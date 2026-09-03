@@ -20529,6 +20529,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _pending_stt_prepared
             else event.text
         ) or ""
+
+        # All messaging adapters converge here. Replace attached documents with
+        # locally extracted anonymous text before vision/document notes or the
+        # provider request can expose their bytes/path. Standalone text events
+        # are deliberately untouched by the document-scoped sanitizer.
+        from agent.document_anonymizer import sanitize_document_event
+
+        message_text = sanitize_document_event(message_text, event)
         _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
         _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
         # Prefer the already resolved session key from the caller so this write

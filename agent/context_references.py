@@ -259,6 +259,26 @@ async def preprocess_context_references_async(
     allowed_root_path = (
         Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
     )
+    model_message = message
+    # The desktop intentionally retains @file chips in authored text. For an
+    # anonymized document that would still reveal the original path to tools,
+    # so replace only document-reference spans in the model-facing copy.
+    from agent.document_anonymizer import document_anonymization_enabled, is_document_path
+
+    if document_anonymization_enabled():
+        for ref in reversed(refs):
+            if ref.kind != "file":
+                continue
+            try:
+                ref_path = _resolve_path(cwd_path, ref.target, allowed_root=allowed_root_path)
+            except Exception:
+                continue
+            if is_document_path(ref_path):
+                model_message = (
+                    model_message[: ref.start]
+                    + "[анонимизированный документ]"
+                    + model_message[ref.end :]
+                )
     warnings: list[str] = []
     blocks: list[str] = []
     injected_tokens = 0
@@ -294,7 +314,7 @@ async def preprocess_context_references_async(
             f"@ context injection refused: {injected_tokens} tokens exceeds the 50% hard limit ({hard_limit})."
         )
         return ContextReferenceResult(
-            message=message,
+            message=model_message,
             original_message=message,
             references=refs,
             warnings=warnings,
@@ -313,7 +333,7 @@ async def preprocess_context_references_async(
     # inline chip, so stripping them left a sentence with a hole in it ("review
     # and ship") and made the desktop re-derive the refs from the attached block
     # to show them as a detached list above the prose.
-    final = message
+    final = model_message
     if warnings:
         final = f"{final}\n\n--- Context Warnings ---\n" + "\n".join(f"- {warning}" for warning in warnings)
     if blocks:
@@ -382,6 +402,28 @@ def _expand_file_reference(
         return f"{ref.raw}: file not found", None
     if not path.is_file():
         return f"{ref.raw}: path is not a file", None
+    # Desktop/TUI file attachments enter the agent through @file references.
+    # Anonymize document formats here, before either their extracted text or
+    # original filesystem path can become model-visible.  Source-code files
+    # are intentionally excluded, and ordinary typed messages never pass this
+    # branch.
+    from agent.document_anonymizer import (
+        document_anonymization_enabled,
+        is_document_path,
+        sanitized_document_text,
+    )
+
+    if document_anonymization_enabled() and is_document_path(path):
+        try:
+            text = sanitized_document_text(path)
+        except Exception as exc:
+            return (
+                f"{ref.raw}: document withheld because local anonymization failed "
+                f"({type(exc).__name__})",
+                None,
+            )
+        label = f"anonymized document ({path.suffix.lower() or 'file'})"
+        return None, f"📄 {label} ({estimate_tokens_rough(text)} tokens)\n{text}"
     if _is_binary_file(path):
         # A binary file can't be inlined as text, but it IS on disk (the agent's
         # tools run where this resolves — the local cwd, or the staged copy in a

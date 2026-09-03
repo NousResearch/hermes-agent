@@ -1866,7 +1866,10 @@ DEFAULT_CONFIG = {
 
     # Privacy settings
     "privacy": {
-        "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
+        "redact_pii": False,  # Hash transport IDs / strip phone numbers from gateway context
+        # Local, document-scoped personN/SUMN replacement. Ordinary chat text
+        # is never passed through this filter. Unsupported documents fail closed.
+        "anonymize_documents": False,
     },
 
     # Text-to-speech configuration

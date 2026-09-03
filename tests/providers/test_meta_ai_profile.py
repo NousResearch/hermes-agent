@@ -28,6 +28,8 @@ class TestMetaAIProfile:
         assert p.api_mode == "codex_responses"
         assert "MODEL_API_KEY" in p.env_vars
         assert p.supports_vision is True
+        # Images are accepted on user turns only; tool-result envelopes 400 (#101668).
+        assert p.supports_vision_tool_messages is False
         assert p.default_aux_model == "muse-spark-1.2-contributor"
         assert p.default_max_tokens == 16384
         assert p.fallback_models == ("muse-spark-1.2",)

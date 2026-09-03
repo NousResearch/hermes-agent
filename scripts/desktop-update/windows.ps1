@@ -1160,6 +1160,12 @@ $script:TreeSafeToFinalize = $true
 # the page can be QA'd in any browser; HERMES_SELFTEST_FAIL=1 exercises the
 # error state, HERMES_SELFTEST_HOLD_SECONDS delays the terminal event.
 if ($SelfTestUi) {
+    # Redirected CI stdout is block-buffered; without AutoFlush the test that
+    # greps this stream for the shim URL can time out on an empty log even
+    # after the listener is up (Windows-only job 100390930641 / #95147).
+    [Console]::Out.AutoFlush = $true
+    Write-Host "SELF-TEST: starting"
+    [Console]::Out.Flush()
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     Show-ProgressWindow
     if (-not $script:UiServer) {
@@ -1170,6 +1176,11 @@ if ($SelfTestUi) {
     }
     if ($script:UiServer) {
         Write-Host "SELF-TEST: shim at http://127.0.0.1:$($script:UiServer.Port)/"
+        [Console]::Out.Flush()
+    } else {
+        Write-Host "SELF-TEST: no shim (UiServer failed)"
+        [Console]::Out.Flush()
+        exit 1
     }
     Write-HandoffLog "SELF-TEST: shim simulation (no update will run)"
     $hold = 6

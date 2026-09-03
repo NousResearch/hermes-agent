@@ -94,7 +94,9 @@ def test_progress_advances_while_the_orchestrator_blocks(tmp_path: Path) -> None
         )
 
     try:
-        deadline = time.monotonic() + 20
+        # 20s raced Start-UiServer's 15s /progress handshake plus script load
+        # on a loaded Windows runner (job 100390930641): empty log, shim_url None.
+        deadline = time.monotonic() + 40
         shim_url = None
         while time.monotonic() < deadline:
             text = output_path.read_text(encoding="utf-8", errors="replace")

@@ -3429,6 +3429,24 @@ DEFAULT_CONFIG = {
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
 
+        # Seconds after a run STARTS during which an incoming text message is
+        # treated as a follow-up to the message that started it — queued into
+        # the same turn instead of interrupting it.
+        #
+        # Some transports deliver ONE human message as SEVERAL events: iMessage
+        # splits on a URL preview or an attachment, Telegram behaves similarly.
+        # Without this window the trailing event lands mid-turn and looks like
+        # the user interrupting themselves.
+        #
+        # Recognized slash commands never reach this path — they are dispatched
+        # by their own busy_policy first — so /stop stays responsive.
+        # Set to 0 to disable. Bridged to HERMES_GATEWAY_FOLLOWUP_GRACE_SECONDS.
+        "followup_grace_seconds": 3.0,
+        # Optional per-platform overrides, e.g. {"bluebubbles": 5.0}. Each key
+        # is bridged to HERMES_<PLATFORM>_FOLLOWUP_GRACE_SECONDS and takes
+        # precedence over followup_grace_seconds for that platform.
+        "followup_grace_seconds_by_platform": {},
+
         # OpenAI-compatible API server platform
         # (gateway/platforms/api_server.py).
         "api_server": {

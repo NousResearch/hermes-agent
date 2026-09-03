@@ -149,6 +149,183 @@ class TestBusySessionAck:
         agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_followup_grace_applies_to_non_telegram_platforms(self, monkeypatch):
+        """A rapid text follow-up must not interrupt on ANY platform, not just Telegram.
+
+        Some transports deliver ONE human message as TWO events. iMessage does this
+        whenever the message carries a URL preview or an attachment: the user types
+        "subscribe to this calendar?" plus a link, presses send once, and the adapter
+        receives two TEXT events a second or two apart.
+
+        Without a follow-up grace window the second event lands mid-turn and is treated
+        as the user interrupting themselves — the run is aborted and the user is told
+        they interrupted a message they sent as one piece.
+
+        The grace window already solves this. It was simply gated to Telegram, so every
+        other adapter re-encounters the same bug.
+        """
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_GATEWAY_FOLLOWUP_GRACE_SECONDS", "3.0")
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=Platform.BLUEBUBBLES,
+            chat_id="any;-;+15550001111",
+            chat_type="dm",
+            user_id="+15550001111",
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {"seconds_since_activity": 0.0}
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+
+        # The two halves of a single iMessage send.
+        halves = [
+            "Can you subscribe to this calendar?",
+            "https://example.com/calendars/team.ics",
+        ]
+        for idx, text in enumerate(halves, start=1):
+            result = await GatewayRunner._handle_message(
+                runner,
+                MessageEvent(
+                    text=text,
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    message_id=f"bb-{idx}",
+                ),
+            )
+            assert result is None
+
+        # The run must survive: the user did not interrupt anything.
+        agent.interrupt.assert_not_called()
+        # And the second half must still be waiting to be handled, not dropped.
+        assert sk in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_control_command_is_not_swallowed_by_the_grace_window(self, monkeypatch):
+        """`/stop` inside the grace window must still reach command handling.
+
+        The window exists to absorb the trailing half of a split send. A control
+        command is never that — it is the user deliberately intervening, and it is
+        exactly the moment they most need to be heard. If `/stop` lands in the
+        pending slot instead, the fix trades "user interrupted themselves" for
+        "user cannot stop a runaway run", which is a strictly worse bug.
+        """
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_GATEWAY_FOLLOWUP_GRACE_SECONDS", "3.0")
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=Platform.BLUEBUBBLES,
+            chat_id="any;-;+15550001111",
+            chat_type="dm",
+            user_id="+15550001111",
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {"seconds_since_activity": 0.0}
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()   # run started just now
+
+        stop_event = MessageEvent(
+            text="/stop",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="stop-1",
+        )
+        assert stop_event.is_command(), "precondition: /stop must parse as a command"
+
+        await GatewayRunner._handle_message(runner, stop_event)
+
+        # The command must NOT have been parked in the pending slot.
+        parked = adapter._pending_messages.get(sk)
+        assert parked is None or parked.text != "/stop", (
+            "/stop was swallowed by the follow-up grace window"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["nan", "inf", "-inf", "banana"])
+    async def test_non_finite_grace_values_fall_back(self, monkeypatch, bad):
+        """`float()` accepts nan/inf; neither is a window a user could have meant.
+
+        NaN fails every comparison and silently disables the feature; inf makes the
+        window unbounded so nothing ever interrupts. Both fail QUIETLY, which is the
+        worst way for a misconfiguration to behave — hence an explicit guard.
+        """
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_GATEWAY_FOLLOWUP_GRACE_SECONDS", bad)
+        monkeypatch.delenv("HERMES_BLUEBUBBLES_FOLLOWUP_GRACE_SECONDS", raising=False)
+
+        assert GatewayRunner._followup_grace_seconds(Platform.BLUEBUBBLES) == 3.0
+
+    @pytest.mark.asyncio
+    async def test_per_platform_override_beats_the_gateway_wide_value(self, monkeypatch):
+        """Per-platform wins; other platforms still read the gateway-wide value."""
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_GATEWAY_FOLLOWUP_GRACE_SECONDS", "1.0")
+        monkeypatch.setenv("HERMES_BLUEBUBBLES_FOLLOWUP_GRACE_SECONDS", "5.0")
+
+        assert GatewayRunner._followup_grace_seconds(Platform.BLUEBUBBLES) == 5.0
+        assert GatewayRunner._followup_grace_seconds(Platform.MATRIX) == 1.0
+
+    @pytest.mark.asyncio
+    async def test_telegram_env_var_still_honoured_after_generalisation(self, monkeypatch):
+        """The platform-specific env var must keep working — it is documented and in use."""
+        from gateway.run import GatewayRunner
+
+        # Only the LEGACY Telegram name is set; the generic one is explicitly off.
+        monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
+        monkeypatch.setenv("HERMES_GATEWAY_FOLLOWUP_GRACE_SECONDS", "0")
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {"seconds_since_activity": 0.0}
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+
+        result = await GatewayRunner._handle_message(
+            runner,
+            MessageEvent(
+                text="follow-up",
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id="tg-1",
+            ),
+        )
+        assert result is None
+        agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):
         """First message during busy session should get a status ack."""
         runner, sentinel = _make_runner()

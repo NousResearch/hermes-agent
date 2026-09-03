@@ -32,6 +32,7 @@ import functools
 import inspect
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -3021,6 +3022,23 @@ if _config_path.exists():
             _trust_recent_seconds = _gateway_cfg.get("trust_recent_files_seconds")
             if _trust_recent_seconds is not None:
                 os.environ["HERMES_MEDIA_TRUST_RECENT_SECONDS"] = str(_trust_recent_seconds)
+            # Bridge gateway.followup_grace_seconds (+ per-platform overrides) to
+            # the internal env vars _followup_grace_seconds() reads. config.yaml
+            # is the user-facing surface; the env names are the mechanism, plus
+            # back-compat for the pre-existing Telegram variable. An explicitly
+            # set env var wins, so the documented escape hatch keeps working.
+            _followup_grace = _gateway_cfg.get("followup_grace_seconds")
+            if (
+                _followup_grace is not None
+                and "HERMES_GATEWAY_FOLLOWUP_GRACE_SECONDS" not in os.environ
+            ):
+                os.environ["HERMES_GATEWAY_FOLLOWUP_GRACE_SECONDS"] = str(_followup_grace)
+            _followup_by_platform = _gateway_cfg.get("followup_grace_seconds_by_platform")
+            if isinstance(_followup_by_platform, dict):
+                for _plat, _secs in _followup_by_platform.items():
+                    _name = f"HERMES_{str(_plat).upper()}_FOLLOWUP_GRACE_SECONDS"
+                    if _secs is not None and _name not in os.environ:
+                        os.environ[_name] = str(_secs)
             # Bridge gateway.platform_connect_timeout → the internal env var the
             # connect path + Discord adapter ready-wait both read (#19776).
             # Unlike the agent.*/display.* bridges above (config-authoritative),
@@ -10747,6 +10765,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return fallback
         modes = getattr(self, "_busy_text_modes_by_profile", None)
         return modes.get(profile_name, fallback) if isinstance(modes, dict) else fallback
+
+    @staticmethod
+    def _followup_grace_seconds(platform: "Platform") -> float:
+        """Seconds after a run starts during which a text message is a FOLLOW-UP.
+
+        Some transports deliver ONE human message as SEVERAL events. iMessage does
+        this whenever the message carries a URL preview or an attachment: the user
+        types a sentence plus a link, presses send once, and the adapter receives two
+        TEXT events a second or two apart. Telegram behaves the same way.
+
+        Without this window the trailing event lands mid-turn and is treated as the
+        user interrupting themselves — the run is aborted and the user is told they
+        interrupted a message they sent as one piece.
+
+        Resolution order, first match wins:
+
+          HERMES_<PLATFORM>_FOLLOWUP_GRACE_SECONDS   per-platform override
+          HERMES_GATEWAY_FOLLOWUP_GRACE_SECONDS      every platform
+          3.0                                        default
+
+        The per-platform form reproduces ``HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS``
+        exactly, so the documented Telegram knob keeps working by construction rather
+        than by special case. Set a value to ``0`` to disable the window.
+        """
+        names = ("HERMES_GATEWAY_FOLLOWUP_GRACE_SECONDS",)
+        value = getattr(platform, "value", "") or ""
+        if value:
+            names = (f"HERMES_{value.upper()}_FOLLOWUP_GRACE_SECONDS",) + names
+        for name in names:
+            raw = os.getenv(name, "").strip()
+            if not raw:
+                continue
+            try:
+                parsed = float(raw)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring %s=%r — not a number; falling back.", name, raw
+                )
+                continue
+            # float() accepts "nan"/"inf". NaN fails every comparison, silently
+            # disabling the window; inf makes it unbounded. Neither is a value a
+            # user can have meant, and both fail quietly, so reject them here.
+            if not math.isfinite(parsed):
+                logger.warning(
+                    "Ignoring %s=%r — not a finite number; falling back.", name, raw
+                )
+                continue
+            return parsed
+        return 3.0
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -19454,20 +19521,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             effective_busy_input_mode = self._effective_busy_input_mode(source)
-            _telegram_followup_grace = float(
-                os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
-            )
+            _followup_grace = self._followup_grace_seconds(source.platform)
             _grace_state = self._peek_session_state(_quick_key)
             _started_at = _grace_state.turn.started_ts if _grace_state else 0
             if (
-                source.platform == Platform.TELEGRAM
-                and event.message_type == MessageType.TEXT
-                and _telegram_followup_grace > 0
+                event.message_type == MessageType.TEXT
+                and _followup_grace > 0
                 and _started_at
-                and (time.time() - _started_at) <= _telegram_followup_grace
+                and (time.time() - _started_at) <= _followup_grace
             ):
                 logger.debug(
-                    "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
+                    "%s follow-up arrived %.2fs after run start for %s — queueing without interrupt",
+                    source.platform.value,
                     time.time() - _started_at,
                     _quick_key,
                 )

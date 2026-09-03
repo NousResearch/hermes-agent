@@ -1013,6 +1013,14 @@ def _begin_tool_execution(
     display_index: int | None,
 ) -> None:
     """Run user-visible and checkpoint preflight on final tool arguments."""
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        try:
+            from tools.kanban_tools import record_current_worker_tool_progress
+
+            record_current_worker_tool_progress(function_name, function_args)
+        except Exception:
+            logging.debug("kanban tool progress stamp failed", exc_info=True)
+
     if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
         display_args = (
             _redact_tool_args_for_display(function_name, function_args) or function_args

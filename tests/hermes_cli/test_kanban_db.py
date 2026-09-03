@@ -1321,6 +1321,83 @@ def _set_task_status(conn: sqlite3.Connection, task_id: str, status: str) -> Non
 # ---------------------------------------------------------------------------
 
 
+def test_stale_detection_uses_progress_not_fresh_liveness(kanban_home, monkeypatch):
+    now = int(time.time())
+    with kb.connect() as conn:
+        stale = kb.create_task(conn, title="looping", assignee="worker")
+        healthy = kb.create_task(conn, title="progressing", assignee="worker")
+        assert kb.claim_task(conn, stale)
+        assert kb.claim_task(conn, healthy)
+
+        for task_id in (stale, healthy):
+            task = kb.get_task(conn, task_id)
+            conn.execute(
+                "UPDATE tasks SET started_at = ?, last_heartbeat_at = ? WHERE id = ?",
+                (now - 1000, now, task_id),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ?, last_heartbeat_at = ? WHERE id = ?",
+                (now - 1000, now, task.current_run_id),
+            )
+        conn.execute(
+            "UPDATE tasks SET last_progress_at = ? WHERE id = ?",
+            (now - 500, stale),
+        )
+        conn.execute(
+            "UPDATE task_runs SET last_progress_at = ? WHERE id = ?",
+            (now - 500, kb.get_task(conn, stale).current_run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET last_progress_at = ? WHERE id = ?",
+            (now - 10, healthy),
+        )
+        conn.execute(
+            "UPDATE task_runs SET last_progress_at = ? WHERE id = ?",
+            (now - 10, kb.get_task(conn, healthy).current_run_id),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(kb.time, "time", lambda: now)
+        reclaimed = kb.detect_stale_running(
+            conn,
+            stale_timeout_seconds=300,
+        )
+
+        assert reclaimed == [stale]
+        assert kb.get_task(conn, stale).status == "ready"
+        assert kb.get_task(conn, healthy).status == "running"
+
+
+def test_heartbeat_worker_only_stamps_progress_when_requested(kanban_home, monkeypatch):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="heartbeat split", assignee="worker")
+        assert kb.claim_task(conn, task_id)
+        run_id = kb.get_task(conn, task_id).current_run_id
+
+        monkeypatch.setattr(kb.time, "time", lambda: 100)
+        assert kb.heartbeat_worker(conn, task_id, expected_run_id=run_id)
+        row = conn.execute(
+            "SELECT last_heartbeat_at, last_progress_at FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        assert tuple(row) == (100, None)
+
+        monkeypatch.setattr(kb.time, "time", lambda: 200)
+        assert kb.heartbeat_worker(
+            conn, task_id, expected_run_id=run_id, progress=True,
+        )
+        row = conn.execute(
+            "SELECT last_heartbeat_at, last_progress_at FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        run = conn.execute(
+            "SELECT last_heartbeat_at, last_progress_at FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        assert tuple(row) == (200, 200)
+        assert tuple(run) == (200, 200)
+
+
 
 
 # ---------------------------------------------------------------------------

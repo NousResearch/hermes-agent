@@ -28,6 +28,7 @@ through the board.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -302,9 +303,10 @@ def _goal_mode_handoff_rejection(task, evidence: str):
 
 _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
 _auto_heartbeat_last_attempt: float = 0.0
+_auto_heartbeat_progress_seen: dict[tuple[str, Optional[int]], set[str]] = {}
 
 
-def heartbeat_current_worker_from_env() -> bool:
+def heartbeat_current_worker_from_env(*, progress: bool = False) -> bool:
     """Best-effort: extend the kanban claim + bump board heartbeat for the
     current dispatcher-spawned worker, using identity from env vars.
 
@@ -331,7 +333,10 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
     import time as _time
     now = _time.monotonic()
-    if (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
+    if (
+        not progress
+        and (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS
+    ):
         return False
     _auto_heartbeat_last_attempt = now
     try:
@@ -349,7 +354,13 @@ def heartbeat_current_worker_from_env() -> bool:
             except (TypeError, ValueError):
                 run_id = None
             try:
-                kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
+                kb.heartbeat_worker(
+                    conn,
+                    tid,
+                    note=None,
+                    expected_run_id=run_id,
+                    progress=progress,
+                )
             except Exception:
                 logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
         finally:
@@ -361,6 +372,42 @@ def heartbeat_current_worker_from_env() -> bool:
     except Exception:
         logger.debug("auto-heartbeat: bridge failed", exc_info=True)
         return False
+
+
+def record_current_worker_tool_progress(
+    tool_name: str,
+    tool_args: dict[str, Any],
+) -> bool:
+    """Stamp progress once per distinct tool+arguments call in the active run.
+
+    The fingerprint is kept in process memory and only the timestamp reaches
+    SQLite; raw arguments (which may contain credentials or user data) are
+    never persisted. Repeating a failed call or re-reading the same target
+    remains live through the ordinary heartbeat but no longer looks like new
+    work to the stale-run detector.
+    """
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not tid or not _is_dispatcher_owned_worker():
+        return False
+    run_id = _worker_run_id(tid)
+    try:
+        canonical = json.dumps(
+            tool_args,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        )
+    except Exception:
+        canonical = repr(tool_args)
+    digest = hashlib.sha256(
+        f"{tool_name}\0{canonical}".encode("utf-8", errors="replace")
+    ).hexdigest()
+    seen = _auto_heartbeat_progress_seen.setdefault((tid, run_id), set())
+    if digest in seen:
+        return False
+    seen.add(digest)
+    return heartbeat_current_worker_from_env(progress=True)
 
 
 # Live operator-note injection: poll the worker's task for new comments and

@@ -1086,6 +1086,7 @@ class Task:
     last_failure_error: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     last_heartbeat_at: Optional[int] = None
+    last_progress_at: Optional[int] = None
     current_run_id: Optional[int] = None
     workflow_template_id: Optional[str] = None
     current_step_key: Optional[str] = None
@@ -1194,6 +1195,9 @@ class Task:
             last_heartbeat_at=(
                 row["last_heartbeat_at"] if "last_heartbeat_at" in keys else None
             ),
+            last_progress_at=(
+                row["last_progress_at"] if "last_progress_at" in keys else None
+            ),
             current_run_id=(
                 row["current_run_id"] if "current_run_id" in keys else None
             ),
@@ -1259,6 +1263,7 @@ class Run:
     worker_pid: Optional[int]
     max_runtime_seconds: Optional[int]
     last_heartbeat_at: Optional[int]
+    last_progress_at: Optional[int]
     started_at: int
     ended_at: Optional[int]
     outcome: Optional[str]
@@ -1283,6 +1288,9 @@ class Run:
             worker_pid=row["worker_pid"],
             max_runtime_seconds=row["max_runtime_seconds"],
             last_heartbeat_at=row["last_heartbeat_at"],
+            last_progress_at=(
+                row["last_progress_at"] if "last_progress_at" in row.keys() else None
+            ),
             started_at=int(row["started_at"]),
             ended_at=(int(row["ended_at"]) if row["ended_at"] is not None else None),
             outcome=row["outcome"],
@@ -1363,6 +1371,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
     last_heartbeat_at    INTEGER,
+    -- Distinct work signal, separate from process/API liveness. Auto-heartbeats
+    -- do not touch this; a previously unseen tool+arguments signature does.
+    last_progress_at     INTEGER,
     -- Pointer into task_runs for the currently-active run (NULL if no
     -- run is in-flight). Denormalised for cheap reads.
     current_run_id       INTEGER,
@@ -1467,6 +1478,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     worker_pid          INTEGER,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
+    last_progress_at    INTEGER,
     started_at          INTEGER NOT NULL,
     ended_at            INTEGER,
     outcome             TEXT,
@@ -2609,6 +2621,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "last_heartbeat_at", "last_heartbeat_at INTEGER"
         )
+    if "last_progress_at" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "last_progress_at", "last_progress_at INTEGER"
+        )
     if "current_run_id" not in cols:
         _add_column_if_missing(
             conn, "tasks", "current_run_id", "current_run_id INTEGER"
@@ -2689,6 +2705,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
+
+    has_runs = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_runs'"
+    ).fetchone()
+    if has_runs:
+        run_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        if "last_progress_at" not in run_cols:
+            _add_column_if_missing(
+                conn, "task_runs", "last_progress_at", "last_progress_at INTEGER"
+            )
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -4692,6 +4720,8 @@ def claim_task(
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
+                   last_heartbeat_at = NULL,
+                   last_progress_at = NULL,
                    started_at    = COALESCE(started_at, ?)
              WHERE id = ?
                AND status = 'ready'
@@ -4792,6 +4822,8 @@ def claim_review_task(
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
+                   last_heartbeat_at = NULL,
+                   last_progress_at = NULL,
                    started_at    = COALESCE(started_at, ?)
              WHERE id = ?
                AND status = 'review'
@@ -8386,8 +8418,9 @@ def heartbeat_worker(
     *,
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    progress: bool = False,
 ) -> bool:
-    """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
+    """Record liveness and optionally a distinct-work progress stamp.
 
     Called by long-running workers as a liveness signal orthogonal to
     the PID check. A worker that forks a long-lived child (train loop,
@@ -8399,17 +8432,22 @@ def heartbeat_worker(
     """
     now = int(time.time())
     with write_txn(conn):
+        task_set = (
+            "last_heartbeat_at = ?, last_progress_at = ?"
+            if progress else "last_heartbeat_at = ?"
+        )
+        task_values = (now, now) if progress else (now,)
         if expected_run_id is None:
             cur = conn.execute(
-                "UPDATE tasks SET last_heartbeat_at = ? "
+                f"UPDATE tasks SET {task_set} "
                 "WHERE id = ? AND status = 'running'",
-                (now, task_id),
+                (*task_values, task_id),
             )
         else:
             cur = conn.execute(
-                "UPDATE tasks SET last_heartbeat_at = ? "
+                f"UPDATE tasks SET {task_set} "
                 "WHERE id = ? AND status = 'running' AND current_run_id = ?",
-                (now, task_id, int(expected_run_id)),
+                (*task_values, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
@@ -8419,9 +8457,13 @@ def heartbeat_worker(
             else _current_run_id(conn, task_id)
         )
         if run_id is not None:
+            run_set = (
+                "last_heartbeat_at = ?, last_progress_at = ?"
+                if progress else "last_heartbeat_at = ?"
+            )
             conn.execute(
-                "UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?",
-                (now, run_id),
+                f"UPDATE task_runs SET {run_set} WHERE id = ?",
+                (*task_values, run_id),
             )
         _append_event(
             conn, task_id, "heartbeat",
@@ -8551,29 +8593,24 @@ def enforce_max_runtime(
     return timed_out
 
 
-# Heartbeat staleness heartbeat gap — if a running task hasn't sent a
-# heartbeat in this many seconds it's considered inactive regardless of
-# the ``dispatch_stale_timeout_seconds`` threshold.  Hardcoded at 1 hour
-# to match the original spec (">4h started + no commits in 1h").
-_STALE_HEARTBEAT_GAP_SECONDS = 3600
-
-
 def detect_stale_running(
     conn: sqlite3.Connection,
     *,
     stale_timeout_seconds: int = 0,
     signal_fn=None,
 ) -> list[str]:
-    """Reclaim ``running`` tasks that show no progress (heartbeat) within the
-    staleness window.
+    """Reclaim running tasks that have stopped producing distinct work.
 
     A task is considered stale when BOTH of these hold:
 
     1. It has been running for longer than ``stale_timeout_seconds``
        (measured from the active run's ``started_at``, falling back to
        ``tasks.started_at`` on older runs).
-    2. Its ``last_heartbeat_at`` is older than
-       ``_STALE_HEARTBEAT_GAP_SECONDS`` (or NULL — never sent a heartbeat).
+    2. Its ``last_progress_at`` is older than ``stale_timeout_seconds``.
+       For legacy rows with no progress stamp, the active run start is used.
+
+    ``last_heartbeat_at`` deliberately does not enter this decision. It is a
+    liveness signal and can stay fresh while an agent repeats the same call.
 
     On reclaim the task is restored to its source phase, the run is closed with
     ``outcome='stale'``, and the host-local worker (if still running) is
@@ -8589,12 +8626,12 @@ def detect_stale_running(
     if stale_timeout_seconds <= 0:
         return []
 
-
     now = int(time.time())
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.last_progress_at, "
+        "       t.claim_lock, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -8611,9 +8648,15 @@ def detect_stale_running(
             continue  # not old enough to check
 
         last_hb = row["last_heartbeat_at"]
-        hb_age = (now - int(last_hb)) if last_hb is not None else None
-        if hb_age is not None and hb_age < _STALE_HEARTBEAT_GAP_SECONDS:
-            continue  # recent heartbeat → still alive
+        last_progress = row["last_progress_at"]
+        progress_base = (
+            int(last_progress)
+            if last_progress is not None
+            else int(row["active_started_at"])
+        )
+        progress_age = now - progress_base
+        if progress_age < stale_timeout_seconds:
+            continue
 
         pid = row["worker_pid"]
         tid = row["id"]
@@ -8638,7 +8681,7 @@ def detect_stale_running(
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
+                "last_heartbeat_at = NULL, last_progress_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ?",
                 (retry_status, tid, row["claim_lock"]),
@@ -8651,9 +8694,11 @@ def detect_stale_running(
                 "last_heartbeat_at": (
                     int(last_hb) if last_hb is not None else None
                 ),
-                "heartbeat_age_seconds": (
-                    int(hb_age) if hb_age is not None else None
+                "last_progress_at": (
+                    int(last_progress) if last_progress is not None else None
                 ),
+                "progress_age_seconds": int(progress_age),
+                "progress_timeout_seconds": int(stale_timeout_seconds),
                 "timeout_seconds": stale_timeout_seconds,
                 "pid": int(pid) if pid else None,
                 "retry_status": retry_status,
@@ -8664,10 +8709,9 @@ def detect_stale_running(
                 conn, tid,
                 outcome="stale", status="stale",
                 error=(
-                    f"no heartbeat for {int(hb_age)}s "
-                    if hb_age is not None
-                    else "no heartbeat ever"
-                ) + f" after {int(elapsed)}s running",
+                    f"no distinct progress for {int(progress_age)}s "
+                    f"after {int(elapsed)}s running"
+                ),
                 metadata=payload,
             )
             _append_event(

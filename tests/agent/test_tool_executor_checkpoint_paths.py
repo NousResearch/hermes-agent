@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from agent.tool_executor import _ensure_file_checkpoint
+from agent.tool_executor import _begin_tool_execution, _ensure_file_checkpoint
 from tools.checkpoint_manager import CheckpointManager
 
 
@@ -38,3 +38,32 @@ def test_relative_file_checkpoint_uses_task_workspace(tmp_path, monkeypatch):
 
     assert manager.list_checkpoints(str(workspace_cwd))
     assert manager.list_checkpoints(str(process_cwd)) == []
+
+
+def test_begin_tool_execution_records_kanban_progress(monkeypatch):
+    recorded = []
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+    monkeypatch.setattr(
+        "tools.kanban_tools.record_current_worker_tool_progress",
+        lambda name, args: recorded.append((name, args)),
+    )
+    agent = SimpleNamespace(
+        quiet_mode=True,
+        tool_progress_mode="off",
+        tool_progress_callback=None,
+        tool_start_callback=None,
+        _checkpoint_mgr=SimpleNamespace(enabled=False),
+        _current_tool=None,
+        _touch_activity=lambda _label: None,
+    )
+
+    _begin_tool_execution(
+        agent,
+        function_name="read_file",
+        function_args={"path": "same.txt"},
+        effective_task_id="task",
+        tool_call_id="call-1",
+        display_index=1,
+    )
+
+    assert recorded == [("read_file", {"path": "same.txt"})]

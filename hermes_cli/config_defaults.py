@@ -2965,11 +2965,12 @@ DEFAULT_CONFIG = {
         # LLM calls in one tick. Excess tasks defer to the next tick.
         "auto_decompose_per_tick": 3,
         # Stale detection: running tasks that have exceeded this many
-        # seconds without a heartbeat (since ``last_heartbeat_at``) are
-        # auto-reclaimed to ``ready`` on the next dispatcher tick. The
-        # worker process (if still running host-locally) is terminated
-        # before the reclaim.  0 disables stale detection entirely.
-        "dispatch_stale_timeout_seconds": 14400,
+        # seconds without distinct progress (a previously unseen tool+args
+        # signature) are auto-reclaimed to ``ready`` on the next dispatcher
+        # tick, even when liveness heartbeats remain fresh. Seven minutes is
+        # just beyond the measured p99.9 productive-message gap (394s).
+        # The worker process is terminated before reclaim. 0 disables it.
+        "dispatch_stale_timeout_seconds": 420,
         # Orphaned-card reconciliation: each dispatcher tick, requeue
         # 'running' cards whose claim bookkeeping is broken (claim_lock or
         # claim_expires NULL with a dead/gone worker) — zombies invisible

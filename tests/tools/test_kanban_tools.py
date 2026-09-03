@@ -350,6 +350,41 @@ def test_heartbeat_extends_claim_expires(worker_env):
     )
 
 
+def test_repeated_tool_signature_does_not_refresh_progress(worker_env, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kt._auto_heartbeat_last_attempt = 0.0
+    kt._auto_heartbeat_progress_seen.clear()
+
+    monkeypatch.setattr(kb.time, "time", lambda: 100)
+    assert kt.record_current_worker_tool_progress("read_file", {"path": "same"})
+
+    monkeypatch.setattr(kb.time, "time", lambda: 200)
+    assert not kt.record_current_worker_tool_progress("read_file", {"path": "same"})
+
+    conn = kb.connect()
+    try:
+        row = conn.execute(
+            "SELECT last_progress_at FROM tasks WHERE id = ?", (worker_env,),
+        ).fetchone()
+        assert row["last_progress_at"] == 100
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(kb.time, "time", lambda: 300)
+    assert kt.record_current_worker_tool_progress("read_file", {"path": "new"})
+
+    conn = kb.connect()
+    try:
+        row = conn.execute(
+            "SELECT last_progress_at FROM tasks WHERE id = ?", (worker_env,),
+        ).fetchone()
+        assert row["last_progress_at"] == 300
+    finally:
+        conn.close()
+
+
 def test_comment_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_comment({

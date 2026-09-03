@@ -952,6 +952,19 @@ def _(rid, params: dict) -> dict:
             # not replay the unanswered call forever (#29086).
             prefix = [] if omit_messages else db.get_ancestor_display_prefix(target)
             history = sanitize_replay_history(raw_history)
+            # Durable lost-result repair: persist ONE synthetic result row per
+            # never-answered tool call so the transcript no longer shows an
+            # eternally in-flight call and the repair survives restarts. Idempotent
+            # (has_tool_result gate); failures never block resume.
+            try:
+                backfilled = backfill_orphan_tool_results(target, raw_history, db)
+                if backfilled:
+                    logger.info(
+                        "session.resume: backfilled %d orphan tool result(s) into %s",
+                        backfilled, target,
+                    )
+            except Exception:
+                logger.exception("orphan tool-result backfill failed for %s", target)
             # Restore the model/provider/reasoning/tier this chat last used so the
             # deferred build (and the info below) match the eager path — without them
             # the build drops the provider ("No LLM provider configured").
@@ -1042,6 +1055,19 @@ def _(rid, params: dict) -> dict:
                 [] if omit_messages else db.get_ancestor_display_prefix(target)
             )
             history = sanitize_replay_history(raw_history)
+            # Durable lost-result repair: persist ONE synthetic result row per
+            # never-answered tool call so the transcript no longer shows an
+            # eternally in-flight call and the repair survives restarts. Idempotent
+            # (has_tool_result gate); failures never block resume.
+            try:
+                backfilled = backfill_orphan_tool_results(target, raw_history, db)
+                if backfilled:
+                    logger.info(
+                        "session.resume: backfilled %d orphan tool result(s) into %s",
+                        backfilled, target,
+                    )
+            except Exception:
+                logger.exception("orphan tool-result backfill failed for %s", target)
             messages = [] if omit_messages else _history_to_messages(display_history)
             tokens = _set_session_context(target)
             try:

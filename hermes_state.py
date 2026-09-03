@@ -12690,6 +12690,33 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return value
         return json.dumps(value)
 
+    def has_tool_result(self, session_id: str, tool_call_id: str) -> bool:
+        """Return True if a tool-result row exists for this call id.
+
+        Used by the resume-path orphan backfill (agent/replay_cleanup.py) to
+        decide whether a dangling assistant ``tool_calls`` entry needs a
+        synthetic result row. Single indexed lookup, no row materialization.
+
+        Fails closed: on lookup error returns True so a transient failure can
+        never cause a duplicate synthetic result write.
+        """
+        if not tool_call_id or not session_id:
+            return False
+        try:
+            row = self._conn.execute(
+                "SELECT 1 FROM messages "
+                "WHERE session_id = ? AND role = 'tool' AND tool_call_id = ? "
+                "AND tool_call_id != '' AND active = 1 LIMIT 1",
+                (session_id, tool_call_id),
+            ).fetchone()
+        except Exception:
+            logger.exception(
+                "has_tool_result lookup failed (session=%s call=%s)",
+                session_id, tool_call_id,
+            )
+            return True
+        return row is not None
+
     def append_message(
         self,
         session_id: str,

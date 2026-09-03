@@ -202,6 +202,152 @@ def sanitize_replay_history(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Durable orphan-result backfill (#lost-result-delivery)
+# ──────────────────────────────────────────────────────────────────────
+
+def collect_dangling_tool_call_ids(agent_history: List[Dict[str, Any]]) -> List[str]:
+    """Return tool-call ids that have NO matching tool result, in history order.
+
+    Unlike the tail strippers (which only fire on block tails with interrupt
+    markers), this walks the FULL history: a session can accumulate dangling
+    calls mid-transcript when the tool-delivery layer dies without writing
+    the result row (e.g. a wedged pre-exec guard threads holding the GIL
+    until the service is restarted). The resumed conversation sanitizes them
+    in memory, but the durable transcript keeps the dangling call forever —
+    and every TUI transcript view renders it as an eternally in-flight call.
+    """
+    dangling: List[str] = []
+    seen: set = set()
+    for msg in agent_history:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                cid = str(tc.get("id") or tc.get("call_id") or "").strip()
+                if cid:
+                    seen.add(cid)
+        elif msg.get("role") == "tool":
+            cid = str(msg.get("tool_call_id") or "").strip()
+            seen.discard(cid)
+    # preserve history order for the assistant calls, results appended after
+    ordered: List[str] = []
+    emitted: set = set()
+    for msg in agent_history:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                cid = str(tc.get("id") or tc.get("call_id") or "").strip()
+                if cid and cid in seen and cid not in emitted:
+                    ordered.append(cid)
+                    emitted.add(cid)
+    return ordered
+
+
+def backfill_orphan_tool_results(
+    session_id: str,
+    agent_history: List[Dict[str, Any]],
+    session_db: Any,
+) -> int:
+    """Persist synthetic results for dangling tool calls — once, durably.
+
+    The resume-time sanitizers (``strip_dangling_tool_call_tail`` /
+    ``strip_interrupted_tool_tails``) repair the model-fed history in memory
+    only; the synthetic ``[Orphan recovery: ...]`` rows never reach state.db,
+    so the dangling call resurfaces on EVERY restart and the TUI transcript
+    shows a never-ending in-flight tool call for that turn.
+
+    This backfills the durable transcript: for each dangling call id it
+    writes one synthetic tool row (same wording as the in-memory recovery,
+    ``effect_disposition`` mirroring the stripper's side-effect logic) with
+    the ORIGINAL assistant message's timestamp slot + 1µs so ordering stays
+    below whatever the user sent next. Idempotent: calls that already have
+    any tool row are skipped, so a re-run after a crash adds nothing.
+
+    Returns the number of rows written. Never raises: a backfill failure
+    must not fail the resume (the in-memory sanitizers still protect the
+    model); the failure is logged and retried on the next resume.
+    """
+    if not agent_history or session_db is None:
+        return 0
+    try:
+        dangling = [
+            (cid, tool_name, ts_after)
+            for cid, tool_name, ts_after in _dangling_with_metadata(
+                agent_history
+            )
+            if not session_db.has_tool_result(session_id, cid)
+        ]
+        if not dangling:
+            return 0
+        written = 0
+        for cid, tool_name, ts_after in dangling:
+            content = (
+                "[Orphan recovery: interrupted side-effecting tool may have "
+                "executed; its effect is UNKNOWN. Inspect state before retrying.]"
+                if tool_may_have_side_effect(tool_name)
+                else "[Orphan recovery: interrupted read-only tool did not complete.]"
+            )
+            try:
+                session_db.append_message(
+                    session_id,
+                    "tool",
+                    content=content,
+                    tool_name=tool_name or "unknown",
+                    tool_call_id=cid,
+                    effect_disposition=(
+                        "unknown" if tool_may_have_side_effect(tool_name) else "none"
+                    ),
+                    timestamp=ts_after,
+                )
+                written += 1
+                logger.info(
+                    "Backfilled orphan tool result row for call %s (%s) in "
+                    "session %s (durable lost-result repair)",
+                    cid, tool_name, session_id,
+                )
+            except Exception:
+                logger.exception(
+                    "orphan-result backfill failed for call %s in session %s",
+                    cid, session_id,
+                )
+        return written
+    except Exception:
+        logger.exception("orphan-result backfill scan failed; skipping repair")
+        return 0
+
+
+def _dangling_with_metadata(agent_history):
+    """Yield (call_id, tool_name, timestamp_after_assistant) for dangling ids."""
+    # First pass: collect which ids have results at all
+    have_result: set = set()
+    for msg in agent_history:
+        if isinstance(msg, dict) and msg.get("role") == "tool":
+            cid = str(msg.get("tool_call_id") or "").strip()
+            if cid:
+                have_result.add(cid)
+    # Second pass: walk in order, remember the assistant ts for each dangling id
+    for msg in agent_history:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        calls = msg.get("tool_calls") or []
+        if not calls:
+            continue
+        ts = msg.get("timestamp")
+        for tc in calls:
+            if not isinstance(tc, dict):
+                continue
+            cid = str(tc.get("id") or tc.get("call_id") or "").strip()
+            if not cid or cid in have_result:
+                continue
+            fn = tc.get("function") or {}
+            name = str(fn.get("name") or "")
+            yield cid, name, ts
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Stale dangerous-confirmation text expiry (#59607)
 # ──────────────────────────────────────────────────────────────────────
 

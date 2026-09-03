@@ -520,6 +520,15 @@ def _iter_command_segments(command: str) -> Iterator[list[str]]:
     logical_lines = _split_logical_lines(normalized)
 
     for line in logical_lines:
+        # A single enormous line (e.g. a binary's decoded contents or a blob
+        # read by a reader without a NUL/binary-magic check) is never
+        # legitimate scannable shell — the pure-Python shlex tokenizer spins
+        # on such lines for minutes while holding the GIL, unbounded by any
+        # command timeout. Defense-in-depth against future reader
+        # regressions; the lifecycle regex has already run over the full raw
+        # text, so block-detection is not weakened. (#78398)
+        if len(line) > 262144:
+            continue
         # Try to tokenize the logical line as a whole.
         try:
             lexer = shlex.shlex(

@@ -21,6 +21,9 @@ def _isolate_approval_state(monkeypatch):
     )
     # Empty session + permanent approval stores so nothing pre-approves.
     monkeypatch.setattr(approval, "is_approved", lambda sk, pk: False)
+    # _approval_scope reads the stores directly — make sure they are clean.
+    approval._session_approved.pop("test-session", None)
+    approval._permanent_approved.discard("plugin_rule:ssh")
     # Not a yolo session (the shared gate checks this first).
     monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
     monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False, raising=False)
@@ -33,14 +36,22 @@ def _isolate_approval_state(monkeypatch):
 
 class TestRequestToolApproval:
     def test_session_cached_approval_short_circuits(self, monkeypatch):
-        monkeypatch.setattr(approval, "is_approved", lambda sk, pk: True)
-        # Should NOT prompt at all.
-        monkeypatch.setattr(
-            approval, "prompt_dangerous_approval",
-            lambda *a, **k: pytest.fail("should not prompt when already approved"),
-        )
-        res = request_tool_approval("write_file", "sensitive path", rule_key="ssh")
-        assert res == {"approved": True, "message": None}
+        # Pre-approve for real (provenance now reads the approval stores
+        # directly via _approval_scope, not through is_approved).
+        approval.approve_session("test-session", "plugin_rule:ssh")
+        try:
+            # Should NOT prompt at all.
+            monkeypatch.setattr(
+                approval, "prompt_dangerous_approval",
+                lambda *a, **k: pytest.fail("should not prompt when already approved"),
+            )
+            res = request_tool_approval("write_file", "sensitive path", rule_key="ssh")
+            assert res["approved"] is True
+            assert res["message"] is None
+            # Provenance: the result explains WHY no prompt fired.
+            assert res.get("pre_approved") == "session"
+        finally:
+            approval._session_approved.pop("test-session", None)
 
     def test_cli_approve_once(self, monkeypatch):
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)

@@ -35,7 +35,8 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional, Sequence
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
@@ -500,8 +501,28 @@ class WhatsAppBehaviorMixin:
 
 
 # ---------------------------------------------------------------------------
-# Shared bridge directory resolution for CLI and adapter
+# Shared bridge process command and directory resolution
 # ---------------------------------------------------------------------------
+
+_WHATSAPP_BRIDGE_BOOTSTRAP = """\
+if (process.platform !== 'win32') process.umask(0o077);
+const { pathToFileURL } = await import('node:url');
+await import(pathToFileURL(process.argv[1]).href);
+"""
+
+
+def build_whatsapp_bridge_command(
+    *, node: str, bridge_path: Path, bridge_args: Sequence[str]
+) -> list[str]:
+    """Launch the ESM bridge only after applying an owner-only POSIX umask."""
+    return [
+        node,
+        "--input-type=module",
+        "--eval",
+        _WHATSAPP_BRIDGE_BOOTSTRAP,
+        str(bridge_path),
+        *bridge_args,
+    ]
 
 def resolve_whatsapp_bridge_dir() -> Path:
     """Resolve the WhatsApp bridge directory, mirroring to HERMES_HOME if needed.

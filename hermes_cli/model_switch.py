@@ -2977,17 +2977,13 @@ def _apply_quick_switch_filter(
         wanted = qs_by_slug.get(slug)
         if wanted is None:
             continue
-        kept = [m for m in (row.get("models") or []) if m in wanted]
-        if not kept:
-            # The user explicitly named these models ("provider::model") — keep
-            # them even when the row's curated/live list does not carry them
-            # (e.g. a model that exists on the provider but is not in the
-            # curated picker snapshot). The named provider row exists, so the
-            # model is selectable through it.
-            kept = list(wanted)
+        # The user explicitly named these models ("provider::model") — show
+        # all of them as long as the provider row exists. Intersecting with
+        # the row's curated/live list would drop models the catalog happens
+        # not to carry on this fetch (e.g. a transient live-catalog miss).
         row = dict(row)
-        row["models"] = kept
-        row["total_models"] = len(kept)
+        row["models"] = list(wanted)
+        row["total_models"] = len(wanted)
         narrowed.append(row)
     return narrowed
 

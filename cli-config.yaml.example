@@ -1485,6 +1485,41 @@ platform_toolsets:
 #       log_level: "info"       # audit verbosity
 
 # =============================================================================
+# Tool Search (progressive disclosure of MCP/plugin tools)
+# =============================================================================
+# Large tool catalogs are hidden behind tool_search / tool_describe /
+# tool_call bridge tools and ranked with BM25 on demand. All keys are
+# optional; defaults are shown. See website/docs/user-guide/features/tool-search.md.
+#
+# Optional embedding reranker (default OFF). BM25 over tool names rewards
+# token co-occurrence in long names, so on a flat REST-style catalog
+# (Cloudflare, ~1.9K tools) "list accounts" returns get_accounts_rules_lists_*
+# and never get_accounts. The reranker reorders results by embedding
+# similarity via any OpenAI-compatible /v1/embeddings endpoint. A local
+# Ollama model works and keeps everything on-machine:
+#   ollama pull nomic-embed-text
+# Tool vectors are embedded once per catalog and cached; any endpoint failure
+# falls back to plain BM25. If the endpoint needs a bearer token, put it in
+# .env as HERMES_EMBED_API_KEY — it is never read from this file.
+#
+# tools:
+#   tool_search:
+#     enabled: auto                 # auto | on | off
+#     search_default_limit: 5
+#     max_search_limit: 25
+#     listing: auto                 # auto | on | off
+#     listing_max_tokens: 4000
+#     reranker:
+#       enabled: false
+#       endpoint: http://localhost:11434/v1/embeddings   # required when enabled
+#       model: nomic-embed-text
+#       mode: rerank                # rerank (cosine) | rrf (fuse with BM25 ranks)
+#       rrf_k: 10                   # RRF smoothing constant (mode: rrf)
+#       query_prefix: "search_query: "     # nomic task prefixes; set both to ""
+#       doc_prefix: "search_document: "    # for models that do not use them
+#       timeout: 5.0                # seconds per embed request before BM25 fallback
+
+# =============================================================================
 # Text-to-Speech
 # =============================================================================
 # TTS defaults to Edge TTS unless changed in ~/.hermes/config.yaml.

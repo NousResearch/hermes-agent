@@ -24,7 +24,7 @@ from hermes_cli.profiles import (
     resolve_profile_env,
     set_active_profile,
 )
-from hermes_constants import named_profile_home
+from hermes_constants import named_profile_home, named_profile_is_deleted
 from hermes_logging import setup_logging
 
 
@@ -156,6 +156,36 @@ class TestDeletedProfileTombstone:
 
         assert leftover_path.read_text(encoding="utf-8") == "keep-me\n"
         assert leftover_path.exists()
+
+    def test_create_after_delete_leaves_tombstone_when_materialization_fails(
+        self, profile_env
+    ):
+        """The same bug shape flagged in install_distribution()'s review
+        (tombstone cleared before the copy steps that can fail) also existed
+        in create_profile(): it cleared the marker right after the
+        pre-flight checks, before shutil.copy2()/copytree() ever ran. A
+        failed clone-reinstall (disk full, permissions, a source file
+        vanishing mid-copy) would then leave the deleted name "live" with a
+        partial profile on disk instead of staying hidden behind its
+        tombstone."""
+        create_profile("template", no_alias=True, no_skills=True)
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        _delete("worker")
+        assert named_profile_is_deleted(profile_dir)
+
+        with patch("shutil.copy2", side_effect=OSError("disk full")):
+            with pytest.raises(OSError):
+                create_profile(
+                    "worker", clone_from="template", clone_config=True, no_alias=True
+                )
+
+        assert named_profile_is_deleted(profile_dir), (
+            "a failed reinstall must not clear the tombstone — otherwise the "
+            "partially-materialized profile becomes visible to "
+            "profile_exists()/list_profiles() instead of staying hidden"
+        )
+        assert profile_exists("worker") is False
+        assert "worker" not in _named_homes(profile_env)
 
 
 class TestNamedProfileHome:

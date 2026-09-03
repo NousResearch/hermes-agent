@@ -609,7 +609,8 @@ class ComputeHost:
                 # server._sessions[sid] (via _init_session, or the fallback dict
                 # in the except below), so the agent is the right owner; a
                 # _make_agent that RAISES is the one path where nothing takes it.
-                session_db = SessionDB(db_path=Path(profile_home) / "state.db")
+                from hermes_state import get_shared_session_db
+                session_db = get_shared_session_db(Path(profile_home) / "state.db")
                 owns_db = True
             agent = server._make_agent(
                 sid,
@@ -629,7 +630,8 @@ class ComputeHost:
         finally:
             if owns_db and session_db is not None:
                 with contextlib.suppress(Exception):
-                    session_db.close()
+                    from hermes_state import release_or_close
+                    release_or_close(session_db)
             if home_token is not None:
                 try:
                     from hermes_constants import reset_hermes_home_override

@@ -66,6 +66,10 @@ export interface SessionCompressResponse {
     usage?: Partial<UsageStats>
   }
   messages?: SessionMessage[]
+  /** Set with `status: 'pending'` when the gateway's compute-host wait expired
+   *  while compression is still running; the transcript refreshes from the
+   *  pushed session.info / `compacted` status edge (#97948). */
+  message?: string
   removed?: number
   status?: string
   summary?: {

@@ -1,7 +1,10 @@
+import shlex
 from unittest.mock import MagicMock
 
 import pytest
 
+import tools.file_operations as file_operations
+from tools.environments.local import LocalEnvironment
 from tools.file_operations import ExecuteResult, ShellFileOperations, _search_stdout_and_limit
 
 
@@ -71,3 +74,247 @@ def test_real_rg_error_still_hard_fails(ops, monkeypatch):
 
     assert result.error == "Search failed: rg: regex parse error:"
     assert result.limit_reason is None
+
+
+class FindRecordingEnvironment:
+    is_local = False
+    cwd = "/narrow"
+
+    def __init__(self, output="", code=0):
+        self.output = output
+        self.code = code
+        self.commands = []
+
+    def execute(self, command, **kwargs):
+        self.commands.append((command, kwargs))
+        if command.startswith("command -v find"):
+            return {"output": "yes\n", "returncode": 0}
+        if command.startswith("command -v rg"):
+            return {"output": "", "returncode": 1}
+        if "find " in command:
+            return {"output": self.output, "returncode": self.code}
+        return {"output": "", "returncode": 1}
+
+    @property
+    def find_commands(self):
+        return [
+            item for item in self.commands
+            if item[0].startswith("find ") or "; find " in item[0]
+        ]
+
+
+class MultiRootFindEnvironment(FindRecordingEnvironment):
+    def execute(self, command, **kwargs):
+        self.commands.append((command, kwargs))
+        if command.startswith("test -e "):
+            output = "not_found\n" if "'/one/.hidden /two/.cache'" in command else "exists\n"
+            return {"output": output, "returncode": 0}
+        if command.startswith("command -v find"):
+            return {"output": "yes\n", "returncode": 0}
+        if command.startswith("command -v rg"):
+            return {"output": "", "returncode": 1}
+        if "find " in command:
+            return {"output": self.output, "returncode": self.code}
+        return {"output": "", "returncode": 1}
+
+
+def test_find_discovery_is_one_unsorted_pruned_bounded_scan():
+    env = FindRecordingEnvironment("/narrow/a.py\n/narrow/b.py\n/narrow/c.py\n/narrow/d.py\n")
+    result = ShellFileOperations(env)._search_files(
+        "*.py", "/narrow", limit=2, offset=1, order="discovery"
+    )
+    assert result.files == ["/narrow/b.py", "/narrow/c.py"]
+    assert result.truncated is True
+    assert len(env.find_commands) == 1
+    command, kwargs = env.find_commands[0]
+    assert "-printf" not in command
+    assert "sort " not in command
+    assert "-prune" in command
+    assert "head -n 4" in command
+    assert kwargs["timeout"] <= 60
+
+
+def test_find_modified_is_one_exact_scan_without_bsd_retry():
+    env = FindRecordingEnvironment("30 /narrow/new.py\n20 /narrow/mid.py\n10 /narrow/old.py\n")
+    result = ShellFileOperations(env)._search_files(
+        "*.py", "/narrow", limit=1, offset=1, order="modified"
+    )
+    assert result.files == ["/narrow/mid.py"]
+    assert result.truncated is True
+    assert len(env.find_commands) == 1
+    command, _ = env.find_commands[0]
+    assert "-printf '%T@ %p\\n'" in command
+    assert "sort -rn" in command
+    assert "head -n 3" in command
+
+
+def test_no_rg_multi_root_modified_is_one_globally_sorted_scan():
+    env = MultiRootFindEnvironment(
+        "30 /two/.cache/new.py\n10 /one/.hidden/old.py\n"
+    )
+
+    result = ShellFileOperations(env).search(
+        "*.py",
+        path="/one/.hidden /two/.cache",
+        target="files",
+        order="modified",
+        limit=1,
+    )
+
+    assert result.error is None
+    assert result.files == ["/two/.cache/new.py"]
+    assert result.truncated is True
+    assert len(env.find_commands) == 1
+    command, kwargs = env.find_commands[0]
+    assert "find '/one/.hidden' '/two/.cache'" in command
+    assert "sort -rn" in command
+    assert "head -n 2" in command
+    assert "! -path '/one/.hidden'" in command
+    assert "! -path '/two/.cache'" in command
+    assert kwargs["timeout"] <= 60
+
+
+def test_find_dash_prefixed_relative_root_is_an_explicit_operand(
+    tmp_path, monkeypatch
+):
+    dash_root = tmp_path / "--version"
+    ordinary_root = tmp_path / "ordinary"
+    dash_root.mkdir()
+    ordinary_root.mkdir()
+    (dash_root / "dash.py").write_text("", encoding="utf-8")
+    (ordinary_root / "plain.py").write_text("", encoding="utf-8")
+
+    ops = ShellFileOperations(LocalEnvironment(str(tmp_path)))
+    monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+    executed = []
+    real_exec = ops._exec
+
+    def recording_exec(command, **kwargs):
+        if command.startswith("set -o pipefail; find "):
+            executed.append(command)
+        return real_exec(command, **kwargs)
+
+    monkeypatch.setattr(ops, "_exec", recording_exec)
+    result = ops._search_files(
+        "*.py", ["--version", "ordinary"], limit=10, offset=0
+    )
+
+    assert result.error is None
+    assert sorted(result.files) == ["./--version/dash.py", "ordinary/plain.py"]
+    assert len(executed) == 1
+    command_tokens = shlex.split(executed[0].removeprefix("set -o pipefail; "))
+    assert "./--version" in command_tokens
+    assert "--version" not in command_tokens
+    assert all("find (GNU findutils)" not in path for path in result.files)
+
+
+def test_find_modified_capability_failure_is_actionable_without_retry():
+    env = FindRecordingEnvironment("", code=1)
+    result = ShellFileOperations(env)._search_files(
+        "*.py", "/narrow", limit=2, offset=0, order="modified"
+    )
+    assert "modification-time" in (result.error or "")
+    assert len(env.find_commands) == 1
+
+
+@pytest.mark.parametrize(
+    ("order", "output"),
+    [
+        (
+            "discovery",
+            "/narrow/a.py\n/narrow/b.py\n/narrow/c.py\n/narrow/d.py\n",
+        ),
+        (
+            "modified",
+            "40 /narrow/a.py\n30 /narrow/b.py\n20 /narrow/c.py\n10 /narrow/d.py\n",
+        ),
+    ],
+)
+def test_find_sigpipe_is_benign_only_after_fetch_limit_rows(order, output):
+    result = ShellFileOperations(FindRecordingEnvironment(output, code=141))._search_files(
+        "*.py", "/narrow", limit=2, offset=1, order=order
+    )
+
+    assert result.error is None
+    assert result.files == ["/narrow/b.py", "/narrow/c.py"]
+    assert result.truncated is True
+
+
+@pytest.mark.parametrize(
+    ("order", "output", "error_fragment"),
+    [
+        ("discovery", "/narrow/partial.py\n", "bounded find traversal"),
+        ("modified", "10 /narrow/partial.py\n", "modification-time"),
+    ],
+)
+def test_find_sigpipe_with_fewer_than_fetch_limit_rows_fails_closed(
+    order, output, error_fragment
+):
+    result = ShellFileOperations(FindRecordingEnvironment(output, code=141))._search_files(
+        "*.py", "/narrow", limit=2, offset=1, order=order
+    )
+
+    assert error_fragment in (result.error or "")
+    assert result.files == []
+    assert result.total_count == 0
+
+
+@pytest.mark.parametrize(
+    ("order", "output", "error_fragment"),
+    [
+        ("discovery", "/narrow/partial.py\n", "bounded find traversal"),
+        ("modified", "/narrow/not-a-timestamp.py\n", "modification-time"),
+    ],
+)
+def test_find_hard_error_discards_partial_output(order, output, error_fragment):
+    env = FindRecordingEnvironment(output, code=2)
+
+    result = ShellFileOperations(env)._search_files(
+        "*.py", "/narrow", limit=2, offset=0, order=order
+    )
+
+    assert error_fragment in (result.error or "")
+    assert result.files == []
+    assert result.total_count == 0
+
+
+def test_find_timeout_preserves_partial_results_and_limit_reason():
+    env = FindRecordingEnvironment(timeout_output("/narrow/partial.py"), code=124)
+
+    result = ShellFileOperations(env)._search_files(
+        "*.py", "/narrow", limit=2, offset=0, order="discovery"
+    )
+
+    assert result.files == ["/narrow/partial.py"]
+    assert_timed_out(result)
+
+
+def test_find_zero_match_exit_zero_is_success():
+    result = ShellFileOperations(FindRecordingEnvironment("", code=0))._search_files(
+        "*.missing", "/narrow", limit=2, offset=0, order="discovery"
+    )
+
+    assert result.error is None
+    assert result.files == []
+
+
+def test_local_broad_no_rg_refuses_before_find(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    ops = ShellFileOperations(LocalEnvironment(str(home)))
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setattr(file_operations.os.path, "isfile", lambda path: False)
+    commands = []
+
+    def fake_exec(command, **kwargs):
+        commands.append((command, kwargs))
+        if command.startswith("command -v rg"):
+            return ExecuteResult("", 1)
+        if command.startswith("command -v find"):
+            return ExecuteResult("yes\n", 0)
+        raise AssertionError(f"broad fallback must not execute: {command}")
+
+    monkeypatch.setattr(ops, "_exec", fake_exec)
+    result = ops._search_files("*.py", str(home), 10, 0, "discovery")
+    assert "ripgrep" in (result.error or "").lower()
+    assert not any(command.startswith("find ") for command, _ in commands)

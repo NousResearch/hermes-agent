@@ -1,0 +1,7 @@
+name: realtime-voice-openai
+version: 1.0.0
+description: "OpenAI Realtime (gpt-realtime) speech-to-speech backend over WebSocket. Requires OPENAI_API_KEY (or VOICE_TOOLS_OPENAI_KEY). Used by `hermes realtime`."
+author: NousResearch
+kind: backend
+requires_env:
+  - OPENAI_API_KEY

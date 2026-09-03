@@ -2922,6 +2922,64 @@ class PluginContext:
         )
         return handle
 
+    # -- realtime voice provider registration -------------------------------
+
+    @_serialized_replacement
+    def register_realtime_voice_provider(self, provider) -> Optional[PluginRegistration]:
+        """Register a bidirectional realtime (speech-to-speech) voice backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.realtime_voice_provider.RealtimeVoiceProvider` and
+        target the host's provider API version. The provider owns its SDK,
+        wire protocol, audio formats, and session lifecycle; Hermes consumes
+        only the normalized audio / transcript / tool-call / lifecycle
+        events and keeps tool execution, approvals, history, and memory on
+        its own side (see :mod:`agent.realtime_voice_orchestrator`).
+
+        ``provider.name`` is what ``hermes realtime --provider <name>``
+        matches against. The bundled OpenAI backend registers through this
+        same hook, so a user plugin can ship Gemini Live, xAI, or any other
+        engine without touching core. Re-registering a name replaces the
+        earlier entry; unloading the plugin restores it.
+        """
+        from agent.realtime_voice_provider import RealtimeVoiceProvider
+        from agent.realtime_voice_registry import (
+            register_provider as _register_realtime_provider,
+            restore_registration,
+            snapshot_registration,
+        )
+
+        if not isinstance(provider, RealtimeVoiceProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a realtime voice provider that "
+                "does not inherit from RealtimeVoiceProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return None
+        registry_name = provider.name.strip().lower()
+        scope = self._manager.scope_key
+        previous = snapshot_registration(registry_name, scope=scope)
+        if not _register_realtime_provider(provider, scope=scope):
+            return None
+        registered = snapshot_registration(registry_name, scope=scope)
+        if registered is not provider:
+            return None
+        handle = self._track_replacement(
+            "realtime_voice_provider",
+            registry_name,
+            slot=("realtime_voice_provider", scope, registry_name),
+            current=provider,
+            previous=previous,
+            restore=lambda replacement: restore_registration(
+                registry_name, provider, replacement, scope=scope
+            ),
+        )
+        logger.info(
+            "Plugin '%s' registered realtime voice provider: %s",
+            self.manifest.name, registry_name,
+        )
+        return handle
+
     # -- platform adapter registration ---------------------------------------
 
     @_serialized_replacement

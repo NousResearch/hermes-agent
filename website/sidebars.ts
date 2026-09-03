@@ -114,6 +114,7 @@ const sidebars: SidebarsConfig = {
           label: 'Media & Web',
           items: [
             'user-guide/features/voice-mode',
+            'user-guide/features/realtime-voice',
             'user-guide/features/wake-word',
             'user-guide/features/web-search',
             'user-guide/features/x-search',

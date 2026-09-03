@@ -287,8 +287,21 @@ def _is_unattended_platform_approval_context() -> bool:
     who can resolve a pending approval. Treating them as gateway approval
     contexts blocks the session for the full approval timeout (60-300s) and
     then fails closed anyway — the deadlock in #37284/#87509.
+
+    A session is NOT unattended once its exact session key registered a
+    gateway approval transport via ``register_gateway_notify``: ``/v1/runs``
+    binds a run-scoped callback resolvable through
+    ``POST /v1/runs/{run_id}/approval``, so a pending approval there has a
+    live listener (#98728). Listener-less routes never register one and keep
+    the instant deny/approve behavior below.
     """
-    return _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
+    if _get_session_platform() not in _UNATTENDED_APPROVAL_PLATFORMS:
+        return False
+    session_key = get_current_session_key(default="")
+    if not session_key:
+        return True
+    with _lock:
+        return session_key not in _gateway_notify_cbs
 
 
 def _is_single_query_approval_context() -> bool:
@@ -337,6 +350,10 @@ def _is_gateway_approval_context() -> bool:
     approval timeout (60-300 s) with no human who can resolve it (#37284,
     #87509). Their dangerous-command handling is governed by
     ``approvals.unattended_mode`` config (default deny), mirroring cron.
+    The exclusion is transport-scoped, not platform-wide: once a session
+    registers a gateway approval transport (``register_gateway_notify``,
+    e.g. a ``/v1/runs`` run with its run-scoped callback), it is treated
+    as an interactive gateway context again (#98728).
     """
     if _is_cron_approval_context():
         return False

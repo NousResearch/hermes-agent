@@ -640,6 +640,7 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
 _SSH_RUNTIME_PURELIB: Optional[Tuple[str, int, int]] = None
 _SSH_RUNTIME_MARKER: Optional[str] = None
+_SSH_OWNERSHIP_PROOF_LABEL = b"hermes-ssh-ownership-v2"
 
 
 def _apply_ssh_session_token(token: str) -> None:
@@ -648,11 +649,54 @@ def _apply_ssh_session_token(token: str) -> None:
         _SESSION_TOKEN = token
 
 
+def _remove_ssh_runtime_marker() -> None:
+    if _SSH_RUNTIME_MARKER is None:
+        return
+    try:
+        os.unlink(_SSH_RUNTIME_MARKER)
+    except OSError:
+        pass
+
+
+def _sweep_stale_ssh_runtime_markers(purelib: str, keep: Optional[str] = None) -> None:
+    prefix = ".hermes-ssh-runtime-"
+    keep_name = os.path.basename(keep) if keep else None
+    try:
+        names = os.listdir(purelib)
+    except OSError:
+        return
+    for name in names:
+        if name == keep_name or not name.startswith(prefix):
+            continue
+        suffix = name[len(prefix) :]
+        if not re.fullmatch(r"[0-9a-f]{16}", suffix):
+            continue
+        path = os.path.join(purelib, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                recorded = fh.readline().strip()
+            pid = int(recorded.split("=", 1)[1])
+            os.kill(pid, 0)
+            continue
+        except ProcessLookupError:
+            pass
+        except (PermissionError, ValueError, IndexError, OSError):
+            continue
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
     global _SSH_OWNER_NONCE, _SSH_RUNTIME_PURELIB, _SSH_RUNTIME_MARKER
-    _SSH_OWNER_NONCE = nonce
+    _remove_ssh_runtime_marker()
+    _SSH_OWNER_NONCE = None
     _SSH_RUNTIME_PURELIB = None
     _SSH_RUNTIME_MARKER = None
+    if nonce and not re.fullmatch(r"[0-9a-f]{16}", nonce):
+        return
+    _SSH_OWNER_NONCE = nonce
     if nonce:
         try:
             purelib = sysconfig.get_paths()["purelib"]
@@ -671,6 +715,7 @@ def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
             with open(marker, "w", encoding="utf-8") as fh:
                 fh.write(f"pid={os.getpid()}\n")
             _SSH_RUNTIME_MARKER = marker
+            _sweep_stale_ssh_runtime_markers(purelib, keep=marker)
         except OSError:
             pass  # read-only site-packages — fall back to the stat snapshot
         try:
@@ -686,15 +731,19 @@ def _ssh_runtime_intact() -> bool:
         return os.path.isfile(_SSH_RUNTIME_MARKER)
     # Fallback (read-only site-packages): directory identity snapshot.
     # Weaker — inode reuse can mask a same-filesystem recreate — but still
-    # catches cross-device moves and version-bump path changes.
+    # catches cross-device moves and version-bump path changes. If neither
+    # identity tier initialized, ownership must fail closed.
     if _SSH_RUNTIME_PURELIB is None:
-        return True
+        return False
     purelib, device, inode = _SSH_RUNTIME_PURELIB
     try:
         st = os.stat(purelib)
     except OSError:
         return False
     return (st.st_dev, st.st_ino) == (device, inode)
+
+
+atexit.register(_remove_ssh_runtime_marker)
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
@@ -1125,7 +1174,17 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     is_mcp_oauth_callback = path.startswith("/api/mcp/oauth/callback/")
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not is_mcp_oauth_callback:
+    is_ssh_ownership_challenge = (
+        _SSH_OWNER_NONCE is not None
+        and path == "/api/ssh/ownership"
+        and "challenge" in request.query_params
+    )
+    if (
+        path.startswith("/api/")
+        and path not in _PUBLIC_API_PATHS
+        and not is_mcp_oauth_callback
+        and not is_ssh_ownership_challenge
+    ):
         if not _has_valid_session_token(request) and not _has_valid_query_token(request, path):
             return JSONResponse(
                 status_code=401,
@@ -3721,15 +3780,33 @@ def _load_configured_gateway_platforms() -> set[str]:
 
 @app.get("/api/ssh/ownership")
 async def get_ssh_ownership(request: Request):
-    _require_token(request)
     if not _SSH_OWNER_NONCE:
         raise HTTPException(status_code=404, detail="SSH ownership is not active")
-    return {
+    challenge = request.query_params.get("challenge")
+    if challenge is None:
+        _require_token(request)
+    elif not re.fullmatch(r"[0-9a-f]{64}", challenge):
+        raise HTTPException(status_code=400, detail="Invalid SSH ownership challenge")
+
+    pid = os.getpid()
+    protocol_version = 2
+    response = {
         "ok": True,
-        "sshOwnerNonce": _SSH_OWNER_NONCE,
-        "protocolVersion": 1,
-        "runtimeIntact": _ssh_runtime_intact(),
+        "protocolVersion": protocol_version,
     }
+    if challenge is not None:
+        canonical = f"{challenge}:{_SSH_OWNER_NONCE}:{pid}:{protocol_version}"
+        proof_key = hmac.new(
+            _SESSION_TOKEN.encode(), _SSH_OWNERSHIP_PROOF_LABEL, hashlib.sha256
+        ).digest()
+        response["proof"] = hmac.new(
+            proof_key, canonical.encode(), hashlib.sha256
+        ).hexdigest()
+    else:
+        response["sshOwnerNonce"] = _SSH_OWNER_NONCE
+        response["runtimeIntact"] = _ssh_runtime_intact()
+        response["pid"] = pid
+    return response
 
 
 @app.get("/api/health")

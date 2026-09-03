@@ -5287,7 +5287,7 @@ function fetchJson(url, token, options: any = {}) {
               ...headersForRemoteRequest(url),
               ...(options.headers || {}),
               'Content-Type': contentType,
-              'X-Hermes-Session-Token': token,
+              ...(token ? { 'X-Hermes-Session-Token': token } : {}),
               // RFC 8252 native flow authenticates the gated gateway with a bearer
               // token instead of the loopback session-token header. When
               // ``options.bearer`` is set we send Authorization: Bearer <token>;
@@ -10207,6 +10207,21 @@ async function sshProbeReuseProof(baseUrl, token, spawnNonce) {
   }
 }
 
+async function sshProbeOwnershipChallenge(baseUrl, challenge) {
+  try {
+    return await fetchJson(`${baseUrl}/api/ssh/ownership?challenge=${encodeURIComponent(challenge)}`, '')
+  } catch (error: any) {
+    if (/^(401|403|404):/.test(String(error?.message || ''))) {
+      const updateError: any = new Error('The remote Hermes backend must be updated for secure SSH reuse.')
+      updateError.kind = 'ssh-update-required'
+      updateError.cause = error
+      throw updateError
+    }
+
+    throw error
+  }
+}
+
 async function teardownSshConnection(profile) {
   const scope = sshScopeKey(profile)
   const state = sshConnections.get(scope)
@@ -10238,7 +10253,20 @@ async function teardownSshConnection(profile) {
               // mysterious no-op on Windows remotes.
               sshRememberLog('[ssh] skip remote serve teardown on Windows remotes; POSIX disconnect does not apply')
             }
-          : remoteLifecycle.disconnect
+          : (ssh, ownershipId) =>
+              remoteLifecycle.disconnect(ssh, ownershipId, async lock => {
+                if (!state.localPort || !state.token || state.pid !== lock.pid || state.remotePort !== lock.port) {
+                  return false
+                }
+
+                return remoteLifecycle.proveOwnershipWithChallenge(
+                  sshProbeOwnershipChallenge,
+                  `http://127.0.0.1:${state.localPort}`,
+                  state.token,
+                  lock.spawnNonce,
+                  lock.pid
+                )
+              })
     }
   )
 }
@@ -10545,6 +10573,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       cancelForward: (localPort, remotePort) => ssh.cancelForward(localPort, remotePort),
       pickLocalPort,
       waitForHermes: (baseUrl, token) => waitForHermes(baseUrl, token, lease.signal, 'token'),
+      probeOwnershipChallenge: sshProbeOwnershipChallenge,
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
@@ -10605,6 +10634,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
         localPort: result.localPort,
         remotePort: result.remotePort,
         pid: result.pid,
+        token: result.token,
         host: sshConfig.host,
         hostLabel,
         hermesVersion: result.hermesVersion || '',

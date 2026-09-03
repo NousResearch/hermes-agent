@@ -33,8 +33,9 @@ import { assertBootstrapNotSuperseded } from './ssh-connection'
 const LOCKFILE_SCHEMA_VERSION = 2
 // Bumped when the desktop<->dashboard reuse contract changes in a way that makes
 // an old running dashboard unsafe to reattach to (token handling, readiness/spawn
-// args, served-token reconciliation). A mismatch forces a clean respawn.
-const PROTOCOL_VERSION = 1
+// args, served-token reconciliation). Legacy records remain readable for safe
+// process handling, but only the current protocol is eligible for reuse.
+const PROTOCOL_VERSION = 2
 const READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/m
 const REMOTE_LOCK_DIR = '~/.hermes/desktop-ssh'
 const SUPPORTED_REMOTE_OS = new Set(['Linux', 'Darwin'])
@@ -57,6 +58,51 @@ function classifySshReuseProof(proof, spawnNonce) {
 
 function mintToken() {
   return crypto.randomBytes(32).toString('hex')
+}
+
+function mintOwnershipChallenge() {
+  return crypto.randomBytes(32).toString('hex')
+}
+
+function ownershipProofKey(token) {
+  return crypto.createHmac('sha256', token).update('hermes-ssh-ownership-v2').digest()
+}
+
+function verifyOwnershipChallengeProof(proof, token, challenge, spawnNonce, pid) {
+  if (
+    proof?.ok !== true ||
+    proof.protocolVersion !== PROTOCOL_VERSION ||
+    !/^[0-9a-f]{64}$/.test(String(proof.proof || ''))
+  ) {
+    return false
+  }
+
+  const expected = crypto
+    .createHmac('sha256', ownershipProofKey(token))
+    .update(`${challenge}:${spawnNonce}:${pid}:${PROTOCOL_VERSION}`)
+    .digest()
+
+  const received = Buffer.from(proof.proof, 'hex')
+
+  return received.length === expected.length && crypto.timingSafeEqual(received, expected)
+}
+
+async function proveOwnershipWithChallenge(
+  probeOwnershipChallenge,
+  baseUrl,
+  token,
+  spawnNonce,
+  pid,
+  mintChallenge = mintOwnershipChallenge
+) {
+  if (typeof probeOwnershipChallenge !== 'function') {
+    return false
+  }
+
+  const challenge = mintChallenge()
+  const proof = await probeOwnershipChallenge(baseUrl, challenge)
+
+  return verifyOwnershipChallengeProof(proof, token, challenge, spawnNonce, pid)
 }
 
 // Fingerprint a token for the lockfile — never store the raw secret on the
@@ -463,11 +509,9 @@ async function readLockfile(ssh, ownershipId) {
     return lockfileSkew('malformed-token-fingerprint')
   }
 
-  if (parsed.protocolVersion !== PROTOCOL_VERSION) {
-    // Fully validated ownership (our schema, our ownershipId, our shape) from
-    // a protocol-incompatible build of OUR OWN lineage: the record is not
-    // reusable and readLockfile keeps its historical contract of hiding it,
-    // which routes connect() to a fresh spawn.
+  if (parsed.protocolVersion !== 1 && parsed.protocolVersion !== PROTOCOL_VERSION) {
+    // Keep a valid protocol-1 record readable so a newer desktop can challenge
+    // or safely reap the process instead of orphaning its only ownership record.
     return null
   }
 
@@ -643,57 +687,181 @@ async function pidIsOurDashboard(
   }
 }
 
-// Kill the stale dashboard ONLY if provably ours, then drop the lockfile.
-async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
+// A successful HMAC challenge authenticates a snapshot of the backend, not a
+// numeric PID forever. Bind the signal to a Linux pidfd, then re-check the
+// lock's kernel creation identity after opening that descriptor. If the host
+// cannot provide a signal-bound identity, refuse and preserve the lock rather
+// than falling back to a racy `kill <pid>` for this authenticated-only path.
+function buildAuthenticatedStaleTerminationCommand(lock) {
+  const pid = Number(lock.pid)
+  const expectedCreation = JSON.stringify(String(lock.creationTime || ''))
+  const script = `
+import os,select,signal,sys
+pid=${pid}
+expected_creation=${expectedCreation}
+if not sys.platform.startswith("linux") or not hasattr(os,"pidfd_open") or not hasattr(signal,"pidfd_send_signal"):
+ print("UNAVAILABLE");sys.exit(0)
+try:
+ pidfd=os.pidfd_open(pid,0)
+except ProcessLookupError:
+ print("ALREADY_STOPPED");sys.exit(0)
+except (OSError,PermissionError):
+ print("UNAVAILABLE");sys.exit(0)
+try:
+ try:
+  raw=open(f"/proc/{pid}/stat","r",encoding="ascii").read()
+  live_creation="linux:"+raw[raw.rfind(")")+2:].split()[19]
+ except (OSError,IndexError,UnicodeError):
+  print("REFUSED");sys.exit(0)
+ if live_creation!=expected_creation:
+  print("REFUSED");sys.exit(0)
+ try:
+  signal.pidfd_send_signal(pidfd,signal.SIGTERM)
+ except ProcessLookupError:
+  print("ALREADY_STOPPED");sys.exit(0)
+ poller=select.poll();poller.register(pidfd,select.POLLIN)
+ if not poller.poll(5000):
+  try:signal.pidfd_send_signal(pidfd,signal.SIGKILL)
+  except ProcessLookupError:print("TERMINATED");sys.exit(0)
+  if not poller.poll(2000):print("TIMEOUT");sys.exit(0)
+ print("TERMINATED")
+finally:
+ os.close(pidfd)
+`.trim()
+
+  return `python3 -c ${shq(script)}`
+}
+
+// Kill the stale dashboard ONLY if provably ours, then drop the lockfile unless
+// the caller asks us to preserve an unverified live owner's recovery record.
+async function cleanupStale(
+  ssh,
+  ownershipId,
+  lock,
+  pidAlive = true,
+  proveOwnership?: (lock: any) => boolean | Promise<boolean>,
+  preserveUnverified = false
+) {
   // Defense in depth (#95532): a skew sentinel is foreign/corrupt state, not
   // an ownership record — never reap or remove anything based on it.
   if (isLockfileSkew(lock)) {
     return
   }
 
-  if (
+  let authenticatedOwnership = false
+
+  if (pidAlive && lock && typeof proveOwnership === 'function') {
+    try {
+      authenticatedOwnership = (await proveOwnership(lock)) === true
+    } catch {
+      // Fall back to process identity. Teardown remains best-effort when the
+      // authenticated HTTP proof cannot cross the existing tunnel.
+    }
+  }
+
+  // An authenticated HTTP proof only speaks for the process that answered the
+  // challenge. That backend can exit before we signal and the kernel can hand
+  // its pid to an unrelated process, so the authenticated path must re-confirm
+  // the lock's recorded process-start identity against the live pid immediately
+  // before signaling. Fail closed: a legacy record without creationTime, or an
+  // unreadable one, is not a match — such a lock still needs argv identity.
+  const authenticatedIdentity =
+    authenticatedOwnership &&
+    Boolean(lock.creationTime) &&
+    (await remoteProcessCreationTime(ssh, lock.pid)) === lock.creationTime
+
+  const owned =
     pidAlive &&
     lock &&
-    (await pidIsOurDashboard(
-      ssh,
-      lock.pid,
-      lock.spawnNonce,
-      lock.hermesPath,
-      lock.hermesHome,
-      ownershipId,
-      lock.profile
-    ))
-  ) {
-    try {
-      const result = (
-        await ssh.exec(
-          `kill ${Number(lock.pid)} && ` +
-            `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
-            `i=$((i+1)); [ "$i" -ge 50 ] && exit 1; sleep 0.1; done`
-        )
-      ).trim()
+    (authenticatedIdentity ||
+      (await pidIsOurDashboard(
+        ssh,
+        lock.pid,
+        lock.spawnNonce,
+        lock.hermesPath,
+        lock.hermesHome,
+        ownershipId,
+        lock.profile
+      )))
 
-      void result
-    } catch {
-      // A backend mid-turn (in-flight LLM call, live MCP children) can ride
-      // out SIGTERM past the 5s graceful wait — and before-quit races this
-      // whole teardown against 6s before closing SSH, so giving up here
-      // reparents the still-running serve to pid 1: the #91668 leak, now on
-      // the quit-during-active-turn path. Escalate to SIGKILL and require a
-      // confirmed exit before treating the record as reclaimed.
+  if (pidAlive && lock && !owned && preserveUnverified) {
+    return false
+  }
+
+  if (owned) {
+    let useArgvTermination = !authenticatedIdentity
+
+    if (authenticatedIdentity) {
+      let result = ''
+
       try {
-        await ssh.exec(
-          `kill -9 ${Number(lock.pid)} 2>/dev/null; ` +
-            `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
-            `i=$((i+1)); [ "$i" -ge 20 ] && exit 1; sleep 0.1; done`
-        )
-      } catch (cause) {
-        // Even SIGKILL could not confirm death (D-state, permissions). Keep
-        // the lockfile so the next connect's reap pass retries.
-        const error: any = new Error('Could not terminate the stale SSH backend.')
-        error.kind = 'transient-transport-error'
-        error.cause = cause
-        throw error
+        result = String(await ssh.exec(buildAuthenticatedStaleTerminationCommand(lock))).trim()
+      } catch {
+        // A failed signal-bound probe cannot authorize record deletion. Keep
+        // the lock so connect/disconnect can retry without orphaning the serve.
+        return false
+      }
+
+      if (result !== 'TERMINATED' && result !== 'ALREADY_STOPPED') {
+        // Darwin and older Linux Python runtimes cannot bind a signal to a
+        // pidfd. They may still use the pre-existing argv/nonce proof; wrapper
+        // processes that need HMAC-only ownership remain fail-closed.
+        if (result !== 'UNAVAILABLE') {
+          return false
+        }
+
+        try {
+          useArgvTermination = await pidIsOurDashboard(
+            ssh,
+            lock.pid,
+            lock.spawnNonce,
+            lock.hermesPath,
+            lock.hermesHome,
+            ownershipId,
+            lock.profile
+          )
+        } catch {
+          return false
+        }
+
+        if (!useArgvTermination) {
+          return false
+        }
+      }
+    }
+
+    if (useArgvTermination) {
+      try {
+        const result = (
+          await ssh.exec(
+            `kill ${Number(lock.pid)} && ` +
+              `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
+              `i=$((i+1)); [ "$i" -ge 50 ] && exit 1; sleep 0.1; done`
+          )
+        ).trim()
+
+        void result
+      } catch {
+        // A backend mid-turn (in-flight LLM call, live MCP children) can ride
+        // out SIGTERM past the 5s graceful wait — and before-quit races this
+        // whole teardown against 6s before closing SSH, so giving up here
+        // reparents the still-running serve to pid 1: the #91668 leak, now on
+        // the quit-during-active-turn path. Escalate to SIGKILL and require a
+        // confirmed exit before treating the record as reclaimed.
+        try {
+          await ssh.exec(
+            `kill -9 ${Number(lock.pid)} 2>/dev/null; ` +
+              `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
+              `i=$((i+1)); [ "$i" -ge 20 ] && exit 1; sleep 0.1; done`
+          )
+        } catch (cause) {
+          // Even SIGKILL could not confirm death (D-state, permissions). Keep
+          // the lockfile so the next connect's reap pass retries.
+          const error: any = new Error('Could not terminate the stale SSH backend.')
+          error.kind = 'transient-transport-error'
+          error.cause = cause
+          throw error
+        }
       }
     }
   }
@@ -709,6 +877,8 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
   }
 
   await removeLockfile(ssh, ownershipId)
+
+  return true
 }
 
 // Normal disconnect (quit, connection switch): reuse cleanupStale so we
@@ -716,7 +886,7 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
 // Closing the SSH transport first is not enough — spawn detaches with
 // setsid/nohup, so the backend reparents to pid 1 and keeps state.db
 // open (#91668).
-async function disconnect(ssh, ownershipId) {
+async function disconnect(ssh, ownershipId, proveOwnership?: (lock: any) => boolean | Promise<boolean>) {
   if (!ssh || !ownershipId) {
     return
   }
@@ -730,7 +900,7 @@ async function disconnect(ssh, ownershipId) {
   }
 
   const pidAlive = await remotePidAlive(ssh, lock.pid)
-  await cleanupStale(ssh, ownershipId, lock, pidAlive)
+  await cleanupStale(ssh, ownershipId, lock, pidAlive, proveOwnership, true)
 }
 
 function buildOwnedStaleTerminationCommand(lock, ownershipId) {
@@ -1383,6 +1553,7 @@ async function connect(deps) {
     forward,
     pickLocalPort,
     waitForHermes,
+    probeOwnershipChallenge,
     probeReuseProof,
     adoptServedToken,
     rememberLog = () => {},
@@ -1443,9 +1614,8 @@ async function connect(deps) {
         lock.profile
       ))
 
-    const reusable =
+    const reuseCandidate =
       pidAlive &&
-      owned &&
       lock.port > 0 &&
       lock.profile === profile &&
       Boolean(reuseToken) &&
@@ -1453,7 +1623,7 @@ async function connect(deps) {
       lock.hermesPath === hermesPath &&
       lock.hermesHome === hermesHome
 
-    if (reusable) {
+    if (reuseCandidate) {
       const creationTime = lock.creationTime || (await remoteProcessCreationTime(ssh, lock.pid))
 
       if (creationTime && !lock.creationTime) {
@@ -1467,6 +1637,40 @@ async function connect(deps) {
 
       try {
         const baseUrl = `http://127.0.0.1:${localPort}`
+        let authenticatedOwnership = false
+
+        if (!owned) {
+          try {
+            authenticatedOwnership = await proveOwnershipWithChallenge(
+              probeOwnershipChallenge,
+              baseUrl,
+              reuseToken,
+              lock.spawnNonce,
+              lock.pid,
+              deps.mintOwnershipChallenge || mintOwnershipChallenge
+            )
+          } catch (cause) {
+            if ((cause as any)?.kind === 'ssh-update-required') {
+              throw cause
+            }
+
+            const error: any = new Error('Could not verify ownership of the existing SSH backend.')
+            error.kind = 'transient-transport-error'
+            error.cause = cause
+            throw error
+          }
+
+          if (!authenticatedOwnership) {
+            const error: any = new Error(
+              'The existing SSH backend is alive but its ownership could not be verified. ' +
+                'Refusing to replace it without a safe teardown.'
+            )
+
+            error.kind = 'ownership-challenge-failed'
+            throw error
+          }
+        }
+
         let reuseClassification
 
         try {
@@ -1482,7 +1686,24 @@ async function connect(deps) {
           assertBootstrapNotSuperseded(signal)
           await cancelForwardSafe(deps, localPort, lock.port)
           await assertRemoteInstallUpdateClear(ssh, hermesHome)
-          await cleanupStale(ssh, ownershipId, lock)
+          const cleaned = await cleanupStale(
+            ssh,
+            ownershipId,
+            lock,
+            pidAlive,
+            authenticatedOwnership ? async () => true : undefined,
+            true
+          )
+
+          if (!cleaned) {
+            const error: any = new Error(
+              'The existing SSH backend is alive but its ownership could not be verified. ' +
+                'Refusing to replace it without a safe teardown.'
+            )
+
+            error.kind = 'foreign-backend'
+            throw error
+          }
         } else if (reuseClassification === 'authenticated-ok') {
           const token = await adoptOwnedServedToken(
             adoptServedToken,
@@ -1526,7 +1747,17 @@ async function connect(deps) {
     } else {
       assertBootstrapNotSuperseded(signal)
       await assertRemoteInstallUpdateClear(ssh, hermesHome)
-      await cleanupStale(ssh, ownershipId, lock, pidAlive)
+      const cleaned = await cleanupStale(ssh, ownershipId, lock, pidAlive, undefined, true)
+
+      if (!cleaned) {
+        const error: any = new Error(
+          'The existing SSH backend is alive but its ownership could not be verified. ' +
+            'Refusing to replace it without a safe teardown.'
+        )
+
+        error.kind = 'foreign-backend'
+        throw error
+      }
     }
   }
 
@@ -1672,6 +1903,7 @@ export {
   probeRemoteHermesHome,
   probeRemotePlatform,
   PROTOCOL_VERSION,
+  proveOwnershipWithChallenge,
   readLockfile,
   READY_RE,
   REMOTE_LOCK_DIR,
@@ -1687,5 +1919,6 @@ export {
   SUPPORTED_REMOTE_OS,
   terminateOwnedDashboardForUpdate,
   validateRemotePath,
+  verifyOwnershipChallengeProof,
   writeLockfile
 }

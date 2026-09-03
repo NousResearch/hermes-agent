@@ -67,6 +67,11 @@ class TurnRetryState:
     # ── Transport / rate-limit recovery ──────────────────────────────────
     primary_recovery_attempted: bool = False
     has_retried_429: bool = False
+    # Free-retry budget for local llama.cpp "transient 400" (dead pooled
+    # socket after an SSE reply).  These retries are not charged against
+    # the normal api_max_retries budget: the request itself is fine, only
+    # the connection was recycled by the server.
+    llama_cpp_transient_retries: int = 0
 
     # ── Auth-failure provider failover ───────────────────────────────────
     # Set once we've escalated a persistent 401/403 (after the per-provider

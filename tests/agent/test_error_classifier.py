@@ -70,6 +70,7 @@ class TestFailoverReason:
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
+            "llama_cpp_transient",
             "unknown",
         }
         actual = {r.value for r in FailoverReason}
@@ -464,6 +465,44 @@ class TestClassifyApiError:
         non-retryable format_error and must not be swept up by the 408 branch."""
         e = MockAPIError("Bad Request", status_code=400)
         result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_400_empty_body_local_llama_cpp_is_transient(self):
+        """An empty-bodied 400 from a local llama.cpp server is the dead
+        pooled-socket signature (the server closed the connection after its
+        SSE reply, so the next call lands on a closed socket and the body is
+        lost). Treat it as transient with free retries, not an abort."""
+        e = MockAPIError("Error code: 400", status_code=400, body=None)
+        result = classify_api_error(e, provider="custom", model="local")
+        assert result.reason == FailoverReason.llama_cpp_transient
+        assert result.retryable is True
+        assert result.should_fallback is False
+
+    def test_400_empty_body_cloud_provider_stays_format_error(self):
+        """Empty-bodied 400s on cloud providers keep the existing
+        non-retryable format_error classification — only local endpoints
+        get the transient treatment."""
+        e = MockAPIError("Error code: 400", status_code=400, body=None)
+        result = classify_api_error(e, provider="openrouter")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_400_with_real_message_local_stays_format_error(self):
+        """A 400 that carries a real message (validation error, etc.) from a
+        local server is still a genuine client error — it must not be swept
+        up by the empty-bodied transient branch."""
+        e = MockAPIError(
+            "Bad request: invalid messages payload",
+            status_code=400,
+            body={
+                "error": {
+                    "message": "Bad request: invalid messages payload",
+                    "type": "invalid_request_error",
+                }
+            },
+        )
+        result = classify_api_error(e, provider="custom")
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
 

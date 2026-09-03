@@ -74,6 +74,12 @@ class FailoverReason(enum.Enum):
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
+    # Local llama.cpp closes the connection after every SSE reply; a pooled
+    # httpx client then lands the next request on the dead socket and gets
+    # an empty-bodied 400.  The request and server are fine — retry on a
+    # fresh connection (Hermes-only: curl and other harnesses open fresh
+    # sockets and never see it).
+    llama_cpp_transient = "llama_cpp_transient"
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -1054,6 +1060,37 @@ def classify_api_error(
             FailoverReason.llama_cpp_grammar_pattern,
             retryable=True,
             should_compress=False,
+        )
+
+    # Transient empty-bodied 400 from a local llama.cpp / OAI-compatible
+    # server.  llama.cpp closes the connection after every SSE reply; a
+    # pooled httpx client (only Hermes pools connections on localhost) can
+    # reuse that dead socket for the next request and receive a 400 whose
+    # body is lost on the half-closed connection (SDK falls back to the
+    # bare "Error code: 400").  No `message`/body text at all is the
+    # signature — real validation errors always carry one.  Keep it on the
+    # same local server with a fresh connection instead of aborting the
+    # turn as a non-retryable client error.
+    if (
+        status_code == 400
+        and not _body_msg
+        and not _metadata_msg
+        and provider_lower
+        in {
+            "custom",
+            "local",
+            "ollama",
+            "lmstudio",
+            "vllm",
+            "koboldcpp",
+            "openwebui",
+        }
+    ):
+        return _result(
+            FailoverReason.llama_cpp_transient,
+            retryable=True,
+            should_compress=False,
+            should_fallback=False,
         )
 
     # xAI Grok subscription entitlement errors.

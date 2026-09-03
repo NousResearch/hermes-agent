@@ -225,6 +225,57 @@ def normalize_actual_base_url(base_url: str) -> str:
     return url
 
 
+def looks_like_ollama_base_url(base_url: str) -> bool:
+    """True when *base_url* points at a local or hosted Ollama OpenAI surface.
+
+    Matches the well-known Ollama loopback/port combinations users configure
+    naturally (http://127.0.0.1:11434, http://localhost:11434, or a
+    host-prefixed LAN address on the same default port), plus explicit
+    ollama-hosted domains (e.g. ollama.acme.com).
+    """
+    url = str(base_url or "").strip().lower()
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except Exception:
+        return False
+    if "ollama" in host:
+        return True
+    # Local Ollama default port on loopback or LAN hosts
+    if port == 11434:
+        return True
+    return False
+
+
+def normalize_ollama_base_url(base_url: str) -> str:
+    """Append /v1 to an Ollama base_url that lacks it.
+
+    The OpenAI Python SDK appends /chat/completions directly to base_url, so
+    a bare http://127.0.0.1:11434 produces http://127.0.0.1:11434/chat/
+    completions — a 404 on Ollama, whose OpenAI surface lives at /v1/chat/
+    completions (#7516).
+
+    Only rewrites URLs that look like Ollama (see
+    :func:`looks_like_ollama_base_url`) AND have an empty or "/" path; any
+    URL that already carries a path (including /v1 or /v1/) is returned
+    unchanged.
+    """
+    url = str(base_url or "").strip().rstrip("/")
+    if not url or not looks_like_ollama_base_url(url):
+        return url
+    try:
+        parsed = urlparse(url)
+        path = parsed.path.rstrip("/")
+    except Exception:
+        return url
+    if path == "":
+        return url + "/v1"
+    return url
+
+
 # =============================================================================
 # Provider Registry
 # =============================================================================

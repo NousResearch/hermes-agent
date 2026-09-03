@@ -39,6 +39,7 @@ from hermes_cli.auth import (
     has_usable_secret,
     is_actual_local_base_url,
     normalize_actual_base_url,
+    normalize_ollama_base_url,
 )
 from hermes_cli import config as _config_mod
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
@@ -1911,8 +1912,13 @@ def _resolve_explicit_runtime(
             api_key = creds.get("api_key", "")
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
-                if provider == "actual":
-                    base_url = normalize_actual_base_url(base_url)
+        if provider == "actual":
+            base_url = normalize_actual_base_url(base_url)
+        # Ollama local endpoints are commonly configured without the /v1
+        # suffix (http://127.0.0.1:11434); the OpenAI SDK appends
+        # /chat/completions directly and gets a 404.  Normalize only URLs
+        # that look like Ollama and carry no path (#7516).
+        base_url = normalize_ollama_base_url(base_url)
 
         api_mode = "chat_completions"
         if provider == "copilot":
@@ -2592,6 +2598,8 @@ def resolve_runtime_provider(
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         if provider == "actual":
             base_url = normalize_actual_base_url(base_url)
+        # Ollama /v1 normalization for custom-provider base URLs (#7516).
+        base_url = normalize_ollama_base_url(base_url)
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(

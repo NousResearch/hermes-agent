@@ -14486,6 +14486,12 @@ def main():
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).",
     )
+    sessions_list.add_argument(
+        "--format",
+        choices=("table", "json", "tsv"),
+        default="table",
+        help="Output format for sessions list (default: table)",
+    )
 
     def _add_session_filter_args(p, default_older_help):
         p.add_argument(

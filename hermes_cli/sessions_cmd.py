@@ -19,6 +19,7 @@ one-way (main.py imports this module; the reverse happens only lazily at call
 time — no import cycle).
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -53,6 +54,115 @@ def _confirm_prompt(prompt: str) -> bool:
         return input(prompt).strip().lower() in {"y", "yes"}
     except (EOFError, KeyboardInterrupt):
         return False
+
+
+_SESSION_LIST_COLUMNS = ("id", "title", "preview", "last_active", "source")
+
+
+def _clean_tsv_cell(value) -> str:
+    """Return one TSV cell with row and column separators normalized."""
+    if value is None:
+        return ""
+    return str(value).replace("\t", " ").replace("\r", " ").replace("\n", " ")
+
+
+def _session_list_record(session: dict) -> dict:
+    """Project one session onto the stable, non-sensitive list schema."""
+    return {column: session.get(column) for column in _SESSION_LIST_COLUMNS}
+
+
+def _format_sessions_list(
+    sessions: list[dict],
+    output_format: str = "table",
+    *,
+    workspace_filter: str = "",
+    workspace_key=None,
+) -> str:
+    """Render ``hermes sessions list`` without exposing full session rows."""
+    if output_format == "json":
+        records = [_session_list_record(session) for session in sessions]
+        return json.dumps(records, ensure_ascii=False) + "\n"
+
+    if output_format == "tsv":
+        lines = ["\t".join(_SESSION_LIST_COLUMNS)]
+        for session in sessions:
+            record = _session_list_record(session)
+            lines.append(
+                "\t".join(
+                    _clean_tsv_cell(record.get(column))
+                    for column in _SESSION_LIST_COLUMNS
+                )
+            )
+        return "\n".join(lines) + "\n"
+
+    if output_format != "table":
+        raise ValueError(f"Unsupported sessions list format: {output_format}")
+
+    get_workspace_key = workspace_key or (lambda _session: None)
+
+    def _workspace_label(session):
+        key = get_workspace_key(session)
+        return (os.path.basename(key.rstrip("/\\")) or key) if key else "—"
+
+    has_workspaces = bool(workspace_filter) or any(
+        get_workspace_key(session) for session in sessions
+    )
+    has_titles = any(session.get("title") for session in sessions)
+    lines = []
+
+    if has_workspaces:
+        if has_titles:
+            lines.append(
+                f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}"
+            )
+            lines.append("─" * 110)
+        else:
+            lines.append(
+                f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} "
+                f"{'Src':<6} {'ID'}"
+            )
+            lines.append("─" * 100)
+        for session in sessions:
+            last_active = _relative_time(session.get("last_active"))
+            workspace = _workspace_label(session)[:16]
+            if has_titles:
+                title = (session.get("title") or "—")[:26]
+                lines.append(
+                    f"{title:<28} {workspace:<18} {last_active:<13} "
+                    f"{session['id']}"
+                )
+            else:
+                preview = session.get("preview", "")[:36]
+                lines.append(
+                    f"{preview:<38} {workspace:<18} {last_active:<13} "
+                    f"{session['source']:<6} {session['id']}"
+                )
+        return "\n".join(lines) + "\n"
+
+    if has_titles:
+        lines.append(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+        lines.append("─" * 110)
+    else:
+        lines.append(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
+        lines.append("─" * 95)
+    for session in sessions:
+        last_active = _relative_time(session.get("last_active"))
+        preview = (
+            session.get("preview", "")[:38]
+            if has_titles
+            else session.get("preview", "")[:48]
+        )
+        if has_titles:
+            title = (session.get("title") or "—")[:30]
+            lines.append(
+                f"{title:<32} {preview:<40} {last_active:<13} {session['id']}"
+            )
+        else:
+            lines.append(
+                f"{preview:<50} {last_active:<13} "
+                f"{session['source']:<6} {session['id']}"
+            )
+    return "\n".join(lines) + "\n"
 
 
 #: Default age floor for `hermes sessions prune --never-active`.  Deliberately
@@ -347,58 +457,19 @@ def cmd_sessions(args, sessions_parser=None):
 
             sessions = [s for s in sessions if _in_workspace(s)]
 
-        if not sessions:
+        output_format = getattr(args, "format", "table")
+        if not sessions and output_format == "table":
             print("No sessions found.")
+            db.close()
             return
-
-        # Short workspace label: the repo/dir basename, "—" when unbound. The
-        # Workspace column only appears once at least one session carries one
-        # (or when filtering), so all-unbound listings read as before.
-        def _ws_label(s):
-            key = _ws_key(s)
-            return (os.path.basename(key.rstrip("/\\")) or key) if key else "—"
-
-        has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
-        has_titles = any(s.get("title") for s in sessions)
-
-        if has_ws:
-            if has_titles:
-                print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
-                print("─" * 110)
-            else:
-                print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 100)
-            for s in sessions:
-                last_active = _relative_time(s.get("last_active"))
-                ws = _ws_label(s)[:16]
-                if has_titles:
-                    title = (s.get("title") or "—")[:26]
-                    print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
-                else:
-                    preview = s.get("preview", "")[:36]
-                    print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
-            return
-
-        if has_titles:
-            print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-            print("─" * 110)
-        else:
-            print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-            print("─" * 95)
-        for s in sessions:
-            last_active = _relative_time(s.get("last_active"))
-            preview = (
-                s.get("preview", "")[:38]
-                if has_titles
-                else s.get("preview", "")[:48]
+        sys.stdout.write(
+            _format_sessions_list(
+                sessions,
+                output_format,
+                workspace_filter=_ws_filter,
+                workspace_key=_ws_key,
             )
-            if has_titles:
-                title = (s.get("title") or "—")[:30]
-                sid = s["id"]
-                print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
-            else:
-                sid = s["id"]
-                print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+        )
 
     elif action == "export":
         from hermes_cli.session_filters import (

@@ -318,7 +318,22 @@ hermes sessions list --source telegram
 
 # Show more sessions
 hermes sessions list --limit 50
+
+# Filter to one workspace
+hermes sessions list --workspace hermes-agent
+
+# Emit a stable JSON array for scripts
+hermes sessions list --format json | jq '.[].id'
+
+# Emit tab-separated rows
+hermes sessions list --format tsv
 ```
+
+The default `table` format remains human-readable. The `json` and `tsv`
+formats expose only the stable, non-sensitive fields `id`, `title`, `preview`,
+`last_active`, and `source`; all list filters are applied before serialization.
+An empty JSON result is `[]`, while an empty TSV result contains only the
+header row.
 
 When sessions have titles, the output shows titles, previews, and relative timestamps:
 

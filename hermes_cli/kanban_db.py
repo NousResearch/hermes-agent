@@ -784,7 +784,11 @@ def _lifecycle_board(conn: sqlite3.Connection, board: Optional[str] = None) -> s
             candidate = _normalize_board_slug(filename.parent.name)
             if candidate:
                 return candidate
-        if filename == kanban_db_path(board=DEFAULT_BOARD).resolve():
+        # Compare against the canonical default location, not the optional
+        # HERMES_KANBAN_DB override. An overridden path may live outside the
+        # board tree and must still retain its explicit board attribution.
+        canonical_default = (kanban_home() / "kanban.db").resolve()
+        if filename == canonical_default:
             return DEFAULT_BOARD
     except Exception:  # pragma: no cover - hook attribution is best effort
         pass

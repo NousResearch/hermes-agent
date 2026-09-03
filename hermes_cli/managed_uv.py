@@ -11,10 +11,11 @@ The Python backing the install is different: it is shared by every Hermes
 profile because the checkout's ``venv`` is shared.  Runtime repair therefore
 uses an install-scoped store under ``<checkout>/.hermes-runtime/python``. A
 vulnerable interpreter is never reinstalled in place. We provision a new
-immutable Python generation, build and smoke-test a relocatable sibling venv,
-then cut over with same-filesystem renames. The old venv remains available for
-synchronous rollback and is parked for cleanup after the updating process
-releases it.
+immutable Python generation and build and smoke-test a relocatable sibling
+venv. POSIX installs cut over with same-filesystem directory renames. Windows
+installs atomically repoint the live venv's ``pyvenv.cfg`` instead, because the
+updater itself maps executables and native extensions from that directory and
+Windows consequently refuses to rename it.
 """
 
 from __future__ import annotations
@@ -1043,6 +1044,72 @@ def _cut_over_candidate(
         raise
 
 
+def _replace_file_atomically(path: Path, data: bytes) -> None:
+    """Replace *path* from a same-directory temporary file."""
+    token = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    temporary = path.with_name(f".{path.name}.runtime-{token}.tmp")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _cut_over_windows_runtime_config(
+    candidate: Path,
+    *,
+    live: Path,
+) -> tuple[bool, bool, SQLiteRuntimeInfo | None, str]:
+    """Repoint a live Windows venv without renaming its locked directory.
+
+    A uv-created Windows venv keeps its base-runtime location in
+    ``pyvenv.cfg``. The updater can replace that text file while its current
+    interpreter and native extensions remain mapped from the venv; replacing
+    the containing directory cannot succeed under the same conditions.
+
+    The second return value reports whether the live config still references
+    the candidate generation. Callers must preserve that generation if a
+    failed smoke test could not restore the original config.
+    """
+    live_config = live / "pyvenv.cfg"
+    candidate_config = candidate / "pyvenv.cfg"
+    try:
+        original = live_config.read_bytes()
+        replacement = candidate_config.read_bytes()
+    except OSError as exc:
+        return False, False, None, f"could not read venv runtime config: {exc}"
+
+    try:
+        _replace_file_atomically(live_config, replacement)
+    except OSError as exc:
+        return False, False, None, f"could not repoint the existing venv: {exc}"
+
+    try:
+        healthy, detail, info = _smoke_candidate_venv(live)
+    except Exception as exc:
+        healthy, detail, info = False, f"candidate smoke raised: {exc}", None
+    if healthy:
+        return True, True, info, ""
+
+    try:
+        _replace_file_atomically(live_config, original)
+    except OSError as rollback_error:
+        return (
+            False,
+            True,
+            info,
+            "post-cutover smoke failed "
+            f"({detail}); runtime-config rollback failed ({rollback_error})",
+        )
+    return False, False, info, f"post-cutover smoke failed: {detail}"
+
+
 def _acquire_repair_lock(runtime_root: Path) -> _RepairLock | None:
     """Acquire an OS-held install lock that is released on process exit."""
     runtime_root.mkdir(parents=True, exist_ok=True)
@@ -1445,15 +1512,29 @@ def repair_vulnerable_runtime(
                 sqlite_after=candidate_info.sqlite_version_string,
             )
 
-        cut_over, backup, final_info, cutover_detail = _cut_over_candidate(
-            candidate,
-            project_root=root,
-            live=live,
-        )
+        runtime_generation_in_use = False
+        if platform.system() == "Windows":
+            (
+                cut_over,
+                runtime_generation_in_use,
+                final_info,
+                cutover_detail,
+            ) = _cut_over_windows_runtime_config(candidate, live=live)
+            backup = None
+        else:
+            cut_over, backup, final_info, cutover_detail = _cut_over_candidate(
+                candidate,
+                project_root=root,
+                live=live,
+            )
         if not cut_over:
             if backup is None:
                 _remove_tree(candidate, boundary=runtime_root)
-                _remove_tree(generation, boundary=managed_python_install_dir(root))
+                if not runtime_generation_in_use:
+                    _remove_tree(
+                        generation,
+                        boundary=managed_python_install_dir(root),
+                    )
             return RuntimeRepairResult(
                 "failed",
                 cutover_detail,
@@ -1475,6 +1556,8 @@ def repair_vulnerable_runtime(
         )
         if backup is not None and backup.exists():
             _remove_tree(backup, boundary=root)
+        elif platform.system() == "Windows":
+            _remove_tree(candidate, boundary=runtime_root)
         return RuntimeRepairResult(
             "repaired",
             sqlite_before=current.sqlite_version_string,

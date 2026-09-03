@@ -92,6 +92,13 @@ _HARDLINE_BLOCK = [
     "dd if=anything of=/dev/hda",
     "echo bad > /dev/sda",
     "cat /dev/urandom > /dev/sdb",
+    # Raw block device wipes — positional device operand (#102371)
+    "shred -n1 -z /dev/sda",
+    "shred /dev/nvme0n1",
+    "wipefs -a /dev/sdb",
+    "blkdiscard /dev/mmcblk0",
+    "sudo wipefs -a /dev/vda",
+    "true && blkdiscard /dev/sdc",
     # Fork bomb
     ":(){ :|:& };:",
     # System-wide kill
@@ -173,6 +180,12 @@ _HARDLINE_ALLOW = [
     # dd to regular files
     "dd if=/dev/zero of=./image.bin",
     "dd if=./data of=./backup.bin",
+    # Regular-file secure deletion must stay clean (#102371): no /dev/ block
+    # operand, so the wipe rules must not fire.
+    "shred file.txt",
+    "shred -u /tmp/secret.bin",
+    "shred -n 3 -z ./backup.tar.gz",
+    "wipefs --help",
     # Redirect to regular files / non-block devices
     "echo done > /tmp/flag",
     "echo test > /dev/null",
@@ -393,6 +406,10 @@ _QUOTED_PROSE_ALLOW_93392 = [
     'git commit -m "never run dd of=/dev/sda in prod"',
     'echo "dd if=/dev/zero of=/dev/sda wipes the disk"',
     "grep 'dd if=/dev/zero of=/dev/sda' notes.md",
+    # shred/wipefs/blkdiscard on block devices (#102371)
+    'git commit -m "never run wipefs -a /dev/sda in prod"',
+    'echo "blkdiscard /dev/nvme0n1 destroys the disk"',
+    "grep 'shred -n1 -z /dev/sda' notes.md",
     # kill -1
     'echo "kill -1 sends SIGHUP to every process"',
     'gh issue comment 7 --body "the agent must never run kill -1"',
@@ -438,6 +455,12 @@ _TRUE_POSITIVES_93392 = [
     "$(dd if=/dev/zero of=/dev/sda)",
     "`dd if=/dev/zero of=/dev/sda`",
     'sh -c "dd if=/dev/zero of=/dev/sda"',
+    # shred/wipefs/blkdiscard to raw block devices (#102371)
+    "shred -n1 -z /dev/sda",
+    "sudo wipefs -a /dev/nvme0n1",
+    "ls; blkdiscard /dev/mmcblk0",
+    "$(shred /dev/sda)",
+    'sh -c "blkdiscard /dev/sdb"',
     # redirect to raw block device (unquoted / carrier / substitution)
     "cat file > /dev/sda",
     "echo junk > /dev/sdb",
@@ -477,6 +500,7 @@ def test_true_positive_shapes_stay_hardline_blocked(command):
 _DANGEROUS_TIER_PROSE_ALLOW = [
     'echo "mkfs is a formatting tool"',
     'git commit -m "explain dd if=/dev/zero usage"',
+    'git commit -m "never run shred /dev/sda in prod"',
 ]
 
 _DANGEROUS_TIER_STILL_FLAGGED = [
@@ -484,6 +508,8 @@ _DANGEROUS_TIER_STILL_FLAGGED = [
     ("sudo mkfs -t vfat /dev/sdc1", "format filesystem"),
     ("dd if=backup.img of=restore.img", "disk copy"),
     ("true && dd if=a.img of=b.img", "disk copy"),
+    ("wipefs -a /dev/sda", "raw block device wipe (shred/wipefs/blkdiscard)"),
+    ("sudo blkdiscard /dev/nvme0n1", "raw block device wipe (shred/wipefs/blkdiscard)"),
 ]
 
 

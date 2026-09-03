@@ -578,6 +578,13 @@ HARDLINE_PATTERNS = [
     # argument, not a command. The argument tail ([^\n]*of=/dev/...) is kept
     # so flag order doesn't matter.
     (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    # Sibling raw-disk destruction tools whose device operand is positional
+    # instead of dd's of= spelling: shred/wipefs/blkdiscard against a block
+    # device have no recovery path, the same device class as the dd rule
+    # above (#102371). Command-position anchored so quoted prose mentioning
+    # them stays data; `shred file.txt` (secure delete of a regular file)
+    # has no /dev/ block operand and stays clean.
+    (_CMDPOS + r'(?:shred|wipefs|blkdiscard)\b[^\n]*\s/dev/(?:sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "raw block device wipe (shred/wipefs/blkdiscard)"),
     # The redirect rule has no command-name token to anchor (`>` appears
     # mid-command: `cat f > /dev/sda`), so command-position anchoring is the
     # wrong tool. It is instead matched against a QUOTE-MASKED variant of the
@@ -1033,6 +1040,10 @@ DANGEROUS_PATTERNS = [
     # quoted prose mentioning mkfs/dd must not require approval to echo.
     (_CMDPOS + r'mkfs\b', "format filesystem"),
     (_CMDPOS + r'dd\s+.*if=', "disk copy"),
+    # Positional-operand twins of the hardline wipe rule (#102371): kept in
+    # the approval tier so the tools are gated even where only
+    # detect_dangerous_command is consulted; regular-file targets stay clean.
+    (_CMDPOS + r'(?:shred|wipefs|blkdiscard)\b[^\n]*\s/dev/(?:sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "raw block device wipe (shred/wipefs/blkdiscard)"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
     # Use [^\n]* instead of .* so DOTALL mode does not cause a WHERE clause on the

@@ -354,7 +354,9 @@ async function waitForRelayConnection(
         .map(connection => String(connection?.id || ''))
         .filter(Boolean)
 
-      let source = (Array.isArray(registered) ? registered : []).find(
+      let source: { id: string; kind?: string; remoteProfile?: string } | undefined = (
+        Array.isArray(registered) ? registered : []
+      ).find(
         connection => String(connection?.id || '') === connectionId
       )
 
@@ -376,7 +378,7 @@ async function waitForRelayConnection(
           if (unionSource) {
             source = {
               id: connectionId,
-              kind: String(unionSource.kind || '')
+              kind: unionSource.kind
             }
           }
         } catch {

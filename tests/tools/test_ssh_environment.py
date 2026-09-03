@@ -144,6 +144,138 @@ class TestControlSocketPath:
         assert SSHEnvironment(host="h", user="v", port=22).control_socket != base
         assert SSHEnvironment(host="g", user="u", port=22).control_socket != base
 
+    def test_control_dir_mode_is_private(self, tmp_path, monkeypatch):
+        """ControlPath directory must be 0o700 so other local users cannot
+        plant sockets under /tmp/hermes-ssh (#80284)."""
+        monkeypatch.setattr(ssh_env, "_SSH_MULTIPLEX", True)
+        monkeypatch.setattr(
+            "tools.environments.ssh.tempfile.gettempdir",
+            lambda: str(tmp_path),
+        )
+        env = SSHEnvironment(host="example.com", user="alice")
+        assert env.control_dir == tmp_path / "hermes-ssh"
+        assert env.control_dir.is_dir()
+        mode = env.control_dir.stat().st_mode & 0o777
+        assert mode == 0o700, f"expected 0o700, got {oct(mode)}"
+        assert env._use_multiplex is True
+
+
+class TestControlPathTrust:
+    """#80299: do not trust a leftover ControlPath socket after dir harden."""
+
+    def _unix_socket(self, path):
+        import socket
+
+        path.unlink(missing_ok=True)
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(str(path))
+        return sock
+
+    def test_prepare_skips_posix_mode_when_not_multiplexing(self, tmp_path):
+        control = tmp_path / "hermes-ssh"
+        control.mkdir()
+        control.chmod(0o777)
+        use, shared = ssh_env._prepare_control_dir(control, multiplex=False)
+        assert use is False
+        assert shared is False
+        assert control.is_dir()
+
+    def test_unowned_control_dir_is_rejected(self, tmp_path, monkeypatch):
+        control = tmp_path / "hermes-ssh"
+        control.mkdir(mode=0o700)
+        real_uid = os.getuid()
+        monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
+        with pytest.raises(RuntimeError, match="not owned"):
+            ssh_env._prepare_control_dir(control, multiplex=True)
+
+    def test_symlink_control_dir_is_rejected(self, tmp_path):
+        real = tmp_path / "real"
+        real.mkdir()
+        control = tmp_path / "hermes-ssh"
+        control.symlink_to(real)
+        with pytest.raises(RuntimeError, match="symlink"):
+            ssh_env._prepare_control_dir(control, multiplex=True)
+
+    def test_chmod_ineffective_disables_multiplex(self, tmp_path, monkeypatch):
+        control = tmp_path / "hermes-ssh"
+        control.mkdir()
+        control.chmod(0o777)
+        monkeypatch.setattr(type(control), "chmod", lambda self, mode: None)
+        use, shared = ssh_env._prepare_control_dir(control, multiplex=True)
+        assert shared is True
+        assert use is False
+
+    def test_foreign_socket_is_unlinked(self, tmp_path, monkeypatch):
+        sock_path = tmp_path / "x.sock"
+        sock = self._unix_socket(sock_path)
+        try:
+            real_uid = os.getuid()
+            monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
+            ssh_env._quarantine_untrusted_control_socket(
+                sock_path, dir_was_shared=False
+            )
+            assert not sock_path.exists()
+        finally:
+            sock.close()
+
+    def test_regular_file_at_socket_path_is_unlinked(self, tmp_path):
+        sock_path = tmp_path / "x.sock"
+        sock_path.write_text("planted", encoding="utf-8")
+        ssh_env._quarantine_untrusted_control_socket(
+            sock_path, dir_was_shared=False
+        )
+        assert not sock_path.exists()
+
+    def test_owned_socket_in_private_dir_is_kept(self, tmp_path):
+        sock_path = tmp_path / "x.sock"
+        sock = self._unix_socket(sock_path)
+        try:
+            ssh_env._quarantine_untrusted_control_socket(
+                sock_path, dir_was_shared=False
+            )
+            assert sock_path.exists()
+        finally:
+            sock.close()
+            sock_path.unlink(missing_ok=True)
+
+    def test_owned_socket_from_shared_dir_is_unlinked(self, tmp_path):
+        sock_path = tmp_path / "x.sock"
+        sock = self._unix_socket(sock_path)
+        try:
+            ssh_env._quarantine_untrusted_control_socket(
+                sock_path, dir_was_shared=True
+            )
+            assert not sock_path.exists()
+        finally:
+            sock.close()
+
+    def test_chmod_ineffective_init_omits_controlpath(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ssh_env, "_SSH_MULTIPLEX", True)
+        monkeypatch.setattr(
+            "tools.environments.ssh.subprocess.run",
+            lambda *a, **k: __import__("subprocess").CompletedProcess([], 0),
+        )
+        monkeypatch.setattr(
+            "tools.environments.ssh.subprocess.Popen",
+            lambda *a, **k: MagicMock(
+                stdout=iter([]), stderr=iter([]), stdin=MagicMock()
+            ),
+        )
+        monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
+        monkeypatch.setattr(
+            "tools.environments.ssh.tempfile.gettempdir",
+            lambda: str(tmp_path),
+        )
+        control = tmp_path / "hermes-ssh"
+        control.mkdir()
+        control.chmod(0o777)
+        monkeypatch.setattr(type(control), "chmod", lambda self, mode: None)
+        env = SSHEnvironment(host="h", user="u")
+        assert env._use_multiplex is False
+        cmd = " ".join(env._build_ssh_command())
+        assert "ControlPath" not in cmd
+        assert "ControlMaster" not in cmd
+
 
 class TestTerminalToolConfig:
     def test_ssh_persistent_default_true(self, monkeypatch):

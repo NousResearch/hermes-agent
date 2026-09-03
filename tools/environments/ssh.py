@@ -11,6 +11,7 @@ import os
 _SSH_MULTIPLEX = os.name != "nt"
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -43,6 +44,92 @@ def _ensure_ssh_available() -> None:
         )
 
 
+def _prepare_control_dir(control_dir: Path, *, multiplex: bool) -> tuple[bool, bool]:
+    """Create the ControlPath directory.
+
+    Returns ``(use_multiplex, dir_was_shared)``.
+
+    POSIX owner/mode checks run only when multiplexing is on. Windows
+    OpenSSH cannot use ControlMaster (#73927). If chmod does not make
+    the directory private, skip ControlPath rather than failing SSH
+    init — the backend still connects, just without reuse.
+    """
+    if not multiplex:
+        control_dir.mkdir(parents=True, exist_ok=True)
+        return False, False
+
+    control_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        st = control_dir.lstat()
+    except FileNotFoundError:
+        return True, False
+
+    if stat.S_ISLNK(st.st_mode):
+        raise RuntimeError(
+            f"SSH control directory {control_dir} is a symlink; refuse to "
+            f"place ControlPath sockets there"
+        )
+
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None and st.st_uid != getuid():
+        raise RuntimeError(
+            f"SSH control directory {control_dir} is not owned by the "
+            f"current user (uid={st.st_uid}); refuse to use a potentially "
+            f"planted path"
+        )
+
+    dir_was_shared = bool(stat.S_IMODE(st.st_mode) & 0o077)
+    if dir_was_shared:
+        try:
+            control_dir.chmod(0o700)
+        except OSError:
+            pass
+        try:
+            mode = stat.S_IMODE(control_dir.stat().st_mode)
+        except OSError:
+            mode = stat.S_IMODE(st.st_mode)
+        if mode & 0o077:
+            logger.warning(
+                "SSH control directory %s stays group/world-accessible "
+                "(mode=%s) after chmod; skipping ControlMaster",
+                control_dir,
+                oct(mode),
+            )
+            return False, True
+    return True, dir_was_shared
+
+
+def _quarantine_untrusted_control_socket(
+    socket_path: Path, *, dir_was_shared: bool
+) -> None:
+    """Remove a ControlPath name we must not hand to OpenSSH.
+
+    Directory mode alone is not proof that an existing socket is ours
+    (#80299): a previously-shared dir can hold a planted inode, and
+    chmod on the directory does not replace it.
+    """
+    try:
+        st = socket_path.lstat()
+    except FileNotFoundError:
+        return
+
+    getuid = getattr(os, "getuid", None)
+    trusted = stat.S_ISSOCK(st.st_mode)
+    if getuid is not None and st.st_uid != getuid():
+        trusted = False
+    if dir_was_shared:
+        trusted = False
+    if trusted:
+        return
+    try:
+        socket_path.unlink()
+    except OSError as exc:
+        raise RuntimeError(
+            f"SSH control socket {socket_path} is untrusted and could not "
+            f"be removed: {exc}"
+        ) from exc
+
+
 class SSHEnvironment(BaseEnvironment):
     """Run commands on a remote machine over SSH.
 
@@ -61,7 +148,6 @@ class SSHEnvironment(BaseEnvironment):
         self.key_path = key_path
 
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
-        self.control_dir.mkdir(parents=True, exist_ok=True)
         # Keep the socket filename short and deterministic so the full path
         # stays under the 104-byte sun_path limit that macOS enforces on
         # Unix domain sockets. A raw ``user@host:port`` — especially with an
@@ -74,6 +160,18 @@ class SSHEnvironment(BaseEnvironment):
             f"{user}@{host}:{port}".encode()
         ).hexdigest()[:16]
         self.control_socket = self.control_dir / f"{_socket_id}.sock"
+        # Mode 0o700: the ControlPath socket is deterministic. A world-writable
+        # /tmp/hermes-ssh lets another local user plant a socket and hijack
+        # the multiplexed connection (#80284). Existing sockets are checked
+        # separately — hardening the directory does not make a planted inode
+        # trusted (#80299).
+        self._use_multiplex, dir_was_shared = _prepare_control_dir(
+            self.control_dir, multiplex=_SSH_MULTIPLEX
+        )
+        if self._use_multiplex:
+            _quarantine_untrusted_control_socket(
+                self.control_socket, dir_was_shared=dir_was_shared
+            )
         _ensure_ssh_available()
         self._establish_connection()
         self._remote_home = self._detect_remote_home()
@@ -92,7 +190,7 @@ class SSHEnvironment(BaseEnvironment):
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
-        if _SSH_MULTIPLEX:
+        if self._use_multiplex:
             cmd.extend(["-o", f"ControlPath={self.control_socket}"])
             cmd.extend(["-o", "ControlMaster=auto"])
             cmd.extend(["-o", "ControlPersist=300"])
@@ -194,7 +292,7 @@ class SSHEnvironment(BaseEnvironment):
         )
 
         scp_cmd = ["scp"]
-        if _SSH_MULTIPLEX:
+        if self._use_multiplex:
             scp_cmd.extend(["-o", f"ControlPath={self.control_socket}"])
         if self.port != 22:
             scp_cmd.extend(["-P", str(self.port)])
@@ -417,7 +515,7 @@ class SSHEnvironment(BaseEnvironment):
             logger.info("SSH: syncing files from sandbox...")
             self._sync_manager.sync_back()
 
-        if self.control_socket.exists():
+        if self._use_multiplex and self.control_socket.exists():
             try:
                 cmd = ["ssh", "-o", f"ControlPath={self.control_socket}",
                        "-O", "exit", f"{self.user}@{self.host}"]

@@ -403,7 +403,9 @@ class TestTerminatePid:
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
 
-        status.terminate_pid(123, force=True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 456)
+
+        status.terminate_pid(123, force=True, expected_start_time=456)
 
         # taskkill is spawned with the no-window flag so the windowless
         # pythonw.exe backend doesn't flash a conhost window on force-kill.
@@ -412,6 +414,27 @@ class TestTerminatePid:
         assert calls == [
             (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
         ]
+
+    def test_windows_force_refuses_pid_without_start_time_guard(self, monkeypatch):
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        calls = []
+        monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
+
+        with pytest.raises(OSError, match="without a process start-time guard"):
+            status.terminate_pid(123, force=True)
+
+        assert calls == []
+
+    def test_windows_force_refuses_reused_pid(self, monkeypatch):
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 999)
+        calls = []
+        monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
+
+        with pytest.raises(OSError, match="process identity changed"):
+            status.terminate_pid(123, force=True, expected_start_time=456)
+
+        assert calls == []
 
 
 class TestScopedLocks:
@@ -1436,4 +1459,3 @@ def test_strict_gateway_identity_rejects_reused_pid(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="identity changed"):
         status.get_running_pid_identity_strict(pid_path)
-

@@ -540,7 +540,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         """Firecrawl serves keyless cloud requests (public API, no auth).
 
         Default-on ring member of the keyless free tier: fresh installs
-        rotate across Exa/Parallel/Tavily/Firecrawl/Keenable. False when
+        rotate across Exa/Parallel/Firecrawl/Keenable. False when
         the user pinned ``web.provider_tier.firecrawl: paid``.
         """
         from plugins.web.keyless_mcp import keyless_enabled, provider_tier

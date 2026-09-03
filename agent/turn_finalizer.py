@@ -126,6 +126,15 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
     ]
 
 
+def _clone_background_review_messages(messages):
+    """Copy the review input without aliasing the live transcript."""
+    # Import lazily: conversation_loop imports this module during turn
+    # finalization, so a module-level import would create a cycle.
+    from agent.conversation_loop import _clone_message_for_send
+
+    return [_clone_message_for_send(message) for message in messages]
+
+
 def finalize_turn(
     agent,
     *,
@@ -752,7 +761,7 @@ def finalize_turn(
             "health (`hermes doctor`), then send your message again"
         )
         # Machine-readable cause for the gateway/desktop: exactly
-        # 'session_persistence_failed:<locked|compression|turn_lease|corrupt|disk|unknown>'.
+        # 'session_persistence_failed:<locked|compression|turn_lease|corrupt|replaced|disk|unknown>'.
         # Never clobber a failure_reason another path already stamped.
         if "failure_reason" not in result:
             _cause = getattr(agent, "_last_persistence_error_cause", None)
@@ -810,6 +819,8 @@ def finalize_turn(
         and (_should_review_memory or _should_review_skills)
     ):
         try:
+            # _spawn_background_review clones the snapshot structurally so
+            # the fork's in-place sanitizers can't reach the live transcript.
             agent._spawn_background_review(
                 messages_snapshot=list(messages),
                 review_memory=_should_review_memory,

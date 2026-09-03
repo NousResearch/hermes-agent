@@ -172,7 +172,7 @@ def test_default_turn_lease_timeout_overrides_stale_env_when_key_is_omitted(
 
     env = _run_gateway_import(hermes_home, initial_env={})
 
-    assert env.get("HERMES_TURN_LEASE_TIMEOUT") == "1800"
+    assert env.get("HERMES_TURN_LEASE_TIMEOUT") == "5"
 
 
 def test_default_turn_lease_timeout_matches_the_runtime_fallback() -> None:

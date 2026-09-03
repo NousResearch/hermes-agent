@@ -699,6 +699,84 @@ def _core_constraints_file() -> Optional[Path]:
         return None
 
 
+def _installed_dist_roots(spec: str, target: Optional[Path]) -> set[Path]:
+    """Return the package directories a freshly installed *spec* owns.
+
+    Resolved from the distribution's own file list rather than guessing the
+    import name from the spec — ``python-telegram-bot`` ships ``telegram``,
+    ``firecrawl-anydoc`` ships ``anydoc``, and several specs ship more than
+    one top-level package.
+    """
+    name = _pkg_name_from_spec(spec)
+    try:
+        import importlib.metadata as _md
+
+        if target is not None:
+            dists = list(_md.distributions(name=name, path=[str(target)]))
+            dist = dists[0] if dists else None
+        else:
+            dist = _md.distribution(name)
+    except Exception:
+        return set()
+    if dist is None:
+        return set()
+
+    roots: set[Path] = set()
+    try:
+        for entry in dist.files or ():
+            parts = entry.parts
+            if not parts or parts[0].startswith(".") or parts[0] == "__pycache__":
+                continue
+            # Metadata dirs (``foo-1.0.dist-info``, legacy ``.egg-info``) own
+            # no importable code; compiling them is wasted work.
+            if parts[0].endswith((".dist-info", ".egg-info")):
+                continue
+            root = Path(dist.locate_file(parts[0]))
+            if root.is_dir():
+                roots.add(root)
+    except Exception:
+        return set()
+    return roots
+
+
+def _warm_installed_bytecode(specs: tuple[str, ...], target: Optional[Path]) -> None:
+    """Byte-compile what we just installed, so no user request has to.
+
+    A pip/uv install writes ``.py`` sources and no ``__pycache__`` — and an
+    install of the *same* version still deletes the cache the old copy had.
+    Whoever imports the package next pays the whole compile: for
+    ``anthropic==0.87.0`` (541 modules) on cpython-3.12.13 that measured
+    2.2-2.7s cold against 0.7-1.0s warm, and 10.5s cold under concurrent
+    load.  That bill lands wherever the first import happens, and
+    for a lazily-installed backend that is the foreground of a user request
+    (#100461) — with nothing printed while it runs, so it reads as a hang.
+    Worse, N per-profile daemons cold-starting together each pay it in full
+    before any of them has written the cache.
+
+    Paying it here instead is strictly better: the caller is already waiting
+    on an installer and can see why.  Best-effort — a compile failure never
+    invalidates an install that succeeded.
+    """
+    if sys.dont_write_bytecode:
+        return
+    try:
+        import compileall
+    except Exception:  # pragma: no cover — stdlib, but never break an install
+        return
+
+    for spec in specs:
+        try:
+            roots = _installed_dist_roots(spec, target)
+        except Exception as exc:
+            logger.debug("Bytecode warm skipped for %s: %s", spec, exc)
+            continue
+        for root in roots:
+            try:
+                compileall.compile_dir(str(root), quiet=2, force=False, workers=1)
+            except Exception as exc:
+                logger.debug("Bytecode warm skipped for %s: %s", root, exc)
+
+
 def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
     """Install ``specs`` using the uv → pip → ensurepip ladder.
 
@@ -756,8 +834,15 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             uv_bin = shutil.which("uv")
         if uv_bin:
             try:
+                # --compile-bytecode: uv does NOT write __pycache__ by default
+                # (pip does), so without it the first `import <backend>` in
+                # the foreground of a user request recompiles every module of
+                # the backend *and* its transitive deps (#100461). This covers
+                # the whole install; _warm_installed_bytecode below is the
+                # belt-and-braces pass for the spec's own roots on any tier.
                 r = subprocess.run(
-                    [uv_bin, "pip", "install", *target_args, *constraint_args, *specs],
+                    [uv_bin, "pip", "install", "--compile-bytecode",
+                     *target_args, *constraint_args, *specs],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout, env=uv_env,
                     stdin=subprocess.DEVNULL,
                     creationflags=windows_hide_flags(),
@@ -765,6 +850,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 if r.returncode == 0:
                     if target is not None:
                         _activate_target_on_syspath(target)
+                    _warm_installed_bytecode(specs, target)
                     return _InstallResult(True, r.stdout or "", r.stderr or "")
                 logger.debug("uv pip install failed: %s", r.stderr)
                 # A resolver failure is authoritative. Falling through to pip
@@ -810,8 +896,10 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 stdin=subprocess.DEVNULL,
                 creationflags=windows_hide_flags(),
             )
-            if r.returncode == 0 and target is not None:
-                _activate_target_on_syspath(target)
+            if r.returncode == 0:
+                if target is not None:
+                    _activate_target_on_syspath(target)
+                _warm_installed_bytecode(specs, target)
             return _InstallResult(r.returncode == 0, r.stdout or "", r.stderr or "")
         except subprocess.TimeoutExpired as e:
             return _InstallResult(False, "", f"pip install timed out: {e}")

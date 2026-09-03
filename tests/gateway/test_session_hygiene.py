@@ -1556,3 +1556,261 @@ async def test_hygiene_compression_cooldown_survives_gateway_restart(
         assert escalated["remaining_seconds"] == pytest.approx(900, abs=5)
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Commit-fence cancel must not livelock hygiene (#96953)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_hygiene_fence_cancel_records_cooldown_without_abort_flag(
+    monkeypatch, tmp_path
+):
+    """A fence-cancelled hygiene worker returns the original transcript with
+    ``_last_compress_aborted`` still False (failure_class=commit_fence_cancelled).
+
+    That used to skip the abort-cooldown block, so the next turn immediately
+    re-armed hygiene and waited up to the 600s ceiling behind a doomed attempt.
+    """
+    from hermes_state import SessionDB
+
+    gateway_run = importlib.import_module("gateway.run")
+    session_id = "sess-fence-cancel"
+
+    class FenceCancelCompressAgent:
+        instances = 0
+
+        def __init__(self, **kwargs):
+            type(self).instances += 1
+            self.session_id = kwargs.get("session_id", session_id)
+            self._session_db = kwargs.get("session_db")
+            self._last_compaction_in_place = False
+            self.context_compressor = SimpleNamespace(
+                bind_session_state=MagicMock(),
+                _last_compress_aborted=False,
+                _last_summary_error=None,
+                _last_aux_model_failure_model=None,
+            )
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+
+        def _compress_context(self, messages, *_args, commit_fence=None, **_kwargs):
+            if commit_fence is not None:
+                assert commit_fence.try_cancel_before_commit() is True
+            return (messages, None)
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session(session_id, "telegram")
+        runner1, adapter1, event1 = _make_cooldown_runner(
+            monkeypatch, tmp_path, FenceCancelCompressAgent, db, session_id
+        )
+        assert await runner1._handle_message(event1) == "ok"
+        assert FenceCancelCompressAgent.instances == 1
+        state = db.get_compression_failure_cooldown(session_id)
+        assert state is not None and state["remaining_seconds"] > 0, (
+            "fence-cancelled hygiene compression did not persist a cooldown; "
+            f"got {state!r}"
+        )
+        assert not any(
+            "Context compression aborted" in s["content"] for s in adapter1.sent
+        ), "fence-cancel during /stop or /restart must not toast an abort"
+
+        class ShouldNotRunAgent:
+            instances = 0
+
+            def __init__(self, **kwargs):
+                type(self).instances += 1
+                self.context_compressor = SimpleNamespace(
+                    bind_session_state=MagicMock(),
+                    _last_compress_aborted=False,
+                    _last_aux_model_failure_model=None,
+                )
+                self.shutdown_memory_provider = MagicMock()
+                self.close = MagicMock()
+
+            def _compress_context(self, messages, *_args, **_kwargs):
+                return (messages, None)
+
+        runner2, _adapter2, event2 = _make_cooldown_runner(
+            monkeypatch, tmp_path, ShouldNotRunAgent, db, session_id
+        )
+        assert await runner2._handle_message(event2) == "ok"
+        assert ShouldNotRunAgent.instances == 0, (
+            "REGRESSION (#96953): hygiene re-armed after a commit-fence "
+            "cancel instead of honoring the failure cooldown"
+        )
+        assert runner2._run_agent.await_count == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_hygiene_does_not_wait_ceiling_after_fence_cancel(
+    monkeypatch, tmp_path
+):
+    """Once the commit fence is cancelled, the host must stop extending the
+    wait — even if the shielded worker is still alive and touching progress.
+    """
+    from hermes_state import SessionDB
+
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    cleanup_done = threading.Event()
+    session_id = "sess-fence-wait"
+
+    class HungAfterFenceCancelAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.session_id = kwargs.get("session_id", session_id)
+            self._session_db = kwargs.get("session_db")
+            self._last_compaction_in_place = False
+            self.context_compressor = SimpleNamespace(
+                bind_session_state=MagicMock(),
+                _last_compress_aborted=False,
+                _last_aux_model_failure_model=None,
+            )
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock(side_effect=cleanup_done.set)
+            type(self).last_instance = self
+
+        def _compress_context(
+            self, messages, *_args, commit_fence=None, **_kwargs
+        ):
+            if commit_fence is not None:
+                commit_fence.try_cancel_before_commit()
+            worker_started.set()
+            # Keep the worker alive (and keep reporting "progress") so a
+            # host that still extends to the 600s ceiling would stall here.
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if commit_fence is not None:
+                    commit_fence.touch_progress()
+                if release_worker.is_set():
+                    break
+                time.sleep(0.02)
+            return (messages, None)
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session(session_id, "telegram")
+        runner, adapter, event = _make_cooldown_runner(
+            monkeypatch, tmp_path, HungAfterFenceCancelAgent, db, session_id
+        )
+        started = time.monotonic()
+        result = await runner._handle_message(event)
+        elapsed = time.monotonic() - started
+
+        assert result == "ok"
+        assert worker_started.wait(timeout=2)
+        assert elapsed < 2.0, (
+            f"hygiene host waited {elapsed:.1f}s after fence cancel — "
+            "must not extend toward the 600s ceiling (#96953)"
+        )
+        assert runner._run_agent.await_count == 1
+        state = db.get_compression_failure_cooldown(session_id)
+        assert state is not None and state["remaining_seconds"] > 0
+        assert not any(
+            "Context compression timed out" in s["content"] for s in adapter.sent
+        ), "fence-cancel is not a summary-model timeout; no timeout toast"
+        release_worker.set()
+        await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=2)
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_hygiene_skips_when_compression_already_in_flight(
+    monkeypatch, tmp_path
+):
+    """Do not spawn a sibling hygiene compressor while a lock is already held."""
+    from hermes_state import SessionDB
+
+    session_id = "sess-in-flight"
+
+    class ShouldNotRunAgent:
+        instances = 0
+
+        def __init__(self, **kwargs):
+            type(self).instances += 1
+            self.context_compressor = SimpleNamespace(
+                bind_session_state=MagicMock(),
+                _last_compress_aborted=False,
+                _last_aux_model_failure_model=None,
+            )
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            return (messages, None)
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session(session_id, "telegram")
+        runner, _adapter, event = _make_cooldown_runner(
+            monkeypatch, tmp_path, ShouldNotRunAgent, db, session_id
+        )
+        runner._session_has_compression_in_flight = AsyncMock(return_value=True)
+        assert await runner._handle_message(event) == "ok"
+        assert ShouldNotRunAgent.instances == 0
+        assert runner._run_agent.await_count == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_hygiene_unwind_records_cooldown(monkeypatch, tmp_path):
+    """Restart-drain cancellation must persist a cooldown before re-raising.
+
+    ``except BaseException`` used to revoke the fence and re-raise with no
+    cooldown, so the next turn after /restart re-triggered hygiene immediately.
+    """
+    from hermes_state import SessionDB
+
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    cleanup_done = threading.Event()
+    session_id = "sess-unwind"
+
+    class SlowCompressAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.session_id = kwargs.get("session_id", session_id)
+            self._session_db = kwargs.get("session_db")
+            self._last_compaction_in_place = False
+            self.context_compressor = SimpleNamespace(
+                bind_session_state=MagicMock(),
+                _last_compress_aborted=False,
+                _last_aux_model_failure_model=None,
+            )
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock(side_effect=cleanup_done.set)
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            worker_started.set()
+            release_worker.wait(timeout=5)
+            return (messages, None)
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session(session_id, "telegram")
+        runner, _adapter, event = _make_cooldown_runner(
+            monkeypatch, tmp_path, SlowCompressAgent, db, session_id
+        )
+        task = asyncio.create_task(runner._handle_message(event))
+        assert await asyncio.to_thread(worker_started.wait, 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        state = db.get_compression_failure_cooldown(session_id)
+        assert state is not None and state["remaining_seconds"] > 0, (
+            "hygiene unwind did not persist a cooldown; got "
+            f"{state!r}"
+        )
+        release_worker.set()
+        await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=2)
+    finally:
+        db.close()

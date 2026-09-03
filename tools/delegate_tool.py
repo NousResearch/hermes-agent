@@ -53,7 +53,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
-        "cronjob",  # no scheduling more work in the parent's name
+        "cronjob_manage",  # no scheduling more work in the parent's name
     ]
 )
 
@@ -1402,6 +1402,41 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
     )
 
 
+_BATCH_ORDINALS: Dict[str, int] = {}
+_BATCH_ORDINALS_LOCK = threading.Lock()
+
+
+def format_batch_tag(delegation_id: Optional[str]) -> str:
+    """Short human tag identifying which delegation batch a line belongs to.
+
+    ``deleg_6a664903`` → ``set 1`` (first batch seen in this process),
+    the next distinct id → ``set 2``, and so on. Several batches (a parent's
+    fan-out plus a child's nested fan-out, or two concurrent tools) print
+    interleaved ``[n/N]`` progress lines to the same console; without a batch
+    tag a ``✓ [3/3]`` and a ``✓ [3/9]`` are indistinguishable, and a raw hex
+    slice (``[b2ac 3/9]``) is attributable but unreadable. Empty string when
+    no id is known so callers can concatenate unconditionally.
+    """
+    if not isinstance(delegation_id, str) or not delegation_id:
+        return ""
+    with _BATCH_ORDINALS_LOCK:
+        n = _BATCH_ORDINALS.get(delegation_id)
+        if n is None:
+            n = len(_BATCH_ORDINALS) + 1
+            _BATCH_ORDINALS[delegation_id] = n
+    return f"set {n}"
+
+
+def _batch_prefix(delegation_id: Optional[str], task_index: int, task_count: int) -> str:
+    """``[set 2 · 3/9] `` for batch children, ``[set 2] `` for a lone child,
+    ``[3/9] `` / ``""`` when the batch id is unknown."""
+    tag = format_batch_tag(delegation_id)
+    if task_count > 1:
+        inner = f"{tag} · {task_index + 1}/{task_count}" if tag else f"{task_index + 1}/{task_count}"
+        return f"[{inner}] "
+    return f"[{tag}] " if tag else ""
+
+
 def _emit_parent_console(parent_agent, line: str) -> None:
     """Emit a human-readable progress line to the parent's console.
 
@@ -1454,8 +1489,14 @@ def _build_child_progress_callback(
     if not spinner and not parent_cb:
         return None  # No display → no callback → zero behavior change
 
-    # Show 1-indexed prefix only in batch mode (multiple tasks)
-    prefix = f"[{task_index + 1}] " if task_count > 1 else ""
+    # Show 1-indexed prefix only in batch mode (multiple tasks). The batch tag
+    # (short delegation id) is resolved lazily from session_ref because the
+    # callback is built before delegate_task stamps ``_delegation_id`` on the
+    # child; delegate_task drops the id into the same shared ref.
+    def _prefix() -> str:
+        deleg = session_ref.get("delegation_id") if session_ref else None
+        return _batch_prefix(deleg, task_index, task_count)
+
     goal_label = (goal or "").strip()
 
     # Gateway: batch tool names, flush periodically
@@ -1484,6 +1525,8 @@ def _build_child_progress_callback(
         # event lets UIs open/inspect the subagent's session directly.
         if session_ref and session_ref.get("session_id"):
             kw["child_session_id"] = str(session_ref["session_id"])
+        if session_ref and session_ref.get("delegation_id"):
+            kw["delegation_id"] = str(session_ref["delegation_id"])
         kw["tool_count"] = _tool_count[0]
         return kw
 
@@ -1510,7 +1553,7 @@ def _build_child_progress_callback(
                     (goal_label[:55] + "...") if len(goal_label) > 55 else goal_label
                 )
                 try:
-                    spinner.print_above(f" {prefix}├─ 🔀 {short}")
+                    spinner.print_above(f" {_prefix()}├─ 🔀 {short}")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.start", preview=preview or goal_label or "", **kwargs)
@@ -1529,7 +1572,7 @@ def _build_child_progress_callback(
                     duration_seconds=kwargs.get("duration_seconds"),
                 )
                 try:
-                    spinner.print_above(f" {prefix}├─ {_fail_line}")
+                    spinner.print_above(f" {_prefix()}├─ {_fail_line}")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.complete", preview=preview, **kwargs)
@@ -1563,7 +1606,7 @@ def _build_child_progress_callback(
             if spinner:
                 short = (text[:55] + "...") if len(text) > 55 else text
                 try:
-                    spinner.print_above(f' {prefix}├─ 💭 "{short}"')
+                    spinner.print_above(f' {_prefix()}├─ 💭 "{short}"')
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.thinking", preview=text)
@@ -1583,12 +1626,12 @@ def _build_child_progress_callback(
             summary_text = tool_name or preview or ""
             if spinner and summary_text:
                 try:
-                    spinner.print_above(f" {prefix}├─ 🔀 {summary_text}")
+                    spinner.print_above(f" {_prefix()}├─ 🔀 {summary_text}")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             if parent_cb:
                 try:
-                    parent_cb("subagent_progress", f"{prefix}{summary_text}")
+                    parent_cb("subagent_progress", f"{_prefix()}{summary_text}")
                 except Exception as e:
                     logger.debug("Parent callback relay failed: %s", e)
             return
@@ -1610,7 +1653,7 @@ def _build_child_progress_callback(
             from agent.display import get_tool_emoji
 
             emoji = get_tool_emoji(tool_name or "")
-            line = f" {prefix}├─ {emoji} {tool_name}"
+            line = f" {_prefix()}├─ {emoji} {tool_name}"
             if short:
                 line += f'  "{short}"'
             try:
@@ -1623,14 +1666,14 @@ def _build_child_progress_callback(
             _batch.append(tool_name or "")
             if len(_batch) >= _BATCH_SIZE:
                 summary = ", ".join(_batch)
-                _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
+                _relay("subagent.progress", preview=f"🔀 {_prefix()}{summary}")
                 _batch.clear()
 
     def _flush():
         """Flush remaining batched tool names to gateway on completion."""
         if parent_cb and _batch:
             summary = ", ".join(_batch)
-            _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
+            _relay("subagent.progress", preview=f"🔀 {_prefix()}{summary}")
             _batch.clear()
 
     _callback._flush = _flush
@@ -2049,13 +2092,13 @@ def _build_child_agent(
     parent_session_db = getattr(parent_agent, "_session_db", None)
     if parent_session_db is not None:
         try:
-            from hermes_state import SessionDB
+            from hermes_state import get_shared_session_db
 
             _parent_db_path = getattr(parent_session_db, "db_path", None)
             child_session_db = (
-                SessionDB(db_path=_parent_db_path)
+                get_shared_session_db(_parent_db_path)
                 if _parent_db_path is not None
-                else SessionDB()
+                else get_shared_session_db()
             )
         except Exception:
             logger.debug(
@@ -2124,7 +2167,8 @@ def _build_child_agent(
             # don't outlive the failed spawn.
             if child_session_db is not None:
                 try:
-                    child_session_db.close()
+                    from hermes_state import release_or_close
+                    release_or_close(child_session_db)
                 except Exception:
                     pass
             raise
@@ -2137,6 +2181,9 @@ def _build_child_agent(
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
+    # Same shared ref receives the batch id once delegate_task stamps it, so
+    # the display prefix and relayed events can tag which batch this is.
+    child._progress_identity_ref = child_session_ref
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
     # Stash the post-degrade role for introspection (leaf if the
@@ -2579,9 +2626,35 @@ def _run_single_child(
 ) -> Dict[str, Any]:
     """
     Run a pre-built child agent. Called from within a thread.
-    Returns a structured result dict.
+    Returns a structured result dict with a ``status`` and ``exit_reason``
+    that are derived honestly from the child's structured completion fields.
+
+    ``status`` ∈ {``"completed"``, ``"interrupted"``, ``"failed"``}:
+        * ``"completed"``  — the child reached a normal finish (may still have
+          hit its iteration budget; see ``exit_reason``).
+        * ``"interrupted"`` — the child was interrupted (``interrupted=True``).
+        * ``"failed"``    — a structured failure (``failed=True`` or a non-empty
+          ``error``) or a summary-less/invalid terminal state.
+
+    ``exit_reason`` ∈ {``"completed"``, ``"max_iterations"``, ``"interrupted"``,
+    ``"error"``}:
+        * ``"completed"``       — normal finish.
+        * ``"max_iterations"``  — genuine per-child iteration-budget exhaustion
+          (``completed=False`` with no failure fields).
+        * ``"interrupted"``     — interrupted by the parent.
+        * ``"error"``           — provider rejection / terminal failure; NOT
+          budget exhaustion (this is the case #97655 fixed).
+
+    ``truncated`` is derived as ``exit_reason == "max_iterations"`` only, so the
+    parent-visible truncation flag stays truthful for all of the above.
     """
     child_start = time.monotonic()
+    # A timed-out Future may still be unwinding on its daemon worker. Closing
+    # the child from this owner thread before that Future settles races every
+    # resource the conversation's finally path still touches (notably its
+    # owned SessionDB). The timeout branch flips this when close ownership is
+    # handed to a Future done-callback instead.
+    _child_close_deferred = False
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
@@ -3059,6 +3132,63 @@ def _run_single_child(
                     f"{_late_pending_steer}]"
                 )
             _attach_worktree(_error_entry)
+            if is_timeout and not _child_future.done():
+                # request_hard_interrupt() is cooperative: the worker still
+                # executes run_conversation's finally path before its Future
+                # becomes done. child.close() tears down that same agent's
+                # clients, messages, and owned SQLite handle, so calling it in
+                # our outer finally while the worker is alive can close SQLite
+                # underneath its final activity write. Future callbacks run
+                # only after the worker has fully returned (or raised), which
+                # is the first safe close boundary.
+                def _close_after_timed_out_worker(_done_future) -> None:
+                    try:
+                        close = getattr(child, "close", None)
+                        if callable(close):
+                            close()
+                    except Exception:
+                        logger.debug(
+                            "Failed to close timed-out child after worker exit",
+                            exc_info=True,
+                        )
+
+                _child_future.add_done_callback(_close_after_timed_out_worker)
+                _child_close_deferred = True
+
+                # Bounded drain (#94248 native half): the deferred close above
+                # only fires once the abandoned worker unwinds, but that worker
+                # is typically parked inside an in-flight OpenSSL read (Codex /
+                # httpx). Never hard-close that transport from this thread —
+                # releasing FDs under a live SSL read is the #29507/#70773
+                # native-corruption family. Instead shutdown() the child's
+                # pooled sockets, which is FD-safe from any thread and settles
+                # the blocked read with EOF/EPIPE so the worker can unwind and
+                # trigger the deferred close. One immediate sweep plus one
+                # delayed re-sweep (covers a fresh connection opened between
+                # the interrupt and the first sweep); a worker that still
+                # doesn't settle keeps its resources until process exit rather
+                # than risking a cross-thread FD release.
+                _drain = getattr(child, "_drain_transports_after_abandonment", None)
+                if callable(_drain):
+                    def _drain_once(phase: str) -> None:
+                        try:
+                            _drain(reason=f"delegate_timeout_{phase}")
+                        except Exception:
+                            logger.debug(
+                                "Timed-out child transport drain (%s) failed",
+                                phase,
+                                exc_info=True,
+                            )
+
+                    _drain_once("immediate")
+
+                    def _drain_resweep() -> None:
+                        if not _child_future.done():
+                            _drain_once("resweep")
+
+                    _resweep_timer = threading.Timer(5.0, _drain_resweep)
+                    _resweep_timer.daemon = True
+                    _resweep_timer.start()
             return _error_entry
         finally:
             # Shut down executor without waiting — if the child thread
@@ -3164,13 +3294,25 @@ def _run_single_child(
 
         if interrupted:
             status = "interrupted"
-        elif result.get("failed"):
-            # The child's conversation loop aborted (non-retryable HTTP
-            # error, retries exhausted, billing wall). final_response holds
-            # the error summary in this shape, NOT usable output — without
-            # this branch a provider 404/400 was classified "completed" with
-            # the error text as its summary, so no surface ever saw a
-            # failure (community report, Aug 2026).
+        elif result.get("failed") or result.get("error"):
+            # A structured failure (provider rejection / terminal exception)
+            # must WIN over the summary-presence heuristic below. The child's
+            # conversation loop returns the error text as final_response, so an
+            # error-shaped summary would otherwise be labeled "completed" here
+            # despite completed=False. The heuristic is only a fallback for
+            # legacy/mock results that omit the structured failure fields.
+            # (Community report Aug 2026; #97655.)
+            status = "failed"
+        elif _schema_valid is False:
+            # T1-24 follow-up: a schema was declared and the final answer —
+            # after the one bounded retry — still violates it (empty `{}`
+            # fallback included). A summary exists, but it is unusable under
+            # the contract the caller asked for, so it must not be reported
+            # as a completed delegation: the batch line would print ✓ and
+            # orchestrators that read only status/icon would accept an
+            # empty verdict. schema_valid/schema_errors (below) carry the
+            # detail; status has to agree with them. _schema_valid stays
+            # None on schema-less runs, which never take this branch.
             status = "failed"
         elif summary and not _empty_sentinel:
             # A summary means the subagent produced usable output.
@@ -3221,9 +3363,15 @@ def _run_single_child(
         # Determine exit reason
         if interrupted:
             exit_reason = "interrupted"
+        elif result.get("failed") or result.get("error"):
+            # Provider rejection / terminal failure. Do NOT report this as
+            # iteration-budget exhaustion — "max_iterations" is only truthful
+            # when the child actually hit its per-delegation iteration cap.
+            exit_reason = "error"
         elif completed:
             exit_reason = "completed"
         else:
+            # Genuine budget exhaustion: completed=False with no failure.
             exit_reason = "max_iterations"
 
         # Extract token counts (safe for mock objects)
@@ -3231,6 +3379,10 @@ def _run_single_child(
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
 
+        # --- result entry contract (see _run_single_child docstring) ---
+        # status ∈ {completed, interrupted, failed}
+        # exit_reason ∈ {completed, max_iterations, interrupted, error}
+        # truncated is exactly (exit_reason == "max_iterations").
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
@@ -3285,7 +3437,28 @@ def _run_single_child(
             else "unknown"
         )
         if status == "failed":
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
+            if _schema_valid is False and summary and not _empty_sentinel:
+                # The child DID respond — the response just violates the
+                # declared contract. Name that instead of the generic
+                # "no response" error; schema_errors (below) hold the
+                # validator's specifics verbatim.
+                entry["error"] = (
+                    "Final answer does not satisfy the declared "
+                    "output_schema (after 1 retry)."
+                    if _schema_retries
+                    else "Final answer does not satisfy the declared "
+                    "output_schema."
+                )
+            else:
+                entry["error"] = result.get(
+                    "error", "Subagent did not produce a response."
+                )
+            # Classified reason from the child loop (e.g. "rate_limit",
+            # "billing", "server_error") — lets the parent distinguish a
+            # quota wall from a real task error without parsing prose.
+            _failure_reason = result.get("failure_reason")
+            if isinstance(_failure_reason, str) and _failure_reason:
+                entry["failure_reason"] = _failure_reason
 
         # T1-24: schema-validation outcome — emitted ONLY when a schema was
         # requested, so legacy (schema-less) payloads keep their exact shape.
@@ -3490,11 +3663,13 @@ def _run_single_child(
         # Close tool resources (terminal sandboxes, browser daemons,
         # background processes, httpx clients) so subagent subprocesses
         # don't outlive the delegation.
-        try:
-            if hasattr(child, "close"):
-                child.close()
-        except Exception:
-            logger.debug("Failed to close child agent after delegation")
+        if not _child_close_deferred:
+            try:
+                close = getattr(child, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                logger.debug("Failed to close child agent after delegation")
 
         # The AIAgent turn boundary normally closes the child scope itself. This
         # fallback covers failures before that boundary starts, but must not pop
@@ -3962,6 +4137,18 @@ def delegate_task(
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
         task_list, context, model=creds.get("model"), provider=creds.get("provider")
     )
+    # Announce the batch tag once so the later ``[tag n/N]`` completion lines
+    # (and any nested batch's lines interleaving with them) are attributable.
+    if n_tasks > 1 and live_deleg_id:
+        _hdr = f"🔀 [{format_batch_tag(live_deleg_id)}] delegating {n_tasks} tasks"
+        _hdr_spinner = getattr(parent_agent, "_delegate_spinner", None)
+        if _hdr_spinner:
+            try:
+                _hdr_spinner.print_above(f"  {_hdr}")
+            except Exception:
+                _emit_parent_console(parent_agent, f"  {_hdr}")
+        else:
+            _emit_parent_console(parent_agent, f"  {_hdr}")
 
     # Capture the ORIGINATING session's wake target BEFORE any child agent is
     # constructed: _build_child_agent() -> AIAgent() -> agent_init calls
@@ -4050,6 +4237,9 @@ def delegate_task(
         # attribution (child-started background processes report under it).
         if live_deleg_id:
             setattr(child, "_delegation_id", live_deleg_id)
+            _ident_ref = getattr(child, "_progress_identity_ref", None)
+            if isinstance(_ident_ref, dict):
+                _ident_ref["delegation_id"] = live_deleg_id
         children.append((i, t, child))
 
     def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:
@@ -4185,7 +4375,9 @@ def delegate_task(
                         status = entry.get("status", "?")
                         icon = "✓" if status == "completed" else "✗"
                         remaining = n_tasks - completed_count
-                        completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                        _tag = format_batch_tag(live_deleg_id)
+                        _slot = f"{_tag} · {idx+1}/{n_tasks}" if _tag else f"{idx+1}/{n_tasks}"
+                        completion_line = f"{icon} [{_slot}] {label}  ({dur}s)"
                         # Failed/errored/timed-out children: say WHY on the
                         # same line, cleaned to one short human-readable
                         # fragment — a bare ✗ reads as "silently dropped".
@@ -4207,7 +4399,7 @@ def delegate_task(
                         if spinner_ref and remaining > 0:
                             try:
                                 spinner_ref.update_text(
-                                    f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining"
+                                    f"🔀 {'[' + _tag + '] ' if _tag else ''}{remaining} task{'s' if remaining != 1 else ''} remaining"
                                 )
                             except Exception as e:
                                 logger.debug("Spinner update_text failed: %s", e)

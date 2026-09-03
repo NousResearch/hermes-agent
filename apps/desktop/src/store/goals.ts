@@ -3,6 +3,9 @@ import { atom } from 'nanostores'
 import { keyedTimeouts } from '@/lib/keyed-timeouts'
 
 import { $gateway } from './gateway'
+import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
+import { ambientRequestFor } from './session-gone-latch'
+import { requestForOwnedSession } from './session-states'
 
 export type GoalStatus = 'active' | 'done' | 'paused' | 'waiting'
 
@@ -163,15 +166,24 @@ export function applyGoalStatusText(sid: string, text: string, opts?: { hydrate?
 export async function refreshSessionGoal(sid: string): Promise<void> {
   const gateway = $gateway.get()
 
-  if (!sid || !gateway) {
+  if (!sid || !gateway || isSessionGone(sid)) {
     return
   }
 
   try {
-    const result = await gateway.request<{ output?: string }>('slash.exec', { command: 'goal status', session_id: sid })
+    const result = await requestForOwnedSession<{ output?: string }>(sid, ambientRequestFor(gateway), 'slash.exec', {
+      command: 'goal status',
+      session_id: sid
+    })
 
     applyGoalStatusText(sid, result?.output ?? '', { hydrate: true })
-  } catch {
-    // Best-effort: older gateways or detached sessions simply won't hydrate it.
+  } catch (error) {
+    if (isSessionGoneForBackgroundPolling(error)) {
+      markSessionGone(sid)
+
+      return
+    }
+
+    // Best-effort: older gateways or a transport blip simply won't hydrate it.
   }
 }

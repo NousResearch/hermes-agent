@@ -87,6 +87,11 @@ def hermes_home(tmp_path, monkeypatch):
     from hermes_cli import goals
 
     goals._DB_CACHE.clear()
+    # Pre-warm the SessionDB cache from this sync (non-loop) context so the
+    # async tests' GoalManager.set() never races the bounded loop-thread
+    # bootstrap window on loaded CI runners (goal silently not persisted →
+    # continuation never enqueued; flaked on main run 33455779041).
+    goals._get_session_db()
     yield home
     goals._DB_CACHE.clear()
 

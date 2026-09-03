@@ -469,6 +469,8 @@ export const it: Translations = {
     copyCliCommand: "Copia comando CLI (per uso esterno / fallback)",
     connect: "Connetti",
     sessionExpires: "La sessione scade tra {time}",
+    sessionExpiredNoError:
+      "L'accesso è scaduto senza raggiungere il provider. Di solito significa che la pagina di accesso si è bloccata nella scheda aperta (problema lato server): completa l'accesso lì, poi fai clic su Riprova. Se continua a fallire, usa una chiave API o la CLI.",
     initiatingLogin: "Avvio del flusso di accesso…",
     exchangingCode: "Scambio del codice per i token…",
     connectedClosing: "Connesso! Chiusura…",

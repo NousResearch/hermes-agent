@@ -768,6 +768,18 @@ class LoopManager:
                     "reason": s.last_stop_reason,
                     "message": f"✓ Loop finished after {s.ticks_fired} tick{'s' if s.ticks_fired != 1 else ''} — {reason}",
                 }
+            if verdict == "blocked":
+                # Judge ruled the stop condition unachievable — don't spin
+                # until the tick budget; pause so the user can re-scope.
+                s.status = "paused"
+                s.paused_reason = f"stop condition judged unachievable: {reason}"
+                save_loop(self.session_id, s)
+                return {
+                    "status": "paused",
+                    "stopped": True,
+                    "reason": s.paused_reason,
+                    "message": f"⏸ Loop paused — {s.paused_reason}. /loop resume to keep going, /loop stop to end it.",
+                }
 
         # 3. --times user cap.
         if s.times and s.ticks_fired >= s.times:

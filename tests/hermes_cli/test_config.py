@@ -655,11 +655,21 @@ class TestSanitizeEnvLines:
 class TestOptionalEnvVarsRegistry:
     """Verify that key env vars are registered in OPTIONAL_ENV_VARS."""
 
+    def test_keenable_api_key_registered(self):
+        """KEENABLE_API_KEY is listed in OPTIONAL_ENV_VARS."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert "KEENABLE_API_KEY" in OPTIONAL_ENV_VARS
+
+
+    def test_keenable_api_key_has_url(self):
+        """KEENABLE_API_KEY has a URL."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["KEENABLE_API_KEY"]["url"] == "https://keenable.ai"
+
     def test_tavily_api_key_registered(self):
         """TAVILY_API_KEY is listed in OPTIONAL_ENV_VARS."""
         from hermes_cli.config import OPTIONAL_ENV_VARS
         assert "TAVILY_API_KEY" in OPTIONAL_ENV_VARS
-
 
     def test_tavily_api_key_has_url(self):
         """TAVILY_API_KEY has a URL."""
@@ -886,7 +896,9 @@ class TestConfigSupportFloor:
         },
         "memory": {"write_approval": True},
         "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
-        "model_catalog": {"ttl_hours": 1},
+        # v25 lowered the old 24h default to 1h; v40 drops that 1h default so
+        # the shipped ttl_minutes (20) applies.
+        "model_catalog": {},
         "plugins": {"enabled": []},
         "stt": {"provider": "local"},
     }
@@ -905,7 +917,7 @@ class TestConfigSupportFloor:
         # default (opt-in) so the write invariant strips it from disk.
         "agent": {},
         "model": {"default": "anthropic/claude-fable-5", "provider": "nous"},
-        "model_catalog": {"ttl_hours": 1},
+        "model_catalog": {},
         "plugins": {"disabled": ["foo"], "enabled": []},
     }
 

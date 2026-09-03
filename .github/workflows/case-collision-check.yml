@@ -1,0 +1,33 @@
+name: Case Collision Check
+
+# Rejects PRs that track two files whose paths differ only by case
+# (README.md vs readme.md, src/Foo.py vs SRC/foo.py).
+#
+# Linux is case-sensitive; Windows and macOS (default) are not. A
+# case-colliding pair lives fine in a Linux checkout and silently breaks
+# every clone on a case-insensitive host — the filesystem can hold only
+# one of them, so checkout fails or whichever wins overwrites the other.
+# Git won't prevent the pair from landing (it only warns at checkout time,
+# on a case-insensitive FS, for the client doing the checkout), so the only
+# enforcement point is CI, on Linux, against the index.
+#
+# Runs unconditionally (no change-classifier gate): a collision can ship in
+# any kind of PR — docs, JS, config, not just Python — so gating on a
+# language lane would be the same "passive rule that cannot enforce a
+# policy" trap the infographic check exists to close.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check-case-collisions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run case-collision checker
+        run: python3 scripts/check-case-collisions.py

@@ -100,6 +100,37 @@ class TestEnvAssignments:
         result = redact_sensitive_text(text)
         assert result == text
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            'IDENTITY_TOKEN="bailu"',
+            "--override-tensor per_layer_token_embd.weight=CPU",
+            'runtime.token="local"',
+            '{"token": "CPU"}',
+            "token: CPU",
+        ],
+    )
+    def test_ambiguous_key_preserves_obviously_noncredential_value(self, text):
+        assert redact_sensitive_text(text, force=True) == text
+
+    @pytest.mark.parametrize(
+        "text, cleartext",
+        [
+            ("PASSWORD=hunter2", "hunter2"),
+            ("SECRET_TOKEN=bailu", "bailu"),
+            ("id_token=local", "local"),
+            ("CUSTOM_TOKEN=opaqueValue123456789", "opaqueValue123456789"),
+            ('{"token": "opaqueValue123456789"}', "opaqueValue123456789"),
+            ('{"key_material": "CPU"}', "CPU"),
+            ('{"bearer": "local"}', "local"),
+            ("TOKEN=" + "sk-" + "a" * 30, "a" * 20),
+        ],
+    )
+    def test_strong_key_or_credential_shaped_value_still_redacts(
+        self, text, cleartext
+    ):
+        assert cleartext not in redact_sensitive_text(text, force=True)
+
 
 
 
@@ -677,6 +708,36 @@ class TestConfigKeyRedosResistance:
         assert "Sup3rS3cret!" not in result
         assert ".password=" in result
 
+    def test_long_opaque_assignment_run_completes_fast(self):
+        """Lowercase env scanning stays linear on compaction payload blobs."""
+        import time
+
+        # A serialized tool payload can contain a long opaque alphanumeric
+        # value followed by '=' without containing a secret-key suffix.  The
+        # old unanchored lowercase-env pattern retried its greedy prefix from
+        # every byte, making this quadratic while holding the GIL.
+        text = "a" * 20_000 + "=value"
+        t0 = time.perf_counter()
+        assert redact_sensitive_text(text, force=True) == text
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_dotted_cfg_scan_stays_linear_with_keyword_elsewhere(self):
+        """_CFG_DOTTED_RE must stay linear once the pre-gate passes.
+
+        The ``_CFG_SECRET_WORD_RE`` pre-gate only skips secret-FREE text, so a
+        payload that contains a real secret assignment AND a long opaque
+        dotted run still reaches the backtrackable ``*`` prefix. Without the
+        run-start lookbehind the sub retries that prefix from every byte of
+        the run (quadratic while holding the GIL).
+        """
+        import time
+
+        text = "password=hunter2\n" + "a." * 15_000 + "=value"
+        t0 = time.perf_counter()
+        result = redact_sensitive_text(text, force=True)
+        assert "hunter2" not in result
+        assert time.perf_counter() - t0 < 2.0
+
     def test_yaml_assign_redos_resistance(self):
         """_YAML_ASSIGN_RE must not backtrack excessively on long inputs."""
         import time
@@ -1051,3 +1112,69 @@ class TestMaskSecretControlStripping:
     def test_all_control_value_returns_empty_fallback(self):
         assert mask_secret("\n\x85\u200b") == ""
         assert mask_secret("\n\x85\u200b", empty="(not set)") == "(not set)"
+
+
+class TestValueAwareGatingCorpus:
+    """Issue #96607: corpus-level before/after for value-aware gating.
+
+    Redaction must mask a keyword-named assignment ONLY when the value has
+    credential shape (vendor prefix, hex/base64/high-entropy, or a strong
+    credential-specific key name). Bare technical vocabulary — ``token``,
+    ``key``, ``cpu`` — in ordinary technical prose/config must pass through
+    byte-for-byte, on every assignment family (ENV, dotted config, JSON,
+    YAML).
+    """
+
+    # Realistic technical prose. On pre-fix main every line was corrupted
+    # to ``***`` despite containing no secret.
+    TECHNICAL_CORPUS = [
+        'IDENTITY_TOKEN="bailu"',
+        "--override-tensor per_layer_token_embd.weight=CPU",
+        "MAX_TOKENS=4096",
+        "runtime.token=local",
+        "The tokenizer splits on whitespace; set max_new_tokens=256.",
+        "num_key_value_heads=8",
+        "token: CPU",
+        "llm_load_tensors: per_layer_token_embd.weight=CPU buffer",
+    ]
+
+    # Obviously-fake but shape-realistic secrets: every one of these must
+    # STAY masked after the gating change (fail-closed on credential shape
+    # or strong key names).
+    FAKE_SECRET_CORPUS = [
+        ("API_KEY=sk-fakefakefakefakefake1234567890abcd", "fakefake"),
+        ("GITHUB_TOKEN=ghp_FAKEfakeFAKEfake1234567890fake", "FAKEfake"),
+        ("MY_SERVICE_TOKEN=A9f3kZq7Lm2Xw8Rt4Yv6", "A9f3kZq7"),
+        ("TOKEN=6f1d2a9c8b3e4f5a6d7c8b9a0e1f2d3c", "6f1d2a9c"),
+        ("password=hunter2", "hunter2"),
+        ("db_password: hunter2", "hunter2"),
+        ("auth_token: 9f8e7d6c5b4a39281706f5e4d3c2b1a0", "9f8e7d6c"),
+        ('"token": "Zx9Qw8Er7Ty6Ui5Op4As3"', "Zx9Qw8Er"),
+        ("SESSION_TOKEN=shrt", "shrt"),
+        ("client_secret=abc", "abc"),
+        ("spring.datasource.password=fakePass123", "fakePass123"),
+    ]
+
+    def test_technical_prose_survives_intact(self):
+        for line in self.TECHNICAL_CORPUS:
+            assert redact_sensitive_text(line, force=True) == line, line
+
+    def test_technical_corpus_as_one_block_survives_intact(self):
+        # The multi-line shape a model actually reads from tool output.
+        block = "\n".join(self.TECHNICAL_CORPUS)
+        assert redact_sensitive_text(block, force=True) == block
+
+    def test_shape_realistic_fake_secrets_still_masked(self):
+        for line, cleartext in self.FAKE_SECRET_CORPUS:
+            result = redact_sensitive_text(line, force=True)
+            assert result != line, line
+            assert cleartext not in result, line
+
+    def test_mixed_block_masks_only_the_secret_lines(self):
+        # Precondition guard: both halves must actually exercise the gate.
+        secret_line = "MY_SERVICE_TOKEN=A9f3kZq7Lm2Xw8Rt4Yv6"
+        prose_line = 'IDENTITY_TOKEN="bailu"'
+        block = f"{prose_line}\n{secret_line}"
+        result = redact_sensitive_text(block, force=True)
+        assert prose_line in result
+        assert "A9f3kZq7Lm2Xw8Rt4Yv6" not in result

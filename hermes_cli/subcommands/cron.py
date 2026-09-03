@@ -42,6 +42,16 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "local profile's canonical Bot Chat as a message the bot responds to)"
         ),
     )
+    cron_create.add_argument(
+        "--failure-deliver",
+        dest="failure_deliver",
+        help=(
+            "Override target for FAILURE notices only (same grammar as "
+            "--deliver). 'local' suppresses failure notices entirely; run "
+            "state stays visible in `hermes cron list`. Omit = failures "
+            "follow --deliver."
+        ),
+    )
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
     cron_create.add_argument(
         "--skill",
@@ -142,6 +152,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--prompt", help="New prompt/task instruction")
     cron_edit.add_argument("--name", help="New job name")
     cron_edit.add_argument("--deliver", help="New delivery target")
+    cron_edit.add_argument(
+        "--failure-deliver",
+        dest="failure_deliver",
+        help=(
+            "Override target for failure notices (same grammar as --deliver; "
+            "'local' suppresses; '' clears the override)"
+        ),
+    )
     cron_edit.add_argument("--repeat", type=int, help="New repeat count")
     cron_edit.add_argument(
         "--skill",
@@ -320,6 +338,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     )
     cron_notepad.add_argument("key", nargs="?", help="Notepad key (get/set/delete)")
     cron_notepad.add_argument("value", nargs="?", help="Value to store (set)")
+
+    # cron doctor
+    cron_subparsers.add_parser("doctor", help="Check scheduled jobs for common health issues")
 
     # cron tick (mostly for debugging)
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")

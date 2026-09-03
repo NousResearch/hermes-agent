@@ -43,6 +43,7 @@ from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -55,8 +56,8 @@ from gateway.platforms.base import (
     resolve_proxy_url,
     safe_url_for_log,
     _ssrf_redirect_guard,
-    cache_document_from_bytes,
-    cache_video_from_bytes,
+    cache_document_from_bytes_async,
+    cache_video_from_bytes_async,
 )
 
 try:  # sibling module; support both package and flat plugin-dir import
@@ -1825,7 +1826,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "Slack's ephemeral reply limit.]_"
             )
         try:
-            async with aiohttp.ClientSession(trust_env=True) as session:
+            async with aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
                 for idx, chunk in enumerate(chunks):
                     payload = {
                         "response_type": "ephemeral",
@@ -3838,6 +3839,30 @@ class SlackAdapter(BasePlatformAdapter):
             return "none"
         return value
 
+    def _slack_api_human_users(self) -> frozenset:
+        """Slack user IDs whose Web-API posts count as human-authored.
+
+        A message posted with a *user* token (``xoxp-``) is authored by a real
+        person, but Slack still stamps it with the posting ``app_id`` and it
+        carries no ``client_msg_id`` — exactly the #35777 app/bot signature in
+        ``_event_declares_bot_sender``. Operators running their own front-end
+        (dashboard, mobile shell) allowlist those *users* via
+        ``platforms.slack.extra.api_human_users`` (``SLACK_API_HUMAN_USERS``
+        fallback) instead of ``allow_bots: all``. Users only — an app-id
+        allowlist would also admit the app's own ``xoxb`` bot posts, which
+        carry the same user+app_id shape.
+        """
+        cached = getattr(self, "_api_human_users_cache", None)
+        if cached is None:
+            raw = self.config.extra.get("api_human_users")
+            if raw is None:
+                raw = os.getenv("SLACK_API_HUMAN_USERS", "")
+            parts = raw if isinstance(raw, (list, tuple, set)) else str(raw).split(",")
+            cached = self._api_human_users_cache = frozenset(
+                str(p).strip() for p in parts if str(p).strip()
+            )
+        return cached
+
     def _event_declares_bot_sender(self, event: dict) -> bool:
         """Return True when the Slack event itself identifies a bot sender."""
         if event.get("bot_id") or event.get("bot_profile"):
@@ -3852,7 +3877,11 @@ class SlackAdapter(BasePlatformAdapter):
         # human-authored messages normally carry client_msg_id, so treat the
         # combination as app/bot-authored (#35777).
         if event.get("app_id") and not event.get("client_msg_id"):
-            return True
+            # ...unless the operator allowlisted this user's API posts
+            # (_slack_api_human_users). ``user`` is required so classic bot
+            # posts (no ``user``) never match; bot_message/bot_id already
+            # returned True above.
+            return event.get("user") not in self._slack_api_human_users()
         return False
 
     def _resolve_thread_ts(
@@ -6324,9 +6353,19 @@ class SlackAdapter(BasePlatformAdapter):
         # or file downloads.  The final gateway runner auth check happens
         # after MessageEvent construction, so adapter-side media fetches need
         # the same auth chain up front.
+        # Prefer the injected profile-bound check (survives the multiplex
+        # closure handler, which has no ``__self__``); fall back to runner
+        # introspection for adapters wired without one.
+        _early_decision = (
+            self._is_sender_authorized(
+                user_id, "dm" if is_dm else "group", channel_id
+            )
+            if user_id and getattr(self, "_authorization_check", None) is not None
+            else None
+        )
         _runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         _auth_fn = getattr(_runner, "_is_user_authorized", None)
-        if user_id and callable(_auth_fn):
+        if _early_decision is None and user_id and callable(_auth_fn):
             _source = self.build_source(
                 chat_id=channel_id,
                 chat_name="",
@@ -6334,13 +6373,14 @@ class SlackAdapter(BasePlatformAdapter):
                 user_id=user_id,
                 user_name="",
             )
-            if not _auth_fn(_source):
-                logger.warning(
-                    "[Slack] Early reject of unauthorized user %s in channel %s",
-                    user_id,
-                    channel_id,
-                )
-                return
+            _early_decision = bool(_auth_fn(_source))
+        if _early_decision is False:
+            logger.warning(
+                "[Slack] Early reject of unauthorized user %s in channel %s",
+                user_id,
+                channel_id,
+            )
+            return
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -6891,7 +6931,7 @@ class SlackAdapter(BasePlatformAdapter):
                     raw_bytes = await self._download_slack_file_bytes(
                         url, team_id=team_id
                     )
-                    cached_path = cache_video_from_bytes(raw_bytes, ext=ext)
+                    cached_path = await cache_video_from_bytes_async(raw_bytes, ext=ext)
                     media_urls.append(cached_path)
                     media_types.append(
                         SUPPORTED_VIDEO_TYPES.get(ext, mimetype or "video/mp4")
@@ -6945,7 +6985,7 @@ class SlackAdapter(BasePlatformAdapter):
                     raw_bytes = await self._download_slack_file_bytes(
                         url, team_id=team_id
                     )
-                    cached_path = cache_document_from_bytes(
+                    cached_path = await cache_document_from_bytes_async(
                         raw_bytes, original_filename or f"document{ext or '.bin'}"
                     )
                     if in_allowlist:
@@ -7049,7 +7089,9 @@ class SlackAdapter(BasePlatformAdapter):
             # subtype=bot_message with user=None; flag them so the
             # gateway SLACK_ALLOW_BOTS bypass can authorize them
             # (they carry no user_id to match against the allowlist).
-            is_bot=bool(event.get("bot_id")) or event.get("subtype") == "bot_message",
+            # Same predicate as the drop gate above, so an api_human_users
+            # post is a plain human here too.
+            is_bot=self._event_declares_bot_sender(event),
         )
 
         # Per-channel ephemeral prompt
@@ -7459,6 +7501,23 @@ class SlackAdapter(BasePlatformAdapter):
         if not normalized_user_id:
             return False
 
+        chat_type = "dm" if str(channel_id or "").startswith("D") else "group"
+
+        # Preferred path: the auth callback GatewayRunner injects at connect
+        # time (``set_authorization_check``) runs the full, profile-bound
+        # ``_is_user_authorized`` chain. Unlike the ``__self__`` introspection
+        # below it also resolves on a multiplexed adapter, whose message
+        # handler is a profile closure with no ``__self__`` (#72657, same
+        # class as Telegram's #86296).
+        # ``getattr``: adapters built via ``object.__new__`` never ran
+        # ``BasePlatformAdapter.__init__``.
+        if getattr(self, "_authorization_check", None) is not None:
+            injected = self._is_sender_authorized(
+                normalized_user_id, chat_type, str(channel_id or "")
+            )
+            if injected is not None:
+                return injected
+
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         auth_fn = getattr(runner, "_is_user_authorized", None)
         if callable(auth_fn):
@@ -7468,7 +7527,7 @@ class SlackAdapter(BasePlatformAdapter):
                 source = SessionSource(
                     platform=Platform.SLACK,
                     chat_id=str(channel_id or normalized_user_id),
-                    chat_type="dm" if str(channel_id or "").startswith("D") else "group",
+                    chat_type=chat_type,
                     user_id=normalized_user_id,
                     user_name=str(user_name).strip() if user_name else None,
                     scope_id=str(team_id) if team_id else None,
@@ -7481,20 +7540,14 @@ class SlackAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
-        if os.getenv("SLACK_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+        # Env-only fallback (no injected check, no bound runner). Gate reads go
+        # through the shared per-profile accessor: under multiplex a scoped
+        # miss returns "" instead of falling through to ``os.environ``, which
+        # holds the DEFAULT profile's allow-all flag / allowlist.
+        from gateway.authz_mixin import _platform_gate_env as _env
+
+        if _env("SLACK_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
             return True
-
-        def _env(name: str) -> str:
-            # Multiplex: profile .env is in secret_scope, not process environ.
-            try:
-                from agent.secret_scope import get_secret
-
-                val = get_secret(name)
-                if val is not None and str(val).strip():
-                    return str(val).strip()
-            except Exception:
-                pass
-            return (os.getenv(name) or "").strip()
 
         allowed_ids = set()
         platform_allowlist = _env("SLACK_ALLOWED_USERS")
@@ -7507,8 +7560,6 @@ class SlackAdapter(BasePlatformAdapter):
         if allowed_ids:
             return "*" in allowed_ids or normalized_user_id in allowed_ids
 
-        if _env("SLACK_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
-            return True
         return _env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
 
     async def _handle_slash_confirm_action(self, ack, body, action) -> None:
@@ -8184,7 +8235,7 @@ class SlackAdapter(BasePlatformAdapter):
             skip_for_delta = bool(after_ts and msg_ts and msg_ts <= after_ts)
             if skip_for_delta and not is_parent:
                 continue
-            is_bot = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
+            is_bot = self._event_declares_bot_sender(msg)
             msg_user = msg.get("user", "")
 
             # Identify "our own" bot for this workspace (multi-workspace safe).
@@ -8953,13 +9004,13 @@ class SlackAdapter(BasePlatformAdapter):
                         )
 
                     if audio:
-                        from gateway.platforms.base import cache_audio_from_bytes
+                        from gateway.platforms.base import cache_audio_from_bytes_async
 
-                        return cache_audio_from_bytes(response.content, ext)
+                        return await cache_audio_from_bytes_async(response.content, ext)
                     else:
-                        from gateway.platforms.base import cache_image_from_bytes
+                        from gateway.platforms.base import cache_image_from_bytes_async
 
-                        return cache_image_from_bytes(response.content, ext)
+                        return await cache_image_from_bytes_async(response.content, ext)
                 except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                     if (
                         isinstance(exc, httpx.HTTPStatusError)

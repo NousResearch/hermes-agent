@@ -17,6 +17,14 @@ import { isMain } from "./utils.mjs"
 
 const ROUTER_CONTEXT_ERROR = "may be used only in the context of a"
 
+// @tanstack/react-query carries module-level React context (QueryClientContext).
+// The entry's QueryClientProvider and every lazy chunk's useQuery must share ONE
+// runtime instance; if a build ever emits a second copy, the provider's context
+// is invisible to the other copy and useQuery throws "No QueryClient set" — the
+// packaged app error-boundaries on launch (#95560). Same single-instance
+// invariant as the react-router check above, same failure class.
+const QUERY_CLIENT_CONTEXT_ERROR = "No QueryClient set, use QueryClientProvider to set one"
+
 // Pure check — returns { ok: true } or { ok: false, error: "..." }.
 // Kept side-effect-free so it can be unit tested without spawning a process.
 export function checkDistBuilt(distDir) {
@@ -51,6 +59,21 @@ export function checkDistBuilt(distDir) {
     return {
       ok: false,
       error: `react-router context invariant found in multiple JS assets: ${routerContextAssets.join(", ")}`
+    }
+  }
+
+  const queryClientContextAssets = readdirSync(assetsDir)
+    .filter(name => name.endsWith(".js"))
+    .filter(name => readFileSync(join(assetsDir, name), "utf8").includes(QUERY_CLIENT_CONTEXT_ERROR))
+
+  if (queryClientContextAssets.length > 1) {
+    return {
+      ok: false,
+      error:
+        `@tanstack/react-query context invariant found in multiple JS assets: ` +
+        `${queryClientContextAssets.join(", ")} — duplicate react-query runtimes make the ` +
+        `QueryClientProvider's context invisible to useQuery in other chunks (` +
+        `"No QueryClient set" on launch, #95560)`
     }
   }
 

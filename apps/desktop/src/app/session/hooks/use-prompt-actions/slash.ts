@@ -74,9 +74,13 @@ import {
 } from './utils'
 
 // Manual compression is LLM-bound and routinely outlives the desktop's 30s
-// default WS request timeout on large sessions — give it the TUI client's
-// 120s RPC budget (HERMES_TUI_RPC_TIMEOUT_MS default) instead.
-const SESSION_COMPRESS_TIMEOUT_MS = 120_000
+// default WS request timeout on large sessions. The gateway blocks its own
+// compute-host wait for up to compression.context_total_ceiling_seconds + 30s
+// (capped at 630s, tui_gateway/server.py _COMPUTE_HOST_COMPRESS_WAIT_CAP_SECS)
+// and then answers `status: 'pending'` rather than an error, so this budget
+// must sit above that cap or the desktop reports a false timeout while the
+// host is still compressing (#97948).
+export const SESSION_COMPRESS_TIMEOUT_MS = 660_000
 const WAKE_START_TIMEOUT_MS = 180_000
 
 const wakeDeviceLabel = (device?: WakeInputDeviceStatus): string => {
@@ -497,6 +501,99 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         branch: async () => {
           await branchCurrentSession()
         },
+        // Desktop owns the active turn, while the historical slash worker
+        // only stops background terminal processes. Interrupt the exact chat
+        // first (the same backend path as the composer Stop button), then keep
+        // the existing process cleanup so /stop retains both meanings.
+        stop: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId: initialSessionId, storedSessionId } = resolved
+          const lines: string[] = []
+
+          try {
+            await withSessionNotFoundResume(
+              initialSessionId,
+              storedSessionId,
+              liveId => requestGateway('session.interrupt', { session_id: liveId }),
+              {
+                requestGateway,
+                onRecovered: recoveredId => {
+                  if (activeSessionIdRef.current === initialSessionId) {
+                    activeSessionIdRef.current = recoveredId
+                    setActiveSessionId(recoveredId)
+                  }
+                }
+              }
+            )
+            lines.push('Stopped the active turn.')
+          } catch (err) {
+            lines.push(`Could not stop the active turn: ${err instanceof Error ? err.message : String(err)}`)
+          }
+
+          try {
+            const result = await requestGateway<unknown>('process.stop', {})
+            const processMessage = renderRpcResult(result, ctx.name)
+
+            if (processMessage) {
+              lines.push(processMessage)
+            }
+          } catch (err) {
+            lines.push(`Could not stop background processes: ${err instanceof Error ? err.message : String(err)}`)
+          }
+
+          renderSlashOutput(lines.join('\n'))
+        },
+        // /btw uses prompt.btw (the TUI's path). It must NOT go through
+        // runExec: the slash worker prints the answer after process_command
+        // returns, past the stdout capture window (#99065). The RPC replies
+        // with a task id; the answer arrives later as btw.complete.
+        btw: async ctx => {
+          const question = ctx.arg.trim()
+
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+
+          if (!question) {
+            renderSlashOutput(
+              'Usage: /btw <question> — answered from a snapshot of this conversation without interrupting it.'
+            )
+
+            return
+          }
+
+          try {
+            const result = await requestGateway<{ task_id?: string }>('prompt.btw', {
+              session_id: sessionId,
+              text: question
+            })
+
+            renderSlashOutput(
+              result.task_id
+                ? `btw ${result.task_id} — answering from a conversation snapshot`
+                : 'btw — answering from a conversation snapshot'
+            )
+          } catch (err) {
+            // Older gateways without the dedicated RPC still have the
+            // slash-worker route — same compatibility fallback as runRpc.
+            if (isMissingRpcMethod(err)) {
+              await runExec(ctx)
+
+              return
+            }
+
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        },
         // /compress (alias /compact) runs the gateway's dedicated
         // session.compress RPC — the TUI's path
         // (ui-tui/src/app/slash/commands/session.ts). It must NOT go through
@@ -572,6 +669,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             )
 
             sessionId = liveSessionId
+
+            // The gateway's compute-host wait expired but compression is still
+            // running there; it pushes session.info + a `compacted` status edge
+            // when the host finishes. Not an error (#97948).
+            if (result?.status === 'pending') {
+              const pendingMessage = result.message || 'compression still running in the background'
+              notify({ durationMs: 8_000, id: noticeId, kind: 'info', message: pendingMessage })
+
+              return
+            }
 
             // Replace the transcript with the post-compress history so the
             // summarized bubbles actually disappear. `messages` is the same

@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +51,7 @@ logger = logging.getLogger(__name__)
 
 _LIFECYCLE_RELATIVE = ("state", "gateway.lifecycle.json")
 _EXIT_DIAG_RELATIVE = ("logs", "gateway-exit-diag.log")
+_STATE_DB_RELATIVE = ("state.db",)
 
 # Heuristic OOM-suspicion thresholds applied to the last heartbeat's memory
 # sample.  Deliberately conservative: this only annotates the report with a
@@ -221,6 +223,44 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[Dict[str, Any]]
     return evidence
 
 
+def check_state_db_integrity(home: Optional[Path] = None) -> str:
+    """Return ``"ok"``, ``"absent"``, or the first ``quick_check`` complaint.
+
+    Called only after an unclean death, because that is when the store may
+    have been torn: a SIGKILL landing on a gateway mid-WAL-checkpoint can
+    leave half-written b-tree pages behind (see
+    ``_enforce_macos_synchronous_full`` in :mod:`hermes_state` — macOS
+    ``fsync`` guarantees neither data-on-platter nor write ordering).
+
+    ``quick_check(1)`` stops at the first problem, so this costs ~2s on a
+    healthy 500MB store and less on a damaged one — cheap enough for a path
+    that runs at most once per unclean boot, far too expensive for every
+    boot. Corruption used to sit undetected for days (2026-08-26 → 08-30)
+    because nothing ever looked.
+
+    The connection is opened normally, not read-only: a WAL store needs its
+    -shm sidecar for a read-only open. The PRAGMA itself writes nothing.
+    Never raises — this is forensics, not lifecycle.
+    """
+    base = home if home is not None else _process_hermes_home()
+    path = base.joinpath(*_STATE_DB_RELATIVE)
+    if not path.exists():
+        return "absent"
+    try:
+        # A WAL store cannot be opened read-only without its -shm sidecar, so
+        # open normally; quick_check itself writes nothing.
+        conn = sqlite3.connect(str(path))
+        try:
+            row = conn.execute("PRAGMA quick_check(1)").fetchone()
+        finally:
+            conn.close()
+    except Exception as exc:  # sqlite3.Error, OSError, anything
+        return f"check-failed: {exc}"
+    if not row or row[0] is None:
+        return "check-failed: no result"
+    return str(row[0])
+
+
 def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     """Boot-time entry point: report any unclean previous exit, then claim
     the sentinel for the current life.
@@ -233,6 +273,18 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     try:
         evidence = detect_unclean_exit(home)
         if evidence is not None:
+            # The death may have torn the store. This is the only moment
+            # we know to look, and looking is what turns a 3.5-day silent
+            # corruption into a startup warning.
+            verdict = check_state_db_integrity(home=home)
+            evidence["state_db_integrity"] = verdict
+            if verdict not in ("ok", "absent"):
+                logger.error(
+                    "state.db FAILED integrity check after an unclean gateway "
+                    "exit: %s — sessions may read as missing until it is "
+                    "repaired. Run `hermes doctor`.",
+                    verdict,
+                )
             record = {
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "tag": "gateway.previous_unclean_exit",

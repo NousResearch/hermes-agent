@@ -1969,17 +1969,46 @@ class TestAbortedRotationDoesNotGrowParent:
     def _durable_len(db: SessionDB, session_id: str) -> int:
         return len(db.get_messages_as_conversation(session_id))
 
-    def test_ended_parent_aborts_before_the_prepublish_flush(self, tmp_path: Path):
+    def test_automatic_stamp_no_longer_wedges_rotation(self, tmp_path: Path):
+        """Flipped by the #88197 wedge fix: an AUTOMATIC stamp
+        (``tui_shutdown`` — is_automatic_end_reason) is stale by construction
+        for a live rotating writer, so publish now clears it in-transaction
+        and the rotation COMMITS instead of aborting forever. The abort
+        contract below moves to deliberate boundaries."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_AUTOMATIC_STAMP_HEALS"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent)
+
+        # The lie at the heart of #88197: the row says ended, the agent is live.
+        db.end_session(parent, "tui_shutdown")
+        assert db.get_session(parent)["ended_at"] is not None
+
+        returned, _sp = agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+
+        # Rotation went through — no abort loop, no repeated flush growth.
+        assert agent.session_id != parent
+        parent_row = db.get_session(parent)
+        assert parent_row["end_reason"] == "compression", (
+            "parent must close with its TRUE boundary, not the stale stamp"
+        )
+        child_row = db.get_session(agent.session_id)
+        assert child_row is not None
+        assert child_row["parent_session_id"] == parent
+
+    def test_deliberately_ended_parent_aborts_before_the_prepublish_flush(
+        self, tmp_path: Path
+    ):
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ENDED_NO_GROWTH"
         db.create_session(parent, source="cli")
         agent = _build_agent_with_db(db, parent)
 
-        # The lie at the heart of #88197: the row says ended, the agent is live.
-        # ``tui_shutdown`` is not a lineage boundary -- nothing forked off this
-        # session -- so durable writes to it are still permitted, which is
-        # exactly why the flush lands and the publish still refuses.
-        db.end_session(parent, "tui_shutdown")
+        # A DELIBERATE boundary (another path owns lineage): the guard must
+        # still refuse BEFORE the #47202 flush so aborted attempts cannot
+        # grow the parent (#88411's contract, now scoped to non-automatic
+        # reasons — automatic stamps rotate through, see the test above).
+        db.end_session(parent, "session_reset")
         assert db.get_session(parent)["ended_at"] is not None
 
         before = self._durable_len(db, parent)

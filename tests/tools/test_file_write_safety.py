@@ -257,6 +257,80 @@ class TestCheckSensitivePathMacOSBypass:
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
 
+class TestHermesConfigAliasGuard:
+    """A second name for the config must not bypass the write denial (issue #78658).
+
+    The guard compares path strings, so any alias that names the config without
+    matching it lexically slips through: an NTFS 8.3 short name such as
+    ``CONFIG~1.YAM``, or a hard link on any platform. ``approvals.mode`` lives
+    in that file, so the bypass lets a prompt-injected agent turn off exec
+    approval through a name the guard does not recognise.
+    """
+
+    @pytest.fixture
+    def guarded_config(self, tmp_path: Path, monkeypatch):
+        """Point the guard at a real config file inside tmp_path."""
+        import tools.file_tools as file_tools
+
+        cfg = tmp_path / "hermes" / "config.yaml"
+        cfg.parent.mkdir()
+        cfg.write_text("approvals:\n  mode: ask\n")
+        resolved = str(cfg.resolve())
+        monkeypatch.setattr(file_tools, "_hermes_config_resolved", resolved)
+        monkeypatch.setattr(file_tools, "_hermes_config_resolved_loaded", True)
+        return cfg
+
+    def test_canonical_path_blocked(self, guarded_config: Path):
+        from tools.file_tools import _check_sensitive_path
+
+        assert _check_sensitive_path(str(guarded_config.resolve())) is not None
+
+    def test_hard_link_alias_blocked(self, guarded_config: Path, tmp_path: Path):
+        from tools.file_tools import _check_sensitive_path
+
+        alias = tmp_path / "hermes" / "innocent.txt"
+        try:
+            os.link(guarded_config, alias)
+        except (OSError, NotImplementedError, AttributeError) as exc:
+            pytest.skip(f"hard links unsupported on this filesystem: {exc}")
+        assert os.path.samefile(guarded_config, alias)
+        assert _check_sensitive_path(str(alias)) is not None
+
+    @pytest.mark.skipif(os.name != "nt", reason="8.3 short names are Windows-only")
+    def test_short_name_alias_blocked(self, guarded_config: Path):
+        import ctypes
+
+        from tools.file_tools import _check_sensitive_path
+
+        long_path = str(guarded_config.resolve())
+        buf = ctypes.create_unicode_buffer(1024)
+        if not ctypes.windll.kernel32.GetShortPathNameW(long_path, buf, 1024):
+            pytest.skip("GetShortPathNameW failed on this volume")
+        short_path = buf.value
+        if short_path.lower() == long_path.lower():
+            pytest.skip("8.3 short-name generation is disabled on this volume")
+        assert os.path.samefile(long_path, short_path)
+        assert _check_sensitive_path(short_path) is not None
+
+    def test_unrelated_existing_file_allowed(self, guarded_config: Path, tmp_path: Path):
+        other = tmp_path / "hermes" / "notes.txt"
+        other.write_text("hello")
+
+        from tools.file_tools import _check_sensitive_path
+
+        assert _check_sensitive_path(str(other)) is None
+
+    def test_new_file_still_allowed(self, guarded_config: Path, tmp_path: Path):
+        """A path that does not exist yet must stay writable.
+
+        The identity check refuses when it cannot resolve a path, so this pins
+        the one case that must not be refused: every write that creates a file.
+        """
+        from tools.file_tools import _check_sensitive_path
+
+        assert _check_sensitive_path(str(tmp_path / "hermes" / "brand-new.txt")) is None
+
+
 class TestAtomicWrite:
     """write_file / patch land via a temp-file + atomic rename.
 

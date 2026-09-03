@@ -1704,6 +1704,13 @@ def list_authenticated_providers(
                 or ep_cfg.get("url", "")
                 or ""
             )
+            # Skip entries with no endpoint URL — they shadow real custom_providers
+            # entries without contributing any models to the picker.  Entries with
+            # only runtime settings (e.g. stale_timeout_seconds) are still read
+            # directly by the resolver; this guard only suppresses the phantom
+            # picker row, matching sections 3b/4 (#101711).
+            if not api_url:
+                continue
             # ``default_model`` is the legacy key; ``model`` matches what
             # custom_providers entries use, so accept either.
             default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")

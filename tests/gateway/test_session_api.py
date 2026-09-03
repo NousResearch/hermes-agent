@@ -117,6 +117,53 @@ async def test_session_messages_default_to_latest_bounded_page(adapter, session_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("query_value", ["1", "true", "TRUE", "yes"])
+async def test_session_messages_include_compacted_history(
+    adapter,
+    session_db,
+    query_value,
+):
+    session_id = session_db.create_session("compacted-messages", "api_server")
+    session_db.append_messages_batch(
+        session_id,
+        [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ],
+    )
+    session_db.archive_and_compact(
+        session_id,
+        [
+            {"role": "assistant", "content": "summary"},
+            {"role": "user", "content": "new question"},
+        ],
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        default_resp = await cli.get(f"/api/sessions/{session_id}/messages")
+        included_resp = await cli.get(
+            f"/api/sessions/{session_id}/messages?include_compacted={query_value}"
+        )
+
+        assert default_resp.status == 200
+        assert included_resp.status == 200
+        default_payload = await default_resp.json()
+        included_payload = await included_resp.json()
+
+    assert [message["content"] for message in default_payload["data"]] == [
+        "summary",
+        "new question",
+    ]
+    assert [message["content"] for message in included_payload["data"]] == [
+        "old question",
+        "old answer",
+        "summary",
+        "new question",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")

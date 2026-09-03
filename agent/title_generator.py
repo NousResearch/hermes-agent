@@ -338,6 +338,33 @@ def _clean_title(text: str) -> Optional[str]:
     return title
 
 
+_RESPONSE_FORMAT_REJECTION_TERMS = (
+    "unavailable",
+    "not support",
+    "not allowed",
+    "invalid",
+    "unknown",
+    "does not support",
+    "doesn't support",
+    "not yet support",
+)
+
+
+def _looks_like_unsupported_response_format(err: Exception) -> bool:
+    """True when the provider rejected the ``json_schema`` response_format.
+
+    The OpenAI SDK wraps HTTP 400s in ``BadRequestError`` whose message
+    embeds the API's JSON body; some gateways surface plain strings instead.
+    Match on text so both shapes are caught, and require the
+    ``response_format`` token *plus* a rejection word so unrelated 400s
+    (auth, rate limits, content policy) never trigger a second API call.
+    """
+    msg = str(err).lower()
+    return "response_format" in msg and any(
+        term in msg for term in _RESPONSE_FORMAT_REJECTION_TERMS
+    )
+
+
 def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
@@ -429,6 +456,36 @@ def generate_title(
             return None
         return title
     except Exception as e:
+        # Some providers (DeepSeek, assorted gateways) reject
+        # response_format json_schema outright with HTTP 400 ("This
+        # response_format type is unavailable now"). That is a provider
+        # capability gap, not a transient failure: retry once without the
+        # constraint and let _extract_title_text's loose JSON/prose
+        # fallbacks do the parsing. Without this, every new session on such
+        # providers logs a spurious title failure and the session keeps the
+        # instant derived title forever.
+        if _looks_like_unsupported_response_format(e):
+            logger.info(
+                "Title generation: provider rejected response_format (%s); "
+                "retrying without it",
+                str(e)[:200],
+            )
+            try:
+                response = call_llm(
+                    task="title_generation",
+                    messages=messages,
+                    max_tokens=64,
+                    temperature=0.3,
+                    timeout=timeout,
+                    main_runtime=main_runtime,
+                )
+                content = response.choices[0].message.content or ""
+                return _clean_title(_extract_title_text(content))
+            except Exception as retry_err:
+                # Surface the retry error: it is the one closest to the
+                # actual cause once the format constraint is gone.
+                logger.debug("Title retry without response_format failed", exc_info=True)
+                e = retry_err
         # Log at WARNING so this shows up in agent.log without debug mode.
         # Full detail at debug level for operators who need the stack.
         logger.warning("Title generation failed: %s", e)

@@ -745,6 +745,31 @@ class GatewaySlashCommandsMixin:
         ])
         if model_line:
             lines.append(model_line)
+
+        # Effective /reasoning level for this session (override > model > global).
+        try:
+            _session_model = str(
+                (
+                    (getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {}
+                ).get("model")
+                or model_name
+                or ""
+            )
+            rc = self._resolve_session_reasoning_config(
+                source=source,
+                session_key=session_key,
+                model=_session_model,
+            )
+            if rc is None:
+                effort = t("gateway.reasoning.level_default")
+            elif rc.get("enabled") is False:
+                effort = t("gateway.reasoning.level_disabled")
+            else:
+                effort = rc.get("effort") or t("gateway.reasoning.level_default")
+            lines.append(t("gateway.status.reasoning", effort=effort))
+        except Exception:
+            pass
+
         if context_line:
             lines.append(context_line)
         lines.extend([

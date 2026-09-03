@@ -73,6 +73,7 @@ def test_show_session_status_prints_gateway_style_summary():
         session_total_tokens=321,
         session_api_calls=4,
     )
+    cli_obj.reasoning_config = {"enabled": True, "effort": "high"}
     cli_obj._session_db.get_session.return_value = {
         "title": "My titled session",
         "started_at": 1775791440,
@@ -87,6 +88,7 @@ def test_show_session_status_prints_gateway_style_summary():
     assert "Path: ~/.hermes" in printed
     assert "Title: My titled session" in printed
     assert "Model: openai/gpt-5.4 (openai)" in printed
+    assert "Reasoning: high" in printed
     assert "Tokens: 321" in printed
     assert "Agent Running: No" in printed
     _, kwargs = cli_obj.console.print.call_args

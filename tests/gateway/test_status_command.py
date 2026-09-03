@@ -589,3 +589,46 @@ async def test_context_all_appends_expanded_listings():
     assert "hermes-agent" in result
     # Expanded view drops the hint
     assert "Use /context all" not in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_session_reasoning_effort():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._resolve_session_reasoning_config = MagicMock(
+        return_value={"enabled": True, "effort": "high"}
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Reasoning:** high" in result
+    runner._resolve_session_reasoning_config.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_status_command_shows_none_when_reasoning_disabled():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._resolve_session_reasoning_config = MagicMock(
+        return_value={"enabled": False}
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Reasoning:**" in result

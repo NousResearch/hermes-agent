@@ -320,6 +320,72 @@ def _make_adapter():
     return adapter
 
 
+class TestMatrixInterimNotificationPolicy:
+    @pytest.mark.asyncio
+    async def test_interim_send_uses_notice_but_final_stays_text(self):
+        """Tool/interim delivery is visible without changing final push semantics."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = object.__new__(MatrixAdapter)
+        adapter._encryption = False
+        adapter.format_message = lambda content: content
+        adapter.truncate_message = lambda content, _: [content]
+        adapter._build_text_message_content = (
+            lambda content: {"msgtype": "m.text", "body": content}
+        )
+        adapter._apply_relation_metadata = lambda *args, **kwargs: None
+        sent = []
+
+        async def send_message_event(_room, _event_type, content):
+            sent.append(content)
+            return f"${len(sent)}"
+
+        adapter._client = MagicMock()
+        adapter._client.send_message_event = send_message_event
+
+        await MatrixAdapter.send(
+            adapter,
+            "!room:example.org",
+            "Working…",
+            metadata={"_interim_send": True},
+        )
+        await MatrixAdapter.send(adapter, "!room:example.org", "Complete.")
+
+        assert sent[0]["msgtype"] == "m.notice"
+        assert sent[1]["msgtype"] == "m.text"
+
+    @pytest.mark.asyncio
+    async def test_interim_edit_keeps_replacement_event_silent(self):
+        """Updating the activity pane must not reintroduce a push event."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = object.__new__(MatrixAdapter)
+        adapter.format_message = lambda content: content
+        adapter._build_text_message_content = (
+            lambda content: {"msgtype": "m.text", "body": content}
+        )
+        sent = []
+
+        async def send_message_event(_room, _event_type, content):
+            sent.append(content)
+            return "$replacement"
+
+        adapter._client = MagicMock()
+        adapter._client.send_message_event = send_message_event
+
+        result = await MatrixAdapter.edit_message(
+            adapter,
+            "!room:example.org",
+            "$activity",
+            "Working…",
+            metadata={"_interim_send": True},
+        )
+
+        assert result.success
+        assert sent[0]["msgtype"] == "m.notice"
+        assert sent[0]["m.new_content"]["msgtype"] == "m.notice"
+
+
 # ---------------------------------------------------------------------------
 # Typing indicator
 # ---------------------------------------------------------------------------

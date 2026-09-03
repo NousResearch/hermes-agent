@@ -42,6 +42,7 @@ class TurnContext:
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
     tool_progress_enabled: bool = False
+    matrix_activity_pane: Any = None
 
     # --- queues ----------------------------------------------------------
     progress_queue: Any = None

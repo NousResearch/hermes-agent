@@ -3,6 +3,15 @@ import { describe, expect, it } from 'vitest'
 import { sanitizeTextForSpeech } from './speech-text'
 
 describe('sanitizeTextForSpeech', () => {
+  it('omits native media attachment directives instead of reading file paths aloud', () => {
+    expect(
+      sanitizeTextForSpeech(
+        'Here you go.\nMEDIA:/Users/example/.hermes/cache/audio/tts_20260824_182426_116072.mp3'
+      )
+    ).toBe('Here you go.')
+    expect(sanitizeTextForSpeech('MEDIA:/Users/example/voice memo.mp3')).toBe('')
+  })
+
   it('summarizes fenced code blocks instead of reading them literally', () => {
     expect(sanitizeTextForSpeech('Here is code:\n```ts\nconst x = 1\n```\nDone.')).toBe(
       'Here is code: code block omitted Done.'

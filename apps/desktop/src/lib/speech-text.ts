@@ -12,6 +12,10 @@ const THINKING_PREFIX_RE =
   /^\s*(?:\([^)\n]{1,48}\)\s*)?(?:processing|thinking|reasoning|analyzing|pondering|contemplating|musing|cogitating|ruminating|deliberating|mulling|reflecting|computing|synthesizing|formulating|brainstorming)\.\.\.\s*/i
 
 const URL_RE = /\bhttps?:\/\/\S+/gi
+// MEDIA lines are native attachment directives, not prose. Strip the whole
+// line before newline normalization so voice playback never spells a local
+// filename while the UI separately renders/plays the attachment.
+const MEDIA_DIRECTIVE_LINE_RE = /^\s*(?:\[\[audio_as_voice\]\]\s*)?MEDIA:.*$/gim
 
 const MARKDOWN_TABLE_DELIMITER_CELL_RE = /^:?-{3,}:?$/
 
@@ -152,7 +156,7 @@ function normalizeLineBreaks(text: string): string {
 }
 
 export function sanitizeTextForSpeech(text: string): string {
-  return normalizeLineBreaks(stripMarkdownTables(text))
+  return normalizeLineBreaks(stripMarkdownTables(text.replace(MEDIA_DIRECTIVE_LINE_RE, '')))
     .replace(FENCED_CODE_RE, CODE_BLOCK_SUMMARY)
     .replace(THINKING_PREFIX_RE, ' ')
     .replace(MARKDOWN_LINK_RE, '$1')

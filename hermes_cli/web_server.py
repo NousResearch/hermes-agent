@@ -5488,6 +5488,70 @@ async def get_client_voice_config(profile: Optional[str] = None):
     return {"ok": True, **result}
 
 
+@app.post("/api/audio/scribe-token")
+async def create_realtime_scribe_token(profile: Optional[str] = None):
+    """Mint a short-lived ElevenLabs token for client-side realtime STT.
+
+    The desktop must never put the profile's long-lived ElevenLabs API key in a
+    WebSocket URL.  This authenticated route resolves that key server-side and
+    exchanges it for a single-use ``realtime_scribe`` token (15 minute expiry).
+    """
+    from tools.voice_client_config import resolve_client_voice_config
+
+    def _mint_scoped():
+        with _config_profile_scope(profile):
+            voice_config = resolve_client_voice_config()
+        stt = voice_config.get("stt") or {}
+        if (
+            stt.get("mode") != "direct"
+            or stt.get("provider") != "elevenlabs"
+            or not stt.get("api_key")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="ElevenLabs client-direct STT is not configured",
+            )
+
+        import requests
+
+        base_url = str(stt.get("base_url") or "https://api.elevenlabs.io/v1").rstrip("/")
+        response = requests.post(
+            f"{base_url}/single-use-token/realtime_scribe",
+            headers={"xi-api-key": stt["api_key"]},
+            timeout=15,
+        )
+        response.raise_for_status()
+        token = str((response.json() or {}).get("token") or "").strip()
+        if not token:
+            raise ValueError("ElevenLabs returned an empty realtime token")
+
+        origin = base_url[:-3] if base_url.endswith("/v1") else base_url
+        websocket_origin = (
+            origin.replace("https://", "wss://", 1)
+            .replace("http://", "ws://", 1)
+        )
+        language = stt.get("language") or None
+        return {
+            "ok": True,
+            "token": token,
+            # The ElevenLabs browser SDK appends the realtime path itself.
+            "websocket_url": websocket_origin,
+            "model": "scribe_v2_realtime",
+            "language": language,
+        }
+
+    try:
+        return await asyncio.get_running_loop().run_in_executor(None, _mint_scoped)
+    except HTTPException:
+        raise
+    except Exception:
+        # Do not include the upstream exception: provider errors can echo URLs
+        # or credentials, and this route exists specifically to keep the
+        # long-lived key out of the renderer and logs.
+        _log.warning("Could not mint ElevenLabs realtime Scribe token")
+        raise HTTPException(status_code=502, detail="Could not start realtime transcription")
+
+
 def _elevenlabs_voice_label(voice: Dict[str, Any]) -> str:
     name = str(voice.get("name") or voice.get("voice_id") or "Voice").strip()
     category = str(voice.get("category") or "").strip()

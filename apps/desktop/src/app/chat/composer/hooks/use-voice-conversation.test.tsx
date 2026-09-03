@@ -45,6 +45,25 @@ const micHandle = {
   stop: vi.fn<() => Promise<MicRecording | null>>(async () => null)
 }
 
+let realtimeCommitted: ((text: string) => void) | null = null
+
+const realtimeSession = {
+  close: vi.fn(),
+  commit: vi.fn(() => realtimeCommitted?.('kick off the task')),
+  mute: vi.fn(),
+  unmute: vi.fn()
+}
+
+const startRealtimeScribe = vi.fn<
+  (options: { onCommitted: (text: string) => void }) => Promise<typeof realtimeSession | null>
+>(async ({ onCommitted }) => {
+  realtimeCommitted = onCommitted
+
+  return realtimeSession
+})
+
+vi.mock('@/lib/realtime-scribe', () => ({ startRealtimeScribe: (options: { onCommitted: (text: string) => void }) => startRealtimeScribe(options) }))
+
 vi.mock('./use-mic-recorder', () => ({
   useMicRecorder: () => ({ handle: micHandle, level: 0, recording: false })
 }))
@@ -87,13 +106,9 @@ function renderConversation(overrides: { onInterrupt?: () => void; transcript?: 
 
   const onStopWord = vi.fn()
 
-  // First transcription is the turn that starts the conversation; subsequent
-  // ones are barge captures (the overridable transcript).
-  let transcriptions = 0
-
-  const onTranscribeAudio = vi.fn(async () =>
-    transcriptions++ === 0 ? 'kick off the task' : (overrides.transcript ?? 'and another thing')
-  )
+  // Realtime supplies the kickoff transcript directly; record/upload is used
+  // either as the compatibility path or for a captured barge utterance.
+  const onTranscribeAudio = vi.fn(async () => overrides.transcript ?? 'kick off the task')
 
   const hook = renderHook(
     ({ busy }: HookProps) =>
@@ -137,12 +152,97 @@ async function enterThinking(hook: ReturnType<typeof renderConversation>['hook']
 describe('useVoiceConversation full-duplex barge-in', () => {
   beforeEach(() => {
     monitorCalls.length = 0
+    realtimeCommitted = null
     vi.clearAllMocks()
+    startRealtimeScribe.mockImplementation(async ({ onCommitted }: { onCommitted: (text: string) => void }) => {
+      realtimeCommitted = onCommitted
+
+      return realtimeSession
+    })
     micHandle.start.mockResolvedValue(undefined)
     micHandle.stop.mockResolvedValue(null)
   })
 
   afterEach(cleanup)
+
+  it('uses a persistent realtime transcript instead of record-upload when available', async () => {
+    const { hook, onSubmit, onTranscribeAudio } = renderConversation()
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await waitFor(() => expect(startRealtimeScribe).toHaveBeenCalledTimes(1))
+    expect(realtimeSession.unmute).toHaveBeenCalled()
+
+    await act(async () => {
+      realtimeCommitted?.('hello in realtime')
+    })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('hello in realtime'))
+    expect(onTranscribeAudio).not.toHaveBeenCalled()
+    expect(realtimeSession.mute).toHaveBeenCalled()
+
+    await act(async () => {
+      await hook.result.current.end()
+    })
+    expect(realtimeSession.close).toHaveBeenCalled()
+  })
+
+  it('closes a realtime session that resolves after the user mutes', async () => {
+    let resolveRealtime: ((session: typeof realtimeSession) => void) | null = null
+    startRealtimeScribe.mockImplementationOnce(
+      ({ onCommitted }: { onCommitted: (text: string) => void }) => {
+        realtimeCommitted = onCommitted
+
+        return new Promise(resolve => {
+          resolveRealtime = resolve
+        })
+      }
+    )
+    const { hook } = renderConversation()
+
+    let starting: Promise<void>
+    act(() => {
+      starting = hook.result.current.start()
+    })
+    await waitFor(() => expect(startRealtimeScribe).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      hook.result.current.toggleMute()
+    })
+    expect(hook.result.current.muted).toBe(true)
+
+    await act(async () => {
+      resolveRealtime?.(realtimeSession)
+      await starting
+    })
+
+    expect(realtimeSession.close).toHaveBeenCalled()
+    expect(realtimeSession.unmute).not.toHaveBeenCalled()
+    expect(hook.result.current.status).toBe('idle')
+  })
+
+  it('falls back to record-upload when realtime Scribe is unavailable', async () => {
+    startRealtimeScribe.mockResolvedValueOnce(null)
+    const { hook, onSubmit, onTranscribeAudio } = renderConversation()
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+    micHandle.stop.mockResolvedValueOnce({
+      audio: new Blob(['q'], { type: 'audio/webm' }),
+      durationMs: 900,
+      heardSpeech: true
+    })
+
+    await act(async () => {
+      hook.result.current.stopTurn()
+    })
+
+    await waitFor(() => expect(onTranscribeAudio).toHaveBeenCalled())
+    expect(onSubmit).toHaveBeenCalledWith('kick off the task')
+  })
 
   it('arms the barge monitor during generation (before any reply audio exists)', async () => {
     const { hook } = renderConversation()

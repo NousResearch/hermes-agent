@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { type RealtimeScribeSession, startRealtimeScribe } from '@/lib/realtime-scribe'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
 import {
@@ -69,6 +70,13 @@ export function useVoiceConversation({
   const responseIdRef = useRef<string | null>(null)
   const spokenSourceLengthRef = useRef(0)
   const speechSessionRef = useRef<null | SpeechStreamSession>(null)
+  const realtimeScribeRef = useRef<null | RealtimeScribeSession>(null)
+  const realtimeStartingRef = useRef<null | Promise<RealtimeScribeSession | null>>(null)
+  const realtimeTurnPendingRef = useRef(false)
+  const realtimeGenerationRef = useRef(0)
+  // Once realtime setup fails, stay on the proven record/upload path for this
+  // conversation instead of minting a new token on every listen cycle.
+  const realtimeUnavailableRef = useRef(false)
   const stopBargeMonitorRef = useRef<(() => void) | null>(null)
   const bargeCapturePendingRef = useRef(false)
   const bargedRef = useRef(false)
@@ -203,10 +211,129 @@ export function useVoiceConversation({
     [handle, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
   )
 
+  const submitRealtimeTranscript = useCallback(
+    async (rawText: string) => {
+      const transcript = rawText.trim()
+
+      if (
+        !transcript ||
+        realtimeTurnPendingRef.current ||
+        !enabledRef.current ||
+        mutedRef.current ||
+        busyRef.current
+      ) {
+        return
+      }
+
+      realtimeTurnPendingRef.current = true
+      clearTurnTimeout()
+      realtimeScribeRef.current?.mute()
+
+      if (isVoiceStopCommand(transcript)) {
+        realtimeTurnPendingRef.current = false
+        setStatus('idle')
+        onStopWordRef.current?.()
+
+        return
+      }
+
+      try {
+        awaitingSpokenResponseRef.current = true
+        dropSpeechSession()
+        setStatus('thinking')
+        await onSubmit(transcript)
+      } catch (error) {
+        awaitingSpokenResponseRef.current = false
+        notifyError(error, voiceCopy.transcriptionFailed)
+        pendingStartRef.current = true
+        setStatus('idle')
+      } finally {
+        realtimeTurnPendingRef.current = false
+      }
+    },
+    [onSubmit, voiceCopy.transcriptionFailed]
+  )
+
+  const failRealtimeSession = useCallback(() => {
+    const session = realtimeScribeRef.current
+
+    realtimeGenerationRef.current += 1
+    realtimeScribeRef.current = null
+    realtimeStartingRef.current = null
+    realtimeUnavailableRef.current = true
+    session?.close()
+
+    if (
+      enabledRef.current &&
+      !mutedRef.current &&
+      !busyRef.current &&
+      statusRef.current === 'listening'
+    ) {
+      setStatus('idle')
+      pendingStartRef.current = true
+    }
+  }, [])
+
   const startListening = useCallback(async () => {
     pendingStartRef.current = false
 
     if (!enabledRef.current || mutedRef.current || busyRef.current) {
+      return
+    }
+
+    // Let wake-word capture release the microphone before either realtime
+    // Scribe or the batch recorder opens it.
+    try {
+      await beforeMicOpenRef.current?.()
+    } catch {
+      // A pause failure shouldn't block the user's explicit start.
+    }
+
+    if (!enabledRef.current || mutedRef.current || busyRef.current) {
+      return
+    }
+
+    // ElevenLabs Scribe Realtime owns a persistent microphone stream for the
+    // whole voice conversation. Keep the batch recorder as an automatic
+    // fallback for other providers, older backends, or connection failures.
+    if (
+      !realtimeUnavailableRef.current &&
+      !realtimeScribeRef.current &&
+      !realtimeStartingRef.current
+    ) {
+      realtimeStartingRef.current = startRealtimeScribe({
+        onCommitted: text => void submitRealtimeTranscript(text),
+        onError: failRealtimeSession,
+        silenceSeconds: 1
+      })
+    }
+
+    if (realtimeStartingRef.current) {
+      const generation = realtimeGenerationRef.current
+      const starting = realtimeStartingRef.current
+      const session = await starting
+
+      if (
+        generation !== realtimeGenerationRef.current ||
+        starting !== realtimeStartingRef.current ||
+        !enabledRef.current ||
+        mutedRef.current ||
+        busyRef.current
+      ) {
+        session?.close()
+
+        return
+      }
+
+      realtimeScribeRef.current = session
+      realtimeStartingRef.current = null
+      realtimeUnavailableRef.current = session === null
+    }
+
+    if (realtimeScribeRef.current) {
+      realtimeScribeRef.current.unmute()
+      setStatus('listening')
+
       return
     }
 
@@ -218,16 +345,8 @@ export function useVoiceConversation({
       return
     }
 
-    // Let the wake-word listener fully release the capture device before we
-    // open ours — opening the mic while wake still holds it makes getUserMedia
-    // fail (the "clicked voice but it never starts listening" bug).
-    try {
-      await beforeMicOpenRef.current?.()
-    } catch {
-      // A pause failure shouldn't block the user's explicit start.
-    }
-
-    // enabled/muted/busy or an interleaved turn may have changed while we waited.
+    // enabled/muted/busy or an interleaved turn may have changed while realtime
+    // discovery/fallback selection ran.
     if (!enabledRef.current || mutedRef.current || busyRef.current || statusRef.current !== 'idle') {
       return
     }
@@ -259,7 +378,15 @@ export function useVoiceConversation({
       setStatus('idle')
       onFatalError?.()
     }
-  }, [handle, handleTurn, onFatalError, voiceCopy.couldNotStartSession, voiceCopy.microphoneFailed])
+  }, [
+    failRealtimeSession,
+    handle,
+    handleTurn,
+    onFatalError,
+    submitRealtimeTranscript,
+    voiceCopy.couldNotStartSession,
+    voiceCopy.microphoneFailed
+  ])
 
   const settleAfterSpeech = useCallback(
     (barged: boolean, stoppedDuringSetup = false) => {
@@ -604,6 +731,12 @@ export function useVoiceConversation({
     clearTurnTimeout()
     stopVoicePlayback()
     handle.cancel()
+    realtimeGenerationRef.current += 1
+    realtimeScribeRef.current?.close()
+    realtimeScribeRef.current = null
+    realtimeStartingRef.current = null
+    realtimeTurnPendingRef.current = false
+    realtimeUnavailableRef.current = false
     turnClosingRef.current = false
     awaitingSpokenResponseRef.current = false
     dropSpeechSession()
@@ -614,7 +747,11 @@ export function useVoiceConversation({
 
   const stopTurn = useCallback(() => {
     if (statusRef.current === 'listening') {
-      void handleTurn(true)
+      if (realtimeScribeRef.current) {
+        realtimeScribeRef.current.commit()
+      } else {
+        void handleTurn(true)
+      }
     }
   }, [handleTurn])
 
@@ -625,6 +762,7 @@ export function useVoiceConversation({
       if (next) {
         clearTurnTimeout()
         handle.cancel()
+        realtimeScribeRef.current?.mute()
         setStatus('idle')
       } else if (enabledRef.current && !busyRef.current && statusRef.current === 'idle') {
         pendingStartRef.current = true

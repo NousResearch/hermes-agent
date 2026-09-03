@@ -7568,6 +7568,101 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     return stopped
 
 
+def _desktop_release_dir_cwd_locks(desktop_dir: Path) -> list[tuple[int, str, str]]:
+    """Best-effort list of (pid, name, exe) whose CWD is inside the ``release`` tree.
+
+    Renaming or deleting ``release/<unpacked>`` (the staged swap, or the
+    in-place pack's cleanup of the stale tree) fails while any process keeps
+    that directory as its current working directory. The sibling stopper
+    (``_stop_desktop_processes_locking_build``) only terminates processes whose
+    EXECUTABLE lives inside the release tree — a third-party resident process
+    (IME cloud service, antivirus, updater) whose exe lives elsewhere but whose
+    CWD was inherited from inside the tree (e.g. it was spawned while a build
+    ran there) survives that sweep and blocks the rebuild with an opaque
+    ``PermissionError``. Windows-only; diagnostics only; never raises.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        import psutil
+    except Exception:
+        return []
+    try:
+        release_dir = (desktop_dir / "release").resolve()
+    except OSError:
+        return []
+    if not release_dir.is_dir():
+        return []
+    me = os.getpid()
+    locks: list[tuple[int, str, str]] = []
+    try:
+        proc_iter = psutil.process_iter(["pid", "name", "exe", "cwd"])
+    except Exception:
+        return []
+    for proc in proc_iter:
+        try:
+            info = proc.info
+        except Exception:
+            continue
+        pid = info.get("pid")
+        cwd = info.get("cwd")
+        if not pid or not cwd or pid == me:
+            continue
+        try:
+            cwd_path = Path(cwd).resolve()
+        except (OSError, ValueError):
+            continue
+        if cwd_path == release_dir or release_dir in cwd_path.parents:
+            locks.append(
+                (int(pid), str(info.get("name") or "?"), str(info.get("exe") or "?"))
+            )
+    return locks
+
+
+def _report_desktop_release_dir_cwd_locks(desktop_dir: Path) -> None:
+    """Print actionable diagnostics on the Windows build-failure path.
+
+    CWD lock holders fall into two classes: the running Hermes desktop itself
+    (exe inside the release tree — the sibling stopper already tried to stop
+    it; if it is still here the user must close the window) and third-party
+    processes (exe elsewhere — the updater must not touch them, so name them
+    and let the user decide). Best-effort; never raises; silent when no CWD
+    lock is found.
+    """
+    try:
+        locks = _desktop_release_dir_cwd_locks(desktop_dir)
+    except Exception:
+        return
+    if not locks:
+        return
+    try:
+        release_dir = (desktop_dir / "release").resolve()
+    except OSError:
+        release_dir = None
+    third_party = []
+    hermes_owned = []
+    for pid, name, exe in locks:
+        in_tree = False
+        if release_dir is not None and exe and exe != "?":
+            try:
+                in_tree = release_dir in Path(exe).resolve().parents
+            except (OSError, ValueError):
+                in_tree = False
+        (hermes_owned if in_tree else third_party).append((pid, name, exe))
+    if third_party:
+        print("  ⚠ The release app directory is the working directory of a")
+        print("    non-Hermes process, which the updater cannot stop:")
+        for pid, name, exe in third_party:
+            print(f"    - {name} (pid {pid})")
+            if exe and exe != "?":
+                print(f"      {exe}")
+        print("  Close it and retry, or force-stop with:  taskkill /PID <pid> /F")
+    if hermes_owned:
+        pids = ", ".join(str(pid) for pid, _, _ in hermes_owned)
+        print("  ⚠ The release app directory is also the working directory of running")
+        print(f"    Hermes processes (pid {pids}); close the Hermes desktop window and retry.")
+
+
 def _desktop_macos_bundle_id(bundle: Path) -> Optional[str]:
     """Return a bundle/framework CFBundleIdentifier for local macOS signing."""
     import plistlib
@@ -8471,6 +8566,10 @@ def cmd_gui(args: argparse.Namespace):
                 if sys.platform == "win32":
                     print("  If this says \"Access is denied\" on Hermes.exe, close any")
                     print("  running Hermes desktop window and retry.")
+                    # A non-Hermes process whose CWD is inside release/ can also
+                    # block the swap/cleanup rename with an opaque error — name
+                    # the lock holder so the user can act (issue #101789).
+                    _report_desktop_release_dir_cwd_locks(desktop_dir)
                 print("  If the log shows Electron download retries, rebuild via a mirror:")
                 print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)

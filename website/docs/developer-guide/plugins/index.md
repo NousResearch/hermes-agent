@@ -511,9 +511,72 @@ def register(ctx):
 - `ctx.register_hook()` subscribes to lifecycle events
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
+- `ctx.register_api_server_route()` registers an authenticated API-server route under `/v1/plugins/`
+- `ctx.register_api_server_capability()` contributes plugin-owned metadata to `/v1/capabilities`
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
 - If this function crashes, the plugin is disabled but Hermes continues fine
+
+### Extend the API server
+
+API-server extensions are registered during plugin startup:
+
+```python
+from aiohttp import web
+
+async def health(request):
+    return web.json_response({"status": "ready"})
+
+def capabilities(*, context):
+    return {
+        "health": {"method": "GET", "path": "/v1/plugins/acme/health"},
+        "auth_required": context.auth_required,
+    }
+
+def register(ctx):
+    ctx.register_api_server_route(
+        "GET",
+        "/v1/plugins/acme/health",
+        health,
+        name="acme_health",
+    )
+    ctx.register_api_server_capability(capabilities)
+```
+
+Route handlers receive an `aiohttp.web.Request` and may be synchronous or
+asynchronous, but must return an `aiohttp.web.StreamResponse` such as
+`web.Response` or `web.json_response(...)`. Synchronous handlers are moved off
+the event loop, and every handler has a bounded execution time. Routes inherit
+the API server's bearer authentication and security middleware. Methods are
+limited to `GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `PATCH`, and `DELETE`.
+Each path must be non-empty and remain below the registering plugin's canonical
+namespace, `/v1/plugins/<plugin-key>/`; method/path pairs and optional route
+names must be unique. Every plugin-key segment must start with an ASCII letter
+or digit and contain only ASCII letters, digits, dots, underscores, or hyphens;
+aiohttp route-template syntax is not allowed in the namespace itself.
+
+Capability providers are synchronous callbacks invoked with one keyword-only
+`context` argument. The context is an immutable
+`ApiServerCapabilityContext` containing only `server_name`, `request_method`,
+`request_path`, `auth_required`, and `profile`; it deliberately does not expose
+the live adapter, request, headers, or API key across the worker-thread
+boundary. Register at most one provider per plugin and return either a
+JSON-serializable dictionary or `None`. Valid dictionaries are published at
+`extensions.plugins.<plugin-key>` in `GET /v1/capabilities`. Provider failures
+and invalid payloads are logged and skipped so one plugin cannot break
+capability discovery for the server.
+
+Synchronous route handlers and capability discovery use an adapter-owned,
+bounded executor. A timed-out callback keeps its worker slot until it actually
+returns, so repeated hung plugin calls cannot grow the process-wide executor or
+queue additional plugin work without bound.
+
+When `gateway.multiplex_profiles` is enabled, these extensions belong only to
+the default profile that owns the shared listener. They are not mirrored into
+`/p/<profile>/`, and named-profile capability responses do not advertise them.
+This prevents a plugin enabled in the default profile from becoming reachable
+through an independent profile. Run a separate profile gateway when that
+profile needs its own plugin API extensions.
 
 **`dispatch_tool` example — a slash command that runs a tool:**
 
@@ -1152,18 +1215,38 @@ def register(ctx):
         "mystatus",
         handler=_handle_status,
         description="Show plugin status",
+        api_executable=True,
     )
 ```
 
 After registration, users can type `/mystatus` in any session. The command appears in autocomplete, `/help` output, and the Telegram bot menu.
 
-**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "")`
+**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "", argument_mode: str | None = None, category: str = "Plugin", api_executable: bool = False)`
+
+`argument_mode` controls how desktop composer text after the command name is treated (`options`, `text`, or `mixed`), defaulting to `text` when `args_hint` is present.
+`category` is optional display metadata for API/mobile command pickers.
+Commands remain local to CLI and messaging sessions by default. Set
+`api_executable=True` only when the handler is safe without interactive
+messaging-session context; those opted-in commands are advertised by
+`GET /v1/capabilities` and can be executed with an authenticated
+`POST /v1/commands/{name}` request whose JSON body is
+`{"args": "raw command arguments"}`.
+
+API-executable command names must normalize to one URL-safe path segment:
+1–64 lowercase ASCII letters, digits, underscores, or hyphens, beginning with
+a letter or digit. Names containing `/`, `.`, Unicode characters, or other
+punctuation are rejected during registration. A command name may have only one
+plugin owner; a second plugin attempting to claim an existing name is rejected
+without replacing the original handler.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
 | `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
+| `args_hint` | `str` | Optional usage hint appended to API/mobile command metadata |
+| `category` | `str` | Optional API/mobile picker grouping; defaults to `Plugin` |
+| `api_executable` | `bool` | Explicitly expose the command through the authenticated API server; defaults to `False` |
 
 **Key differences from `register_cli_command()`:**
 
@@ -1174,7 +1257,7 @@ After registration, users can type `/mystatus` in any session. The command appea
 | Handler receives | Raw args string | argparse `Namespace` |
 | Use case | Diagnostics, status, quick actions | Complex subcommand trees, setup wizards |
 
-**Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
+**Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence. Duplicate names across plugins raise `ValueError`; the first registered plugin retains ownership.
 
 **Async handlers:** The gateway dispatch automatically detects and awaits async handlers, so you can use either sync or async functions:
 

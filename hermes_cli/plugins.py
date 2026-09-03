@@ -41,6 +41,7 @@ import importlib.metadata
 import importlib.util
 import inspect
 import json
+import keyword
 import logging
 import os
 import queue
@@ -681,6 +682,16 @@ def _get_enabled_plugins() -> Optional[set]:
 # ---------------------------------------------------------------------------
 
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
+_API_PLUGIN_ID_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_API_EXECUTABLE_COMMAND_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
+
+
+def is_safe_api_server_plugin_id(plugin_id: str) -> bool:
+    """Return whether a plugin id is safe to embed as literal URL segments."""
+    return bool(plugin_id) and all(
+        _API_PLUGIN_ID_SEGMENT_RE.fullmatch(segment)
+        for segment in plugin_id.split("/")
+    )
 
 
 def _portable_skill_namespace(key: str) -> str:
@@ -1090,6 +1101,11 @@ def _resolve_module_source(module_name: str, limit: int = 8192) -> str:
     return _read_source_from_origin(resolve_module_origin(module_name), limit)
 
 
+def is_api_executable_plugin_command_name(name: Any) -> bool:
+    """Whether *name* is one URL-safe API command path segment."""
+    return isinstance(name, str) and bool(_API_EXECUTABLE_COMMAND_NAME_RE.fullmatch(name))
+
+
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
@@ -1268,6 +1284,23 @@ class PluginRegistration:
         finally:
             if self._on_dispose is not None:
                 self._on_dispose(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ApiServerCapabilityContext:
+    """Stable, non-secret context exposed to API capability providers.
+
+    Capability discovery runs outside the aiohttp event loop.  Passing the
+    live adapter or request into that worker would expose mutable server state,
+    credentials, and a request object owned by another thread.  This value
+    object is the complete provider contract instead.
+    """
+
+    server_name: str
+    request_method: str
+    request_path: str
+    auth_required: bool
+    profile: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -2183,6 +2216,8 @@ class PluginContext:
         description: str = "",
         args_hint: str = "",
         argument_mode: str | None = None,
+        category: str = "Plugin",
+        api_executable: bool = False,
     ) -> Optional[PluginRegistration]:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -2204,8 +2239,20 @@ class PluginContext:
         name behaves (``options``, ``text``, or ``mixed``). Omit it to infer
         ``text`` whenever ``args_hint`` is set, so ``/myplugin `` stays typeable.
 
+        ``category`` is optional metadata for API and mobile clients that group
+        commands in their own command pickers.
+
+        ``api_executable`` must be explicitly enabled before the API server may
+        advertise or execute the command. CLI and messaging registrations are
+        local-only by default because their handlers may assume interactive
+        session context.
+
         Names conflicting with built-in commands are rejected with a warning.
         """
+        if not callable(handler):
+            raise TypeError("Plugin command handler must be callable")
+        if not isinstance(api_executable, bool):
+            raise TypeError("api_executable must be a boolean")
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning(
@@ -2213,6 +2260,11 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        if api_executable and not is_api_executable_plugin_command_name(clean):
+            raise ValueError(
+                "API-executable plugin command name must be a URL-safe single path segment "
+                "of 1-64 lowercase ASCII letters, digits, underscores, or hyphens"
+            )
 
         # Reject if it conflicts with a built-in command
         try:
@@ -2228,6 +2280,12 @@ class PluginContext:
             pass  # If commands module isn't available, skip the check
 
         previous = self._manager._plugin_commands.get(clean)
+        if previous is not None:
+            owner = str(previous.get("plugin") or "unknown")
+            raise ValueError(
+                f"Plugin command '/{clean}' is already registered by plugin '{owner}'"
+            )
+
         hint = (args_hint or "").strip()
         mode = argument_mode if argument_mode in {"options", "text", "mixed"} else (
             "text" if hint else None
@@ -2239,6 +2297,8 @@ class PluginContext:
             "plugin_key": self.manifest.key or self.manifest.name,
             "args_hint": hint,
             "argument_mode": mode,
+            "category": str(category or "Plugin").strip() or "Plugin",
+            "api_executable": api_executable,
         }
         self._manager._plugin_commands[clean] = entry
         handle = self._track_replacement(
@@ -3591,6 +3651,94 @@ class PluginContext:
         logger.debug("Plugin %s registered middleware: %s", self.manifest.name, kind)
         return handle
 
+    # -- API server registration --------------------------------------------
+
+    def register_api_server_route(
+        self,
+        method: str,
+        path: str,
+        handler: Callable,
+        *,
+        name: str | None = None,
+    ) -> None:
+        """Register an aiohttp route contribution for the API server adapter."""
+        if not callable(handler):
+            raise TypeError("API server route handler must be callable")
+        normalized_method = str(method or "").upper()
+        if normalized_method not in {"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}:
+            raise ValueError(f"unsupported method: {normalized_method or '<empty>'}")
+        if not isinstance(path, str):
+            raise TypeError("API server route path must be a string")
+        if not path.startswith("/v1/plugins/"):
+            raise ValueError("API server route path must be under /v1/plugins/")
+        if path == "/v1/plugins/":
+            raise ValueError("API server route path must include a route name")
+        plugin_id = str(self.manifest.key or self.manifest.name).strip("/")
+        if not is_safe_api_server_plugin_id(plugin_id):
+            raise ValueError(
+                "API server plugin namespace must contain safe URL path segments"
+            )
+        plugin_namespace = f"/v1/plugins/{plugin_id}/"
+        if not plugin_id or not path.startswith(plugin_namespace):
+            raise ValueError(
+                "API server route path must stay under the plugin's own namespace: "
+                f"{plugin_namespace}"
+            )
+        if name is not None and (not isinstance(name, str) or not name.strip()):
+            raise TypeError("API server route name must be a non-empty string or None")
+        if name is not None and any(
+            not part.isidentifier() or keyword.iskeyword(part)
+            for part in re.split(r"[.:-]", name)
+        ):
+            raise ValueError(
+                "API server route name must contain Python identifiers separated "
+                "by dash, dot, or colon"
+            )
+        for route in self._manager._api_server_routes:
+            if (route.get("method"), route.get("path")) == (normalized_method, path):
+                raise ValueError(f"API server route already registered: {normalized_method} {path}")
+            if name is not None and route.get("name") == name:
+                raise ValueError(f"API server route name already registered: {name}")
+        self._manager._api_server_routes.append(
+            {
+                "method": normalized_method,
+                "path": path,
+                "handler": handler,
+                "name": name,
+                "plugin": plugin_id,
+            }
+        )
+        logger.debug(
+            "Plugin %s registered API server route: %s %s",
+            self.manifest.name,
+            normalized_method,
+            path,
+        )
+
+    def register_api_server_capability(self, provider: Callable) -> None:
+        """Register a provider callback for /v1/capabilities extensions."""
+        if not callable(provider):
+            raise TypeError("API server capability provider must be callable")
+        if inspect.iscoroutinefunction(provider) or inspect.iscoroutinefunction(
+            getattr(provider, "__call__", None)
+        ):
+            raise TypeError("API server capability provider must be synchronous")
+        plugin_id = str(self.manifest.key or self.manifest.name).strip("/")
+        if any(
+            entry.get("plugin") == plugin_id
+            for entry in self._manager._api_server_capability_providers
+        ):
+            raise ValueError(
+                f"API server capability provider already registered for plugin: {plugin_id}"
+            )
+        self._manager._api_server_capability_providers.append(
+            {
+                "plugin": plugin_id,
+                "provider": provider,
+            }
+        )
+        logger.debug("Plugin %s registered API server capability provider", self.manifest.name)
+
     # -- skill registration -------------------------------------------------
 
     @_serialized_replacement
@@ -3835,6 +3983,8 @@ class PluginManager:
         # ``register_telegram_handler`` is a thin alias writing into the
         # "telegram" bucket.
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
+        self._api_server_routes: List[Dict[str, Any]] = []
+        self._api_server_capability_providers: List[Dict[str, Any]] = []
 
     # -----------------------------------------------------------------------
     # Registration ledger internals
@@ -4182,6 +4332,8 @@ class PluginManager:
             self._predeclared_modules.clear()
             self._predeclared_tools.clear()
             self._platform_handler_factories.clear()
+            self._api_server_routes.clear()
+            self._api_server_capability_providers.clear()
             self._context_engine = None
             with self._hook_timeout_lock:
                 self._hook_running_callbacks.clear()
@@ -6097,6 +6249,52 @@ class PluginManager:
             )
         return result
 
+    def get_api_server_routes(self) -> List[Dict[str, Any]]:
+        """Return plugin-contributed API server routes in registration order."""
+        return list(self._api_server_routes)
+
+    def get_api_server_capabilities(
+        self,
+        *,
+        context: ApiServerCapabilityContext,
+    ) -> List[Dict[str, Any]]:
+        """Resolve plugin capability contributions for /v1/capabilities."""
+        if not isinstance(context, ApiServerCapabilityContext):
+            raise TypeError("context must be an ApiServerCapabilityContext")
+        results: List[Dict[str, Any]] = []
+        for entry in self._api_server_capability_providers:
+            plugin_name = entry.get("plugin", "unknown")
+            provider = entry.get("provider")
+            if not callable(provider):
+                continue
+            try:
+                payload = provider(context=context)
+            except Exception as exc:
+                logger.warning(
+                    "Plugin '%s' API server capability provider failed (%s); skipping",
+                    plugin_name,
+                    type(exc).__name__,
+                )
+                continue
+            if payload is None:
+                continue
+            if not isinstance(payload, dict):
+                logger.warning(
+                    "Plugin '%s' API server capability provider returned non-dict payload; skipping",
+                    plugin_name,
+                )
+                continue
+            try:
+                json.dumps(payload)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Plugin '%s' API server capability provider returned a non-JSON-serializable payload; skipping",
+                    plugin_name,
+                )
+                continue
+            results.append({"plugin": plugin_name, "capabilities": payload})
+        return results
+
     # -----------------------------------------------------------------------
     # Plugin skill lookups
     # -----------------------------------------------------------------------
@@ -7115,6 +7313,19 @@ def get_plugin_commands() -> Dict[str, dict]:
     before any explicit discover_plugins() call.
     """
     return _ensure_plugins_discovered()._plugin_commands
+
+
+def get_api_executable_plugin_commands() -> Dict[str, dict]:
+    """Return the callable plugin commands explicitly exposed to the API."""
+    return {
+        name: entry
+        for name, entry in (get_plugin_commands() or {}).items()
+        if isinstance(name, str)
+        and is_api_executable_plugin_command_name(name)
+        and isinstance(entry, dict)
+        and entry.get("api_executable") is True
+        and callable(entry.get("handler"))
+    }
 
 
 def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:

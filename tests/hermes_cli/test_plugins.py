@@ -5,6 +5,7 @@ import json
 import sys
 import threading
 import types
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +13,7 @@ import pytest
 import yaml
 
 from hermes_cli.plugins import (
+    ApiServerCapabilityContext,
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
     PluginContext,
@@ -1986,7 +1988,87 @@ class TestPreLlmCallTargetRouting:
 class TestPluginCommands:
     """Tests for plugin slash command registration via register_command()."""
 
+    def test_register_command_rejects_non_callable_handler(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
 
+        with pytest.raises(TypeError, match="handler must be callable"):
+            ctx.register_command("broken", "not-callable")
+
+        assert "broken" not in mgr._plugin_commands
+
+    def test_register_command_with_category(self):
+        """category is stored for mobile/API command discovery surfaces."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command(
+            "joke",
+            lambda a: a,
+            description="Generate a joke",
+            category="Creative",
+        )
+
+        entry = mgr._plugin_commands["joke"]
+        assert entry["category"] == "Creative"
+        assert entry["api_executable"] is False
+
+    def test_register_command_can_explicitly_enable_api_execution(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command(
+            "remote-action",
+            lambda args: args,
+            api_executable=True,
+        )
+
+        assert mgr._plugin_commands["remote-action"]["api_executable"] is True
+
+    @pytest.mark.parametrize(
+        "name",
+        ["category/action", "bad.name", "café", "x" * 65],
+    )
+    def test_api_executable_command_requires_url_safe_single_segment(self, name):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+
+        with pytest.raises(ValueError, match="URL-safe single path segment"):
+            ctx.register_command(name, lambda args: args, api_executable=True)
+
+        assert mgr._plugin_commands == {}
+
+    def test_register_command_rejects_duplicate_plugin_ownership(self):
+        mgr = PluginManager()
+        first_handler = lambda args: f"first:{args}"
+        PluginContext(PluginManifest(name="plugin-a", source="user"), mgr).register_command(
+            "shared-plugin-command", first_handler
+        )
+
+        with pytest.raises(ValueError, match="already registered by plugin 'plugin-a'"):
+            PluginContext(
+                PluginManifest(name="plugin-b", source="user"), mgr
+            ).register_command("shared-plugin-command", lambda args: f"second:{args}")
+
+        assert mgr._plugin_commands["shared-plugin-command"]["handler"] is first_handler
+        assert mgr._plugin_commands["shared-plugin-command"]["plugin"] == "plugin-a"
+
+    def test_register_command_rejects_non_boolean_api_execution_flag(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        with pytest.raises(TypeError, match="api_executable must be a boolean"):
+            ctx.register_command(
+                "status",
+                lambda args: args,
+                api_executable="yes",
+            )
+
+        assert "status" not in mgr._plugin_commands
 
     def test_register_command_empty_name_rejected(self, caplog):
         """Empty name after normalization is rejected with a warning."""
@@ -2294,6 +2376,259 @@ class TestPluginDispatchTool:
 
         call_kwargs = mock_registry.dispatch.call_args
         assert call_kwargs[1]["parent_agent"] is explicit_agent
+
+
+class TestPluginApiServerHooks:
+    def test_register_api_server_route_rejects_non_callable_handler(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+
+        with pytest.raises(TypeError, match="handler must be callable"):
+            ctx.register_api_server_route(
+                "GET", "/v1/plugins/api-plugin/bad", "not-callable"
+            )
+
+        assert mgr.get_api_server_routes() == []
+
+    def test_register_api_server_capability_rejects_non_callable_provider(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+
+        with pytest.raises(TypeError, match="provider must be callable"):
+            ctx.register_api_server_capability(object())
+
+        assert mgr._api_server_capability_providers == []
+
+    def test_register_api_server_capability_rejects_async_provider(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+
+        async def _provider(**kwargs):
+            return {"feature": True}
+
+        with pytest.raises(TypeError, match="must be synchronous"):
+            ctx.register_api_server_capability(_provider)
+
+        assert mgr._api_server_capability_providers == []
+
+    def test_register_api_server_route_tracks_route_definition(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="api-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        async def _handler(request):
+            return None
+
+        ctx.register_api_server_route(
+            "GET",
+            "/v1/plugins/api-plugin/ping",
+            _handler,
+            name="plugin_ping",
+        )
+
+        routes = mgr.get_api_server_routes()
+        assert len(routes) == 1
+        assert routes[0]["method"] == "GET"
+        assert routes[0]["path"] == "/v1/plugins/api-plugin/ping"
+        assert routes[0]["handler"] is _handler
+        assert routes[0]["name"] == "plugin_ping"
+        assert routes[0]["plugin"] == "api-plugin"
+
+    @pytest.mark.parametrize(
+        ("method", "path", "name", "message"),
+        [
+            ("NOPE", "/v1/plugins/api-plugin/ping", None, "unsupported method"),
+            ("GET", "/v1/models", None, "under /v1/plugins/"),
+            ("GET", "/v1/plugins/", None, "include a route name"),
+            ("GET", "/v1/plugins/api-plugin/ping", "", "name must be"),
+            (
+                "GET",
+                "/v1/plugins/api-plugin/ping",
+                "invalid/name",
+                "Python identifiers",
+            ),
+        ],
+    )
+    def test_register_api_server_route_rejects_invalid_definition(
+        self, method, path, name, message
+    ):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+
+        with pytest.raises((TypeError, ValueError), match=message):
+            ctx.register_api_server_route(method, path, lambda request: None, name=name)
+
+        assert mgr.get_api_server_routes() == []
+
+    def test_register_api_server_route_rejects_duplicate_method_and_path(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+        handler = lambda request: None
+
+        ctx.register_api_server_route("GET", "/v1/plugins/api-plugin/ping", handler)
+
+        with pytest.raises(ValueError, match="already registered"):
+            ctx.register_api_server_route("get", "/v1/plugins/api-plugin/ping", handler)
+
+        assert len(mgr.get_api_server_routes()) == 1
+
+    def test_register_api_server_route_rejects_duplicate_name(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+        handler = lambda request: None
+
+        ctx.register_api_server_route(
+            "GET", "/v1/plugins/api-plugin/one", handler, name="api_plugin_route"
+        )
+
+        with pytest.raises(ValueError, match="name already registered"):
+            ctx.register_api_server_route(
+                "POST",
+                "/v1/plugins/api-plugin/two",
+                handler,
+                name="api_plugin_route",
+            )
+
+        assert len(mgr.get_api_server_routes()) == 1
+
+    def test_register_api_server_route_rejects_another_plugin_namespace(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="display-name",
+            key="category/api-plugin",
+            source="user",
+        )
+        ctx = PluginContext(manifest, mgr)
+
+        with pytest.raises(ValueError, match="own namespace"):
+            ctx.register_api_server_route(
+                "GET",
+                "/v1/plugins/other-plugin/status",
+                lambda request: None,
+            )
+
+        ctx.register_api_server_route(
+            "GET",
+            "/v1/plugins/category/api-plugin/status",
+            lambda request: None,
+        )
+        assert mgr.get_api_server_routes()[0]["plugin"] == "category/api-plugin"
+
+    @pytest.mark.parametrize(
+        "plugin_key",
+        [
+            "api plugin",
+            "../api-plugin",
+            "api-plugin/{tail:.*}",
+        ],
+    )
+    def test_register_api_server_route_rejects_unsafe_plugin_namespace(
+        self, plugin_key
+    ):
+        mgr = PluginManager()
+        ctx = PluginContext(
+            PluginManifest(name="display-name", key=plugin_key, source="user"),
+            mgr,
+        )
+
+        with pytest.raises(ValueError, match="safe URL path segments"):
+            ctx.register_api_server_route(
+                "GET",
+                f"/v1/plugins/{plugin_key}/status",
+                lambda request: None,
+            )
+
+        assert mgr.get_api_server_routes() == []
+
+    def test_register_api_server_capability_provider_is_invoked_with_safe_context(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="display-name",
+            key="category/api-plugin",
+            source="user",
+        )
+        ctx = PluginContext(manifest, mgr)
+
+        seen = {}
+
+        def _provider(*, context):
+            seen["context"] = context
+            return {"feature_flag": True}
+
+        ctx.register_api_server_capability(_provider)
+
+        context = ApiServerCapabilityContext(
+            server_name="api_server",
+            request_method="GET",
+            request_path="/v1/capabilities",
+            auth_required=True,
+            profile=None,
+        )
+        capabilities = mgr.get_api_server_capabilities(context=context)
+        assert capabilities == [
+            {
+                "plugin": "category/api-plugin",
+                "capabilities": {"feature_flag": True},
+            }
+        ]
+        assert seen == {"context": context}
+        assert not hasattr(context, "adapter")
+        assert not hasattr(context, "request")
+        with pytest.raises(FrozenInstanceError):
+            context.request_path = "/mutated"
+
+    def test_plugin_capability_provider_failure_isolated(self, caplog):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="api-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        def _bad_provider(*, context):
+            raise RuntimeError("boom")
+
+        ctx.register_api_server_capability(_bad_provider)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            capabilities = mgr.get_api_server_capabilities(
+                context=ApiServerCapabilityContext(
+                    server_name="api_server",
+                    request_method="GET",
+                    request_path="/v1/capabilities",
+                    auth_required=False,
+                    profile=None,
+                )
+            )
+        assert capabilities == []
+        assert "api server capability provider" in caplog.text.lower()
+
+    def test_register_api_server_capability_rejects_duplicate_provider(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+
+        ctx.register_api_server_capability(lambda **kwargs: {"first": True})
+
+        with pytest.raises(ValueError, match="already registered"):
+            ctx.register_api_server_capability(lambda **kwargs: {"second": True})
+
+        assert len(mgr._api_server_capability_providers) == 1
+
+    def test_plugin_capability_provider_non_json_payload_is_isolated(self, caplog):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
+        ctx.register_api_server_capability(lambda **kwargs: {"bad": object()})
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            capabilities = mgr.get_api_server_capabilities(
+                context=ApiServerCapabilityContext(
+                    server_name="api_server",
+                    request_method="GET",
+                    request_path="/v1/capabilities",
+                    auth_required=False,
+                    profile=None,
+                )
+            )
+
+        assert capabilities == []
+        assert "json-serializable" in caplog.text.lower()
 
 
 class TestPluginDebugLogging:

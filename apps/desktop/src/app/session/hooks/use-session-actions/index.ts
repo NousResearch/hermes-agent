@@ -2086,7 +2086,6 @@ export function useSessionActions({
         // connections is two different sessions, so a route-blind key would
         // coalesce them onto one create.
         const createKey = branchCreateKey({
-          branchCount,
           branchMessages,
           cwd,
           ownerRoute,
@@ -2381,6 +2380,9 @@ export function useSessionActions({
         storedSessionId,
         startingCwd,
         profile,
+        // The legacy count slot is always empty now: the cut is addressed by
+        // durable row id, which is the whole point of this fix.
+        undefined,
         ownerRoute,
         // Forking from a specific message: name its durable DB row id so the
         // backend truncates the RAW history at exactly that row. Without an id

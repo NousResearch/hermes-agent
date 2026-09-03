@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import logging
 import os
 import sys
 import types
@@ -382,6 +383,139 @@ class TestObservationModeMigration:
         assert cfg.user_observe_others is False
         assert cfg.ai_observe_me is False
         assert cfg.ai_observe_others is True
+
+
+class TestObservationOptOutPhrases:
+    """Per-turn observation opt-out phrases (provider-local, Honcho-only)."""
+
+    @staticmethod
+    def _invalid_type_warnings(caplog):
+        return [
+            record
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and "expected a list of strings" in record.getMessage()
+        ]
+
+    def test_default_is_empty(self, tmp_path):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({}))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_opt_out_phrases == []
+
+    def test_root_level_phrases(self, tmp_path, caplog):
+        caplog.set_level(logging.WARNING)
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "observationOptOutPhrases": ["off the record", "don't remember this"],
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_opt_out_phrases == ["off the record", "don't remember this"]
+        assert not self._invalid_type_warnings(caplog)
+
+    def test_host_level_overrides_root(self, tmp_path):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "observationOptOutPhrases": ["root phrase"],
+            "hosts": {"hermes": {
+                "enabled": True,
+                "observationOptOutPhrases": ["host phrase"],
+            }},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_opt_out_phrases == ["host phrase"]
+
+    def test_non_string_and_blank_entries_dropped(self, tmp_path):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "observationOptOutPhrases": ["valid", "", "  ", 123, None],
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_opt_out_phrases == ["valid"]
+
+    def test_non_list_value_ignored(self, tmp_path, caplog):
+        caplog.set_level(logging.WARNING)
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "observationOptOutPhrases": "not a list",
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_opt_out_phrases == []
+        warnings = self._invalid_type_warnings(caplog)
+        assert len(warnings) == 1
+        warning = warnings[0].getMessage()
+        assert "expected a list of strings" in warning
+        assert "got str" in warning
+        assert "ignored" in warning.lower()
+        assert "off" in warning.lower()
+
+    def test_explicit_invalid_host_string_fails_closed(self, tmp_path, caplog):
+        # Host presence overrides root: an explicit but invalid (non-list)
+        # host value must NOT fall back to root phrases — it fails closed.
+        caplog.set_level(logging.WARNING)
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "observationOptOutPhrases": ["root phrase"],
+            "hosts": {"hermes": {
+                "enabled": True,
+                "observationOptOutPhrases": "not a list",
+            }},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_opt_out_phrases == []
+        warnings = self._invalid_type_warnings(caplog)
+        assert len(warnings) == 1
+        warning = warnings[0].getMessage()
+        assert "expected a list of strings" in warning
+        assert "got str" in warning
+        assert "ignored" in warning.lower()
+        assert "off" in warning.lower()
+
+    def test_explicit_null_host_fails_closed(self, tmp_path, caplog):
+        # Host key present but null overrides root and yields [].
+        caplog.set_level(logging.WARNING)
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "observationOptOutPhrases": ["root phrase"],
+            "hosts": {"hermes": {
+                "enabled": True,
+                "observationOptOutPhrases": None,
+            }},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_opt_out_phrases == []
+        assert not self._invalid_type_warnings(caplog)
+
+    def test_absent_host_key_uses_root(self, tmp_path):
+        # Host block present but WITHOUT the key: root value is used.
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "observationOptOutPhrases": ["root phrase"],
+            "hosts": {"hermes": {"enabled": True}},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_opt_out_phrases == ["root phrase"]
+
+    def test_empty_host_list_overrides_root(self, tmp_path):
+        # Explicit empty host list overrides root entirely.
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "observationOptOutPhrases": ["root phrase"],
+            "hosts": {"hermes": {
+                "enabled": True,
+                "observationOptOutPhrases": [],
+            }},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_opt_out_phrases == []
 
 
 class TestGetHonchoClient:

@@ -224,6 +224,42 @@ def _parse_optional_string(
     return str(value).strip()
 
 
+def _coerce_string_list(value) -> list[str]:
+    """Filter a single config value to a clean list of non-blank strings.
+
+    A valid JSON array yields its string entries (non-string / blank dropped);
+    any non-list value (including ``None``) yields ``[]``. This is fail-closed:
+    an explicit-but-invalid value never leaks phrases. An explicit non-list
+    (e.g. a bare string instead of an array) also logs a warning so a config
+    typo does not silently disable the feature with zero signal.
+    """
+    if not isinstance(value, list):
+        if value is not None:
+            logger.warning(
+                "Honcho config: expected a list of strings but got %s — "
+                "value ignored (feature stays off). Use a YAML/JSON array, "
+                "e.g. ['off the record'], not a bare string.",
+                type(value).__name__,
+            )
+        return []
+    return [str(v).strip() for v in value if isinstance(v, str) and str(v).strip()]
+
+
+def _parse_string_list(host_obj: dict, root_obj: dict, key: str) -> list[str]:
+    """Parse a list-of-strings config field with host-level whole-value override.
+
+    Host presence overrides root: if ``key`` is present in ``host_obj`` (even
+    as an empty list, a non-list, or ``null``), only the host value is used and
+    root is ignored entirely — matching the whole-value-override behavior of
+    ``_parse_string_map``. An explicit but invalid host value fails closed to
+    ``[]`` rather than silently activating root phrases. When the host block
+    does not contain the key at all, the root value is used (valid list
+    filtered, otherwise ``[]``).
+    """
+    source = host_obj[key] if key in host_obj else root_obj.get(key)
+    return _coerce_string_list(source)
+
+
 def _parse_dialectic_depth(host_val, root_val) -> int:
     """Parse dialecticDepth: host wins, then root, then 1. Clamped to 1-3."""
     for val in (host_val, root_val):
@@ -471,6 +507,12 @@ class HonchoClientConfig:
     user_observe_others: bool = True
     ai_observe_me: bool = True
     ai_observe_others: bool = True
+    # Per-turn observation opt-out: user-message substrings that mark a turn
+    # "no_observe" (still stored/searchable, excluded from Honcho's reasoning
+    # pipeline). Case-insensitive substring match against the raw user
+    # message content. Empty by default — phrase-based opt-out is off unless
+    # a user configures it. See HonchoMemoryProvider.sync_turn.
+    observation_opt_out_phrases: list[str] = field(default_factory=list)
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
@@ -808,6 +850,11 @@ class HonchoClientConfig:
                     or ("unified" if _explicitly_configured else "directional")
                 ),
                 host_block.get("observation") or raw.get("observation"),
+            ),
+            observation_opt_out_phrases=_parse_string_list(
+                host_block,
+                raw,
+                "observationOptOutPhrases",
             ),
             session_strategy=session_strategy,
             session_peer_prefix=session_peer_prefix,

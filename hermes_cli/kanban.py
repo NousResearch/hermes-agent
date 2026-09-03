@@ -1090,14 +1090,6 @@ def kanban_command(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Board-management commands operate on board metadata and the persisted
-    # current-board pointer itself. They must ignore the shared `--board`
-    # task-routing override; otherwise `/kanban --board beta boards show`
-    # reports beta as the current board even when the on-disk pointer is
-    # alpha.
-    if action == "boards":
-        return _dispatch_boards(args)
-
     # `--board <slug>` applies to every subcommand below by way of an
     # explicit-board scope for the duration of this call (scoped via
     # contextvars rather than threading `board=` through 50+ kb.connect()
@@ -1138,7 +1130,26 @@ def kanban_command(args: argparse.Namespace) -> int:
     # HERMES_HOME. Previously only `init` and `daemon` triggered
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
+    #
+    # `boards` dispatches inside the scope too (same nullcontext when no
+    # --board flag was passed, so its default resolution is unchanged):
+    # `boards list` / `boards show` (and `boards export` with no slug)
+    # resolve the active board through get_current_board(), which the
+    # explicit scope pins, and read_board_metadata() computes each
+    # db_path via kanban_db_path(), which ignores the worker path pins
+    # only inside that scope. Without this, a pinned worker's
+    # `--board alpha boards list --json` reported the PINNED db_path
+    # (and its task totals) for every board — t_4eff74eb critic round 1.
+    #
+    # Task-level board-management operations (boards switch / rename /
+    # rm / create / set-default-workdir / import) intentionally run under
+    # the scope as well: they address their target board by slug and do
+    # not consult the active-board chain, so the scope never changes
+    # their target — it only keeps the scope's contextvar consistent
+    # for any helper that resolves paths during the call.
     with board_scope:
+        if action == "boards":
+            return _dispatch_boards(args)
         # `repair` must dispatch BEFORE the auto-init below: on a corrupt DB
         # init_db() itself raises KanbanDbCorruptError, which would turn
         # every `hermes kanban repair` into "could not initialize database"

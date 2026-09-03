@@ -340,6 +340,65 @@ class TestMcpTest:
         assert captured["outer_timeout"] == 310.0
         assert captured["shutdown"] is True
 
+    def test_probe_connect_timeout_propagates_to_transport(self, monkeypatch):
+        """The effective connect_timeout must reach the transport layer.
+
+        _probe_single_server is called with an explicit connect_timeout by the
+        dashboard OAuth flow and `hermes mcp login`. The value was used only for
+        the outer asyncio.wait_for; _run_http inside _connect_server fell back
+        to its own 60 s default, so the OAuth handshake could time out mid-
+        consent and restart under the user (#80521).
+        """
+        import hermes_cli.mcp_config as mc
+
+        seen = {}
+
+        class FakeServer:
+            _tools = []
+
+            async def shutdown(self):
+                return None
+
+        async def fake_connect(name, config):
+            seen["config"] = config
+            return FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", fake_connect)
+
+        mc._probe_single_server(
+            "reports",
+            {"url": "https://mcp.example/mcp"},
+            connect_timeout=315,
+        )
+
+        assert seen["config"]["connect_timeout"] == 315.0
+
+    def test_probe_default_connect_timeout_propagates_to_transport(self, monkeypatch):
+        """When no connect_timeout is supplied, the transport still receives a
+        clamped float so the probe and the handshake share the same bound."""
+        import hermes_cli.mcp_config as mc
+
+        seen = {}
+
+        class FakeServer:
+            _tools = []
+
+            async def shutdown(self):
+                return None
+
+        async def fake_connect(name, config):
+            seen["config"] = config
+            return FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", fake_connect)
+
+        mc._probe_single_server(
+            "reports",
+            {"url": "https://mcp.example/mcp"},
+        )
+
+        assert seen["config"]["connect_timeout"] == 30.0
+
 
 # ---------------------------------------------------------------------------
 # Tests: env var interpolation

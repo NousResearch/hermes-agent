@@ -592,7 +592,7 @@ class TestA2AOrchestrate:
     def test_all_mode_returns_every_reply(self, monkeypatch):
         monkeypatch.setattr(tools, "_load_config", lambda: _TWO_PEERS)
         monkeypatch.setattr(tools, "_call_peer_sync",
-                            lambda name, entry, msg, ctx="": (name, f"reply from {name}"))
+                            lambda name, entry, msg, ctx="": (name, f"reply from {name}", protocol.STATE_COMPLETED))
         out = tools.a2a_orchestrate({"capability": "research", "message": "go"})
         assert "reply from researcher" in out
         assert "reply from generalist" in out
@@ -604,7 +604,7 @@ class TestA2AOrchestrate:
             "generalist": "a much longer and more detailed reply",
         }
         monkeypatch.setattr(tools, "_call_peer_sync",
-                            lambda name, entry, msg, ctx="": (name, replies[name]))
+                            lambda name, entry, msg, ctx="": (name, replies[name], protocol.STATE_COMPLETED))
         out = tools.a2a_orchestrate({"capability": "research", "message": "go", "mode": "best"})
         assert out.startswith("[best: generalist]")
 
@@ -616,7 +616,7 @@ class TestA2AOrchestrate:
             "generalist": "Error: " + "x" * 500,
         }
         monkeypatch.setattr(tools, "_call_peer_sync",
-                            lambda name, entry, msg, ctx="": (name, replies[name]))
+                            lambda name, entry, msg, ctx="": (name, replies[name], protocol.STATE_COMPLETED))
         out = tools.a2a_orchestrate({"capability": "research", "message": "go", "mode": "best"})
         assert out.startswith("[best: researcher]")
         assert "ok" in out
@@ -626,22 +626,66 @@ class TestA2AOrchestrate:
         with a misleading [best: ...] header."""
         monkeypatch.setattr(tools, "_load_config", lambda: _TWO_PEERS)
         monkeypatch.setattr(tools, "_call_peer_sync",
-                            lambda name, entry, msg, ctx="": (name, "Error: connection refused"))
+                            lambda name, entry, msg, ctx="": (name, "Error: connection refused", protocol.STATE_FAILED))
         out = tools.a2a_orchestrate({"capability": "research", "message": "go", "mode": "best"})
         assert out.startswith("All peers failed:")
         assert "[best:" not in out
 
+    def test_best_mode_ignores_failed_task_with_plain_text(self, monkeypatch):
+        """A failed A2A task with non-error text must not beat a completed task."""
+        monkeypatch.setattr(tools, "_load_config", lambda: _TWO_PEERS)
+
+        def fake_call(name, entry, msg, ctx=""):
+            if name == "generalist":
+                return (name, "this failed but has a very long explanatory body " * 20, protocol.STATE_FAILED)
+            return (name, "ok", protocol.STATE_COMPLETED)
+
+        monkeypatch.setattr(tools, "_call_peer_sync", fake_call)
+        out = tools.a2a_orchestrate({"capability": "research", "message": "go", "mode": "best"})
+        assert out.startswith("[best: researcher]")
+        assert "this failed" not in out
+
+    def test_first_mode_skips_rejected_task_with_plain_text(self, monkeypatch):
+        """First mode should require completed peer tasks, not just non-Error text."""
+        monkeypatch.setattr(tools, "_load_config", lambda: _TWO_PEERS)
+
+        def fake_call(name, entry, msg, ctx=""):
+            if name == "generalist":
+                return (name, "not authorized for this task", protocol.STATE_REJECTED)
+            return (name, "completed answer", protocol.STATE_COMPLETED)
+
+        monkeypatch.setattr(tools, "_call_peer_sync", fake_call)
+        out = tools.a2a_orchestrate({"capability": "research", "message": "go", "mode": "first"})
+        assert out.startswith("[first: researcher]")
+        assert "completed answer" in out
+        assert "not authorized" not in out
+
+    def test_all_mode_shows_non_completed_task_state(self, monkeypatch):
+        monkeypatch.setattr(tools, "_load_config", lambda: _TWO_PEERS)
+
+        def fake_call(name, entry, msg, ctx=""):
+            if name == "generalist":
+                return (name, "need project id", protocol.STATE_INPUT_REQUIRED)
+            return (name, "done", protocol.STATE_COMPLETED)
+
+        monkeypatch.setattr(tools, "_call_peer_sync", fake_call)
+        out = tools.a2a_orchestrate({"capability": "research", "message": "go", "mode": "all"})
+        assert "--- generalist ---" in out
+        assert "[input-required] need project id" in out
+        assert "--- researcher ---" in out
+        assert "done" in out
+
     def test_first_mode_all_errors_reports_failure(self, monkeypatch):
         monkeypatch.setattr(tools, "_load_config", lambda: _TWO_PEERS)
         monkeypatch.setattr(tools, "_call_peer_sync",
-                            lambda name, entry, msg, ctx="": (name, "Error: nope"))
+                            lambda name, entry, msg, ctx="": (name, "Error: nope", protocol.STATE_FAILED))
         out = tools.a2a_orchestrate({"capability": "code", "message": "go", "mode": "first"})
         assert out.startswith("All peers failed:")
 
     def test_first_mode_returns_a_success(self, monkeypatch):
         monkeypatch.setattr(tools, "_load_config", lambda: _TWO_PEERS)
         monkeypatch.setattr(tools, "_call_peer_sync",
-                            lambda name, entry, msg, ctx="": (name, f"win {name}"))
+                            lambda name, entry, msg, ctx="": (name, f"win {name}", protocol.STATE_COMPLETED))
         out = tools.a2a_orchestrate({"capability": "code", "message": "go", "mode": "first"})
         assert out.startswith("[first: ")
         assert "win" in out

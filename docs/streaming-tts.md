@@ -57,7 +57,7 @@ tts:
 | openai      | chunked HTTP (`with_streaming_response`, `pcm`) | yes | `tts.openai.api_key` → env → managed gateway |
 | gemini      | SSE (`streamGenerateContent?alt=sse`) | yes         | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
 | xai         | WebSocket (`wss://api.x.ai/v1/tts`)   | yes         | xAI OAuth or `XAI_API_KEY` |
-| edge, piper, kitten, neutts, mistral, minimax, deepinfra, … | — | no (per-sentence sync fallback) | as usual |
+| edge, piper, kitten, neutts, mistral, minimax, deepinfra, groq, … | — | no (per-sentence sync fallback) | as usual |
 
 All credential lookups go through `resolve_provider_secret()`
 (config > env/.env > credential pool) — never bare env reads. Streamed bodies

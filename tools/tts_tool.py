@@ -254,6 +254,11 @@ DEFAULT_GEMINI_AUDIO_TAGS = False
 GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
 # Base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
 DEFAULT_DEEPINFRA_TTS_VOICE = "default"
+DEFAULT_GROQ_TTS_MODEL = "canopylabs/orpheus-v1-english"
+DEFAULT_GROQ_TTS_VOICE = "autumn"
+DEFAULT_GROQ_TTS_BASE_URL = "https://api.groq.com/openai/v1"
+GROQ_TTS_RESPONSE_FORMATS = frozenset({"flac", "mp3", "mulaw", "ogg", "wav"})
+GROQ_TTS_REQUEST_TIMEOUT_SECONDS = 60.0
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -305,6 +310,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "groq": 10000,        # Groq Orpheus; no published hard cap — conservative
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -809,6 +815,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "kittentts",
     "piper",
     "deepinfra",
+    "groq",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -2002,6 +2009,108 @@ def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, A
         voice=di_config.get("voice", DEFAULT_DEEPINFRA_TTS_VOICE),
         speed=float(di_config.get("speed", tts_config.get("speed", 1.0))),
     )
+
+
+def _bounded_provider_error(exc: BaseException, *, limit: int = 240) -> str:
+    """Return a short diagnostic with URLs and token-shaped secrets stripped."""
+    raw = str(exc) or exc.__class__.__name__
+    raw = re.sub(r"https?://\S+", "<url>", raw)
+    raw = re.sub(r"(?i)(bearer\s+|gsk_|sk-)[A-Za-z0-9._\-]+", "<redacted>", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    if len(raw) > limit:
+        return raw[: limit - 1] + "…"
+    return raw or "provider error"
+
+
+def _groq_tts_response_format(output_path: str) -> str:
+    """Map an output path to a Groq-supported speech response_format."""
+    ext = Path(output_path).suffix.lower().lstrip(".")
+    if ext == "opus":
+        return "ogg"
+    if ext in GROQ_TTS_RESPONSE_FORMATS:
+        return ext
+    return "mp3"
+
+
+def _groq_tts_base_url(section: Dict[str, Any]) -> str:
+    configured = section.get("base_url") if isinstance(section, dict) else None
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip().rstrip("/")
+    env_url = (get_env_value("GROQ_BASE_URL") or "").strip()
+    if env_url:
+        return env_url.rstrip("/")
+    return DEFAULT_GROQ_TTS_BASE_URL
+
+
+def _generate_groq_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Synthesize via Groq Orpheus (OpenAI-compatible /audio/speech).
+
+    Groq TTS is a cascaded speech shell (STT and TTS stay independently
+    selectable). It is not a native bidirectional speech session.
+    Credentials reuse ``GROQ_API_KEY``; model/voice are forwarded exactly
+    from ``tts.groq`` (defaults only when unset).
+    """
+    api_key = _resolve_provider_key("GROQ_API_KEY", "groq")
+    if not api_key:
+        raise ValueError(
+            "GROQ_API_KEY not set. Run `hermes setup` to configure, "
+            "or set the env var directly. Get a key at https://console.groq.com/keys"
+        )
+
+    groq_config = tts_config.get("groq") if isinstance(tts_config, dict) else None
+    if not isinstance(groq_config, dict):
+        groq_config = {}
+
+    model = groq_config.get("model")
+    if not isinstance(model, str) or not model.strip():
+        model = DEFAULT_GROQ_TTS_MODEL
+    else:
+        model = model.strip()
+
+    voice = groq_config.get("voice")
+    if not isinstance(voice, str) or not voice.strip():
+        voice = DEFAULT_GROQ_TTS_VOICE
+    else:
+        voice = voice.strip()
+
+    response_format = _groq_tts_response_format(output_path)
+    OpenAIClient = _import_openai_client()
+    client = OpenAIClient(
+        api_key=api_key,
+        base_url=_groq_tts_base_url(groq_config),
+        timeout=GROQ_TTS_REQUEST_TIMEOUT_SECONDS,
+    )
+    try:
+        try:
+            create_kwargs: Dict[str, Any] = {
+                "model": model,
+                "voice": voice,
+                "input": text,
+                "response_format": response_format,
+            }
+            response = client.audio.speech.create(**create_kwargs)
+            writer = getattr(response, "stream_to_file", None)
+            if callable(writer):
+                writer(output_path)
+            else:
+                body = getattr(response, "content", None)
+                if not body:
+                    raise ValueError("Groq TTS returned an empty audio body")
+                Path(output_path).write_bytes(body)
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(
+                f"Groq TTS request failed: {_bounded_provider_error(exc)}"
+            ) from None
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        raise ValueError("Groq TTS produced no audio")
+    return output_path
 
 
 # ===========================================================================
@@ -3525,7 +3634,7 @@ def _text_to_speech_single(
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini", "groq"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -3591,6 +3700,17 @@ def _text_to_speech_single(
                 }, ensure_ascii=False)
             logger.info("Generating speech with DeepInfra TTS...")
             _generate_deepinfra_tts(text, file_str, tts_config)
+
+        elif provider == "groq":
+            try:
+                _import_openai_client()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "Groq TTS uses the 'openai' SDK but it isn't installed."
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Groq Orpheus TTS...")
+            _generate_groq_tts(text, file_str, tts_config)
 
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")
@@ -3732,7 +3852,7 @@ def _text_to_speech_single(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
+        elif provider in {"elevenlabs", "openai", "mistral", "gemini", "groq"}:
             voice_compatible = want_opus and file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -3881,7 +4001,7 @@ def text_to_speech_tool(
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
             base_path = out_dir / f"tts_{timestamp}.{fmt}"
-        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini", "groq"}:
             base_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             base_path = out_dir / f"tts_{timestamp}.mp3"
@@ -4022,6 +4142,10 @@ def check_tts_requirements() -> bool:
         if importlib.util.find_spec("openai") is None:
             return False
         return bool(_resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"))
+    if provider == "groq":
+        if importlib.util.find_spec("openai") is None:
+            return False
+        return bool(_resolve_provider_key("GROQ_API_KEY", "groq"))
     if provider == "minimax":
         try:
             _resolve_minimax_tts_runtime(tts_config)

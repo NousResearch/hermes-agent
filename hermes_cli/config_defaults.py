@@ -1876,7 +1876,7 @@ DEFAULT_CONFIG = {
     # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
         # Set explicitly to pin a backend:
-        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "groq" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
         "edge": {
             "voice": "en-US-AriaNeural",
@@ -1950,6 +1950,11 @@ DEFAULT_CONFIG = {
             "model": "",  # empty = first tts-tagged model from the live catalog
             "voice": "default",
             # "base_url": "",  # override DEEPINFRA_BASE_URL for TTS only
+        },
+        "groq": {
+            "model": "canopylabs/orpheus-v1-english",
+            "voice": "autumn",
+            # "base_url": "",  # override GROQ_BASE_URL for TTS only
         },
     },
 

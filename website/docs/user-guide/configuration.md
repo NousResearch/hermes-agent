@@ -1860,7 +1860,7 @@ Legitimately slow work is not penalized: streaming responses, tool heartbeats (e
 
 ```yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper" | "deepinfra"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper" | "deepinfra" | "groq"
   speed: 1.0                    # Global speed multiplier (fallback for all providers)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -1890,6 +1890,10 @@ tts:
     sample_rate: 24000
     bit_rate: 128000            # MP3 bitrate
     # base_url: "https://api.x.ai/v1"
+  groq:
+    model: "canopylabs/orpheus-v1-english"  # or canopylabs/orpheus-arabic-saudi
+    voice: "autumn"
+    # base_url: "https://api.groq.com/openai/v1"  # override GROQ_BASE_URL
   neutts:
     ref_audio: ''
     ref_text: ''
@@ -1898,6 +1902,8 @@ tts:
 ```
 
 This controls both the `text_to_speech` tool and spoken replies in voice mode (`/voice tts` in the CLI or messaging gateway).
+
+**Groq.** `tts.provider: groq` uses Canopy Labs Orpheus through Groq's OpenAI-compatible `/audio/speech` endpoint and reuses `GROQ_API_KEY` (the same secret as Groq Whisper STT). STT and TTS stay independently selectable. Groq Whisper transcription is a finalized file/URL job — it does not itself provide partial ASR or a native bidirectional speech session. Pairing Groq STT with Groq TTS is a fast cascaded shell, not duplex.
 
 **Speed fallback hierarchy:** provider-specific speed (e.g. `tts.edge.speed`) → global `tts.speed` → `1.0` default. Set the global `tts.speed` to apply a uniform speed across all providers, or override per-provider for fine-grained control.
 

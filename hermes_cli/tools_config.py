@@ -393,6 +393,15 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "deepinfra",
             },
+            {
+                "name": "Groq Orpheus TTS",
+                "badge": "paid",
+                "tag": "Canopy Labs Orpheus via GROQ_API_KEY (same key as Groq STT)",
+                "env_vars": [
+                    {"key": "GROQ_API_KEY", "prompt": "Groq API key", "url": "https://console.groq.com/keys"},
+                ],
+                "tts_provider": "groq",
+            },
         ],
     },
     "stt": {

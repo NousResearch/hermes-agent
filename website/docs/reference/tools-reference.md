@@ -76,7 +76,7 @@ If the prompt times out part-way, answers the user already locked are kept: the 
 
 ## `feishu_doc` toolset
 
-Scoped to the Feishu document-comment intelligent-reply handler (`gateway/platforms/feishu_comment.py`). Not exposed on `hermes-cli` or the regular Feishu chat adapter.
+Scoped to the Feishu document-comment intelligent-reply handler (`plugins/platforms/feishu/feishu_comment.py`). Not exposed on `hermes-cli` or the regular Feishu chat adapter.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|

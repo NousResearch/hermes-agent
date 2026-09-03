@@ -45,6 +45,54 @@ class TestBlueBubblesConfigLoading:
         assert bc.extra["require_mention"] is True
         assert bc.extra["mention_patterns"] == ["(?i)^amos\\b"]
 
+    def test_env_credentials_do_not_disable_yaml_mention_gating(self, monkeypatch):
+        """Credentials in .env must not clobber require_mention from config.yaml.
+
+        ``getenv`` inside ``_apply_env_overrides`` is ``_getenv_str``, which
+        returns "" rather than None for an unset variable. That made the
+        ``is not None`` guard always true, so merely having
+        BLUEBUBBLES_SERVER_URL/PASSWORD in .env silently rewrote an explicit
+        ``require_mention: true`` to False and the bot answered every message
+        in every group chat.
+        """
+        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
+        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+        monkeypatch.delenv("BLUEBUBBLES_REQUIRE_MENTION", raising=False)
+        from gateway.config import GatewayConfig, _apply_env_overrides
+
+        config = GatewayConfig(
+            platforms={
+                Platform.BLUEBUBBLES: PlatformConfig(
+                    enabled=True,
+                    extra={"require_mention": True},
+                )
+            }
+        )
+
+        _apply_env_overrides(config)
+
+        assert config.platforms[Platform.BLUEBUBBLES].extra["require_mention"] is True
+
+    def test_env_still_overrides_yaml_when_explicitly_set(self, monkeypatch):
+        """The env var keeps precedence when the user actually sets it."""
+        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
+        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+        monkeypatch.setenv("BLUEBUBBLES_REQUIRE_MENTION", "false")
+        from gateway.config import GatewayConfig, _apply_env_overrides
+
+        config = GatewayConfig(
+            platforms={
+                Platform.BLUEBUBBLES: PlatformConfig(
+                    enabled=True,
+                    extra={"require_mention": True},
+                )
+            }
+        )
+
+        _apply_env_overrides(config)
+
+        assert config.platforms[Platform.BLUEBUBBLES].extra["require_mention"] is False
+
 
 class TestBlueBubblesHelpers:
     def test_check_requirements(self, monkeypatch):

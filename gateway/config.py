@@ -2630,7 +2630,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "webhook_path": getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
             "send_read_receipts": is_truthy_value(getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true")),
         })
-        bluebubbles_require_mention = getenv("BLUEBUBBLES_REQUIRE_MENTION")
+        # ``getenv`` is ``_getenv_str``, which returns "" (not None) for an
+        # unset variable. Using it here made the ``is not None`` guard always
+        # true, so simply having BLUEBUBBLES_SERVER_URL/PASSWORD in .env
+        # overwrote an explicit ``require_mention: true`` from config.yaml
+        # with False. Read through ``_getenv`` so an unset variable stays None
+        # and the YAML value survives.
+        bluebubbles_require_mention = _getenv("BLUEBUBBLES_REQUIRE_MENTION")
         if bluebubbles_require_mention is not None:
             config.platforms[Platform.BLUEBUBBLES].extra["require_mention"] = (
                 bluebubbles_require_mention.lower() in {"true", "1", "yes", "on"}

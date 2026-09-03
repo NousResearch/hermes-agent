@@ -74,6 +74,30 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
     assert build_kanban_stop_nudge(messages=messages) is None
 
 
+@pytest.mark.parametrize("tool", ["kanban_request_review", "kanban_request_changes"])
+def test_no_nudge_after_review_handoff(clear_kanban_env, tool):
+    """Handing off to review (or back to the implementer) closes the worker's
+    run — the process must be allowed to exit instead of being nudged to
+    call complete/block on a task it no longer owns (2026-09-02 runaway)."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": tool, "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "name": tool, "tool_call_id": "1", "content": "ok"},
+    ]
+    assert session_called_kanban_terminal(messages) is True
+    assert build_kanban_stop_nudge(messages=messages) is None
+
+
 
 
 

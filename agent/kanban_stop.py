@@ -1,6 +1,7 @@
 """Turn-end guard for kanban workers.
 
-Kanban workers must end with ``kanban_complete`` or ``kanban_block``. Models
+Kanban workers must end with a terminal board tool (``kanban_complete``,
+``kanban_block``, ``kanban_request_review``, ``kanban_request_changes``). Models
 (especially GLM / Qwen families) sometimes narrate the next step
 ("Let me write the report now") and stop with ``finish_reason=stop`` and no
 tool calls. Hermes treats that as a clean exit → ``rc=0`` → dispatcher
@@ -17,7 +18,16 @@ import os
 from typing import Any, Iterable, Optional
 
 
-_TERMINAL_KANBAN_TOOLS = frozenset({"kanban_complete", "kanban_block"})
+# Every tool that closes the worker's run. ``kanban_request_review`` and
+# ``kanban_request_changes`` hand the task to another run — nudging after
+# them makes the worker keep calling complete/block on a task it no longer
+# owns (it loops for hours; the 2026-09-02 coloring-books runaway).
+_TERMINAL_KANBAN_TOOLS = frozenset({
+    "kanban_complete",
+    "kanban_block",
+    "kanban_request_review",
+    "kanban_request_changes",
+})
 
 _DEFAULT_MAX_ATTEMPTS = 2
 

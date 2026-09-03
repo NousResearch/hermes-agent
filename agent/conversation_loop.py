@@ -4008,15 +4008,29 @@ def run_conversation(
                         incomplete_reason = str(incomplete_reason).strip().lower()
                     if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
                         # Responses API max-output exhaustion is a normal
-                        # Codex incomplete turn.  Let the Codex-specific
-                        # continuation path below append the incomplete
-                        # assistant state and retry, instead of routing to
-                        # the generic chat-completions length rollback that
-                        # emits "Response truncated due to output length
-                        # limit" and stops gateway turns.
-                        finish_reason = "incomplete"
+                        # output-token truncation.  Route it through the same
+                        # bounded length-continuation dispatcher used by the
+                        # chat modes below: it progressively boosts the output
+                        # token budget via _ephemeral_max_output_tokens and
+                        # refuses to execute a truncated tool call.  The
+                        # Codex-specific incomplete branch stays reserved for
+                        # genuinely non-recoverable shapes (reasoning-only
+                        # no-progress, empty/non-replayable interim) so the
+                        # standard wire shape does not burn its 3 attempts at
+                        # an unchanged budget (#91779, #91770).
+                        finish_reason = "length"
                     elif status == "incomplete" and incomplete_reason == "content_filter":
                         finish_reason = "content_filter"
+                    elif status == "incomplete":
+                        # Truncated mid-generation but not a recognised reason
+                        # (self-hosted /v1/responses servers like llama.cpp
+                        # omit incomplete_details entirely). Route through the
+                        # length-continuation machinery below so the partial is
+                        # recovered via the bounded nudge/stitching path with
+                        # the 4-attempt ceiling, instead of only the codex-
+                        # incomplete continuation that has no such bounds
+                        # (#91770).
+                        finish_reason = "length"
                     else:
                         finish_reason = "stop"
                 elif agent.api_mode == "anthropic_messages":
@@ -4163,7 +4177,9 @@ def run_conversation(
                     # Normalize the truncated response to a single OpenAI-style
                     # message shape so text-continuation and tool-call retry
                     # work uniformly across chat_completions, bedrock_converse,
-                    # and anthropic_messages.  For Anthropic we use the same
+                    # anthropic_messages, and the Responses family
+                    # (codex / codex_responses / responses).  For Anthropic we
+                    # use the same
                     # adapter the agent loop already relies on so the rebuilt
                     # interim assistant message is byte-identical to what
                     # would have been appended in the non-truncated path.
@@ -4295,7 +4311,7 @@ def run_conversation(
                             "error": _rep_error,
                         }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages", "codex", "codex_responses", "responses"}:
                         assistant_message = _trunc_msg
                         # ── Content-filter stream stall → fallback (#32421) ──
                         # When the provider's output-layer safety filter (e.g.
@@ -4509,7 +4525,7 @@ def run_conversation(
                                 "error": "Response remained truncated after 4 continuation attempts",
                             }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages", "codex", "codex_responses", "responses"}:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and _trunc_has_tool_calls:
                             _is_stub_stall = (

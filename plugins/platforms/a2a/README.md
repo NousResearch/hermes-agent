@@ -24,10 +24,13 @@ gateway:
 a2a_agents:
   researcher:
     url: "http://localhost:9999"
-    auth: { type: bearer, token: "sk-..." }
+    auth: { type: bearer, token_file: "~/.hermes/auth/researcher.token" }
     timeout: 120
     capabilities: [web_search, research]
 ```
+
+Bearer files must be regular files readable only by their owner (`0600`).
+Inline `token` remains supported, but it cannot be combined with `token_file`.
 
 ## Outbound — call other agents
 

@@ -13,7 +13,7 @@ Peers are resolved from config.yaml under ``a2a_agents``::
     a2a_agents:
       researcher:
         url: "http://localhost:9999"
-        auth: { type: bearer, token: "sk-..." }
+        auth: { type: bearer, token_file: "~/.hermes/auth/researcher.token" }
         timeout: 120
         capabilities: [web_search, research]
 
@@ -25,9 +25,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import stat
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any, Optional, TypedDict
 
 from . import protocol, security
@@ -69,8 +72,46 @@ def _resolve_peer(agent: str) -> Optional[dict]:
 
 
 def _auth_header(auth: dict) -> dict:
-    if auth and auth.get("type") == "bearer" and auth.get("token"):
-        return {"Authorization": f"Bearer {auth['token']}"}
+    if not auth or auth.get("type") != "bearer":
+        return {}
+    inline = str(auth.get("token") or "").strip()
+    token_file = str(auth.get("token_file") or "").strip()
+    if inline and token_file:
+        raise ValueError("bearer auth cannot combine token and token_file")
+    if token_file:
+        path = Path(token_file).expanduser()
+        descriptor: int | None = None
+        try:
+            no_follow = getattr(os, "O_NOFOLLOW", None)
+            if no_follow is None:
+                raise ValueError("bearer token_file secure no-follow open is unavailable")
+            flags = os.O_RDONLY | no_follow
+            descriptor = os.open(path, flags)
+            file_stat = os.fstat(descriptor)
+            if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_mode & 0o077:
+                raise ValueError("bearer token_file must be a regular file with mode 0600")
+            if file_stat.st_size > 4098:
+                raise ValueError("bearer token_file must contain at most 4096 bytes")
+            with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                descriptor = None
+                token = handle.read().strip()
+        except ValueError:
+            raise
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("bearer token_file is unreadable") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        token_bytes = token.encode("utf-8")
+        if len(token_bytes) < 32:
+            raise ValueError("bearer token_file must contain one bearer value of at least 32 bytes")
+        if len(token_bytes) > 4096:
+            raise ValueError("bearer token_file must contain at most 4096 bytes")
+        if any(char.isspace() for char in token):
+            raise ValueError("bearer token_file must contain one bearer value")
+        return {"Authorization": f"Bearer {token}"}
+    if inline:
+        return {"Authorization": f"Bearer {inline}"}
     return {}
 
 

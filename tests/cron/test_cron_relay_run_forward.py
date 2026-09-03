@@ -148,6 +148,31 @@ class TestForwardRelayFrontedRun:
             cronjob_tools._forward_relay_fronted_run({"id": "j1"})
         assert sent["json"] == {}
 
+    def test_detached_direct_run_forwards_instead_of_launching_worker(self):
+        job = {"id": "j1", "name": "relay run", "deliver": "discord"}
+        with patch.object(
+            cronjob_tools, "resolve_job_ref", return_value=job
+        ), patch.object(
+            cronjob_tools,
+            "_relay_fronted_delivery_platforms",
+            return_value={"discord"},
+        ), patch("httpx.post", return_value=_Resp(200)) as post, patch.object(
+            cronjob_tools, "_try_dispatch_detached_run"
+        ) as detached:
+            out = json.loads(
+                cronjob_tools.cronjob(
+                    action="run",
+                    job_id="j1",
+                    prompt="one fire only",
+                    detach_run=True,
+                )
+            )
+
+        assert out["success"] is True
+        assert out["forwarded_to_gateway"] is True
+        assert post.call_args.kwargs["json"] == {"prompt": "one fire only"}
+        detached.assert_not_called()
+
 
 class TestManualRunPromptConsumption:
     """The stamped transient prompt reaches the fire that consumes the

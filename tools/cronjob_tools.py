@@ -1879,6 +1879,14 @@ def cronjob(
             # incident). Falls back to inline execution when the session
             # runtime can't receive detached completions.
             if detach_run:
+                # Relay-fronted platforms can only deliver through the live
+                # gateway adapter. Preserve that transport before choosing a
+                # standalone worker, which intentionally has no adapters.
+                forwarded = _forward_relay_fronted_run(
+                    job, extra_prompt=extra_prompt
+                )
+                if forwarded is not None:
+                    return forwarded
                 bg = _try_dispatch_detached_run(job, extra_prompt=extra_prompt)
             else:
                 bg = _try_dispatch_background_run(

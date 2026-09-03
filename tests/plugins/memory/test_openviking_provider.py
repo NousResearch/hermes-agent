@@ -1159,14 +1159,21 @@ def test_sync_turn_captures_session_id_before_worker_runs():
     finally:
         _mod._VikingClient = real_client_cls
 
-    # The whole turn must target the OLD session id as a single ordered batch.
-    assert captured_paths == ["/api/v1/sessions/old-sid/messages/batch"]
-    assert captured_payloads == [{
-        "messages": [
-            {"role": "user", "parts": [{"type": "text", "text": "u"}]},
-            {"role": "assistant", "parts": [{"type": "text", "text": "a"}], "peer_id": "hermes"},
-        ]
-    }]
+    # The whole turn must target the OLD session id: session registration
+    # first (see _ensure_ov_session), then the single ordered batch.
+    assert captured_paths == [
+        "/api/v1/sessions",
+        "/api/v1/sessions/old-sid/messages/batch",
+    ]
+    assert captured_payloads == [
+        {"session_id": "old-sid"},
+        {
+            "messages": [
+                {"role": "user", "parts": [{"type": "text", "text": "u"}]},
+                {"role": "assistant", "parts": [{"type": "text", "text": "a"}], "peer_id": "hermes"},
+            ]
+        },
+    ]
 
 
 def _long_structured_turn(assistant_count=204):
@@ -1925,3 +1932,124 @@ class TestOpenVikingEnvWriter:
         assert env.read_text(encoding="utf-8").splitlines() == [
             "A=1", "OPENAI_API_KEY=new", "B=2",
         ]
+
+
+def _registration_provider(sid):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+    provider._session_id = sid
+    return provider
+
+
+def test_sync_turn_registers_session_once_per_sid():
+    """The sid is registered with POST /api/v1/sessions before its first
+    batch and never re-registered on later turns."""
+    provider = _registration_provider("sid-reg")
+    captured = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            captured.append(path)
+            return {}
+
+    import plugins.memory.openviking as _mod
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    try:
+        provider.sync_turn("u1", "a1")
+        assert provider._drain_writers("sid-reg", timeout=2.0)
+        provider.sync_turn("u2", "a2")
+        assert provider._drain_writers("sid-reg", timeout=2.0)
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    assert captured[0] == "/api/v1/sessions"
+    assert captured.count("/api/v1/sessions") == 1
+    assert captured.count("/api/v1/sessions/sid-reg/messages/batch") == 2
+
+
+def test_sync_turn_treats_already_exists_registration_as_registered():
+    """An ALREADY_EXISTS answer (racing writer / previous run) counts as
+    registered: the batch proceeds and the sid is not re-registered."""
+    provider = _registration_provider("sid-exists")
+    captured = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            captured.append(path)
+            if path == "/api/v1/sessions":
+                raise RuntimeError(
+                    "ALREADY_EXISTS: Session 'sid-exists' already exists"
+                )
+            return {}
+
+    import plugins.memory.openviking as _mod
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    try:
+        provider.sync_turn("u1", "a1")
+        assert provider._drain_writers("sid-exists", timeout=2.0)
+        provider.sync_turn("u2", "a2")
+        assert provider._drain_writers("sid-exists", timeout=2.0)
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    assert captured.count("/api/v1/sessions") == 1
+    assert captured.count("/api/v1/sessions/sid-exists/messages/batch") == 2
+
+
+def test_overlapping_first_writers_register_session_once():
+    """Two writers for ONE sid in flight at the same time produce exactly one
+    POST /api/v1/sessions: registration is single-flight per sid (review
+    finding on #72146 — the unsynchronized check/post/add sequence let both
+    first turns register)."""
+    provider = _registration_provider("sid-race")
+    captured = []
+    cap_lock = threading.Lock()
+    reg_entered = threading.Event()
+    release_reg = threading.Event()
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            with cap_lock:
+                captured.append(path)
+            if path == "/api/v1/sessions":
+                reg_entered.set()
+                # Hold the first registration POST open: this is exactly the
+                # window in which an unsynchronized second writer would pass
+                # the registered-set check and POST again.
+                release_reg.wait(timeout=2.0)
+            return {}
+
+    import plugins.memory.openviking as _mod
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    try:
+        provider.sync_turn("u1", "a1")          # writer 1: enters registration
+        assert reg_entered.wait(timeout=2.0)
+        provider.sync_turn("u2", "a2")          # writer 2: spawned mid-POST
+        # Give writer 2 time to reach the registration seam while writer 1
+        # still holds the POST open.
+        time.sleep(0.3)
+        release_reg.set()
+        assert provider._drain_writers("sid-race", timeout=5.0)
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    with cap_lock:
+        assert captured.count("/api/v1/sessions") == 1
+        assert captured.count("/api/v1/sessions/sid-race/messages/batch") == 2

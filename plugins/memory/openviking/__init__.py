@@ -2295,6 +2295,15 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._deferred_commit_lock = threading.Lock()
         self._committed_session_ids: Set[str] = set()
         self._committed_session_lock = threading.Lock()
+        # One registration POST per sid even with overlapping writers:
+        # _spawn_writer allows several concurrent writers for one sid, so
+        # the registered-set check and the register POST must be
+        # single-flight. The state lock guards the set and the per-sid lock
+        # table; the per-sid lock spans the POST itself, so first turns of
+        # DIFFERENT sids never serialize each other. See the #72146 review.
+        self._registered_session_ids: Set[str] = set()
+        self._session_registration_locks: Dict[str, threading.Lock] = {}
+        self._session_registration_state_lock = threading.Lock()
         self._pending_marked_sids: Set[str] = set()
         # Connection settings and _client are one published state. Serialize
         # refreshes so callers never observe a new config with the old client.
@@ -3187,6 +3196,42 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 assistant_message,
             ]
         }
+
+    # Official OpenViking (>=0.3.x) no longer auto-creates a session on the
+    # first messages/batch POST: an unregistered sid answers 404, every turn
+    # degrades to the fallback (which 404s the same way), and the final
+    # session commit fails with "Session not found" — so memory extraction
+    # silently never runs. Register the sid once per provider lifetime; an
+    # ALREADY_EXISTS answer (racing writer / prior run) counts as registered.
+    def _ensure_ov_session(self, client: "_VikingClient", sid: str) -> None:
+        if not sid:
+            return
+        # Single-flight per sid: the naive check/post/add lets two
+        # overlapping first writers both pass the check and both POST.
+        with self._session_registration_state_lock:
+            if sid in self._registered_session_ids:
+                return
+            lock = self._session_registration_locks.setdefault(
+                sid, threading.Lock()
+            )
+        with lock:
+            with self._session_registration_state_lock:
+                if sid in self._registered_session_ids:
+                    return
+            try:
+                client.post("/api/v1/sessions", {"session_id": sid})
+            except Exception as exc:
+                msg = str(exc).upper()
+                if not ("EXIST" in msg or "ALREADY" in msg or "DUPLICATE" in msg):
+                    logger.warning(
+                        "OpenViking session register failed for %s: %s", sid, exc
+                    )
+                    return
+            with self._session_registration_state_lock:
+                self._registered_session_ids.add(sid)
+                # A loser blocked on `lock` re-checks the set and returns;
+                # dropping the table entry just keeps it from growing.
+                self._session_registration_locks.pop(sid, None)
 
     def _post_session_turn(
         self,
@@ -4669,6 +4714,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
             def _post_turn(client: _VikingClient) -> None:
                 nonlocal next_batch_index
+                # Register the sid before any message POST (see
+                # _ensure_ov_session) — covers the batch path and the
+                # per-message fallback alike.
+                self._ensure_ov_session(client, sid)
                 if batch_messages:
                     while next_batch_index < len(batch_messages):
                         batch_end = min(

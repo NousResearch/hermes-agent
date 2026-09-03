@@ -406,6 +406,18 @@ _IMAGE_API_MODELS: Dict[str, Dict[str, Any]] = {
         "quality": (), "background": (), "output_format": (),
         "compression": False, "seed": True, "max_n": 6, "max_refs": 4,
     },
+    "meta/muse-image": {
+        "display": "Meta Muse Image",
+        "strengths": "Agentic Meta model; output_format png/jpeg/webp honored",
+        "aspect_ratios": (
+            "1:1", "16:9", "9:16", "3:2", "2:3", "4:3", "3:4", "5:4",
+            "21:9", "1:2", "auto",
+        ),
+        "resolutions": ("512", "1K", "2K", "4K"),
+        "quality": (), "background": (),
+        "output_format": ("png", "jpeg", "webp"),
+        "compression": False, "seed": True, "max_n": 10, "max_refs": 3,
+    },
 }
 
 #: Applied to a catalog model this table doesn't describe, so a newly released

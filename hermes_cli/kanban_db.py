@@ -9218,6 +9218,7 @@ def _record_task_failure(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     blocked = False
+    auto_blocked_hook: Optional[dict] = None
     with write_txn(conn):
         row = conn.execute(
             "SELECT consecutive_failures, status, max_retries, current_run_id "
@@ -9225,6 +9226,7 @@ def _record_task_failure(
         ).fetchone()
         if row is None:
             return False
+        run_id = row["current_run_id"]
         retry_status = (
             _retry_status_for_run(conn, task_id, row["current_run_id"])
             if release_claim
@@ -9265,7 +9267,6 @@ def _record_task_failure(
                     "WHERE id = ? AND status IN ('ready', 'review', 'running')",
                     (failures, error[:500], task_id),
                 )
-            run_id = None
             if end_run:
                 # Only the spawn path has an open run to close.
                 run_id = _end_run(
@@ -9294,6 +9295,16 @@ def _record_task_failure(
                 conn, task_id, "gave_up", payload, run_id=run_id,
             )
             blocked = True
+            if _kanban_observer_consumed("on_kanban_task_auto_blocked"):
+                auto_blocked_hook = {
+                    "run_id": run_id,
+                    "outcome": outcome,
+                    "error": error[:500],
+                    "error_fingerprint": _error_fingerprint(error),
+                    "consecutive_failures": failures,
+                    "failure_limit": effective_limit,
+                    "retry_status": retry_status,
+                }
         else:
             # Below threshold.
             if release_claim:
@@ -9333,6 +9344,20 @@ def _record_task_failure(
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
+    if auto_blocked_hook is not None:
+        try:
+            task = get_task(conn, task_id)
+            if task is not None:
+                _fire_kanban_lifecycle_hook(
+                    "on_kanban_task_auto_blocked",
+                    task_id,
+                    board=get_current_board(),
+                    assignee=task.assignee,
+                    status=task.status,
+                    **auto_blocked_hook,
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.debug("kanban auto-block hook failed: %s", exc)
     return blocked
 
 

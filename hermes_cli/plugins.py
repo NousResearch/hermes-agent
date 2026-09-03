@@ -352,6 +352,13 @@ VALID_HOOKS: Set[str] = {
     #     skipped_nonspawnable, skipped_locked).
     #   Privacy: result carries task ids, assignees, and workspace paths.
     "on_kanban_dispatch_tick",
+    # on_kanban_task_auto_blocked fires after the circuit-breaker transition
+    # commits, from every failure path that reaches its effective limit. Adds:
+    #   outcome: str (the triggering failure outcome), error: str,
+    #   error_fingerprint: str, consecutive_failures: int,
+    #   failure_limit: int, retry_status: str, status: "blocked".
+    # The hook is observer-only and short-circuits when no subscriber exists.
+    "on_kanban_task_auto_blocked",
     # Gateway platform-boundary observer hooks (#64176). Observer-only; each
     # callback isolated by invoke_hook. Payloads are normalized envelopes only,
     # never raw platform SDK objects (per #64176 / #64182 ground rule). This

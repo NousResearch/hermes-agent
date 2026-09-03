@@ -883,6 +883,21 @@ const DESKTOP_LOG_MAX_BYTES = 10 * 1024 * 1024
 const DESKTOP_LOG_BACKUP_COUNT = 3
 const DESKTOP_LOG_DISCARD_BYTES = DESKTOP_LOG_MAX_BYTES * 4
 const desktopLogBackupPath = n => `${DESKTOP_LOG_PATH}.${n}`
+
+// rememberLog()'s backing state. It lives up here, beside the DESKTOP_LOG_*
+// constants, because module-level initializers further down this file call
+// rememberLog() while the module is still evaluating (readPersistedPoolLimits()
+// is the first, and will not be the last). Declared at their point of use these
+// were in the temporal dead zone at that moment; the bundler lowers module-scope
+// `const`/`let` to `var`, so the TDZ ReferenceError degraded into `hermesLog`
+// being plain `undefined` and the main process died on boot with
+// "Cannot read properties of undefined (reading 'push')" — no window, no log
+// line, because the logger itself was what crashed. Anything that logs during
+// module evaluation must be declared before the code that does the logging.
+const hermesLog = []
+let desktopLogBuffer = ''
+let desktopLogFlushTimer = null
+let desktopLogFlushPromise = Promise.resolve()
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
 const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 // Automated teardown (Playwright's app.close(), harness scripts) quits with
@@ -1574,12 +1589,8 @@ let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
 let remoteHeaderRulesInstalled = false
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
-const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
-let desktopLogBuffer = ''
-let desktopLogFlushTimer = null
-let desktopLogFlushPromise = Promise.resolve()
 let nativeThemeListenerInstalled = false
 
 let bootProgressState = {

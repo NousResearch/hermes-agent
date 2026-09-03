@@ -3,6 +3,9 @@
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
 **Never give up on the right solution.**
+## About
+
+This project is an open-source AI research agent.
 
 ## What Hermes Is
 

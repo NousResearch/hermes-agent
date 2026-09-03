@@ -498,6 +498,9 @@ def _build_gemini_contents(
                         )
                     )
 
+        if role == "user" and not parts:
+            parts = [{"text": "(empty message)"}]
+
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
 
@@ -548,6 +551,15 @@ def _build_gemini_contents(
         else:
             merged_contents.append(content)
     contents = merged_contents
+
+    # Gemini REST API requires contents to be non-empty, start with role 'user',
+    # and end with role 'user' (generating a model response requires a user prompt).
+    if not contents:
+        contents.append({"role": "user", "parts": [{"text": "(empty message)"}]})
+    elif contents[0].get("role") != "user":
+        contents.insert(0, {"role": "user", "parts": [{"text": "(empty message)"}]})
+    if contents[-1].get("role") != "user":
+        contents.append({"role": "user", "parts": [{"text": "(empty message)"}]})
 
     system_instruction = None
     joined_system = "\n".join(part for part in system_text_parts if part).strip()

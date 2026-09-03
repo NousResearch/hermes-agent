@@ -124,11 +124,62 @@ def test_consecutive_user_messages_merge_for_gemini_alternation():
     messages = [
         {"role": "user", "content": "first"},
         {"role": "user", "content": "second"},
-        {"role": "assistant", "content": "ok"},
     ]
     contents, _ = _build_gemini_contents(messages)
     roles = [c["role"] for c in contents]
-    assert roles == ["user", "model"], roles
+    assert roles == ["user"], roles
+    assert len(contents[0]["parts"]) == 2
+    assert contents[0]["parts"][0] == {"text": "first"}
+    assert contents[0]["parts"][1] == {"text": "second"}
+
+
+def test_empty_user_message_is_not_dropped():
+    """An empty user message must produce a valid user content turn."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    messages = [
+        {"role": "user", "content": ""},
+    ]
+    contents, _ = _build_gemini_contents(messages)
+    assert len(contents) == 1
+    assert contents[0]["role"] == "user"
+    assert contents[0]["parts"] == [{"text": "(empty message)"}]
+
+
+def test_trailing_model_turn_appends_user_prompt_turn():
+    """A conversation ending in a model turn must append a user turn so Gemini has a prompt."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    contents, _ = _build_gemini_contents(messages)
+    assert [c["role"] for c in contents] == ["user", "model", "user"]
+    assert contents[-1]["parts"] == [{"text": "(empty message)"}]
+
+
+def test_leading_model_turn_prepends_user_turn():
+    """A conversation starting with a model turn (e.g. post-compaction) must prepend a user turn."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    messages = [
+        {"role": "assistant", "content": "summary of past conversation"},
+        {"role": "user", "content": "next task"},
+    ]
+    contents, _ = _build_gemini_contents(messages)
+    assert [c["role"] for c in contents] == ["user", "model", "user"]
+    assert contents[0]["parts"] == [{"text": "(empty message)"}]
+
+
+def test_empty_messages_produces_single_user_turn():
+    """An empty message list must still produce a non-empty contents with a single user turn."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    contents, _ = _build_gemini_contents([])
+    assert len(contents) == 1
+    assert contents[0]["role"] == "user"
+    assert contents[0]["parts"] == [{"text": "(empty message)"}]
 
 
 def test_schema_bearing_tool_result_is_wrapped_as_opaque_text():

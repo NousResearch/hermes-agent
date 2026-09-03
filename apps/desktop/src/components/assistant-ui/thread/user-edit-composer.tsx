@@ -35,6 +35,7 @@ import {
   insertInlineRefsIntoEditor
 } from '@/app/chat/composer/inline-refs'
 import { chipTypedPathOnSpace, pathifyRefs } from '@/app/chat/composer/path-refs'
+import { EDITOR_SUPPRESSION_ATTRS } from '@/app/chat/composer/autofill-suppression'
 import {
   composerPlainText,
   insertComposerContentsAtCaret,
@@ -44,7 +45,6 @@ import {
   replaceBeforeCaret,
   RICH_INPUT_SLOT
 } from '@/app/chat/composer/rich-editor'
-import { EDITOR_SUPPRESSION_ATTRS } from '@/app/chat/composer/autofill-suppression'
 import { detectTrigger, openDirectiveScope, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { isRedoShortcut, isUndoShortcut } from '@/app/chat/composer/undo-history'

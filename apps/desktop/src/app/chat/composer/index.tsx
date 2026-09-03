@@ -27,13 +27,13 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { EDITOR_SUPPRESSION_ATTRS } from './autofill-suppression'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
   type QueueEditState,
   slashArgStage
 } from './composer-utils'
-import { EDITOR_SUPPRESSION_ATTRS } from './autofill-suppression'
 import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'

@@ -10,9 +10,11 @@ This module is the single source of truth for the dangerous command system:
 
 import contextlib
 import contextvars
+from dataclasses import asdict, dataclass
 import fnmatch
 import functools
 import hashlib
+import secrets
 import logging
 import os
 import re
@@ -62,6 +64,12 @@ _approval_session_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_session_id",
     default="",
 )
+_native_tool_approval_grant_ctx: contextvars.ContextVar[
+    "NativeToolApprovalGrant | None"
+] = contextvars.ContextVar(
+    "native_tool_approval_grant",
+    default=None,
+)
 
 # Interactive-CLI flag. Concurrent ACP sessions run on a shared
 # ThreadPoolExecutor (acp_adapter/server.py), so mutating the process-global
@@ -76,6 +84,133 @@ _hermes_interactive_ctx: contextvars.ContextVar[Optional[str]] = contextvars.Con
     "hermes_interactive",
     default=None,
 )
+
+
+@dataclass(frozen=True)
+class NativeToolApprovalGrant:
+    """One-use proof that a plugin-gated tool call received human approval."""
+
+    tool_name: str
+    session_id: str
+    tool_call_id: str
+    turn_id: str
+    rule_key: str
+    grant_id: str
+    approved_at: float
+    expires_at: float
+
+
+def clear_current_native_tool_approval_grant() -> None:
+    """Drop any plugin native-approval grant bound to this execution context."""
+    _native_tool_approval_grant_ctx.set(None)
+
+
+def build_plugin_tool_approval_rule_key(
+    tool_name: str,
+    reason: str,
+    *,
+    rule_key: str = "",
+) -> str:
+    """Return the stable plugin rule-key suffix used for allowlists/grants."""
+    if rule_key:
+        return rule_key
+    description = reason or f"Plugin requires approval for {tool_name}"
+    reason_hash = hashlib.sha256(description.encode("utf-8")).hexdigest()[:12]
+    return f"{tool_name}:{reason_hash}"
+
+
+def _issue_current_native_tool_approval_grant(
+    *,
+    tool_name: str,
+    rule_key: str,
+) -> dict[str, str | float]:
+    """Bind a one-use native approval grant to the current execution context."""
+    approved_at = time.time()
+    grant = NativeToolApprovalGrant(
+        tool_name=tool_name,
+        session_id=_approval_session_id.get(),
+        tool_call_id=_approval_tool_call_id.get(),
+        turn_id=_approval_turn_id.get(),
+        rule_key=rule_key,
+        grant_id=f"native-{secrets.token_urlsafe(18)}",
+        approved_at=approved_at,
+        expires_at=approved_at + 30.0,
+    )
+    _native_tool_approval_grant_ctx.set(grant)
+    return asdict(grant)
+
+
+def consume_current_native_tool_approval_grant(
+    *,
+    tool_name: str,
+    rule_key: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+) -> dict[str, str | float] | None:
+    """Consume the current plugin approval grant exactly once if it matches.
+
+    Callers may pass explicit correlation IDs or rely on the current approval
+    ContextVars. Any mismatch fails closed and preserves the grant for the
+    rightful consumer in the same context.
+    """
+    grant = _native_tool_approval_grant_ctx.get()
+    if grant is None:
+        return None
+    expected_session_id = session_id or _approval_session_id.get()
+    expected_tool_call_id = tool_call_id or _approval_tool_call_id.get()
+    expected_turn_id = turn_id or _approval_turn_id.get()
+    if (
+        grant.tool_name != tool_name
+        or grant.session_id != expected_session_id
+        or grant.tool_call_id != expected_tool_call_id
+        or grant.turn_id != expected_turn_id
+    ):
+        return None
+    if rule_key and grant.rule_key != rule_key:
+        return None
+    clear_current_native_tool_approval_grant()
+    return asdict(grant)
+
+
+def _invalid_approval_scope_result(
+    *,
+    description: str,
+    pattern_key: str,
+    allowed_once_only: bool,
+) -> dict:
+    """Fail closed when an approval surface returns a scope the caller forbids."""
+    if allowed_once_only:
+        detail = (
+            "This action only supports one-time approval. Session or permanent "
+            "approval was not accepted."
+        )
+    else:
+        detail = "This action does not allow permanent approval."
+    return {
+        "approved": False,
+        "message": f"BLOCKED: {detail}",
+        "pattern_key": pattern_key,
+        "description": description,
+        "outcome": "invalid_scope",
+        "user_consent": False,
+    }
+
+
+def _approval_choice_allowed(
+    choice: str | None,
+    *,
+    allow_session: bool,
+    allow_permanent: bool,
+) -> bool:
+    """True when *choice* is compatible with the caller's allowed scopes."""
+    if choice in {None, "once", "deny", "timeout"}:
+        return True
+    if choice == "session":
+        return allow_session
+    if choice == "always":
+        return allow_session and allow_permanent
+    return False
 
 
 def set_hermes_interactive_context(interactive: bool) -> contextvars.Token:
@@ -185,7 +320,6 @@ def _observe_smart_approval_verdict(payload: dict | None, verdict: str) -> None:
     )
 
 
-
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
     """Bind the active approval session key to the current context."""
     return _approval_session_key.set(session_key or "")
@@ -201,9 +335,7 @@ def set_current_observability_context(
     turn_id: str = "",
     tool_call_id: str = "",
     session_id: str = "",
-) -> tuple[
-    contextvars.Token[str], contextvars.Token[str], contextvars.Token[str]
-]:
+) -> tuple[contextvars.Token[str], contextvars.Token[str], contextvars.Token[str]]:
     """Bind active tool correlation IDs to approval hooks."""
     return (
         _approval_turn_id.set(turn_id or ""),
@@ -236,6 +368,7 @@ def get_current_session_key(default: str = "default") -> str:
     if session_key:
         return session_key
     from gateway.session_context import get_session_env
+
     return get_session_env("HERMES_SESSION_KEY", default)
 
 
@@ -357,6 +490,7 @@ def _resolve_cli_approval_callback(approval_callback=None):
         return approval_callback
     try:
         from tools.terminal_tool import _get_approval_callback
+
         return _get_approval_callback()
     except Exception:
         return None
@@ -378,6 +512,7 @@ def _should_fall_through_to_cli_approval(
     """
     return bool(is_cli and approval_callback is not None and notify_cb is None)
 
+
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME, or by the resolved absolute
 # active profile home path such as /home/hermes/.hermes/config.yaml. The
@@ -386,12 +521,12 @@ def _should_fall_through_to_cli_approval(
 # these static patterns stay free of any import-time path snapshot (which would
 # go stale when HERMES_HOME is set after this module is imported, e.g. under the
 # hermetic test conftest or any deferred-profile-resolution path).
-_SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
+_SSH_SENSITIVE_PATH = r"(?:~|\$home|\$\{home\})/\.ssh(?:/|$)"
 _HERMES_ENV_PATH = (
-    r'(?:~\/\.hermes/|'
-    r'(?:\$home|\$\{home\})/\.hermes/|'
-    r'(?:\$hermes_home|\$\{hermes_home\})/)'
-    r'\.env\b'
+    r"(?:~\/\.hermes/|"
+    r"(?:\$home|\$\{home\})/\.hermes/|"
+    r"(?:\$hermes_home|\$\{hermes_home\})/)"
+    r"\.env\b"
 )
 # ~/.hermes/config.yaml IS the security policy: approvals.mode, yolo, and the
 # permanent-approval allowlist live here, and the config cache is mtime-keyed
@@ -402,51 +537,49 @@ _HERMES_ENV_PATH = (
 # theater. Mirrors _HERMES_ENV_PATH; matches the HERMES_HOME override form as
 # well as ~/.hermes/.
 _HERMES_CONFIG_PATH = (
-    r'(?:~\/\.hermes/|'
-    r'(?:\$home|\$\{home\})/\.hermes/|'
-    r'(?:\$hermes_home|\$\{hermes_home\})/)'
-    r'config\.yaml\b'
+    r"(?:~\/\.hermes/|"
+    r"(?:\$home|\$\{home\})/\.hermes/|"
+    r"(?:\$hermes_home|\$\{hermes_home\})/)"
+    r"config\.yaml\b"
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = (
-    r'(?:~|\$home|\$\{home\})/\.'
-    r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
+    r"(?:~|\$home|\$\{home\})/\."
+    r"(?:bashrc|zshrc|profile|bash_profile|zprofile)\b"
 )
 _CREDENTIAL_FILES = (
-    r'(?:~|\$home|\$\{home\})/\.'
-    r'(?:netrc|pgpass|npmrc|pypirc)\b'
+    r"(?:~|\$home|\$\{home\})/\."
+    r"(?:netrc|pgpass|npmrc|pypirc)\b"
 )
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/{etc,var,tmp,home}.
 # A command written to target /private/etc/sudoers works identically to
 # /etc/sudoers on macOS but bypasses a plain "/etc/" pattern check. Match
 # both forms. Inspired by Claude Code 2.1.113's "dangerous path protection".
-_MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
+_MACOS_PRIVATE_SYSTEM_PATH = r"/private/(?:etc|var|tmp|home)/"
 # System-config paths that should trigger approval for any write/edit,
 # collapsing /etc, its macOS /private/etc mirror, and /etc/sudoers.d/ into
 # one shared fragment so new DANGEROUS_PATTERNS stay consistent.
-_SYSTEM_CONFIG_PATH = (
-    rf'(?:/etc/|{_MACOS_PRIVATE_SYSTEM_PATH})'
-)
+_SYSTEM_CONFIG_PATH = rf"(?:/etc/|{_MACOS_PRIVATE_SYSTEM_PATH})"
 _SENSITIVE_WRITE_TARGET = (
-    rf'(?:{_SYSTEM_CONFIG_PATH}|/dev/sd|'
-    rf'{_SSH_SENSITIVE_PATH}|'
-    rf'{_HERMES_ENV_PATH}|'
-    rf'{_HERMES_CONFIG_PATH}|'
-    rf'{_SHELL_RC_FILES}|'
-    rf'{_CREDENTIAL_FILES})'
+    rf"(?:{_SYSTEM_CONFIG_PATH}|/dev/sd|"
+    rf"{_SSH_SENSITIVE_PATH}|"
+    rf"{_HERMES_ENV_PATH}|"
+    rf"{_HERMES_CONFIG_PATH}|"
+    rf"{_SHELL_RC_FILES}|"
+    rf"{_CREDENTIAL_FILES})"
 )
 _USER_SENSITIVE_WRITE_TARGET = (
-    rf'(?:{_SSH_SENSITIVE_PATH}|'
-    rf'{_SHELL_RC_FILES}|'
-    rf'{_CREDENTIAL_FILES})'
+    rf"(?:{_SSH_SENSITIVE_PATH}|"
+    rf"{_SHELL_RC_FILES}|"
+    rf"{_CREDENTIAL_FILES})"
 )
-_PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
+_PROJECT_SENSITIVE_WRITE_TARGET = rf"(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})"
 # Anchor for the cp/mv/install rule, where the sensitive path is only a write
 # target when it is the LAST argument (the destination). Requiring end-of-line
 # (or a command separator) keeps `cp config.yaml backup.yaml` — config.yaml as
 # the SOURCE — out of the deny.
-_COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
+_COMMAND_TAIL = r"(?:\s*(?:&&|\|\||;).*)?$"
 # Boundary for stream-write rules (`>`/`>>` redirection and `tee`), where the
 # sensitive path is ALWAYS a write target no matter what follows it. We only
 # need the path token to END at a shell word boundary — whitespace, a quote, a
@@ -500,13 +633,14 @@ _CMDPOS = (
     # Real ;/&/| separators are converted to newlines by the quote-aware
     # _mark_command_starts pass. Keeping them in this flat regex mistakes
     # quoted regex/data (for example grep '(safe|rm -rf /)') for commands.
-    r'(?:^|[\n`]|\$\()'            # start position
-    r'\s*'                          # optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
-    r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
-    r'\s*'
+    r"(?:^|[\n`]|\$\()"  # start position
+    r"\s*"  # optional whitespace
+    r"(?:sudo\s+(?:-[^\s]+\s+)*)?"  # optional sudo with flags
+    r"(?:env\s+(?:\w+=\S*\s+)*)?"  # optional env with VAR=VAL pairs
+    r"(?:(?:exec|nohup|setsid|time)\s+)*"  # optional wrapper commands
+    r"\s*"
 )
+
 
 # Destructive-path argument matcher for the rm hardline rules.
 #
@@ -523,14 +657,14 @@ _CMDPOS = (
 # OR a shell metacharacter (`) ` ; | &`) so a real root wipe inside a command
 # substitution — `$(rm -rf /)`, `` `rm -rf /` `` — whose `/` is terminated by
 # `)`/backtick is still caught.
-def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
+def _hardline_rm_path(path_alt: str, tail: str = r"(?:\s|$|[)`;|&])") -> str:
     return rf'(?:["\'](?:{path_alt})["\']|(?:{path_alt}){tail})'
 
 
 # Protected system roots whose recursive deletion has no recovery path.
 _HARDLINE_SYSTEM_DIRS = (
-    r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|'
-    r'/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*'
+    r"/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|"
+    r"/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*"
 )
 
 # `rm` plus its flag group, shared by the three rm hardline rules. Kept as a
@@ -546,7 +680,7 @@ _HARDLINE_SYSTEM_DIRS = (
 # the anchor. A real wipe at any command position (bare, chained, in $()/`…`,
 # under sudo) still matches; the quoted-path branch in _hardline_rm_path keeps
 # catching `rm -rf "/"`.
-_RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
+_RM_FLAG_PREFIX = _CMDPOS + r"rm\s+(-[^\s]*\s+)*"
 
 HARDLINE_PATTERNS = [
     # rm recursive targeting the root filesystem or protected roots.
@@ -565,19 +699,31 @@ HARDLINE_PATTERNS = [
     # instead of being unconditionally hardline-blocked. The explicit "/ \*"
     # alt preserves the slash-space-glob spelling (`rm -rf / *`, which the
     # shell sees as two args: "/" plus the "*" glob).
-    (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
-    (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
-    (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
+    (
+        _RM_FLAG_PREFIX + _hardline_rm_path(r"/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*"),
+        "recursive delete of root filesystem",
+    ),
+    (
+        _RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS),
+        "recursive delete of system directory",
+    ),
+    (
+        _RM_FLAG_PREFIX + _hardline_rm_path(r"(?:~|\$\{?HOME\}?)(?:/?|/\*)?"),
+        "recursive delete of home directory",
+    ),
     # Filesystem format — anchor to command position like every other
     # hardline entry so quoted prose ("echo \"does this workflow use mkfs
     # anywhere?\"") does not trip the unconditional floor (#93392).
-    (_CMDPOS + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    (_CMDPOS + r"mkfs(\.[a-z0-9]+)?\b", "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection). `dd` is a command-name
     # token, so anchor it to command position like mkfs/rm/shutdown (#93392):
     # quoted prose such as `git commit -m "never dd of=/dev/sda"` is an
     # argument, not a command. The argument tail ([^\n]*of=/dev/...) is kept
     # so flag order doesn't matter.
-    (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    (
+        _CMDPOS + r"dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*",
+        "dd to raw block device",
+    ),
     # The redirect rule has no command-name token to anchor (`>` appears
     # mid-command: `cat f > /dev/sda`), so command-position anchoring is the
     # wrong tool. It is instead matched against a QUOTE-MASKED variant of the
@@ -585,22 +731,25 @@ HARDLINE_PATTERNS = [
     # prose (`echo "cat f > /dev/sda"`) cannot trip it, while shell-carrying
     # wrappers (sh -c / bash -c / eval) still surface their payload as a raw
     # detection variant — quoting is not a bypass (#93392).
-    (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
+    (r">\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b", "redirect to raw block device"),
     # Fork bomb (classic shell form). Also positionless (the trigger is the
     # function definition itself, valid anywhere in a command line), so it is
     # quote-masked like the redirect rule above rather than _CMDPOS-anchored.
-    (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
+    (r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", "fork bomb"),
     # Kill every process on the system — anchor the command-name token so
     # `echo "kill -1 sends SIGHUP to everything"` doesn't trip (#93392).
-    (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    (_CMDPOS + r"kill\s+(-[^\s]+\s+)*-1\b", "kill all processes"),
     # System shutdown / reboot — anchor to command position (start of line,
     # after a command separator, or after sudo/env wrappers) so we don't
     # false-positive on "echo reboot" or "grep 'shutdown' logs".
     # _CMDPOS matches start-of-command positions.
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
-    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
-    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
-    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    (_CMDPOS + r"(shutdown|reboot|halt|poweroff)\b", "system shutdown/reboot"),
+    (_CMDPOS + r"init\s+[06]\b", "init 0/6 (shutdown/reboot)"),
+    (
+        _CMDPOS + r"systemctl\s+(poweroff|reboot|halt|kexec)\b",
+        "systemctl poweroff/reboot",
+    ),
+    (_CMDPOS + r"telinit\s+[06]\b", "telinit 0/6 (shutdown/reboot)"),
 ]
 
 # Pre-compiled variant used by the hot-path matcher. Building these at module
@@ -637,16 +786,21 @@ HARDLINE_PATTERNS_COMPILED = [
 # EXECUTE. For these, quoted text is code, not prose, so the quote-masked
 # hardline rules must scan the raw string (see detect_hardline_command).
 _SHELL_CARRIER_NAMES = frozenset({
-    "eval", "sh", "bash", "zsh", "ksh", "dash", "source", ".",
+    "eval",
+    "sh",
+    "bash",
+    "zsh",
+    "ksh",
+    "dash",
+    "source",
+    ".",
 })
 
 
 def _contains_shell_carrier(command: str) -> bool:
     """Return whether any command-position word is a shell-carrying command."""
     for _, _, word in _iter_shell_command_word_spans(command):
-        name = os.path.basename(
-            _deobfuscate_shell_word_for_detection(word)
-        ).lower()
+        name = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
         if name in _SHELL_CARRIER_NAMES:
             return True
     return False
@@ -700,14 +854,14 @@ def _mask_quoted_prose(command: str) -> str:
             if ch == "`":
                 close = command.find("`", i + 1)
                 if close != -1:
-                    out.append(command[i:close + 1])
+                    out.append(command[i : close + 1])
                     i = close + 1
                     continue
             out.append(" ")
             i += 1
             continue
         if ch == "\\" and i + 1 < n:
-            out.append(command[i:i + 2])
+            out.append(command[i : i + 2])
             i += 2
             continue
         if ch in ("'", '"'):
@@ -727,9 +881,7 @@ def _mask_quoted_prose(command: str) -> str:
 # Treat this as an unconditional block — there is never a legitimate
 # reason for the agent to pipe passwords to sudo -S when no password
 # has been configured.
-_SUDO_STDIN_RE = re.compile(
-    r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b',
-    re.IGNORECASE)
+_SUDO_STDIN_RE = re.compile(r"(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b", re.IGNORECASE)
 
 
 def _check_sudo_stdin_guard(command: str) -> tuple:
@@ -811,8 +963,7 @@ def _match_user_deny_rule(command: str) -> str | None:
         return None
     if not deny_patterns:
         return None
-    globs = [p.strip() for p in deny_patterns
-             if isinstance(p, str) and p.strip()]
+    globs = [p.strip() for p in deny_patterns if isinstance(p, str) and p.strip()]
     if not globs:
         return None
     for command_variant in _command_detection_variants(command):
@@ -857,6 +1008,7 @@ def _save_blocked_payload(command: str) -> Optional[str]:
         from hermes_constants import get_hermes_home
         import time as _time
         import uuid as _uuid
+
         script_dir = get_hermes_home() / "cache" / "blocked-scripts"
         script_dir.mkdir(parents=True, exist_ok=True)
         # Opportunistic cleanup: blocked payloads older than 7 days.
@@ -872,10 +1024,13 @@ def _save_blocked_payload(command: str) -> Optional[str]:
             "#!/bin/bash\n"
             "# Auto-saved by Hermes: this command exceeded the inline command\n"
             "# parser limit and was blocked from direct execution. Review it,\n"
-            "# then run it via: bash " + str(path) + "\n"
+            "# then run it via: bash "
+            + str(path)
+            + "\n"
             + command
             + ("\n" if not command.endswith("\n") else ""),
-            encoding="utf-8", errors="replace",
+            encoding="utf-8",
+            errors="replace",
         )
         return str(path)
     except Exception:
@@ -906,7 +1061,7 @@ def _hardline_block_result(description: str, command: str = "") -> dict:
                 " RECOVERY: this block fires on oversized/unparseable inline "
                 "command payloads (heredocs, giant one-liners), not on the "
                 f"operation itself. Your command was saved to {saved} — "
-                f"review it, then run: terminal(command=\"bash {saved}\"). "
+                f'review it, then run: terminal(command="bash {saved}"). '
                 "Do not retry inline."
             )
         else:
@@ -914,8 +1069,8 @@ def _hardline_block_result(description: str, command: str = "") -> dict:
                 " RECOVERY: this block fires on oversized/unparseable inline "
                 "command payloads (heredocs, giant one-liners), not on the "
                 "operation itself. Write the script to a file with write_file, "
-                "then run it: terminal(command=\"bash /path/script.sh\") or "
-                "\"python3 /path/script.py\". Do not retry inline."
+                'then run it: terminal(command="bash /path/script.sh") or '
+                '"python3 /path/script.py". Do not retry inline.'
             )
     return {
         "approved": False,
@@ -943,9 +1098,9 @@ def _sudo_stdin_block_result(description: str) -> dict:
 # =========================================================================
 
 DANGEROUS_PATTERNS = [
-    (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
-    (r'\brm\s+-[^\s]*r', "recursive delete"),
-    (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
+    (r"\brm\s+(-[^\s]*\s+)*/", "delete in root path"),
+    (r"\brm\s+-[^\s]*r", "recursive delete"),
+    (r"\brm\s+--recursive\b", "recursive delete (long flag)"),
     # GNU rm permutes options, so a recursive flag group may legally FOLLOW
     # the operands: `rm build/ -rf`, `rm build/ -r -f`, and `rm build/
     # --recursive --force` are all equivalent to the flags-first spellings the
@@ -961,21 +1116,32 @@ DANGEROUS_PATTERNS = [
     # like `--registry` (preceded by `-`, not whitespace) does not count.
     # Port of openai/codex#33464 ("recognize force options when they follow
     # operands").
-    (r'\brm\s+(?!--(?:\s|$))(?:(?!\s--(?:\s|$))[^\n"\';|&])*\s'
-     r'(?:-[a-z]*r[a-z]*\b|--recursive\b)',
-     "recursive delete (flags after operands)"),
+    (
+        r'\brm\s+(?!--(?:\s|$))(?:(?!\s--(?:\s|$))[^\n"\';|&])*\s'
+        r"(?:-[a-z]*r[a-z]*\b|--recursive\b)",
+        "recursive delete (flags after operands)",
+    ),
     # Windows shell front-ends have destructive built-ins that do not look like
     # Unix `rm`. Gate only when they are executed through cmd/powershell so
     # ordinary prose or filenames containing "del"/"rd" do not trip the guard.
-    (r'\bcmd(?:\.exe)?\s+/(?:c|k)\s+.*\b(?:del|erase|rd|rmdir)\b', "Windows cmd destructive delete"),
+    (
+        r"\bcmd(?:\.exe)?\s+/(?:c|k)\s+.*\b(?:del|erase|rd|rmdir)\b",
+        "Windows cmd destructive delete",
+    ),
     # PowerShell/pwsh: the destructive verb runs as the default positional
     # argument, so `powershell Remove-Item ...` needs NO explicit -Command.
     # Anchor the verb to the command position (right after the shell name,
     # after any leading `-Flag` switches, and optionally after -Command/-c)
     # so bare invocations are caught while a benign path arg containing
     # "del"/"rm" (e.g. `-File c:\del-logs\run.ps1`) is not.
-    (r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?(?:remove-item|rmdir|erase|del|rd|ri|rm)\b', "Windows PowerShell destructive delete"),
-    (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
+    (
+        r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?(?:remove-item|rmdir|erase|del|rd|ri|rm)\b',
+        "Windows PowerShell destructive delete",
+    ),
+    (
+        r"\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b",
+        "PowerShell encoded command execution",
+    ),
     # ── Windows destructive tier (#69472) ────────────────────────────────
     # These are native Windows EXEs / cmdlets reachable from ANY Hermes
     # terminal backend on a Windows host — including the default git-bash
@@ -989,110 +1155,178 @@ DANGEROUS_PATTERNS = [
     # -Force. The cmd/powershell-prefixed forms are covered above; this
     # catches the bare form (ACP clients, pwsh-default SSH hosts, or
     # `powershell` invoked earlier in a compound command).
-    (r'\bremove-item\b[^\n;|&]*\s-(?:recurse|force)\b', "PowerShell destructive delete (Remove-Item)"),
+    (
+        r"\bremove-item\b[^\n;|&]*\s-(?:recurse|force)\b",
+        "PowerShell destructive delete (Remove-Item)",
+    ),
     # cmd builtins with destructive switches, bare form: del/erase/rd/rmdir
     # with /s (recurse) or /q (quiet). Requires the switch so `del file.txt`
     # inside a cmd /c string stays covered by the prefixed rule only.
-    (r'\b(?:del|erase|rd|rmdir)\s+(?:/[a-z]\s+)*/[sq]\b', "Windows destructive delete (recursive/quiet switch)"),
+    (
+        r"\b(?:del|erase|rd|rmdir)\s+(?:/[a-z]\s+)*/[sq]\b",
+        "Windows destructive delete (recursive/quiet switch)",
+    ),
     # Remote content piped to Invoke-Expression — PowerShell's `curl | sh`.
-    (r'\b(?:iwr|invoke-webrequest|invoke-restmethod|irm|curl|wget)\b[^\n]*\|\s*(?:iex|invoke-expression)\b', "pipe remote content to PowerShell (iwr | iex)"),
-    (r'\b(?:iex|invoke-expression)\s*\(\s*(?:iwr|invoke-webrequest|invoke-restmethod|irm)\b', "execute remote content via Invoke-Expression"),
+    (
+        r"\b(?:iwr|invoke-webrequest|invoke-restmethod|irm|curl|wget)\b[^\n]*\|\s*(?:iex|invoke-expression)\b",
+        "pipe remote content to PowerShell (iwr | iex)",
+    ),
+    (
+        r"\b(?:iex|invoke-expression)\s*\(\s*(?:iwr|invoke-webrequest|invoke-restmethod|irm)\b",
+        "execute remote content via Invoke-Expression",
+    ),
     # Force process kills — Windows analogue of pkill -9.
-    (r'\btaskkill\b[^\n]*\s/f\b', "force kill processes (taskkill /F)"),
-    (r'\bstop-process\b[^\n]*\s-force\b', "force kill processes (Stop-Process -Force)"),
+    (r"\btaskkill\b[^\n]*\s/f\b", "force kill processes (taskkill /F)"),
+    (r"\bstop-process\b[^\n]*\s-force\b", "force kill processes (Stop-Process -Force)"),
     # Volume/disk destruction — Windows analogue of mkfs / dd.
-    (r'\bformat-volume\b', "format filesystem (Format-Volume)"),
-    (r'\bclear-disk\b', "wipe disk (Clear-Disk)"),
-    (r'\bdiskpart\b', "disk partitioning (diskpart)"),
-    (r'\bformat(?:\.com)?\s+[a-z]:', "format drive (format.com)"),
-    (r'\bcipher\s+/w\b', "wipe free space (cipher /w)"),
+    (r"\bformat-volume\b", "format filesystem (Format-Volume)"),
+    (r"\bclear-disk\b", "wipe disk (Clear-Disk)"),
+    (r"\bdiskpart\b", "disk partitioning (diskpart)"),
+    (r"\bformat(?:\.com)?\s+[a-z]:", "format drive (format.com)"),
+    (r"\bcipher\s+/w\b", "wipe free space (cipher /w)"),
     # ACL destruction — Windows analogue of chmod 777.
-    (r'\bicacls\b[^\n]*\s/grant\b[^\n]*\b(?:everyone|todos|jeder|tout\s+le\s+monde|\*s-1-1-0)\b', "grant Everyone access (icacls)"),
-    (r'\bicacls\b[^\n]*\s/reset\b', "reset ACLs recursively (icacls /reset)"),
+    (
+        r"\bicacls\b[^\n]*\s/grant\b[^\n]*\b(?:everyone|todos|jeder|tout\s+le\s+monde|\*s-1-1-0)\b",
+        "grant Everyone access (icacls)",
+    ),
+    (r"\bicacls\b[^\n]*\s/reset\b", "reset ACLs recursively (icacls /reset)"),
     # Backup/recovery destruction — classic ransomware prep, no benign
     # agent use case.
-    (r'\bvssadmin\b[^\n]*\bdelete\s+shadows\b', "delete volume shadow copies (vssadmin)"),
-    (r'\bwbadmin\b[^\n]*\bdelete\b', "delete backups (wbadmin)"),
-    (r'\bbcdedit\b[^\n]*\s/set\b', "modify boot configuration (bcdedit /set)"),
+    (
+        r"\bvssadmin\b[^\n]*\bdelete\s+shadows\b",
+        "delete volume shadow copies (vssadmin)",
+    ),
+    (r"\bwbadmin\b[^\n]*\bdelete\b", "delete backups (wbadmin)"),
+    (r"\bbcdedit\b[^\n]*\s/set\b", "modify boot configuration (bcdedit /set)"),
     # Registry deletion with force flag.
-    (r'\breg(?:\.exe)?\s+delete\b', "registry delete (reg delete)"),
-    (r'\bremove-itemproperty\b[^\n]*\s-force\b', "registry value delete (Remove-ItemProperty -Force)"),
+    (r"\breg(?:\.exe)?\s+delete\b", "registry delete (reg delete)"),
+    (
+        r"\bremove-itemproperty\b[^\n]*\s-force\b",
+        "registry value delete (Remove-ItemProperty -Force)",
+    ),
     # Windows service/system stop — analogue of systemctl stop.
-    (r'\bstop-service\b[^\n]*\s-force\b', "force stop service (Stop-Service -Force)"),
-    (r'\bsc(?:\.exe)?\s+(?:stop|delete)\b', "stop/delete service (sc)"),
+    (r"\bstop-service\b[^\n]*\s-force\b", "force stop service (Stop-Service -Force)"),
+    (r"\bsc(?:\.exe)?\s+(?:stop|delete)\b", "stop/delete service (sc)"),
     # Credential/key paths in Windows form — the POSIX ~/.ssh patterns never
     # match drive-letter or backslash spellings. Match both separators.
-    (r'\busers[\\/][^\\/\s]+[\\/]\.ssh\b', "access to SSH keys (Windows path)"),
-    (r'\bappdata[\\/](?:local|roaming)[\\/]hermes[^\n]*\.env\b', "access to Hermes secrets (Windows path)"),
+    (r"\busers[\\/][^\\/\s]+[\\/]\.ssh\b", "access to SSH keys (Windows path)"),
+    (
+        r"\bappdata[\\/](?:local|roaming)[\\/]hermes[^\n]*\.env\b",
+        "access to Hermes secrets (Windows path)",
+    ),
     # ─────────────────────────────────────────────────────────────────────
-    (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
-    (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
-    (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
-    (r'\bchown\s+--recur[a-z]*\b.*root', "recursive chown to root (long flag)"),
+    (
+        r"\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b",
+        "world/other-writable permissions",
+    ),
+    (
+        r"\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)",
+        "recursive world/other-writable (long flag)",
+    ),
+    (r"\bchown\s+(-[^\s]*)?R\s+root", "recursive chown to root"),
+    (r"\bchown\s+--recur[a-z]*\b.*root", "recursive chown to root (long flag)"),
     # Anchored to command position like the hardline twins (#93392):
     # quoted prose mentioning mkfs/dd must not require approval to echo.
-    (_CMDPOS + r'mkfs\b', "format filesystem"),
-    (_CMDPOS + r'dd\s+.*if=', "disk copy"),
-    (r'>\s*/dev/sd', "write to block device"),
-    (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
+    (_CMDPOS + r"mkfs\b", "format filesystem"),
+    (_CMDPOS + r"dd\s+.*if=", "disk copy"),
+    (r">\s*/dev/sd", "write to block device"),
+    (r"\bDROP\s+(TABLE|DATABASE)\b", "SQL DROP"),
     # Use [^\n]* instead of .* so DOTALL mode does not cause a WHERE clause on the
     # *next* line to satisfy the negative lookahead, silently allowing DELETE without WHERE.
-    (r'\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
-    (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
-    (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
-    (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
-    (r'\bkill\s+-9\s+-1\b', "kill all processes"),
-    (r'\bpkill\s+-9\b', "force kill processes"),
+    (r"\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)", "SQL DELETE without WHERE"),
+    (r"\bTRUNCATE\s+(TABLE)?\s*\w", "SQL TRUNCATE"),
+    (rf">\s*{_SYSTEM_CONFIG_PATH}", "overwrite system config"),
+    (
+        r"\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b",
+        "stop/restart system service",
+    ),
+    (r"\bkill\s+-9\s+-1\b", "kill all processes"),
+    (r"\bpkill\s+-9\b", "force kill processes"),
     # killall with SIGKILL (parallel to pkill -9). Catches -9 / -KILL /
     # -s KILL / -SIGKILL forms, and also `killall -r <regex>` broad sweeps
     # that can wipe out unrelated processes by accident.
     # Inspired by Claude Code 2.1.113 expanded deny rules.
-    (r'\bkillall\s+(-[^\s]*\s+)*-(9|KILL|SIGKILL)\b', "force kill processes (killall -KILL)"),
-    (r'\bkillall\s+(-[^\s]*\s+)*-s\s+(KILL|SIGKILL|9)\b', "force kill processes (killall -s KILL)"),
-    (r'\bkillall\s+(-[^\s]*\s+)*-r\b', "kill processes by regex (killall -r)"),
-    (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
+    (
+        r"\bkillall\s+(-[^\s]*\s+)*-(9|KILL|SIGKILL)\b",
+        "force kill processes (killall -KILL)",
+    ),
+    (
+        r"\bkillall\s+(-[^\s]*\s+)*-s\s+(KILL|SIGKILL|9)\b",
+        "force kill processes (killall -s KILL)",
+    ),
+    (r"\bkillall\s+(-[^\s]*\s+)*-r\b", "kill processes by regex (killall -r)"),
+    (r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", "fork bomb"),
     # Shell -c is parsed structurally by _execution_flag_findings(). A regex
     # that merely searched a dash-token for "c" also matched --norc,
     # --rcfile, and --restricted.
-    (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
-    (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
+    (
+        r"\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)",
+        "pipe remote content to shell",
+    ),
+    (
+        r"\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b",
+        "execute remote script via process substitution",
+    ),
     # Remote content executed via command substitution: eval/source/. $(curl ...)
     # or `wget ...`. Equivalent to piping remote content to a shell.
-    (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
+    (
+        r"(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b",
+        "execute remote content via command substitution",
+    ),
     # Decode-and-execute: encoded/transformed content piped to a shell. Without
     # these, `echo <base64> | base64 -d | bash` silently runs `rm -rf /` or any
     # other command because the raw text carries no dangerous keywords.
-    (r'\b(base64|base32|base16)\s+(?:-[dD]|--decode)\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
-     "pipe decoded content to shell (possible command obfuscation)"),
+    (
+        r"\b(base64|base32|base16)\s+(?:-[dD]|--decode)\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b",
+        "pipe decoded content to shell (possible command obfuscation)",
+    ),
     # xxd reverse hex dump to shell (xxd uses -r for decode, not -d).
-    (r'\bxxd\s+-r\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
-     "pipe xxd-decoded content to shell (possible command obfuscation)"),
+    (
+        r"\bxxd\s+-r\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b",
+        "pipe xxd-decoded content to shell (possible command obfuscation)",
+    ),
     # Character transformation via tr piped to shell:
     # `echo 'eq -pe v/' | tr 'eqv' 'rmf' | bash` decodes to `rm -rf /`.
-    (r'\becho\b[^|]*\|\s*\btr\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
-     "pipe tr-transformed output to shell (possible command obfuscation)"),
+    (
+        r"\becho\b[^|]*\|\s*\btr\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b",
+        "pipe tr-transformed output to shell (possible command obfuscation)",
+    ),
     # openssl decode piped to shell:
     # `echo <base64> | openssl base64 -d | bash` decodes arbitrary commands.
-    (r'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
-     "pipe openssl-decoded content to shell (possible command obfuscation)"),
+    (
+        r"\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b",
+        "pipe openssl-decoded content to shell (possible command obfuscation)",
+    ),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
-    (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
-    (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
-    (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via redirection"),
-    (r'\bxargs\s+.*\brm\b', "xargs with rm"),
+    (
+        rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}',
+        "overwrite system file via redirection",
+    ),
+    (
+        rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}',
+        "overwrite project env/config via tee",
+    ),
+    (
+        rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}',
+        "overwrite project env/config via redirection",
+    ),
+    (r"\bxargs\s+.*\brm\b", "xargs with rm"),
     # find -exec rm / -execdir rm — the -execdir variant (same semantics,
     # runs in the directory of each match) was previously missed. Claude
     # Code 2.1.113 tightened their equivalent find rule to stop auto-
     # approving -exec / -delete flags.
-    (r'\bfind\b.*-exec(?:dir)?\s+(/\S*/)?rm\b', "find -exec/-execdir rm"),
-    (r'\bfind\b.*-delete\b', "find -delete"),
+    (r"\bfind\b.*-exec(?:dir)?\s+(/\S*/)?rm\b", "find -exec/-execdir rm"),
+    (r"\bfind\b.*-delete\b", "find -delete"),
     # Gateway lifecycle protection: prevent the agent from killing its own
     # gateway process.  These commands trigger a gateway restart/stop that
     # terminates all running agents mid-work.  Allow global flags between
     # `hermes` and `gateway` (e.g. `hermes -p ade gateway restart`) so a
     # profile flag can't slip the agent past the guard.
-    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
-    (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    (
+        r"\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b",
+        "stop/restart hermes gateway (kills running agents)",
+    ),
+    (r"\bhermes\s+update\b", "hermes update (restarts gateway, kills running agents)"),
     # Docker container lifecycle — any user with docker.sock mounted (a common
     # Docker Compose pattern) gives the agent the ability to restart/stop/kill
     # containers without approval.  These are agent-initiated lifecycle operations
@@ -1111,40 +1345,71 @@ DANGEROUS_PATTERNS = [
     # Inspired by Claude Code 2.1.214, which added permission prompts for
     # docker/podman commands carrying daemon-redirect flags (--url,
     # --connection, --identity, remote mode).
-    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-h|--host)[=\s]+\S+',
-     "docker with remote daemon redirect (-H/--host)"),
-    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-c|--context)[=\s]+\S+',
-     "docker with daemon redirect (--context: alternate daemon)"),
-    (r'\bdocker\s+context\s+use\b',
-     "docker context use (switches default daemon for future commands)"),
-    (r'\bpodman\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:--url|--connection|--identity)[=\s]+\S+',
-     "podman with remote daemon redirect (--url/--connection/--identity)"),
-    (r'\bpodman\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-r\b|--remote\b)',
-     "podman remote mode (-r/--remote: remote daemon)"),
-    (r'\b(?:docker_host|docker_context|container_host|container_connection)=\S+',
-     "docker/podman daemon redirect via environment (DOCKER_HOST/CONTAINER_HOST)"),
+    (
+        r"\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-h|--host)[=\s]+\S+",
+        "docker with remote daemon redirect (-H/--host)",
+    ),
+    (
+        r"\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-c|--context)[=\s]+\S+",
+        "docker with daemon redirect (--context: alternate daemon)",
+    ),
+    (
+        r"\bdocker\s+context\s+use\b",
+        "docker context use (switches default daemon for future commands)",
+    ),
+    (
+        r"\bpodman\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:--url|--connection|--identity)[=\s]+\S+",
+        "podman with remote daemon redirect (--url/--connection/--identity)",
+    ),
+    (
+        r"\bpodman\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-r\b|--remote\b)",
+        "podman remote mode (-r/--remote: remote daemon)",
+    ),
+    (
+        r"\b(?:docker_host|docker_context|container_host|container_connection)=\S+",
+        "docker/podman daemon redirect via environment (DOCKER_HOST/CONTAINER_HOST)",
+    ),
     # Allow global flags between `docker`/`compose` and the verb (e.g.
     # `docker compose -f prod.yml down`, `docker --log-level debug stop app`)
     # and the legacy hyphenated `docker-compose` binary, so a flag can't slip
     # a lifecycle command past the guard — same treatment as the `hermes ...
     # gateway` pattern above.
-    (r'\bdocker(?:-compose|\s+compose)\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(restart|stop|kill|down)\b',
-     "docker compose restart/stop/kill/down (container lifecycle)"),
-    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(restart|stop|kill)\b',
-     "docker restart/stop/kill (container lifecycle)"),
+    (
+        r"\bdocker(?:-compose|\s+compose)\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(restart|stop|kill|down)\b",
+        "docker compose restart/stop/kill/down (container lifecycle)",
+    ),
+    (
+        r"\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(restart|stop|kill)\b",
+        "docker restart/stop/kill (container lifecycle)",
+    ),
     # Gateway protection: never start gateway outside systemd management
-    (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
-    (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
+    (
+        r"gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)",
+        "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')",
+    ),
+    (
+        r"\bnohup\b.*gateway\s+run\b",
+        "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')",
+    ),
     # Self-termination protection: prevent agent from killing its own process
-    (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
+    (
+        r"\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b",
+        "kill hermes/gateway process (self-termination)",
+    ),
     # Self-termination via kill + command substitution (pgrep/pidof).
     # The name-based pattern above catches `pkill hermes` but not
     # `kill -9 $(pgrep -f hermes)` because the substitution is opaque
     # to regex at detection time. Catch the structural pattern instead.
     # `pidof` is the BSD/Linux alternative to `pgrep` and is equally
     # opaque, so include it in the same alternation.
-    (r'\bkill\b.*\$\(\s*(pgrep|pidof)\b', "kill process via pgrep/pidof expansion (self-termination)"),
-    (r'\bkill\b.*`\s*(pgrep|pidof)\b', "kill process via backtick pgrep/pidof expansion (self-termination)"),
+    (
+        r"\bkill\b.*\$\(\s*(pgrep|pidof)\b",
+        "kill process via pgrep/pidof expansion (self-termination)",
+    ),
+    (
+        r"\bkill\b.*`\s*(pgrep|pidof)\b",
+        "kill process via backtick pgrep/pidof expansion (self-termination)",
+    ),
     # launchctl-driven gateway stop/restart on macOS. The agent can bypass
     # the `hermes gateway stop|restart` pattern above by driving launchd
     # directly against the service label (commonly `ai.hermes.gateway`).
@@ -1164,11 +1429,20 @@ DANGEROUS_PATTERNS = [
     # an unrelated "hermes" mention now also matches) — for an approval gate
     # that's the correct direction to err: an extra approval prompt is
     # cheap, a missed one took down the whole gateway fleet.
-    (r'(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)', "stop/restart hermes launchd service (kills running agents)"),
+    (
+        r"(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)",
+        "stop/restart hermes launchd service (kills running agents)",
+    ),
     # File copy/move/edit into sensitive system paths (/etc/ and macOS
     # /private/etc/ mirror).
-    (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
-    (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
+    (
+        rf"\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}",
+        "copy/move file into system config path",
+    ),
+    (
+        rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}',
+        "overwrite project env/config file",
+    ),
     # cp/mv/install OVERWRITING a sensitive credential/SSH/shell-rc/Hermes file.
     # The tee/redirection patterns above already gate _SENSITIVE_WRITE_TARGET
     # (~/.ssh/*, ~/.netrc/.pgpass/.npmrc/.pypirc, shell rc files,
@@ -1182,22 +1456,43 @@ DANGEROUS_PATTERNS = [
     # but reading OUT of a sensitive path (`cp ~/.ssh/config /tmp/x`) stays safe.
     # The trailing `[^\s"\']*` consumes the rest of the destination filename
     # (e.g. `authorized_keys` after the `~/.ssh/` fragment).
-    (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    (
+        rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}',
+        "copy/move file into sensitive credential/SSH/shell-rc path",
+    ),
     # In-place edits mutate the target file directly, bypassing redirection,
     # tee, and copy/move/install coverage. Gate the same user-controlled
     # startup/credential files so `sed -i ... ~/.bashrc` and `perl -i ...
     # ~/.ssh/authorized_keys` cannot silently plant login commands or keys.
-    (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
-    (rf'\bsed\s+--in-place\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (long flag)"),
-    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
-    (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
-    (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
+    (
+        rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*',
+        "in-place edit of sensitive credential/SSH/shell-rc path",
+    ),
+    (
+        rf'\bsed\s+--in-place\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*',
+        "in-place edit of sensitive credential/SSH/shell-rc path (long flag)",
+    ),
+    (
+        rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*',
+        "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)",
+    ),
+    (rf"\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}", "in-place edit of system config"),
+    (
+        rf"\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}",
+        "in-place edit of system config (long flag)",
+    ),
     # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or
     # .env). sed -i bypasses the redirection/tee patterns above because it
     # mutates the file directly. Pairs the file_tools write_file/patch deny so
     # the terminal side is not an open door. See #14639.
-    (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
-    (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
+    (
+        rf"\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})",
+        "in-place edit of Hermes config/env",
+    ),
+    (
+        rf"\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})",
+        "in-place edit of Hermes config/env (long flag)",
+    ),
     # perl -i and ruby -i perform the same in-place mutation as sed -i but are
     # not caught by the -e/-c script-execution pattern above (which targets code
     # evaluation, not file mutation). Pairs the sed -i coverage from #14639.
@@ -1206,7 +1501,10 @@ DANGEROUS_PATTERNS = [
     # backup suffix (`perl -i.bak`). Match any flag token containing `i`
     # anywhere in the args, not just the first token — `perl -e '...'` (code
     # eval, no -i) does not trip because it has no `-...i` flag token.
-    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
+    (
+        rf"\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})",
+        "in-place edit of Hermes config/env (perl/ruby)",
+    ),
     # Interpreter heredocs are handled by _execution_flag_findings() alongside
     # inline-exec flags; keep only shell heredocs regex-based here.
     # Shell execution via heredoc — `bash <<'EOF' ... EOF` runs arbitrary
@@ -1214,7 +1512,7 @@ DANGEROUS_PATTERNS = [
     # inner commands may not individually match any dangerous pattern (e.g.
     # data-exfiltration pipelines using curl/cat) yet are still executed in
     # a full shell context.
-    (r'\b(bash|sh|zsh|ksh)\s+<<', "shell execution via heredoc"),
+    (r"\b(bash|sh|zsh|ksh)\s+<<", "shell execution via heredoc"),
     # Git destructive operations that can lose uncommitted work or rewrite
     # shared history. Not captured by rm/chmod/etc patterns.
     # `git reset --hard` accepts any unambiguous long-flag prefix (--h,
@@ -1223,11 +1521,14 @@ DANGEROUS_PATTERNS = [
     # starting with "h" (siblings are --soft/--mixed/--merge/--keep), so
     # this cannot collide with another reset mode. It also does not match
     # `--help`, which git special-cases before mode resolution.
-    (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
-    (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
-    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+    (
+        r"\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b",
+        "git reset --hard (destroys uncommitted changes)",
+    ),
+    (r"\bgit\s+push\b.*--forc[a-z]*\b", "git force push (rewrites remote history)"),
+    (r"\bgit\s+push\b.*-f\b", "git force push short flag (rewrites remote history)"),
+    (r"\bgit\s+clean\s+-[^\s]*f", "git clean with force (deletes untracked files)"),
+    (r"\bgit\s+branch\s+-D\b", "git branch force delete"),
     # `-D` is shorthand for `-d --force`; the long-flag spellings
     # (`--delete`, `--force`) are different tokens entirely, so they slip
     # past the `-D\b` pattern above even though `git branch -d --force`
@@ -1236,12 +1537,18 @@ DANGEROUS_PATTERNS = [
     # same command segment (not spanning `;`/`|`/`&`/newline) the same
     # way the sudo patterns below do, to avoid contaminating an unrelated
     # later command in the same script.
-    (r'\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
-    (r'\bgit\s+branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
+    (
+        r"\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)",
+        "git branch force delete (long flags)",
+    ),
+    (
+        r"\bgit\s+branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)",
+        "git branch force delete (long flags, force-first)",
+    ),
     # Script execution after chmod +x — catches the two-step pattern where
     # a script is first made executable then immediately run. The script
     # content may contain dangerous commands that individual patterns miss.
-    (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
+    (r"\bchmod\s+\+x\b.*[;&|]+\s*\./", "chmod +x followed by immediate execution"),
     # Sudo with stdin / askpass / shell / list-privs flags. An LLM-driven
     # agent has no TTY, so sudo invocations that succeed without human
     # interaction are those reading the password from stdin (-S/--stdin)
@@ -1262,12 +1569,16 @@ DANGEROUS_PATTERNS = [
     # to match broadly: per `man sudo`, `--stdin` is the only long option
     # starting with "st" (siblings are --shell/--set-home) and
     # `--askpass` is the only one starting with "a" at all.
-    (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)',
-     "sudo with privilege flag (stdin/askpass/shell/list)"),
+    (
+        r"\bsudo\b[^;|&\n]*?\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)",
+        "sudo with privilege flag (stdin/askpass/shell/list)",
+    ),
     # Combined short-flag form: -nS, -ns, -sa, -las — sudo flags packed
     # into a single -X token. Catches the same threat class.
-    (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b',
-     "sudo with combined-flag privilege escalation"),
+    (
+        r"\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b",
+        "sudo with combined-flag privilege escalation",
+    ),
 ]
 
 
@@ -1280,15 +1591,21 @@ DANGEROUS_PATTERNS_COMPILED = [
 
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""
-    return pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
+    return pattern.split(r"\b")[1] if r"\b" in pattern else pattern[:20]
 
 
 _PATTERN_KEY_ALIASES: dict[str, set[str]] = {}
 for _pattern, _description in DANGEROUS_PATTERNS:
     _legacy_key = _legacy_pattern_key(_pattern)
     _canonical_key = _description
-    _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _legacy_key})
-    _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
+    _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({
+        _canonical_key,
+        _legacy_key,
+    })
+    _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({
+        _legacy_key,
+        _canonical_key,
+    })
 
 # Preserve approvals stored under the removed interpreter regex rules.
 _REMOVED_PATTERN_KEY_ALIASES = {
@@ -1296,12 +1613,14 @@ _REMOVED_PATTERN_KEY_ALIASES = {
     "script execution via heredoc": "(python[23]?|perl|ruby|node)\\s+<<",
 }
 for _canonical_key, _legacy_key in _REMOVED_PATTERN_KEY_ALIASES.items():
-    _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update(
-        {_canonical_key, _legacy_key}
-    )
-    _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update(
-        {_legacy_key, _canonical_key}
-    )
+    _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({
+        _canonical_key,
+        _legacy_key,
+    })
+    _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({
+        _legacy_key,
+        _canonical_key,
+    })
 
 
 def _approval_key_aliases(pattern_key: str) -> set[str]:
@@ -1318,6 +1637,7 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
 
@@ -1330,9 +1650,9 @@ def _normalize_command_for_detection(command: str) -> str:
     # Strip all ANSI escape sequences (CSI, OSC, DCS, 8-bit C1, etc.)
     command = strip_ansi(command)
     # Strip null bytes
-    command = command.replace('\x00', '')
+    command = command.replace("\x00", "")
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
-    command = unicodedata.normalize('NFKC', command)
+    command = unicodedata.normalize("NFKC", command)
     # Collapse shell line continuations (backslash-newline). The shell removes
     # BOTH characters and joins the tokens, so `rm -rf \<newline>/` executes as
     # `rm -rf /`. This must run BEFORE the generic backslash-escape strip below,
@@ -1342,7 +1662,7 @@ def _normalize_command_for_detection(command: str) -> str:
     # be bypassed even with yolo). Handles both \n and \r\n line endings. Line
     # continuations carry no path separator, so this is a no-op on the Windows
     # home-prefix folds below (which match C:\Users\alice\... — no newline).
-    command = re.sub(r'\\\r?\n', '', command)
+    command = re.sub(r"\\\r?\n", "", command)
     # Fold absolute home / active-profile-home prefixes into their canonical
     # ~/ and ~/.hermes/ forms so static user-sensitive patterns catch
     # /home/alice/.bashrc and C:\Users\alice\.bashrc the same way they catch
@@ -1361,9 +1681,9 @@ def _normalize_command_for_detection(command: str) -> str:
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
-    command = re.sub(r'\\([^\n])', r'\1', command)
+    command = re.sub(r"\\([^\n])", r"\1", command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
-    command = re.sub(r"''|\"\"", '', command)
+    command = re.sub(r"''|\"\"", "", command)
     # Collapse $IFS / ${IFS} word-separator expansions to a literal space.
     # In any POSIX shell the IFS variable defaults to <space><tab><newline>,
     # so `rm${IFS}-rf${IFS}/` is executed as `rm -rf /`. Because the dangerous
@@ -1375,7 +1695,7 @@ def _normalize_command_for_detection(command: str) -> str:
     # brace form also covers bash substring expansions like `${IFS:0:1}` (a
     # single space). Same de-obfuscation class as the backslash/empty-quote
     # handling above.
-    command = re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+    command = re.sub(r"\$\{IFS\b[^}]*\}|\$IFS\b", " ", command)
     return command
 
 
@@ -1477,6 +1797,7 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     """
     try:
         from hermes_constants import get_hermes_home
+
         home = get_hermes_home().expanduser()
         candidates = [
             str(home),
@@ -1502,11 +1823,16 @@ _COMMAND_WRAPPER_WORDS = {
     "builtin",
 }
 _SUDO_OPTIONS_WITH_ARG = {
-    "-c", "--close-from",
-    "-g", "--group",
-    "-h", "--host",
-    "-p", "--prompt",
-    "-u", "--user",
+    "-c",
+    "--close-from",
+    "-g",
+    "--group",
+    "-h",
+    "--host",
+    "-p",
+    "--prompt",
+    "-u",
+    "--user",
 }
 
 _INTERPRETER_EXEC_FLAGS = {
@@ -1519,11 +1845,32 @@ _INTERPRETER_EXEC_FLAGS = {
 }
 _INTERPRETER_WITH_ARG = {
     "python": {"-W", "-X", "--check-hash-based-pycs"},
-    "node": {"-C", "--conditions", "--cpu-prof-dir", "--diagnostic-dir", "--icu-data-dir", "--import", "--loader", "--openssl-config", "--require", "--title"},
+    "node": {
+        "-C",
+        "--conditions",
+        "--cpu-prof-dir",
+        "--diagnostic-dir",
+        "--icu-data-dir",
+        "--import",
+        "--loader",
+        "--openssl-config",
+        "--require",
+        "--title",
+    },
     "perl": {"-0", "-F", "-I", "-M", "-m", "-x"},
     "ruby": {"-C", "-E", "-F", "-I", "-K", "-r"},
     "php": {"-c", "-d", "-z"},
-    "powershell": {"-configurationname", "-custompipename", "-executionpolicy", "-inputformat", "-outputformat", "-settingsfile", "-version", "-windowstyle", "-workingdirectory"},
+    "powershell": {
+        "-configurationname",
+        "-custompipename",
+        "-executionpolicy",
+        "-inputformat",
+        "-outputformat",
+        "-settingsfile",
+        "-version",
+        "-windowstyle",
+        "-workingdirectory",
+    },
 }
 _READ_TOOL_EXEC_FLAGS = {
     "sort": {"--compress-program"},
@@ -1536,31 +1883,83 @@ _READ_TOOL_EXEC_FLAGS = {
 # of the supported binaries (ripgrep 14, GNU sort, man-db, and ag 2.2).
 _READ_TOOL_LONG_OPTIONS_WITH_ARG = {
     "rg": {
-        "--after-context", "--before-context", "--color", "--colors",
-        "--context", "--context-separator", "--dfa-size-limit", "--encoding",
-        "--engine", "--field-context-separator", "--field-match-separator",
-        "--file", "--generate", "--glob", "--hostname-bin",
-        "--hyperlink-format", "--iglob", "--ignore-file", "--max-columns",
-        "--max-count", "--max-depth", "--max-filesize", "--path-separator",
-        "--pre", "--pre-glob", "--regex-size-limit", "--regexp", "--replace",
-        "--sort", "--sortr", "--threads", "--type", "--type-add",
-        "--type-clear", "--type-not",
+        "--after-context",
+        "--before-context",
+        "--color",
+        "--colors",
+        "--context",
+        "--context-separator",
+        "--dfa-size-limit",
+        "--encoding",
+        "--engine",
+        "--field-context-separator",
+        "--field-match-separator",
+        "--file",
+        "--generate",
+        "--glob",
+        "--hostname-bin",
+        "--hyperlink-format",
+        "--iglob",
+        "--ignore-file",
+        "--max-columns",
+        "--max-count",
+        "--max-depth",
+        "--max-filesize",
+        "--path-separator",
+        "--pre",
+        "--pre-glob",
+        "--regex-size-limit",
+        "--regexp",
+        "--replace",
+        "--sort",
+        "--sortr",
+        "--threads",
+        "--type",
+        "--type-add",
+        "--type-clear",
+        "--type-not",
     },
     "sort": {
-        "--batch-size", "--buffer-size", "--compress-program",
-        "--field-separator", "--files0-from", "--key", "--output",
-        "--parallel", "--random-source", "--sort", "--temporary-directory",
+        "--batch-size",
+        "--buffer-size",
+        "--compress-program",
+        "--field-separator",
+        "--files0-from",
+        "--key",
+        "--output",
+        "--parallel",
+        "--random-source",
+        "--sort",
+        "--temporary-directory",
     },
     "man": {
-        "--config-file", "--encoding", "--extension", "--locale",
-        "--manpath", "--pager", "--preprocessor", "--prompt", "--recode",
-        "--sections", "--systems",
+        "--config-file",
+        "--encoding",
+        "--extension",
+        "--locale",
+        "--manpath",
+        "--pager",
+        "--preprocessor",
+        "--prompt",
+        "--recode",
+        "--sections",
+        "--systems",
     },
     "ag": {
-        "--ackmate-dir-filter", "--color-line-number", "--color-match",
-        "--color-path", "--depth", "--filename-pattern", "--file-search-regex",
-        "--ignore", "--ignore-dir", "--max-count", "--pager",
-        "--path-to-ignore", "--width", "--workers",
+        "--ackmate-dir-filter",
+        "--color-line-number",
+        "--color-match",
+        "--color-path",
+        "--depth",
+        "--filename-pattern",
+        "--file-search-regex",
+        "--ignore",
+        "--ignore-dir",
+        "--max-count",
+        "--pager",
+        "--path-to-ignore",
+        "--width",
+        "--workers",
     },
 }
 _READ_TOOL_SHORT_OPTIONS_WITH_ARG = {
@@ -1577,7 +1976,6 @@ _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
 
 
-
 def _command_parser_limit_exceeded(command: str) -> bool:
     """Bound all parser work before normalization/tokenization.
 
@@ -1590,9 +1988,8 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     # Long separator-free input has no compound-command utility and otherwise
     # makes every legacy regex inspect one giant token. Reject it before any
     # normalization, tokenization, or regex work.
-    if (
-        len(command) > _MAX_SEPARATOR_FREE_COMMAND_CHARS
-        and not any(char in command for char in ";&|\n")
+    if len(command) > _MAX_SEPARATOR_FREE_COMMAND_CHARS and not any(
+        char in command for char in ";&|\n"
     ):
         return True
     separators = 0
@@ -1649,19 +2046,28 @@ def _shell_tokens_with_spans(segment: str, start: int):
         raw = segment[token_start:i]
         # Only a wholly single-quoted operand is inert shell data. Double
         # quotes still execute $() and backticks; unquoted substitutions do too.
-        inert_single_quoted = (
-            (raw.startswith("'") and raw.endswith("'"))
-            or ("='" in raw and raw.endswith("'"))
+        inert_single_quoted = (raw.startswith("'") and raw.endswith("'")) or (
+            "='" in raw and raw.endswith("'")
         )
         tokens.append(("".join(value), token_start, i, inert_single_quoted))
     return tokens
 
 
 _GREP_OPTIONS_WITH_ARG = {
-    "--after-context", "--before-context", "--binary-files", "--context",
-    "--directories", "--devices", "--exclude", "--exclude-dir",
-    "--exclude-from", "--include", "--label", "--max-count",
-    "--regexp", "--file",
+    "--after-context",
+    "--before-context",
+    "--binary-files",
+    "--context",
+    "--directories",
+    "--devices",
+    "--exclude",
+    "--exclude-dir",
+    "--exclude-from",
+    "--include",
+    "--label",
+    "--max-count",
+    "--regexp",
+    "--file",
 }
 _GREP_SHORT_OPTIONS_WITH_ARG = {"A", "B", "C", "D", "d", "e", "f", "m"}
 
@@ -1679,8 +2085,11 @@ def _quoted_grep_pattern_spans(command: str) -> tuple[list[tuple[int, int]], boo
         segment_at = command.find(segment, offset)
         offset = segment_at + len(segment)
         for start, _, word in _iter_shell_command_word_spans(segment):
-            if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() not in {
-                "grep", "egrep",
+            if os.path.basename(
+                _deobfuscate_shell_word_for_detection(word)
+            ).lower() not in {
+                "grep",
+                "egrep",
             }:
                 continue
             tokens = _shell_tokens_with_spans(segment, start)
@@ -2128,11 +2537,7 @@ def _literal_command_substitution_output(script: str) -> str | None:
     if command == "printf":
         if len(args) == 1 and _is_simple_shell_literal(args[0]):
             return args[0]
-        if (
-            len(args) == 2
-            and args[0] == "%s"
-            and _is_simple_shell_literal(args[1])
-        ):
+        if len(args) == 2 and args[0] == "%s" and _is_simple_shell_literal(args[1]):
             return args[1]
     return None
 
@@ -2144,7 +2549,9 @@ def _replace_simple_command_substitutions(word: str) -> str:
         if word.startswith("$(", i):
             end = _scan_dollar_paren_end(word, i)
             if end is not None:
-                replacement = _literal_command_substitution_output(word[i + 2:end - 1])
+                replacement = _literal_command_substitution_output(
+                    word[i + 2 : end - 1]
+                )
                 if replacement is not None:
                     chars.append(replacement)
                     i = end
@@ -2152,7 +2559,9 @@ def _replace_simple_command_substitutions(word: str) -> str:
         if word[i] == "`":
             end = _scan_backtick_end(word, i)
             if end is not None:
-                replacement = _literal_command_substitution_output(word[i + 1:end - 1])
+                replacement = _literal_command_substitution_output(
+                    word[i + 1 : end - 1]
+                )
                 if replacement is not None:
                     chars.append(replacement)
                     i = end
@@ -2348,7 +2757,7 @@ def _mask_quoted_newlines(command: str) -> str:
         ch = command[i]
         if quote:
             if ch == "\\" and quote == '"' and i + 1 < len(command):
-                out.append(command[i:i + 2])
+                out.append(command[i : i + 2])
                 i += 2
                 continue
             if ch == quote:
@@ -2359,7 +2768,7 @@ def _mask_quoted_newlines(command: str) -> str:
         if ch in ("'", '"'):
             quote = ch
         elif ch == "\\" and i + 1 < len(command):
-            out.append(command[i:i + 2])
+            out.append(command[i : i + 2])
             i += 2
             continue
         out.append(ch)
@@ -2388,8 +2797,7 @@ def _iter_shell_command_word_spans(command: str):
             if skip_wrapper_options and lower_word.startswith("-"):
                 option_name = lower_word.split("=", 1)[0]
                 skip_next_wrapper_arg = (
-                    "=" not in lower_word
-                    and option_name in _SUDO_OPTIONS_WITH_ARG
+                    "=" not in lower_word and option_name in _SUDO_OPTIONS_WITH_ARG
                 )
                 pos = word_end
                 prefix_words += 1
@@ -2431,7 +2839,9 @@ def _command_detection_variants(command: str):
     # them. Gated on a real path shape (letter, colon, backslash — or
     # double backslash UNC) so POSIX escape semantics (`echo a\"b`) are
     # untouched on every other command.
-    if re.search(r"(?:[A-Za-z]:|\\\\)[\\\\]", command) or re.search(r"[A-Za-z]:\\", command):
+    if re.search(r"(?:[A-Za-z]:|\\\\)[\\\\]", command) or re.search(
+        r"[A-Za-z]:\\", command
+    ):
         win_variant = _normalize_command_for_detection(
             _mask_quoted_newlines(command.replace("\\", "/"))
         )
@@ -2503,7 +2913,9 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     target = os.path.realpath(operand)
     if os.path.dirname(target) != temp_dir:
         return False
-    return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
+    return (
+        re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
+    )
 
 
 _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = (
@@ -2733,6 +3145,7 @@ def human_wait_seconds(session_key: str | None = None) -> float:
             total += _clamped_window_seconds(state.window_started, now, ceiling)
         return total
 
+
 # =========================================================================
 # Consecutive-denial circuit breaker for smart approvals
 # =========================================================================
@@ -2799,7 +3212,9 @@ def _denial_breaker_addendum(session_key: str) -> str:
     logger.warning(
         "Smart-approval circuit breaker tripped for session %s: "
         "%d consecutive denials (threshold %d)",
-        session_key, count, threshold,
+        session_key,
+        count,
+        threshold,
     )
     return (
         f" CIRCUIT BREAKER: {count} consecutive commands were blocked by "
@@ -2807,6 +3222,7 @@ def _denial_breaker_addendum(session_key: str) -> str:
         "operation. Report the blocked operation to the user and either "
         "ask them to run it manually or use /approve."
     )
+
 
 # =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
@@ -2819,6 +3235,7 @@ def _denial_breaker_addendum(session_key: str) -> str:
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
+
     __slots__ = ("event", "data", "result", "reason", "acknowledged")
 
     def __init__(self, data: dict):
@@ -2833,7 +3250,7 @@ class _ApprovalEntry:
         self.reason: Optional[str] = None
 
 
-_gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
+_gateway_queues: dict[str, list] = {}  # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
 
 
@@ -2862,10 +3279,13 @@ def unregister_gateway_notify(session_key: str) -> None:
         entry.event.set()
 
 
-def resolve_gateway_approval(session_key: str, choice: str,
-                             resolve_all: bool = False,
-                             reason: Optional[str] = None,
-                             request_id: Optional[str] = None) -> int:
+def resolve_gateway_approval(
+    session_key: str,
+    choice: str,
+    resolve_all: bool = False,
+    reason: Optional[str] = None,
+    request_id: Optional[str] = None,
+) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
@@ -2884,7 +3304,9 @@ def resolve_gateway_approval(session_key: str, choice: str,
         if not queue:
             return 0
         if request_id:
-            targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
+            targets = [
+                entry for entry in queue if entry.data.get("request_id") == request_id
+            ]
             if not targets:
                 return 0
             queue[:] = [entry for entry in queue if entry not in targets]
@@ -3171,10 +3593,10 @@ def _command_matches_permanent_allowlist(command: str) -> bool:
     return False
 
 
-
 # =========================================================================
 # Config persistence for permanent allowlist
 # =========================================================================
+
 
 def load_permanent_allowlist() -> set:
     """Load permanently allowed command patterns from config.
@@ -3184,6 +3606,7 @@ def load_permanent_allowlist() -> set:
     """
     try:
         from hermes_cli.config import load_config_readonly
+
         config = load_config_readonly()
         patterns = set(config.get("command_allowlist", []) or [])
         if patterns:
@@ -3198,6 +3621,7 @@ def save_permanent_allowlist(patterns: set):
     """Save permanently allowed command patterns to config."""
     try:
         from hermes_cli.config import load_config, save_config
+
         config = load_config()
         config["command_allowlist"] = list(patterns)
         save_config(config)
@@ -3209,12 +3633,17 @@ def save_permanent_allowlist(patterns: set):
 # Approval prompting + orchestration
 # =========================================================================
 
-def prompt_dangerous_approval(command: str, description: str,
-                              timeout_seconds: int | None = None,
-                              allow_permanent: bool = True,
-                              approval_callback=None,
-                              *, allow_session: bool = True,
-                              smart_denied: bool = False) -> str:
+
+def prompt_dangerous_approval(
+    command: str,
+    description: str,
+    timeout_seconds: int | None = None,
+    allow_permanent: bool = True,
+    approval_callback=None,
+    *,
+    allow_session: bool = True,
+    smart_denied: bool = False,
+) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
     Args:
@@ -3259,17 +3688,22 @@ def prompt_dangerous_approval(command: str, description: str,
         )
 
 
-def _prompt_dangerous_approval_inner(command: str, description: str,
-                                     timeout_seconds: int,
-                                     allow_permanent: bool = True,
-                                     approval_callback=None,
-                                     *, allow_session: bool = True,
-                                     smart_denied: bool = False) -> str:
+def _prompt_dangerous_approval_inner(
+    command: str,
+    description: str,
+    timeout_seconds: int,
+    allow_permanent: bool = True,
+    approval_callback=None,
+    *,
+    allow_session: bool = True,
+    smart_denied: bool = False,
+) -> str:
     # Redact secrets before any user-visible rendering. The original
     # `command` is still what executes after approval; only the displayed
     # copy is scrubbed. Reuses the same redaction module used for memory
     # and log sanitization so tokens mask consistently across surfaces.
     from agent.redact import redact_sensitive_text
+
     display_command = redact_sensitive_text(command)
     display_description = redact_sensitive_text(description)
 
@@ -3304,12 +3738,14 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
     # established pattern).
     try:
         from prompt_toolkit.application.current import get_app_or_none
+
         if get_app_or_none() is not None:
             logger.warning(
                 "Dangerous-command approval requested on a thread with no "
                 "approval callback while prompt_toolkit is active; denying "
                 "to avoid stdin deadlock. command=%r description=%r",
-                command, description,
+                command,
+                description,
             )
             return "deny"
     except Exception:
@@ -3323,9 +3759,12 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
         # Resolve the active UI language once per prompt so we don't re-read
         # config/YAML inside the retry loop below.
         from agent.i18n import t
+
         while True:
             print()
-            print(f"  {t('approval.dangerous_header', description=display_description)}")
+            print(
+                f"  {t('approval.dangerous_header', description=display_description)}"
+            )
             print(f"      {display_command}")
             print()
             if once_only:
@@ -3344,7 +3783,11 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
                     if once_only:
                         prompt = t("approval.prompt_smart_deny")
                     else:
-                        prompt = t("approval.prompt_long") if allow_permanent else t("approval.prompt_short")
+                        prompt = (
+                            t("approval.prompt_long")
+                            if allow_permanent
+                            else t("approval.prompt_short")
+                        )
                     result["choice"] = input(prompt).strip().lower()
                 except (EOFError, OSError):
                     result["choice"] = ""
@@ -3373,16 +3816,22 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
                     },
                 }
                 decision = choice_map.get(choice, "deny")
-                print(t("approval.allowed_once" if decision == "once" else "approval.denied"))
+                print(
+                    t(
+                        "approval.allowed_once"
+                        if decision == "once"
+                        else "approval.denied"
+                    )
+                )
                 return decision
 
-            if choice in {'o', 'once'}:
+            if choice in {"o", "once"}:
                 print(t("approval.allowed_once"))
                 return "once"
-            elif choice in {'s', 'session'}:
+            elif choice in {"s", "session"}:
                 print(t("approval.allowed_session"))
                 return "session"
-            elif choice in {'a', 'always'}:
+            elif choice in {"a", "always"}:
                 if not allow_permanent:
                     print(t("approval.allowed_session"))
                     return "session"
@@ -3423,8 +3872,7 @@ def _normalize_approval_mode(mode) -> str:
         if normalized in _VALID_MODES:
             return normalized
         logger.warning(
-            "Unknown approvals.mode %r — defaulting to 'manual'. "
-            "Valid values: %s",
+            "Unknown approvals.mode %r — defaulting to 'manual'. Valid values: %s",
             mode,
             ", ".join(_VALID_MODES),
         )
@@ -3440,6 +3888,7 @@ def _get_approval_config() -> dict:
     """
     try:
         from hermes_cli.config import load_config_readonly
+
         config = load_config_readonly()
         return config.get("approvals", {}) or {}
     except Exception as e:
@@ -3486,9 +3935,7 @@ def is_approval_bypass_active_for_session(session_key: str) -> bool:
 
 def is_approval_bypass_active() -> bool:
     """Return whether the current approval context has bypass enabled."""
-    return is_approval_bypass_active_for_session(
-        get_current_session_key(default="")
-    )
+    return is_approval_bypass_active_for_session(get_current_session_key(default=""))
 
 
 def _get_approval_timeout() -> int:
@@ -3522,8 +3969,7 @@ def _get_approval_timeout() -> int:
         safe_cap = 365 * 24 * 3600
     if raw > safe_cap:
         logger.warning(
-            "approvals.timeout=%s exceeds the platform-safe maximum; "
-            "clamping to %ss",
+            "approvals.timeout=%s exceeds the platform-safe maximum; clamping to %ss",
             raw,
             safe_cap,
         )
@@ -3535,8 +3981,13 @@ def _get_cron_approval_mode() -> str:
     """Read the cron approval mode from config. Returns 'deny' or 'approve'."""
     try:
         from hermes_cli.config import load_config_readonly
+
         config = load_config_readonly()
-        mode = str(cfg_get(config, "approvals", "cron_mode", default="deny")).lower().strip()
+        mode = (
+            str(cfg_get(config, "approvals", "cron_mode", default="deny"))
+            .lower()
+            .strip()
+        )
         if mode in {"approve", "off", "allow", "yes"}:
             return "approve"
         return "deny"
@@ -3548,8 +3999,13 @@ def _get_single_query_approval_mode() -> str:
     """Read the single-query (-q) approval mode from config. Returns 'deny' or 'approve'."""
     try:
         from hermes_cli.config import load_config_readonly
+
         config = load_config_readonly()
-        mode = str(cfg_get(config, "approvals", "single_query_mode", default="deny")).lower().strip()
+        mode = (
+            str(cfg_get(config, "approvals", "single_query_mode", default="deny"))
+            .lower()
+            .strip()
+        )
         if mode in {"approve", "off", "allow", "yes"}:
             return "approve"
         return "deny"
@@ -3567,8 +4023,13 @@ def _get_unattended_approval_mode() -> str:
     """
     try:
         from hermes_cli.config import load_config_readonly
+
         config = load_config_readonly()
-        mode = str(cfg_get(config, "approvals", "unattended_mode", default="deny")).lower().strip()
+        mode = (
+            str(cfg_get(config, "approvals", "unattended_mode", default="deny"))
+            .lower()
+            .strip()
+        )
         if mode in {"approve", "off", "allow", "yes"}:
             return "approve"
         return "deny"
@@ -3767,6 +4228,8 @@ def _run_approval_gate(
     single_query_deny_message: str,
     unattended_deny_message: str = "",
     autoapprove_log_prefix: str,
+    allow_session: bool = True,
+    allow_permanent: bool = True,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
 ) -> dict:
@@ -3799,6 +4262,9 @@ def _run_approval_gate(
             (-q) session hits this gate under ``single_query_mode: deny``.
         autoapprove_log_prefix: Log line prefix for the non-interactive
             auto-approve warning (identifies command vs plugin origin).
+        allow_session: When False, this action supports only one-time
+            approval; session-scoped answers are rejected.
+        allow_permanent: When False, permanent allowlisting is rejected.
         fail_closed_when_no_human: When True, a non-interactive non-gateway
             context that is NOT a cron session (e.g. a bare script with
             HERMES_INTERACTIVE unset) BLOCKS instead of auto-approving. The
@@ -3852,7 +4318,9 @@ def _run_approval_gate(
             logger.warning(
                 "%s (pattern: %s): %s — single-query auto-approve "
                 "(approvals.single_query_mode: approve).",
-                autoapprove_log_prefix, pattern_key, description,
+                autoapprove_log_prefix,
+                pattern_key,
+                description,
             )
             return {"approved": True, "message": None}
         # Cron sessions: respect cron_mode config
@@ -3872,7 +4340,8 @@ def _run_approval_gate(
             if _get_unattended_approval_mode() == "deny":
                 return {
                     "approved": False,
-                    "message": unattended_deny_message or (
+                    "message": unattended_deny_message
+                    or (
                         f"BLOCKED: approval required ({description}) but this "
                         "session runs on an unattended platform "
                         f"({_get_session_platform()}) with no user present to "
@@ -3894,11 +4363,14 @@ def _run_approval_gate(
                 "%s (pattern: %s): %s — no interactive user/gateway present; "
                 "BLOCKED (fail-closed). Set HERMES_INTERACTIVE or "
                 "HERMES_GATEWAY_SESSION to answer the prompt.",
-                autoapprove_log_prefix, pattern_key, description,
+                autoapprove_log_prefix,
+                pattern_key,
+                description,
             )
             return {
                 "approved": False,
-                "message": no_human_block_message or (
+                "message": no_human_block_message
+                or (
                     f"BLOCKED: approval required ({description}) but no "
                     "interactive user or gateway is present to approve it."
                 ),
@@ -3908,7 +4380,9 @@ def _run_approval_gate(
         logger.warning(
             "%s (pattern: %s): %s — set HERMES_INTERACTIVE or "
             "HERMES_GATEWAY_SESSION to require approval.",
-            autoapprove_log_prefix, pattern_key, description,
+            autoapprove_log_prefix,
+            pattern_key,
+            description,
         )
         return {"approved": True, "message": None}
 
@@ -3925,13 +4399,14 @@ def _run_approval_gate(
 
         if notify_cb is not None:
             from agent.redact import redact_sensitive_text
+
             approval_data = {
                 "command": redact_sensitive_text(display_target),
                 "pattern_key": pattern_key,
                 "pattern_keys": [pattern_key],
                 "description": redact_sensitive_text(description),
-                "allow_permanent": True,
-                "allow_session": True,
+                "allow_permanent": allow_session and allow_permanent,
+                "allow_session": allow_session,
             }
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
@@ -3948,6 +4423,17 @@ def _run_approval_gate(
             resolved = decision["resolved"]
             choice = decision["choice"]
             deny_reason = decision.get("reason")
+
+            if not _approval_choice_allowed(
+                choice,
+                allow_session=allow_session,
+                allow_permanent=allow_permanent,
+            ):
+                return _invalid_approval_scope_result(
+                    description=description,
+                    pattern_key=pattern_key,
+                    allowed_once_only=not allow_session,
+                )
 
             if not resolved or choice is None or choice == "deny":
                 if not resolved:
@@ -3982,7 +4468,12 @@ def _run_approval_gate(
                 approve_session(session_key, pattern_key)
                 approve_permanent(pattern_key)
                 save_permanent_allowlist(_permanent_approved)
-            return {"approved": True, "message": None}
+            return {
+                "approved": True,
+                "message": None,
+                "user_approved": True,
+                "approval_choice": choice,
+            }
 
         # No notify callback: interactive CLI with a panel callback should
         # still prompt locally instead of queuing a pending approval nobody
@@ -3994,11 +4485,16 @@ def _run_approval_gate(
         ):
             # No notify callback (e.g. API server without an attached chat):
             # queue for /approve /deny review, agent sees approval_required.
-            submit_pending(session_key, {
-                "command": display_target,
-                "pattern_key": pattern_key,
-                "description": description,
-            })
+            submit_pending(
+                session_key,
+                {
+                    "command": display_target,
+                    "pattern_key": pattern_key,
+                    "description": description,
+                    "allow_permanent": allow_session and allow_permanent,
+                    "allow_session": allow_session,
+                },
+            )
             return {
                 "approved": False,
                 "pattern_key": pattern_key,
@@ -4020,8 +4516,13 @@ def _run_approval_gate(
         session_key=session_key,
         surface="cli",
     )
-    choice = prompt_dangerous_approval(display_target, description,
-                                       approval_callback=approval_callback)
+    choice = prompt_dangerous_approval(
+        display_target,
+        description,
+        allow_permanent=allow_session and allow_permanent,
+        approval_callback=approval_callback,
+        allow_session=allow_session,
+    )
     _fire_approval_hook(
         "post_approval_response",
         command=display_target,
@@ -4032,6 +4533,17 @@ def _run_approval_gate(
         surface="cli",
         choice=choice,
     )
+
+    if not _approval_choice_allowed(
+        choice,
+        allow_session=allow_session,
+        allow_permanent=allow_permanent,
+    ):
+        return _invalid_approval_scope_result(
+            description=description,
+            pattern_key=pattern_key,
+            allowed_once_only=not allow_session,
+        )
 
     if choice == "timeout":
         return {
@@ -4069,7 +4581,12 @@ def _run_approval_gate(
         approve_permanent(pattern_key)
         save_permanent_allowlist(_permanent_approved)
 
-    return {"approved": True, "message": None}
+    return {
+        "approved": True,
+        "message": None,
+        "user_approved": True,
+        "approval_choice": choice,
+    }
 
 
 def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
@@ -4086,9 +4603,9 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
 
 
-def check_dangerous_command(command: str, env_type: str,
-                            approval_callback=None,
-                            has_host_access: bool = False) -> dict:
+def check_dangerous_command(
+    command: str, env_type: str, approval_callback=None, has_host_access: bool = False
+) -> dict:
     """Check if a command is dangerous and handle approval.
 
     This is the main entry point called by terminal_tool before executing
@@ -4122,8 +4639,9 @@ def check_dangerous_command(command: str, env_type: str,
     # user saying "never, even under yolo".
     deny_pattern = _match_user_deny_rule(command)
     if deny_pattern is not None:
-        logger.warning("User deny rule %r blocked command: %s",
-                       deny_pattern, command[:200])
+        logger.warning(
+            "User deny rule %r blocked command: %s", deny_pattern, command[:200]
+        )
         return _user_deny_block_result(deny_pattern)
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
@@ -4168,6 +4686,8 @@ def request_tool_approval(
     reason: str,
     *,
     rule_key: str = "",
+    allow_session: bool = True,
+    allow_permanent: bool = True,
     approval_callback=None,
 ) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
@@ -4194,6 +4714,8 @@ def request_tool_approval(
             on the same tool persist independently (answering ``[a]lways`` to
             "write to ~/.ssh" does NOT auto-approve a later "send email" rule
             on the same tool).
+        allow_session: When False, only one-time approval is valid.
+        allow_permanent: When False, permanent allowlisting is invalid.
         approval_callback: Optional CLI callback for interactive prompts
             (same contract as ``check_dangerous_command``).
 
@@ -4208,16 +4730,13 @@ def request_tool_approval(
     (a bare script with no ``HERMES_INTERACTIVE``) fails CLOSED — a plugin-
     flagged action never runs ungated without a human.
     """
+    clear_current_native_tool_approval_grant()
     description = reason or f"Plugin requires approval for {tool_name}"
-    # Allowlist grain: an explicit plugin rule_key wins; otherwise derive from
-    # tool + a short hash of the reason so distinct reasons on the same tool
-    # get independent [a]lways entries (Finding: rule_key=tool_name alone was
-    # too coarse — one "always" would blanket every rule on that tool).
-    if rule_key:
-        key_suffix = rule_key
-    else:
-        _reason_hash = hashlib.sha256(description.encode("utf-8")).hexdigest()[:12]
-        key_suffix = f"{tool_name}:{_reason_hash}"
+    key_suffix = build_plugin_tool_approval_rule_key(
+        tool_name,
+        description,
+        rule_key=rule_key,
+    )
     # Synthetic pattern key so plugin-rule approvals live in the same
     # session/permanent allowlist machinery as command patterns, namespaced
     # to avoid ever colliding with a real command pattern key.
@@ -4226,7 +4745,7 @@ def request_tool_approval(
     # executes; it only labels the gate. Namespaced identically.
     display_target = f"<{tool_name}> (plugin approval rule)"
 
-    return _run_approval_gate(
+    result = _run_approval_gate(
         pattern_key=pattern_key,
         description=description,
         display_target=display_target,
@@ -4248,6 +4767,8 @@ def request_tool_approval(
             f"plugin-escalated tool call '{tool_name}' in "
             "non-interactive non-gateway context"
         ),
+        allow_session=allow_session,
+        allow_permanent=allow_permanent,
         fail_closed_when_no_human=True,
         no_human_block_message=(
             f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
@@ -4255,11 +4776,24 @@ def request_tool_approval(
             "A plugin flagged this action for human confirmation."
         ),
     )
+    if (
+        result.get("approved")
+        and result.get("user_approved")
+        and result.get("approval_choice") == "once"
+    ):
+        result["native_approval_grant"] = _issue_current_native_tool_approval_grant(
+            tool_name=tool_name,
+            rule_key=key_suffix,
+        )
+    else:
+        clear_current_native_tool_approval_grant()
+    return result
 
 
 # =========================================================================
 # Combined pre-exec guard (tirith + dangerous command detection)
 # =========================================================================
+
 
 def _format_tirith_description(tirith_result: dict) -> str:
     """Build a human-readable description from tirith findings.
@@ -4278,7 +4812,9 @@ def _format_tirith_description(tirith_result: dict) -> str:
         title = f.get("title", "")
         desc = f.get("description", "")
         if title and desc:
-            parts.append(f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}")
+            parts.append(
+                f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}"
+            )
         elif title:
             parts.append(f"[{severity}] {title}" if severity else title)
     if not parts:
@@ -4306,7 +4842,7 @@ def _get_approval_transport_config() -> tuple[str, str | None]:
         from hermes_cli.config import load_config_readonly
 
         config = load_config_readonly() or {}
-        approval_config = ((config.get("security") or {}).get("approval") or {})
+        approval_config = (config.get("security") or {}).get("approval") or {}
         selected = str(approval_config.get("transport") or "builtin").strip().lower()
         fallback = str(approval_config.get("transport_fallback") or "").strip().lower()
     except Exception:
@@ -4350,7 +4886,10 @@ def _present_with_selected_transport(
 
     try:
         from agent.redact import redact_sensitive_text
-        from hermes_cli.approval_transport import ApprovalRequest, invoke_approval_transport
+        from hermes_cli.approval_transport import (
+            ApprovalRequest,
+            invoke_approval_transport,
+        )
 
         timeout_seconds = _get_approval_timeout()
         request = ApprovalRequest.create(
@@ -4397,7 +4936,9 @@ def _present_with_selected_transport(
 
     def _poll() -> None:
         if touch_activity_if_due is not None:
-            touch_activity_if_due(activity_state, "waiting for plugin approval transport")
+            touch_activity_if_due(
+                activity_state, "waiting for plugin approval transport"
+            )
 
     with human_wait_window(session_key):
         result = invoke_approval_transport(
@@ -4407,7 +4948,9 @@ def _present_with_selected_transport(
             on_poll=_poll,
             is_interrupted=is_interrupted,
         )
-    hook_choice = result.choice if result.failure is None else f"transport_{result.failure}"
+    hook_choice = (
+        result.choice if result.failure is None else f"transport_{result.failure}"
+    )
     _fire_approval_hook(
         "post_approval_response",
         command=request.command,
@@ -4448,8 +4991,9 @@ def _transport_denied_result(
     }
 
 
-def _await_coalesced_leader(session_key: str, leader, approval_data: dict,
-                            *, surface: str = "gateway"):
+def _await_coalesced_leader(
+    session_key: str, leader, approval_data: dict, *, surface: str = "gateway"
+):
     """Wait on an already-pending identical approval instead of re-prompting.
 
     Called by ``_await_gateway_decision`` when an identical approval (same
@@ -4517,9 +5061,7 @@ def _await_coalesced_leader(session_key: str, leader, approval_data: dict,
                 resolved = choice is not None
                 break
             if touch_activity_if_due is not None:
-                touch_activity_if_due(
-                    _activity_state, "waiting for user approval"
-                )
+                touch_activity_if_due(_activity_state, "waiting for user approval")
 
     if choice == "once":
         # Single-use consent — the caller re-prompts. The post hook fires
@@ -4546,8 +5088,9 @@ def _await_coalesced_leader(session_key: str, leader, approval_data: dict,
     }
 
 
-def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
-                            *, surface: str = "gateway") -> dict:
+def _await_gateway_decision(
+    session_key: str, notify_cb, approval_data: dict, *, surface: str = "gateway"
+) -> dict:
     """Enqueue *approval_data*, notify the user, and block the calling agent
     thread until the request is resolved or the gateway approval timeout
     elapses — firing pre/post approval hooks and cleaning up the queue entry.
@@ -4586,11 +5129,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     with _lock:
         for existing in _gateway_queues.get(session_key, []):
             data = existing.data
-            if (
-                data.get("command") == approval_data.get("command")
-                and list(data.get("pattern_keys") or [])
-                == list(approval_data.get("pattern_keys") or [])
-            ):
+            if data.get("command") == approval_data.get("command") and list(
+                data.get("pattern_keys") or []
+            ) == list(approval_data.get("pattern_keys") or []):
                 leader = existing
                 break
     if leader is not None:
@@ -4727,9 +5268,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     return {"resolved": resolved, "choice": choice, "reason": entry.reason}
 
 
-def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+def check_all_command_guards(
+    command: str, env_type: str, approval_callback=None, has_host_access: bool = False
+) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
@@ -4762,8 +5303,9 @@ def check_all_command_guards(command: str, env_type: str,
     # check so even yolo/smart approval/mode=off cannot bypass it.
     is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
     if is_sudo_guess:
-        logger.warning("Sudo stdin guard block: %s (command: %s)",
-                       sudo_guess_desc, command[:200])
+        logger.warning(
+            "Sudo stdin guard block: %s (command: %s)", sudo_guess_desc, command[:200]
+        )
         return _sudo_stdin_block_result(sudo_guess_desc)
 
     # User-defined deny rules (approvals.deny in config.yaml): like the
@@ -4771,8 +5313,9 @@ def check_all_command_guards(command: str, env_type: str,
     # rule is the user saying "never, even under yolo".
     deny_pattern = _match_user_deny_rule(command)
     if deny_pattern is not None:
-        logger.warning("User deny rule %r blocked command: %s",
-                       deny_pattern, command[:200])
+        logger.warning(
+            "User deny rule %r blocked command: %s", deny_pattern, command[:200]
+        )
         return _user_deny_block_result(deny_pattern)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
@@ -4827,6 +5370,7 @@ def check_all_command_guards(command: str, env_type: str,
                 # the pattern-based detection above.
                 try:
                     from tools.tirith_security import check_command_security
+
                     _sq_tirith = check_command_security(command)
                     if _sq_tirith.get("action") in ("block", "warn"):
                         _sq_desc = _format_tirith_description(_sq_tirith)
@@ -4851,6 +5395,7 @@ def check_all_command_guards(command: str, env_type: str,
                     _sq_fail_open = True  # safe default if config is unreadable
                     try:
                         from hermes_cli.config import load_config_readonly as _load_cfg
+
                         _sec = (_load_cfg() or {}).get("security", {}) or {}
                         if _sec.get("tirith_enabled", True):
                             _sq_fail_open = _sec.get("tirith_fail_open", True)
@@ -4893,6 +5438,7 @@ def check_all_command_guards(command: str, env_type: str,
                 # the pattern-based detection above.
                 try:
                     from tools.tirith_security import check_command_security
+
                     _cron_tirith = check_command_security(command)
                     if _cron_tirith.get("action") in ("block", "warn"):
                         _cron_desc = _format_tirith_description(_cron_tirith)
@@ -4916,6 +5462,7 @@ def check_all_command_guards(command: str, env_type: str,
                     _cron_fail_open = True  # safe default if config is unreadable
                     try:
                         from hermes_cli.config import load_config_readonly as _load_cfg
+
                         _sec = (_load_cfg() or {}).get("security", {}) or {}
                         if _sec.get("tirith_enabled", True):
                             _cron_fail_open = _sec.get("tirith_fail_open", True)
@@ -4937,7 +5484,10 @@ def check_all_command_guards(command: str, env_type: str,
         # Unattended programmatic platforms (webhook/msgraph_webhook/
         # api_server): respect unattended_mode config (#37284, #87509).
         # Mirrors the cron branch above, tirith parity included.
-        if _is_unattended_platform_approval_context() and not _is_cron_approval_context():
+        if (
+            _is_unattended_platform_approval_context()
+            and not _is_cron_approval_context()
+        ):
             if _get_unattended_approval_mode() == "deny":
                 _ua_platform = _get_session_platform()
                 is_dangerous, _pk, description = detect_dangerous_command(command)
@@ -4957,6 +5507,7 @@ def check_all_command_guards(command: str, env_type: str,
                 # are caught even when pattern detection misses.
                 try:
                     from tools.tirith_security import check_command_security
+
                     _ua_tirith = check_command_security(command)
                     if _ua_tirith.get("action") in ("block", "warn"):
                         _ua_desc = _format_tirith_description(_ua_tirith)
@@ -4975,6 +5526,7 @@ def check_all_command_guards(command: str, env_type: str,
                     _ua_fail_open = True  # safe default if config is unreadable
                     try:
                         from hermes_cli.config import load_config_readonly as _load_cfg
+
                         _sec = (_load_cfg() or {}).get("security", {}) or {}
                         if _sec.get("tirith_enabled", True):
                             _ua_fail_open = _sec.get("tirith_fail_open", True)
@@ -5003,6 +5555,7 @@ def check_all_command_guards(command: str, env_type: str,
     tirith_result = {"action": "allow", "findings": [], "summary": ""}
     try:
         from tools.tirith_security import check_command_security
+
         tirith_result = check_command_security(command)
     except ImportError:
         # Tirith module not installed.  When tirith_fail_open is True (the
@@ -5014,6 +5567,7 @@ def check_all_command_guards(command: str, env_type: str,
         _tirith_fail_open = True  # safe default if config is unreadable
         try:
             from hermes_cli.config import load_config_readonly as _load_cfg
+
             _sec = (_load_cfg() or {}).get("security", {}) or {}
             _tirith_enabled = _sec.get("tirith_enabled", True)
             if _tirith_enabled:
@@ -5091,19 +5645,25 @@ def check_all_command_guards(command: str, env_type: str,
             # benign command suppress review of later commands that happen to
             # match the same broad detector category.
             _reset_denials(session_key)
-            logger.debug("Smart approval: auto-approved '%s' (%s)",
-                         command[:60], combined_desc_for_llm)
-            return {"approved": True, "message": None,
-                    "smart_approved": True,
-                    "description": combined_desc_for_llm}
+            logger.debug(
+                "Smart approval: auto-approved '%s' (%s)",
+                command[:60],
+                combined_desc_for_llm,
+            )
+            return {
+                "approved": True,
+                "message": None,
+                "smart_approved": True,
+                "description": combined_desc_for_llm,
+            }
         elif verdict == "deny" and not (is_cli or is_gateway or is_ask):
             _record_denial(session_key)
             breaker_addendum = _denial_breaker_addendum(session_key)
             return {
                 "approved": False,
                 "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
-                           "The command was assessed as genuinely dangerous. "
-                           f"Do NOT retry.{breaker_addendum}",
+                "The command was assessed as genuinely dangerous. "
+                f"Do NOT retry.{breaker_addendum}",
                 "smart_denied": True,
             }
         elif verdict == "deny":
@@ -5217,6 +5777,7 @@ def check_all_command_guards(command: str, env_type: str,
             # persistence keys off pattern_key (not the command text), so the
             # allowlist is unaffected.
             from agent.redact import redact_sensitive_text
+
             approval_data = {
                 "command": redact_sensitive_text(command),
                 "pattern_key": primary_key,
@@ -5305,8 +5866,12 @@ def check_all_command_guards(command: str, env_type: str,
             # A human approval (including an ESCALATE-then-approve or a
             # smart-DENY owner override) resets the consecutive-denial tally.
             _reset_denials(session_key)
-            return {"approved": True, "message": None,
-                    "user_approved": True, "description": combined_desc}
+            return {
+                "approved": True,
+                "message": None,
+                "user_approved": True,
+                "description": combined_desc,
+            }
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
         # Interactive CLI with a Dangerous Command callback should still
@@ -5322,6 +5887,7 @@ def check_all_command_guards(command: str, env_type: str,
             # user-facing copy — the raw `command` is preserved for execution and
             # the allowlist keys off pattern_key, so redaction is display-only.
             from agent.redact import redact_sensitive_text
+
             _disp_command = redact_sensitive_text(command)
             _disp_combined_desc = redact_sensitive_text(combined_desc)
             pending_data = {
@@ -5433,12 +5999,17 @@ def check_all_command_guards(command: str, env_type: str,
 
     # A human approval resets the consecutive-denial tally.
     _reset_denials(session_key)
-    return {"approved": True, "message": None,
-            "user_approved": True, "description": combined_desc}
+    return {
+        "approved": True,
+        "message": None,
+        "user_approved": True,
+        "description": combined_desc,
+    }
 
 
-def check_execute_code_guard(code: str, env_type: str,
-                             has_host_access: bool = False) -> dict:
+def check_execute_code_guard(
+    code: str, env_type: str, has_host_access: bool = False
+) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
     execute_code runs arbitrary local Python — the script can call
@@ -5590,18 +6161,25 @@ def check_execute_code_guard(code: str, env_type: str,
         _observe_smart_approval_verdict(observer_payload, verdict)
         if verdict == "approve":
             _reset_denials(session_key)
-            logger.debug("Smart approval: auto-approved execute_code for session %s",
-                         session_key)
-            return {"approved": True, "message": None,
-                    "smart_approved": True, "description": description}
+            logger.debug(
+                "Smart approval: auto-approved execute_code for session %s", session_key
+            )
+            return {
+                "approved": True,
+                "message": None,
+                "smart_approved": True,
+                "description": description,
+            }
         if verdict == "deny" and not (is_gateway or is_ask):
             _record_denial(session_key)
             breaker_addendum = _denial_breaker_addendum(session_key)
             return {
                 "approved": False,
-                "message": ("BLOCKED by smart approval: execute_code script "
-                            "execution was assessed as genuinely dangerous. "
-                            f"Do NOT retry.{breaker_addendum}"),
+                "message": (
+                    "BLOCKED by smart approval: execute_code script "
+                    "execution was assessed as genuinely dangerous. "
+                    f"Do NOT retry.{breaker_addendum}"
+                ),
                 "smart_denied": True,
                 "pattern_key": pattern_key,
                 "description": description,
@@ -5624,6 +6202,7 @@ def check_execute_code_guard(code: str, env_type: str,
     # smart approval and executed; redaction is display-only. Approval
     # persistence keys off pattern_key, so the allowlist is unaffected.
     from agent.redact import redact_sensitive_text
+
     display_command = redact_sensitive_text(command)
     display_code = redact_sensitive_text(code)
     display_description = redact_sensitive_text(description)
@@ -5824,8 +6403,10 @@ def check_execute_code_guard(code: str, env_type: str,
     if decision.get("notify_failed"):
         return {
             "approved": False,
-            "message": ("BLOCKED: Failed to send execute_code approval request "
-                        "to user. Do NOT retry."),
+            "message": (
+                "BLOCKED: Failed to send execute_code approval request "
+                "to user. Do NOT retry."
+            ),
             "pattern_key": pattern_key,
             "description": description,
             "outcome": "notify_failed",
@@ -5872,13 +6453,18 @@ def check_execute_code_guard(code: str, env_type: str,
 
     # A human approval resets the consecutive-denial tally.
     _reset_denials(session_key)
-    return {"approved": True, "message": None,
-            "user_approved": True, "description": description}
+    return {
+        "approved": True,
+        "message": None,
+        "user_approved": True,
+        "description": description,
+    }
 
 
 # =========================================================================
 # MCP elicitation entry point
 # =========================================================================
+
 
 def request_elicitation_consent(
     message: str,
@@ -5926,11 +6512,16 @@ def request_elicitation_consent(
         }
         try:
             decision = _await_gateway_decision(
-                session_key, notify_cb, approval_data, surface=surface,
+                session_key,
+                notify_cb,
+                approval_data,
+                surface=surface,
             )
         except Exception as exc:
             logger.error(
-                "Elicitation gateway dispatch failed: %s", exc, exc_info=True,
+                "Elicitation gateway dispatch failed: %s",
+                exc,
+                exc_info=True,
             )
             return "decline"
 
@@ -5954,7 +6545,9 @@ def request_elicitation_consent(
         )
     except Exception as exc:
         logger.error(
-            "Elicitation CLI prompt failed: %s", exc, exc_info=True,
+            "Elicitation CLI prompt failed: %s",
+            exc,
+            exc_info=True,
         )
         return "decline"
 

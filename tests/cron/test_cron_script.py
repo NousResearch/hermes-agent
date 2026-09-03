@@ -807,3 +807,344 @@ class TestScriptTimeoutTreeKill:
                     psutil.Process(gpid).kill()
                 except psutil.NoSuchProcess:
                     pass
+
+
+class TestDockerScriptBackend:
+    """Docker-backed cron scripts preserve isolation and never fall back locally."""
+
+    def test_backend_defaults_local_and_preserves_invalid_value(self):
+        from cron.scheduler import _cron_script_backend
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        assert _cron_script_backend({}) == "local"
+        assert _cron_script_backend({"cron": {}}) == "local"
+        assert _cron_script_backend({"cron": {"script_backend": "docker"}}) == "docker"
+        assert _cron_script_backend({"cron": {"script_backend": "bogus"}}) == "bogus"
+        assert DEFAULT_CONFIG["cron"]["script_backend"] == "local"
+        assert DEFAULT_CONFIG["cron"]["script_forward_env"] == []
+        assert DEFAULT_CONFIG["cron"]["script_env"] == {}
+        assert DEFAULT_CONFIG["cron"]["script_mounts"] == []
+
+    def test_run_job_script_dispatches_to_docker(self, cron_env, monkeypatch):
+        from cron import scheduler as sched
+
+        script = cron_env / "scripts" / "docker_canary.py"
+        script.write_text('print("docker-canary-ok")\n', encoding="utf-8")
+        config = {
+            "cron": {
+                "script_backend": "docker",
+                "script_image": "example.invalid/hermes@sha256:" + "a" * 64,
+                "script_network_mode": "none",
+                "script_mounts": [],
+                "script_forward_env": [],
+                "script_env": {},
+            }
+        }
+        monkeypatch.setattr(sched, "load_config", lambda: config)
+        calls = []
+
+        def fake_docker_run(path, workdir=None, config=None, cancel_event=None):
+            calls.append((path, workdir, config, cancel_event))
+            return True, "docker-canary-ok"
+
+        monkeypatch.setattr(sched, "_run_job_script_via_docker", fake_docker_run)
+        ok, output = sched._run_job_script(str(script))
+
+        assert (ok, output) == (True, "docker-canary-ok")
+        assert calls == [(script.resolve(), None, config, None)]
+
+    def test_invalid_backend_fails_without_local_execution(self, cron_env, monkeypatch):
+        from cron import scheduler as sched
+
+        script = cron_env / "scripts" / "must_not_run.py"
+        script.write_text('raise AssertionError("ran locally")\n', encoding="utf-8")
+        monkeypatch.setattr(
+            sched,
+            "load_config",
+            lambda: {"cron": {"script_backend": "bogus"}},
+        )
+
+        ok, output = sched._run_job_script(str(script))
+
+        assert not ok
+        assert "script_backend" in output
+        assert "bogus" in output
+
+    def test_config_load_failure_fails_without_local_execution(self, cron_env, monkeypatch):
+        from cron import scheduler as sched
+
+        script = cron_env / "scripts" / "must_not_run.py"
+        script.write_text('raise AssertionError("ran locally")\n', encoding="utf-8")
+
+        def fail_config_load():
+            raise RuntimeError("malformed config")
+
+        monkeypatch.setattr(sched, "load_config", fail_config_load)
+
+        ok, output = sched._run_job_script(str(script))
+
+        assert not ok
+        assert "load cron script configuration" in output
+
+    def test_docker_argv_enforces_confinement_and_hides_env_values(
+        self, cron_env, monkeypatch
+    ):
+        from cron import scheduler as sched
+        from tools.environments import docker as docker_mod
+        from tools.environments import local as local_mod
+
+        script = cron_env / "scripts" / "docker_canary.py"
+        script.write_text('print("ok")\n', encoding="utf-8")
+        state_dir = cron_env / "state"
+        state_dir.mkdir()
+        secret_value = "not-a-real-secret"
+        monkeypatch.setenv("FORWARDED_TEST_SECRET", secret_value)
+        monkeypatch.setattr(docker_mod, "find_docker", lambda: "/usr/bin/docker")
+        monkeypatch.setattr(local_mod, "build_subprocess_env", lambda: {"PATH": "/usr/bin"})
+        captured = {}
+
+        class FakeProc:
+            pid = 12345
+            returncode = 0
+
+            def poll(self):
+                return self.returncode
+
+            def communicate(self, timeout=None):
+                return "container-ok", ""
+
+        def fake_popen(argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return FakeProc()
+
+        monkeypatch.setattr(sched.subprocess, "Popen", fake_popen)
+        config = {
+            "cron": {
+                "script_backend": "docker",
+                "script_image": "example.invalid/hermes@sha256:" + "b" * 64,
+                "script_network_mode": "none",
+                "script_mounts": [f"{state_dir}:/state:rw"],
+                "script_forward_env": ["FORWARDED_TEST_SECRET"],
+                "script_env": {"STATIC_SETTING": "enabled"},
+            }
+        }
+
+        ok, output = sched._run_job_script_via_docker(
+            script.resolve(),
+            workdir=str(state_dir),
+            config=config,
+        )
+
+        assert (ok, output) == (True, "container-ok")
+        argv = captured["argv"]
+        assert "--read-only" in argv
+        assert "--cap-drop" in argv and "ALL" in argv
+        assert "no-new-privileges:true" in argv
+        assert "--pids-limit" in argv
+        assert argv[argv.index("--network") + 1] == "none"
+        assert "-w" in argv and argv[argv.index("-w") + 1] == "/state"
+        assert "FORWARDED_TEST_SECRET" in argv
+        assert "STATIC_SETTING" in argv
+        assert all(secret_value not in part for part in argv)
+        assert captured["kwargs"]["env"]["FORWARDED_TEST_SECRET"] == secret_value
+        assert captured["kwargs"]["env"]["STATIC_SETTING"] == "enabled"
+
+    def test_forwarded_env_uses_active_profile_secret_scope(self, cron_env, monkeypatch):
+        from agent.secret_scope import (
+            reset_secret_scope,
+            set_multiplex_active,
+            set_secret_scope,
+        )
+        from cron import scheduler as sched
+        from tools.environments import docker as docker_mod
+        from tools.environments import local as local_mod
+
+        script = cron_env / "scripts" / "docker_canary.py"
+        script.write_text('print("ok")\n', encoding="utf-8")
+        monkeypatch.setenv("FORWARDED_TEST_SECRET", "wrong-profile")
+        monkeypatch.setattr(docker_mod, "find_docker", lambda: "/usr/bin/docker")
+        monkeypatch.setattr(local_mod, "build_subprocess_env", lambda: {"PATH": "/usr/bin"})
+        captured = {}
+
+        class FakeProc:
+            pid = 12345
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "container-ok", ""
+
+        monkeypatch.setattr(
+            sched.subprocess,
+            "Popen",
+            lambda argv, **kwargs: captured.update(kwargs) or FakeProc(),
+        )
+        config = {
+            "cron": {
+                "script_backend": "docker",
+                "script_image": "example.invalid/hermes@sha256:" + "f" * 64,
+                "script_network_mode": "none",
+                "script_mounts": [],
+                "script_forward_env": ["FORWARDED_TEST_SECRET"],
+                "script_env": {},
+            }
+        }
+
+        set_multiplex_active(True)
+        token = set_secret_scope({"FORWARDED_TEST_SECRET": "active-profile"})
+        try:
+            ok, output = sched._run_job_script_via_docker(script, config=config)
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+
+        assert (ok, output) == (True, "container-ok")
+        assert captured["env"]["FORWARDED_TEST_SECRET"] == "active-profile"
+
+    def test_docker_mount_source_must_be_absolute(self):
+        from cron.scheduler import _parse_docker_script_mount
+
+        error = _parse_docker_script_mount("relative/path:/state:ro")
+
+        assert isinstance(error, str)
+        assert "absolute" in error
+
+    @pytest.mark.parametrize("destination", ["/hermes-scripts", "/hermes-scripts/nested"])
+    def test_docker_mount_cannot_shadow_reserved_script_path(
+        self, cron_env, destination
+    ):
+        from cron import scheduler as sched
+
+        script = cron_env / "scripts" / "docker_canary.py"
+        script.write_text('print("ok")\n', encoding="utf-8")
+        source = cron_env / "shadow"
+        source.mkdir()
+        config = {
+            "cron": {
+                "script_backend": "docker",
+                "script_image": "example.invalid/hermes@sha256:" + "1" * 64,
+                "script_network_mode": "none",
+                "script_mounts": [f"{source}:{destination}:ro"],
+            }
+        }
+
+        ok, output = sched._run_job_script_via_docker(script, config=config)
+
+        assert not ok
+        assert "reserved script path" in output
+
+    @pytest.mark.parametrize(
+        "config,error_fragment",
+        [
+            ({"cron": {"script_backend": "docker"}}, "script_image"),
+            (
+                {
+                    "cron": {
+                        "script_backend": "docker",
+                        "script_image": "hermes:latest",
+                        "script_network_mode": "none",
+                    }
+                },
+                "digest",
+            ),
+            (
+                {
+                    "cron": {
+                        "script_backend": "docker",
+                        "script_image": "repo/image@sha256:" + "c" * 64,
+                    }
+                },
+                "script_network_mode",
+            ),
+        ],
+    )
+    def test_docker_backend_rejects_incomplete_confinement(
+        self, cron_env, config, error_fragment
+    ):
+        from cron import scheduler as sched
+
+        script = cron_env / "scripts" / "docker_canary.py"
+        script.write_text('print("ok")\n', encoding="utf-8")
+
+        ok, output = sched._run_job_script_via_docker(script, config=config)
+
+        assert not ok
+        assert error_fragment in output
+
+    def test_workdir_requires_an_explicit_mount(self, cron_env, monkeypatch):
+        from cron import scheduler as sched
+        from tools.environments import docker as docker_mod
+
+        script = cron_env / "scripts" / "docker_canary.py"
+        script.write_text('print("ok")\n', encoding="utf-8")
+        workdir = cron_env / "unmounted"
+        workdir.mkdir()
+        monkeypatch.setattr(docker_mod, "find_docker", lambda: "/usr/bin/docker")
+        config = {
+            "cron": {
+                "script_backend": "docker",
+                "script_image": "repo/image@sha256:" + "d" * 64,
+                "script_network_mode": "none",
+                "script_mounts": [],
+            }
+        }
+
+        ok, output = sched._run_job_script_via_docker(
+            script,
+            workdir=str(workdir),
+            config=config,
+        )
+
+        assert not ok
+        assert "explicit script_mounts" in output
+
+    def test_cancel_stops_container_and_client(self, cron_env, monkeypatch):
+        from cron import scheduler as sched
+        from tools.environments import docker as docker_mod
+
+        script = cron_env / "scripts" / "docker_canary.py"
+        script.write_text('print("ok")\n', encoding="utf-8")
+        monkeypatch.setattr(docker_mod, "find_docker", lambda: "/usr/bin/docker")
+        config = {
+            "cron": {
+                "script_backend": "docker",
+                "script_image": "repo/image@sha256:" + "e" * 64,
+                "script_network_mode": "none",
+                "script_mounts": [],
+            }
+        }
+        calls = []
+
+        class FakeProc:
+            pid = 12345
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+        monkeypatch.setattr(sched.subprocess, "Popen", lambda *a, **k: FakeProc())
+        monkeypatch.setattr(
+            sched,
+            "_stop_docker_cron_container",
+            lambda docker, name, env: calls.append(("container", name)),
+        )
+        monkeypatch.setattr(
+            sched,
+            "_terminate_cron_script_tree",
+            lambda proc: calls.append(("client", proc.pid)),
+        )
+        monkeypatch.setattr(sched, "_drain_script_pipes", lambda proc: None)
+
+        class Cancelled:
+            def is_set(self):
+                return True
+
+        ok, output = sched._run_job_script_via_docker(
+            script,
+            config=config,
+            cancel_event=Cancelled(),
+        )
+
+        assert not ok
+        assert "ownership was lost" in output
+        assert [kind for kind, _ in calls] == ["container", "client"]

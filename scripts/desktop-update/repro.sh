@@ -17,6 +17,8 @@
 #   repro.sh gate          linux relaunch-gate decision matrix (anchoring,
 #                          sandbox preflight, opt-out fallbacks) -- asserts
 #                          every outcome without touching a real install
+#   repro.sh suid          setuid sandbox-helper preservation across the
+#                          rebuild -- asserts the privileged inode survives
 #
 # The sandbox persists between runs (~/tmp is fine to nuke): fresh reuses
 # nothing, behind/error reuse the last sandbox install when present because
@@ -130,6 +132,101 @@ case "$MODE" in
 
     rm -rf "$G"
     [ "$fails" -eq 0 ] && say "gate matrix: all pass" || { say "gate matrix: $fails FAILED"; exit 1; }
+    ;;
+  suid)
+    # Setuid sandbox-helper preservation matrix. electron-builder rebuilds
+    # chrome-sandbox as the invoking (unprivileged) user, so the privileged
+    # inode install.sh configured has to be parked across the rebuild and
+    # renamed back. Root is not required to TEST that: the property under
+    # assertion is that the ORIGINAL INODE survives (identity + mode), which
+    # is exactly what carries root:root 4755 on a real install.
+    S="/tmp/hermes-suid-test.$$"
+    UNPACKED="$S/hermes-agent/apps/desktop/release/linux-unpacked"
+    mkdir -p "$UNPACKED"
+
+    fails=0
+    expect() { # name expected actual
+      if [ "$2" = "$3" ]; then printf 'ok   %s -> %s\n' "$1" "$3"
+      else printf 'FAIL %s -> %s (want %s)\n' "$1" "$3" "$2"; fails=$((fails+1)); fi
+    }
+    helper="$UNPACKED/chrome-sandbox"
+    # Parked outside the checkout on purpose -- see posix.sh. HERMES_HOME is
+    # the install root's parent, which is what the script derives.
+    parked="$S/.chrome-sandbox.suid-preserved"
+    # Privileged-helper stand-in: setuid, and -- unlike anything the rebuild
+    # writes -- the inode we must still be looking at when the dust settles.
+    seed() { printf 'privileged-helper' > "$helper"; chmod 4755 "$helper"; rm -f "$parked"; }
+    ino() { stat -c %i "$1" 2>/dev/null || echo missing; }
+    mode() { stat -c %a "$1" 2>/dev/null || echo missing; }
+    # What electron-builder leaves behind: a fresh, user-owned, non-setuid
+    # file -- byte-identical unless Electron itself was upgraded.
+    rebuild() { rm -f "$helper"; printf '%s' "$1" > "$helper"; chmod 0755 "$helper"; }
+    # Never let the driver's exit status decide the suite (set -e): every
+    # assertion below is about filesystem state, and a driver that refuses
+    # the flag outright must surface as failed EXPECTATIONS, not a silent abort.
+    drive() { bash "$SCRIPT_DIR/posix.sh" --self-test-suid --install-root "$S/hermes-agent" "$@" >/dev/null 2>&1 || true; }
+
+    seed; before="$(ino "$helper")"
+    drive --suid-phase park
+    expect "park: helper moved aside"        missing   "$(ino "$helper")"
+    expect "park: privileged inode kept"     "$before" "$(ino "$parked")"
+
+    rebuild privileged-helper
+    drive --suid-phase restore
+    expect "restore: original inode back"    "$before" "$(ino "$helper")"
+    expect "restore: setuid mode intact"     4755      "$(mode "$helper")"
+    expect "restore: parked copy consumed"   missing   "$(ino "$parked")"
+
+    # Electron upgrade: the rebuilt helper differs, so it must WIN -- pairing
+    # a stale setuid binary with a new Chromium is the worse failure.
+    seed
+    drive --suid-phase park
+    rebuild new-electron-helper
+    rebuilt="$(ino "$helper")"
+    drive --suid-phase restore
+    expect "upgrade: rebuilt helper kept"    "$rebuilt" "$(ino "$helper")"
+    expect "upgrade: stale copy discarded"   missing    "$(ino "$parked")"
+
+    # No rebuild at all (the update was a no-op): ours goes straight back.
+    seed; before="$(ino "$helper")"
+    drive --suid-phase park
+    drive --suid-phase restore
+    expect "no rebuild: helper restored"     "$before" "$(ino "$helper")"
+
+    # The reason the parked inode does not live beside the helper:
+    # electron-builder recreates release/linux-unpacked wholesale. Wipe the
+    # whole tree between park and restore and the helper must still come back.
+    seed; before="$(ino "$helper")"
+    drive --suid-phase park
+    rm -rf "$UNPACKED"
+    drive --suid-phase restore
+    expect "survives a wiped release tree" "$before" "$(ino "$helper")"
+    expect "wipe: setuid mode intact"      4755      "$(mode "$helper")"
+
+    # An interrupted run left the inode parked with no helper in place; the
+    # next run must reclaim it before doing anything else.
+    seed; before="$(ino "$helper")"
+    drive --suid-phase park
+    drive --suid-phase park
+    expect "crash recovery: reclaimed"       "$before" "$(ino "$parked")"
+
+    # A helper that is NOT privileged is left entirely alone -- there is
+    # nothing to preserve, and parking it would only risk losing the rebuild.
+    rm -f "$parked"; printf 'plain' > "$helper"; chmod 0755 "$helper"
+    before="$(ino "$helper")"
+    drive --suid-phase park
+    expect "unprivileged helper untouched"   "$before" "$(ino "$helper")"
+
+    # And the STRICT predicate the real update runs under: setuid alone is not
+    # enough, the helper must also be root-owned. Asserted with the relaxation
+    # switched back off, so the production condition is pinned, not assumed.
+    seed; before="$(ino "$helper")"
+    HERMES_SUID_SELFTEST_REQUIRE_ROOT=1 drive --suid-phase park
+    expect "strict: user-owned setuid ignored" "$before" "$(ino "$helper")"
+    expect "strict: nothing parked"            missing   "$(ino "$parked")"
+
+    rm -rf "$S"
+    [ "$fails" -eq 0 ] && say "suid matrix: all pass" || { say "suid matrix: $fails FAILED"; exit 1; }
     ;;
   launch)
     # Terminal-lifecycle matrix (gille round 2): launch acceptance is part

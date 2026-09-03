@@ -221,6 +221,10 @@ class WebhookAdapter(BasePlatformAdapter):
         # Idempotency: TTL cache of recently processed delivery IDs.
         # Prevents duplicate agent runs when webhook providers retry.
         self._seen_deliveries: Dict[str, float] = {}
+        # Direct deliveries stay reserved independently of the TTL until their
+        # downstream send finishes. Successful sends enter _seen_deliveries;
+        # failed or cancelled sends release the reservation for provider retry.
+        self._deliveries_in_flight: set[str] = set()
         self._idempotency_ttl: int = 3600  # 1 hour
         self._seen_deliveries_next_prune_at: float = 0.0
 
@@ -451,17 +455,34 @@ class WebhookAdapter(BasePlatformAdapter):
         window.append(now)
         return True
 
-    def _record_delivery_id(self, delivery_id: str, now: float) -> bool:
-        """Return True when this delivery should be processed."""
+    def _record_delivery_id(
+        self, delivery_id: str, now: float, *, reserve_until_complete: bool = False
+    ) -> bool:
+        """Claim an unseen delivery ID, optionally until downstream completion."""
+        if delivery_id in self._deliveries_in_flight:
+            return False
         seen_at = self._seen_deliveries.get(delivery_id)
         if seen_at is not None and now - seen_at < self._idempotency_ttl:
             return False
         if seen_at is not None:
             self._seen_deliveries.pop(delivery_id, None)
-        self._seen_deliveries[delivery_id] = now
+        if reserve_until_complete:
+            self._deliveries_in_flight.add(delivery_id)
+        else:
+            self._seen_deliveries[delivery_id] = now
         if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
             self._prune_seen_deliveries(now)
         return True
+
+    def _complete_delivery_id(self, delivery_id: str, now: float) -> None:
+        """Commit a successful direct-delivery claim to the TTL cache."""
+        self._deliveries_in_flight.discard(delivery_id)
+        self._seen_deliveries[delivery_id] = now
+
+    def _forget_delivery_id(self, delivery_id: str) -> None:
+        """Release a failed claim so a provider retry can process it."""
+        self._deliveries_in_flight.discard(delivery_id)
+        self._seen_deliveries.pop(delivery_id, None)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
@@ -878,7 +899,10 @@ class WebhookAdapter(BasePlatformAdapter):
         # ── Idempotency ─────────────────────────────────────────
         # Skip duplicate deliveries (webhook retries).
         now = time.time()
-        if not self._record_delivery_id(delivery_id, now):
+        deliver_only = bool(route_config.get("deliver_only"))
+        if not self._record_delivery_id(
+            delivery_id, now, reserve_until_complete=deliver_only
+        ):
             logger.info(
                 "[webhook] Skipping duplicate delivery %s", delivery_id
             )
@@ -893,36 +917,41 @@ class WebhookAdapter(BasePlatformAdapter):
         # cron jobs, other agents) that need to push a plain notification
         # to a user's chat with zero LLM cost.  Reuses the same HMAC auth,
         # rate limiting, idempotency, and template rendering as agent mode.
-        if route_config.get("deliver_only"):
-            delivery = {
-                "deliver": route_config.get("deliver", "log"),
-                "deliver_extra": self._render_delivery_extra(
-                    route_config.get("deliver_extra", {}), payload
-                ),
-                "payload": payload,
-            }
-            logger.info(
-                "[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s",
-                event_type,
-                route_name,
-                delivery["deliver"],
-                len(prompt),
-                delivery_id,
-            )
+        if deliver_only:
             try:
+                delivery = {
+                    "deliver": route_config.get("deliver", "log"),
+                    "deliver_extra": self._render_delivery_extra(
+                        route_config.get("deliver_extra", {}), payload
+                    ),
+                    "payload": payload,
+                }
+                logger.info(
+                    "[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s",
+                    event_type,
+                    route_name,
+                    delivery["deliver"],
+                    len(prompt),
+                    delivery_id,
+                )
                 result = await self._direct_deliver(prompt, delivery)
+            except asyncio.CancelledError:
+                self._forget_delivery_id(delivery_id)
+                raise
             except Exception:
                 logger.exception(
                     "[webhook] direct-deliver failed route=%s delivery=%s",
                     route_name,
                     delivery_id,
                 )
+                self._forget_delivery_id(delivery_id)
                 return web.json_response(
                     {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
                     status=502,
                 )
 
             if result.success:
+                self._complete_delivery_id(delivery_id, time.time())
                 return web.json_response(
                     {
                         "status": "delivered",
@@ -940,6 +969,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 delivery["deliver"],
                 result.error,
             )
+            self._forget_delivery_id(delivery_id)
             return web.json_response(
                 {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
                 status=502,

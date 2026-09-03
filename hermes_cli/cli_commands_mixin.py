@@ -1246,7 +1246,7 @@ class CLICommandsMixin:
             if hasattr(self.agent, "_todo_store"):
                 try:
                     from tools.todo_tool import TodoStore
-                    self.agent._todo_store = TodoStore()
+                    self.agent._todo_store = TodoStore.for_session(target_id)
                 except Exception:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
@@ -1604,7 +1604,7 @@ class CLICommandsMixin:
             if hasattr(self.agent, "_todo_store"):
                 try:
                     from tools.todo_tool import TodoStore
-                    self.agent._todo_store = TodoStore()
+                    self.agent._todo_store = TodoStore.for_session(new_session_id)
                 except Exception:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):

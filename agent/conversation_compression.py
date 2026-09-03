@@ -5214,6 +5214,14 @@ def compress_context(
                             _handoff_message[_DB_PERSISTED_MARKER] = True
                     agent.session_id = new_session_id
                     agent._db_flush_scan_prefix = None
+                    # A compression continuation has a distinct session id.
+                    # Carry the active list into its matching persisted store
+                    # before future writes can target the continuation.
+                    from tools.todo_tool import TodoStore
+                    todos = agent._todo_store.read()
+                    agent._todo_store = TodoStore.for_session(agent.session_id)
+                    if todos:
+                        agent._todo_store.write(todos)
                     try:
                         from gateway.session_context import set_current_session_id
 

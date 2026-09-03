@@ -1807,9 +1807,10 @@ def init_agent(
     except Exception:
         pass
     
-    # In-memory todo list for task planning (one per agent/session)
+    # Todo state is session-scoped, so a fresh agent for this session can
+    # recover it without exposing another session's list.
     from tools.todo_tool import TodoStore
-    agent._todo_store = TodoStore()
+    agent._todo_store = TodoStore.for_session(agent.session_id)
     
     # Load config once for memory, skills, and compression sections
     try:

@@ -423,10 +423,37 @@ def _compute_tool_definitions(
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
     tools_to_include: set = set()
+    raw_worker_allowlist = os.environ.get(
+        "HERMES_INTERNAL_WORKER_TOOL_ALLOWLIST"
+    )
+    worker_allowlist = None
+    if raw_worker_allowlist:
+        try:
+            parsed_allowlist = json.loads(raw_worker_allowlist)
+            if (
+                isinstance(parsed_allowlist, list)
+                and parsed_allowlist
+                and all(
+                    isinstance(name, str) and name
+                    for name in parsed_allowlist
+                )
+            ):
+                worker_allowlist = set(parsed_allowlist)
+        except (TypeError, ValueError):
+            worker_allowlist = set()
+    if raw_worker_allowlist is not None:
+        # Runtime-owned worker policies attest and execute an exact literal tool
+        # surface. Progressive disclosure would replace approved plugin tools
+        # with tool_search/tool_describe/tool_call, changing both the attested
+        # contract and the model-visible authority. Ordinary sessions keep the
+        # configured tool-search behavior.
+        skip_tool_search_assembly = True
 
     if enabled_toolsets is not None:
         effective_enabled_toolsets = list(enabled_toolsets)
-        if (
+        if raw_worker_allowlist:
+            tools_to_include.update(worker_allowlist or set())
+        if worker_allowlist is None and (
             os.environ.get("HERMES_KANBAN_TASK")
             and not _is_delegated_child_context()
             and _is_dispatcher_owned_worker()
@@ -456,6 +483,8 @@ def _compute_tool_definitions(
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
+        if raw_worker_allowlist:
+            tools_to_include.update(worker_allowlist or set())
 
     # Always apply disabled toolsets as a subtraction step at the end.
     # This ensures that even if a composite toolset (like hermes-cli)
@@ -508,6 +537,15 @@ def _compute_tool_definitions(
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    if raw_worker_allowlist is not None:
+        # Runtime-owned exact worker policies can only reduce the effective
+        # registry. A malformed or unavailable policy fails closed to no tools.
+        filtered_tools = [
+            definition
+            for definition in filtered_tools
+            if definition.get("function", {}).get("name")
+            in (worker_allowlist or set())
+        ]
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references

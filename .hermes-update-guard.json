@@ -1,0 +1,9 @@
+{
+  "schema_version": "1.0.0",
+  "guards": [
+    {
+      "guard_id": "hermes-builder-dispatch-stage-1",
+      "anchor_commit": "10f99d262c0d94b30922f04ac71036b124659f36"
+    }
+  ]
+}

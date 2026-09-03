@@ -554,12 +554,12 @@ def init_agent(
     ephemeral_system_prompt: str = None,
     log_prefix_chars: int = 100,
     log_prefix: str = "",
-    providers_allowed: List[str] = None,
-    providers_ignored: List[str] = None,
-    providers_order: List[str] = None,
-    provider_sort: str = None,
+    providers_allowed: Optional[List[str]] = None,
+    providers_ignored: Optional[List[str]] = None,
+    providers_order: Optional[List[str]] = None,
+    provider_sort: Optional[str] = None,
     provider_require_parameters: bool = False,
-    provider_data_collection: str = None,
+    provider_data_collection: Optional[str] = None,
     openrouter_min_coding_score: Optional[float] = None,
     session_id: str = None,
     tool_progress_callback: callable = None,
@@ -584,7 +584,7 @@ def init_agent(
     event_callback: Optional[Callable[[str, dict], None]] = None,
     reaction_callback: Optional[Callable[[str], None]] = None,
     max_tokens: int = None,
-    reasoning_config: Dict[str, Any] = None,
+    reasoning_config: Optional[Dict[str, Any]] = None,
     service_tier: str = None,
     request_overrides: Dict[str, Any] = None,
     prefill_messages: List[Dict[str, Any]] = None,
@@ -605,7 +605,7 @@ def init_agent(
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
     run_budget_seconds: Optional[float] = None,
-    fallback_model: Dict[str, Any] = None,
+    fallback_model: Optional[Dict[str, Any] | List[Dict[str, Any]]] = None,
     credential_pool=None,
     checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20,
@@ -717,6 +717,31 @@ def init_agent(
         key: value for key, value in (capabilities or {}).items()
         if isinstance(key, str) and isinstance(value, bool)
     }
+
+    # Canonicalize URL-only direct construction before any provider-scoped
+    # config is selected. Exact-host helpers reject spoofed/suffix hosts.
+    if provider_name is None:
+        if (
+            agent._base_url_hostname == "chatgpt.com"
+            and "/backend-api/codex" in agent._base_url_lower
+        ):
+            agent.provider = "openai-codex"
+        elif agent._base_url_hostname == "api.x.ai":
+            agent.provider = "xai"
+        elif agent._base_url_hostname == "api.anthropic.com":
+            agent.provider = "anthropic"
+        elif agent._is_openrouter_url():
+            agent.provider = "openrouter"
+        elif base_url_host_matches(agent._base_url_lower, "api.openai.com"):
+            agent.provider = "openai-api"
+        elif agent._base_url_hostname == "api.meta.ai":
+            agent.provider = "meta"
+        elif (
+            agent._base_url_hostname.startswith("bedrock-runtime.")
+            and base_url_host_matches(agent._base_url_lower, "amazonaws.com")
+        ):
+            agent.provider = "bedrock"
+
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
@@ -814,6 +839,89 @@ def init_agent(
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
     except Exception:
         pass
+
+    # Main-provider-scoped policy. The raw config remains unchanged; this
+    # projection exists only for agents whose canonical PRIMARY provider matches
+    # a ``main_provider_policies.<provider>`` entry. Main-agent reasoning is
+    # intentionally outside this policy contract; caller/session reasoning and
+    # the base profile's reasoning settings remain authoritative.
+    _effective_main_provider_cfg = None
+    _main_provider_policy_active = False
+    _main_provider_policy_has_model_override = False
+    try:
+        from hermes_cli.config import (
+            load_config_readonly as _load_policy_config,
+            resolve_main_provider_policy,
+        )
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        _base_policy_cfg = _load_policy_config()
+        _candidate_effective_cfg = resolve_main_provider_policy(
+            _base_policy_cfg, agent.provider, agent.model
+        )
+        _candidate_policy_active = _candidate_effective_cfg is not _base_policy_cfg
+        if _candidate_policy_active:
+            _raw_provider_policy = (
+                (_base_policy_cfg.get("main_provider_policies") or {}).get(
+                    agent.provider
+                )
+            )
+            _raw_model_overrides = (
+                _raw_provider_policy.get("model_overrides")
+                if isinstance(_raw_provider_policy, dict)
+                else None
+            )
+            _candidate_has_model_override = bool(
+                isinstance(_raw_model_overrides, dict)
+                and isinstance(_raw_model_overrides.get(agent.model), dict)
+                and "context_length" in _raw_model_overrides[agent.model]
+            )
+            _policy_routing = _candidate_effective_cfg.get("provider_routing") or {}
+            if not isinstance(_policy_routing, dict):
+                raise TypeError("projected provider_routing must be a mapping")
+            _policy_only = _policy_routing.get("only")
+            _policy_ignore = _policy_routing.get("ignore")
+            _policy_order = _policy_routing.get("order")
+            _policy_sort = _policy_routing.get("sort")
+            _policy_data_collection = _policy_routing.get("data_collection")
+            _candidate_runtime_values = (
+                _policy_only if isinstance(_policy_only, list) else None,
+                _policy_ignore if isinstance(_policy_ignore, list) else None,
+                _policy_order if isinstance(_policy_order, list) else None,
+                _policy_sort if isinstance(_policy_sort, str) else None,
+                bool(_policy_routing.get("require_parameters", False)),
+                (
+                    _policy_data_collection
+                    if isinstance(_policy_data_collection, str)
+                    else None
+                ),
+                get_fallback_chain(_candidate_effective_cfg),
+            )
+
+            # Publish only after routing, fallback, and model/context projection
+            # have all validated successfully.
+            (
+                providers_allowed,
+                providers_ignored,
+                providers_order,
+                provider_sort,
+                provider_require_parameters,
+                provider_data_collection,
+                fallback_model,
+            ) = _candidate_runtime_values
+            _main_provider_policy_has_model_override = (
+                _candidate_has_model_override
+            )
+        _effective_main_provider_cfg = _candidate_effective_cfg
+        _main_provider_policy_active = _candidate_policy_active
+    except Exception:
+        # Policy resolution is an optional config projection; malformed policy
+        # data must degrade to the caller-provided/base runtime, never block an
+        # otherwise valid agent.
+        _effective_main_provider_cfg = None
+        _main_provider_policy_active = False
+
+    agent._main_provider_policy_active = _main_provider_policy_active
 
     # GPT-5.x models usually require the Responses API path, but some
     # providers have exceptions (for example Copilot's gpt-5-mini still
@@ -1811,10 +1919,15 @@ def init_agent(
     from tools.todo_tool import TodoStore
     agent._todo_store = TodoStore()
     
-    # Load config once for memory, skills, and compression sections
+    # Load config once for memory, skills, and compression sections. Reuse the
+    # provider-scoped projection built above so model/context/compression reads
+    # agree with provider routing and fallback resolution for this agent.
     try:
-        from hermes_cli.config import load_config_readonly as _load_agent_config
-        _agent_cfg = _load_agent_config()
+        if _effective_main_provider_cfg is not None:
+            _agent_cfg = _effective_main_provider_cfg
+        else:
+            from hermes_cli.config import load_config_readonly as _load_agent_config
+            _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
 
@@ -2638,7 +2751,9 @@ def init_agent(
             _configured_default_runtime_model
             and _configured_default_runtime_model != _active_runtime_model
         )
-        if _model_mismatch or _route_mismatch:
+        if (
+            _model_mismatch or _route_mismatch
+        ) and not _main_provider_policy_has_model_override:
             _ra().logger.debug(
                 "Ignoring model.context_length=%s for startup runtime %s at %s "
                 "(configured default is %s at %s)",

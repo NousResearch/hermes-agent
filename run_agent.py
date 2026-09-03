@@ -560,7 +560,7 @@ class AIAgent:
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
         run_budget_seconds: Optional[float] = None,
-        fallback_model: Dict[str, Any] = None,
+        fallback_model: Optional[Dict[str, Any] | List[Dict[str, Any]]] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 20,

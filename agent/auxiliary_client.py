@@ -3316,9 +3316,15 @@ def _aux_openrouter_settings() -> Tuple[bool, str]:
     config-read failure.
     """
     try:
-        from hermes_cli.config import cfg_get, load_config_readonly
+        from hermes_cli.config import (
+            cfg_get,
+            load_config_readonly,
+            resolve_main_provider_policy,
+        )
 
-        cfg = load_config_readonly()
+        cfg = resolve_main_provider_policy(
+            load_config_readonly(), _read_main_provider(), _read_main_model()
+        )
         free_only = bool(cfg_get(cfg, "auxiliary", "free_only", default=False))
         val = cfg_get(cfg, "auxiliary", "openrouter_model")
         model = val.strip() if isinstance(val, str) and val.strip() else _OPENROUTER_MODEL
@@ -6374,10 +6380,16 @@ def _try_main_fallback_chain(
     participate in the same order as the main agent.
     """
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_cli.config import (
+            load_config_readonly,
+            resolve_main_provider_policy,
+        )
         from hermes_cli.fallback_config import get_fallback_chain
 
-        chain = get_fallback_chain(load_config_readonly())
+        config = resolve_main_provider_policy(
+            load_config_readonly(), _read_main_provider(), _read_main_model()
+        )
+        chain = get_fallback_chain(config)
     except Exception as exc:
         logger.debug("Auxiliary %s: could not load main fallback chain: %s", task or "call", exc)
         return None, None, ""
@@ -8899,8 +8911,13 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     if not task:
         return {}
     try:
-        from hermes_cli.config import load_config_readonly
-        config = load_config_readonly()
+        from hermes_cli.config import (
+            load_config_readonly,
+            resolve_main_provider_policy,
+        )
+        config = resolve_main_provider_policy(
+            load_config_readonly(), _read_main_provider(), _read_main_model()
+        )
     except ImportError:
         return {}
     aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}

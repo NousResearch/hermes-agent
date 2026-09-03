@@ -3026,6 +3026,123 @@ def switch_model(
     old_model = agent.model
     old_provider = agent.provider
 
+    # Resolve the destination's provider-scoped projection before mutating any
+    # live state.  A switch must either install one coherent routing/context/
+    # fallback view or leave the old runtime untouched.
+    _sm_base_cfg: Dict[str, Any] = {}
+    _sm_effective_cfg: Dict[str, Any] = {}
+    _sm_destination_policy_active = False
+    _sm_policy_refresh = False
+    _sm_policy_context_intent: Optional[int] = None
+    _sm_policy_has_context_override = False
+    _sm_policy_routing: Dict[str, Any] = {}
+    _sm_policy_fallback_chain: List[Dict[str, Any]] = []
+    try:
+        from hermes_cli.config import (
+            load_config_readonly as _sm_load_policy_config,
+            resolve_main_provider_policy,
+        )
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        _sm_base_cfg = _sm_load_policy_config() or {}
+        _sm_policies = _sm_base_cfg.get("main_provider_policies")
+        _sm_effective_cfg = resolve_main_provider_policy(
+            _sm_base_cfg, new_provider, new_model
+        )
+        _sm_destination_policy_active = _sm_effective_cfg is not _sm_base_cfg
+        _sm_policy_refresh = _sm_destination_policy_active or bool(
+            getattr(agent, "_main_provider_policy_active", False)
+        )
+        if _sm_policy_refresh:
+            _sm_policy_routing_value = _sm_effective_cfg.get("provider_routing")
+            if isinstance(_sm_policy_routing_value, dict):
+                _sm_policy_routing = _sm_policy_routing_value
+            _sm_policy_fallback_chain = get_fallback_chain(_sm_effective_cfg)
+
+            _sm_effective_model_cfg = _sm_effective_cfg.get("model")
+            if isinstance(_sm_effective_model_cfg, dict):
+                _sm_raw_context = _sm_effective_model_cfg.get("context_length")
+                if (
+                    isinstance(_sm_raw_context, int)
+                    and not isinstance(_sm_raw_context, bool)
+                    and _sm_raw_context > 0
+                ):
+                    _sm_policy_context_intent = _sm_raw_context
+
+            _sm_provider_key = str(new_provider or "").strip().lower()
+            _sm_policy = (
+                _sm_policies.get(_sm_provider_key)
+                if isinstance(_sm_policies, dict)
+                else None
+            )
+            _sm_model_overrides = (
+                _sm_policy.get("model_overrides")
+                if isinstance(_sm_policy, dict)
+                else None
+            )
+            _sm_exact_model_override = (
+                _sm_model_overrides.get(str(new_model or "").strip())
+                if isinstance(_sm_model_overrides, dict)
+                else None
+            )
+            _sm_policy_has_context_override = bool(
+                _sm_destination_policy_active
+                and isinstance(_sm_exact_model_override, dict)
+                and "context_length" in _sm_exact_model_override
+            )
+
+            # A base model.context_length belongs to its configured route.  A
+            # matching exact model override is the sole policy exception.
+            if (
+                _sm_policy_context_intent is not None
+                and not _sm_policy_has_context_override
+            ):
+                from agent.agent_init import _context_route_mismatch
+                from hermes_cli.config import split_model_config_default
+                from hermes_cli.model_normalize import normalize_model_for_provider
+
+                _sm_base_model_cfg = _sm_base_cfg.get("model")
+                if not isinstance(_sm_base_model_cfg, dict):
+                    _sm_policy_context_intent = None
+                else:
+                    _sm_configured_model = _sm_base_model_cfg.get("default")
+                    if isinstance(_sm_configured_model, dict):
+                        _sm_configured_model, _ = split_model_config_default(
+                            _sm_configured_model
+                        )
+                    _sm_configured_model = normalize_model_for_provider(
+                        str(_sm_configured_model or ""), new_provider
+                    )
+                    _sm_destination_model = normalize_model_for_provider(
+                        str(new_model or ""), new_provider
+                    )
+                    if (
+                        _sm_configured_model
+                        and _sm_configured_model != _sm_destination_model
+                    ) or _context_route_mismatch(
+                        _sm_base_model_cfg.get("base_url"),
+                        base_url,
+                        _sm_base_model_cfg.get("provider"),
+                        new_provider,
+                    ):
+                        _sm_policy_context_intent = None
+    except Exception as _policy_error:
+        logger.debug(
+            "switch_model: main-provider policy projection skipped",
+            exc_info=True,
+        )
+        # Once the source runtime is policy-scoped, continuing without a
+        # readable projection would pair the destination client/model with the
+        # source provider's routing and fallback state. Abort before any live
+        # mutation instead; the caller can retry after the transient read heals.
+        if getattr(agent, "_main_provider_policy_active", False):
+            raise RuntimeError(
+                "switch_model: main-provider policy projection could not be read"
+            ) from _policy_error
+        _sm_destination_policy_active = False
+        _sm_policy_refresh = False
+        _sm_effective_cfg = {}
+
     # ── Determine api_mode if not provided ──
     # Pass model so dual-wire providers (Nous Portal anthropic/* → Messages)
     # resolve correctly; without it determine_api_mode falls back to the
@@ -3103,8 +3220,15 @@ def switch_model(
             "_config_context_length",
             "_reasoning_echo_flag",
             "runtime_capabilities",
+            "_main_provider_policy_active",
         )
     }
+    _compressor = getattr(agent, "context_compressor", None)
+    _compressor_snapshot = (
+        dict(getattr(_compressor, "__dict__", {}))
+        if _compressor is not None
+        else None
+    )
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
     # live dict doesn't poison the rollback target.
     _snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
@@ -3123,6 +3247,12 @@ def switch_model(
                 continue
             try:
                 setattr(agent, _name, _value)
+            except Exception:  # noqa: BLE001
+                pass
+        if _compressor is not None and _compressor_snapshot is not None:
+            try:
+                _compressor.__dict__.clear()
+                _compressor.__dict__.update(_compressor_snapshot)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -3311,10 +3441,15 @@ def switch_model(
 
         _sm_cfg = load_config()
         _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
-        _destination_context_intent = get_custom_provider_context_length(
+        _custom_context_intent = get_custom_provider_context_length(
             model=agent.model,
             base_url=agent.base_url,
             custom_providers=_sm_custom_providers,
+        )
+        _destination_context_intent = (
+            _sm_policy_context_intent
+            if _sm_policy_refresh and _sm_policy_context_intent is not None
+            else _custom_context_intent
         )
     except Exception:
         _destination_context_intent = None
@@ -3417,6 +3552,31 @@ def switch_model(
     except Exception as _reasoning_err:
         logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
 
+    # Publish provider-policy routing and fallback state only after client and
+    # context setup have succeeded.  The projection includes the base config
+    # for non-matching providers, so switching away restores it exactly.
+    if _sm_policy_refresh:
+        _only = _sm_policy_routing.get("only")
+        _ignore = _sm_policy_routing.get("ignore")
+        _order = _sm_policy_routing.get("order")
+        _sort = _sm_policy_routing.get("sort")
+        _data_collection = _sm_policy_routing.get("data_collection")
+        agent.providers_allowed = list(_only) if isinstance(_only, list) else None
+        agent.providers_ignored = list(_ignore) if isinstance(_ignore, list) else None
+        agent.providers_order = list(_order) if isinstance(_order, list) else None
+        agent.provider_sort = _sort if isinstance(_sort, str) else None
+        agent.provider_require_parameters = bool(
+            _sm_policy_routing.get("require_parameters", False)
+        )
+        agent.provider_data_collection = (
+            _data_collection if isinstance(_data_collection, str) else None
+        )
+        agent._fallback_chain = [dict(entry) for entry in _sm_policy_fallback_chain]
+        agent._fallback_model = (
+            agent._fallback_chain[0] if agent._fallback_chain else None
+        )
+    agent._main_provider_policy_active = _sm_destination_policy_active
+
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
 
@@ -3482,14 +3642,16 @@ def switch_model(
     # ("switched to anthropic, tui keeps trying openrouter").
     old_norm = (old_provider or "").strip().lower()
     new_norm = (new_provider or "").strip().lower()
-    fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
-    if old_norm and new_norm and old_norm != new_norm:
-        fallback_chain = [
-            entry for entry in fallback_chain
-            if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
-        ]
-    agent._fallback_chain = fallback_chain
-    agent._fallback_model = fallback_chain[0] if fallback_chain else None
+    if not _sm_policy_refresh:
+        fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
+        if old_norm and new_norm and old_norm != new_norm:
+            fallback_chain = [
+                entry for entry in fallback_chain
+                if (entry.get("provider") or "").strip().lower()
+                not in {old_norm, new_norm}
+            ]
+        agent._fallback_chain = fallback_chain
+        agent._fallback_model = fallback_chain[0] if fallback_chain else None
 
     # Apply the switched-to provider's request_overrides (custom_providers
     # extra_body, e.g. chat_template_kwargs). See helper for rationale.

@@ -6310,7 +6310,11 @@ class TurnRunner:
         # serialization (_running_agents) keeps this safe post-lock.
         if reused_cached_agent and agent is not None:
             self._runner._apply_fallback_chain_to_agent(
-                agent, self._runner._refresh_fallback_model(),
+                agent,
+                self._runner._refresh_fallback_model(
+                    turn_route["runtime"].get("provider", ""),
+                    turn_route["model"],
+                ),
             )
 
         # Lock released — now schedule cleanup of any cross-process-evicted
@@ -6367,7 +6371,10 @@ class TurnRunner:
                 gateway_session_key=ctx.session_key,
                 session_db=getattr(self._runner._session_db, "_db", self._runner._session_db),
                 # Reload from disk — do not reuse the startup snapshot (#60955).
-                fallback_model=self._runner._refresh_fallback_model(),
+                fallback_model=self._runner._refresh_fallback_model(
+                    turn_route["runtime"].get("provider", ""),
+                    turn_route["model"],
+                ),
                 skip_context_files=skip_context_files,
                 # Keep the persona even with minimal context: soul identity is
                 # a single small file, not part of the expensive walk.
@@ -7618,6 +7625,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        # Immutable neutral fallback captured before any provider-scoped
+        # refresh updates the compatibility mirror. It is the only safe
+        # last-known-good for an uncached route on this gateway's own profile.
+        self._startup_fallback_model = [
+            dict(entry) for entry in (self._fallback_model or [])
+        ] or None
 
         # Wire process registry into session store for reset protection.
         # A background process older than the configured threshold (default 24h,
@@ -10917,26 +10930,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
         return None
 
-    def _refresh_fallback_model(self) -> list | None:
-        """Re-read fallback_providers from disk for the next agent create/reuse.
+    def _refresh_fallback_model(
+        self, provider: str = "", model: str = ""
+    ) -> list | None:
+        """Re-read the live main route's effective fallback chain from disk.
 
-        Cron already does this per job via ``get_fallback_chain``; the gateway
-        previously froze ``self._fallback_model`` at process start, so a chain
-        configured (or changed) after ``hermes gateway`` was running never
-        reached messaging sessions even though the same process's cron jobs
-        fell back correctly. Fixes #60955.
-
-        A TRANSIENT read/parse failure (user mid-edit of config.yaml with a
-        non-atomic write) keeps the last known-good chain instead of wiping a
-        cached agent's working fallback for that turn.  Only a successful read
-        that genuinely lacks the key clears the chain.
+        Provider policies are resolved for the route that will own the agent.
+        Last-known-good values are keyed by that route so a transient parse
+        failure in one multiplexed session cannot borrow another session's
+        policy chain.
         """
+        config_home = _gateway_config_home()
+        try:
+            home_key = str(config_home.expanduser().resolve(strict=False))
+        except Exception:
+            home_key = str(config_home)
+        try:
+            default_home_key = str(
+                _hermes_home.expanduser().resolve(strict=False)
+            )
+        except Exception:
+            default_home_key = str(_hermes_home)
+        normalized_provider = str(provider or "").strip().lower()
+        normalized_model = str(model or "").strip()
+        route_key = (home_key, normalized_provider, normalized_model)
+        if not hasattr(self, "_startup_fallback_model"):
+            self._startup_fallback_model = [
+                dict(entry)
+                for entry in (getattr(self, "_fallback_model", None) or [])
+            ] or None
+        route_cache = getattr(self, "_fallback_model_by_route", None)
+        if not isinstance(route_cache, dict):
+            route_cache = {}
+            self._fallback_model_by_route = route_cache
+            if home_key == default_home_key and self._startup_fallback_model:
+                route_cache[(default_home_key, "", "")] = [
+                    dict(entry) for entry in self._startup_fallback_model
+                ]
+
+        def startup_chain() -> list | None:
+            if home_key != default_home_key or not self._startup_fallback_model:
+                return None
+            return [dict(entry) for entry in self._startup_fallback_model]
+
+        def remember(chain: list | None) -> list | None:
+            self._fallback_model = chain
+            route_cache[route_key] = chain
+            return chain
+
         try:
             from hermes_cli.config import read_user_config_raw
-            cfg_path = _hermes_home / "config.yaml"
+            cfg_path = config_home / "config.yaml"
             if not cfg_path.exists():
-                self._fallback_model = None
-                return self._fallback_model
+                return remember(None)
             # Raw primitive (raises on parse failure) is required here: the
             # canonical fail-open loader would return {} on a torn mid-edit
             # write and WIPE the last known-good chain. The overlay/expansion
@@ -10955,14 +11001,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
         except Exception:
-            # Transient failure — keep last known-good chain.
+            # Transient failure — keep only this route's last-known-good chain.
             logger.debug(
                 "fallback_providers refresh: config.yaml read failed; "
-                "keeping last known-good chain", exc_info=True,
+                "keeping route-scoped last-known-good chain", exc_info=True,
             )
-            return self._fallback_model
-        self._fallback_model = get_fallback_chain(cfg) or None
-        return self._fallback_model
+            if route_key in route_cache:
+                return route_cache[route_key]
+            return startup_chain()
+
+        try:
+            from hermes_cli.config import resolve_main_provider_policy
+
+            cfg = resolve_main_provider_policy(
+                cfg, normalized_provider, normalized_model
+            )
+        except Exception:
+            logger.debug(
+                "fallback_providers refresh: policy resolution failed; "
+                "keeping route-scoped last-known-good chain",
+                exc_info=True,
+            )
+            if route_key in route_cache:
+                return route_cache[route_key]
+            return startup_chain()
+        return remember(get_fallback_chain(cfg) or None)
 
     @staticmethod
     def _apply_fallback_chain_to_agent(agent: Any, chain: list | None) -> None:
@@ -25588,7 +25651,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     thread_id=source.thread_id,
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
-                    fallback_model=self._refresh_fallback_model(),
+                    fallback_model=self._refresh_fallback_model(
+                        turn_route["runtime"].get("provider", ""),
+                        turn_route["model"],
+                    ),
                 )
                 try:
                     return agent.run_conversation(
@@ -29384,6 +29450,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 out[f"{section}.{key}"] = section_val.get(key)
             else:
                 out[f"{section}.{key}"] = None
+        # Provider policies bake routing, auxiliary, fallback, and context
+        # state into AIAgent construction. Include the complete closed policy
+        # map so edits as well as enabled/disabled transitions rebuild it.
+        out["main_provider_policies"] = cfg.get("main_provider_policies")
         try:
             from tools.registry import registry
 

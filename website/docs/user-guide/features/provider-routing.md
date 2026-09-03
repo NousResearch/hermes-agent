@@ -33,6 +33,61 @@ provider_routing:
 Provider routing only applies when using OpenRouter or Nous Portal. It has no effect with direct provider connections (e.g., connecting directly to the Anthropic API).
 :::
 
+## Scope settings to the selected main provider
+
+Use `main_provider_policies.<provider>` when auxiliary, fallback, context, or
+provider-routing settings should activate only while that provider is the
+agent's **primary** route. The base profile remains authoritative for every
+other main provider, so switching back restores its original behavior without
+rewriting config.
+
+```yaml
+main_provider_policies:
+  openrouter:
+    enabled: true
+    model_overrides:
+      z-ai/glm-5.3-flash:
+        context_length: 1048576
+    provider_routing:
+      require_parameters: true
+      data_collection: deny
+    auxiliary:
+      compression:
+        provider: openrouter
+        model: deepseek/deepseek-v4-flash-0731
+        reasoning_effort: low
+      review:
+        provider: anthropic
+        model: claude-opus-5
+    fallback_providers:
+      - provider: openai-codex
+        model: gpt-5.6-sol-900k
+      - provider: anthropic
+        model: claude-opus-5
+```
+
+The provider policy is resolved from the live main route when an agent is
+created, including a session `/model` switch, delegated child, gateway session,
+or cron agent. It is **not** activated merely because OpenRouter appears as a
+fallback or auxiliary provider. Within `auxiliary`, the scalar
+`free_only` and `openrouter_model` settings govern OpenRouter auto-fallback for
+that live main route alongside task-specific entries such as `compression` and
+`review`.
+
+Administrator-managed config remains authoritative after policy projection.
+For example, a managed `provider_routing.data_collection: deny` or managed
+auxiliary/compression leaf cannot be relaxed by a user-defined provider policy.
+
+`model_overrides` is keyed by exact model ID. Use it for model-specific values
+such as `context_length`; a pin for one OpenRouter model never leaks to a
+smaller model on the same aggregator. Policies cannot change `model.provider`
+or `model.default` — model selection remains explicit through `hermes model` or
+`/model`.
+
+Set `enabled: false` to keep a policy configured but dormant. `hermes config
+get` continues to show the base profile values; the overlay is a runtime
+projection and is never written over those base values.
+
 ## Options
 
 ### `sort`

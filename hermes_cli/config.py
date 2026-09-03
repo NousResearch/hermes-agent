@@ -2981,6 +2981,212 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+_MAIN_PROVIDER_POLICY_KEYS = frozenset(
+    {
+        "enabled",
+        "model_overrides",
+        "provider_routing",
+        "auxiliary",
+        "fallback_providers",
+    }
+)
+_MAIN_PROVIDER_ROUTING_LIST_KEYS = frozenset({"only", "ignore", "order"})
+_MAIN_PROVIDER_ROUTING_STRING_KEYS = frozenset({"sort", "data_collection"})
+_MAIN_PROVIDER_ROUTING_BOOL_KEYS = frozenset({"require_parameters"})
+_MAIN_PROVIDER_MODEL_SELECTOR_KEYS = frozenset(
+    {"provider", "default", "model", "base_url", "api_base"}
+)
+
+
+def _is_policy_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _valid_main_provider_policy(policy: dict) -> bool:
+    """Validate the complete supported policy shape before any overlay."""
+    if not set(policy).issubset(_MAIN_PROVIDER_POLICY_KEYS):
+        return False
+
+    if not isinstance(policy.get("enabled", True), bool):
+        return False
+
+    fallback = policy.get("fallback_providers")
+    if fallback is not None:
+        if not isinstance(fallback, list):
+            return False
+        for entry in fallback:
+            if not isinstance(entry, dict):
+                return False
+            provider = entry.get("provider")
+            model = entry.get("model")
+            if not isinstance(provider, str) or not provider.strip():
+                return False
+            if not isinstance(model, str) or not model.strip():
+                return False
+            if any(not _is_policy_scalar(value) for value in entry.values()):
+                return False
+
+    routing = policy.get("provider_routing")
+    if routing is not None:
+        if not isinstance(routing, dict):
+            return False
+        for key, value in routing.items():
+            if not isinstance(key, str) or not key:
+                return False
+            if key in _MAIN_PROVIDER_ROUTING_LIST_KEYS:
+                if not isinstance(value, list) or any(
+                    not isinstance(item, str) for item in value
+                ):
+                    return False
+            elif key in _MAIN_PROVIDER_ROUTING_STRING_KEYS:
+                if not isinstance(value, str):
+                    return False
+            elif key in _MAIN_PROVIDER_ROUTING_BOOL_KEYS:
+                if not isinstance(value, bool):
+                    return False
+            elif not _is_policy_scalar(value):
+                return False
+
+    auxiliary = policy.get("auxiliary")
+    if auxiliary is not None:
+        if not isinstance(auxiliary, dict):
+            return False
+        for task, task_config in auxiliary.items():
+            if task == "free_only":
+                if not isinstance(task_config, bool):
+                    return False
+                continue
+            if task == "openrouter_model":
+                if not isinstance(task_config, str):
+                    return False
+                continue
+            if (
+                not isinstance(task, str)
+                or not task
+                or not isinstance(task_config, dict)
+            ):
+                return False
+            for selector in ("provider", "model"):
+                if selector in task_config and not isinstance(
+                    task_config[selector], str
+                ):
+                    return False
+
+    model_overrides = policy.get("model_overrides")
+    if model_overrides is not None:
+        if not isinstance(model_overrides, dict):
+            return False
+        for model_id, model_config in model_overrides.items():
+            if (
+                not isinstance(model_id, str)
+                or not model_id
+                or not isinstance(model_config, dict)
+            ):
+                return False
+            if set(model_config).intersection(_MAIN_PROVIDER_MODEL_SELECTOR_KEYS):
+                return False
+            context_length = model_config.get("context_length")
+            if context_length is not None and (
+                not isinstance(context_length, int)
+                or isinstance(context_length, bool)
+                or context_length <= 0
+            ):
+                return False
+            if any(not _is_policy_scalar(value) for value in model_config.values()):
+                return False
+
+    return True
+
+
+def resolve_main_provider_policy(
+    config: dict, provider: str, model: str = ""
+) -> dict:
+    """Overlay config scoped to the agent's selected main provider/model.
+
+    ``main_provider_policies.<provider>`` is dormant until an agent is
+    constructed with that provider as its primary route. Optional
+    ``model_overrides.<exact-model-id>`` values are merged into the top-level
+    ``model`` section only for that exact active model, which keeps context
+    pins from leaking to smaller models on the same aggregator.
+
+    The selector itself (``model.provider`` / ``model.default``) remains owned
+    by ``/model`` and ``hermes model``; a policy can tune the selected route but
+    cannot select a different one recursively.
+
+    The input is never mutated. A non-matching, disabled, or malformed policy
+    returns it unchanged so this helper is cheap on the normal path.
+    """
+    if not isinstance(config, dict):
+        return {}
+    provider_key = str(provider or "").strip().lower()
+    if not provider_key:
+        return config
+    policies = config.get("main_provider_policies")
+    if not isinstance(policies, dict):
+        return config
+    policy = policies.get(provider_key)
+    if not isinstance(policy, dict) or not _valid_main_provider_policy(policy):
+        return config
+    if policy.get("enabled", True) is False:
+        return config
+
+    overlay = {
+        key: value
+        for key, value in policy.items()
+        if key not in {"enabled", "model_overrides"}
+    }
+    model_key = str(model or "").strip()
+    model_overrides = policy.get("model_overrides")
+    model_overlay = (
+        model_overrides.get(model_key)
+        if isinstance(model_overrides, dict) and model_key
+        else None
+    )
+    if not overlay and not isinstance(model_overlay, dict):
+        return config
+    resolved = _deep_merge(config, overlay)
+    if isinstance(model_overlay, dict):
+        resolved_model_base = resolved.get("model")
+        if not isinstance(resolved_model_base, dict):
+            resolved_model_base = (
+                {"default": resolved_model_base}
+                if isinstance(resolved_model_base, str)
+                and resolved_model_base.strip()
+                else {}
+            )
+        resolved["model"] = _deep_merge(resolved_model_base, model_overlay)
+
+    # Policies are conditional behavior, not model selectors. Preserve the
+    # configured route even if a malformed policy tries to replace it.
+    base_model = config.get("model")
+    resolved_model = resolved.get("model")
+    if isinstance(base_model, dict) and isinstance(resolved_model, dict):
+        for selector in ("provider", "default", "model"):
+            if selector in base_model:
+                resolved_model[selector] = base_model[selector]
+            else:
+                resolved_model.pop(selector, None)
+    elif (
+        isinstance(base_model, str)
+        and base_model.strip()
+        and isinstance(resolved_model, dict)
+    ):
+        resolved_model["default"] = base_model
+
+    # The config loader already applied managed scope, but the conditional user
+    # policy overlay above runs later. Re-apply through the single managed-scope
+    # owner so no policy leaf can defeat an administrator pin.
+    try:
+        from hermes_cli import managed_scope
+
+        resolved = managed_scope.apply_managed_overlay(resolved)
+    except Exception:
+        # Managed scope itself is fail-open; keep policy resolution equally
+        # non-fatal if its module is unavailable during partial installs.
+        pass
+    return resolved
+
+
 def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     """Remove the given dotted leaf keys from a nested config dict.
 
@@ -5806,6 +6012,22 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
             return False, suggested_full
 
         return False, None
+
+    # main_provider_policies has a dynamic provider-name segment but a closed
+    # policy section immediately below it. Deeper auxiliary task names and
+    # provider-specific settings remain intentionally open.
+    if top == "main_provider_policies":
+        if len(segments) <= 2:
+            return True, None
+        section = segments[2]
+        if section in _MAIN_PROVIDER_POLICY_KEYS:
+            return True, None
+        suggestion = _suggest_closest_key(
+            section, set(_MAIN_PROVIDER_POLICY_KEYS)
+        )
+        if suggestion is None:
+            return False, None
+        return False, ".".join(segments[:2] + [suggestion])
 
     # ── Deeper validation ────────────────────────────────────────────
     # Walk DEFAULT_CONFIG along the user's segments. Stop at:

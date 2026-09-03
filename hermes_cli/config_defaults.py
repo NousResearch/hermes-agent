@@ -7,6 +7,9 @@ verbatim from hermes_cli/config.py. Must not import from hermes_cli.config.
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
+    # Provider-scoped runtime overlays. Keys are canonical provider ids; each
+    # policy is dormant unless that provider is the agent's selected main route.
+    "main_provider_policies": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],

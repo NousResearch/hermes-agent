@@ -343,3 +343,132 @@ def test_cli_boards_list_json_no_flag_worker_parity(multi_board_home, capsys):
     )
     assert boards["default"]["total"] == 1
     assert boards["default"]["is_current"] is True
+
+
+# ---------------------------------------------------------------------------
+# Round 3 (critic r2 RED): bootstrap-by-flag must stay legal
+# ---------------------------------------------------------------------------
+
+
+def test_cli_board_flag_bootstrap_boards_create_on_missing_board(
+    multi_board_home, capsys
+):
+    """`--board ghost boards create ghost` must SUCCEED even though 'ghost'
+    does not exist when the command starts.
+
+    The explicit scope's board-exists pre-check (a typo guard for task-level
+    subcommands) must NOT gate `boards ...` subcommands: bootstrap-by-flag
+    was legal before the explicit scope existed (base 6051590677 dispatched
+    `boards` before that check) and fleet automation uses exactly this shape
+    — create the board, then seed it, all under one --board prefix. The r2
+    dispatch reorder accidentally put `boards` AFTER the check, making the
+    command fail with the self-contradictory message telling you to run the
+    very command just executed (t_4eff74eb critic round 2).
+    """
+    from hermes_cli import kanban as kc
+
+    home, _ = multi_board_home
+    assert not kb.board_exists("ghost")
+
+    args = _parse_kanban_args(
+        ["kanban", "--board", "ghost", "boards", "create", "ghost"]
+    )
+    assert kc.kanban_command(args) == 0
+    out = capsys.readouterr().out
+    assert "Board 'ghost' created." in out
+    assert "does not exist" not in out
+
+    # The board now exists at its OWN directory (board.json + own DB)...
+    ghost_dir = home / "kanban" / "boards" / "ghost"
+    assert (ghost_dir / "board.json").exists()
+    assert (ghost_dir / "kanban.db").exists()
+
+    # ...and the pinned default board was NOT touched by the bootstrap.
+    with kb.connect() as conn:  # pins → default board
+        titles = [
+            r["title"]
+            for r in conn.execute("SELECT title FROM tasks").fetchall()
+        ]
+    assert titles == ["default-board task"]
+
+
+def test_cli_board_flag_bootstrap_boards_import_on_missing_board(
+    multi_board_home, tmp_path, capsys
+):
+    """`--board fresh boards import <archive> --as fresh` must bootstrap the
+    same way: `boards import` creates its own board by slug, so the missing-
+    flag-target pre-check must not gate it either."""
+    import tarfile
+
+    from hermes_cli import kanban as kc
+
+    home, _ = multi_board_home
+    # Build a minimal importable archive via the real exporter: export the
+    # existing `alpha` board, then import it under a DIFFERENT slug that
+    # does not exist yet — with an explicit --board pinned to that slug.
+    archive = home / "alpha.tar.gz"
+    export_args = _parse_kanban_args(
+        [
+            "kanban", "--board", "alpha", "boards", "export", "alpha",
+            "-o", str(archive),
+        ]
+    )
+    assert kc.kanban_command(export_args) == 0
+    assert archive.exists()
+    capsys.readouterr()  # discard export output; isolate the import's JSON
+    with tarfile.open(archive) as tar:
+        names = tar.getnames()
+    assert names, "export produced an empty archive"
+
+    assert not kb.board_exists("fresh")
+    import_args = _parse_kanban_args(
+        [
+            "kanban", "--board", "fresh", "boards", "import",
+            str(archive), "--as", "fresh", "--json",
+        ]
+    )
+    assert kc.kanban_command(import_args) == 0
+    res = _read_json(capsys)
+    assert res["board"] == "fresh"
+    assert res["renamed"] is False
+
+    fresh_dir = home / "kanban" / "boards" / "fresh"
+    assert (fresh_dir / "board.json").exists()
+    assert (fresh_dir / "kanban.db").exists()
+    assert kb.board_exists("fresh")
+    # Sibling boards untouched by the bootstrap import.
+    assert kb.board_exists("alpha")
+    assert not kb.board_exists("ghost")
+
+
+def test_cli_task_level_create_under_flag_still_requires_existing_board(
+    multi_board_home, capsys
+):
+    """Negative control for the r3 exemption: the typo guard still gates
+    TASK-level subcommands. `--board ghost create ...` must keep failing
+    with the guidance message (typoed slugs must not silently create empty
+    boards via the task surface) — only `boards ...` bootstraps."""
+    from hermes_cli import kanban as kc
+
+    home, task_id = multi_board_home
+    args = _parse_kanban_args(
+        [
+            "kanban", "--board", "ghost", "create",
+            "should not land anywhere", "--assignee", "critic", "--json",
+        ]
+    )
+    assert kc.kanban_command(args) == 1  # pre-check still enforced
+    captured = capsys.readouterr()
+    assert "board 'ghost' does not exist" in captured.err
+    assert "boards create ghost" in captured.err
+
+    # Nothing was written anywhere: no ghost board materialized...
+    assert not kb.board_exists("ghost")
+    # ...and the card did not silently land on the pinned default DB.
+    with kb.connect() as conn:  # pins → default board
+        titles = [
+            r["title"]
+            for r in conn.execute("SELECT title FROM tasks").fetchall()
+        ]
+    assert titles == ["default-board task"]
+    assert task_id  # keep the fixture id alive

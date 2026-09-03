@@ -761,8 +761,12 @@ def detect_hardline_command(command: str) -> tuple:
     """
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
-    normalized = _normalize_command_for_detection(command)
-    _, malformed_grep = _grep_safe_detection_variant(normalized)
+    # Grep syntax must be validated against faithful shell quote state:
+    # normalization strips escapes such as \" before the grep parser sees
+    # them. Quoted newlines are data, so mask those without altering quoting.
+    _, malformed_grep = _grep_safe_detection_variant(
+        _mask_quoted_newlines(command)
+    )
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
@@ -2036,6 +2040,45 @@ def _scan_dollar_paren_end(command: str, start: int) -> int | None:
     return None
 
 
+def _scan_parameter_expansion_end(
+    command: str, start: int, end: int | None = None
+) -> int | None:
+    """Return the offset after a balanced ``${...}`` parameter expansion."""
+    depth = 1
+    quote: str | None = None
+    limit = len(command) if end is None else min(end, len(command))
+    i = start + 2
+    while i < limit:
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < limit:
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < limit:
+            i += 2
+            continue
+        if command.startswith("${", i):
+            depth += 1
+            i += 2
+            continue
+        if ch == "}":
+            depth -= 1
+            i += 1
+            if depth == 0:
+                return i
+            continue
+        i += 1
+    return None
+
+
 def _scan_backtick_end(command: str, start: int) -> int | None:
     i = start + 1
     while i < len(command):
@@ -2270,6 +2313,12 @@ def _iter_shell_command_starts(command: str):
                 scan(i + 1, nested_end - 1 if nested_end is not None else end)
                 i = nested_end if nested_end is not None else end
                 continue
+            # Parameter-expansion braces are shell word syntax, not command
+            # group openers. The quoted branch never treats `{` as an opener.
+            if command.startswith("${", i):
+                nested_end = _scan_parameter_expansion_end(command, i, end)
+                i = nested_end if nested_end is not None else end
+                continue
             if ch in ("(", "{"):
                 starts.append(i + 1)
             elif ch in ";\n":
@@ -2291,7 +2340,7 @@ def _iter_shell_command_starts(command: str):
             yield start
 
 
-def _mark_command_starts(command: str) -> str:
+def _mark_command_starts(command: str, marker: str = "\n") -> str:
     """Insert a newline before each real (quote-aware) command start.
 
     ``\\n`` is already a ``_CMDPOS`` separator, so this rewrites subshell
@@ -2313,7 +2362,7 @@ def _mark_command_starts(command: str) -> str:
     parts: list[str] = []
     previous = 0
     for offset in offsets:
-        parts.extend((command[previous:offset], "\n"))
+        parts.extend((command[previous:offset], marker))
         previous = offset
     parts.append(command[previous:])
     return "".join(parts)
@@ -2483,6 +2532,16 @@ def _command_detection_variants(command: str):
             continue
         seen.add(variant)
         yield variant
+    # Locate command starts before escape normalization can corrupt shell quote
+    # state. The leading space keeps the inserted newline from being consumed
+    # as a backslash-newline continuation when the preceding text ends in `\`.
+    faithful_marked = _mark_command_starts(
+        _mask_quoted_newlines(command), marker=" \n"
+    )
+    faithful_marked = _normalize_command_for_detection(faithful_marked)
+    if faithful_marked not in seen:
+        seen.add(faithful_marked)
+        yield faithful_marked
 
 
 def _is_verification_artifact_cleanup(command: str) -> bool:

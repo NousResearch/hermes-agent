@@ -235,6 +235,127 @@ def test_grep_pcre_pattern_with_grouped_root_delete_text_stays_safe():
     assert detect_hardline_command(command) == (False, None)
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        r'cd ~/.hermes/hermes-agent && grep -n "^from\|^__all__\|^    \"" tools/environments/__init__.py | head -15',
+        r'egrep -n "alpha\"beta|gamma" input.txt',
+    ],
+)
+def test_quoted_grep_patterns_with_escaped_double_quotes_stay_safe(command):
+    assert detect_hardline_command(command) == (False, None)
+    assert detect_dangerous_command(command) == (False, None, None)
+
+
+def test_unterminated_quoted_grep_pattern_fails_closed():
+    assert detect_hardline_command('grep -n "unterminated file') == (
+        True,
+        "command parser limit or malformed executable payload",
+    )
+
+
+def test_escaped_quotes_in_grep_pattern_do_not_hide_following_hardline_command():
+    command = r'grep -n "prefix \"quoted\" suffix" input.txt; reboot'
+    assert detect_hardline_command(command) == (True, "system shutdown/reboot")
+
+
+@pytest.mark.parametrize(
+    ("command", "description"),
+    [
+        (r'echo "a\"b"; reboot', "system shutdown/reboot"),
+        (
+            r'echo "a\"b" && rm -rf --no-preserve-root /',
+            "recursive delete of root filesystem",
+        ),
+        (r'printf "x\"y"; shutdown -h now', "system shutdown/reboot"),
+        (r'cat "file\"name.txt"; rm -rf ~/', "recursive delete of home directory"),
+    ],
+)
+def test_faithful_quote_state_marks_following_hardline_command(command, description):
+    assert detect_hardline_command(command) == (True, description)
+
+
+def test_faithful_quote_state_marker_survives_backslash_line_normalization():
+    # Two backslashes leave a literal backslash before the real newline command
+    # boundary; normalization must not consume the inserted start marker too.
+    command = r"printf \\" + "\nreboot"
+    assert detect_hardline_command(command) == (True, "system shutdown/reboot")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'grep -n "; reboot" f.txt',
+        'echo "; reboot"',
+    ],
+)
+def test_quoted_hardline_text_remains_data(command):
+    assert detect_hardline_command(command) == (False, None)
+
+
+@pytest.mark.parametrize(
+    ("command", "description"),
+    [
+        ('echo "ab"; reboot', "system shutdown/reboot"),
+        ("reboot", "system shutdown/reboot"),
+        ("rm -rf --no-preserve-root /", "recursive delete of root filesystem"),
+    ],
+)
+def test_plain_hardline_commands_remain_blocked(command, description):
+    assert detect_hardline_command(command) == (True, description)
+
+
+@pytest.mark.parametrize(
+    ("command", "description"),
+    [
+        (
+            r'echo "a\"b"; rm${IFS}-rf${IFS}--no-preserve-root${IFS}/',
+            "recursive delete of root filesystem",
+        ),
+        (
+            r'echo "a\"b"; echo${IFS}x; rm${IFS}-rf${IFS}/',
+            "recursive delete of root filesystem",
+        ),
+        (
+            r'rm${IFS}-rf${IFS}--no-preserve-root${IFS}/',
+            "recursive delete of root filesystem",
+        ),
+        (r'echo "a\"b"; ${IFS}reboot', "system shutdown/reboot"),
+        (
+            r'echo "a\"b"; rm ${IFS:0:1}-rf --no-preserve-root /',
+            "recursive delete of root filesystem",
+        ),
+        (r'echo "a\"b"; reboot', "system shutdown/reboot"),
+        (
+            r'echo "a\"b" && rm -rf --no-preserve-root /',
+            "recursive delete of root filesystem",
+        ),
+        (r'cat "file\"name.txt"; rm -rf ~/', "recursive delete of home directory"),
+        ('echo "ab"; reboot', "system shutdown/reboot"),
+        ("reboot", "system shutdown/reboot"),
+        ("rm -rf --no-preserve-root /", "recursive delete of root filesystem"),
+    ],
+)
+def test_parameter_expansions_preserve_hardline_command_starts(command, description):
+    assert detect_hardline_command(command) == (True, description)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        r'cd ~/.hermes/hermes-agent && grep -n "^from\|^__all__\|^    \"" tools/environments/__init__.py | head -15',
+        r'egrep -n "alpha\"beta|gamma" input.txt',
+        "grep -P '(?:safe|rm -rf --no-preserve-root /)' audit.log",
+        'grep -n "; reboot" f.txt',
+        'echo "; reboot"',
+        'echo "${IFS}"',
+        'echo "value is ${HOME}/x"',
+    ],
+)
+def test_parameter_expansion_marking_avoids_false_positives(command):
+    assert detect_hardline_command(command) == (False, None)
+
+
 def test_interpreter_heredoc_keeps_legacy_approval_key_compatibility():
     from tools.approval import _approval_key_aliases
 

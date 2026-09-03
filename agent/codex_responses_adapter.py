@@ -478,6 +478,42 @@ def _normalize_responses_message_status(value: Any, *, default: str = "completed
     return default
 
 
+def _msg_item(role: str, content: Any) -> Dict[str, Any]:
+    """Build a complete Responses message input item.
+
+    Strict /v1/responses parsers (llama.cpp server-chat.cpp) reject assistant
+    items without ``type: "message"``, so every emitter routes through this
+    constructor to make the invariant structural rather than remembered.
+    """
+    return {"type": "message", "role": role, "content": content}
+
+
+def _carry_item_identity(
+    raw_item: Dict[str, Any],
+    item_out: Dict[str, Any],
+    *,
+    is_github_responses: bool,
+) -> None:
+    """Preserve known-safe identity fields (id, phase) onto a rebuilt item.
+
+    Replayed history items can ride ``id`` / ``phase``; silently dropping them
+    while normalizing turns into hard-to-diagnose context loss downstream.
+    Mirrors the identity handling used for typed message items.
+    """
+    item_id = raw_item.get("id")
+    if (
+        not is_github_responses
+        and isinstance(item_id, str)
+        and item_id.strip()
+    ):
+        stripped_id = item_id.strip()
+        if len(stripped_id) <= _MAX_RESPONSES_ITEM_ID_LENGTH:
+            item_out["id"] = stripped_id
+    phase = raw_item.get("phase")
+    if isinstance(phase, str) and phase.strip():
+        item_out["phase"] = phase.strip()
+
+
 def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]],
     *,
@@ -707,10 +743,10 @@ def _chat_messages_to_responses_input(
                 if replayed_message_items > 0:
                     pass
                 elif content_parts:
-                    items.append({"role": "assistant", "content": content_parts})
+                    items.append(_msg_item("assistant", content_parts))
                     item_sources.append(msg)
                 elif content_text.strip():
-                    items.append({"role": "assistant", "content": content_text})
+                    items.append(_msg_item("assistant", content_text))
                     item_sources.append(msg)
                 elif has_codex_reasoning:
                     # The Responses API requires a following item after each
@@ -718,7 +754,7 @@ def _chat_messages_to_responses_input(
                     # When the assistant produced only reasoning with no visible
                     # content, emit an empty assistant message as the required
                     # following item.
-                    items.append({"role": "assistant", "content": ""})
+                    items.append(_msg_item("assistant", ""))
                     item_sources.append(msg)
 
                 tool_calls = msg.get("tool_calls")
@@ -763,9 +799,9 @@ def _chat_messages_to_responses_input(
             # Non-assistant (user) role: emit multimodal parts when present,
             # otherwise fall back to the text payload.
             if content_parts:
-                items.append({"role": role, "content": content_parts})
+                items.append(_msg_item(role, content_parts))
             else:
-                items.append({"role": role, "content": content_text})
+                items.append(_msg_item(role, content_text))
             item_sources.append(msg)
             continue
 
@@ -1098,48 +1134,62 @@ def _preflight_codex_input_items(
 
         if item_type == "message":
             role = item.get("role")
-            if role != "assistant":
-                raise ValueError(f"Codex Responses input[{idx}] message items must have role='assistant'.")
+            if role not in ("assistant", "user"):
+                raise ValueError(
+                    f"Codex Responses input[{idx}] message items must have role='assistant' or 'user'."
+                )
             content = item.get("content")
-            if not isinstance(content, list):
-                raise ValueError(f"Codex Responses input[{idx}] message item must have content list.")
-            normalized_content = []
-            for part_idx, part in enumerate(content):
-                if not isinstance(part, dict):
+            if isinstance(content, str):
+                # String content is what _chat_messages_to_responses_input
+                # emits for plain-text messages, and an empty string for the
+                # required assistant "following item" after a reasoning
+                # block. Pass it through unchanged — strict list-only
+                # validation rejected exactly the items our own converter
+                # produces (breaks llama.cpp /v1/responses, which hard-
+                # rejects assistant items without "type": "message").
+                normalized_content: Any = sanitize_text(content)
+            elif isinstance(content, list):
+                normalized_content = []
+                text_type = "output_text" if role == "assistant" else "input_text"
+                for part_idx, part in enumerate(content):
+                    if not isinstance(part, dict):
+                        raise ValueError(
+                            f"Codex Responses input[{idx}] message content[{part_idx}] must be an object."
+                        )
+                    part_type = part.get("type")
+                    if part_type not in {"output_text", "text", "input_text"}:
+                        raise ValueError(
+                            f"Codex Responses input[{idx}] message content[{part_idx}] has unsupported type {part_type!r}."
+                        )
+                    text = part.get("text", "")
+                    if text is None:
+                        text = ""
+                    if not isinstance(text, str):
+                        text = str(text)
+                    normalized_content.append({"type": text_type, "text": sanitize_text(text)})
+                if not normalized_content and role != "assistant":
                     raise ValueError(
-                        f"Codex Responses input[{idx}] message content[{part_idx}] must be an object."
+                        f"Codex Responses input[{idx}] message item must contain at least one text part."
                     )
-                part_type = part.get("type")
-                if part_type not in {"output_text", "text"}:
-                    raise ValueError(
-                        f"Codex Responses input[{idx}] message content[{part_idx}] has unsupported type {part_type!r}."
-                    )
-                text = part.get("text", "")
-                if text is None:
-                    text = ""
-                if not isinstance(text, str):
-                    text = str(text)
-                normalized_content.append({"type": "output_text", "text": sanitize_text(text)})
-            if not normalized_content:
-                raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
+            else:
+                raise ValueError(
+                    f"Codex Responses input[{idx}] message item content must be a string or list."
+                )
             normalized_item: Dict[str, Any] = {
                 "type": "message",
-                "role": "assistant",
-                "status": _normalize_responses_message_status(item.get("status")),
+                "role": role,
                 "content": normalized_content,
             }
-            item_id = item.get("id")
-            if (
-                not is_github_responses
-                and isinstance(item_id, str)
-                and item_id.strip()
-            ):
-                stripped_id = item_id.strip()
-                if len(stripped_id) <= _MAX_RESPONSES_ITEM_ID_LENGTH:
-                    normalized_item["id"] = stripped_id
-            phase = item.get("phase")
-            if isinstance(phase, str) and phase.strip():
-                normalized_item["phase"] = phase.strip()
+            if role == "assistant":
+                # ``status`` is an assistant-output-only field; never stamp
+                # it onto user input items (strict /v1/responses parsers may
+                # reject the extra key on user messages).
+                _item_status = _normalize_responses_message_status(item.get("status"))
+                if _item_status is not None:
+                    normalized_item["status"] = _item_status
+            _carry_item_identity(
+                item, normalized_item, is_github_responses=is_github_responses
+            )
             normalized.append(normalized_item)
             continue
 
@@ -1197,12 +1247,20 @@ def _preflight_codex_input_items(
                         raise ValueError(
                             f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."
                         )
-                normalized.append({"role": role, "content": validated})
+                _item_out = _msg_item(role, validated)
+                _carry_item_identity(
+                    item, _item_out, is_github_responses=is_github_responses
+                )
+                normalized.append(_item_out)
                 continue
             if not isinstance(content, str):
                 content = str(content)
 
-            normalized.append({"role": role, "content": sanitize_text(content)})
+            _item_out = _msg_item(role, sanitize_text(content))
+            _carry_item_identity(
+                item, _item_out, is_github_responses=is_github_responses
+            )
+            normalized.append(_item_out)
             continue
 
         raise ValueError(

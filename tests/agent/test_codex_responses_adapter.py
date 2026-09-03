@@ -625,3 +625,180 @@ def _xai_reasoning_only_response(reasoning_text):
             )
         ],
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Every message item serialized from chat history must carry an explicit
+# "type": "message". OpenAI's endpoints tolerate typeless items, but
+# llama.cpp's server-chat.cpp /v1/responses parser requires the explicit
+# "type" on assistant items and rejects the whole request otherwise — an
+# agent turn dies with an empty "" response as soon as a multi-turn
+# conversation replays assistant history. _preflight_codex_input_items must
+# also accept the stamped items our own converter produces (string content,
+# user role, and the empty assistant "following item").
+# ---------------------------------------------------------------------------
+
+
+def test_chat_messages_to_responses_input_stamps_message_type_on_role_history():
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there"},
+        {"role": "user", "content": [{"type": "text", "text": "look at this"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "saw it"}]},
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    assert [i["type"] for i in items] == ["message", "message", "message", "message"]
+    assert all(i.get("role") in ("user", "assistant") for i in items)
+
+
+def test_chat_messages_to_responses_input_keeps_explicit_non_message_types():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "call_id": "call_abc123",
+                    "function": {"name": "web_search", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_abc123",
+            "content": "some result",
+        },
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    assert [i["type"] for i in items] == ["function_call", "function_call_output"]
+
+
+def test_chat_messages_to_responses_input_stamps_reasoning_following_item():
+    """The empty assistant item after a replayed reasoning block must carry
+    "type": "message" too (it is the item llama.cpp would otherwise reject)."""
+    messages = [
+        {"role": "user", "content": "think about this"},
+        {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "encrypted_content": "opaque-carrier", "summary": []},
+            ],
+        },
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    assert items[0] == {"type": "message", "role": "user", "content": "think about this"}
+    assert items[1]["type"] == "reasoning"
+    assert items[2] == {"type": "message", "role": "assistant", "content": ""}
+
+
+def test_preflight_codex_input_items_seals_typeless_role_items():
+    normalized = _preflight_codex_input_items(
+        [
+            {"role": "user", "content": "ping"},
+            {"role": "assistant", "content": "pong"},
+            {"role": "user", "content": [{"type": "input_text", "text": "look"}]},
+        ]
+    )
+
+    assert [i["type"] for i in normalized] == ["message", "message", "message"]
+    assert normalized[0]["content"] == "ping"
+    assert normalized[2]["content"] == [{"type": "input_text", "text": "look"}]
+
+
+def test_preflight_codex_input_items_accepts_stamped_string_content_items():
+    # Our converter emits "type": "message" items with STRING content for
+    # plain-text messages and an empty string for the reasoning-following
+    # item. Strict list-only validation would reject exactly this wire.
+    normalized = _preflight_codex_input_items(
+        [
+            {"type": "message", "role": "user", "content": "ping"},
+            {"type": "message", "role": "assistant", "content": "pong"},
+            {"type": "message", "role": "assistant", "content": ""},
+        ]
+    )
+
+    assert normalized[0]["content"] == "ping"
+    assert normalized[1]["content"] == "pong"
+    assert normalized[1]["type"] == "message"
+    assert normalized[2]["content"] == ""
+    assert normalized[2]["role"] == "assistant"
+
+
+def test_chat_messages_to_responses_input_to_preflight_roundtrip():
+    """Converter output — the real main-flow wire — must pass preflight
+    unchanged in shape with every message item carrying "type": "message"."""
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there"},
+        {"role": "user", "content": [{"type": "text", "text": "look at this"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "saw it"}]},
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+    normalized = _preflight_codex_input_items(items)
+
+    assert [i["type"] for i in normalized] == ["message", "message", "message", "message"]
+    assert [i["role"] for i in normalized] == ["user", "assistant", "user", "assistant"]
+
+
+def test_preflight_codex_input_items_rejects_system_role_typed_message():
+    # Widening typed-message acceptance to user/assistant must not silently
+    # admit system-role items.
+    with pytest.raises(ValueError):
+        _preflight_codex_input_items(
+            [{"type": "message", "role": "system", "content": "be nice"}]
+        )
+
+
+def test_preflight_codex_input_items_rejects_non_text_non_list_content():
+    # typed-message content is a string or a list of content parts; anything
+    # else is a malformed wire that must be surfaced at preflight.
+    with pytest.raises(ValueError):
+        _preflight_codex_input_items(
+            [{"type": "message", "role": "assistant", "content": 42}]
+        )
+
+
+def test_preflight_codex_input_items_rejects_user_item_with_empty_content_list():
+    # Empty assistant content is a valid reasoning-following item; empty USER
+    # content is a malformed wire.
+    with pytest.raises(ValueError):
+        _preflight_codex_input_items(
+            [{"type": "message", "role": "user", "content": []}]
+        )
+
+
+def test_preflight_codex_input_items_user_items_carry_no_status_field():
+    # status is an assistant-output-only field; user input items must never
+    # carry it, while assistant status is preserved for replay.
+    normalized = _preflight_codex_input_items(
+        [
+            {"type": "message", "role": "user", "content": "ping"},
+            {"type": "message", "role": "assistant", "content": "pong",
+             "status": "in_progress"},
+        ]
+    )
+
+    assert "status" not in normalized[0]
+    assert normalized[1]["status"] == "in_progress"
+
+
+def test_preflight_codex_input_items_preserves_id_and_phase_on_role_items():
+    # Replayed history riding id/phase must survive preflight normalization
+    # instead of being silently dropped (context loss downstream).
+    normalized = _preflight_codex_input_items(
+        [
+            {"role": "user", "content": "ping", "id": "msg_1", "phase": "raw"},
+        ]
+    )
+
+    assert normalized[0]["id"] == "msg_1"
+    assert normalized[0]["phase"] == "raw"

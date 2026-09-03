@@ -17,6 +17,10 @@ import pytest
 VALID_SKILL_CONTENT = """---
 name: my-skill
 description: test skill
+author: test-suite
+version: 1.0.0
+license: MIT
+platforms: [linux, macos, windows]
 ---
 
 # My Skill

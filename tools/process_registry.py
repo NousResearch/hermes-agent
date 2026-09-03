@@ -50,7 +50,7 @@ _IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from hermes_cli.config import get_hermes_home
 
@@ -114,6 +114,25 @@ _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
 _SYSTEMD_SCOPE_PROBED_AT = 0.0
 _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS = 60.0
+# Properties requested for every transient worker scope, in argv order.
+# ``OOMPolicy=`` only became valid on *scope* units in systemd v253; older
+# managers (Ubuntu 22.04's 249, Debian 12 / RHEL 9's 252) reject the whole
+# invocation with ``Unknown assignment: OOMPolicy=kill``, which made the probe
+# below report a perfectly working scope backend as unavailable (#102486).
+# The probe therefore negotiates the set this manager accepts, and the scope
+# builder reuses exactly that set.
+_SCOPE_PROPERTY_NAMES: Tuple[str, ...] = (
+    "MemoryAccounting",
+    "MemoryMax",
+    "OOMPolicy",
+)
+_SYSTEMD_SCOPE_PROPERTIES: Optional[Tuple[str, ...]] = None
+_SYSTEMD_SCOPE_LAST_ERROR: Optional[str] = None
+_UNSUPPORTED_PROPERTY_MARKERS = (
+    "unknown assignment",
+    "unknown property",
+    "cannot set property",
+)
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
@@ -181,6 +200,38 @@ def _worker_memory_max_bytes() -> int:
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 
+def _scope_property_argv(names: Sequence[str]) -> List[str]:
+    """Return ``--property NAME=VALUE`` pairs for *names*, in the given order."""
+    constants = {"MemoryAccounting": "yes", "OOMPolicy": "kill"}
+    argv: List[str] = []
+    for name in names:
+        # The bound is only read when the property survived negotiation.
+        value = (
+            str(_worker_memory_max_bytes())
+            if name == "MemoryMax"
+            else constants[name]
+        )
+        argv.extend(("--property", f"{name}={value}"))
+    return argv
+
+
+def _rejected_scope_properties(
+    stderr: str, candidates: Sequence[str]
+) -> Tuple[str, ...]:
+    """Return the *candidates* this systemd says it does not understand.
+
+    ``systemd-run`` refuses an unsupported property before creating anything
+    (``Unknown assignment: OOMPolicy=kill``); the manager reports the
+    server-side variant (``Cannot set property ..., or unknown property``).
+    Any other failure -- a missing user bus above all -- is a real
+    unavailability and must not be retried away.
+    """
+    lowered = stderr.lower()
+    if not any(marker in lowered for marker in _UNSUPPORTED_PROPERTY_MARKERS):
+        return ()
+    return tuple(name for name in candidates if name.lower() in lowered)
+
+
 def _systemd_run_user_scope_available() -> bool:
     """Return True if ``systemd-run --user --scope`` can create a cgroup.
 
@@ -193,6 +244,7 @@ def _systemd_run_user_scope_available() -> bool:
     outcome.
     """
     global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    global _SYSTEMD_SCOPE_PROPERTIES, _SYSTEMD_SCOPE_LAST_ERROR
     cached = _SYSTEMD_SCOPE_AVAILABLE
     now = time.monotonic()
     if cached is True:
@@ -219,43 +271,76 @@ def _systemd_run_user_scope_available() -> bool:
             return False
 
         available = False
+        supported: Tuple[str, ...] = _SCOPE_PROPERTY_NAMES
+        last_error: Optional[str] = None
         if _IS_LINUX:
             try:
                 import shutil
 
                 binary = shutil.which("systemd-run")
                 if binary:
-                    # Probe: create a transient scope that immediately exits.
-                    # A unique unit avoids collisions; timeout bounds D-Bus.
-                    probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-                    result = subprocess.run(
-                        [
-                            binary, "--user", "--scope", "--quiet",
-                            "--unit", probe_unit,
-                            "--collect",
-                            "--property", "MemoryAccounting=yes",
-                            "--property", f"MemoryMax={_worker_memory_max_bytes()}",
-                            "--property", "OOMPolicy=kill",
-                            "--",
-                            "/bin/true",
-                        ],
-                        capture_output=True,
-                        timeout=3,
-                    )
-                    available = result.returncode == 0
-                    if not available:
-                        logger.debug(
-                            "systemd-run --user --scope probe failed (rc=%s): %s",
-                            result.returncode,
-                            (result.stderr or b"").decode(
-                                "utf-8", "replace"
-                            ).strip(),
+                    candidates = list(_SCOPE_PROPERTY_NAMES)
+                    while True:
+                        # Probe: create a transient scope that immediately
+                        # exits.  A unique unit avoids collisions; timeout
+                        # bounds D-Bus.
+                        probe_unit = (
+                            f"hermes-probe-scope-{os.getpid()}"
+                            f"-{uuid.uuid4().hex[:8]}"
+                        )
+                        result = subprocess.run(
+                            [
+                                binary, "--user", "--scope", "--quiet",
+                                "--unit", probe_unit,
+                                "--collect",
+                                *_scope_property_argv(candidates),
+                                "--",
+                                "/bin/true",
+                            ],
+                            capture_output=True,
+                            timeout=3,
+                        )
+                        if result.returncode == 0:
+                            available = True
+                            supported = tuple(candidates)
+                            break
+                        last_error = (result.stderr or b"").decode(
+                            "utf-8", "replace"
+                        ).strip()
+                        rejected = _rejected_scope_properties(
+                            last_error, candidates
+                        )
+                        if not rejected:
+                            logger.debug(
+                                "systemd-run --user --scope probe failed "
+                                "(rc=%s): %s",
+                                result.returncode,
+                                last_error,
+                            )
+                            break
+                        # This manager is too old for one of the hardening
+                        # properties.  Drop it and re-probe: an unsupported
+                        # knob must cost that knob, not the whole restart-safe
+                        # scope backend every worker dispatch depends on.
+                        candidates = [
+                            name for name in candidates if name not in rejected
+                        ]
+                        logger.warning(
+                            "systemd rejected transient-scope propert%s %s; "
+                            "worker isolation continues without %s (%s)",
+                            "y" if len(rejected) == 1 else "ies",
+                            ", ".join(rejected),
+                            "it" if len(rejected) == 1 else "them",
+                            last_error,
                         )
             except Exception as exc:
+                last_error = str(exc)
                 logger.debug("systemd-run --user --scope probe error: %s", exc)
 
         _SYSTEMD_SCOPE_AVAILABLE = available
         _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
+        _SYSTEMD_SCOPE_PROPERTIES = supported if available else None
+        _SYSTEMD_SCOPE_LAST_ERROR = None if available else last_error
         return available
 
 
@@ -303,7 +388,14 @@ def _build_systemd_scope_argv(
         # guard anyway so we never pass None into Popen.
         return shell_argv
     unit_name = f"hermes-worker-{unit_suffix}"
-    memory_max = _worker_memory_max_bytes()
+    # Exactly the properties the probe proved this systemd accepts.  When the
+    # probe has not run, ask for the full set: identical to the behaviour
+    # before the negotiation existed.
+    properties = (
+        _SCOPE_PROPERTY_NAMES
+        if _SYSTEMD_SCOPE_PROPERTIES is None
+        else _SYSTEMD_SCOPE_PROPERTIES
+    )
     return [
         binary,
         "--user",
@@ -312,12 +404,7 @@ def _build_systemd_scope_argv(
         "--unit",
         unit_name,
         "--collect",
-        "--property",
-        "MemoryAccounting=yes",
-        "--property",
-        f"MemoryMax={memory_max}",
-        "--property",
-        "OOMPolicy=kill",
+        *_scope_property_argv(properties),
         "--",
         *shell_argv,
     ]
@@ -339,9 +426,11 @@ def restart_safe_gateway_child_argv(
     if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
         return command
     if not _systemd_run_user_scope_available():
+        reason = _SYSTEMD_SCOPE_LAST_ERROR
         raise RuntimeError(
             "cannot create restart-safe systemd scope for gateway child: "
             "systemd-run --user --scope is unavailable"
+            + (f" ({reason})" if reason else "")
         )
     scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
     if scoped == command:

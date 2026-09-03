@@ -2441,6 +2441,123 @@ class TestSystemdCgroupIsolation:
         assert pr._systemd_run_user_scope_available() is True
         assert len(probe_calls) == 2
 
+    def test_probe_negotiates_away_a_rejected_scope_property(self, monkeypatch):
+        """A property this systemd cannot parse costs that property only.
+
+        ``OOMPolicy=`` is valid on *scope* units only from systemd v253, so
+        managers like Ubuntu 22.04's 249 answer the probe with
+        ``Unknown assignment: OOMPolicy=kill``.  Reading that as "the scope
+        backend is unavailable" fails every restart-safe dispatch (#102486).
+        """
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_IS_LINUX", True)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROPERTIES", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_LAST_ERROR", None)
+        probe_argvs = []
+
+        def fake_run(argv, **kwargs):
+            probe_argvs.append(list(argv))
+            if any(value.startswith("OOMPolicy=") for value in argv):
+                return subprocess.CompletedProcess(
+                    args=argv,
+                    returncode=1,
+                    stderr=b"Unknown assignment: OOMPolicy=kill\n",
+                )
+            return subprocess.CompletedProcess(args=argv, returncode=0)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is True
+        assert len(probe_argvs) == 2, "the probe must retry without the property"
+        assert pr._SYSTEMD_SCOPE_PROPERTIES == ("MemoryAccounting", "MemoryMax")
+
+        retry = probe_argvs[1]
+        assert not any(value.startswith("OOMPolicy=") for value in retry)
+        assert "MemoryAccounting=yes" in retry, retry
+        assert any(value.startswith("MemoryMax=") for value in retry), retry
+        first_unit = probe_argvs[0][probe_argvs[0].index("--unit") + 1]
+        retry_unit = retry[retry.index("--unit") + 1]
+        assert first_unit != retry_unit, "each attempt needs its own unit name"
+
+    def test_probe_does_not_negotiate_a_missing_user_bus(self, monkeypatch):
+        """Only unparseable properties are retried away.
+
+        A missing user D-Bus session is genuine unavailability: retrying with
+        a smaller property set would spin without ever succeeding.
+        """
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_IS_LINUX", True)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROPERTIES", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_LAST_ERROR", None)
+        probe_calls = []
+
+        def fake_run(argv, **kwargs):
+            probe_calls.append(list(argv))
+            return subprocess.CompletedProcess(
+                args=argv,
+                returncode=1,
+                stderr=b"Failed to connect to bus: No such file or directory\n",
+            )
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is False
+        assert len(probe_calls) == 1
+        assert pr._SYSTEMD_SCOPE_PROPERTIES is None
+        assert "Failed to connect to bus" in (pr._SYSTEMD_SCOPE_LAST_ERROR or "")
+
+    def test_scope_argv_uses_the_negotiated_property_set(self, monkeypatch):
+        """The worker scope is built from what the probe proved, not a guess.
+
+        Probing without OOMPolicy and then spawning with it would fail every
+        worker at exec time exactly as the probe did.
+        """
+        import tools.process_registry as pr
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr(
+            pr, "_SYSTEMD_SCOPE_PROPERTIES", ("MemoryAccounting", "MemoryMax")
+        )
+
+        argv = pr._build_systemd_scope_argv(["/bin/true"], unit_suffix="abc")
+
+        properties = [
+            argv[index + 1]
+            for index, value in enumerate(argv[:-1])
+            if value == "--property"
+        ]
+        assert not any(value.startswith("OOMPolicy=") for value in properties)
+        assert "MemoryAccounting=yes" in properties
+        assert any(value.startswith("MemoryMax=") for value in properties)
+
+    def test_fail_closed_error_reports_why_the_probe_failed(self, monkeypatch):
+        """The refusal names the systemd error instead of only its verdict.
+
+        The opaque "systemd-run --user --scope is unavailable" text is what
+        turned a single rejected property into a blind cron outage.
+        """
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_IS_LINUX", True)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", False)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 1_000_000.0)
+        monkeypatch.setattr(
+            pr,
+            "_SYSTEMD_SCOPE_LAST_ERROR",
+            "Failed to connect to bus: No such file or directory",
+        )
+        monkeypatch.setattr(pr, "_is_supervised_gateway_process", lambda: True)
+        monkeypatch.setenv("INVOCATION_ID", "deadbeef")
+
+        with pytest.raises(RuntimeError, match="Failed to connect to bus"):
+            pr.restart_safe_gateway_child_argv(["/bin/true"], unit_suffix="job")
+
     def test_stop_systemd_unit_treats_absent_unit_as_clean(self, monkeypatch):
         import tools.process_registry as pr
 

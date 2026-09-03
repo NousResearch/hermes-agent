@@ -883,7 +883,7 @@ describe('profile-aware plugin session opens', () => {
     expect(requestSessionResume).not.toHaveBeenCalled()
   })
 
-  it('forces a resume on an explicit bot switch even when a cached transcript looks healthy (#93604)', async () => {
+  it('forces a resume on an explicit bot switch without flashing over a healthy cached transcript (#93604)', async () => {
     // Bot-switch shape from the field: the previous visit left a non-empty
     // snapshot in the session-states cache, so the surface passes every
     // health check while painting STALE messages. The heuristic alone skips
@@ -892,6 +892,8 @@ describe('profile-aware plugin session opens', () => {
     setMockAtom($selectedStoredSessionId, 'bot-chat')
     setMockAtom($activeSessionId, 'runtime-stale-snapshot')
     setMockAtom($messages, [{ id: 'stale-history', parts: [], role: 'assistant' }] as never)
+    const swapTargets: Array<null | string> = []
+    const unsubscribe = $gatewaySwapTarget.subscribe(value => swapTargets.push(value))
 
     const opening = host.openSession('bot-chat', {
       profile: 'hyoseob',
@@ -905,6 +907,8 @@ describe('profile-aware plugin session opens', () => {
     expect(requestSessionResume).toHaveBeenCalledWith('bot-chat', undefined)
 
     await opening
+    unsubscribe()
+    expect(swapTargets).not.toContain('hyoseob')
     expect($gatewaySwapTarget.get()).toBeNull()
   })
 

@@ -946,12 +946,6 @@ export const host = {
         throw new Error('Session open was superseded by a newer selection.')
       }
 
-      if (options.awaitHydration) {
-        // Keep the target-specific overlay visible through transcript hydration,
-        // not merely through the gateway/profile activation that precedes it.
-        $gatewaySwapTarget.set(targetProfile)
-      }
-
       // Only the HYDRATION half retries. Activation already failed its own
       // bounded wait above, and a wedged dial does not get better by dialling
       // again inside the same wake — that is the Retry surface's job.
@@ -994,6 +988,12 @@ export const host = {
             $selectedStoredSessionId.get() === storedSessionId &&
             Boolean($activeSessionId.get()) &&
             (!expectHistory || $messages.get().length > 0)
+
+          if (options.awaitHydration) {
+            // A warm Bot Chat is already painted. Covering it before a forced
+            // transcript refresh produces a full-pane flash on every reopen.
+            $gatewaySwapTarget.set(surfaceHealthy ? null : targetProfile)
+          }
 
           // surfaceHealthy trusts ANY non-empty cached transcript, so it
           // cannot distinguish a fresh transcript from a stale snapshot the

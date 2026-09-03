@@ -503,6 +503,22 @@ _REQUEST_VALIDATION_PATTERNS = [
     "invalid_request_error",
     "unknown_parameter",
     "unsupported_parameter",
+    # Reasoning-effort validation: a structured 400 whose error code names a
+    # reasoning-effort vocabulary violation is a request-shape rejection —
+    # the effort LEVEL was invalid for this provider, not the context. Must
+    # be classified before context_overflow so it never enters compression:
+    # compression cannot fix a bad parameter, and the loop ends in a bogus
+    # "Context length exceeded (77 tokens). Cannot compress further." on a
+    # tiny session (#100536).
+    "invalid_reasoning_effort",
+    "unsupported reasoning effort",
+    "invalid reasoning effort",
+    "reasoning_effort_not_supported",
+    # Some providers blame the parameter with effort-naming instead of a
+    # structured code ("reasoning.effort is not supported", "effort is
+    # invalid for this model"). Match the explicit effort-param phrasing,
+    # not the bare word "effort" (too collision-prone).
+    "reasoning.effort",
 ]
 
 # A reasoning-mandatory route answering ``reasoning: {enabled: false}``

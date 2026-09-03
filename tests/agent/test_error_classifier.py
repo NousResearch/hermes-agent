@@ -1206,6 +1206,68 @@ class TestMultimodalToolContentUnsupported:
         e = MockAPIError("bad request: missing field 'model'", status_code=400)
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
 
+    # ── Reasoning-effort validation 400s must never enter compression (#100536) ──
+
+    def test_structured_invalid_reasoning_effort_400_is_format_error(self):
+        """A custom Responses provider rejecting an unsupported reasoning level
+        returns a structured 400 naming the error_code. That is a
+        request-validation error, NOT a context overflow — compressing a tiny
+        session over it ends in a bogus 'Context length exceeded (77 tokens).
+        Cannot compress further.' (#100536)."""
+        e = MockAPIError(
+            '{"error": {"param": "reasoning.effort", '
+            '"error_code": "invalid_reasoning_effort", "retryable": false}}',
+            status_code=400,
+            body={
+                "error": {
+                    "param": "reasoning.effort",
+                    "error_code": "invalid_reasoning_effort",
+                    "retryable": False,
+                }
+            },
+        )
+        result = classify_api_error(
+            e, provider="openai", model="gpt-5.6-sol",
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_effort_param_phrase_400_is_format_error_not_overflow(self):
+        """Providers that blame the parameter by name ('reasoning.effort is
+        not supported') must be caught by the effort-param phrasing, not
+        routed to compression."""
+        e = MockAPIError(
+            "reasoning.effort is not supported for this model",
+            status_code=400,
+            body={"error": {"message": "reasoning.effort is not supported"}},
+        )
+        result = classify_api_error(e, provider="openai", model="gpt-5.6-sol")
+        assert result.reason == FailoverReason.format_error
+
+    def test_plain_effort_vocabulary_400_is_format_error(self):
+        """Plain-text vocabulary errors ('Invalid reasoning effort: max...') are
+        deterministic request rejections — fail fast, never compress."""
+        e = MockAPIError(
+            "Invalid reasoning effort: 'max'. Supported values are: "
+            "none, low, medium, high, xhigh",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openai", model="gpt-5.6-sol")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_genuine_context_overflow_400_still_compresses(self):
+        """Guard: the new effort patterns must not shadow a REAL context
+        overflow — 'context length exceeded' 400s keep their compression
+        route."""
+        e = MockAPIError(
+            "This model's maximum context length is 200000 tokens. "
+            "However, your messages resulted in 250000 tokens",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openai", model="gpt-5.6-sol")
+        assert result.reason == FailoverReason.context_overflow
+
 
 class TestOpenRouterUpstreamRateLimit:
     """Distinguish upstream-provider 429 from account-level 429 on OpenRouter.

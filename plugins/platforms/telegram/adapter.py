@@ -534,6 +534,41 @@ def _rich_normalize_linebreaks(text: str) -> str:
     return ''.join(out)
 
 
+_RTL_CODEPOINTS = frozenset(
+    cp
+    for lo, hi in (
+        (0x0590, 0x05FF),  # Hebrew
+        (0x0600, 0x06FF),  # Arabic
+        (0x0700, 0x074F),  # Syriac
+        (0x0750, 0x077F),  # Arabic Supplement
+        (0x08A0, 0x08FF),  # Arabic Extended-A
+        (0xFB50, 0xFDFF),  # Arabic Presentation Forms-A
+        (0xFDF0, 0xFDCF),  # Arabic ligatures
+        (0xFE70, 0xFEFC),  # Arabic Presentation Forms-B
+    )
+    for cp in range(lo, hi + 1)
+)
+
+
+def _is_rtl_text(text: str) -> bool:
+    """True when >30% of the alphabetic characters are Hebrew/Arabic-script.
+
+    Heuristic mirrors the Teams adapter's RTL detection: a message that is
+    predominantly RTL-script should be flagged so Telegram renders it
+    right-to-left (Bot API 10.1 ``InputRichMessage.is_rtl``).
+    """
+    if not text:
+        return False
+    rtl = letters = 0
+    for ch in text:
+        if not ch.isalpha():
+            continue
+        letters += 1
+        if ord(ch) in _RTL_CODEPOINTS:
+            rtl += 1
+    return letters > 0 and rtl / letters > 0.3
+
+
 # Watchdog bound for `await updater.stop()`. When the underlying TCP socket is
 # in CLOSE-WAIT the PTB polling task is blocked on epoll on the dead socket and
 # never wakes, so an unguarded stop() hangs indefinitely and wedges the whole
@@ -725,6 +760,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # reply still lands through sendRichMessage so tables are not flattened
         # by the MarkdownV2 formatter.
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
+        # RTL rich messages (Bot API 10.1 InputRichMessage.is_rtl): opt-in via
+        # platforms.telegram.extra.rich_rtl; when on, payloads with >30%
+        # Hebrew/Arabic alphabetic content get is_rtl=True so Telegram renders
+        # them right-to-left.
+        self._rich_rtl_enabled: bool = self._coerce_bool_extra("rich_rtl", False)
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -2204,6 +2244,12 @@ class TelegramAdapter(BasePlatformAdapter):
         payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
+        # Bot API 10.1 InputRichMessage.is_rtl: "Pass True if the rich message
+        # must be shown right-to-left" (Hebrew/Arabic). Opt-in via
+        # platforms.telegram.extra.rich_rtl + auto-detection when >30% of the
+        # alphabetic characters are RTL (mirrors the Teams adapter heuristic).
+        if getattr(self, "_rich_rtl_enabled", False) and _is_rtl_text(content):
+            payload["is_rtl"] = True
         return payload
 
     def _is_rich_capability_error(self, exc: Exception) -> bool:

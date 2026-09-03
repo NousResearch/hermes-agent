@@ -4183,32 +4183,46 @@ _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS = _RUN_CLAIM_HEARTBEAT_SECONDS * 3
 
 
-def _get_script_timeout() -> int:
-    """Resolve cron pre-run script timeout from module/env/config with a safe default."""
+def _parse_script_timeout(value: Any, source: str) -> tuple[bool, Optional[int]]:
+    """Parse one timeout source, distinguishing unlimited from invalid."""
+    try:
+        if isinstance(value, bool):
+            raise TypeError
+        numeric = float(value)
+        if numeric == 0:
+            return True, None
+        timeout = int(numeric)
+        if timeout > 0:
+            return True, timeout
+    except (TypeError, ValueError, OverflowError):
+        pass
+
+    logger.warning("Invalid %s=%r; expected 0 or at least 1 second", source, value)
+    return False, None
+
+
+def _get_script_timeout() -> Optional[int]:
+    """Resolve the cron script timeout; ``None`` means no deadline."""
     if _SCRIPT_TIMEOUT != _DEFAULT_SCRIPT_TIMEOUT:
-        try:
-            timeout = int(float(_SCRIPT_TIMEOUT))
-            if timeout > 0:
-                return timeout
-        except Exception:
-            logger.warning("Invalid patched _SCRIPT_TIMEOUT=%r; using env/config/default", _SCRIPT_TIMEOUT)
+        valid, timeout = _parse_script_timeout(_SCRIPT_TIMEOUT, "patched _SCRIPT_TIMEOUT")
+        if valid:
+            return timeout
 
     env_value = os.getenv("HERMES_CRON_SCRIPT_TIMEOUT", "").strip()
     if env_value:
-        try:
-            timeout = int(float(env_value))
-            if timeout > 0:
-                return timeout
-        except Exception:
-            logger.warning("Invalid HERMES_CRON_SCRIPT_TIMEOUT=%r; using config/default", env_value)
+        valid, timeout = _parse_script_timeout(env_value, "HERMES_CRON_SCRIPT_TIMEOUT")
+        if valid:
+            return timeout
 
     try:
         cfg = load_config() or {}
         cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
         configured = cron_cfg.get("script_timeout_seconds")
         if configured is not None:
-            timeout = int(float(configured))
-            if timeout > 0:
+            valid, timeout = _parse_script_timeout(
+                configured, "cron.script_timeout_seconds"
+            )
+            if valid:
                 return timeout
     except Exception as exc:
         logger.debug("Failed to load cron script timeout from config: %s", exc)
@@ -4668,7 +4682,9 @@ def _run_job_script(
             env=env,
             **popen_kwargs,
         )
-        deadline = time.monotonic() + script_timeout
+        deadline = (
+            None if script_timeout is None else time.monotonic() + script_timeout
+        )
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 # Same bug class as the timeout site below: a cancelled fire
@@ -4676,8 +4692,8 @@ def _run_job_script(
                 _terminate_cron_script_tree(proc)
                 _drain_script_pipes(proc)
                 return False, "Script cancelled because cron fire ownership was lost"
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
                 # Phase 4a (#85125): a script timeout must leave ZERO living
                 # descendants. killpg only reaches the script's own process
                 # group — a grandchild that called setsid (backgrounded
@@ -4691,7 +4707,8 @@ def _run_job_script(
                 _drain_script_pipes(proc)
                 return False, f"Script timed out after {script_timeout}s: {path}"
             try:
-                stdout_raw, stderr_raw = proc.communicate(timeout=min(0.1, remaining))
+                poll_timeout = 0.1 if remaining is None else min(0.1, remaining)
+                stdout_raw, stderr_raw = proc.communicate(timeout=poll_timeout)
                 break
             except subprocess.TimeoutExpired:
                 continue

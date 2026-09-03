@@ -87,6 +87,78 @@ def test_cronjob_tool_rejects_stale_past_one_shot(cron_env, monkeypatch):
 class TestRunJobScript:
     """Test the _run_job_script() function."""
 
+    @pytest.mark.parametrize("source", ["module", "env", "config"])
+    def test_zero_timeout_resolves_to_unlimited(self, cron_env, monkeypatch, source):
+        from cron import scheduler as sched
+
+        monkeypatch.setattr(sched, "_SCRIPT_TIMEOUT", sched._DEFAULT_SCRIPT_TIMEOUT)
+        monkeypatch.delenv("HERMES_CRON_SCRIPT_TIMEOUT", raising=False)
+        monkeypatch.setattr(sched, "load_config", lambda: {})
+
+        if source == "module":
+            monkeypatch.setattr(sched, "_SCRIPT_TIMEOUT", 0)
+        elif source == "env":
+            monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "0")
+        else:
+            monkeypatch.setattr(
+                sched,
+                "load_config",
+                lambda: {"cron": {"script_timeout_seconds": 0}},
+            )
+
+        assert sched._get_script_timeout() is None
+
+    @pytest.mark.parametrize(
+        ("source", "configured"),
+        [
+            ("config", -1),
+            ("config", "not-a-number"),
+            ("config", False),
+            ("module", False),
+        ],
+    )
+    def test_invalid_config_timeout_warns_and_uses_default(
+        self, cron_env, monkeypatch, caplog, source, configured,
+    ):
+        from cron import scheduler as sched
+
+        monkeypatch.setattr(sched, "_SCRIPT_TIMEOUT", sched._DEFAULT_SCRIPT_TIMEOUT)
+        monkeypatch.delenv("HERMES_CRON_SCRIPT_TIMEOUT", raising=False)
+        if source == "module":
+            monkeypatch.setattr(sched, "_SCRIPT_TIMEOUT", configured)
+            monkeypatch.setattr(sched, "load_config", lambda: {})
+        else:
+            monkeypatch.setattr(
+                sched,
+                "load_config",
+                lambda: {"cron": {"script_timeout_seconds": configured}},
+            )
+
+        with caplog.at_level("WARNING", logger=sched.__name__):
+            assert sched._get_script_timeout() == sched._DEFAULT_SCRIPT_TIMEOUT
+
+        expected_source = (
+            "patched _SCRIPT_TIMEOUT"
+            if source == "module"
+            else "cron.script_timeout_seconds"
+        )
+        assert expected_source in caplog.text
+
+    def test_unlimited_script_can_finish_without_deadline(self, cron_env, monkeypatch):
+        from cron import scheduler as sched
+
+        script = cron_env / "scripts" / "slow_success.py"
+        script.write_text(
+            'import time\ntime.sleep(0.2)\nprint("finished")\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sched, "_get_script_timeout", lambda: None)
+
+        success, output = sched._run_job_script(str(script))
+
+        assert success is True
+        assert output == "finished"
+
     def test_successful_script(self, cron_env):
         from cron.scheduler import _run_job_script
 
@@ -719,6 +791,7 @@ class TestScriptTimeoutTreeKill:
             proc.kill()
 
         monkeypatch.setattr(sched, "_terminate_cron_script_tree", _record_and_kill)
+        monkeypatch.setattr(sched, "_get_script_timeout", lambda: None)
 
         class _Cancelled:
             def is_set(self):

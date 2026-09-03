@@ -18900,10 +18900,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
         # (e.g. customer handover ingest) without triggering the pairing flow.
         if not is_internal:
+            def _pre_gateway_stop_when(_result):
+                return isinstance(_result, dict) and _result.get("action") in {
+                    "skip", "rewrite", "allow",
+                }
+
             try:
-                from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-                _hook_results = _invoke_hook(
+                from hermes_cli.lifecycle import (
+                    ainvoke_hook_ordered as _ainvoke_hook_ordered,
+                )
+                _hook_results = await _ainvoke_hook_ordered(
                     "pre_gateway_dispatch",
+                    stop_when=_pre_gateway_stop_when,
                     event=event,
                     gateway=self,
                     # getattr: bare-runner tests build GatewayRunner via

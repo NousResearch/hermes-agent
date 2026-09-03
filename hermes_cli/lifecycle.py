@@ -22,6 +22,31 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return plugins.invoke_hook(hook_name, **kwargs)
 
 
+async def ainvoke_hook_ordered(
+    hook_name: str,
+    *,
+    timeout: float | None = None,
+    stop_when=None,
+    **kwargs: Any,
+) -> List[Any]:
+    """Notify observers, then invoke plugin callbacks in awaited order."""
+    try:
+        from hermes_cli.observability import observe_lifecycle
+
+        observe_lifecycle(hook_name, **kwargs)
+    except Exception:
+        logger.warning("Built-in observability hook failed", exc_info=True)
+
+    from hermes_cli import plugins
+
+    return await plugins.ainvoke_hook_ordered(
+        hook_name,
+        timeout=timeout,
+        stop_when=stop_when,
+        **kwargs,
+    )
+
+
 def has_hook(hook_name: str) -> bool:
     """Return whether a first-party observer or plugin consumes a hook."""
     try:

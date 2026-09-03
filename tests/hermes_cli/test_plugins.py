@@ -11,12 +11,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+import hermes_cli.plugins as plugins_module
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
     PluginContext,
     PluginManager,
     PluginManifest,
+    ainvoke_hook_ordered,
     _dispatch_pre_tool_call_hooks,
     get_plugin_command_handler,
     get_plugin_commands,
@@ -2377,3 +2379,52 @@ class TestDispatchToolWithoutCliRef:
             assert calls[0][1].get("parent_agent") is None
         finally:
             registry.deregister("_test_dispatch_probe")
+
+
+class TestAsyncOrderedHooks:
+    @pytest.mark.asyncio
+    async def test_awaits_and_stops_before_later_callback(self, monkeypatch):
+        seen = []
+
+        async def first(**_kwargs):
+            seen.append("first")
+            return {"action": "skip"}
+
+        def second(**_kwargs):
+            seen.append("second")
+            return {"action": "allow"}
+
+        manager = types.SimpleNamespace(
+            iter_hook_callbacks=lambda _name: (first, second),
+        )
+        monkeypatch.setattr(plugins_module, "_delivery_manager", lambda: manager)
+
+        results = await ainvoke_hook_ordered(
+            "pre_gateway_dispatch",
+            stop_when=lambda result: result.get("action") == "skip",
+        )
+
+        assert results == [{"action": "skip"}]
+        assert seen == ["first"]
+
+    @pytest.mark.asyncio
+    async def test_isolates_failure_and_runs_later_callback(self, monkeypatch):
+        seen = []
+
+        async def broken(**_kwargs):
+            seen.append("broken")
+            raise RuntimeError("plugin failed")
+
+        def second(**_kwargs):
+            seen.append("second")
+            return {"action": "rewrite", "text": "safe"}
+
+        manager = types.SimpleNamespace(
+            iter_hook_callbacks=lambda _name: (broken, second),
+        )
+        monkeypatch.setattr(plugins_module, "_delivery_manager", lambda: manager)
+
+        results = await ainvoke_hook_ordered("pre_gateway_dispatch")
+
+        assert results == [{"action": "rewrite", "text": "safe"}]
+        assert seen == ["broken", "second"]

@@ -7678,6 +7678,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_via_service = False
         self._detached_restart_helper_started = False
         self._restart_command_source: Optional[SessionSource] = None
+        # Monotonic deadline of an in-flight restart after-turn wait, or None.
+        # Published by _await_active_work_before_restart so the stop() shutdown
+        # watchdog can size its leash to cover that wait (see
+        # _resolve_shutdown_leash).
+        self._restart_after_turn_deadline: Optional[float] = None
         # Monotonic-ish wall clock of when this GatewayRunner was constructed.
         # Used by the /restart redelivery guard to bound the window in which a
         # missing dedup marker is treated as a stale redelivery.
@@ -10148,6 +10153,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except Exception:
             pass
+
+    def _remaining_after_turn_wait(self) -> float:
+        """Seconds still owed to an in-flight restart after-turn wait.
+
+        Returns 0.0 when no wait is running or its deadline has passed.
+        ``_await_active_work_before_restart`` publishes the deadline; the
+        shutdown watchdog uses this to size its leash so it never force-kills
+        a gateway that is still legitimately waiting for in-flight turns.
+        """
+        deadline = getattr(self, "_restart_after_turn_deadline", None)
+        if deadline is None:
+            return 0.0
+        return max(0.0, float(deadline) - time.monotonic())
+
+    def _resolve_shutdown_leash(self) -> float:
+        """Wall-clock leash for the stop() shutdown watchdog.
+
+        Normally ``restart_drain_timeout + grace``. When ``stop()`` is entered
+        while the in-band restart after-turn wait is still running, that wait's
+        remaining budget is the real lower bound: ``restart_drain_timeout``
+        defaults to 0, so the plain leash is just the 60s grace and the
+        watchdog would kill a healthy gateway mid-wait (and orphan its external
+        supervisor). Takes whichever budget is larger; never raises.
+        """
+        base = resolve_shutdown_watchdog_delay(self._restart_drain_timeout)
+        try:
+            deadline = getattr(self, "_restart_after_turn_deadline", None)
+            if deadline is None:
+                return base
+            remaining = max(0.0, float(deadline) - time.monotonic())
+        except (TypeError, ValueError):
+            # Only a malformed deadline degrades to the plain contract.
+            return base
+        if remaining <= 0:
+            return base
+        return max(base, resolve_shutdown_watchdog_delay(remaining))
 
     def _persist_active_agents(self) -> None:
         """Persist the live in-flight agent count to ``gateway_state.json``.
@@ -12820,32 +12861,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        # Publish the deadline so stop()'s shutdown watchdog can extend its
+        # leash to cover this wait. Without it stop() arms only
+        # drain_timeout+grace (60s by default) and force-kills a gateway that
+        # is still legitimately waiting out its after-turn budget.
+        self._restart_after_turn_deadline = time.monotonic() + timeout
         last_status_at = 0.0
-        while self._awaitable_work_count() > 0:
-            now = loop.time()
-            if now >= deadline:
-                logger.warning(
-                    "Restart after-turn wait timed out after %.0fs with %d "
-                    "still active; proceeding to stop()/drain which may "
-                    "interrupt remaining work (#77184)",
-                    timeout,
-                    self._active_work_count(),
-                )
-                return False
-            if (now - last_status_at) >= 30.0:
-                logger.info(
-                    "Restart deferred: waiting on %d active work unit(s) "
-                    "(%d wedged and excluded; %.0fs remaining before force drain)",
-                    self._awaitable_work_count(),
-                    self._wedged_agent_count(),
-                    deadline - now,
-                )
-                try:
-                    self._update_runtime_status("draining")
-                except Exception:
-                    pass
-                last_status_at = now
-            await asyncio.sleep(0.1)
+        try:
+            while self._awaitable_work_count() > 0:
+                now = loop.time()
+                if now >= deadline:
+                    logger.warning(
+                        "Restart after-turn wait timed out after %.0fs with %d "
+                        "still active; proceeding to stop()/drain which may "
+                        "interrupt remaining work (#77184)",
+                        timeout,
+                        self._active_work_count(),
+                    )
+                    return False
+                if (now - last_status_at) >= 30.0:
+                    logger.info(
+                        "Restart deferred: waiting on %d active work unit(s) "
+                        "(%d wedged and excluded; %.0fs remaining before force drain)",
+                        self._awaitable_work_count(),
+                        self._wedged_agent_count(),
+                        deadline - now,
+                    )
+                    try:
+                        self._update_runtime_status("draining")
+                    except Exception:
+                        pass
+                    last_status_at = now
+                await asyncio.sleep(0.1)
+        finally:
+            self._restart_after_turn_deadline = None
 
         if self._active_work_count() > 0:
             logger.warning(
@@ -16523,9 +16572,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         lambda: 0,
                     )(),
                     "restart_drain_timeout": self._restart_drain_timeout,
-                    "watchdog_delay_s": resolve_shutdown_watchdog_delay(
-                        self._restart_drain_timeout
-                    ),
+                    "after_turn_wait_remaining_s": self._remaining_after_turn_wait(),
+                    "watchdog_delay_s": self._resolve_shutdown_leash(),
                     "phase_elapsed_s": (
                         time.monotonic() - started if started is not None else None
                     ),
@@ -16533,7 +16581,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if not os.environ.get("PYTEST_CURRENT_TEST"):
                 arm_shutdown_watchdog(
-                    resolve_shutdown_watchdog_delay(self._restart_drain_timeout),
+                    self._resolve_shutdown_leash(),
                     done_event=_watchdog_done,
                     snapshot_fn=_shutdown_watchdog_snapshot,
                     exit_code=1,

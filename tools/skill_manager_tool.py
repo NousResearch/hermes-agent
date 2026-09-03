@@ -142,6 +142,25 @@ def _guard_agent_created_enabled() -> bool:
         return False
 
 
+def _background_create_frontmatter_required() -> bool:
+    """Read skills.require_background_create_frontmatter (default True).
+
+    Background review / curator forks create skills unattended. Requiring
+    author/version/license/platforms on those creates is the default rail;
+    users who do not want it can turn the flag off, same config shape as
+    skills.guard_agent_created. Fail closed if config cannot be loaded.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        return is_truthy_value(
+            cfg_get(cfg, "skills", "require_background_create_frontmatter"),
+            default=True,
+        )
+    except Exception:
+        return True
+
+
 def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     """Scan a skill directory after write. Returns error string if blocked, else None.
 
@@ -467,6 +486,63 @@ def _background_review_write_guard(
             ),
         }
     return None
+
+
+_BACKGROUND_CREATE_REQUIRED_FIELDS = ("author", "version", "license", "platforms")
+
+
+def _frontmatter_field_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple)):
+        return not any(str(item).strip() for item in value)
+    return False
+
+
+def _missing_background_create_frontmatter_fields(content: str) -> List[str]:
+    fm, _ = _parse_frontmatter(content)
+    if not isinstance(fm, dict):
+        return list(_BACKGROUND_CREATE_REQUIRED_FIELDS)
+    return [
+        key for key in _BACKGROUND_CREATE_REQUIRED_FIELDS
+        if key not in fm or _frontmatter_field_missing(fm.get(key))
+    ]
+
+
+def _background_review_create_frontmatter_guard(
+    content: str,
+) -> Optional[Dict[str, Any]]:
+    """Refuse unattended creates that omit author/version/license/platforms.
+
+    Sibling of ``_background_review_write_guard``: that function protects
+    *existing* skills from autonomous mutation; this one protects the library
+    from malformed *new* sediment. Foreground creates are unchanged. Gated
+    by ``skills.require_background_create_frontmatter`` (default on).
+    """
+    try:
+        from tools.skill_provenance import is_background_review
+        if not is_background_review():
+            return None
+    except Exception:
+        return None
+    if not _background_create_frontmatter_required():
+        return None
+    missing = _missing_background_create_frontmatter_fields(content)
+    if not missing:
+        return None
+    listed = ", ".join(missing)
+    return {
+        "success": False,
+        "error": (
+            f"Refusing background skill_manage create: SKILL.md frontmatter "
+            f"is missing {listed}. Background review/curator forks must "
+            "declare author, version, license, and platforms so unattended "
+            "creates are auditable. Retry with a complete frontmatter block."
+        ),
+        "_missing_frontmatter_fields": missing,
+    }
 
 
 def _background_review_read_before_write_guard(
@@ -1017,6 +1093,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     err = _validate_frontmatter(content, new_skill=True)
     if err:
         return {"success": False, "error": err}
+
+    create_guard = _background_review_create_frontmatter_guard(content)
+    if create_guard is not None:
+        return create_guard
 
     err = _validate_content_size(content)
     if err:

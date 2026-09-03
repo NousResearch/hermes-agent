@@ -2345,6 +2345,12 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Background review / curator forks create skills unattended.
+        # When true (default), skill_manage create in those contexts must
+        # declare author, version, license, and platforms; missing fields
+        # are refused with a clear error. Foreground creates are unchanged.
+        # Turn off to restore the previous unattended-create behavior.
+        "require_background_create_frontmatter": True,
         # Advisory NVIDIA SkillEvaluator Tier 1 scan on hub installs
         # (`hermes skills install`). Runs ALONGSIDE the built-in skills
         # guard (which stays the enforcement layer) and only when the

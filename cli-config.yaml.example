@@ -1067,6 +1067,12 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # Require author/version/license/platforms on skill_manage create when the
+  # caller is a background_review / curator fork (is_background_review()).
+  # Default true: unattended creates must be auditable. Foreground creates
+  # still accept name+description only. Set false to opt out of the rail.
+  # require_background_create_frontmatter: true
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

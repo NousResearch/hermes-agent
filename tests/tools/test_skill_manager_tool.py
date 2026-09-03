@@ -525,8 +525,10 @@ class TestSkillManageDispatcher:
                  patch("tools.skill_usage.is_hub_installed", return_value=False), \
                  patch("tools.skill_usage.is_bundled",
                        side_effect=lambda skill_name: skill_name == "bundled"):
-                skill_manage(action="create", name="umbrella", content=VALID_SKILL_CONTENT)
-                skill_manage(action="create", name="bundled", content=VALID_SKILL_CONTENT)
+                skill_manage(action="create", name="umbrella",
+                             content=_skill_content("umbrella"))
+                skill_manage(action="create", name="bundled",
+                             content=_skill_content("bundled"))
                 raw = skill_manage(
                     action="delete",
                     name="bundled",
@@ -1068,6 +1070,10 @@ def _skill_content(name: str) -> str:
         "---\n"
         f"name: {name}\n"
         "description: A test skill for unit testing.\n"
+        "author: Hermes Agent\n"
+        "version: 1.0.0\n"
+        "license: MIT\n"
+        "platforms: [linux, macos]\n"
         "---\n\n"
         f"# {name}\n\n"
         "Step 1: Do the thing.\n"
@@ -1096,7 +1102,7 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_bare_prune_during_curator_pass_refused(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_curator_skill("active-skill", VALID_SKILL_CONTENT)
+            _create_curator_skill("active-skill", _skill_content("active-skill"))
             result = _delete_skill("active-skill", absorbed_into="")
         assert result["success"] is False
         assert result.get("_fail_closed") is True
@@ -1191,3 +1197,161 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+@contextmanager
+def _background_origin():
+    """Bind the write origin the background_review / curator forks use."""
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        yield
+    finally:
+        reset_current_write_origin(token)
+
+
+COMPLETE_SKILL_CONTENT = """\
+---
+name: complete-skill
+description: A test skill with full frontmatter.
+author: Hermes Agent
+version: 1.0.0
+license: MIT
+platforms: [linux, macos]
+---
+
+# Complete Skill
+
+Step 1: Do the thing.
+"""
+
+
+class TestBackgroundCreateFrontmatterGuard:
+    """#101402: unattended creates must declare author/version/license/platforms.
+
+    Foreground `skill_manage create` still accepts name+description only.
+    The guard is a different layer from a global skills.read_only lock
+    (see competing #64963): it fires only when is_background_review().
+    """
+
+    def test_background_create_refuses_bare_frontmatter(self, tmp_path):
+        with _skill_dir(tmp_path), _background_origin():
+            raw = skill_manage(
+                action="create", name="bare-bg", content=VALID_SKILL_CONTENT
+            )
+        result = json.loads(raw)
+        assert result["success"] is False
+        err = result["error"].lower()
+        assert "author" in err
+        assert "version" in err
+        assert "license" in err
+        assert "platforms" in err
+        # Discriminator vs weaker layers that could also refuse a write.
+        assert "read_only" not in err
+        assert "bundled" not in err
+        assert "_read_before_write_required" not in result
+        assert result.get("_missing_frontmatter_fields") == [
+            "author",
+            "version",
+            "license",
+            "platforms",
+        ]
+        assert not (tmp_path / "bare-bg" / "SKILL.md").exists()
+
+    def test_background_create_names_the_single_missing_field(self, tmp_path):
+        content = (
+            "---\n"
+            "name: almost\n"
+            "description: Missing only platforms.\n"
+            "author: Hermes Agent\n"
+            "version: 1.0.0\n"
+            "license: MIT\n"
+            "---\n\n"
+            "# Almost\n\n"
+            "Body.\n"
+        )
+        with _skill_dir(tmp_path), _background_origin():
+            raw = skill_manage(action="create", name="almost", content=content)
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "platforms" in result["error"].lower()
+        assert result.get("_missing_frontmatter_fields") == ["platforms"]
+        assert not (tmp_path / "almost" / "SKILL.md").exists()
+
+    def test_background_create_treats_blank_author_as_missing(self, tmp_path):
+        content = (
+            "---\n"
+            "name: blank-author\n"
+            "description: Author is whitespace only.\n"
+            "author: '   '\n"
+            "version: 1.0.0\n"
+            "license: MIT\n"
+            "platforms: [linux]\n"
+            "---\n\n"
+            "# Blank\n\n"
+            "Body.\n"
+        )
+        with _skill_dir(tmp_path), _background_origin():
+            raw = skill_manage(
+                action="create", name="blank-author", content=content
+            )
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "author" in result["error"].lower()
+        assert result.get("_missing_frontmatter_fields") == ["author"]
+        assert not (tmp_path / "blank-author" / "SKILL.md").exists()
+
+    def test_background_create_accepts_complete_frontmatter(self, tmp_path):
+        with _skill_dir(tmp_path), _background_origin():
+            raw = skill_manage(
+                action="create",
+                name="complete-skill",
+                content=COMPLETE_SKILL_CONTENT,
+            )
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert (tmp_path / "complete-skill" / "SKILL.md").exists()
+
+    def test_foreground_create_still_allows_bare_frontmatter(self, tmp_path):
+        with _skill_dir(tmp_path):
+            raw = skill_manage(
+                action="create", name="bare-fg", content=VALID_SKILL_CONTENT
+            )
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert (tmp_path / "bare-fg" / "SKILL.md").exists()
+
+    def test_escape_hatch_disables_the_background_create_rail(self, tmp_path):
+        with _skill_dir(tmp_path), _background_origin(), patch(
+            "tools.skill_manager_tool._background_create_frontmatter_required",
+            return_value=False,
+        ):
+            raw = skill_manage(
+                action="create", name="bare-escape", content=VALID_SKILL_CONTENT
+            )
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert (tmp_path / "bare-escape" / "SKILL.md").exists()
+
+    def test_config_error_fails_closed_on_the_rail(self):
+        from tools.skill_manager_tool import _background_create_frontmatter_required
+
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+            assert _background_create_frontmatter_required() is True
+
+    def test_quoted_false_disables_the_rail(self):
+        from tools.skill_manager_tool import _background_create_frontmatter_required
+
+        for quoted in ("false", "False", "0", "no", "off"):
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "skills": {"require_background_create_frontmatter": quoted}
+                },
+            ):
+                assert _background_create_frontmatter_required() is False, quoted

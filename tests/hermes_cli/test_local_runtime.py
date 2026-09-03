@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -226,6 +227,31 @@ def test_install_dir_is_profile_scoped(tmp_path, monkeypatch):
 ])
 def test_backend_selection(vendor, os_name, expected):
     assert select_backend(vendor, os_name=os_name) == expected
+
+
+@pytest.mark.parametrize("device_name,expected", [
+    ("AMD Radeon RX 580 Series", "amd"),
+    ("Intel(R) Arc(TM) A770 Graphics", "intel"),
+])
+def test_gpu_vendor_detection_uses_vulkan_devices(
+        monkeypatch, device_name, expected):
+    """A working Vulkan device must reach the existing Vulkan backend
+    branch even when the host has no nvidia-smi installation."""
+    from hermes_cli.local_runtime import bootstrap, hardware
+
+    monkeypatch.setattr(hardware, "_nvidia_smi_path", lambda: None)
+    monkeypatch.setattr(bootstrap, "_vulkaninfo_path", lambda: "vulkaninfo")
+
+    def _run(argv, **kwargs):
+        assert argv == ["vulkaninfo", "--summary"]
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=f"deviceName = {device_name}\n", stderr="")
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", _run)
+
+    vendor = bootstrap._detect_gpu_vendor()
+    assert vendor == expected
+    assert select_backend(vendor, os_name="win") == "vulkan"
 
 
 def test_sha256_mismatch_rejects(tmp_path, monkeypatch):

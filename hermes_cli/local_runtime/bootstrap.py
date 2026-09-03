@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -27,24 +28,63 @@ logger = logging.getLogger(__name__)
 _SUPERVISOR = None  # process-wide singleton; one router per Hermes process
 
 
+def _vulkaninfo_path() -> str | None:
+    """Resolve vulkaninfo without assuming an interactive PATH."""
+    found = shutil.which("vulkaninfo")
+    if found is None and os.name == "nt":
+        candidate = (
+            Path(os.environ.get("SystemRoot", r"C:\Windows"))
+            / "System32" / "vulkaninfo.exe"
+        )
+        if candidate.exists():
+            found = str(candidate)
+    return found
+
+
+def _vulkan_gpu_vendor(summary: str) -> str | None:
+    """Recognized non-NVIDIA vendor from vulkaninfo's deviceName rows."""
+    for line in summary.splitlines():
+        if "devicename" not in line.lower():
+            continue
+        name = line.lower()
+        if "amd" in name or "radeon" in name:
+            return "amd"
+        if "intel" in name:
+            return "intel"
+    return None
+
+
 def _detect_gpu_vendor() -> str | None:
-    """Best-effort GPU vendor for backend selection. NVIDIA via nvidia-smi
-    (resolved by the hardware probe's PATH-independent ladder — a stripped
-    service PATH must not demote an NVIDIA box to vulkan/cpu); anything
-    else defers to select_backend's fallback ladder."""
+    """Best-effort GPU vendor for backend selection.
+
+    NVIDIA keeps priority via the PATH-independent nvidia-smi ladder. A
+    successful vulkaninfo device query then proves that an AMD or Intel GPU
+    can use the Vulkan build rather than merely inferring support from its
+    adapter name.
+    """
     from hermes_cli.local_runtime.hardware import _nvidia_smi_path
 
     smi = _nvidia_smi_path()
-    if smi is None:
-        return None
-    try:
-        out = subprocess.run(
-            [smi, "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=10)
-        if out.returncode == 0 and out.stdout.strip():
-            return "nvidia " + out.stdout.strip().splitlines()[0]
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    if smi is not None:
+        try:
+            out = subprocess.run(
+                [smi, "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=10)
+            if out.returncode == 0 and out.stdout.strip():
+                return "nvidia " + out.stdout.strip().splitlines()[0]
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    vulkaninfo = _vulkaninfo_path()
+    if vulkaninfo is not None:
+        try:
+            out = subprocess.run(
+                [vulkaninfo, "--summary"], capture_output=True, text=True,
+                timeout=10)
+            if out.returncode == 0:
+                return _vulkan_gpu_vendor(out.stdout + "\n" + out.stderr)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     return None
 
 

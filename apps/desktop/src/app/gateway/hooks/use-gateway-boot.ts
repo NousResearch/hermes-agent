@@ -46,6 +46,7 @@ import {
 } from '@/store/gateway-switch'
 import { checkLocalRuntimeUpdate, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import { notify, notifyError } from '@/store/notifications'
+import { loadPoolLimits } from '@/store/pool-limits'
 import {
   $activeGatewayProfile,
   normalizeProfileKey,
@@ -899,6 +900,10 @@ export function useGatewayBoot({
     // macOS wake often restores focus without a visibilitychange — without
     // this a socket dropped during sleep sits closed until the user clicks.
     window.addEventListener('focus', onFocus)
+
+    // Pool limits are main-process state; mirror them once for the Settings
+    // rows and prewarmProfileBackend's saturation guard.
+    void loadPoolLimits()
 
     // Keep live pool backends alive while this window is open (the main process
     // can't observe the direct renderer↔backend WS). No-op for the primary.

@@ -12,6 +12,7 @@ import pytest
 
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -212,6 +213,60 @@ class TestSearch:
             _assert_clean(m.content)
             _assert_clean(m.path)
 
+
+class TestWindowsNativeRgLiveSearch:
+    """Real local Windows rg search regression for the #84378 path boundary."""
+
+    @pytest.mark.windows_only
+    def test_real_local_search_uses_native_temp_path(self, tmp_path):
+        """Exercise LocalEnvironment -> rg through public search operations."""
+        if shutil.which("rg") is None:
+            pytest.skip("native rg is not available on PATH")
+
+        real_env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+        version = real_env.execute("rg --version")
+        if version["returncode"] != 0:
+            pytest.skip("rg is not executable through the local Windows shell")
+
+        (tmp_path / "native-rg-live.txt").write_text(
+            "NATIVE_RG_LIVE_TOKEN\n", encoding="utf-8"
+        )
+        (tmp_path / "other.txt").write_text("unrelated content\n", encoding="utf-8")
+
+        class RecordingLocalEnvironment(LocalEnvironment):
+            """Test-only delegating recorder; production still uses LocalEnvironment."""
+
+            def __init__(self, delegate):
+                self.delegate = delegate
+                self.cwd = delegate.cwd
+                self.outputs = []
+
+            def execute(self, command, **kwargs):
+                result = self.delegate.execute(command, **kwargs)
+                self.outputs.append(result.get("output", ""))
+                return result
+
+        recording_env = RecordingLocalEnvironment(real_env)
+        ops = ShellFileOperations(recording_env, cwd=str(tmp_path))
+
+        content = ops.search(
+            "NATIVE_RG_LIVE_TOKEN", path=str(tmp_path), target="content"
+        )
+        files = ops.search(
+            "native-rg-live.txt", path=str(tmp_path), target="files"
+        )
+        zero = ops.search(
+            "NATIVE_RG_LIVE_DEFINITELY_ABSENT", path=str(tmp_path), target="content"
+        )
+
+        assert content.error is None
+        assert content.total_count >= 1
+        assert any("NATIVE_RG_LIVE_TOKEN" in m.content for m in content.matches)
+        assert files.error is None
+        assert any("native-rg-live.txt" in p for p in files.files)
+        assert zero.error is None
+        assert zero.total_count == 0
+        assert all("os error 3" not in output.lower() for output in recording_env.outputs)
 
     def test_search_output_has_zero_noise(self, ops, populated_dir):
         """Dedicated noise check: search must return only real content."""

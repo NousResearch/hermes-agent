@@ -14313,6 +14313,38 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print(f"  {line}")
         print()
 
+        # ── Context files (per-file listing — inspired by Copilot CLI's
+        # /instructions per-file view).  Read-only discovery mirror of
+        # build_context_files_prompt; zero prompt/cache impact.
+        try:
+            from agent.prompt_builder import list_context_file_sources
+            from agent.runtime_cwd import resolve_context_cwd
+
+            _sources = list_context_file_sources(
+                cwd=resolve_context_cwd(),
+                context_length=getattr(
+                    getattr(self.agent, "context_compressor", None),
+                    "context_length", None,
+                ),
+            )
+        except Exception:
+            _sources = []
+        if _sources:
+            print("  Context files")
+            _status_glyph = {"loaded": "✓", "truncated": "◐", "shadowed": "○"}
+            for src in _sources:
+                glyph = _status_glyph.get(src.get("status", ""), "•")
+                note = ""
+                if src["status"] == "truncated":
+                    note = "  (truncated — over context_file_max_chars)"
+                elif src["status"] == "shadowed":
+                    note = "  (not loaded — higher-priority context type wins)"
+                print(
+                    f"    {glyph} {src['label']:<32} "
+                    f"{src['est_tokens']:>8,} tokens{note}"
+                )
+            print()
+
     def _show_usage(self):
         """Rate limits + session token usage (when a live agent exists) + Nous credits.
 

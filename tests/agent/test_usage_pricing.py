@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from agent.usage_pricing import (
     CanonicalUsage,
     format_cost_label,
@@ -909,3 +911,52 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_provider"),
+    [
+        ("kimi-coding", "kimi-coding"),
+        ("kimi", "kimi-coding"),
+        ("moonshot", "kimi-coding"),
+        ("kimi-coding-cn", "kimi-coding-cn"),
+        ("kimi-cn", "kimi-coding-cn"),
+        ("moonshot-cn", "kimi-coding-cn"),
+    ],
+)
+def test_kimi_coding_plan_is_subscription_included(provider, expected_provider):
+    route = resolve_billing_route(
+        "kimi-k3",
+        provider=provider,
+        base_url="https://api.kimi.com/coding/v1",
+    )
+    assert route.billing_mode == "subscription_included"
+    assert route.provider == expected_provider
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url"),
+    [
+        ("kimi-coding", None),
+        ("moonshot", "https://api.moonshot.ai/v1"),
+        ("moonshot-cn", "https://api.moonshot.cn/v1"),
+        ("kimi", "https://proxy.example.com/coding"),
+        ("kimi", "http://api.kimi.com/coding"),
+        ("custom", "https://api.kimi.com/coding"),
+    ],
+)
+def test_kimi_legacy_and_custom_routes_fail_closed(provider, base_url):
+    route = resolve_billing_route("kimi-k3", provider=provider, base_url=base_url)
+    assert route.billing_mode == "unknown"
+
+
+def test_kimi_estimate_usage_cost_is_included():
+    result = estimate_usage_cost(
+        "kimi-k3",
+        CanonicalUsage(input_tokens=1000, output_tokens=500),
+        provider="moonshot",
+        base_url="https://api.kimi.com/coding",
+    )
+
+    assert result.status == "included"
+    assert float(result.amount_usd) == 0.0

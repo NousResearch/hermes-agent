@@ -11,6 +11,7 @@ import httpx
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
+from utils import is_kimi_coding_base_url
 
 if TYPE_CHECKING:
     from typing import TypeGuard
@@ -809,6 +810,178 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
     )
 
 
+# All provider spellings that may resolve to a Kimi runtime. The CN set keeps
+# its own snapshot label; the actual Coding Plan gate is the resolved base URL
+# (utils.is_kimi_coding_base_url), not the alias.
+_KIMI_PROVIDER_ALIASES = frozenset({
+    "kimi",
+    "kimi-coding",
+    "kimi-coding-cn",
+    "moonshot",
+    "kimi-cn",
+    "moonshot-cn",
+})
+_KIMI_CN_PROVIDER_ALIASES = frozenset({"kimi-coding-cn", "kimi-cn", "moonshot-cn"})
+
+
+def _kimi_provider_label(alias: str) -> str:
+    return "kimi-coding-cn" if alias in _KIMI_CN_PROVIDER_ALIASES else "kimi-coding"
+
+
+def _kimi_usages_url(base_url: str) -> str:
+    """Resolve the Kimi Code ``/usages`` endpoint from a chat base URL.
+
+    The quota endpoint lives next to the chat routes: ``/coding/v1/usages``.
+    Accepts a base URL with or without the trailing ``/v1`` so both the
+    canonical ``https://api.kimi.com/coding`` config value and the
+    ``.../coding/v1`` variant used by some resolvers work.
+    """
+    normalized = base_url.strip().rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[: -len("/v1")]
+    return normalized + "/v1/usages"
+
+
+def _kimi_window_label(window: Any) -> str:
+    """Human label for a Kimi ``limits[]`` rolling window (e.g. 300 minutes)."""
+    w = window if isinstance(window, dict) else {}
+    duration = w.get("duration")
+    unit = str(w.get("timeUnit") or "").strip().upper()
+    try:
+        n = float(duration)
+    except (TypeError, ValueError):
+        return "Rolling window"
+    if n <= 0:
+        return "Rolling window"
+    if unit == "TIME_UNIT_MINUTE":
+        if n % 60 == 0:
+            hours = int(n // 60)
+            return f"{hours}-hour" if hours != 1 else "Hourly"
+        return f"{int(n)}-minute"
+    if unit == "TIME_UNIT_HOUR":
+        return f"{int(n)}-hour"
+    if unit == "TIME_UNIT_DAY":
+        return f"{int(n)}-day"
+    return "Rolling window"
+
+
+def _percent_from_counts(detail: Any) -> Optional[float]:
+    """Compute used_percent from a {limit, used, remaining} quota object.
+
+    Deliberately preserve values above 100: an over-quota response is useful
+    provider data. The renderer floors the remaining percentage at zero while
+    continuing to show the actual used percentage.
+    """
+    if not isinstance(detail, dict):
+        return None
+    limit_raw = detail.get("limit")
+    used_raw = detail.get("used")
+    if not isinstance(limit_raw, (int, float, str)) or isinstance(limit_raw, bool):
+        return None
+    if not isinstance(used_raw, (int, float, str)) or isinstance(used_raw, bool):
+        return None
+    try:
+        limit = float(limit_raw)
+        used = float(used_raw)
+    except (TypeError, ValueError):
+        return None
+    if limit <= 0:
+        return None
+    return used / limit * 100.0
+
+
+def _fetch_kimi_account_usage(
+    provider: str,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """Fetch Kimi Code (Coding Plan) quota from ``/coding/v1/usages``.
+
+    ``provider`` is the caller's original alias (``kimi``, ``moonshot``,
+    ``kimi-coding-cn``, …). Resolution happens under that alias — the same
+    name the runtime credential records are keyed on — and the Coding Plan
+    gate is the *resolved* base URL, mirroring ``resolve_billing_route``.
+    Legacy ``api.moonshot.ai/v1`` and custom routes return no snapshot.
+
+    Response schema (verified against the live endpoint 2026-07)::
+
+        {
+          "user": {"membership": {"level": "LEVEL_ADVANCED"}, ...},
+          "usage": {"limit": "100", "used": "1", "remaining": "99",
+                    "resetTime": "..."},          # weekly quota (percent)
+          "limits": [{"window": {"duration": 300,
+                                 "timeUnit": "TIME_UNIT_MINUTE"},
+                      "detail": {"limit": "100", "used": "3", ...}}],
+          "parallel": {"limit": "30"}
+        }
+    """
+    runtime = resolve_runtime_provider(
+        requested=provider,
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+    token = str(runtime.get("api_key", "") or "").strip()
+    runtime_base_url = str(runtime.get("base_url", "") or "").strip()
+    if not token or not is_kimi_coding_base_url(runtime_base_url):
+        return None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=15.0) as client:
+        response = client.get(
+            _kimi_usages_url(runtime_base_url),
+            headers=headers,
+        )
+        response.raise_for_status()
+    payload = response.json() or {}
+    windows: list[AccountUsageWindow] = []
+    weekly = payload.get("usage") or {}
+    weekly_percent = _percent_from_counts(weekly)
+    if weekly_percent is not None:
+        windows.append(
+            AccountUsageWindow(
+                label="Weekly",
+                used_percent=weekly_percent,
+                reset_at=_parse_dt(weekly.get("resetTime")),
+            )
+        )
+    rolling = payload.get("limits") or []
+    if isinstance(rolling, list):
+        for entry in rolling:
+            if not isinstance(entry, dict):
+                continue
+            detail = entry.get("detail") or {}
+            percent = _percent_from_counts(detail)
+            if percent is None:
+                continue
+            windows.append(
+                AccountUsageWindow(
+                    label=_kimi_window_label(entry.get("window")),
+                    used_percent=percent,
+                    reset_at=_parse_dt(detail.get("resetTime")),
+                )
+            )
+    details: list[str] = []
+    parallel = (payload.get("parallel") or {}).get("limit")
+    try:
+        if parallel is not None and int(parallel) > 0:
+            details.append(f"Parallel requests: {int(parallel)} max")
+    except (TypeError, ValueError):
+        pass
+    plan = _title_case_slug(
+        ((payload.get("user") or {}).get("membership") or {}).get("level")
+    )
+    return AccountUsageSnapshot(
+        provider=_kimi_provider_label(provider),
+        source="usage_api",
+        fetched_at=_utc_now(),
+        plan=plan,
+        windows=tuple(windows),
+        details=tuple(details),
+    )
+
+
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
     runtime = resolve_runtime_provider(
         requested="openrouter",
@@ -895,6 +1068,15 @@ def fetch_account_usage(
             return _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
         if normalized == "anthropic":
             return _fetch_anthropic_account_usage()
+        if normalized in _KIMI_PROVIDER_ALIASES:
+            # Resolve under the caller's own alias — runtime credential
+            # records for legacy `moonshot`/`moonshot-cn` users are keyed on
+            # that name, and resolving under a substituted `kimi-coding`
+            # would silently miss them. The Coding Plan gate is the resolved
+            # base URL inside _fetch_kimi_account_usage.
+            return _fetch_kimi_account_usage(
+                normalized, base_url=base_url, api_key=api_key
+            )
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
     except Exception:

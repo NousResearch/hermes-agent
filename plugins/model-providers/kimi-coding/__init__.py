@@ -8,30 +8,11 @@ This module covers the chat_completions path (/v1 endpoint).
 """
 
 from typing import Any
-from urllib.parse import urlparse
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from providers import register_provider
 from providers.base import OMIT_TEMPERATURE, ProviderProfile
-
-
-def _is_confirmed_kimi_coding_url(base_url: str) -> bool:
-    """Return True only for Kimi Code's canonical HTTPS API surfaces."""
-    try:
-        parsed = urlparse(base_url)
-        port = parsed.port
-    except ValueError:
-        return False
-    return (
-        parsed.scheme.lower() == "https"
-        and (parsed.hostname or "").lower() == "api.kimi.com"
-        and port in (None, 443)
-        and parsed.username is None
-        and parsed.password is None
-        and parsed.path.rstrip("/") in {"/coding", "/coding/v1"}
-        and not parsed.query
-        and not parsed.fragment
-    )
+from utils import is_kimi_coding_base_url
 
 
 class KimiProfile(ProviderProfile):
@@ -46,8 +27,8 @@ class KimiProfile(ProviderProfile):
     ) -> list[str] | None:
         """Use Kimi Code's OpenAI-compatible surface for model discovery."""
         effective_base = (base_url or self.base_url or "").rstrip("/")
-        confirmed_coding_endpoint = _is_confirmed_kimi_coding_url(effective_base)
-        if confirmed_coding_endpoint and urlparse(effective_base).path.rstrip("/") == "/coding":
+        confirmed_coding_endpoint = is_kimi_coding_base_url(effective_base)
+        if confirmed_coding_endpoint and effective_base.endswith("/coding"):
             effective_base += "/v1"
         models = super().fetch_models(
             api_key=api_key,

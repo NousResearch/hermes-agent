@@ -1,9 +1,10 @@
-"""hermes import-agent — import Claude Code / Codex CLI setups into Hermes.
+"""hermes import-agent — import Claude Code / Codex / Gemini CLI setups into Hermes.
 
 Usage:
-    hermes import-agent                       # auto-detect ~/.claude or ~/.codex
+    hermes import-agent                       # auto-detect ~/.claude, ~/.codex or ~/.gemini
     hermes import-agent claude-code           # import from ~/.claude
     hermes import-agent codex                 # import from ~/.codex
+    hermes import-agent gemini                # import from ~/.gemini
     hermes import-agent claude-code --dry-run # preview only, no changes
     hermes import-agent codex --source /path/to/.codex
 
@@ -29,6 +30,20 @@ codex (~/.codex):
     config.toml [mcp_servers.*]     → config.yaml mcp_servers
     memories/*.md                   → memory entries in HERMES_HOME/memories/MEMORY.md
     skills/<name>/SKILL.md          → HERMES_HOME/skills/codex-imports/<name>/
+
+gemini (~/.gemini, Google Gemini CLI):
+    GEMINI.md                       → memory entries in HERMES_HOME/memories/MEMORY.md
+    settings.json tools.allowed     → config.yaml command_allowlist
+        (run_shell_command(...) / ShellTool(...) rules; legacy flat
+        ``allowedTools`` is read too)
+    settings.json mcpServers        → config.yaml mcp_servers
+        (``httpUrl`` takes precedence over ``url``, matching Gemini's own
+        transport precedence; ``trust: true`` is deliberately dropped —
+        Hermes approval settings stay untouched)
+    skills/<name>/SKILL.md          → HERMES_HOME/skills/gemini-imports/<name>/
+    extensions/                     → skipped with a note (extensions bundle
+        their own MCP servers/context; reinstall the Hermes-side equivalents
+        deliberately)
 
 Secrets are NEVER imported: credential files (.credentials.json, auth.json)
 are ignored, and MCP server env vars with secret-looking names (KEY, TOKEN,
@@ -59,16 +74,18 @@ ENTRY_DELIMITER = "\n§\n"
 # default memory limit).
 MEMORY_CHAR_LIMIT = 20_000
 
-SUPPORTED_AGENTS = ("claude-code", "codex")
+SUPPORTED_AGENTS = ("claude-code", "codex", "gemini")
 
 _AGENT_DEFAULT_DIRS = {
     "claude-code": ".claude",
     "codex": ".codex",
+    "gemini": ".gemini",
 }
 
 _SKILL_CATEGORY = {
     "claude-code": "claude-code-imports",
     "codex": "codex-imports",
+    "gemini": "gemini-imports",
 }
 
 # Env var names that look like credentials — never copied into config.yaml.
@@ -351,6 +368,37 @@ def claude_rule_to_command_pattern(rule: str) -> Optional[str]:
     return inner
 
 
+_GEMINI_SHELL_RULE_RE = re.compile(
+    r"^(?:run_shell_command|ShellTool)\((?P<inner>.*)\)$"
+)
+
+
+def gemini_rule_to_command_pattern(rule: str) -> Optional[str]:
+    """Convert a Gemini CLI allowed-tool rule into a Hermes command glob.
+
+    Gemini's ``tools.allowed`` (and the legacy flat ``allowedTools``) lists
+    tool names that bypass the confirmation dialog.  Shell rules look like
+    ``run_shell_command(git status)`` or ``ShellTool(git status)`` and match
+    by command prefix, so they map to a trailing-glob Hermes pattern:
+
+    ``run_shell_command(git status)`` → ``git status*``
+    ``ShellTool(npm test)``           → ``npm test*``
+    ``run_shell_command``             → None (blanket rule, too broad)
+    Non-shell tool names (``write_file``, ``WebFetch``, ...) → None: they
+    gate Gemini-specific tools with no command-allowlist equivalent.
+    """
+    rule = (rule or "").strip()
+    m = _GEMINI_SHELL_RULE_RE.match(rule)
+    if not m:
+        return None
+    inner = m.group("inner").strip()
+    if not inner:
+        return None
+    if not inner.endswith("*"):
+        inner = inner + "*"
+    return inner
+
+
 # ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
@@ -469,6 +517,8 @@ class AgentImporter:
             return self.build_report()
         if self.agent == "claude-code":
             self._run_claude_code()
+        elif self.agent == "gemini":
+            self._run_gemini()
         else:
             self._run_codex()
         return self.build_report()
@@ -496,6 +546,24 @@ class AgentImporter:
                                 kind="mcp-servers")
         self.import_memories_dir(self.source_root / "memories")
         self.import_skills(self.source_root / "skills")
+
+    def _run_gemini(self) -> None:
+        # Inspired by the Energy scout finding "import memories & skills —
+        # no fresh start": widen import-agent to the third major CLI agent.
+        settings = self._load_gemini_settings()
+        self.import_context_file(self.source_root / "GEMINI.md", kind="gemini-md")
+        self.import_gemini_allowlist(settings)
+        mcp = settings.get("mcpServers")
+        self.import_mcp_servers(mcp if isinstance(mcp, dict) else {},
+                                kind="mcp-servers")
+        self.import_skills(self.source_root / "skills")
+        extensions_dir = self.source_root / "extensions"
+        if extensions_dir.is_dir() and any(extensions_dir.iterdir()):
+            self.record(
+                "extensions", extensions_dir, None, "skipped",
+                "Gemini extensions bundle their own MCP servers and context — "
+                "re-add the servers you need to Hermes config.yaml deliberately",
+            )
 
     # -- parsers (fail soft: bad files become per-item error records) -------
 
@@ -550,6 +618,24 @@ class AgentImporter:
                         f"Could not parse config.toml: {exc}")
             return {}
         return data if isinstance(data, dict) else {}
+
+    def _load_gemini_settings(self) -> Dict[str, Any]:
+        path = self.source_root / "settings.json"
+        if not path.exists():
+            self.record("settings", None, None, "skipped",
+                        "No settings.json found")
+            return {}
+        try:
+            data = json.loads(read_text(path))
+        except (json.JSONDecodeError, OSError) as exc:
+            self.record("settings", path, None, "error",
+                        f"Could not parse settings.json: {exc}")
+            return {}
+        if not isinstance(data, dict):
+            self.record("settings", path, None, "error",
+                        "settings.json is not a JSON object")
+            return {}
+        return data
 
     # -- mappers -------------------------------------------------------------
 
@@ -635,11 +721,11 @@ class AgentImporter:
 
     def import_permission_allowlist(self, settings: Dict[str, Any]) -> None:
         """settings.json permissions.allow → config.yaml command_allowlist."""
-        destination = self.target_root / "config.yaml"
         permissions = settings.get("permissions")
         allow = permissions.get("allow") if isinstance(permissions, dict) else None
         if not isinstance(allow, list) or not allow:
-            self.record("command-allowlist", None, destination, "skipped",
+            self.record("command-allowlist", None,
+                        self.target_root / "config.yaml", "skipped",
                         "No permissions.allow rules found")
             return
 
@@ -653,15 +739,63 @@ class AgentImporter:
                 patterns.append(pattern)
             else:
                 skipped_rules.append(rule)
+        self._merge_command_allowlist(
+            source_label="settings.json permissions.allow",
+            patterns=patterns,
+            skipped_rules=skipped_rules,
+            empty_reason="No Bash(...) allow rules to import",
+        )
+
+    def import_gemini_allowlist(self, settings: Dict[str, Any]) -> None:
+        """settings.json tools.allowed / allowedTools → config.yaml command_allowlist.
+
+        Gemini CLI stores auto-approved tools under the nested
+        ``tools.allowed`` key (current schema) or the legacy flat
+        ``allowedTools`` key; both are read.
+        """
+        tools = settings.get("tools")
+        allowed = tools.get("allowed") if isinstance(tools, dict) else None
+        rules: List[Any] = list(allowed) if isinstance(allowed, list) else []
+        legacy = settings.get("allowedTools")
+        if isinstance(legacy, list):
+            rules.extend(legacy)
+        if not rules:
+            self.record("command-allowlist", None,
+                        self.target_root / "config.yaml", "skipped",
+                        "No tools.allowed rules found")
+            return
+
+        patterns: List[str] = []
+        skipped_rules: List[str] = []
+        for rule in rules:
+            if not isinstance(rule, str):
+                continue
+            pattern = gemini_rule_to_command_pattern(rule)
+            if pattern:
+                patterns.append(pattern)
+            else:
+                skipped_rules.append(rule)
+        self._merge_command_allowlist(
+            source_label="settings.json tools.allowed",
+            patterns=patterns,
+            skipped_rules=skipped_rules,
+            empty_reason="No run_shell_command(...) allow rules to import",
+        )
+
+    def _merge_command_allowlist(self, source_label: str,
+                                 patterns: List[str],
+                                 skipped_rules: List[str],
+                                 empty_reason: str) -> None:
+        """Merge command patterns into config.yaml command_allowlist."""
+        destination = self.target_root / "config.yaml"
         patterns = sorted(dict.fromkeys(patterns))
         if not patterns:
             self.record("command-allowlist", None, destination, "skipped",
-                        "No Bash(...) allow rules to import",
-                        unmapped_rules=skipped_rules)
+                        empty_reason, unmapped_rules=skipped_rules)
             return
 
         config = self.load_target_config(
-            "command-allowlist", "settings.json permissions.allow", destination)
+            "command-allowlist", source_label, destination)
         if config is None:
             return
         current = config.get("command_allowlist", [])
@@ -670,7 +804,7 @@ class AgentImporter:
         merged = sorted(dict.fromkeys(list(current) + patterns))
         added = [p for p in merged if p not in current]
         if not added:
-            self.record("command-allowlist", "settings.json permissions.allow",
+            self.record("command-allowlist", source_label,
                         destination, "skipped", "All patterns already present")
             return
         details: Dict[str, Any] = {"added_patterns": added}
@@ -679,10 +813,10 @@ class AgentImporter:
         if self.execute:
             config["command_allowlist"] = merged
             dump_yaml_file(destination, config)
-            self.record("command-allowlist", "settings.json permissions.allow",
+            self.record("command-allowlist", source_label,
                         destination, "imported", **details)
         else:
-            self.record("command-allowlist", "settings.json permissions.allow",
+            self.record("command-allowlist", source_label,
                         destination, "imported", "Would merge patterns", **details)
 
     def import_permission_denylist(self, settings: Dict[str, Any]) -> None:
@@ -774,8 +908,12 @@ class AgentImporter:
                     )
                 if srv.get("cwd"):
                     hermes_srv["cwd"] = srv["cwd"]
-            if srv.get("url"):
-                hermes_srv["url"] = srv["url"]
+            # Gemini CLI uses ``httpUrl`` for streamable-HTTP servers and
+            # gives it precedence over ``url`` (SSE); Hermes takes either
+            # transport through its single ``url`` key.
+            remote_url = srv.get("httpUrl") or srv.get("url")
+            if remote_url:
+                hermes_srv["url"] = remote_url
                 headers = srv.get("headers")
                 if isinstance(headers, dict):
                     kept_headers = {
@@ -866,13 +1004,14 @@ def import_agent_command(args) -> None:
         detected = detect_agents()
         if not detected:
             print()
-            print_error("No supported agent setup found (~/.claude or ~/.codex).")
+            print_error("No supported agent setup found "
+                        "(~/.claude, ~/.codex or ~/.gemini).")
             print_info("Specify one explicitly: hermes import-agent claude-code --source /path")
             return
         if len(detected) > 1 and explicit_source is None:
             print()
             print_info("Multiple agent setups detected: " + ", ".join(detected))
-            print_info("Pick one: hermes import-agent claude-code   or   hermes import-agent codex")
+            print_info("Pick one: hermes import-agent claude-code | codex | gemini")
             return
         agent = detected[0]
 

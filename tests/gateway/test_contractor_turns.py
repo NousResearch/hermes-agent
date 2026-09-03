@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -20,6 +21,24 @@ import gateway.platforms.base as platform_base
 import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.session import SessionSource
+
+
+@pytest.fixture(autouse=True)
+def _isolate_profile_secret_hydration(monkeypatch):
+    """Contractor behavior tests must not resolve workstation vault refs."""
+    monkeypatch.setattr(gateway_run, "_load_profile_secret_scope", lambda _home: {})
+
+    async def run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", run_inline)
+
+    @asynccontextmanager
+    async def runtime_scope(profile_home):
+        with gateway_run._profile_runtime_scope(profile_home, {}):
+            yield
+
+    monkeypatch.setattr(gateway_run, "_async_profile_runtime_scope", runtime_scope)
 
 
 def _context(tmp_path: Path, **overrides):
@@ -181,6 +200,55 @@ def test_typed_context_rejects_invalid_or_widening_values(tmp_path, overrides, m
     values.update(overrides)
     with pytest.raises(ValueError, match=message):
         context_type(**values)
+
+
+@pytest.mark.parametrize("invalid_root", ["missing", "file"])
+def test_typed_context_rejects_non_directory_project_root(tmp_path, invalid_root):
+    root = tmp_path / invalid_root
+    if invalid_root == "file":
+        root.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="existing directory"):
+        _context(tmp_path, project_root=str(root))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("invalid-type", "invalid type"),
+        ("external-event", "internal events"),
+        ("profile-mismatch", "profile"),
+    ],
+)
+async def test_contractor_handler_rejects_untrusted_context_before_skills(
+    tmp_path, monkeypatch, case, message
+):
+    rejected_type = getattr(gateway_run, "ContractorTurnRejected", RuntimeError)
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._resolve_profile_home_for_source = lambda _source: tmp_path
+    runner._run_in_executor_with_context = AsyncMock(
+        side_effect=AssertionError("agent construction must not start")
+    )
+    load_skill = Mock(
+        side_effect=AssertionError("skill loading must not start")
+    )
+    monkeypatch.setattr("agent.skill_commands._load_skill_payload", load_skill)
+
+    event = _event(tmp_path)
+    context = event.contractor_context
+    if case == "invalid-type":
+        context = {"project_root": str(tmp_path)}
+    elif case == "external-event":
+        event.internal = False
+    else:
+        context = _context(tmp_path, profile_name="other-profile")
+
+    with pytest.raises(rejected_type, match=message):
+        await runner._handle_contractor_turn(event, event.source, context)
+
+    load_skill.assert_not_called()
+    runner._run_in_executor_with_context.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -578,58 +646,76 @@ def test_memory_or_history_tool_leak_fails_before_model_execution(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_contractor_turn_rejects_project_root_outside_profile_home(
+async def test_contractor_turn_accepts_disjoint_typed_project_root(
     tmp_path, monkeypatch
 ):
-    rejected_type = getattr(gateway_run, "ContractorTurnRejected", RuntimeError)
+    """Bloodbank authorizes the project; Hermes only validates the typed path."""
     runner = object.__new__(gateway_run.GatewayRunner)
-    profile_home = tmp_path / "profile"
+    profile_home = tmp_path / "profile-home"
     profile_home.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
+    project_root = tmp_path / "authorized-project"
+    project_root.mkdir()
     runner._resolve_profile_home_for_source = lambda _source: profile_home
-    runner._run_in_executor_with_context = AsyncMock(
-        side_effect=AssertionError("agent construction must not start")
+    runner._run_contractor_agent_sync = Mock(
+        return_value={"final_response": "done", "completed": True, "failed": False}
+    )
+
+    async def run_inline(func, *args):
+        return func(*args)
+
+    runner._run_in_executor_with_context = run_inline
+    monkeypatch.setattr(
+        "agent.skill_commands._load_skill_payload",
+        lambda name, **_kwargs: ({"content": name}, project_root / name, name),
     )
     monkeypatch.setattr(
-        "agent.skill_commands._load_skill_payload", lambda *_a, **_k: None
+        "agent.skill_commands._build_skill_message",
+        lambda payload, *_args, **_kwargs: payload["content"],
     )
 
-    event = _event(tmp_path, project_root=str(outside))
-    with pytest.raises(rejected_type, match="authorized profile boundary"):
-        await runner._handle_contractor_turn(
-            event, event.source, event.contractor_context
-        )
+    event = _event(tmp_path, project_root=str(project_root))
+    response = await runner._handle_contractor_turn(
+        event, event.source, event.contractor_context
+    )
 
-    runner._run_in_executor_with_context.assert_not_awaited()
+    assert response == "done"
+    worker_args = runner._run_contractor_agent_sync.call_args.args
+    assert worker_args[2] is event.contractor_context
+    assert worker_args[2].project_root == str(project_root.resolve())
 
 
 @pytest.mark.asyncio
-async def test_contractor_turn_rejects_symlink_escape_outside_profile_home(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("replacement", ["missing", "file"])
+async def test_contractor_turn_revalidates_project_directory_before_skills(
+    tmp_path, monkeypatch, replacement
 ):
     rejected_type = getattr(gateway_run, "ContractorTurnRejected", RuntimeError)
     runner = object.__new__(gateway_run.GatewayRunner)
     profile_home = tmp_path / "profile"
-    profile_home.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    symlink = profile_home / "project"
-    symlink.symlink_to(outside)
+    project_root = profile_home / "project"
+    project_root.mkdir(parents=True)
     runner._resolve_profile_home_for_source = lambda _source: profile_home
     runner._run_in_executor_with_context = AsyncMock(
         side_effect=AssertionError("agent construction must not start")
     )
-    monkeypatch.setattr(
-        "agent.skill_commands._load_skill_payload", lambda *_a, **_k: None
+    load_skill = Mock(
+        side_effect=AssertionError("skill loading must not start")
     )
+    monkeypatch.setattr("agent.skill_commands._load_skill_payload", load_skill)
 
-    event = _event(tmp_path, project_root=str(symlink))
-    with pytest.raises(rejected_type, match="authorized profile boundary"):
+    event = _event(tmp_path, project_root=str(project_root))
+    project_root.rmdir()
+    if replacement == "file":
+        project_root.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(
+        rejected_type, match="contractor project root|existing directory"
+    ):
         await runner._handle_contractor_turn(
             event, event.source, event.contractor_context
         )
 
+    load_skill.assert_not_called()
     runner._run_in_executor_with_context.assert_not_awaited()
 
 
@@ -681,6 +767,36 @@ def _minimal_contractor_runner(tmp_path, monkeypatch, **overrides):
     monkeypatch.setattr(gateway_run, "_checkpoint_agent_kwargs", lambda _cfg: {})
     monkeypatch.setattr(gateway_run, "_current_max_iterations", lambda: 10)
     return runner
+
+
+def test_null_contractor_service_tier_is_distinct_from_ordinary_omission(
+    monkeypatch,
+):
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._service_tier = "priority"
+    runtime = {
+        "provider": "test-provider",
+        "request_overrides": {"extra_body": {"existing": True}},
+    }
+    monkeypatch.setattr(
+        "hermes_cli.models.resolve_fast_mode_overrides",
+        lambda *_args, **_kwargs: {"service_tier": "priority"},
+    )
+
+    contractor_route = runner._resolve_turn_agent_config(
+        "prompt", "test-model", runtime, service_tier=None
+    )
+    ordinary_route = runner._resolve_turn_agent_config(
+        "prompt", "test-model", runtime
+    )
+
+    assert contractor_route["request_overrides"] == {
+        "extra_body": {"existing": True}
+    }
+    assert ordinary_route["request_overrides"] == {
+        "extra_body": {"existing": True},
+        "service_tier": "priority",
+    }
 
 
 class _CleanFakeAgent:
@@ -774,6 +890,79 @@ def test_contractor_cleanup_failure_is_observed_on_successful_turn(
     assert result["completed"] is True
     assert "cleanup_error" in result
     assert "cleanup failed" in result["cleanup_error"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_raises_from_public_contractor_handler(
+    tmp_path, monkeypatch
+):
+    cleanup_failure_type = getattr(
+        gateway_run,
+        "ContractorTurnCleanupFailed",
+        gateway_run.ContractorTurnRejected,
+    )
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    runner = _minimal_contractor_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr("run_agent.AIAgent", _MessySuccessAgent)
+    monkeypatch.setattr(
+        "agent.skill_commands._load_skill_payload",
+        lambda name, **_kwargs: ({"content": name}, project_root / name, name),
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands._build_skill_message",
+        lambda payload, *_args, **_kwargs: payload["content"],
+    )
+
+    async def run_inline(func, *args):
+        return func(*args)
+
+    runner._run_in_executor_with_context = run_inline
+    event = _event(tmp_path, project_root=str(project_root))
+
+    with pytest.raises(cleanup_failure_type, match="cleanup failed"):
+        await runner._handle_contractor_turn(
+            event, event.source, event.contractor_context
+        )
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_marks_platform_processing_failed(
+    tmp_path, monkeypatch
+):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    runner = _minimal_contractor_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr("run_agent.AIAgent", _MessySuccessAgent)
+    monkeypatch.setattr(
+        "agent.skill_commands._load_skill_payload",
+        lambda name, **_kwargs: ({"content": name}, project_root / name, name),
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands._build_skill_message",
+        lambda payload, *_args, **_kwargs: payload["content"],
+    )
+
+    async def run_inline(func, *args):
+        return func(*args)
+
+    runner._run_in_executor_with_context = run_inline
+    event = _event(tmp_path, project_root=str(project_root))
+    adapter = _test_adapter()
+    adapter._message_handler = runner._handle_message
+    adapter.on_processing_complete = AsyncMock()
+    adapter.send = AsyncMock(
+        return_value=platform_base.SendResult(success=True, message_id="error-1")
+    )
+    session_key = "agent:operations:webhook:contractor"
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._session_tasks[session_key] = asyncio.current_task()
+
+    await adapter._process_message_background(event, session_key)
+
+    adapter.on_processing_complete.assert_awaited_once_with(
+        event, platform_base.ProcessingOutcome.FAILURE
+    )
 
 
 class _MessyFailureAgent:

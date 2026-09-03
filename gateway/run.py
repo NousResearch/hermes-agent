@@ -2467,6 +2467,10 @@ class ContractorTurnRejected(RuntimeError):
     """A contractor policy invariant failed before safe model execution."""
 
 
+class ContractorTurnCleanupFailed(ContractorTurnRejected):
+    """A contractor completed its work but could not close cleanly."""
+
+
 class HygieneTurnHoldExceeded(Exception):
     """The hygiene-compression turn-hold budget elapsed while the summary
     model was still streaming progress.
@@ -9053,7 +9057,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_message: str,
         model: str,
         runtime_kwargs: dict,
-        service_tier: Optional[str] = None,
+        service_tier: Any = _SERVICE_TIER_UNSET,
     ) -> dict:
         """Build the effective model/runtime config for a single turn.
 
@@ -9070,7 +9074,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         ``service_tier`` may be supplied explicitly for callers (such as
         stateless contractor turns) that must not write shared runner state.
-        When omitted, the runner's own session-bound value is used.
+        Explicit ``None`` means normal tier; only omission falls back to the
+        runner's session-bound value.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -9106,7 +9111,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # dropped by the runtime whitelist above, so a custom provider's
         # configured extra_body (chat_template_kwargs, etc.) never reached the
         # model on the gateway path -- only /fast service-tier overrides did.
-        if service_tier is None:
+        if service_tier is _SERVICE_TIER_UNSET:
             service_tier = getattr(self, "_service_tier", None)
         if service_tier != "priority":
             # None (normal) or auto/cold — the bounded window is applied per
@@ -21280,27 +21285,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             raise ContractorTurnRejected("contractor turn requires a command identity")
         session_id = f"contractor:{context.contractor_id}:{command_id}"
 
-        # Bind the project root to the trusted profile home before any runtime
-        # scope or skill loading is acquired. The profile home is authoritative
-        # Hermes state; the context project root must be the same directory or
-        # safely contained within it, with symlinks fully resolved (#33GOD-51).
+        # Resolve both independent roots before entering the profile runtime
+        # scope or loading skills. Bloodbank has already authorized and
+        # canonicalized the project root before constructing the typed context;
+        # Hermes revalidates existence/type but does not duplicate that registry
+        # authority by requiring a project repository to live under profile
+        # state (#33GOD-53).
         try:
             profile_home = Path(
                 self._resolve_profile_home_for_source(source)
             ).resolve(strict=True)
         except Exception as exc:
             raise ContractorTurnRejected(
-                "could not resolve canonical profile home for contractor authorization"
+                "could not resolve canonical profile home for contractor runtime"
             ) from exc
+        if not profile_home.is_dir():
+            raise ContractorTurnRejected(
+                "contractor profile home must resolve to an existing directory"
+            )
         try:
             project_root = Path(context.project_root).resolve(strict=True)
         except Exception as exc:
             raise ContractorTurnRejected(
-                "could not resolve canonical contractor project root"
+                "contractor project root must resolve to an existing directory"
             ) from exc
-        if not project_root.is_relative_to(profile_home):
+        if not project_root.is_dir():
             raise ContractorTurnRejected(
-                "contractor project root is outside the authorized profile boundary"
+                "contractor project root must resolve to an existing directory"
             )
 
         async with _async_profile_runtime_scope(profile_home):
@@ -21326,7 +21337,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_id=session_id,
                 message_id=command_id,
                 profile=context.profile_name,
-                cwd=context.project_root,
+                cwd=str(project_root),
                 async_delivery=False,
                 cron_session="",
             )
@@ -21387,7 +21398,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             or result.get("failed") is True
             or result.get("completed") is not True
         ):
-            raise ContractorTurnRejected("contractor agent did not complete successfully")
+            failure = ContractorTurnRejected(
+                "contractor agent did not complete successfully"
+            )
+            cleanup_error = (
+                result.get("cleanup_error") if isinstance(result, dict) else None
+            )
+            if cleanup_error:
+                failure.add_note(
+                    f"Contractor agent cleanup also failed: {cleanup_error}"
+                )
+            raise failure
+        cleanup_error = result.get("cleanup_error")
+        if cleanup_error:
+            raise ContractorTurnCleanupFailed(
+                f"contractor agent cleanup failed: {cleanup_error}"
+            )
         return str(result.get("final_response") or "")
 
     async def _mark_durable_active_turn(

@@ -199,9 +199,11 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
         # FastAPI event loop is never blocked.
         tools, token_present = await asyncio.to_thread(_probe_scoped)
     except Exception as exc:
+        from hermes_cli.mcp_config import redact_mcp_probe_text
+
         return {
             "ok": False,
-            "error": str(exc),
+            "error": redact_mcp_probe_text(exc),
             "tools": [],
         }
     if not token_present:

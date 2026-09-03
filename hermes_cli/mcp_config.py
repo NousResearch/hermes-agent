@@ -32,6 +32,158 @@ logger = logging.getLogger(__name__)
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# MCP test/dashboard surfaces must not fingerprint credential header values
+# (firstN/lastN is a reusable fragment). Redact by field identity: once a
+# recognized credential header key is found, replace its complete associated
+# value regardless of scheme, quoting, parameter order, or wire/JSON/Python
+# mapping serialization. Header names come from agent.redact so the lists
+# cannot drift. The generic redactor then runs with force=True.
+_AUTH_SCHEME_PREFIX_RE = re.compile(
+    r"^(?:Bearer|Basic|Token|Digest)\s+",
+    re.IGNORECASE,
+)
+_DIGEST_PARAM_NAMES = (
+    "username|response|opaque|cnonce|nonce|uri|realm|qop|nc|algorithm"
+)
+_DIGEST_PARAM = (
+    rf"(?:{_DIGEST_PARAM_NAMES})\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s,]+)"
+)
+_DIGEST_PARAMS = rf"{_DIGEST_PARAM}(?:\s*,\s*{_DIGEST_PARAM})*"
+_PROBE_REDACTION_RES: Optional[Tuple[re.Pattern[str], ...]] = None
+
+
+def _credential_header_names() -> str:
+    from agent.redact import _SECRET_HEADER_NAMES
+
+    return rf"(?:(?:Proxy-)?Authorization|{_SECRET_HEADER_NAMES})"
+
+
+def _probe_redaction_res() -> Tuple[re.Pattern[str], ...]:
+    global _PROBE_REDACTION_RES
+    if _PROBE_REDACTION_RES is not None:
+        return _PROBE_REDACTION_RES
+    header = _credential_header_names()
+    # Quoted-key mapping/JSON: {'X-Api-Key': '…'} / {"Authorization": "…"}
+    mapping = re.compile(
+        rf"""(['\"])({header})\1(\s*:\s*)(['\"])((?:\\.|(?!\4).)*)\4""",
+        re.IGNORECASE,
+    )
+    unquoted_mapping = re.compile(
+        rf"""(['\"])({header})\1(\s*:\s*)(?!['\"])([^\s,}}\]]+)""",
+        re.IGNORECASE,
+    )
+    # Bare wire header: Authorization: Digest … / X-Api-Key: token
+    wire = re.compile(
+        rf"({header})(\s*:\s*)([^\n\r]+)",
+        re.IGNORECASE,
+    )
+    bare_scheme = re.compile(
+        rf"\b(Bearer|Basic|Token)(\s+)([^\s\"']+)"
+        rf"|\b(Digest)(\s+)({_DIGEST_PARAMS})",
+        re.IGNORECASE,
+    )
+    _PROBE_REDACTION_RES = (mapping, unquoted_mapping, wire, bare_scheme)
+    return _PROBE_REDACTION_RES
+
+
+def _mask_header_field_value(value: str) -> str:
+    """Replace a credential header's complete associated value with ``***``.
+
+    A leading auth scheme word is kept for debugging; Digest parameters are
+    part of the field value and are not tokenized.
+    """
+    scheme = _AUTH_SCHEME_PREFIX_RE.match(value)
+    if scheme:
+        return f"{scheme.group(0)}***"
+    return "***"
+
+
+def _sub_mapping_header(match: re.Match[str]) -> str:
+    return (
+        f"{match.group(1)}{match.group(2)}{match.group(1)}"
+        f"{match.group(3)}{match.group(4)}"
+        f"{_mask_header_field_value(match.group(5))}{match.group(4)}"
+    )
+
+
+def _sub_unquoted_mapping_header(match: re.Match[str]) -> str:
+    return (
+        f"{match.group(1)}{match.group(2)}{match.group(1)}"
+        f"{match.group(3)}{_mask_header_field_value(match.group(4))}"
+    )
+
+
+def _sub_wire_header(match: re.Match[str]) -> str:
+    return f"{match.group(1)}{match.group(2)}{_mask_header_field_value(match.group(3))}"
+
+
+def _sub_bare_scheme(match: re.Match[str]) -> str:
+    if match.group(1):
+        return f"{match.group(1)}{match.group(2)}***"
+    return f"{match.group(4)}{match.group(5)}***"
+
+
+def redact_mcp_probe_text(text: object) -> str:
+    """Fully redact MCP probe/display strings before they leave the process.
+
+    Recognized credential header fields (Authorization / Proxy-Authorization
+    and ``agent.redact._SECRET_HEADER_NAMES``) have their complete associated
+    value replaced with ``***``. Bare Bearer/Basic/Token/Digest spans are
+    covered the same way. The generic secret redactor then runs with
+    ``force=True`` as defense in depth.
+    """
+    raw = "" if text is None else str(text)
+    if not raw:
+        return raw
+    mapping, unquoted_mapping, wire, bare_scheme = _probe_redaction_res()
+    redacted = mapping.sub(_sub_mapping_header, raw)
+    redacted = unquoted_mapping.sub(_sub_unquoted_mapping_header, redacted)
+    redacted = wire.sub(_sub_wire_header, redacted)
+    redacted = bare_scheme.sub(_sub_bare_scheme, redacted)
+    from agent.redact import redact_sensitive_text
+
+    return redact_sensitive_text(redacted, force=True)
+
+
+def _header_value_is_only_env_refs(value: str) -> bool:
+    """True when every non-scheme span in *value* is a ``${VAR}`` reference."""
+    leftover = _ENV_VAR_PATTERN.sub("", value)
+    leftover = _AUTH_SCHEME_PREFIX_RE.sub("", leftover)
+    return leftover.strip(" \t;,") == ""
+
+
+def redact_mcp_header_display(name: str, value: object) -> str:
+    """Fail-closed CLI display for a credential-shaped MCP header.
+
+    A value that is only ``${ENV}`` references (optionally with an auth scheme
+    word) may be shown — it carries no secret. Anything else, including opaque
+    API keys and mixed template+literal strings, is replaced with ``***``.
+    ``name`` stays paired with the value so callers cannot drop the header
+    identity before this policy runs.
+    """
+    raw = "" if value is None else str(value)
+    if raw and _header_value_is_only_env_refs(raw):
+        return raw
+    # Pair name+value for the generic redactor, then still fail closed — an
+    # opaque token with no recognized scheme must not print.
+    redact_mcp_probe_text(f"{name}: {raw}")
+    return "***"
+
+
+def _redact_probe_exception(exc: BaseException) -> Exception:
+    """Return a raise-able exception whose ``str()`` is safe to print."""
+    root = _unwrap_exception_group(exc)
+    safe = redact_mcp_probe_text(root)
+    if safe == str(root) and isinstance(root, Exception):
+        return root
+    try:
+        rebuilt = type(root)(safe)
+        if str(rebuilt) == safe and isinstance(rebuilt, Exception):
+            return rebuilt
+    except Exception:
+        pass
+    return RuntimeError(safe)
+
 
 _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
     "codex": {
@@ -394,7 +546,7 @@ def _probe_single_server(
     try:
         _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
     except BaseException as exc:
-        raise _unwrap_exception_group(exc) from None
+        raise _redact_probe_exception(exc) from None
     finally:
         _stop_mcp_loop_if_idle()
 
@@ -565,7 +717,7 @@ def cmd_mcp_add(args):
     try:
         tools = _probe_single_server(name, server_config)
     except Exception as exc:
-        _error(f"Failed to connect: {exc}")
+        _error(f"Failed to connect: {redact_mcp_probe_text(exc)}")
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
             if _save_mcp_server(name, server_config):
@@ -774,13 +926,9 @@ def cmd_mcp_test(args):
     elif headers:
         for k, v in headers.items():
             if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):
-                # Mask the value (accepts ${VAR} and Cursor-style ${env:VAR})
-                resolved = _ENV_VAR_PATTERN.sub(lambda m: os.getenv(_env_ref_name(m.group(1)), ""), v)
-                if len(resolved) > 8:
-                    masked = resolved[:4] + "***" + resolved[-4:]
-                else:
-                    masked = "***"
-                print(f"    {k}: {masked}")
+                # Keep header identity with the value. A ${ENV} substring is
+                # not proof the rest of the header is non-secret.
+                print(f"    {k}: {redact_mcp_header_display(k, v)}")
     else:
         _info("Auth: none")
 
@@ -791,7 +939,7 @@ def cmd_mcp_test(args):
         elapsed_ms = (time.monotonic() - start) * 1000
     except Exception as exc:
         elapsed_ms = (time.monotonic() - start) * 1000
-        _error(f"Connection failed ({elapsed_ms:.0f}ms): {exc}")
+        _error(f"Connection failed ({elapsed_ms:.0f}ms): {redact_mcp_probe_text(exc)}")
         return
 
     _success(f"Connected ({elapsed_ms:.0f}ms)")
@@ -903,7 +1051,7 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
             )
         except Exception:
             humanized = None
-        _error(f"Authentication failed: {humanized or exc}")
+        _error(f"Authentication failed: {redact_mcp_probe_text(humanized or exc)}")
         return False
 
 
@@ -1009,7 +1157,7 @@ def cmd_mcp_configure(args):
     try:
         all_tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        _error(f"Failed to connect: {exc}")
+        _error(f"Failed to connect: {redact_mcp_probe_text(exc)}")
         return
 
     if not all_tools:

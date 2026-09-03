@@ -32,7 +32,7 @@ def read_file_with_signature(
         with candidate.open("rb") as handle:
             data = handle.read()
             stat_result = os.fstat(handle.fileno())
-    except OSError:
+    except (OSError, RuntimeError):
         return None
     return data, (
         resolved,

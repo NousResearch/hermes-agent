@@ -263,3 +263,58 @@ class TestQuietModeCacheIsolation:
 
         assert result == cached
         assert result is not cached
+
+    def test_oscillation_fallback_refreshes_last_resolved_tool_names(
+        self, monkeypatch
+    ):
+        """Continuously-changing-config fallback must keep _last_resolved_tool_names
+        aligned with the cached definitions it returns, not leave them stale.
+
+        The oscillation-fallback branch (attempt==1, cache hit, fingerprint still
+        changing) is reached by pre-seeding the cache under the known key and
+        arranging the fingerprint mock to always return a different value after
+        the initial binding — mirroring the existing
+        ``test_repeated_cache_hit_fingerprint_changes_return_last_complete_snapshot``
+        scenario but adding the _last_resolved_tool_names assertion.
+        """
+        # Each ``with _CONFIG_LOCK`` block calls _tool_defs_config_fingerprints()
+        # once for `before`.  The second call (after `if cached is not None:`)
+        # checks whether the config changed while we held the result.
+        # With the cache pre-populated, the sequence is:
+        #   attempt 0: before=A  [hit]  check=B  → mismatch → attempt==0 → continue
+        #   attempt 1: before=A  [hit]  check=B  → mismatch → attempt==1 → fallback
+        snapshots = iter(("fp-A", "fp-B", "fp-A", "fp-B"))
+        cached = [{"function": {"name": "expected_tool"}}]
+
+        monkeypatch.setattr(
+            model_tools,
+            "_tool_defs_config_fingerprints",
+            lambda: next(snapshots),
+        )
+        monkeypatch.setattr(
+            model_tools,
+            "check_fn_cache_scope",
+            lambda: "oscillation-names-test",
+        )
+        monkeypatch.setattr(
+            model_tools,
+            "_tool_defs_cache_key",
+            lambda *_args: "osc-names-key",
+        )
+        monkeypatch.setattr(
+            model_tools,
+            "_compute_tool_definitions",
+            lambda *_args, **_kwargs: pytest.fail("pre-seeded cache must not recompute"),
+        )
+        model_tools._tool_defs_cache["osc-names-key"] = cached
+        # Force a stale value so we can verify it gets overwritten.
+        model_tools._last_resolved_tool_names = ["stale_tool"]
+
+        result = model_tools.get_tool_definitions(quiet_mode=True)
+
+        assert result == cached
+        assert result is not cached
+        assert model_tools._last_resolved_tool_names == ["expected_tool"], (
+            "oscillation fallback must refresh _last_resolved_tool_names "
+            "to match the returned cached definitions"
+        )

@@ -337,7 +337,10 @@ _RAW_CONFIG_CACHE: Dict[str, tuple] = {}
 
 def _canonical_config_path_key(path: Path) -> str:
     """Return the cache identity shared by config readers and writers."""
-    return str(path.resolve(strict=False))
+    try:
+        return str(path.resolve(strict=False))
+    except (OSError, RuntimeError):
+        return str(path.absolute())
 # Serializes all config read/write paths. libyaml's C extension is not
 # thread-safe for concurrent safe_load() on the same file, and multiple
 # tool threads (approval.py, browser_tool.py, setup flows) hit

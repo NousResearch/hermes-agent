@@ -438,6 +438,9 @@ def get_tool_definitions(
                 # A continuously changing config cannot safely populate a cache.
                 # The cached entry still matches the latest complete `before`
                 # snapshot, so prefer it to crashing or returning a torn schema.
+                _last_resolved_tool_names = [
+                    t["function"]["name"] for t in cached
+                ]
                 return list(cached)
 
             result = _compute_tool_definitions(

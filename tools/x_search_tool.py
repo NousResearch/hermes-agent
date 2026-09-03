@@ -379,15 +379,30 @@ def x_search_tool(
                 break
             except requests.HTTPError as e:
                 status_code = getattr(getattr(e, "response", None), "status_code", None)
-                if status_code is None or status_code < 500 or attempt >= max_retries:
+                # Retry on transient/server errors: 408, 425, 429, 500, 502, 503, 504
+                retryable_codes = {408, 425, 429, 500, 502, 503, 504}
+                if status_code is None or status_code not in retryable_codes or attempt >= max_retries:
                     raise
+                # Honor Retry-After header if present
+                retry_after = None
+                if e.response is not None:
+                    response_headers = getattr(e.response, "headers", {})
+                    retry_after_header = response_headers.get("Retry-After")
+                    if retry_after_header:
+                        try:
+                            retry_after = float(retry_after_header)
+                        except ValueError:
+                            # Non-numeric Retry-After (e.g., HTTP-date); fall back to backoff
+                            pass
+                sleep_time = retry_after if retry_after is not None else min(5.0, 1.5 * (attempt + 1))
                 logger.warning(
-                    "x_search upstream failure on attempt %s/%s: %s",
+                    "x_search upstream failure on attempt %s/%s: %s (retrying in %.1fs)",
                     attempt + 1,
                     max_retries + 1,
                     _http_error_message(e),
+                    sleep_time,
                 )
-                time.sleep(min(5.0, 1.5 * (attempt + 1)))
+                time.sleep(sleep_time)
             except (requests.ReadTimeout, requests.ConnectionError) as e:
                 if attempt >= max_retries:
                     raise
@@ -408,6 +423,14 @@ def x_search_tool(
         citations = list(data.get("citations") or [])
         inline_citations = _extract_inline_citations(data)
 
+        # Extract x_search_calls from usage.server_side_tool_usage_details
+        x_search_calls = None
+        usage = data.get("usage")
+        if usage and isinstance(usage, dict):
+            server_side = usage.get("server_side_tool_usage_details")
+            if server_side and isinstance(server_side, dict):
+                x_search_calls = server_side.get("x_search_calls")
+
         # Degraded-result detection.
         #
         # xAI returns 200 OK with a synthesized answer even when its X index
@@ -417,6 +440,15 @@ def x_search_tool(
         # any narrowing filter is active AND both citation channels came back
         # empty, mark the response as degraded so callers can decide to
         # broaden filters, retry, or fall back to a different source.
+        #
+        # Additionally, if the response includes x_search_calls (from usage),
+        # we can determine if the X index actually ran:
+        # - x_search_calls == 0: index never ran → degraded (unsourced prose)
+        # - x_search_calls > 0 and both citation channels empty: index ran but
+        #   found nothing matching → degraded
+        # - x_search_calls > 0 and citations exist: not degraded
+        # If x_search_calls is not present in the response, fall back to the
+        # filter-based heuristic for backward compatibility.
         active_filters: List[str] = []
         if allowed:
             active_filters.append("allowed_x_handles")
@@ -426,12 +458,29 @@ def x_search_tool(
             active_filters.append("from_date")
         if to_date.strip():
             active_filters.append("to_date")
-        degraded = bool(active_filters) and not citations and not inline_citations
-        degraded_reason = (
-            f"no citations returned despite filters: {', '.join(active_filters)}"
-            if degraded
-            else None
-        )
+
+        if x_search_calls is not None:
+            # Usage data present: base degraded on whether the index ran and found results
+            if x_search_calls == 0:
+                degraded = True
+                degraded_reason = "x_search index returned no results (x_search_calls=0)"
+            elif not citations and not inline_citations:
+                degraded = True
+                degraded_reason = (
+                    f"no citations returned despite x_search_calls={x_search_calls}"
+                    + (f" and filters: {', '.join(active_filters)}" if active_filters else "")
+                )
+            else:
+                degraded = False
+                degraded_reason = None
+        else:
+            # No usage data: fall back to filter-based heuristic
+            degraded = bool(active_filters) and not citations and not inline_citations
+            degraded_reason = (
+                f"no citations returned despite filters: {', '.join(active_filters)}"
+                if degraded
+                else None
+            )
 
         return json.dumps(
             {
@@ -444,6 +493,7 @@ def x_search_tool(
                 "answer": answer,
                 "citations": citations,
                 "inline_citations": inline_citations,
+                "x_search_calls": x_search_calls,
                 "degraded": degraded,
                 "degraded_reason": degraded_reason,
             },

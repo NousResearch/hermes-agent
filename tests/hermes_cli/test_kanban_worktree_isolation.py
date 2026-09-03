@@ -16,6 +16,7 @@ Two-part fix under test:
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -124,6 +125,59 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     assert head == "wt/sibling"
+
+
+def test_resolve_worktree_recreates_missing_registered_checkout(kanban_home, tmp_path):
+    repo = _make_repo(tmp_path)
+    target = _add_worktree(repo, repo / ".worktrees" / "reissue", "wt/reissue")
+    shutil.rmtree(target)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="reissued task",
+            workspace_kind="worktree",
+            workspace_path=str(target),
+            branch_name="wt/reissue",
+        )
+        task = kb.get_task(conn, tid)
+
+    workspace, branch = kb._resolve_worktree_workspace(task)
+    assert workspace == target.resolve()
+    assert branch == "wt/reissue"
+    assert target.is_dir()
+
+
+@pytest.mark.parametrize("status", ["ready", "review"])
+def test_dispatch_blocks_unrecoverable_missing_worktree(
+    kanban_home, tmp_path, all_assignees_spawnable, status
+):
+    missing = tmp_path / "retired-repo" / ".worktrees" / "task"
+    spawned: list[str] = []
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="stale workspace",
+            assignee="worker",
+            workspace_kind="worktree",
+            workspace_path=str(missing),
+        )
+        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, tid))
+        conn.commit()
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda _task, workspace: spawned.append(workspace),
+        )
+        task = kb.get_task(conn, tid)
+        blocked = [event for event in kb.list_events(conn, tid) if event.kind == "blocked"]
+
+    assert spawned == []
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.consecutive_failures == 0
+    assert result.auto_blocked == [tid]
+    assert blocked[-1].payload["reason"] == f"missing workspace path: {missing}"
 
 
 

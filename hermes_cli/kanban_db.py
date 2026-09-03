@@ -11311,8 +11311,6 @@ def dispatch_once(
     boards tick in parallel. See :func:`_dispatch_tick_lock` for the
     cross-process / cross-platform mechanics.
     """
-    raise RuntimeError("SYNTHETIC POST-DEPLOY BREAK #2 (auto-rollback test)")
-
     try:
         db_path = kanban_db_path(board=board)
     except Exception:

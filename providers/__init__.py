@@ -46,6 +46,10 @@ _REGISTRY: dict[str, ProviderProfile] = {}
 _ALIASES: dict[str, str] = {}
 _PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
 _discovered = False
+# Canonical names + aliases contributed by repo-bundled sources only
+# (bundled plugin dirs + legacy ``providers/*.py`` modules). Populated once
+# during ``_discover_providers``; ``None`` until then.
+_BUNDLED_NAMES: frozenset[str] | None = None
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
@@ -76,6 +80,25 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
         _discover_providers()
     canonical = _ALIASES.get(name, name)
     return _REGISTRY.get(canonical)
+
+
+def _known_names() -> frozenset[str]:
+    """All registered canonical names + aliases, from any source."""
+    return frozenset(_REGISTRY) | frozenset(_ALIASES)
+
+
+def is_bundled_provider(name: str) -> bool:
+    """True when ``name`` (canonical or alias) was contributed by a bundled source.
+
+    Only bundled plugin dirs and legacy ``providers/*.py`` modules count:
+    names registered later by user plugins (``$HERMES_HOME``) or pip
+    entry-points resolve through ``get_provider_profile`` but return False
+    here. Use this when a heuristic must not change with the user's
+    installed plugins (e.g. stripping a provider prefix off a model id).
+    """
+    if not _discovered:
+        _discover_providers()
+    return name in (_BUNDLED_NAMES or frozenset())
 
 
 def list_providers() -> list[ProviderProfile]:
@@ -353,12 +376,18 @@ def _discover_providers() -> None:
     #    genuinely new providers.
     _discover_entry_point_providers()
 
+    # Snapshot the name space around the bundled sources (step 1 + step 3)
+    # so ``is_bundled_provider`` can tell repo-bundled names apart from
+    # user-plugin / pip-installed ones regardless of override collisions.
+    _names_pre_bundled = _known_names()
+
     # 1. Bundled plugins — shipped with hermes-agent.
     if _BUNDLED_PLUGINS_DIR.is_dir():
         for child in sorted(_BUNDLED_PLUGINS_DIR.iterdir()):
             if not child.is_dir() or child.name.startswith(("_", ".")):
                 continue
             _import_plugin_dir(child, "bundled")
+    _names_post_bundled = _known_names()
 
     # 2. User plugins — under $HERMES_HOME/plugins/model-providers/<name>/.
     #    These can override any bundled profile of the same name (last-writer-wins
@@ -369,6 +398,7 @@ def _discover_providers() -> None:
             if not child.is_dir() or child.name.startswith(("_", ".")):
                 continue
             _import_plugin_dir(child, "user")
+    _names_pre_legacy = _known_names()
 
     # 2b. Plugins installed by ``hermes plugins install`` / the plugin index.
     #     Those clone into $HERMES_HOME/plugins/<name>/ — flat, NOT under
@@ -408,6 +438,10 @@ def _discover_providers() -> None:
                 )
     except Exception:
         pass
+    global _BUNDLED_NAMES
+    _BUNDLED_NAMES = (_names_post_bundled - _names_pre_bundled) | (
+        _known_names() - _names_pre_legacy
+    )
 
     # (Pip entry-point providers are discovered in step 0, before the
     # filesystem plugins, so first-party profiles always win on name

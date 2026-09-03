@@ -64,3 +64,23 @@ def test_list_providers_dedupes_aliases_in_cached_snapshot():
 
     assert providers.get_provider_profile("moonshot") is profile
     assert providers.list_providers() == [profile]
+
+
+def test_is_bundled_provider_covers_bundled_names():
+    # Bundled plugin profiles resolve through the registry AND report as
+    # bundled, so name-based rewrites (e.g. stripping a provider prefix off
+    # a model id) stay stable across installs.
+    assert providers.is_bundled_provider("anthropic")
+    assert providers.is_bundled_provider("openrouter")
+
+
+def test_is_bundled_provider_false_for_user_only_names():
+    # A name registered only outside discovery (the user-plugin /
+    # register_provider path) must NOT count as bundled even though the
+    # registry resolves it.
+    _reset_registry()
+    providers.register_provider(_profile("acme-only", "acme"))
+
+    assert providers.get_provider_profile("acme-only") is not None
+    assert not providers.is_bundled_provider("acme-only")
+    assert not providers.is_bundled_provider("acme")

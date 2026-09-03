@@ -3194,6 +3194,49 @@ def get_model_context_length(
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
+    #
+    # The slash-qualified spelling ("opencode-go/qwen3.7-plus") carries the
+    # provider in the prefix: strip it when the prefix names a BUNDLED
+    # provider and the caller is not on an OpenRouter endpoint (which makes
+    # the whole id an OR slug like "anthropic/claude-fable-5" — the first
+    # segment is a vendor, not a Hermes provider). The bundled-only check
+    # keeps the rewrite stable across installs: the provider registry is
+    # extended by user plugins under $HERMES_HOME, and a user-only
+    # registration must not change how server-side ids resolve. When the
+    # caller supplied no explicit provider, the parsed prefix ALSO
+    # propagates into the provider-aware lookup (step 5f) — without it the
+    # leftover bare id keeps its "qwen" substring, which matches the
+    # generic DEFAULT_CONTEXT_LENGTHS entry before the real per-model
+    # lookup scores: the bare-vs-prefixed divergence in #47782 (1,000,000
+    # vs 131,072). An explicitly supplied provider always wins over the
+    # parsed one, and an endpoint-URL inference wins over both.
+    parsed_provider = ""
+    if not (provider or "").strip() and "/" in model:
+        on_openrouter = bool(base_url) and (
+            _infer_provider_from_url(base_url) == "openrouter"
+        )
+        if not on_openrouter:
+            prefix, rest = model.split("/", 1)
+            prefix = prefix.strip().lower()
+            if rest.strip() and prefix:
+                # Only when the caller supplied NO provider, is not on an
+                # OpenRouter endpoint, and the prefix names a BUNDLED
+                # provider, treat the id as the provider/model convention:
+                # strip it and propagate the parsed provider into the
+                # provider-aware lookup. Every other slash form stays
+                # whole — explicit-provider ids are server-side spellings
+                # (local/custom endpoints know "NousResearch/Hermes-…"
+                # org-qualified names; NVIDIA NIM uses "deepseek-ai/…";
+                # OpenRouter slugs use "anthropic/…"), and stripping those
+                # breaks the downstream catalog/cache lookups.
+                try:
+                    from providers import is_bundled_provider
+
+                    if is_bundled_provider(prefix):
+                        parsed_provider = prefix
+                        model = rest.strip()
+                except Exception:
+                    pass
     model = _strip_provider_prefix(model)
 
     # Endpoint-scoped provider metadata. Keep this ahead of the persistent
@@ -3427,8 +3470,18 @@ def get_model_context_length(
     # since the same model can have different context limits per provider
     # (e.g. claude-opus-4.6 is 1M on Anthropic but 128K on GitHub Copilot).
     # If provider is generic (openrouter/custom/empty), try to infer from URL.
-    effective_provider = provider
-    if not effective_provider or effective_provider in {"openrouter", "custom"}:
+    # A provider parsed off a slash-qualified model id (#47782) sits between
+    # the two: it beats generic/empty, but a real inference from the
+    # endpoint URL is still more authoritative.
+    effective_provider = provider or parsed_provider
+    if (
+        not effective_provider
+        or effective_provider in {"openrouter", "custom"}
+        # A provider parsed off the model id is the weakest signal (it is
+        # only ever set when the caller supplied no provider) — an endpoint
+        # URL inference is more authoritative and overrides it.
+        or parsed_provider
+    ):
         if base_url:
             inferred = _infer_provider_from_url(base_url)
             if inferred:

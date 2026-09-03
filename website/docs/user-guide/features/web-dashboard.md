@@ -496,7 +496,7 @@ Returns metadata for a single session.
 
 ### GET /api/sessions/\{session_id\}/messages
 
-Returns a bounded page of message history, including tool calls and timestamps. By default it returns the latest 500 messages in chronological order. Use `limit` (maximum 500), `offset`, and `order=oldest|latest` for explicit pagination.
+Returns a bounded page of message history, including tool calls and timestamps. By default it returns the latest 500 active messages in chronological order. Use `limit` (maximum 500), `offset`, and `order=oldest|latest` for explicit pagination. Set `include_compacted=true` to include transcript rows preserved by context compaction. The API-server adapter also accepts `1`, `yes`, and `on` case-insensitively; its explicit false spellings are `0`, `false`, `no`, and `off`. Use the canonical `true` or `false` forms for portable clients because malformed or empty values may be rejected by the dashboard backend. Because `limit` and `offset` apply to the selected stream, offsets can shift when `include_compacted` changes.
 
 ### GET /api/sessions/search
 

@@ -116,6 +116,32 @@ class TestSetupLogging:
         content = agent_log.read_text()
         assert "test message for agent.log" in content
 
+    def test_profile_routing_follows_context_home(self, hermes_home, tmp_path):
+        """Desktop multiplex cron records are written to their owning profile."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, profile_home]
+        ) is True
+
+        logger = logging.getLogger("cron.scheduler.profile-routing-test")
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("profile-routed cron record")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        assert "profile-routed cron record" in (
+            profile_home / "logs" / "agent.log"
+        ).read_text()
+        assert "profile-routed cron record" not in (
+            hermes_home / "logs" / "agent.log"
+        ).read_text()
+
 
 
 
@@ -398,20 +424,27 @@ class TestWindowsConcurrentLogLockTimeout:
         logger.addHandler(handler)
         return logger, handler
 
+    @pytest.mark.windows_only
     def test_helper_only_matches_windows_concurrent_lock_timeout(self):
-        with patch.object(hermes_logging.sys, "platform", "win32"):
-            assert hermes_logging._is_windows_concurrent_log_lock_timeout(
-                RuntimeError("Cannot acquire lock after 20 attempts")
-            )
-            assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
-                RuntimeError("some other logging failure")
-            )
+        # Windows-only: concurrent-log-handler (and therefore its cross-process
+        # lock timeout) is only installed on Windows — faking sys.platform
+        # exercised the string check without the handler that raises it.
+        assert hermes_logging._is_windows_concurrent_log_lock_timeout(
+            RuntimeError("Cannot acquire lock after 20 attempts")
+        )
+        assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
+            RuntimeError("some other logging failure")
+        )
 
-        with patch.object(hermes_logging.sys, "platform", "linux"):
-            assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
-                RuntimeError("Cannot acquire lock after 20 attempts")
-            )
+    @pytest.mark.linux_only
+    def test_helper_never_matches_off_windows(self):
+        # On POSIX the suppression must stay inert: stdlib RotatingFileHandler
+        # is in use, so this RuntimeError text is never a CLH lock timeout.
+        assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
+            RuntimeError("Cannot acquire lock after 20 attempts")
+        )
 
+    @pytest.mark.windows_only
     def test_lock_timeout_routed_to_handle_error_is_suppressed(self, tmp_path, capsys):
         """Mirror CLH's real control flow.
 
@@ -420,17 +453,20 @@ class TestWindowsConcurrentLogLockTimeout:
         RuntimeError raised in ``_do_lock()`` is caught *inside* CLH and routed
         to ``handleError`` with the exception live in ``sys.exc_info()``.  We
         invoke ``handleError`` the same way CLH would and assert no traceback
-        reaches stderr (the slash-worker surface)."""
+        reaches stderr (the slash-worker surface).
+
+        Windows-only: the suppression is keyed on the real host, and only on
+        Windows is the base handler CLH at all — the fake platform gave us the
+        branch without the handler that raises."""
         logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
         record = logger.makeRecord(
             logger.name, logging.INFO, __file__, 0, "force rollover", (), None,
         )
         try:
-            with patch.object(hermes_logging.sys, "platform", "win32"):
-                try:
-                    raise RuntimeError("Cannot acquire lock after 20 attempts")
-                except RuntimeError:
-                    handler.handleError(record)
+            try:
+                raise RuntimeError("Cannot acquire lock after 20 attempts")
+            except RuntimeError:
+                handler.handleError(record)
 
             captured = capsys.readouterr()
             assert "Cannot acquire lock after 20 attempts" not in captured.err
@@ -666,5 +702,4 @@ class TestAsyncQueueLogging:
             "agent.log" in getattr(h, "baseFilename", "")
             for h in hermes_logging.rotating_file_handlers()
         )
-
 

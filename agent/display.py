@@ -427,6 +427,22 @@ def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, li
     return len(goals), goals
 
 
+def _browser_exec_step_label(args: dict, max_chars: int = 80) -> str | None:
+    """User-friendly step label from browser_exec code's leading comment."""
+    code = str(args.get("code", "") or "").strip()
+    if not code:
+        return None
+    first = code.split("\n", 1)[0].strip()
+    if not first.startswith("#"):
+        return None
+    label = first.lstrip("#").strip()
+    if not label:
+        return None
+    if len(label) > max_chars:
+        label = label[: max_chars - 1] + "…"
+    return label
+
+
 def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
     """Build a short preview of a tool call's primary argument for display.
 
@@ -446,13 +462,26 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "image_generate": "prompt", "text_to_speech": "text",
         "vision_analyze": "question",
         "skill_view": "name", "skills_list": "category",
-        "cronjob": "action",
-        "execute_code": "code", "delegate_task": "goal",
+        "cronjob_manage": "action",
+        "execute_code": "code", "browser_exec": "code", "delegate_task": "goal",
         "clarify": "question", "skill_manage": "name",
     }
 
+    # browser_exec: prefer the leading `# …` comment as a friendly step label
+    if tool_name == "browser_exec":
+        label = _browser_exec_step_label(args)
+        if label is not None:
+            return _truncate_preview(label, max_len)
+        preview = _oneline(str(args.get("code", "") or ""))
+        return _truncate_preview(preview, max_len) if preview else None
+
     # delegate_task: show goal (single) or individual task goals (batch)
     if tool_name == "delegate_task":
+        action = str(args.get("action") or "").strip().lower()
+        if action in ("list", "steer", "stop"):
+            sid = str(args.get("subagent_id") or "").strip()
+            preview = f"{action} {sid}".strip()
+            return _truncate_preview(preview, max_len)
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
             task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=40)
@@ -467,7 +496,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         preview = _oneline(str(goal))
         return _truncate_preview(preview, max_len) if preview else None
 
-    if tool_name == "process":
+    if tool_name == "process_manage":
         action = args.get("action", "")
         sid = args.get("session_id", "")
         data = args.get("data", "")
@@ -482,7 +511,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         parts = [p for p in parts if p]
         return " ".join(parts) if parts else None
 
-    if tool_name == "todo":
+    if tool_name == "todo_list":
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
         if todos_arg is None:
@@ -628,10 +657,10 @@ _TOOL_VERBS: dict[str, str] = {
     "skills_list": "Listing skills",
     "skill_manage": "Updating skill",
     "delegate_task": "Delegating",
-    "cronjob": "Scheduling",
+    "cronjob_manage": "Scheduling",
     "clarify": "Asking",
     "memory": "Updating memory",
-    "todo": "Updating tasks",
+    "todo_list": "Updating tasks",
 }
 
 # Verbs that read better without the raw argument preview appended.
@@ -1404,7 +1433,7 @@ def _get_cute_tool_message(
         return _wrap(f"┊ 📄 fetch     pages  {dur}")
     if tool_name == "terminal":
         return _wrap(f"┊ 💻 $         {_trunc(build_tool_preview(tool_name, args) or args.get('command', ''), 42)}  {dur}")
-    if tool_name == "process":
+    if tool_name == "process_manage":
         action = args.get("action", "?")
         sid = args.get("session_id", "")[:12]
         labels = {"list": "ls processes", "poll": f"poll {sid}", "log": f"log {sid}",
@@ -1444,7 +1473,7 @@ def _get_cute_tool_message(
         return _wrap(f"┊ 🖼️  images    extracting  {dur}")
     if tool_name == "browser_vision":
         return _wrap(f"┊ 👁️  vision    analyzing page  {dur}")
-    if tool_name == "todo":
+    if tool_name == "todo_list":
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
         # Parse result for completion progress
@@ -1503,7 +1532,7 @@ def _get_cute_tool_message(
         return _wrap(f"┊ 👁️  vision    {_trunc(args.get('question', ''), 30)}  {dur}")
     if tool_name == "send_message":
         return _wrap(f"┊ 📨 send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
-    if tool_name == "cronjob":
+    if tool_name == "cronjob_manage":
         action = args.get("action", "?")
         if action == "create":
             skills = args.get("skills") or ([] if not args.get("skill") else [args.get("skill")])
@@ -1516,7 +1545,20 @@ def _get_cute_tool_message(
         code = args.get("code", "")
         first_line = code.strip().split("\n")[0] if code.strip() else ""
         return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
+    if tool_name == "browser_exec":
+        label = _browser_exec_step_label(args)
+        if label is not None:
+            # Leading `# …` comment (the tool description asks for one):
+            # surface it as the user-facing step label; the code itself stays
+            # collapsed behind display.tool_preview_length.
+            return _wrap(f"┊ 🌐 browser   {label}  {dur}")
+        code = " ".join(str(args.get("code", "") or "").split())
+        return _wrap(f"┊ 🌐 browser   {_trunc(code, 35)}  {dur}")
     if tool_name == "delegate_task":
+        _action = str(args.get("action") or "").strip().lower()
+        if _action in ("list", "steer", "stop"):
+            _sid = str(args.get("subagent_id") or "").strip()
+            return _wrap(f"┊ 🔀 delegate  {_trunc(f'{_action} {_sid}'.strip(), 35)}  {dur}")
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
             task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=30)

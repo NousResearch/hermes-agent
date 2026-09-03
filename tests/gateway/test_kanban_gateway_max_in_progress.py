@@ -48,19 +48,28 @@ def _seed_ready(kb, slug: str, n: int, *, assignee: str = "default") -> None:
 
 
 def _gateway_style_tick(kb, slugs: list[str], max_in_progress: int):
-    """Mirror the gateway remaining-capacity loop from kanban_watchers._tick_once."""
+    """Mirror the gateway remaining-capacity loop from kanban_watchers._tick_once.
+
+    ``dispatch_once`` is host-level (OOF-30): it already subtracts running
+    tasks on every board. The gateway therefore passes the gateway-wide cap
+    unchanged. Re-counting before each board matches the watcher tick so a
+    prior board's spawns are visible without rewriting the cap (that would
+    double-subtract).
+    """
     results = []
     for slug in slugs:
         total_running = sum(_count_board_running(kb, other) for other in slugs)
         remaining = max(0, max_in_progress - total_running)
         board_running = _count_board_running(kb, slug)
-        board_cap = _effective_board_max_in_progress(board_running, remaining)
+        # Helper stays the board-local adapter; production must not feed it
+        # into today's host-level dispatch_once.
+        assert _effective_board_max_in_progress(board_running, remaining) >= remaining
         with kb.connect_closing(board=slug) as conn:
             res = kb.dispatch_once(
                 conn,
                 board=slug,
                 spawn_fn=_fake_spawn,
-                max_in_progress=board_cap,
+                max_in_progress=max_in_progress,
             )
         results.append((slug, res))
     return results
@@ -96,6 +105,8 @@ def test_existing_workers_consume_gateway_budget(isolated_multi_board):
     _seed_ready(kb, "beta", 5)
 
     # Pretend alpha already has 2 running workers from a prior tick.
+    # Must go through claim_task so orphan reconciliation (OOF-30) does
+    # not immediately requeue unclaimed 'running' rows.
     with kb.connect_closing(board="alpha") as conn:
         ids = [
             row["id"]
@@ -103,12 +114,8 @@ def test_existing_workers_consume_gateway_budget(isolated_multi_board):
                 "SELECT id FROM tasks WHERE status = 'ready' ORDER BY created_at LIMIT 2"
             )
         ]
-        with kb.write_txn(conn):
-            for tid in ids:
-                conn.execute(
-                    "UPDATE tasks SET status = 'running' WHERE id = ?",
-                    (tid,),
-                )
+        for tid in ids:
+            assert kb.claim_task(conn, tid) is not None
 
     results = _gateway_style_tick(kb, ["alpha", "beta"], max_in_progress=3)
     total_spawned = sum(len(res.spawned) for _, res in results)
@@ -163,13 +170,13 @@ def test_failed_spawn_does_not_permanently_consume_budget(isolated_multi_board):
         total_running = sum(_count_board_running(kb, other) for other in slugs)
         remaining = max(0, 2 - total_running)
         board_running = _count_board_running(kb, slug)
-        board_cap = _effective_board_max_in_progress(board_running, remaining)
+        assert _effective_board_max_in_progress(board_running, remaining) >= remaining
         with kb.connect_closing(board=slug) as conn:
             kb.dispatch_once(
                 conn,
                 board=slug,
                 spawn_fn=flaky_spawn,
-                max_in_progress=board_cap,
+                max_in_progress=2,
                 failure_limit=10,
             )
 

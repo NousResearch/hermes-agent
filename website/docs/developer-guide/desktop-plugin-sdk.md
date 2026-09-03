@@ -39,7 +39,8 @@ module and never touches app internals (they are lint-fenced out of a bundled
 plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
 
 - **`host.state.*`** — readonly views over the app's live state (nanostore
-  atoms): active session, cwd, gateway status, model, profile, viewport.
+  atoms): active session, per-session turn-busy, cwd, gateway socket status,
+  model, profile, viewport. `gateway` is the WebSocket, not turn-busy.
 - **`host.*` actions** — curated safe verbs: toast, navigate, tail logs,
   restart the gateway, subscribe to the gateway event stream.
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
@@ -54,11 +55,15 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
 | Mode | Where | Who | Build step |
 |------|-------|-----|------------|
 | **Disk** (recommended) | `$HERMES_HOME/desktop-plugins/<id>/plugin.js` | users, agents | none — plain ESM, loaded uncompiled |
+| **Unified package** | `$HERMES_HOME/plugins/<id>/desktop/plugin.js` | plugins that also ship agent-side code | none — same disk pipeline |
 | **Bundled** | `apps/desktop/src/plugins/<id>/plugin.tsx` | in-tree, shipped with the app | the app's own Vite build |
 
-Both take the same `HermesPlugin` contract, appear in **Settings → Plugins**, and
-enable/disable live. Everything on this page is written against the disk door
-(what you and the agent write); [Bundled plugins](#bundled-plugins) notes the two
+All three take the same `HermesPlugin` contract, appear in **Settings → Plugins**,
+and enable/disable live. A unified package is just the disk door scanning inside
+your agent plugin's folder — see
+[One package, both SDKs](#one-package-both-sdks). Everything on this page is
+written against the disk door (what you and the agent write);
+[Bundled plugins](#bundled-plugins) notes the two
 differences. No desktop plugins ship in the core tree today — reference demos
 live in the companion
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
@@ -242,6 +247,12 @@ data: {
 `'top' | 'bottom' | 'left' | 'right' | 'center'`. Declare a `width`/`height` so
 the pane doesn't claim half the zone.
 
+Closing the only pane contributed by a plugin disables that plugin, which can
+be re-enabled from **Settings → Plugins**. When a plugin contributes multiple
+panes, closing one dismisses only that pane and leaves the plugin's other panes,
+commands, and middleware active. **Reset layout** restores dismissed contributed
+panes.
+
 ### Pages and sidebar nav
 
 A route mounts a full page in the workspace pane, like any built-in view. Pair it
@@ -331,12 +342,106 @@ import { THEMES_AREA } from '@hermes/plugin-sdk'
 ctx.register({ id: 'noir', area: THEMES_AREA, data: myDesktopTheme })
 ```
 
+Registering a theme lists it; it does not select it. `useTheme()` reads the
+painted appearance (`theme`, `themeName`, `availableThemes`, `resolvedMode`) and
+changes it (`setTheme`, `setMode`, `previewTheme`) from a component:
+
+```javascript
+import { Button, useTheme } from '@hermes/plugin-sdk'
+
+function ThemePicker() {
+  const { availableThemes, setTheme, themeName } = useTheme()
+
+  return availableThemes.map(t => (
+    <Button key={t.name} disabled={t.name === themeName} onClick={() => setTheme(t.name)}>
+      {t.label}
+    </Button>
+  ))
+}
+```
+
+A switch driven by something other than a render — a gateway connecting, a
+socket event, any `host.onEvent` callback — has no component to hang the hook
+on. Use `requestTheme(name)` there. An unresolvable name is refused rather than
+coerced to the default skin, so the return value doubles as the availability
+check and a wrong name can never silently reset someone's appearance:
+
+```javascript
+import { host, requestTheme } from '@hermes/plugin-sdk'
+
+host.onEvent('gateway.ready', () => {
+  if (!requestTheme('noir')) {
+    host.notifyError('Connected, but the noir theme is not installed.')
+  }
+})
+```
+
+Both doors persist per profile, so a plugin-driven switch sticks exactly like a
+manual pick. To tint the *active* theme rather than replace it, use
+`setAccentOverride(hex)` and clear it in `ctx.onDispose` — the bundled `accent`
+plugin is the worked example.
+
 ### Composer extensions
 
 `COMPOSER_AREAS` (`top`, `bottom`, `leading`, `actions`, `attachments`,
 `middleware`) let a plugin add controls around the message composer, provide an
 attachment source, or transform a draft before it is sent (`ComposerMiddleware`
 with a `handler(draft) => draft | null`).
+
+### Transcript directives — inline components the model addresses
+
+`TRANSCRIPT_DIRECTIVE_AREA` makes the transcript itself a contribution area.
+Register a named directive and the agent can render your component inline in
+an assistant message by emitting a paragraph of the form `::name{key="value"}`:
+
+```javascript
+import { TRANSCRIPT_DIRECTIVE_AREA } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'task-card',
+  area: TRANSCRIPT_DIRECTIVE_AREA,
+  data: {
+    name: 'task', // the model writes ::task{id="BB-12"}
+    render: ({ attrs, streaming }) => jsx(TaskCard, { taskId: attrs.id, streaming })
+  }
+})
+```
+
+Rules the host enforces so the surface stays safe:
+
+- The directive must be the **entire paragraph** — `::name` mid-prose stays
+  prose, so plugin components can never hijack running text.
+- Attributes are **untrusted model output** (`key="value"` pairs, string-only).
+  Validate your own fields; render nothing on garbage rather than guessing.
+- An **unclaimed** directive (no plugin registered for the name) renders as
+  the plain paragraph it always was — nothing breaks when a plugin is off.
+- Renders are wrapped in the contribution error boundary: a throw degrades to
+  an inline error chip, never a dead message.
+- First registration wins on a name collision; namespace adventurous names
+  with your slug (`myplugin-board`, not `board`).
+
+Core ships one directive as the reference consumer: `::preview{file="…"}`
+renders the workspace HTML file **live inside the message** — a sandboxed
+`srcdoc` iframe with an opaque origin (scripts run and the widget is fully
+interactive; no reach into the app, its storage, or the bridge). The frame
+sizes itself to the content (height live, width adopted from the content's
+intrinsic span, flush left in the message flow), and a theme prelude hands
+the document the app's resolved tokens (`--foreground`, `--muted-foreground`,
+`--accent`, `--border`, `--card`), the app font, and a transparent
+background — so widget-shaped HTML reads as native while a full page keeps
+its own design. Non-HTML targets and remote gateways fall back to the
+classic preview card. Tell the agent about your directive in a skill (that's
+how it learns to emit it).
+
+Previewed widgets can also **talk back**. Inside the frame,
+`window.hermes.send('get-price eth')` (or a declarative
+`<button data-hermes-send="get-price eth">` — no script needed) hands that
+prompt to the agent as a user turn, off-screen: no bubble takes up the
+transcript, the widget updating is the visible response. The turn is still
+real — it wakes the agent, rides the composer's steer/queue rules, and
+persists (typed `hidden`) so resume and the session DB keep the full record.
+Prompts are trimmed, capped at 500 chars, and throttled to one per second
+per frame.
 
 ### Mount-scoped chrome (`Contribute`)
 
@@ -364,28 +469,123 @@ components.
 
 ```ts
 host.state.activeSessionId  // ReadableAtom<string | null>
+host.state.awaitingResponse // ReadableAtom<boolean>  true until the first assistant payload
+host.state.busy             // ReadableAtom<boolean>  focused chat is working after a send
+host.state.busyBySession    // ReadableAtom<Record<string, boolean>>  runtime id → mid-turn
+host.state.focusedSessionId // ReadableAtom<string | null>  (runtime id of the FOCUSED session — tile-aware; prefer for session.* RPC)
+host.state.focusedSessionProfile // ReadableAtom<string>  (owner profile of the focused chat — prefer over `profile` for per-bot/profile readouts)
+host.state.focusedStoredSessionId // ReadableAtom<string | null>  (durable id — navigation / session-list matching)
+host.state.focusedUsage     // ReadableAtom<UsageStats | null>  (live streamed usage of the focused session, no RPC needed)
 host.state.cwd              // ReadableAtom<string>
-host.state.gateway          // ReadableAtom<string>  ('idle' | 'connecting' | 'open' | …)
+host.state.gateway          // ReadableAtom<string>  socket state ('idle' | 'connecting' | 'open' | …)
 host.state.model            // ReadableAtom<string>
 host.state.profile          // ReadableAtom<string>
 host.state.viewport         // ReadableAtom<{ width, height, narrow }>
+```
 
+`host.state.gateway` is the WebSocket connection, not whether a chat turn is
+running. A session can be mid-turn while the socket is `open`; another session
+can be idle at the same time. Disable composer or plugin actions from the
+**focused session's** turn-busy (`host.state.busyBySession[sessionId]`, or that
+session's `view.$busy`) — never from `gateway`, and never from a process-global
+busy flag.
+
+```ts
 host.notify({ kind, message, title?, detail?, action? })  // toast; returns id
 host.notifyError(error, fallbackMessage)                   // toast an error
-ctx.os.notify({ title, body?, silent? })   // native OS notification (attributed to your plugin)
+ctx.os.notify({ title, body?, silent?, icon?, activate?, onActivate?, actions? })
+                                           // native OS notification (attributed to your plugin)
 ctx.os.openExternal(url)                   // OS default handler (browser, mail, spotify:) → Promise<boolean>
 ctx.os.revealPath(path)                    // reveal in Finder / Explorer → Promise<boolean>
 ctx.os.writeClipboard(text)                // system clipboard → Promise<boolean>
 host.navigate('/route')                    // hash-route navigation
+host.openSession(id, { profile?, intent? }) // open a stored session core-style;
+                                           //   profile: soft-swap to that profile's backend first
+                                           //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
+host.newChat(profile?)                     // fresh chat draft, optionally in another profile
+host.openWorkspace(id, { render, title?, minWidth?, onClose? })
+                                           // dock a plugin-rendered tab into the MAIN
+                                           //   workspace zone and reveal it; returns a disposer
+host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
+                                           //   actually on screen (its zone's active tab)?
 host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer
 host.logs(...)                             // tail an app log file
 host.status()                              // one-shot system status snapshot
 host.restartGateway()                      // restart the backend gateway
-host.request<T>(method, params?)           // gateway JSON-RPC — the real power
+host.profileRoutes()                       // [{ profile, targetProfile, connectionId, mode }]
+host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no foreground swap
+host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
+host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
-cron, kanban, …). `host.onEvent` streams live gateway events (message deltas,
+cron, kanban, …). `host.requestProfile` accepts a descriptor from
+`host.profileRoutes()` and routes that RPC through its exact registry source and
+profile without changing the active chat or gateway. The profile-only overload is
+retained only for the sole-local/legacy topology; registry-aware plugins should pass
+the descriptor so two sources exposing the same profile name cannot collide.
+
+`host.openWorkspace(id, { render, title?, minWidth?, onClose? })` docks a
+plugin-rendered view into the **main workspace zone** — the same center area
+session tiles and previews use — as a tab, and reveals it. Re-calling it with
+the same `id` refreshes the content in place and re-fronts the tab instead of
+opening a duplicate. Closing the tab (the tab's Close control or ⌘W) tears the
+registration down and fires your `onClose`; the returned disposer closes it
+programmatically. Feature-detect it (`typeof host.openWorkspace ===
+'function'`) and fall back to a regular contributed pane on older desktop
+builds — Bot Mode's group-chat rooms are the reference consumer (main-window
+takeover when available, in-panel view otherwise).
+
+`host.paneVisibility(paneId)` returns a readonly reactive atom that is `true`
+while a contributed pane is actually on screen: present in the layout tree,
+not dismissed or hidden, its zone un-minimized, and holding its zone's active
+tab slot (a lone pane in its own zone counts). The id is the
+contribution-scoped pane id, `<pluginId>:<paneId>`. Atoms are memoized per id,
+so calling it in render is safe. Use it to register companion UI only while
+your pane is visible — Bot Mode's Cronjobs pane is the reference consumer: it
+registers while the Bots pane holds the sidebar tab and unregisters when the
+user tabs back to Sessions. Feature-detect on older desktops
+(`typeof host.paneVisibility === 'function'`) and fall back to
+always-registered behavior.
+
+`host.profileRoutes()` inventories every registered source in the current connection
+registry. Connect-on-demand SSH sources expose a credential-free `default` seed
+route without opening a tunnel, so a plugin can be the first caller that dials them;
+an SSH `remoteProfile` remains the route's backend `targetProfile`. `connectionId`
+is the registry routing identity;
+pair it with `profile` for keys and persistence. Endpoint, token, SSH host/key, and
+other raw connection fields never cross the plugin IPC boundary. `profile` is the
+source-local route used
+for requests; `targetProfile` is the backend Hermes profile served by that route.
+They differ when a route explicitly maps to another backend profile (for example an
+SSH `remoteProfile` override or a legacy per-profile URL alias). This distinction
+preserves backend identity without exposing connection secrets.
+
+Profile-shaped plugins get first-class methods too:
+`profiles.list` (each profile + its most recent conversation as
+`last_session`; pass `include_sessions: false` to skip the per-profile DB
+probe; pass `preferred_session_ids: { profileName: sessionId }` for an
+exact, existence-checked lookup of one pinned session per profile — each
+named row gains a `preferred_session` summary that resolves hidden rows
+and compression lineages to their live tip, or `null` when the id is
+definitively gone; older gateways ignore the param and omit the field)
+and `profiles.create` (`name`, `description`, `clone_from`,
+`clone_all`, `no_skills`, `soul`, optional `model` + `provider` pin) — the
+ws twins of the dashboard's `/api/profiles` REST routes.
+`host.state.busy` is the focused chat's live turn (thinking and streaming).
+`host.state.awaitingResponse` stays true from send until the first assistant
+payload. Both follow the chat the user is actually looking at — the focused
+session tile when one holds focus, else the primary workspace chat (the same
+signal the statusbar's busy pulse reads). Subscribe in a component:
+
+```javascript
+const busy = useValue(host.state.busy)
+```
+
+For token-level detail, listen with `host.onEvent` (`message.start`,
+`message.delta`, `message.complete`).
+
+`host.onEvent` streams live gateway events (message deltas,
 session lifecycle, tool activity). Listeners are isolated — a throw in your
 listener can't affect app dispatch. Every `host` door is async-safe: a sync throw
 from an internal helper (e.g. no desktop bridge in a plain browser) becomes a
@@ -399,6 +599,32 @@ approval/turn alerts use. It fires only while the user is away from Hermes
 they're looking at the app. Users can silence it per device under Settings ▸
 Notifications ▸ "Plugin notifications", and repeats from the same plugin are
 throttled, so treat it as a signal for genuinely notable events — not a log.
+
+Rich presentation + activation (extends the original `ctx.os` door):
+
+```ts
+ctx.os.notify({
+  title: 'New match found',
+  body: 'Someone matched your signal',
+  icon: '/abs/path/to/icon.png', // Electron Notification icon
+  // Body click → focus Hermes + navigate. Same vocabulary as OS deep links:
+  activate: 'hermes://index-network/intent/1',
+  // or: activate: '/index-network/intent/1'
+  // or: activate: { path: '/index-network/intent/1' }
+  onActivate: () => focusLocalState('1'), // optional renderer callback
+  actions: [
+    { id: 'open', label: 'Open', activate: 'hermes://index-network/intent/1' },
+    { id: 'dismiss', label: 'Dismiss', onAction: () => dismiss('1') },
+  ],
+})
+```
+
+`activate` is deeplink-compatible: `hermes://index-network/intent/1` and the
+hash path `/index-network/intent/1` resolve to the same in-app route (and the
+same `hermes://…` URL works as an OS deep link). Action buttons only render on
+signed macOS builds; elsewhere the body click still activates. Navigation only
+happens on user click — never from a background event alone.
+
 The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
@@ -463,6 +689,59 @@ plugin reskin automatically with every theme.
 If your plugin needs server-side work, ship a Python `plugin_api.py` and reach it
 through `ctx.rest` / `ctx.socket` — a namespace scoped to your plugin **by
 construction**.
+
+### One package, both SDKs {#one-package-both-sdks}
+
+A feature that needs a desktop UI **and** agent-side code (a Python plugin, its
+backend routes, skills) doesn't have to ship as two co-dependent installs. The
+desktop app also scans `$HERMES_HOME/plugins/<id>/` — the regular agent-plugin
+root — for a `desktop/plugin.js`, and loads it through the exact same pipeline
+as the standalone disk door (hot reload included):
+
+```
+~/.hermes/plugins/<id>/           # ONE installable folder
+├── plugin.yaml                   # the agent half: tools, hooks, commands
+├── skills/…
+├── dashboard/
+│   ├── manifest.json             # { "name": "<id>", "api": "plugin_api.py" }
+│   └── plugin_api.py             # backend routes → /api/plugins/<id>/
+└── desktop/
+    └── plugin.js                 # the desktop half: panes, commands, ctx.rest
+```
+
+The `desktop/plugin.js` half is an ordinary disk plugin — same contract, same
+imports, same `ctx.rest('/…')` reaching the `plugin_api.py` sitting beside it.
+Installing, sharing, or removing the feature is one folder.
+
+Two enable switches still apply, on purpose, and both default to **off**: the
+desktop half ships opt-in — it inventories in **Settings → Plugins** but stays
+disabled until the user toggles it — matching the Python half's
+`plugins.enabled` gate in `config.yaml` (the security boundary below). Dropping
+a package into `~/.hermes/plugins` is inert on every surface until the user
+says otherwise. The desktop half degrades gracefully when the backend half is
+off — `ctx.rest` returns errors, not crashes.
+
+:::note
+The scan is local to the machine the desktop app runs on. Against a remote
+backend, the remote box's `~/.hermes/plugins` is not reachable as a filesystem —
+only locally installed packages contribute a desktop half (same rule as the
+standalone door).
+:::
+
+### Distributing with an install link {#install-link}
+
+Ship your plugin repo (agent half, desktop half, or both) and link to it with
+the `hermes://` scheme — a plain anchor on your website or README:
+
+```html
+<a href="hermes://plugin/install?repo=owner/repo&enable=1">Install in Hermes</a>
+```
+
+The user gets a confirmation dialog (repo id, source links, a probe of what
+the repo ships) and picks components before anything is installed — deep links
+never auto-install. `force=1` replaces an existing install; dev builds use
+`hermes-dev://`. Full link reference:
+[One-click install links](/user-guide/features/plugins#one-click-install-links-desktop).
 
 ### The Python side
 
@@ -615,10 +894,11 @@ not treat this pipeline as a trust boundary.
 | Category | Exports |
 |----------|---------|
 | Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
-| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `Contribution` |
+| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
+| Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `contrastRatio`, `readableOn`, `normalizeHex`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText` |
 | Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness` |
 

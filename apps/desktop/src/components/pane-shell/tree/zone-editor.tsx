@@ -25,6 +25,7 @@ import { Input } from '@/components/ui/input'
 import { registry } from '@/contrib/registry'
 import { useI18n } from '@/i18n'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
+import { startPointerDrag } from '@/lib/pointer-drag'
 import { cn } from '@/lib/utils'
 
 import {
@@ -214,9 +215,7 @@ export function ZoneEditor() {
       setSelection(mergeClosureIndices(model, picked))
     }
 
-    const onUp = (ev: PointerEvent) => {
-      window.removeEventListener('pointermove', onMove, true)
-      window.removeEventListener('pointerup', onUp, true)
+    startPointerDrag(onMove, ev => {
       setSelectBox(null)
 
       if (!dragged) {
@@ -233,10 +232,7 @@ export function ZoneEditor() {
 
       const rect = canvasRef.current!.getBoundingClientRect()
       setMergeAt({ x: ev.clientX - rect.x, y: ev.clientY - rect.y })
-    }
-
-    window.addEventListener('pointermove', onMove, true)
-    window.addEventListener('pointerup', onUp, true)
+    })
   }
 
   const startResizerDrag = (index: number, e: ReactPointerEvent<HTMLDivElement>) => {
@@ -267,13 +263,7 @@ export function ZoneEditor() {
       }
     }
 
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove, true)
-      window.removeEventListener('pointerup', onUp, true)
-    }
-
-    window.addEventListener('pointermove', onMove, true)
-    window.addEventListener('pointerup', onUp, true)
+    startPointerDrag(onMove)
   }
 
   const merge = () => {

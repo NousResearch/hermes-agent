@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Open a URL, dev server, or file in the Hermes desktop GUI's preview pane.
 
-Gated on ``HERMES_DESKTOP`` (like ``read_terminal`` / ``close_terminal``) so it
-never appears outside the GUI. Emits ``preview.open`` through the shared
-``desktop_ui`` bridge; the renderer opens the pane beside the chat for the
-window that asked and never steals focus for a background session.
+Lives in the ``desktop_ui`` toolset, which the GUI gateway enables only for a
+session whose source is the desktop app — so the schema never reaches a CLI,
+messaging, or cron agent, and it DOES reach a desktop client on a remote/cloud
+backend. Emits ``preview.open`` through the shared ``desktop_ui`` bridge; the
+renderer opens the pane beside the chat for the window that asked and never
+steals focus for a background session.
 """
 
 import json
@@ -12,7 +14,6 @@ import re
 
 from tools import desktop_ui
 from tools.registry import registry, tool_error
-from utils import env_var_enabled
 
 
 def _normalize_target(raw: str) -> str:
@@ -52,11 +53,6 @@ def open_preview_tool(url: str, label: str = "") -> str:
     return json.dumps({"success": True, "url": target, "label": label}, ensure_ascii=False)
 
 
-def check_open_preview_requirements() -> bool:
-    """Desktop GUI only — HERMES_DESKTOP is set on the gateway the app spawns."""
-    return env_var_enabled("HERMES_DESKTOP")
-
-
 OPEN_PREVIEW_SCHEMA = {
     "name": "open_preview",
     "description": (
@@ -65,7 +61,8 @@ OPEN_PREVIEW_SCHEMA = {
         "preview pane — e.g. \"open cnn.com in the preview pane\" or \"preview "
         "localhost:3000\". Accepts a web URL (a bare domain like www.cnn.com is fine), "
         "a localhost dev-server URL, or a file path (HTML renders live; other files "
-        "show their contents). The pane opens for the current window only."
+        "show their contents). The pane opens for the current window only. To close "
+        "the pane or a tab, use close_preview."
     ),
     "parameters": {
         "type": "object",
@@ -87,11 +84,5 @@ OPEN_PREVIEW_SCHEMA = {
 }
 
 
-registry.register(
-    name="open_preview",
-    toolset="terminal",
-    schema=OPEN_PREVIEW_SCHEMA,
-    handler=lambda args, **kw: open_preview_tool(url=args.get("url", ""), label=args.get("label", "")),
-    check_fn=check_open_preview_requirements,
-    emoji="🖼️",
-)
+# Registration removed: consolidated into the `preview` tool (#95681);
+# this module keeps its functions for the preview_tool.

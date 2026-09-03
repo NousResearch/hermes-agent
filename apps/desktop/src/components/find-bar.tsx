@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
+import { appViewForPath, isOverlayView } from '@/app/routes'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { findBarKeyAction, formatMatchLabel } from '@/lib/find-in-page'
@@ -12,6 +13,7 @@ import {
   findNext,
   findPrevious,
   initFindInPageListener,
+  initOpenFindBarListener,
   setFindQuery
 } from '@/store/find-in-page'
 
@@ -36,7 +38,9 @@ export function FindBar() {
   const { t } = useI18n()
   const { active, query, matchOrdinal, matchCount } = useStore($findInPage)
   const inputRef = useRef<HTMLInputElement>(null)
+  const nativeSearchRequestRef = useRef(0)
   const [localQuery, setLocalQuery] = useState('')
+  const [filesPaneRight, setFilesPaneRight] = useState<number | null>(null)
   const { pathname } = useLocation()
 
   // Navigating away (opening another session, a settings page, …) closes the
@@ -66,19 +70,137 @@ export function FindBar() {
     return undefined
   }, [active])
 
+  // The files pane (right sidebar, `aside[aria-label="Right sidebar"]`) is a
+  // floating right rail. The find bar is `fixed right-4` by default, which
+  // would cover the files pane's header + first rows when it is open. Measure
+  // the pane's live rect and park the bar just left of it instead.
+  //
+  // The pane can open, close, or be drag-resized *while the bar is open* (its
+  // visibility lives in the contrib workspace registry, not a store we can
+  // subscribe to from here), so a window `resize` listener alone is not
+  // enough: a ResizeObserver tracks width drags of the current aside, and a
+  // body-scoped MutationObserver catches the aside mounting/unmounting and
+  // re-attaches the ResizeObserver to the new node. All paths coalesce into
+  // one rAF-batched measure; everything tears down when the bar closes.
+  useEffect(() => {
+    if (!active) {
+      setFilesPaneRight(null)
+
+      return undefined
+    }
+
+    let rafId: null | number = null
+    let observedAside: Element | null = null
+
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => scheduleMeasure())
+
+    const measure = () => {
+      rafId = null
+      const aside = document.querySelector('aside[aria-label="Right sidebar"]')
+
+      // The aside can be replaced wholesale (pane closed and reopened, panes
+      // flipped) — retarget the ResizeObserver whenever its identity changes.
+      if (aside !== observedAside) {
+        if (observedAside) {
+          resizeObserver?.unobserve(observedAside)
+        }
+
+        if (aside) {
+          resizeObserver?.observe(aside)
+        }
+
+        observedAside = aside
+      }
+
+      const rect = aside?.getBoundingClientRect()
+
+      if (rect && rect.width > 0 && rect.left < window.innerWidth) {
+        setFilesPaneRight(window.innerWidth - rect.left)
+      } else {
+        setFilesPaneRight(null)
+      }
+    }
+
+    const scheduleMeasure = () => {
+      rafId ??= requestAnimationFrame(measure)
+    }
+
+    // Catches the pane opening/closing while the bar is up. Scoped to
+    // childList mutations only (no attributes/characterData), and the bar is
+    // a transient overlay, so the observer lives only for the find session.
+    const mutationObserver = new MutationObserver(scheduleMeasure)
+    mutationObserver.observe(document.body, { childList: true, subtree: true })
+
+    measure()
+    window.addEventListener('resize', scheduleMeasure)
+
+    return () => {
+      window.removeEventListener('resize', scheduleMeasure)
+      mutationObserver.disconnect()
+      resizeObserver?.disconnect()
+
+      if (rafId != null) {
+        cancelAnimationFrame(rafId)
+      }
+    }
+  }, [active, pathname])
+
   // Subscribe to found-in-page results from the main process. Refcounted in
   // the store, so a remount (connection re-home) can't stack listeners; the
   // subscription is deliberately mount-scoped and NOT tied to `active` —
   // results for an in-flight search must still land if the bar just closed.
   useEffect(() => initFindInPageListener(), [])
 
+  // Mirror the find-results listener for the main-process Ctrl/Cmd+F
+  // forward — on Pop!_OS / GNOME the GTK compositor grabs the chord at
+  // the windowing layer (#81727).
+  useEffect(() => initOpenFindBarListener(), [])
+
   // Debounce search — fire findInPage 200ms after the user stops typing.
   useEffect(() => {
+    const requestId = ++nativeSearchRequestRef.current
+    const input = inputRef.current
+
     if (!active || !localQuery) {
+      if (input?.inert) {
+        input.inert = false
+      }
+
       return undefined
     }
 
-    const id = setTimeout(() => setFindQuery(localQuery), 200)
+    const id = setTimeout(() => {
+      if (!input) {
+        void setFindQuery(localQuery)
+
+        return
+      }
+
+      const hadFocus = document.activeElement === input
+      const selectionStart = input.selectionStart
+      const selectionEnd = input.selectionEnd
+
+      // The HTML inert contract excludes this truthful search control from
+      // find-in-page. Keep it inert until the IPC reply confirms Electron has
+      // started the request, then restore focus and selection.
+      input.inert = true
+
+      void setFindQuery(localQuery).finally(() => {
+        if (nativeSearchRequestRef.current !== requestId) {
+          return
+        }
+
+        input.inert = false
+
+        if (hadFocus && input.isConnected) {
+          input.focus({ preventScroll: true })
+
+          if (selectionStart !== null && selectionEnd !== null) {
+            input.setSelectionRange(selectionStart, selectionEnd)
+          }
+        }
+      })
+    }, 200)
 
     // Cleanup covers every exit: another keystroke, the bar closing, and
     // unmount. Nothing can fire a find after the bar is gone.
@@ -121,7 +243,7 @@ export function FindBar() {
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [active])
 
-  if (!active) {
+  if (!active || isOverlayView(appViewForPath(pathname))) {
     return null
   }
 
@@ -131,7 +253,7 @@ export function FindBar() {
 
     // Empty query: clear highlights immediately rather than after the debounce.
     if (!value) {
-      setFindQuery('')
+      void setFindQuery('')
     }
   }
 
@@ -156,22 +278,32 @@ export function FindBar() {
 
   const matchLabel = formatMatchLabel(query, matchOrdinal, matchCount)
 
+  const barStyle = filesPaneRight != null ? { right: `calc(${filesPaneRight}px + 0.75rem)` } : undefined
+
   return (
     <div
       className={cn(
-        'pointer-events-auto fixed right-4 top-[calc(var(--titlebar-height,0px)+0.5rem)] z-50',
-        'flex items-center gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-surface-background) px-2 py-1 shadow-md'
+        // Floats BELOW the titlebar band. The bar mounts at the overlay root,
+        // outside the app-shell subtree that defines --titlebar-height, so the
+        // fallback must be the real titlebar height (34px, matching
+        // floating-hud.ts / notifications.tsx) — a 0px fallback parks the bar
+        // inside the titlebar strip, underneath the native min/max/close
+        // window-controls overlay on Windows/Linux.
+        'pointer-events-auto fixed right-4 top-[calc(var(--titlebar-height,34px)+0.5rem)] z-50',
+        'flex items-center gap-2 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-surface-background) px-2 py-1.5 shadow-md'
       )}
       role="search"
+      style={barStyle}
     >
       <input
         aria-label={t.keybinds.actions['view.findInPage'] ?? 'Find in page'}
+        autoComplete="off"
         className="h-6 w-40 bg-transparent text-xs text-(--ui-text-primary) outline-none placeholder:text-(--ui-text-tertiary)"
         onChange={onInput}
         onKeyDown={onKeyDown}
         placeholder={t.keybinds.actions['view.findInPage'] ?? 'Find in page'}
         ref={inputRef}
-        type="text"
+        type="search"
         value={localQuery}
       />
 
@@ -184,11 +316,11 @@ export function FindBar() {
       <Tip label={t.findInPage.previous}>
         <button
           aria-label={t.findInPage.previous}
-          className="flex h-5 w-5 items-center justify-center rounded text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background)"
+          className="flex h-7 w-7 items-center justify-center rounded text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background)"
           onClick={findPrevious}
           type="button"
         >
-          <svg height="12" viewBox="0 0 16 16" width="12">
+          <svg height="14" viewBox="0 0 16 16" width="14">
             <path d="M4 10l4-4 4 4" fill="none" stroke="currentColor" strokeWidth="1.5" />
           </svg>
         </button>
@@ -197,11 +329,11 @@ export function FindBar() {
       <Tip label={t.findInPage.next}>
         <button
           aria-label={t.findInPage.next}
-          className="flex h-5 w-5 items-center justify-center rounded text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background)"
+          className="flex h-7 w-7 items-center justify-center rounded text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background)"
           onClick={findNext}
           type="button"
         >
-          <svg height="12" viewBox="0 0 16 16" width="12">
+          <svg height="14" viewBox="0 0 16 16" width="14">
             <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" />
           </svg>
         </button>
@@ -209,11 +341,11 @@ export function FindBar() {
 
       <button
         aria-label={t.common.close}
-        className="flex h-5 w-5 items-center justify-center rounded text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background)"
+        className="flex h-7 w-7 items-center justify-center rounded text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background)"
         onClick={closeFindBar}
         type="button"
       >
-        <svg height="10" viewBox="0 0 12 12" width="10">
+        <svg height="12" viewBox="0 0 12 12" width="12">
           <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.5" />
         </svg>
       </button>

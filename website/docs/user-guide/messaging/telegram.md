@@ -83,7 +83,7 @@ Notes:
 
 Hermes registers its command menu automatically when the Telegram gateway starts. The menu is built from the central slash-command registry plus eligible plugin/skill commands, then capped so Telegram accepts the payload reliably. The default cap is 60 commands — enough to keep all built-in commands plus common skill commands visible.
 
-If you have local or plugin commands that should stay visible in Telegram's `/` picker, prioritize them in `~/.hermes/config.yaml`:
+If you have skill, plugin, or built-in commands that should stay visible in Telegram's `/` picker, prioritize them in `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
@@ -94,6 +94,7 @@ platforms:
         priority_mode: prepend  # prepend | append | replace
         priority:
           - my_plugin_command
+          - songsee          # skill commands work here too
 ```
 
 `priority_mode` controls how your list combines with Hermes' built-in priority list:
@@ -102,7 +103,25 @@ platforms:
 - `append`: keep Hermes defaults first, then your commands
 - `replace`: use only your list for priority ordering
 
+Priority is applied to the **combined** candidate list (core commands, plugin commands, and skill commands) before the cap is enforced — so a prioritized skill command is guaranteed a menu slot even when core commands alone would fill the menu. Previously skills were always trimmed first and alphabetically, so late-alphabet skills could never appear regardless of `priority`.
+
 Telegram allows up to 100 BotCommands, but large command payloads can fail. Hermes defaults to 60 for reliability and clamps configured values to `1..100`; use `/commands` for the full command list.
+
+### Inline command picker: search every command (no cap)
+
+The `/` menu is capped, but Telegram's **inline mode** is not. Once enabled, type `@yourbotname` followed by a search term in any chat to get a live, searchable picker over **every** Hermes command and installed skill — results are computed per keystroke and paginated, so nothing is ever trimmed:
+
+```
+@yourbotname plan            → tap the /plan result to send it
+@yourbotname plan migrate auth to OIDC   → sends /plan migrate auth to OIDC
+@yourbotname pdf             → finds skills matching "pdf" by name or description
+```
+
+The first word filters the catalog; everything after it is carried into the sent command as its argument. Tapping a result sends the command as a normal message from you, so it dispatches through the standard command path (command-prefixed messages reach the bot even with privacy mode on).
+
+**One-time setup:** inline mode is off by default for every Telegram bot. Enable it in [@BotFather](https://t.me/BotFather) with `/setinline` (pick your bot, set any placeholder text, e.g. `Search commands and skills...`). Until then, Telegram never delivers inline queries and the picker stays inert.
+
+Results are only served to users who pass your gateway allowlist — unauthorized users get an empty list, so your installed skill catalog is not exposed to strangers (inline queries can be sent from any chat, even ones the bot is not in).
 
 ## Step 3: Privacy Mode (Critical for Groups)
 
@@ -322,6 +341,8 @@ TELEGRAM_PROXY=socks5://127.0.0.1:1080
 Supported schemes: `http://`, `https://`, `socks5://`.
 
 The proxy applies to both the main Telegram connection and the fallback IP transport. If no Telegram-specific proxy is set, the gateway falls back to `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (or macOS system proxy auto-detection).
+
+If the fallback IP discovery path is unhealthy on your host, set `HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true` to keep cold connect on the plain `api.telegram.org` path. You can also bound DNS-over-HTTPS fallback discovery with `HERMES_TELEGRAM_FALLBACK_DISCOVERY_TIMEOUT` in seconds; the default is `5`.
 
 ## Home Channel
 
@@ -827,29 +848,31 @@ Shows the current topic's binding: session title, session ID, and hints for `/ne
 
 ### Under the hood
 
-- Activation persists to `telegram_dm_topic_mode(chat_id, user_id, enabled, ...)` in `state.db`
-- Each topic binding persists to `telegram_dm_topic_bindings(chat_id, thread_id, session_id, ...)` with `ON DELETE CASCADE` on `session_id` — pruning a session automatically clears its topic binding
-- The topic-mode SQLite migration is **opt-in**: it runs on the first `/topic` call, never on gateway startup. Until a user runs `/topic` in this profile, `state.db` is unchanged
-- Each inbound DM message looks up its `(chat_id, thread_id)` binding. If present, the lookup routes the message to the bound session via `SessionStore.switch_session()` so the session-key-to-session-id mapping stays consistent on disk
+- Activation persists to `telegram_dm_topic_mode(profile_name, chat_id, user_id, enabled, ...)` in `state.db`. Primary key is `(profile_name, chat_id)` so multiplexed / profile-routed bots sharing one `state.db` do not clobber each other when the same Telegram user DMs multiple bots (private `chat_id` is the user id and is identical across bots).
+- Each topic binding persists to `telegram_dm_topic_bindings(profile_name, chat_id, thread_id, session_id, ...)` with PK `(profile_name, chat_id, thread_id)` and `ON DELETE CASCADE` on `session_id` — pruning a session automatically clears its topic binding
+- The topic-mode SQLite migration is **opt-in**: it runs on the first `/topic` call, never on gateway startup. Until a user runs `/topic` in this profile, `state.db` is unchanged. Schema v3 adds `profile_name`; legacy rows migrate into the `default` namespace only
+- Each inbound DM message looks up its `(profile_name, chat_id, thread_id)` binding using the **routed** profile (`source.profile`, not the process-global active profile). If present, the lookup routes the message to the bound session via `SessionStore.switch_session()` so the session-key-to-session-id mapping stays consistent on disk
 - `/new` inside a topic rewrites the binding row to point at the new session ID, so the next message stays on the fresh session
 - Topics declared in `extra.dm_topics` are **never auto-renamed** — the operator-chosen name is preserved even when multi-session mode is enabled
 - Set `extra.disable_topic_auto_rename: true` to turn off auto-rename for **all** topics in the chat (ad-hoc topics created via Threaded Mode included)
 - The General (pinned top) topic in a forum-enabled DM is treated as the root lobby, regardless of whether Telegram delivers its messages with `message_thread_id=1` or with no thread_id
-- Root-lobby reminders are rate-limited to one message per 30 seconds per chat — a user who forgets topic mode is on and types ten prompts in the root won't get ten replies
-- BotFather setup screenshots are rate-limited to one send per 5 minutes per chat — repeated `/topic` attempts while Threads Settings are still disabled won't re-upload the same image
-- `/background <prompt>` started inside a topic delivers its result back to the same topic; background sessions don't trigger auto-rename of the owning topic
+- Root-lobby reminders are rate-limited to one message per 30 seconds per **(profile, chat)** — a user who forgets topic mode is on and types ten prompts in the root won't get ten replies, and two multiplexed profiles sharing a chat id do not suppress each other's reminders
+- BotFather setup screenshots are rate-limited to one send per 5 minutes per **(profile, chat)** — repeated `/topic` attempts while Threads Settings are still disabled won't re-upload the same image
+- `/bg <prompt>` started inside a topic delivers its result back to the same topic; background sessions don't trigger auto-rename of the owning topic
 - `/topic` itself is gated by the bot's user authorization check — unauthorized DMs get a refusal instead of activation
 
 ### Disabling multi-session mode
 
-Send `/topic off` in the root DM. Hermes flips the row off, clears the chat's `(thread_id → session_id)` bindings, and the root DM reverts to a normal Hermes chat. Existing topics in Telegram aren't deleted — they just stop being gated as independent sessions. Re-run `/topic` later to turn it back on.
+Send `/topic off` in the root DM. Hermes flips the row off for **this profile's** namespace, clears that profile's `(thread_id → session_id)` bindings for the chat, and the root DM reverts to a normal Hermes chat. Existing topics in Telegram aren't deleted — they just stop being gated as independent sessions. Re-run `/topic` later to turn it back on.
 
-If you need to clean up by hand (e.g. a bulk reset across many chats), remove the rows directly:
+If you need to clean up by hand (e.g. a bulk reset across many chats), scope rows by `profile_name` (use `default` for single-profile installs):
 
 ```bash
 sqlite3 ~/.hermes/state.db \
-  "UPDATE telegram_dm_topic_mode SET enabled = 0 WHERE chat_id = '<your_chat_id>'; \
-   DELETE FROM telegram_dm_topic_bindings WHERE chat_id = '<your_chat_id>';"
+  "UPDATE telegram_dm_topic_mode SET enabled = 0
+     WHERE profile_name = 'default' AND chat_id = '<your_chat_id>';
+   DELETE FROM telegram_dm_topic_bindings
+     WHERE profile_name = 'default' AND chat_id = '<your_chat_id>';"
 ```
 
 ### Downgrading Hermes
@@ -957,7 +980,7 @@ gateway:
 
 ## Rendering: Rich Messages, Tables and Link Previews
 
-**Rich Messages (Bot API 10.1).** Final replies that contain constructs the legacy MarkdownV2 path degrades — tables, task lists, collapsible `<details>`, and block math — are sent with Telegram's native [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) using the agent's **raw markdown**, so they render natively with no client-side flattening. During streaming, the final answer is delivered by **editing the existing preview in place** via `editMessageText`'s `rich_message` parameter — no second message, no delete, so there is no duplicate-delivery flicker at the end of a turn. In DMs the live streaming preview also uses `sendRichMessageDraft`, so the animated draft matches the final rich message. Ordinary replies (plain prose, bold/italic, simple lists) stay on the MarkdownV2 path for consistent font weight and spacing across clients.
+**Rich Messages (Bot API 10.1).** Final replies that contain constructs the legacy MarkdownV2 path degrades — tables, task lists, collapsible `<details>`, and block math — are sent with Telegram's native [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) using the agent's **raw markdown**, so they render natively with no client-side flattening. In DMs, the default `rich_drafts: false` keeps the streaming preview plain — it uses Telegram's ephemeral draft transport with legacy rendering (tables and other rich-only constructs stay as raw markdown in the preview) — then persists the completed response with `sendRichMessage`. Setting `rich_drafts: true` makes the live preview use `sendRichMessageDraft` too. Edit-based streams can finalize an existing preview in place through `editMessageText`'s `rich_message` parameter. Ordinary replies (plain prose, bold/italic, simple lists) stay on the MarkdownV2 path for consistent font weight and spacing across clients.
 
 The rich path is skipped automatically when content exceeds the 32,768-character rich text limit, and any rejection from Telegram (unsupported endpoint on an older `python-telegram-bot`, parser error, oversized blocks/columns) **transparently falls back** to the MarkdownV2 path — your message is never lost. Transient/network errors are *not* silently re-sent (no duplicate final message).
 
@@ -977,7 +1000,7 @@ gateway:
         rich_drafts: false
 ```
 
-This setting is for client-rendering/copy compatibility; Hermes already falls back automatically when Telegram rejects the rich API call. `rich_drafts` controls the experimental rich draft preview path during Telegram DM streaming and stays off by default because Telegram Desktop/macOS can visually overlay rich draft frames until the chat redraws. If you only want the legacy "always code-block" table behavior while keeping rich messages enabled, disable table normalization by setting `telegram.pretty_tables: false` in `config.yaml` (default: `true`).
+This setting is for client-rendering/copy compatibility; Hermes already falls back automatically when Telegram rejects the rich API call. `rich_drafts` controls whether the DM streaming preview *renders* rich (`sendRichMessageDraft`) and stays off by default because Telegram Desktop/macOS can visually overlay rich draft frames until the chat redraws; with it off, the preview streams plain and the final still arrives as a native Rich Message. If you only want the legacy "always code-block" table behavior while keeping rich messages enabled, disable table normalization by setting `telegram.pretty_tables: false` in `config.yaml` (default: `true`).
 
 **Link previews.** Telegram auto-generates link previews for URLs in bot messages. If you'd rather suppress those (long `/tools` output, agent reply that mentions ten links, etc.):
 
@@ -1135,9 +1158,9 @@ In some restricted networks, `api.telegram.org` may resolve to an IP that is unr
 
 1. If `TELEGRAM_FALLBACK_IPS` is set, those IPs are used directly.
 2. Otherwise, the adapter automatically queries **Google DNS** and **Cloudflare DNS** via DNS-over-HTTPS (DoH) to discover alternative IPs for `api.telegram.org`.
-3. IPs returned by DoH that differ from the system DNS result are used as fallbacks.
-4. If DoH is also blocked, a hardcoded seed IP (`149.154.167.220`) is used as a last resort.
-5. Once a fallback IP succeeds, it becomes "sticky" — subsequent requests use it directly without retrying the primary path first.
+3. Known IPv4 Telegram API IPs are tried **before** the dual-stack `api.telegram.org` hostname. A blackholed IPv6 path can sit in `connect()` without erroring, which used to pin the event loop so the 30s init deadline never fired.
+4. If DoH is also blocked or times out, a hardcoded IPv4 seed list (`149.154.166.110`, `149.154.167.220`) is used as that IPv4-first list. The hostname remains last resort.
+5. Once a path succeeds, it becomes "sticky" — subsequent requests use it directly. The hostname is kept as a last resort for IPv6-only networks.
 
 ### Configuration
 
@@ -1157,7 +1180,7 @@ platforms:
 ```
 
 :::tip
-You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network.
+You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network. If IPv6 is broken on the host, you can also set `network.force_ipv4: true` in `config.yaml` to skip AAAA lookups process-wide.
 :::
 
 ## Proxy Support

@@ -1,21 +1,21 @@
 ---
-title: "Memento Flashcards — Spaced-repetition flashcard system"
+title: "Memento Flashcards — Spaced-repetition flashcards: create, review, quiz, export"
 sidebar_label: "Memento Flashcards"
-description: "Spaced-repetition flashcard system"
+description: "Spaced-repetition flashcards: create, review, quiz, export"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Memento Flashcards
 
-Spaced-repetition flashcard system. Create cards from facts or text, chat with flashcards using free-text answers graded by the agent, generate quizzes from YouTube transcripts, review due cards with adaptive scheduling, and export/import decks as CSV.
+Spaced-repetition flashcards: create, review, quiz, export.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/productivity/memento-flashcards` |
-| Path | `optional-skills/productivity/memento-flashcards` |
+| Path | `optional-skills/productivity\memento-flashcards` |
 | Version | `1.0.0` |
 | Author | Memento AI |
 | License | MIT |

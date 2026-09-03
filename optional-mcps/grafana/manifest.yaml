@@ -1,0 +1,65 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: grafana
+description: >-
+  Query metrics, logs, dashboards, alerts, and incidents from Grafana Cloud.
+source: https://grafana.com/docs/grafana-cloud/ai-tools/mcp-servers/cloud-mcp/
+
+# Grafana Cloud's hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration over
+# Streamable HTTP; Hermes's MCP client + mcp_oauth_manager handle discovery,
+# PKCE, token exchange, and refresh. OAuth is user-scoped to your Grafana RBAC.
+#
+# Note: this is the *hosted* Grafana Cloud MCP server, not the self-run OSS
+# `mcp-grafana` binary (which authenticates with a service account token and
+# supports self-hosted Grafana). Self-hosted users should configure that
+# manually per https://github.com/grafana/mcp-grafana.
+transport:
+  type: http
+  url: https://mcp.grafana.com/mcp
+
+auth:
+  type: oauth
+
+# Defensive excludes (verified against Grafana's published MCP tool tables).
+# The hosted Cloud server's documented surface (~35 tools: dashboards,
+# datasources, Prometheus/Loki/Tempo/Pyroscope queries, annotations,
+# rendering) is clean — but the sibling OSS roster carries two clusters we
+# never want auto-enabled if the Cloud surface grows toward it:
+#   - ask_assistant: opaque delegation to Grafana Assistant (an agent
+#     meta-tool, same class as Railway's railway-agent) that also bills
+#     Assistant usage per call.
+#   - agento11y_*: eight multiplexed tools for Grafana's own
+#     agent-observability product surface.
+# Both no-op harmlessly while the Cloud server doesn't serve them.
+tools:
+  default_excluded:
+    - ask_assistant
+    - "agento11y_*"
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - grafana
+    - promql
+    - logql
+    - observability
+    - dashboard
+  hosts:
+    - grafana.net
+    - grafana.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Grafana Cloud
+  (or run `hermes mcp login grafana`). During authorization you'll enter your
+  Grafana Cloud stack URL (https://<your-stack>.grafana.net) and choose read
+  or read+write access, then approve. Restart the session so tools load.
+
+  Requires a hosted Grafana Cloud stack and the "Assistant Cloud MCP User"
+  role (Editor or higher has it by default). Self-hosted Grafana isn't
+  supported by this endpoint — use the OSS mcp-grafana server instead.
+
+  Billing note: Grafana counts each user connecting via MCP as an active
+  Grafana Assistant user — see grafana.com Assistant pricing.

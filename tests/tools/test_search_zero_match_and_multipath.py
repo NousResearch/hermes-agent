@@ -27,12 +27,21 @@ class TestZeroMatchProbe:
         assert r["total_count"] == 0
         assert "case-insensitive" in r.get("warning", "")
 
+    def test_case_mismatch_hint_names_the_files(self, proj):
+        # The probe already ran the -i search; it must hand over the paths,
+        # not just a count (issue #80522: hint-only sent weak models into
+        # 5-search casing-variant spirals — +6 turns measured on the A/B eval).
+        r = json.loads(search_tool("token_alpha", path=str(proj / "proj"), task_id="t-zm"))
+        w = r.get("warning", "")
+        assert "a.py" in w and "b.py" in w
+
     def test_regex_metachar_literal_hint(self, proj):
         d = proj / "proj"
         (d / "meta.py").write_text("result = lookup[key+1]\n")
         r = json.loads(search_tool("lookup[key+1]", path=str(d), task_id="t-zm"))
         assert r["total_count"] == 0
         assert "literal match" in r.get("warning", "")
+        assert "meta.py" in r.get("warning", "")
 
     def test_true_zero_match_no_hint(self, proj):
         r = json.loads(search_tool("zzz_totally_absent_zzz", path=str(proj / "proj"), task_id="t-zm"))
@@ -46,6 +55,97 @@ class TestZeroMatchProbe:
         r = json.loads(search_tool("HIDDEN_ONLY_TOKEN", path=str(d), task_id="t-zm"))
         assert r["total_count"] == 0
         assert "hidden or gitignored" in r.get("warning", "")
+        # Same class as the casing probe: the path must be in the hint.
+        assert "conf.cfg" in r.get("warning", "")
+
+    def test_hidden_probe_prunes_dependency_trees_and_keeps_local_ignored(self, proj, monkeypatch):
+        d = proj / "proj"
+        dependency = d / "node_modules" / "package" / ".hidden"
+        dependency.mkdir(parents=True)
+        dependency_file = dependency / "dependency.js"
+        dependency_file.write_text("BOUNDED_HIDDEN_TOKEN = true\n")
+        local = d / ".project-local"
+        local.mkdir()
+        local_file = local / "settings.cfg"
+        local_file.write_text("BOUNDED_HIDDEN_TOKEN = true\n")
+        (d / ".gitignore").write_text("node_modules/\n.project-local/\n")
+
+        # Drive the public search seam while recording the commands that the
+        # zero-match probe actually executes. The real rg calls still run.
+        from tools.file_tools import _get_file_ops
+
+        task_id = "t-zm-pruned-hidden"
+        ops = _get_file_ops(task_id=task_id)
+        commands = []
+        real_exec = ops._exec
+
+        def recording_exec(command, *args, **kwargs):
+            commands.append(command)
+            return real_exec(command, *args, **kwargs)
+
+        monkeypatch.setattr(ops, "_exec", recording_exec)
+        r = json.loads(search_tool("BOUNDED_HIDDEN_TOKEN", path=str(d), task_id=task_id))
+        warning = r.get("warning", "")
+
+        assert r["total_count"] == 0
+        assert "hidden or gitignored" in warning
+        assert local_file.name in warning
+        assert dependency_file.name not in warning
+
+        hidden_probe_commands = [
+            command for command in commands
+            if "--hidden" in command and "--no-ignore" in command
+        ]
+        assert len(hidden_probe_commands) == 1
+        hidden_probe = hidden_probe_commands[0]
+        assert "--glob" in hidden_probe
+        assert "'!node_modules/**'" in hidden_probe
+        assert "'!**/node_modules/**'" in hidden_probe
+
+    def test_hidden_probe_prunes_explicit_dependency_root(self, proj, monkeypatch):
+        d = proj / "proj"
+        dependency = d / "node_modules" / "package" / ".hidden"
+        dependency.mkdir(parents=True)
+        (dependency / "dependency.js").write_text("EXPLICIT_ROOT_TOKEN = true\n")
+        (d / ".gitignore").write_text("node_modules/\n")
+
+        from tools.file_tools import _get_file_ops
+
+        task_id = "t-zm-explicit-pruned-root"
+        ops = _get_file_ops(task_id=task_id)
+        commands = []
+        real_exec = ops._exec
+
+        def recording_exec(command, *args, **kwargs):
+            commands.append(command)
+            return real_exec(command, *args, **kwargs)
+
+        monkeypatch.setattr(ops, "_exec", recording_exec)
+        r = json.loads(search_tool(
+            "EXPLICIT_ROOT_TOKEN",
+            path=str(d / "node_modules"),
+            task_id=task_id,
+        ))
+
+        assert r["total_count"] == 0
+        assert "warning" not in r
+        hidden_probe_commands = [
+            command for command in commands
+            if "--hidden" in command and "--no-ignore" in command
+        ]
+        assert len(hidden_probe_commands) == 1
+        hidden_probe = hidden_probe_commands[0]
+        assert "'!node_modules/**'" in hidden_probe
+        assert "'!**/node_modules/**'" in hidden_probe
+
+    def test_probe_path_list_is_capped(self, proj):
+        d = proj / "proj"
+        for i in range(8):
+            (d / f"cap{i}.txt").write_text("capped_case_token = 1\n")
+        r = json.loads(search_tool("CAPPED_CASE_TOKEN", path=str(d), task_id="t-zm"))
+        w = r.get("warning", "")
+        assert "case-insensitive" in w
+        assert "+3 more" in w  # 8 files, 5 shown
 
     def test_matching_search_unaffected(self, proj):
         r = json.loads(search_tool("TOKEN_ALPHA", path=str(proj / "proj"), task_id="t-zm"))

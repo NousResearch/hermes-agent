@@ -15,7 +15,7 @@ Delegate coding tasks to the Blackbox AI multi-model CLI.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/autonomous-ai-agents/blackbox` |
-| Path | `optional-skills/autonomous-ai-agents/blackbox` |
+| Path | `optional-skills/autonomous-ai-agents\blackbox` |
 | Version | `1.0.1` |
 | Author | Hermes Agent (Nous Research) |
 | License | MIT |

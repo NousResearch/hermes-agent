@@ -5,10 +5,12 @@
  */
 
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 
 import { test, vi } from 'vitest'
 
 import {
+  bindGeometryPersistence,
   computeWindowOptions,
   debounce,
   DEFAULT_HEIGHT,
@@ -154,4 +156,34 @@ test('debounce.flush runs now and cancels the pending timer', () => {
   assert.equal(calls, 1)
 
   vi.useRealTimers()
+})
+
+// ─── bindGeometryPersistence ───────────────────────────────────────────────
+
+test('bindGeometryPersistence saves on drag and on resize', () => {
+  const win = new EventEmitter()
+  let saves = 0
+
+  bindGeometryPersistence(win, () => {
+    saves += 1
+  })
+
+  win.emit('move')
+  win.emit('resize')
+  assert.equal(saves, 2)
+})
+
+// The regression this exists for: `moved`/`resized` never fire on Linux, so a
+// window bound only to those pretends to persist and silently forgets its place
+// every launch. A window that emits nothing else must still save.
+test('a window that never emits moved/resized still saves its geometry', () => {
+  const win = new EventEmitter()
+  let saves = 0
+
+  bindGeometryPersistence(win, () => {
+    saves += 1
+  })
+
+  win.emit('move')
+  assert.ok(saves > 0)
 })

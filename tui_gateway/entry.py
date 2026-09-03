@@ -20,6 +20,7 @@ import traceback
 from tui_gateway._stdin_recovery import handle_spurious_eof
 
 from tui_gateway import server
+from tui_gateway.event_replay import replay_epoch
 from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
 from tui_gateway.transport import TeeTransport
 
@@ -376,19 +377,10 @@ _recovery_times: list[float] = []
 
 
 def _has_configured_mcp_servers() -> bool:
-    """Return whether startup should attempt MCP discovery.
+    """Delegate to the shared native and portable MCP startup gate."""
+    from hermes_cli.mcp_startup import _has_configured_mcp_servers as configured
 
-    Keep this cheap so non-MCP users do not pay the MCP SDK import cost.
-    """
-    try:
-        from hermes_cli.config import read_raw_config
-
-        mcp_servers = (read_raw_config() or {}).get("mcp_servers")
-        return isinstance(mcp_servers, dict) and len(mcp_servers) > 0
-    except Exception:
-        # Be conservative: if we can't decide, fall back to attempting
-        # discovery. The caller starts it in the background.
-        return True
+    return configured()
 
 
 def ensure_mcp_discovery_started() -> None:
@@ -430,6 +422,25 @@ def ensure_mcp_discovery_started() -> None:
 def main():
     _install_sidecar_publisher()
 
+    # Cross-backend liveness (#94895): register a heartbeat row so the
+    # startup orphan sweep can distinguish "row owned by a live but idle
+    # backend" from "row truly orphaned". Must run BEFORE the sweep so
+    # the sweep sees our row in the same transaction.
+    try:
+        server._start_backend_heartbeat_refresher()
+    except Exception:
+        logger.warning("backend heartbeat refresher start failed", exc_info=True)
+
+    # One-time sweep of session rows orphaned by a previous gateway process
+    # (#65194) — the in-process WS-orphan reap timer dies with the process.
+    # Desktop/dashboard reach the agent through handle_ws instead; the
+    # scheduler is once-per-process + config-gated so the second site is a
+    # no-op when this already ran.
+    try:
+        server._schedule_startup_orphan_sweep()
+    except Exception:
+        logger.warning("startup orphan sweep scheduling failed", exc_info=True)
+
     # MCP tool discovery — backgrounded so a slow or unreachable MCP server
     # can't freeze TUI startup (a dead stdio/http server burns 1+2+4s of
     # connect retries → ~7s of dead air before the composer appears).  The
@@ -446,7 +457,13 @@ def main():
         "params": {
             "type": "gateway.ready",
             # change_events: see tui_gateway/ws.py — clients demote legacy polls.
-            "payload": {"skin": resolve_skin(), "change_events": True},
+            # replay_epoch: restart detection for the WS replay contract (the
+            # stdio TUI ignores it).
+            "payload": {
+                "skin": resolve_skin(),
+                "change_events": True,
+                "replay_epoch": replay_epoch(),
+            },
         },
     }):
         _log_exit("startup write failed (broken stdout pipe before first event)")

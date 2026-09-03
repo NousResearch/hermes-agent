@@ -14,6 +14,7 @@ full parent environment (provider API keys included):
 """
 
 import json
+import os
 from unittest.mock import MagicMock
 
 SECRET = "sk-super-secret-should-not-leak"
@@ -42,13 +43,34 @@ def _assert_sanitized(captured):
     assert env is not None, "subprocess must receive an explicit env="
     assert "ANTHROPIC_API_KEY" not in env
     # Sanitization filters secrets, not everything — ordinary vars survive.
-    assert env.get("PATH") == "/usr/bin:/bin"
+    _assert_path_preserved(env)
     # Confirms the telemetry helper still ran (default: telemetry disabled).
     assert env.get("CUA_DRIVER_RS_TELEMETRY_ENABLED") == "0"
 
 
+def _assert_path_preserved(env):
+    """Original PATH entries survive sanitization; the hermes console-script
+    dir may be prepended (see _sanitize_subprocess_env, issue #92998) so we
+    assert the contract, not byte equality."""
+    from tools.environments.local import _resolve_hermes_bin_dir
+
+    path_val = env.get("PATH", "")
+    assert path_val.endswith("/usr/bin:/bin"), path_val
+    hermes_bin = _resolve_hermes_bin_dir()
+    if hermes_bin and path_val != "/usr/bin:/bin":
+        assert path_val.startswith(hermes_bin + os.pathsep), path_val
+
+
 def _patch_windows_hide_flags(monkeypatch, module):
-    monkeypatch.setattr(module, "IS_WINDOWS", True, raising=False)
+    """Pin the ``windows_hide_flags()`` seam so the console-hiding assertion
+    is host-independent.
+
+    ``windows_hide_flags`` is our own platform probe (CREATE_NO_WINDOW on
+    Windows, ``0`` elsewhere). Patching that seam — rather than lying to the
+    interpreter about ``sys.platform`` — keeps the real subject of these
+    tests (does the spawn site forward its result to ``creationflags=``?)
+    covered on every host.
+    """
     monkeypatch.setattr(
         module, "windows_hide_flags", lambda: CREATE_NO_WINDOW, raising=False
     )
@@ -203,7 +225,7 @@ def test_doctor_sanitized_env_helper(monkeypatch):
 
     env = doctor._sanitized_cua_env()
     assert "ANTHROPIC_API_KEY" not in env
-    assert env.get("PATH") == "/usr/bin:/bin"
+    _assert_path_preserved(env)
     assert env.get("CUA_DRIVER_RS_TELEMETRY_ENABLED") == "0"
 
     # The Popen spawn site must actually use the sanitized helper.

@@ -25,8 +25,22 @@ import {
 
 /** Background-running dot aria-label (from i18n en.ts). */
 const BG_DOT_LABEL = 'Background task running'
+/** Foreground turn-running dot aria-label. */
+const SESSION_RUNNING_DOT_LABEL = 'Session running'
 /** Finished-unread dot aria-label. */
 const UNREAD_DOT_LABEL = 'Finished — unread'
+
+/**
+ * The auto-title auxiliary call hits the SAME mock provider as the chat turn,
+ * and its request carries the user's message — trigger keyword included. The
+ * mock's trigger matching is text-based, so the title call consumes a script
+ * index: the real chat turn then gets turn 2 (final answer, NO tool calls),
+ * the background process is never spawned, and the bg dot never appears.
+ * Whether that happens depends on which request lands first — the CI flake
+ * these specs had. Disable auto-title so script indices line up with real
+ * chat turns (same fix as interim-messages.spec.ts).
+ */
+const DISABLE_AUTO_TITLE = 'auxiliary:\n  title_generation:\n    enabled: false'
 
 /** Send a message and wait for the final response to appear. */
 async function sendMessageAndWait(
@@ -65,7 +79,7 @@ test.describe('sidebar states — background process and subagent', () => {
 
   test.beforeAll(async () => {
     restartMockServer()
-    fixture = await setupMockBackend()
+    fixture = await setupMockBackend({ extraConfig: DISABLE_AUTO_TITLE })
     await waitForAppReady(fixture, 120_000)
   })
 
@@ -118,22 +132,32 @@ test.describe('sidebar states — subagent and background dot coexist', () => {
   test.describe.configure({ mode: 'serial' })
 
   let fixture: MockBackendFixture
+  // Hold the background process open until the test releases it. Without the
+  // sentinel the process is a bare `sleep 5` racing the agent turn (two model
+  // trips + a real subagent spawn): on a loaded runner the turn outlives the
+  // sleep, the process is reaped mid-turn, and the dot never appears at all —
+  // the CI flake this spec had.
+  const bgRelease = createBackgroundReleaseHandle()
 
   test.beforeAll(async () => {
     restartMockServer()
-    fixture = await setupMockBackend()
+    fixture = await setupMockBackend({
+      extraConfig: DISABLE_AUTO_TITLE,
+      mockServer: { backgroundReleasePath: bgRelease.path },
+    })
     await waitForAppReady(fixture, 120_000)
   })
 
   test.afterAll(async () => {
+    bgRelease.release()
     await fixture?.cleanup()
+    bgRelease.cleanup()
   })
 
   test('background dot visible while subagent runs', async () => {
     const page = fixture.page
 
-    // Start the turn but DON'T wait for the final answer yet — we want
-    // to assert the background dot is visible WHILE the subagent runs.
+    // Start the turn — a held background process plus a real subagent.
     const composer = page.locator('[contenteditable="true"]').first()
     await composer.waitFor({ state: 'visible', timeout: 10_000 })
     await composer.click()
@@ -147,29 +171,45 @@ test.describe('sidebar states — subagent and background dot coexist', () => {
       { timeout: 15_000 },
     )
 
-    // The background process (sleep 5) should show a "Background task
-    // running" dot while the subagent is also running.
-    await expect
-      .poll(
-        () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),
-        { timeout: 30_000, message: 'background dot should appear while subagent runs' },
-      )
-      .toBeGreaterThan(0)
-
-    // Evidence: the background dot is visible while the subagent runs.
-    await page.screenshot({ path: 'test-results/bg-dot-while-subagent-runs.png' })
-
-    // Now wait for the final answer to appear.
+    // While the turn is busy the dot-state priority paints the session as
+    // "working" ('Session running') — that claim OUTRANKS 'background', so
+    // polling for the bg dot mid-turn races the turn length against the poll
+    // budget. Wait for the turn to END (final text + running dot cleared),
+    // then assert the background dot as a stable, sentinel-held state.
     await page.waitForFunction(
       (text) => (document.body.textContent ?? '').includes(text),
       SIDEBAR_CROSS_TEXTS.finalText,
       { timeout: 90_000 },
     )
+    await expect
+      .poll(
+        () => page.locator(`[aria-label="${SESSION_RUNNING_DOT_LABEL}"]`).count(),
+        { timeout: 30_000, message: 'session running dot should disappear after turn completes' },
+      )
+      .toBe(0)
 
-    // After the turn + auto-dismiss, the background dot should be gone.
-    await page.waitForTimeout(8000)
-    const bgCount = await page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count()
-    expect(bgCount, 'background dot should be gone after process exits').toBe(0)
+    // The background process is held open by the sentinel, so the bg dot is
+    // a stable state — poll only to absorb the event-driven flip landing a
+    // tick after the running dot clears.
+    await expect
+      .poll(
+        () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),
+        { timeout: 30_000, message: 'background dot should be visible after turn completes' },
+      )
+      .toBeGreaterThan(0)
+
+    // Evidence: the background dot is visible while the process runs.
+    await page.screenshot({ path: 'test-results/bg-dot-while-subagent-runs.png' })
+
+    // Release the process; the dot should clear on the completion event —
+    // event-driven, not a fixed sleep.
+    bgRelease.release()
+    await expect
+      .poll(
+        () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),
+        { timeout: 30_000, message: 'background dot should be gone after process exits' },
+      )
+      .toBe(0)
   })
 })
 
@@ -188,6 +228,7 @@ test.describe('sidebar states — cross-session dot transition', () => {
   test.beforeAll(async () => {
     restartMockServer()
     fixture = await setupMockBackend({
+      extraConfig: DISABLE_AUTO_TITLE,
       mockServer: { backgroundReleasePath: bgRelease.path },
     })
     await waitForAppReady(fixture, 120_000)
@@ -211,26 +252,38 @@ test.describe('sidebar states — cross-session dot transition', () => {
     await composer.type('E2E_SIDEBAR_CROSS', { delay: 20 })
     await page.keyboard.press('Enter')
 
-    // Wait for the background dot to appear.
-    await expect
-      .poll(
-        () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),
-        { timeout: 30_000, message: 'background dot should appear' },
-      )
-      .toBeGreaterThan(0)
-
-    // Wait for the final answer (turn completes, but bg process still running).
+    // While the turn is busy the dot-state priority paints the session as
+    // "working" ('Session running') — that claim OUTRANKS 'background', so
+    // polling for the bg dot mid-turn races the turn length (two model trips
+    // + a real subagent spawn) against the poll budget: the CI flake this
+    // spec had. Wait for the turn to END first, then assert the bg dot as a
+    // stable, sentinel-held state.
+    //
+    // The final answer text streams before message.complete, so text visibility
+    // alone is not a completion barrier. Wait for the foreground-running state
+    // to clear before asserting the background-process state.
     await page.waitForFunction(
       (text) => (document.body.textContent ?? '').includes(text),
       SIDEBAR_CROSS_TEXTS.finalText,
       { timeout: 90_000 },
     )
+    await expect
+      .poll(
+        () => page.locator(`[aria-label="${SESSION_RUNNING_DOT_LABEL}"]`).count(),
+        { timeout: 30_000, message: 'session running dot should disappear after turn completes' },
+      )
+      .toBe(0)
 
-    // The background dot must still be visible: the turn is done but the
+    // The background dot must be visible now: the turn is done but the
     // process is held open by the sentinel, so this is a stable state rather
-    // than a window we have to catch in time.
-    const bgDuringTurn = await page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count()
-    expect(bgDuringTurn, 'background dot should still be visible after turn completes').toBeGreaterThan(0)
+    // than a window we have to catch in time. Poll to absorb the event-driven
+    // flip landing a tick after the running dot clears.
+    await expect
+      .poll(
+        () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),
+        { timeout: 30_000, message: 'background dot should be visible after turn completes' },
+      )
+      .toBeGreaterThan(0)
 
     // Evidence: bg dot visible on session A while its turn is done but the
     // background process hasn't exited yet.

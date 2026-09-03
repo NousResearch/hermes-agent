@@ -13,6 +13,11 @@ describe('modelSearchText', () => {
     expect(modelSearchText('k3')).toBe('k3 kimi-k3 kimi')
     expect(modelSearchText('K3')).toBe('K3 kimi-k3 kimi')
   })
+
+  it('adds ox-alpha aliases for the Ox Alpha preview wire id', () => {
+    expect(modelSearchText('x-preview-f-free')).toBe('x-preview-f-free ox-alpha ox')
+    expect(modelSearchText('X-Preview-F-Free')).toBe('X-Preview-F-Free ox-alpha ox')
+  })
 })
 
 describe('model picker search with aliases', () => {
@@ -31,5 +36,13 @@ describe('model picker search with aliases', () => {
   it('does not invent k3 for unrelated queries', () => {
     const ranked = fuzzyRank(models, 'glm', modelSearchText).map(r => r.item)
     expect(ranked).toEqual([])
+  })
+
+  it('surfaces the Ox Alpha preview slug when the user searches ox', () => {
+    const zenModels = ['x-preview-f-free', 'gpt-5.6-sol', 'kimi-k3']
+    const ranked = fuzzyRank(zenModels, 'ox', modelSearchText).map(r => r.item)
+    expect(ranked).toContain('x-preview-f-free')
+    const rankedFull = fuzzyRank(zenModels, 'ox-alpha', modelSearchText).map(r => r.item)
+    expect(rankedFull).toContain('x-preview-f-free')
   })
 })

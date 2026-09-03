@@ -63,4 +63,25 @@ describe('delegateTaskPayloads', () => {
 
     expect(spec).toMatchObject({ event_type: 'subagent.complete', status: 'failed' })
   })
+
+  it.each(['timeout', 'error', 'failed', 'failure', 'TIMEOUT'])(
+    'maps completion with result.status=%s to a failed subagent.complete',
+    resultStatus => {
+      const [spec] = delegateTaskPayloads(
+        payload({ name: 'delegate_task', result: { status: resultStatus, summary: 'timed out' } }),
+        'complete'
+      )
+
+      expect(spec).toMatchObject({ event_type: 'subagent.complete', status: 'failed' })
+    }
+  )
+
+  it('maps a successful completion to completed', () => {
+    const [spec] = delegateTaskPayloads(
+      payload({ name: 'delegate_task', result: { status: 'success', summary: 'done' } }),
+      'complete'
+    )
+
+    expect(spec).toMatchObject({ event_type: 'subagent.complete', status: 'completed' })
+  })
 })

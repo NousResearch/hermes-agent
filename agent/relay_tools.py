@@ -21,6 +21,7 @@ def execute(
     callback: Callable[[dict[str, Any]], Any],
     *,
     session_id: str,
+    tool_call_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Run one tool call through Relay and return its final arguments."""
@@ -36,14 +37,23 @@ def execute(
     def invoke(next_args: Any) -> Any:
         nonlocal callback_error, observed_args
         observed_args = next_args if isinstance(next_args, dict) else args
+
+        def guarded(final_args: dict[str, Any]) -> Any:
+            # Everything the tool transitively calls (including auxiliary LLM
+            # calls it forwards to worker threads) must bypass managed Relay
+            # execution — the native pipeline's Futures bind to THIS loop,
+            # which is blocked until the tool returns (#77244).
+            with relay_runtime.managed_callback_guard():
+                return callback(final_args)
+
         try:
-            result = callback_context.copy().run(callback, observed_args)
+            result = callback_context.copy().run(guarded, observed_args)
         except BaseException as exc:
             callback_error = exc
             raise
         raw_result["value"] = result
         raw_result["json"] = _jsonable(result)
-        return raw_result["json"]
+        return runtime.relay.ToolExecutionResult(raw_result["json"])
 
     try:
         managed = _run_awaitable(
@@ -55,6 +65,7 @@ def execute(
                 invoke,
                 handle=parent,
                 metadata=_jsonable(metadata or {}),
+                tool_call_id=tool_call_id or None,
             )
         )
     except BaseException as exc:
@@ -76,11 +87,12 @@ def execute(
             return raw_result["value"], observed_args
         raise
 
-    if "value" in raw_result and _json_equal(managed, raw_result["json"]):
+    managed_result = managed.result
+    if "value" in raw_result and _json_equal(managed_result, raw_result["json"]):
         return raw_result["value"], observed_args
-    if isinstance(managed, str):
-        return managed, observed_args
-    return json.dumps(_jsonable(managed), ensure_ascii=False), observed_args
+    if isinstance(managed_result, str):
+        return managed_result, observed_args
+    return json.dumps(_jsonable(managed_result), ensure_ascii=False), observed_args
 
 
 def _jsonable(value: Any) -> Any:
@@ -93,7 +105,12 @@ def _jsonable(value: Any) -> Any:
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         try:
-            return _jsonable(model_dump(mode="json"))
+            # warnings=False: suppress pydantic's serializer UserWarnings on
+            # generic-union SDK models; they would leak to the CLI mid-turn.
+            try:
+                return _jsonable(model_dump(mode="json", warnings=False))
+            except TypeError:
+                return _jsonable(model_dump())
         except Exception:
             pass
     try:

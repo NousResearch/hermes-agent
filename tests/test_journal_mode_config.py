@@ -29,6 +29,17 @@ def _disable_vulnerable_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _reset_configured_delete_override_warned_paths():
+    """Reset the configured-delete-override warned-paths set so the
+    once-per-process-per-db_label dedup doesn't leak between tests."""
+    import hermes_state
+
+    hermes_state._delete_overridden_warned_paths.clear()
+    yield
+    hermes_state._delete_overridden_warned_paths.clear()
+
+
 def test_database_journal_mode_has_a_canonical_default():
     from hermes_cli.config import DEFAULT_CONFIG
 
@@ -112,7 +123,10 @@ def test_configured_delete_validates_vulnerable_sqlite_result(monkeypatch, tmp_p
         conn.close()
 
 
-def test_configured_delete_never_live_downgrades_existing_wal(monkeypatch, tmp_path):
+def test_configured_delete_never_live_downgrades_existing_wal(monkeypatch, tmp_path, caplog):
+    """Keeping WAL is correct, but the operator must be told their configured
+    delete had no effect (otherwise the DB silently stays WAL and the protection
+    they configured never applies)."""
     from hermes_state import apply_wal_with_fallback
 
     _configure_mode(monkeypatch, tmp_path, "delete")
@@ -124,8 +138,96 @@ def test_configured_delete_never_live_downgrades_existing_wal(monkeypatch, tmp_p
             "hermes_state.is_sqlite_wal_reset_vulnerable",
             lambda **kwargs: True,
         )
-        assert apply_wal_with_fallback(conn, db_label="existing-wal.db") == "wal"
+        with caplog.at_level("ERROR", logger="hermes_state"):
+            assert apply_wal_with_fallback(conn, db_label="existing-wal.db") == "wal"
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert any(
+            "database.journal_mode=delete is configured" in r.message
+            and "on-disk" in r.message
+            for r in caplog.records
+        ), "expected a warning that configured delete was overridden by on-disk WAL"
+    finally:
+        conn.close()
+
+
+def test_configured_delete_overridden_warns_on_non_vulnerable_runtime_too(monkeypatch, tmp_path, caplog):
+    """When the SQLite runtime is NOT WAL-reset-vulnerable (e.g. after a
+    3.51.3+ upgrade), the on-disk WAL + configured-delete case reaches the
+    read-only probe path instead of the vulnerability path. That path used to
+    return WAL with no signal at all; it must emit the same override warning."""
+    from hermes_state import apply_wal_with_fallback
+
+    _configure_mode(monkeypatch, tmp_path, "delete")
+    _disable_vulnerable_gate(monkeypatch)
+    db_path = tmp_path / "existing-wal.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        with caplog.at_level("ERROR", logger="hermes_state"):
+            assert apply_wal_with_fallback(conn, db_label="existing-wal.db") == "wal"
+            assert apply_wal_with_fallback(conn, db_label="existing-wal.db") == "wal"
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        warnings = [
+            r for r in caplog.records
+            if "database.journal_mode=delete is configured" in r.message
+        ]
+        assert len(warnings) == 1, (
+            "probe path must warn when configured delete is overridden by on-disk WAL, "
+            "and dedup to one per process per db_label"
+        )
+    finally:
+        conn.close()
+
+
+def test_configured_delete_overridden_warning_fires_once_per_db(monkeypatch, tmp_path, caplog):
+    """The override warning is deduped per process per db_label (same discipline
+    as the WAL-fallback warning), so repeated connections don't flood the log."""
+    from hermes_state import apply_wal_with_fallback
+
+    _configure_mode(monkeypatch, tmp_path, "delete")
+    monkeypatch.setattr(
+        "hermes_state.is_sqlite_wal_reset_vulnerable",
+        lambda **kwargs: True,
+    )
+    db_path = tmp_path / "existing-wal.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        with caplog.at_level("ERROR", logger="hermes_state"):
+            assert apply_wal_with_fallback(conn, db_label="once.db") == "wal"
+            assert apply_wal_with_fallback(conn, db_label="once.db") == "wal"
+            assert apply_wal_with_fallback(conn, db_label="once.db") == "wal"
+        warnings = [
+            r for r in caplog.records
+            if "database.journal_mode=delete is configured" in r.message
+        ]
+        assert len(warnings) == 1, "override warning must fire once per process per db_label"
+    finally:
+        conn.close()
+
+
+def test_configured_delete_with_require_wal_and_existing_wal_returns_wal(monkeypatch, tmp_path, caplog):
+    """Pin the require_wal=True + configured=delete + on-disk WAL edge case: the
+    existing-WAL probe branch returns "wal" unconditionally (require_wal only
+    governs the WAL-refusal fallback paths), so the override warning fires and no
+    WalUnsupportedError is raised."""
+    from hermes_state import apply_wal_with_fallback
+
+    _configure_mode(monkeypatch, tmp_path, "delete")
+    _disable_vulnerable_gate(monkeypatch)
+    db_path = tmp_path / "existing-wal.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        with caplog.at_level("ERROR", logger="hermes_state"):
+            result = apply_wal_with_fallback(
+                conn, db_label="existing-wal.db", require_wal=True
+            )
+        assert result == "wal"
+        assert any(
+            "database.journal_mode=delete is configured" in r.message
+            for r in caplog.records
+        )
     finally:
         conn.close()
 

@@ -64,3 +64,40 @@ def test_user_cannot_shadow_managed_literal_via_envref(homes, monkeypatch):
     _write(home / "config.yaml", "model:\n  default: ${EVIL}\n")
     _write(managed / "config.yaml", "model:\n  default: managed/locked\n")
     assert cfg_get(load_config(), "model", "default") == "managed/locked"
+
+
+def test_managed_nested_dict_default_flattens_on_load(homes):
+    """A dict-valued managed ``model.default`` must flatten on load.
+
+    ``load_config()`` merges the managed overlay after its single
+    normalization pass, so a managed ``model.default: {provider: ...,
+    model: ...}`` used to reach runtime readers as a raw dict. The overlay
+    is now normalized before merging (parity with
+    ``managed_scope.apply_managed_overlay``), so the merged config exposes a
+    string ``default`` paired with the nested ``provider``.
+    """
+    from hermes_cli.config import load_config, cfg_get
+
+    home, managed = homes
+    _write(home / "config.yaml", "model:\n  default: user/model\n")
+    _write(managed / "config.yaml", "model:\n  default:\n    provider: nous\n    model: managed/nested\n")
+    cfg = load_config()
+    assert cfg_get(cfg, "model", "default") == "managed/nested"
+    assert cfg_get(cfg, "model", "provider") == "nous"
+
+
+def test_managed_bare_string_model_flattens_to_default_on_load(homes):
+    """A bare ``model: <string>`` in the managed file stays a dict shape.
+
+    Mirrors the existing managed-overlay contract: a bare string model must
+    merge as ``model.default`` so readers that do
+    ``cfg["model"]["default"]`` keep working (never a bare string at
+    ``cfg["model"]``).
+    """
+    from hermes_cli.config import load_config, cfg_get
+
+    home, managed = homes
+    _write(home / "config.yaml", "model:\n  default: user/model\n")
+    _write(managed / "config.yaml", "model: managed/bare\n")
+    cfg = load_config()
+    assert cfg_get(cfg, "model", "default") == "managed/bare"

@@ -30,9 +30,11 @@ def _reset_cron_running_set():
     import cron.scheduler as sched
 
     sched._running_job_ids.clear()
+    sched._running_fire_owners.clear()
     sched._interrupted_job_ids.clear()
     yield
     sched._running_job_ids.clear()
+    sched._running_fire_owners.clear()
     sched._interrupted_job_ids.clear()
 
 
@@ -85,9 +87,13 @@ class TestKillToolSubprocessesMarksCronInterrupted:
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01  # force the timeout path
+        runner._cron_drain_timeout = 0.01  # ...past the cron floor too (#82161)
         adapter.disconnect = _make_async_noop()
 
         sched._running_job_ids.add("job-1")
+        sched._running_fire_owners["job-1"] = {
+            object(): ("owner-1", sched._get_hermes_home().resolve())
+        }
 
         monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 1)
         monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)

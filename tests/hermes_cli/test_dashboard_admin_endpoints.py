@@ -545,9 +545,35 @@ class TestSessionManagementEndpoints:
         assert r.status_code == 200
         body = r.json()
         assert body["matched"] >= 1
+        assert "skipped_open" in body
         assert "oldest_started_at" in body and "newest_started_at" in body
         assert "oldest_last_active" in body and "newest_last_active" in body
         assert all("last_active" in session for session in body["sessions"])
+
+    def test_prune_reports_open_sessions_excluded_by_safety_guard(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        db.create_session(session_id="sess-old-open", source="skip-test")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (1.0, "sess-old-open"),
+        )
+        db._conn.commit()
+        db.close()
+
+        r = self.client.post(
+            "/api/sessions/prune",
+            json={"older_than_days": 1, "source": "skip-test"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["removed"] == 0
+        assert body["skipped_open"] == 1
+
+        db = SessionDB()
+        assert db.get_session("sess-old-open") is not None
+        db.close()
 
 
 
@@ -633,6 +659,42 @@ class TestSkillsHubSourcesEndpoint:
         assert len(body["featured"]) == 1
         assert body["featured"][0]["trust_level"] == "trusted"
         assert isinstance(body["installed"], dict)
+
+
+class TestOfficialSkillsCatalogEndpoint:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_lists_full_catalog_with_installed_flags(self, monkeypatch):
+        # Serve the catalog from OptionalSkillSource.list_local() (no network),
+        # with the per-profile installed map marking already-installed rows.
+        metas = [
+            _FakeMeta("official/gifs/gif-search", "builtin", "official"),
+            _FakeMeta("official/creative/ascii-art", "builtin", "official"),
+        ]
+        monkeypatch.setattr(
+            "tools.skills_hub.OptionalSkillSource.list_local",
+            lambda self: metas,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.web_server._installed_hub_identifiers",
+            lambda profile=None: {"official/gifs/gif-search": {"name": "gif-search"}},
+        )
+        r = self.client.get("/api/skills/hub/official")
+        assert r.status_code == 200
+        skills = r.json()["skills"]
+        by_ident = {s["identifier"]: s for s in skills}
+        assert set(by_ident) == {
+            "official/gifs/gif-search",
+            "official/creative/ascii-art",
+        }
+        # Category derived from the identifier's directory segment.
+        assert by_ident["official/gifs/gif-search"]["category"] == "gifs"
+        assert by_ident["official/creative/ascii-art"]["category"] == "creative"
+        # Installed flag comes from the profile's hub lock.
+        assert by_ident["official/gifs/gif-search"]["installed"] is True
+        assert by_ident["official/creative/ascii-art"]["installed"] is False
 
 
 class TestSkillsHubPreviewEndpoint:
@@ -951,6 +1013,10 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
 
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
     monkeypatch.setattr(ws, "_ACTION_LOG_DIR", tmp_path)
+    # Isolate the module-global proc registry: _spawn_hermes_action stores
+    # _FakeProc (no poll()) in _ACTION_PROCS, and later tests' lifespan
+    # shutdown (_terminate_desktop_managed_gateway) would trip over it.
+    monkeypatch.setattr(ws, "_ACTION_PROCS", {})
 
     captured = {}
 
@@ -967,3 +1033,69 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
 
     assert "_HERMES_GATEWAY" not in captured["env"]
     assert captured["env"]["HERMES_NONINTERACTIVE"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# Desktop lifespan reaps orphan gateways at serve startup (#77276)
+# ---------------------------------------------------------------------------
+
+def test_desktop_lifespan_reaps_orphan_gateways_on_startup(
+    monkeypatch, _isolate_hermes_home
+):
+    """Starting a Desktop serve backend should reap orphan gateways left by a
+    previous serve session before forking a fresh one (#77276).
+
+    Graceful shutdown reaps the managed child, but an abnormal exit reparents
+    the old gateway to launchd (PPID=1) where it keeps holding the QQ
+    WebSocket. The lifespan calls _reap_unsupervised_gateway_orphans() once at
+    startup under HERMES_DESKTOP=1 so the stale orphan is cleared first.
+    """
+    import hermes_cli.web_server as ws
+
+    called = []
+
+    def _fake_reap():
+        called.append(True)
+        return True
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    # Keep the lifespan cheap: don't re-import the gateway module or spin up the
+    # real cron scheduler thread.
+    monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
+    # web_server imports the reaper lazily from hermes_cli.gateway, so patch it
+    # on that module.
+    import hermes_cli.gateway as g
+
+    monkeypatch.setattr(g, "_reap_unsupervised_gateway_orphans", _fake_reap)
+
+    client, _header = _client()
+    with client:
+        pass
+
+    assert called == [True]
+
+
+def test_desktop_lifespan_terminates_managed_gateway_restart(monkeypatch):
+    """A Desktop-owned gateway child must not survive its serve backend."""
+    import hermes_cli.web_server as ws
+
+    calls = []
+
+    class _FakeRunningProc:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            calls.append("terminate")
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
+    monkeypatch.setitem(ws._ACTION_PROCS, "gateway-restart", _FakeRunningProc())
+
+    client, _header = _client()
+    with client:
+        pass
+
+    assert calls == ["terminate"]

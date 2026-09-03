@@ -10,6 +10,14 @@ import type { ReactNode } from 'react'
 export type ContributionSource = 'core' | (string & {})
 
 /**
+ * Which workspace surface the window is looking at. `'sessions'` is the classic
+ * session workspace; `'bots'` means Bot Mode has one exact bot selected,
+ * identified by an opaque owner key. Consumers ADAPT to this — it steers where
+ * the `+` routes — but it never decides whether a pane renders.
+ */
+export type WorkspaceMode = 'sessions' | 'bots'
+
+/**
  * The single, uniform primitive every surface consumes. A bar renders these as
  * inline items via `<Slot>`; a dock renders them as stacked/tabbed panes via
  * `<PaneHost>`. Same shape either way -- the host decides how to present them.

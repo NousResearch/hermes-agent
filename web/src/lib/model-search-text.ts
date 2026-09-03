@@ -10,6 +10,9 @@
  */
 const MODEL_SEARCH_ALIASES: Record<string, readonly string[]> = {
   k3: ["kimi-k3", "kimi"],
+  // OpenCode Zen serves the "Ox Alpha" stealth model under an opaque
+  // preview slug; let users find it by its public codename.
+  "x-preview-f-free": ["ox-alpha", "ox"],
 };
 
 /** Haystack for fuzzy/substring model search; never changes the wire id. */

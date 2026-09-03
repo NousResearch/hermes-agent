@@ -124,6 +124,7 @@ describe('wake indicator window controller', () => {
     const controller = createWakeIndicatorWindowController({
       isMac: true,
       loadWindowUrl: vi.fn(),
+      log: () => {},
       preloadPath: '/tmp/preload.cjs',
       rendererIndex: () => '/tmp/index.html',
       wireWindow: vi.fn()

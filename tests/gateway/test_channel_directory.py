@@ -110,6 +110,27 @@ class TestBuildChannelDirectoryOffload:
         assert builder_threads
         assert all(tid != loop_thread for tid in builder_threads)
 
+    def test_directory_write_runs_off_event_loop_thread(self, tmp_path):
+        """The persist step calls os.fsync, which blocks the loop until the write
+        reaches stable storage. #60794 moved the builders off the loop; the write
+        stayed on it."""
+        from gateway.config import Platform
+
+        cache_file = tmp_path / "channel_directory.json"
+        loop_thread = threading.get_ident()
+        write_threads = []
+
+        def fake_write(path, data, *args, **kwargs):
+            write_threads.append(threading.get_ident())
+
+        with patch("gateway.channel_directory.atomic_json_write", side_effect=fake_write), \
+             patch("gateway.channel_directory._build_discord", return_value=[]), \
+             patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            asyncio.run(build_channel_directory({Platform.DISCORD: object()}))
+
+        assert write_threads
+        assert all(tid != loop_thread for tid in write_threads)
+
 
 class TestResolveChannelName:
     def _setup(self, tmp_path, platforms):
@@ -315,6 +336,28 @@ class TestBuildSlack:
 
         assert {e["id"] for e in entries} == {"C001", "C002"}
         assert client.users_conversations.await_count == 2
+
+    def test_thread_ids_use_base_conversation_and_dedupe_info_calls(self, tmp_path, monkeypatch):
+        client = _make_slack_client([{"ok": True, "channels": [], "response_metadata": {}}])
+        client.conversations_info = AsyncMock(side_effect=[
+            {"ok": True, "channel": {"name": "engineering"}},
+            {"ok": True, "channel": {"name": "support"}},
+        ])
+        monkeypatch.setattr(
+            "gateway.channel_directory._build_from_sessions",
+            lambda platform: [
+                {"id": "C001:111", "name": "C001:111", "type": "channel"},
+                {"id": "C001:222", "name": "C001:222", "type": "channel"},
+                {"id": "C002:333", "name": "C002:333", "type": "channel"},
+            ],
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
+
+        assert {entry["name"] for entry in entries} == {"engineering", "support"}
+        assert client.conversations_info.await_count == 2
+        assert [call.kwargs["channel"] for call in client.conversations_info.await_args_list] == ["C001", "C002"]
 
 
 class TestChannelAliases:

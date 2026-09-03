@@ -23,8 +23,12 @@ class TestJsonStringCoercion:
         result = json.loads(todo_tool(todos=todos_str, store=store))
         assert "error" not in result
         assert result["summary"]["total"] == 2
-        assert result["todos"][0]["id"] == "t1"
-        assert result["todos"][1]["status"] == "in_progress"
+        # Order-agnostic: TodoStore._normalize_order may lift the in_progress
+        # item ahead of earlier pending rows (#42649); this test only pins
+        # JSON-string coercion, not ordering.
+        by_id = {t["id"]: t for t in result["todos"]}
+        assert set(by_id) == {"t1", "t2"}
+        assert by_id["t2"]["status"] == "in_progress"
 
 
     def test_non_list_non_string_returns_error(self):

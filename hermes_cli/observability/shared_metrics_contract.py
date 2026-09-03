@@ -18,14 +18,20 @@ MODEL_CALL_SCOPE = "hermes.model_call"
 MODEL_CALL_PROFILE_MODEL = "unknown"
 TASK_SCOPE = "hermes.task_run"
 TOOL_CALL_SCOPE = "hermes.tool_call"
+CLIENT_ACTIVE_MARK = "hermes.client.active"
 TOOL_APPROVAL_MARK = "hermes.tool_approval"
+SKILL_LIFECYCLE_MARK = "hermes.skill.lifecycle"
+SKILL_LOAD_MARK = "hermes.skill.load"
 SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
+CLIENT_ACTIVE_METRIC = "hermes.client.active"
 LEGACY_MODEL_CALL_METRIC = "hermes.model_call.count"
 MODEL_ROUTE_METRIC = "hermes.model_route.count"
 TASK_STARTED_METRIC = "hermes.task_run.started"
 TASK_FINISHED_METRIC = "hermes.task_run.finished"
 TOOL_CALL_METRIC = "hermes.tool_call.count"
 TOOL_APPROVAL_METRIC = "hermes.tool_approval.count"
+SKILL_LIFECYCLE_METRIC = "hermes.skill.lifecycle.count"
+SKILL_LOAD_METRIC = "hermes.skill.load.count"
 MODEL_IDENTIFIER_MAX_LENGTH = 256
 PROVIDER_IDENTIFIER_MAX_LENGTH = 64
 _METRIC_IDENTIFIER_CHARACTERS = frozenset(
@@ -152,6 +158,123 @@ TOOL_LATENCY_BUCKETS: frozenset[str] = frozenset({
     "unknown",
 })
 TOOL_RETRY_BUCKETS: frozenset[str] = COUNT_BUCKETS | frozenset({"unknown"})
+SKILL_LIFECYCLE_ACTIONS: frozenset[str] = frozenset({
+    "archived",
+    "created",
+    "edited",
+    "installed",
+    "patched",
+    "restored",
+    "stale",
+})
+SKILL_PROVENANCES: frozenset[str] = frozenset({
+    "agent_created",
+    "external",
+    "installed",
+    "local",
+    "unknown",
+})
+SKILL_REUSE_STATES: frozenset[str] = frozenset({"first_use", "reused"})
+SKILL_POST_PATCH_STATES: frozenset[str] = frozenset({
+    "no_new_patch",
+    "not_applicable",
+    "reused_after_patch",
+})
+CLIENT_OS_FAMILIES: frozenset[str] = frozenset({
+    "linux",
+    "macos",
+    "unknown",
+    "windows",
+})
+CLIENT_ARCHITECTURES: frozenset[str] = frozenset({
+    "arm",
+    "arm64",
+    "unknown",
+    "x86",
+    "x86_64",
+})
+CLIENT_INSTALL_METHODS: frozenset[str] = frozenset({
+    "apt",
+    "docker",
+    "git",
+    "home-manager",
+    "homebrew",
+    "nixos",
+    "pip",
+    "unknown",
+})
+CLIENT_RESOURCE_KEYS: frozenset[str] = frozenset({
+    "architecture",
+    "hermes_version",
+    "install_method",
+    "os_family",
+})
+
+def client_os_family(value: Any) -> str:
+    """Map a platform system name to the shared-metrics OS taxonomy."""
+    normalized = str(value or "").strip().lower()
+    return {
+        "darwin": "macos",
+        "linux": "linux",
+        "macos": "macos",
+        "windows": "windows",
+    }.get(normalized, "unknown")
+
+
+def client_architecture(value: Any) -> str:
+    """Map a machine architecture to the shared-metrics taxonomy."""
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {"amd64", "x64", "x86_64"}:
+        return "x86_64"
+    if normalized in {"aarch64", "arm64"}:
+        return "arm64"
+    if normalized in {"i386", "i486", "i586", "i686", "x86"}:
+        return "x86"
+    if normalized.startswith("armv"):
+        return "arm"
+    return "unknown"
+
+
+def client_install_method(value: Any) -> str:
+    """Return an allowlisted Hermes installation method."""
+    normalized = str(value or "").strip().lower()
+    if normalized == "nix":
+        return "nixos"
+    return normalized if normalized in CLIENT_INSTALL_METHODS else "unknown"
+
+
+def client_resource(
+    hermes_version: Any,
+    *,
+    os_name: Any,
+    architecture: Any,
+    install_method: Any,
+) -> dict[str, str]:
+    """Build the bounded client resource attached to aggregate packages."""
+    normalized_version = str(hermes_version or "").strip()
+    if not normalized_version or len(normalized_version) > 64:
+        normalized_version = "unknown"
+    return {
+        "architecture": client_architecture(architecture),
+        "hermes_version": normalized_version,
+        "install_method": client_install_method(install_method),
+        "os_family": client_os_family(os_name),
+    }
+
+
+def client_resource_is_valid(resource: Any) -> bool:
+    """Return whether a package resource exactly matches the bounded contract."""
+    if not isinstance(resource, dict) or set(resource) != CLIENT_RESOURCE_KEYS:
+        return False
+    version = resource.get("hermes_version")
+    return (
+        isinstance(version, str)
+        and 0 < len(version) <= 64
+        and resource.get("os_family") in CLIENT_OS_FAMILIES
+        and resource.get("architecture") in CLIENT_ARCHITECTURES
+        and resource.get("install_method") in CLIENT_INSTALL_METHODS
+    )
+
 
 _LEGACY_PROVIDER_FAMILIES = frozenset({
     "aggregator",
@@ -187,6 +310,7 @@ _LEGACY_MODEL_FAMILIES = frozenset({
 })
 
 _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
+    CLIENT_ACTIVE_METRIC: {},
     # Retained only so pre-v2 pending rows remain packageable.
     LEGACY_MODEL_CALL_METRIC: {
         "call_role": frozenset({"primary"}),
@@ -221,9 +345,22 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "attribution": TOOL_APPROVAL_ATTRIBUTIONS,
         "outcome": TOOL_APPROVAL_OUTCOMES - {"not_required"},
     },
+    SKILL_LIFECYCLE_METRIC: {
+        "action": SKILL_LIFECYCLE_ACTIONS,
+        "provenance": SKILL_PROVENANCES,
+    },
+    SKILL_LOAD_METRIC: {
+        "post_patch_state": SKILL_POST_PATCH_STATES,
+        "provenance": SKILL_PROVENANCES,
+        "reuse_state": SKILL_REUSE_STATES,
+        "use_count_bucket": COUNT_BUCKETS,
+    },
 }
 COUNTER_METRICS: frozenset[str] = frozenset({
+    CLIENT_ACTIVE_METRIC,
     MODEL_ROUTE_METRIC,
+    SKILL_LIFECYCLE_METRIC,
+    SKILL_LOAD_METRIC,
     TASK_FINISHED_METRIC,
     TASK_STARTED_METRIC,
     TOOL_APPROVAL_METRIC,
@@ -267,6 +404,22 @@ def _event_metadata_is_valid(event: Any) -> bool:
     return not relay_metadata - {"otel.status_code"} and metadata.get(
         "otel.status_code", "OK"
     ) in {"OK", "ERROR"}
+
+
+def client_active_counter(event: Any) -> tuple[str, dict[str, str]] | None:
+    """Return the active-install counter for one empty allowlisted mark."""
+    if not _event_metadata_is_valid(event):
+        return None
+    if (
+        str(getattr(event, "kind", "") or "") != "mark"
+        or str(getattr(event, "name", "") or "") != CLIENT_ACTIVE_MARK
+        or getattr(event, "category", None) is not None
+        or getattr(event, "scope_category", None) is not None
+        or getattr(event, "category_profile", None) is not None
+        or getattr(event, "data", None) != {}
+    ):
+        return None
+    return CLIENT_ACTIVE_METRIC, {}
 
 
 def model_call_dimensions(event: Any) -> dict[str, str] | None:
@@ -445,6 +598,86 @@ def tool_approval_counter(event: Any) -> tuple[str, dict[str, str]] | None:
     if not counter_dimensions_are_valid(TOOL_APPROVAL_METRIC, dimensions):
         return None
     return TOOL_APPROVAL_METRIC, dimensions
+
+
+def skill_counter(event: Any) -> tuple[str, dict[str, str]] | None:
+    """Return one validated skill lifecycle or load counter from a safe mark."""
+    if not _event_metadata_is_valid(event):
+        return None
+    if (
+        str(getattr(event, "kind", "") or "") != "mark"
+        or getattr(event, "category", None) is not None
+        or getattr(event, "scope_category", None) is not None
+        or getattr(event, "category_profile", None) is not None
+    ):
+        return None
+
+    name = str(getattr(event, "name", "") or "")
+    data = getattr(event, "data", None)
+    if name == SKILL_LIFECYCLE_MARK:
+        metric_name = SKILL_LIFECYCLE_METRIC
+        expected_fields = {"action", "provenance"}
+    elif name == SKILL_LOAD_MARK:
+        metric_name = SKILL_LOAD_METRIC
+        expected_fields = {
+            "post_patch_state",
+            "provenance",
+            "reuse_state",
+            "use_count_bucket",
+        }
+    else:
+        return None
+    if not isinstance(data, dict) or set(data) != expected_fields:
+        return None
+    dimensions = {field: data.get(field) for field in sorted(expected_fields)}
+    if not counter_dimensions_are_valid(metric_name, dimensions):
+        return None
+    return metric_name, dimensions
+
+
+def skill_lifecycle_fields(kwargs: dict[str, Any]) -> dict[str, str] | None:
+    """Build bounded fields for one successful non-load skill transition."""
+    action = str(kwargs.get("action") or "").strip().lower()
+    if action not in SKILL_LIFECYCLE_ACTIONS:
+        return None
+    return {
+        "action": action,
+        "provenance": skill_provenance(kwargs.get("provenance")),
+    }
+
+
+def skill_load_fields(kwargs: dict[str, Any]) -> dict[str, str] | None:
+    """Build bounded skill-use fields without exporting local skill identity."""
+    use_count = kwargs.get("use_count")
+    reused = kwargs.get("reused")
+    reuse_after_patch = kwargs.get("reuse_after_patch")
+    if (
+        isinstance(use_count, bool)
+        or not isinstance(use_count, int)
+        or use_count < 1
+        or not isinstance(reused, bool)
+        or not isinstance(reuse_after_patch, bool)
+        or (reuse_after_patch and not reused)
+    ):
+        return None
+    return {
+        "post_patch_state": (
+            "not_applicable"
+            if not reused
+            else "reused_after_patch"
+            if reuse_after_patch
+            else "no_new_patch"
+        ),
+        "provenance": skill_provenance(kwargs.get("provenance")),
+        "reuse_state": "reused" if reused else "first_use",
+        "use_count_bucket": count_bucket(use_count),
+    }
+
+
+def skill_provenance(value: Any) -> str:
+    """Normalize producer provenance to the closed shared-metrics taxonomy."""
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in SKILL_PROVENANCES else "unknown"
 
 
 def execution_surface(kwargs: dict[str, Any]) -> str:

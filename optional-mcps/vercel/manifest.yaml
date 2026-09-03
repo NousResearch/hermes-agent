@@ -1,0 +1,33 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: vercel
+description: >-
+  Deployments, logs, and projects via Vercel's hosted MCP.
+source: https://vercel.com/docs/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration;
+# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh.
+# No `vercel.app` suggest host on purpose: pasted deploy-preview links are
+# about the site being previewed, not about managing Vercel.
+transport:
+  type: http
+  url: https://mcp.vercel.com
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - vercel
+  hosts:
+    - vercel.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Vercel (or run `hermes mcp login vercel`). Approve access,
+  then restart the session so tools load.

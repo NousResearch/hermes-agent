@@ -82,3 +82,63 @@ class TestGatewaySessionEffectiveModel:
         assert result_default is not None
         assert result_default["effort"] == "low"
 
+
+
+class TestApiServerPerModelReasoning:
+    """The OpenAI-compatible surface must resolve reasoning for the model the
+    request actually runs, not ``model.default``.
+
+    e81d18dfb removed exactly this defect from the native gateway paths
+    ("the gateway resolving reasoning against config model.default instead of
+    the session's effective model"); the API server adapter kept it because it
+    resolved reasoning at function entry, before the model precedence chain.
+    """
+
+    @staticmethod
+    def _cfg():
+        return {
+            "model": {"default": "cheap/model-mini"},
+            "agent": {
+                "reasoning_effort": "low",
+                "reasoning_overrides": {"premium/model-max": "xhigh"},
+            },
+        }
+
+    def _run(self, monkeypatch, effective_model):
+        from unittest.mock import MagicMock, patch
+
+        from gateway.config import PlatformConfig
+        from gateway.platforms.api_server import APIServerAdapter
+
+        monkeypatch.setattr(
+            gateway_run, "_load_gateway_runtime_config", lambda: self._cfg(),
+        )
+        adapter = APIServerAdapter(PlatformConfig())
+
+        with patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True), \
+             patch("gateway.run._resolve_runtime_agent_kwargs") as kwargs_mock, \
+             patch("gateway.run._resolve_gateway_model") as model_mock, \
+             patch("gateway.run._load_gateway_config") as cfg_mock, \
+             patch("run_agent.AIAgent") as agent_cls:
+            kwargs_mock.return_value = {
+                "api_key": "k", "base_url": None, "provider": None,
+                "api_mode": None, "command": None, "args": [],
+            }
+            model_mock.return_value = effective_model
+            cfg_mock.return_value = self._cfg()
+            agent_cls.return_value = MagicMock()
+
+            adapter._create_agent()
+
+            return agent_cls.call_args.kwargs
+
+    def test_reasoning_follows_the_requested_model(self, monkeypatch):
+        kwargs = self._run(monkeypatch, "premium/model-max")
+
+        assert kwargs["model"] == "premium/model-max"
+        assert kwargs["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+
+    def test_model_without_an_override_falls_back_to_global(self, monkeypatch):
+        kwargs = self._run(monkeypatch, "cheap/model-mini")
+
+        assert kwargs["reasoning_config"] == {"enabled": True, "effort": "low"}

@@ -12,6 +12,7 @@ export interface CronJobFormState {
   script: string;
   no_agent: boolean;
   context_from: string;
+  continuity: boolean;
   enabled_toolsets: string[];
   workdir: string;
 }
@@ -33,12 +34,6 @@ function optionalText(value: string, stripTrailingSlash = false): string | null 
   return text || null;
 }
 
-/** Coerce a stored list/string field back into the textarea's newline form. */
-function listToText(value: unknown): string {
-  if (Array.isArray(value)) return splitCronList(value).join("\n");
-  return typeof value === "string" ? value : "";
-}
-
 /** Read a stored string field as a plain string ("" when absent). */
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -47,7 +42,13 @@ function asString(value: unknown): string {
 /** Build the create/update payload. Optional fields collapse to null so an
  * update explicitly clears them rather than leaving stale values. */
 export function buildCronJobPayload(form: CronJobFormState): CronJobMutation {
-  const contextFrom = splitCronList(form.context_from);
+  // The `continuity` toggle is stored as the reserved "self" entry in
+  // context_from (the job's own previous output). Users never type "self" —
+  // the checkbox is the surface; strip any hand-typed variant first.
+  const contextFrom = splitCronList(form.context_from).filter(
+    (item) => item.toLowerCase() !== "self",
+  );
+  if (form.continuity) contextFrom.push("self");
   const enabledToolsets = form.enabled_toolsets.filter(Boolean);
   return {
     name: form.name.trim(),
@@ -74,6 +75,13 @@ export function cronJobHasExecutionContent(
 }
 
 export function cronJobFormFromJob(job: CronJob): CronJobFormState {
+  const storedRefs = splitCronList(job.context_from);
+  // Raw store records carry the reserved "self" entry inside context_from;
+  // tool/RPC-formatted records strip it and set an explicit continuity flag.
+  const continuity =
+    Boolean((job as { continuity?: boolean }).continuity) ||
+    storedRefs.some((item) => item.toLowerCase() === "self");
+  const externalRefs = storedRefs.filter((item) => item.toLowerCase() !== "self");
   return {
     name: asString(job.name),
     prompt: asString(job.prompt),
@@ -88,8 +96,45 @@ export function cronJobFormFromJob(job: CronJob): CronJobFormState {
     base_url: asString(job.base_url),
     script: asString(job.script),
     no_agent: Boolean(job.no_agent),
-    context_from: listToText(job.context_from),
+    context_from: externalRefs.join("\n"),
+    continuity,
     enabled_toolsets: splitCronList(job.enabled_toolsets),
     workdir: asString(job.workdir),
   };
+}
+
+/** How a job's `last_status` should render. The scheduler writes a small,
+ *  closed set of literals; every literal maps to an explicit tone here so a
+ *  new status can never fall through to a neutral "unknown"-looking badge.
+ *  In particular `delivery_failed` (agent run succeeded, output never reached
+ *  the target) is amber, not green and not the same red as a run error, and
+ *  its detail lives in `last_delivery_error` (last_error is null for it). */
+export type CronLastResultTone = "success" | "warning" | "destructive";
+
+export interface CronLastResult {
+  status: string;
+  tone: CronLastResultTone;
+  /** Human detail to show next to the badge; null when nothing to add. */
+  detail: string | null;
+}
+
+const CRON_LAST_RESULT_TONE: Record<string, CronLastResultTone> = {
+  ok: "success",
+  delivery_failed: "warning",
+  blocked_config: "warning",
+  error: "destructive",
+};
+
+export function cronLastResult(
+  job: Pick<CronJob, "last_status" | "last_error" | "last_delivery_error">,
+): CronLastResult | null {
+  const status = asString(job.last_status).trim();
+  if (!status) return null;
+  const tone = CRON_LAST_RESULT_TONE[status] ?? "destructive";
+  if (status === "ok") return { status, tone, detail: null };
+  const detail =
+    status === "delivery_failed"
+      ? asString(job.last_delivery_error).trim() || asString(job.last_error).trim()
+      : asString(job.last_error).trim() || asString(job.last_delivery_error).trim();
+  return { status, tone, detail: detail || null };
 }

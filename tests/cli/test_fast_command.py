@@ -123,6 +123,17 @@ class TestPriorityProcessingModels(unittest.TestCase):
 
 
 
+    def test_grok_46_supports_priority_processing(self):
+        from hermes_cli.models import (
+            model_supports_fast_mode,
+            resolve_fast_mode_overrides,
+        )
+
+        assert model_supports_fast_mode("grok-4.6") is True
+        assert model_supports_fast_mode("x-ai/grok-4.6-latest") is True
+        assert model_supports_fast_mode("grok-4.5") is False
+        assert resolve_fast_mode_overrides("grok-4.6") == {"service_tier": "priority"}
+
     def test_resolve_overrides_returns_service_tier(self):
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -148,8 +159,8 @@ class TestFastModeRouting(unittest.TestCase):
         stub = SimpleNamespace(
             model="gpt-5.4",
             api_key="primary-key",
-            base_url="https://openrouter.ai/api/v1",
-            provider="openrouter",
+            base_url="https://api.openai.com/v1",
+            provider="openai",
             api_mode="chat_completions",
             acp_command=None,
             acp_args=[],
@@ -160,10 +171,15 @@ class TestFastModeRouting(unittest.TestCase):
         route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
 
         # Provider should NOT have changed
-        assert route["runtime"]["provider"] == "openrouter"
+        assert route["runtime"]["provider"] == "openai"
         assert route["runtime"]["api_mode"] == "chat_completions"
         # But request_overrides should be set
         assert route["request_overrides"] == {"service_tier": "priority"}
+
+        # Proxied routes (OpenRouter etc.) strip/400 on the param — never sent.
+        stub.base_url = "https://openrouter.ai/api/v1"
+        stub.provider = "openrouter"
+        assert cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")["request_overrides"] is None
 
     def test_turn_route_keeps_primary_runtime_when_model_has_no_fast_backend(self):
         cli_mod = _import_cli()
@@ -191,28 +207,36 @@ class TestAnthropicFastMode(unittest.TestCase):
     def test_anthropic_opus_supported(self):
         from hermes_cli.models import model_supports_fast_mode
 
+        # Per the live fast-mode docs: Opus 4.8 + Opus 5, Claude API only.
         # Native Anthropic format (hyphens)
-        assert model_supports_fast_mode("claude-opus-4-6") is True
+        assert model_supports_fast_mode("claude-opus-4-8") is True
         # OpenRouter format (dots)
-        assert model_supports_fast_mode("claude-opus-4.6") is True
+        assert model_supports_fast_mode("claude-opus-4.8") is True
         # With vendor prefix
-        assert model_supports_fast_mode("anthropic/claude-opus-4-6") is True
-        assert model_supports_fast_mode("anthropic/claude-opus-4.6") is True
+        assert model_supports_fast_mode("anthropic/claude-opus-4-8") is True
+        assert model_supports_fast_mode("anthropic/claude-opus-4.8") is True
+        assert model_supports_fast_mode("claude-opus-5") is True
+        assert model_supports_fast_mode("anthropic/claude-opus-5") is True
 
-    def test_anthropic_non_opus46_models_excluded(self):
-        """The speed=fast parameter is gated to Opus 4.6 — others excluded.
+    def test_anthropic_unsupported_models_excluded(self):
+        """The speed=fast parameter is gated to Opus 4.8 / Opus 5.
 
-        Per https://platform.claude.com/docs/en/build-with-claude/fast-mode,
-        sending speed=fast to Opus 4.7, Sonnet, or Haiku returns HTTP 400.
-        Opus 4.8 uses a separate ``…-fast`` model id, not this parameter.
+        Per https://platform.claude.com/docs/en/build-with-claude/fast-mode:
+        Opus 4.6 LOST fast mode 2026-06-29 (the param is silently ignored —
+        standard speed at standard billing — so a toggle would do nothing);
+        Opus 4.7 hard-400s; Sonnet/Haiku never had it; dedicated ``…-fast``
+        ids select fast inference via the model field, not the parameter.
         """
         from hermes_cli.models import model_supports_fast_mode
 
         assert model_supports_fast_mode("claude-sonnet-4-6") is False
         assert model_supports_fast_mode("claude-sonnet-4.6") is False
         assert model_supports_fast_mode("claude-haiku-4-5") is False
+        assert model_supports_fast_mode("claude-opus-4-6") is False
+        assert model_supports_fast_mode("claude-opus-4.6") is False
         assert model_supports_fast_mode("claude-opus-4-7") is False
-        assert model_supports_fast_mode("claude-opus-4-8") is False
+        assert model_supports_fast_mode("claude-opus-4-8-fast") is False
+        assert model_supports_fast_mode("anthropic/claude-opus-4.8-fast") is False
         assert model_supports_fast_mode("anthropic/claude-sonnet-4.6") is False
         assert model_supports_fast_mode("anthropic/claude-opus-4-7") is False
 
@@ -221,10 +245,10 @@ class TestAnthropicFastMode(unittest.TestCase):
     def test_resolve_overrides_returns_speed_for_anthropic(self):
         from hermes_cli.models import resolve_fast_mode_overrides
 
-        result = resolve_fast_mode_overrides("claude-opus-4-6")
+        result = resolve_fast_mode_overrides("claude-opus-4-8")
         assert result == {"speed": "fast"}
 
-        result = resolve_fast_mode_overrides("anthropic/claude-opus-4.6")
+        result = resolve_fast_mode_overrides("anthropic/claude-opus-4.8")
         assert result == {"speed": "fast"}
 
 
@@ -232,7 +256,7 @@ class TestAnthropicFastMode(unittest.TestCase):
 
 
     def test_fast_command_hidden_for_anthropic_sonnet(self):
-        """Sonnet doesn't support fast mode (Opus 4.6 only) — /fast must be hidden."""
+        """Sonnet doesn't support fast mode (Opus 4.8/5 only) — /fast must be hidden."""
         cli_mod = _import_cli()
         stub = SimpleNamespace(
             provider="anthropic", requested_provider="anthropic",
@@ -246,7 +270,7 @@ class TestAnthropicFastMode(unittest.TestCase):
         """Anthropic models should get speed:'fast' override, not service_tier."""
         cli_mod = _import_cli()
         stub = SimpleNamespace(
-            model="claude-opus-4-6",
+            model="claude-opus-4-8",
             api_key="sk-ant-test",
             base_url="https://api.anthropic.com",
             provider="anthropic",
@@ -270,7 +294,7 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         from agent.anthropic_adapter import build_anthropic_kwargs, _FAST_MODE_BETA
 
         kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-6",
+            model="claude-opus-4-8",
             messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
             tools=None,
             max_tokens=None,
@@ -286,7 +310,7 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         from agent.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-6",
+            model="claude-opus-4-8",
             messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
             tools=None,
             max_tokens=None,
@@ -301,7 +325,7 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         from agent.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-6",
+            model="claude-opus-4-8",
             messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
             tools=None,
             max_tokens=None,

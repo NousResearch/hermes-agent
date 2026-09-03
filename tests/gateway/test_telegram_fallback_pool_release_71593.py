@@ -105,13 +105,47 @@ async def test_failed_fallback_pool_is_discarded_and_closed(monkeypatch):
         "CLOSE_WAIT sockets leak (revert of _reset_fallback? #71593)."
     )
 
-    # Each fallback pool that was built for a failing IP must have been
-    # aclose()d exactly once (two fallback IPs → two discards).
-    assert len(closed_log) == 2, (
-        f"Expected 2 discarded/closed fallback pools, got {len(closed_log)} — "
+    # The failed primary plus each fallback pool must be
+    # aclose()d exactly once (one primary + two fallback IPs).
+    assert len(closed_log) == 3, (
+        f"Expected 3 discarded/closed transports, got {len(closed_log)} — "
         "the discard-on-failure path did not aclose() the poisoned pools."
     )
     assert all(t.closed for t in closed_log)
+    await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_failed_primary_pool_is_discarded_and_closed(monkeypatch):
+    """A failed primary attempt must release its pool before fallback (#82920)."""
+    for key in (
+        "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy",
+        "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    behavior = {"api.telegram.org": "timeout", "149.154.167.220": "ok"}
+    instances = []
+
+    def factory(**kwargs):
+        transport = _CountingTransport(behavior, [])
+        instances.append(transport)
+        return transport
+
+    monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+    transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+    try:
+        response = await transport.handle_async_request(_telegram_request())
+        assert response.status_code == 200
+        # IPv4-first (#87015): .220 succeeds on the first try, so the
+        # dual-stack hostname pool is never opened and never discarded.
+        # Instances: 1 primary (unused this request) + 1 fallback (.220).
+        assert len(instances) == 2
+        assert not instances[0].closed
+        assert not instances[1].closed
+        assert transport._sticky_ip == "149.154.167.220"
+    finally:
+        await transport.aclose()
 
 
 def test_caller_limits_win_over_pool_default(monkeypatch):

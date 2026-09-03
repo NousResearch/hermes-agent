@@ -232,5 +232,8 @@ def test_execute_code_non_approved_still_interrupts_on_stale_bit(monkeypatch):
 
     # Killed on the first poll before the script can print.
     assert "CODE_DONE" not in result["output"], result
+    assert result["status"] == "interrupted", result
+    assert result["output"] == "[execution interrupted]"
+    assert "user sent a new message" not in result["output"]
 
 

@@ -20,6 +20,18 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _stop_reason(result):
+    """Read a sampling result's stop reason across the mcp 1.x -> 2.x rename.
+
+    ``CreateMessageResult.stopReason`` became ``.stop_reason`` in mcp 2.0
+    (camelCase survives only as the serialization alias, which pydantic does
+    not expose to attribute access).
+    """
+    from tools.mcp_tool import mcp_field
+
+    return mcp_field(result, "stop_reason", "stopReason")
+
+
 def _make_mcp_tool(name="read_file", description="Read a file", input_schema=None):
     """Create a fake MCP Tool object matching the SDK interface."""
     tool = SimpleNamespace()
@@ -117,6 +129,74 @@ class TestLoadMCPConfig:
             from tools.mcp_tool import _load_mcp_config
             result = _load_mcp_config()
             assert result == {}
+
+    def test_portable_servers_merge_after_native_interpolation(self):
+        native = {"native": {"command": "node", "args": ["${PORT}"]}}
+        portable = {
+            "agent-plugin-demo__worker": {
+                "command": "python",
+                "args": ["${UNKNOWN}"],
+                "cwd": "/plugin",
+            }
+        }
+        manager = SimpleNamespace(get_portable_mcp_servers=lambda: portable)
+        with (
+            patch("hermes_cli.config.load_config", return_value={"mcp_servers": native}),
+            patch("hermes_cli.plugins.discover_plugins"),
+            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+            patch.dict(os.environ, {"PORT": "3000"}),
+        ):
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result["native"]["args"] == ["3000"]
+        assert result["agent-plugin-demo__worker"]["args"] == ["${UNKNOWN}"]
+
+    def test_portable_server_resolves_through_real_plugin_discovery(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+        import yaml
+        from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
+        from hermes_cli import plugins as plugins_mod
+
+        home = tmp_path / "home"
+        plugin = home / "plugins" / "portable"
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.json").write_text(
+            json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "portable.test"})
+        )
+        (plugin / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "$schema": MCP_SCHEMA_V1,
+                    "mcpServers": {
+                        "worker": {"type": "stdio", "command": "python"}
+                    },
+                }
+            )
+        )
+        home.mkdir(exist_ok=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["portable.test"]}})
+        )
+        bundled = tmp_path / "bundled"
+        bundled.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", None)
+
+        from tools.mcp_tool import _load_mcp_config
+
+        result = _load_mcp_config()
+
+        [server] = result.values()
+        assert server["command"] == "python"
+        assert server["cwd"] == str(plugin.resolve())
+        assert server["env"]["PLUGIN_ROOT"] == str(plugin.resolve())
+        assert server["env"]["PLUGIN_DATA"].startswith(str(home / "plugin-data"))
+        assert "agent_plugin" not in server
 
 
 class TestMCPParallelSafetyProvenance:
@@ -700,6 +780,58 @@ class TestDiscoverAndRegister:
             for record in caplog.records
         )
 
+    def test_native_tool_wins_over_generated_utility_on_collision(self, caplog):
+        """A server-native tool named `read_resource` must survive its collision
+        with the generated `read_resource` utility (#87112).
+
+        Before the fix the collision handler treated the pair as ambiguous and
+        skipped BOTH, so the server's own tool vanished on every boot. The
+        generated utility is only sugar for servers that lack such a tool, so
+        the native tool wins and the utility is dropped.
+        """
+        from tools.mcp_tool import _register_server_tools
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        server = _make_mock_server(
+            "srv",
+            session=MagicMock(),
+            tools=[
+                _make_mcp_tool("read_resource", "Native read-resource tool"),
+                _make_mcp_tool("safe_tool"),
+            ],
+        )
+        # Resources enabled (default) so the read_resource utility is generated
+        # and collides; prompts disabled to keep the candidate set focused.
+        config = {"tools": {"prompts": False}}
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
+            registered = _register_server_tools("srv", server, config)
+
+        # The native tool is registered (before the fix it was dropped) and it
+        # is the server's tool, not the utility stub.
+        assert "mcp__srv__read_resource" in registered
+        entry = registry.get_entry("mcp__srv__read_resource")
+        assert entry is not None
+        assert entry.description == "Native read-resource tool"
+        assert "mcp__srv__safe_tool" in registered
+
+        # The collision was resolved in favour of the native tool, not skipped
+        # as ambiguous.
+        assert not any(
+            "name normalization collision" in record.message
+            and "mcp__srv__read_resource" in record.message
+            for record in caplog.records
+        )
+        assert any(
+            record.levelno == logging.INFO
+            and "keeping the native tool and dropping the utility" in record.message
+            and "read_resource" in record.message
+            for record in caplog.records
+        )
+
 # ---------------------------------------------------------------------------
 # MCPServerTask (run / start / shutdown)
 # ---------------------------------------------------------------------------
@@ -739,17 +871,37 @@ class TestMCPServerTask:
         p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
 
         async def _test():
-            with patch("tools.mcp_tool.StdioServerParameters"), p_stdio, p_cs:
+            with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
                 server = MCPServerTask("test_srv")
-                await server.start({"command": "npx", "args": ["-y", "test"]})
+                await server.start(
+                    {"command": "npx", "args": ["-y", "test"], "cwd": "/plugin"}
+                )
 
                 assert server.session is mock_session
                 assert len(server._tools) == 1
                 assert server._tools[0].name == "echo"
                 mock_session.initialize.assert_called_once()
+                assert params.call_args.kwargs["cwd"] == "/plugin"
 
                 await server.shutdown()
                 assert server.session is None
+
+        asyncio.run(_test())
+
+    def test_start_preserves_native_default_cwd(self):
+        from tools.mcp_tool import MCPServerTask
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
+                server = MCPServerTask("native")
+                await server.start({"command": "npx", "args": ["-y", "test"]})
+                assert params.call_args.kwargs["cwd"] is None
+                await server.shutdown()
 
         asyncio.run(_test())
 
@@ -1269,6 +1421,79 @@ class TestReconnection:
 
         asyncio.run(_test())
 
+    def test_reconnect_failures_after_initial_success_use_reconnect_budget(self):
+        """A server that already registered tools must not be re-classified
+        as "never connected" just because a later reconnect attempt fails
+        while ``_ready`` is momentarily clear (#94654).
+
+        ``_MAX_INITIAL_CONNECT_RETRIES`` is 3 and ``_MAX_RECONNECT_RETRIES``
+        is 5. Four consecutive post-success reconnect failures exceed the
+        (buggy) initial-connect ladder but not the reconnect budget, so this
+        distinguishes the two code paths.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        run_count = 0
+        target_server = None
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count, target_server
+            run_count += 1
+            if target_server is not self_srv:
+                return None
+            if run_count == 1:
+                # Initial connection succeeds and registers tools. Setting
+                # ``_ever_connected`` mirrors what the real ``_run_stdio``
+                # does right after a successful ``_discover_tools()`` call.
+                self_srv.session = MagicMock()
+                self_srv._tools = []
+                self_srv._ready.set()
+                # Guarded set: MCPServerTask uses __slots__, so on pre-fix
+                # code (no ``_ever_connected`` slot) a bare assignment raises
+                # AttributeError *inside this mock* while ``_ready`` is still
+                # set — which detours run() into the reconnect ladder and lets
+                # the test pass vacuously on the buggy code. The guard keeps
+                # the regression test biting: pre-fix the flag simply doesn't
+                # exist and the misclassification fires.
+                try:
+                    self_srv._ever_connected = True
+                except AttributeError:
+                    pass
+                return "reconnect"
+            if run_count <= 5:
+                # Four consecutive failures on later reconnect attempts --
+                # a flapping transport, not a server that never connected.
+                raise ConnectionError("reconnect attempt failed")
+            self_srv._shutdown_event.set()
+            await self_srv._shutdown_event.wait()
+
+        async def patched_wait_parked(self_srv, timeout=None):
+            # If the code under test parks early, unblock immediately
+            # instead of waiting out the real park interval.
+            self_srv._shutdown_event.set()
+            return "shutdown"
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("test_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                 patch.object(
+                     MCPServerTask, "_wait_for_reconnect_or_shutdown",
+                     patched_wait_parked,
+                 ), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                await server.run({"command": "test"})
+
+            assert server._was_parked is False, (
+                "server parked after only 4 reconnect failures following a "
+                "successful initial connection -- it was misclassified as "
+                "never having connected and re-entered the initial-connect "
+                "ladder instead of the (larger) reconnect budget"
+            )
+
+        asyncio.run(_test())
 
     def test_preflight_probe_runs_on_initial_http_connect(self):
         """The content-type preflight probe fires on the first HTTP connect."""
@@ -1800,7 +2025,7 @@ class TestSamplingCallbackText:
         assert result.content.text == "Hello from LLM"
         assert result.model == "test-model"
         assert result.role == "assistant"
-        assert result.stopReason == "endTurn"
+        assert _stop_reason(result) == "endTurn"
 
     def test_server_tools_with_object_schema_are_normalized(self):
         """Server-provided tools should gain empty properties for object schemas."""
@@ -1850,7 +2075,7 @@ class TestSamplingCallbackToolUse:
             result = asyncio.run(self.handler(None, params))
 
         assert isinstance(result, CreateMessageResultWithTools)
-        assert result.stopReason == "toolUse"
+        assert _stop_reason(result) == "toolUse"
         assert result.model == "test-model"
         assert len(result.content) == 1
         tc = result.content[0]
@@ -2242,6 +2467,24 @@ class TestMCPSelectiveToolLoading:
         )
         assert registered == ["mcp__ink__create_service"]
 
+    def test_empty_include_registers_nothing(self):
+        """include: [] is an explicit empty whitelist, not "no filter".
+
+        The install checklist writes include: [] when the user unchecks
+        every tool ("contributes nothing until reconfigured") — the next
+        session must not register the full tool surface.
+        """
+        config = {
+            "url": "https://mcp.example.com",
+            "tools": {"include": []},
+        }
+        registered, _ = self._run_discover(
+            "ink",
+            ["create_service", "delete_service", "list_services"],
+            config,
+            session=SimpleNamespace(),
+        )
+        assert registered == []
 
     def test_enabled_false_skips_connection_attempt(self):
         from tools.mcp_tool import discover_mcp_tools
@@ -2699,3 +2942,73 @@ class TestMCPDiscoveryCrossProcessLock:
                 os.unlink(lock_path)
             except Exception:
                 pass
+
+
+class TestRedirectHeaderStripper:
+    """Cross-origin redirect header boundary (portable Agent Plugins v1)."""
+
+    def _make_response(self, next_headers):
+        import httpx
+
+        next_request = httpx.Request(
+            "GET", "https://other.example.test/mcp", headers=next_headers
+        )
+        response = SimpleNamespace(
+            is_redirect=True,
+            next_request=next_request,
+        )
+        return response, next_request
+
+    def test_default_strips_only_authorization(self):
+        import httpx
+
+        from tools.mcp_tool import _make_redirect_header_stripper
+
+        hook = _make_redirect_header_stripper(
+            httpx.URL("https://origin.example.test/mcp")
+        )
+        response, next_request = self._make_response(
+            {"Authorization": "Bearer x", "X-Tenant": "t"}
+        )
+        asyncio.run(hook(response))
+        assert "authorization" not in next_request.headers
+        assert next_request.headers["x-tenant"] == "t"
+
+    def test_strict_strips_configured_headers_cross_origin(self):
+        import httpx
+
+        from tools.mcp_tool import _make_redirect_header_stripper
+
+        hook = _make_redirect_header_stripper(
+            httpx.URL("https://origin.example.test/mcp"),
+            strict=True,
+            configured_header_names={"x-tenant"},
+        )
+        response, next_request = self._make_response(
+            {"Authorization": "Bearer x", "X-Tenant": "t", "Accept": "a"}
+        )
+        asyncio.run(hook(response))
+        assert "authorization" not in next_request.headers
+        assert "x-tenant" not in next_request.headers
+        # Client-generated headers unrelated to package config survive.
+        assert next_request.headers["accept"] == "a"
+
+    def test_same_origin_redirect_keeps_headers(self):
+        import httpx
+
+        from tools.mcp_tool import _make_redirect_header_stripper
+
+        hook = _make_redirect_header_stripper(
+            httpx.URL("https://origin.example.test/mcp"),
+            strict=True,
+            configured_header_names={"x-tenant"},
+        )
+        next_request = httpx.Request(
+            "GET",
+            "https://origin.example.test/other",
+            headers={"Authorization": "Bearer x", "X-Tenant": "t"},
+        )
+        response = SimpleNamespace(is_redirect=True, next_request=next_request)
+        asyncio.run(hook(response))
+        assert next_request.headers["authorization"] == "Bearer x"
+        assert next_request.headers["x-tenant"] == "t"

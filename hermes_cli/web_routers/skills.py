@@ -49,6 +49,10 @@ load_config = late("load_config")
 # Live proxies for web_server-owned module state (mutations/monkeypatches
 # on web_server remain authoritative; resolved at operation time).
 _SKILL_HUB_SOURCE_LABELS = LateState("_SKILL_HUB_SOURCE_LABELS")
+# Config read-modify-write serialization for off-loop handlers (see the
+# definition in web_server.py). LateState supports ``with``-blocks, so this
+# is the live lock object, not a frozen import-time copy.
+_CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 
 @hub_router.post("/api/skills/hub/install")
@@ -105,6 +109,41 @@ async def update_skills_hub(
         _log.exception("Failed to spawn skills update")
         raise HTTPException(status_code=500, detail=f"Failed to update skills: {exc}")
     return {"ok": True, "pid": proc.pid, "name": "skills-update"}
+
+
+@hub_router.get("/api/skills/hub/official")
+async def list_official_skills(profile: Optional[str] = None):
+    """List the ENTIRE built-in optional-skills catalog shipped with the repo.
+
+    Backs the desktop Capabilities → Skills list: every official optional
+    skill appears alongside the installed skills with an install affordance.
+    Local-checkout scan only (no network), plus the per-profile installed
+    map so the UI can mark rows that are already installed.
+    """
+
+    def _run():
+        from tools.skills_hub import OptionalSkillSource
+
+        installed = _installed_hub_identifiers(profile)
+        out = []
+        for m in OptionalSkillSource().list_local():
+            payload = _skill_meta_to_payload(m)
+            ident = payload.get("identifier") or ""
+            # identifier format: official/<category>/<skill> (category dirs
+            # mirror skills/): surface the category for row subtitles.
+            rel = ident.split("/", 1)[-1] if "/" in ident else ident
+            payload["category"] = rel.split("/", 1)[0] if "/" in rel else "general"
+            payload["installed"] = ident in installed
+            out.append(payload)
+        return {"skills": out}
+
+    try:
+        return await asyncio.to_thread(_run)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("official skills catalog listing failed")
+        raise HTTPException(status_code=502, detail=f"Official catalog failed: {exc}")
 
 
 @hub_router.get("/api/skills/hub/sources")
@@ -336,9 +375,38 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
             )
 
         q_path = None
+        tier1 = None
         try:
             q_path = quarantine_bundle(bundle)
             result = scan_skill(q_path, source=scan_source)
+            # Advisory SkillEvaluator Tier 1 second opinion (same contract
+            # as the CLI installer: optional binary, never blocks, errors
+            # degrade to no data).
+            try:
+                from tools.skillevaluator_scan import (
+                    run_tier1_scan, tier1_advisory_enabled,
+                )
+                if tier1_advisory_enabled():
+                    t1 = run_tier1_scan(q_path)
+                    if t1.available:
+                        tier1 = {
+                            "passed": t1.passed,
+                            "incomplete_checks": t1.incomplete_checks,
+                            "findings": [
+                                {
+                                    "check": f.check,
+                                    "validator": f.validator,
+                                    "severity": f.severity,
+                                    "message": f.message,
+                                    "file": f.file,
+                                    "line": f.line,
+                                    "secrets_class": f.is_secrets_class,
+                                }
+                                for f in t1.findings
+                            ],
+                        }
+            except Exception:
+                _log.debug("Tier 1 advisory scan skipped", exc_info=True)
         finally:
             if q_path is not None:
                 _shutil.rmtree(q_path, ignore_errors=True)
@@ -379,6 +447,9 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
             "policy_reason": reason,
             "findings": findings,
             "severity_counts": counts,
+            # Advisory SkillEvaluator Tier 1 block, or None when the
+            # optional scanner isn't installed/enabled.
+            "tier1": tier1,
         }
 
     try:
@@ -401,40 +472,48 @@ async def get_skills(profile: Optional[str] = None):
         activity_count,
         load_usage,
     )
-    with _profile_scope(profile):
-        config = load_config()
-        disabled = get_disabled_skills(config)
-        skills = _find_all_skills(skip_disabled=True)
-        usage = load_usage()
-        # Set-based provenance (same classification as skill_usage.provenance,
-        # without a per-skill manifest read): hub > bundled > agent, where
-        # "agent" covers agent-authored AND local hand-made skills — the ones
-        # the user may edit/delete from the UI.
-        bundled_names = _read_bundled_manifest_names()
-        hub_names = _read_hub_installed_names()
-    for s in skills:
-        s["enabled"] = s["name"] not in disabled
-        s["usage"] = activity_count(usage.get(s["name"], {}))
-        s["provenance"] = (
-            "hub" if s["name"] in hub_names
-            else "bundled" if s["name"] in bundled_names
-            else "agent"
-        )
-    return skills
+    def _run():
+        with _profile_scope(profile):
+            config = load_config()
+            disabled = get_disabled_skills(config)
+            skills = _find_all_skills(skip_disabled=True)
+            usage = load_usage()
+            # Set-based provenance (same classification as skill_usage.provenance,
+            # without a per-skill manifest read): hub > bundled > agent, where
+            # "agent" covers agent-authored AND local hand-made skills — the ones
+            # the user may edit/delete from the UI.
+            bundled_names = _read_bundled_manifest_names()
+            hub_names = _read_hub_installed_names()
+        for s in skills:
+            s["enabled"] = s["name"] not in disabled
+            s["usage"] = activity_count(usage.get(s["name"], {}))
+            s["provenance"] = (
+                "hub" if s["name"] in hub_names
+                else "bundled" if s["name"] in bundled_names
+                else "agent"
+            )
+        return skills
+
+    return await asyncio.to_thread(_run)
 
 
 @router.put("/api/skills/toggle")
 async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
-    with _profile_scope(body.profile or profile):
-        config = load_config()
-        disabled = get_disabled_skills(config)
-        if body.enabled:
-            disabled.discard(body.name)
-        else:
-            disabled.add(body.name)
-        save_disabled_skills(config, disabled)
-    return {"ok": True, "name": body.name, "enabled": body.enabled}
+
+    def _run():
+        with _profile_scope(body.profile or profile):
+            with _CONFIG_MUTATION_LOCK:
+                config = load_config()
+                disabled = get_disabled_skills(config)
+                if body.enabled:
+                    disabled.discard(body.name)
+                else:
+                    disabled.add(body.name)
+                save_disabled_skills(config, disabled)
+        return {"ok": True, "name": body.name, "enabled": body.enabled}
+
+    return await asyncio.to_thread(_run)
 
 
 @router.get("/api/skills/content")
@@ -442,18 +521,21 @@ async def get_skill_content(name: str, profile: Optional[str] = None):
     """Return the raw SKILL.md text for a skill, for the dashboard editor."""
     from tools.skill_manager_tool import _find_skill
 
-    with _profile_scope(profile):
-        found = _find_skill(name)
-        if not found:
-            raise HTTPException(status_code=404, detail=f"Skill '{name}' not found.")
-        skill_md = found["path"] / "SKILL.md"
-        if not skill_md.exists():
-            raise HTTPException(status_code=404, detail=f"Skill '{name}' has no SKILL.md.")
-        try:
-            content = skill_md.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        return {"name": name, "content": content, "path": str(skill_md)}
+    def _run():
+        with _profile_scope(profile):
+            found = _find_skill(name)
+            if not found:
+                raise HTTPException(status_code=404, detail=f"Skill '{name}' not found.")
+            skill_md = found["path"] / "SKILL.md"
+            if not skill_md.exists():
+                raise HTTPException(status_code=404, detail=f"Skill '{name}' has no SKILL.md.")
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            return {"name": name, "content": content, "path": str(skill_md)}
+
+    return await asyncio.to_thread(_run)
 
 
 @router.post("/api/skills")
@@ -467,8 +549,11 @@ async def create_skill(body: SkillCreate):
     """
     from tools.skill_manager_tool import _create_skill
 
-    with _profile_scope(body.profile):
-        result = _create_skill(body.name, body.content, body.category or None)
+    def _run():
+        with _profile_scope(body.profile):
+            return _create_skill(body.name, body.content, body.category or None)
+
+    result = await asyncio.to_thread(_run)
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to create skill."))
     _clear_skills_prompt_cache()
@@ -480,8 +565,11 @@ async def update_skill_content(body: SkillContentUpdate):
     """Replace the SKILL.md of an existing skill (full rewrite) from the editor."""
     from tools.skill_manager_tool import _edit_skill
 
-    with _profile_scope(body.profile):
-        result = _edit_skill(body.name, body.content)
+    def _run():
+        with _profile_scope(body.profile):
+            return _edit_skill(body.name, body.content)
+
+    result = await asyncio.to_thread(_run)
     if not result.get("success"):
         err = result.get("error", "Failed to update skill.")
         status = 404 if "not found" in str(err).lower() else 400

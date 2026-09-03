@@ -183,3 +183,22 @@ class TestCatalogSWR:
         assert out == manifest
         fetch.assert_called_once()
         spawn.assert_not_called()
+
+
+class TestCorruptCacheRowDegradation:
+    """A corrupted 'at' in the user-editable provider_models_cache.json must
+    degrade cached_provider_model_ids to a cache miss (live fetch), never
+    raise through the picker (which has no try/except at its call sites)."""
+
+    @pytest.mark.parametrize("bad_at", ["yesterday", None, True])
+    def test_corrupt_at_falls_back_to_live_fetch(self, bad_at):
+        import hermes_cli.models as mod
+
+        cache = {"openrouter": {"fp": "fp", "at": bad_at, "models": ["corrupt-row"]}}
+        with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
+             patch.object(mod, "_credential_fingerprint", return_value="fp"), \
+             patch.object(mod, "_save_provider_models_cache"), \
+             patch.object(mod, "provider_model_ids", return_value=["live-model"]) as live:
+            out = mod.cached_provider_model_ids("openrouter")
+        assert out == ["live-model"]
+        live.assert_called_once()

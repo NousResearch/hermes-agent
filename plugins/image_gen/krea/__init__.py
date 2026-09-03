@@ -57,6 +57,9 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "Illustration, anime, painting, expressive styles. Faster + cheaper.",
         "price": "$0.030 (text) / $0.035 (style refs) / $0.040 (moodboards)",
         "path": "medium",
+        # Upscaling is opt-in everywhere (Aug 2026 policy: default-on
+        # enhance passes degraded output quality).
+        "upscale": False,
     },
     "krea-2-large": {
         "display": "Krea 2 Large",
@@ -64,6 +67,8 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "Photorealism, raw textured looks (motion blur, grain), expressive styles.",
         "price": "$0.060 (text) / $0.065 (style refs) / $0.070 (moodboards)",
         "path": "large",
+        # 2K native — high-res enough out of the box.
+        "upscale": False,
     },
     "krea-2-medium-turbo": {
         "display": "Krea 2 Medium Turbo",
@@ -71,6 +76,8 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "Fastest Krea 2 — medium quality at lower latency / cost.",
         "price": "$0.015 (text) / $0.0175 (style refs)",
         "path": "medium-turbo",
+        # Opt-in only (Aug 2026 policy).
+        "upscale": False,
     },
 }
 
@@ -110,6 +117,12 @@ _POLL_TIMEOUT_SECONDS = 180.0
 _RETRYABLE_POLL_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 
 _TERMINAL_STATES = {"completed", "failed", "cancelled"}
+
+# Krea Enhance — the upscale/enhancer endpoint used for the optional
+# ``upscale`` pass after generation ("1.5K native, 4K via Enhancer" is
+# Krea's own pipeline shape). Cheap creative enhancer, max 8K.
+_ENHANCE_PATH = "/generate/enhance/krea/enhance"
+_ENHANCE_SCALE_FACTOR = 2
 
 
 # ---------------------------------------------------------------------------
@@ -165,20 +178,31 @@ def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]
 def _resolve_managed_krea_gateway():
     """Return managed Krea gateway config when the user is on the managed path.
 
-    Mirrors ``_resolve_managed_fal_gateway`` in ``tools/image_generation_tool.py``:
-    the Nous-hosted Krea gateway wins when it is resolvable AND either no direct
-    ``KREA_API_KEY`` is configured or the user explicitly opted into the gateway
-    for ``image_gen``. Returns ``None`` (direct/BYO path) otherwise, and never
-    raises — plugin discovery and availability scans must stay robust.
+    Strict selection model: the managed Krea gateway is used when the stored
+    ``image_gen`` selection is ``nous`` (or legacy ``use_gateway: true``), or
+    on a never-configured install when no direct ``KREA_API_KEY`` exists.
+    An explicit vendor selection (``krea``, ``fal``, ...) pins the direct
+    path. Returns ``None`` (direct/BYO path) otherwise, and never raises —
+    plugin discovery and availability scans must stay robust.
     """
     try:
         from tools.managed_tool_gateway import resolve_managed_tool_gateway
-        from tools.tool_backend_helpers import prefers_gateway
+        from tools.tool_backend_helpers import (
+            NOUS_MANAGED_PROVIDER,
+            read_selection,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug("Managed Krea gateway resolution unavailable: %s", exc)
         return None
 
-    if get_secret("KREA_API_KEY") and not prefers_gateway("image_gen"):
+    try:
+        selected = read_selection("image_gen")
+    except Exception:  # noqa: BLE001
+        selected = None
+    if selected is not None and selected != NOUS_MANAGED_PROVIDER:
+        # Explicit vendor selection: direct credentials only.
+        return None
+    if selected is None and get_secret("KREA_API_KEY"):
         return None
 
     try:
@@ -212,6 +236,121 @@ def _resolve_creativity(value: Optional[str]) -> str:
     if isinstance(cfg_value, str) and cfg_value.strip().lower() in _VALID_CREATIVITY:
         return cfg_value.strip().lower()
     return "medium"
+
+
+def _poll_krea_job(
+    base_url: str,
+    auth_token: str,
+    job_id: str,
+    *,
+    timeout_seconds: float = _POLL_TIMEOUT_SECONDS,
+) -> Optional[Dict[str, Any]]:
+    """Poll ``/jobs/{job_id}`` until terminal; return the job dict or None.
+
+    Best-effort variant of the main generate() poll loop used for secondary
+    jobs (the Enhance upscale pass): any failure returns ``None`` so the
+    caller can fall back instead of failing the whole generation.
+    """
+    job_url = f"{base_url}/jobs/{job_id}"
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "User-Agent": "Hermes-Agent/1.0 (krea-image-gen)",
+    }
+    interval = _POLL_INITIAL_INTERVAL
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        time.sleep(interval)
+        interval = min(interval * _POLL_BACKOFF, _POLL_MAX_INTERVAL)
+        try:
+            resp = requests.get(job_url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            job = resp.json()
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            if status not in _RETRYABLE_POLL_STATUSES or time.monotonic() >= deadline:
+                logger.warning("Krea enhance poll failed (%d) for job %s", status, job_id)
+                return None
+            continue
+        except Exception as exc:  # noqa: BLE001 — timeout/connection/JSON
+            if time.monotonic() >= deadline:
+                logger.warning("Krea enhance poll gave up for job %s: %s", job_id, exc)
+                return None
+            continue
+
+        if isinstance(job, dict):
+            status_str = job.get("status")
+            if status_str in _TERMINAL_STATES or job.get("completed_at"):
+                return job
+        if time.monotonic() >= deadline:
+            logger.warning("Krea enhance job %s did not finish in %ds", job_id, int(timeout_seconds))
+            return None
+
+
+def _extract_result_url(job: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Pull the first result URL out of a terminal Krea job dict."""
+    if not isinstance(job, dict):
+        return None
+    result = job.get("result")
+    if not isinstance(result, dict):
+        return None
+    urls = result.get("urls")
+    if isinstance(urls, list):
+        for candidate in urls:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+    single = result.get("url")
+    if isinstance(single, str) and single.strip():
+        return single.strip()
+    return None
+
+
+def _enhance_image(
+    base_url: str,
+    auth_token: str,
+    image_url: str,
+    prompt: str,
+    *,
+    managed: bool,
+) -> Optional[str]:
+    """Run Krea Enhance on ``image_url``; return the enhanced URL or None.
+
+    Best-effort: any submit/poll/result failure logs and returns ``None`` so
+    the caller falls back to the original (un-upscaled) image — an upscale
+    failure must never destroy an already-successful generation.
+    """
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Hermes-Agent/1.0 (krea-image-gen)",
+    }
+    if managed:
+        headers["x-idempotency-key"] = str(uuid.uuid4())
+    payload: Dict[str, Any] = {
+        "image_url": image_url,
+        "image_scaling_factor": _ENHANCE_SCALE_FACTOR,
+        # Keep the enhancer faithful to the generated composition: the
+        # original prompt guides detail, and default ai_strength stays
+        # conservative (Krea default 0.4 adds detail without redrawing).
+        "prompt": prompt,
+    }
+    try:
+        resp = requests.post(
+            f"{base_url}{_ENHANCE_PATH}", headers=headers, json=payload, timeout=30,
+        )
+        resp.raise_for_status()
+        job_id = (resp.json() or {}).get("job_id")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Krea Enhance submit failed: %s", exc)
+        return None
+    if not isinstance(job_id, str) or not job_id:
+        logger.warning("Krea Enhance submit response missing job_id")
+        return None
+
+    job = _poll_krea_job(base_url, auth_token, job_id)
+    if not isinstance(job, dict) or job.get("status") in {"failed", "cancelled"}:
+        logger.warning("Krea Enhance job %s did not complete successfully", job_id)
+        return None
+    return _extract_result_url(job)
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +406,13 @@ class KreaImageGenProvider(ImageGenProvider):
 
     def capabilities(self) -> Dict[str, Any]:
         # Krea supports reference-guided generation (image-to-image style
-        # transfer) via image_style_references — up to 10 refs.
-        return {"modalities": ["text", "image"], "max_reference_images": 10}
+        # transfer) via image_style_references — up to 10 refs — and an
+        # opt-in Enhance upscale pass (see generate()'s upscale_requested).
+        return {
+            "modalities": ["text", "image"],
+            "max_reference_images": 10,
+            "supports_upscale": True,
+        }
 
     # ------------------------------------------------------------------
     # generate()
@@ -700,6 +844,36 @@ class KreaImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
+        # High-resolution pass (Krea Enhance). Precedence: explicit kwarg >
+        # ``image_gen.krea.upscale`` config > per-model catalog default
+        # (1.5K-native tiers default on; 2K-native Large stays off). Best-
+        # effort: failure falls back to the original image rather than
+        # failing the generation.
+        upscaled = False
+        upscale_requested = kwargs.get("upscale")
+        if not isinstance(upscale_requested, bool):
+            cfg_krea = _load_krea_config().get("krea")
+            cfg_upscale = cfg_krea.get("upscale") if isinstance(cfg_krea, dict) else None
+            if isinstance(cfg_upscale, bool):
+                upscale_requested = cfg_upscale
+            else:
+                upscale_requested = bool(meta.get("upscale", False))
+        if upscale_requested:
+            enhanced_url = _enhance_image(
+                base_url,
+                auth_token,
+                result_image_url,
+                prompt,
+                managed=managed is not None,
+            )
+            if enhanced_url:
+                result_image_url = enhanced_url
+                upscaled = True
+            else:
+                logger.warning(
+                    "Krea Enhance pass failed — returning native-resolution image"
+                )
+
         # Materialise locally — Krea result URLs may expire, mirroring
         # what we do for xAI / OpenAI URL responses (#26942).
         try:
@@ -719,7 +893,10 @@ class KreaImageGenProvider(ImageGenProvider):
             "resolution": DEFAULT_RESOLUTION,
             "creativity": creativity,
             "job_id": job_id,
+            "upscaled": upscaled,
         }
+        if upscaled:
+            extra["upscale_factor"] = _ENHANCE_SCALE_FACTOR
         if isinstance(job.get("completed_at"), str):
             extra["completed_at"] = job["completed_at"]
 

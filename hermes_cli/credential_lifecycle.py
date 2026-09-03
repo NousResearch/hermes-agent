@@ -141,11 +141,18 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
 
     touched: List[str] = []
 
-    def _fix(section: Any, key_path: str) -> None:
+    def _fix(
+        section: Any,
+        key_path: str,
+        fields: tuple[str, ...] = ("api_key", "api"),
+    ) -> None:
         if not isinstance(section, dict):
             return
         # "api" is the legacy alias for model.api_key kept by older configs.
-        for field in ("api_key", "api"):
+        # NOTE: in the keyed ``providers`` schema ``api`` means the base_url,
+        # not a credential (see ``get_compatible_custom_providers``), so that
+        # section passes ``fields=("api_key",)`` to avoid touching a base_url.
+        for field in fields:
             current = section.get(field)
             if isinstance(current, str) and current == old_value:
                 if new_value:
@@ -168,6 +175,18 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
     elif isinstance(custom, dict):
         for name, entry in custom.items():
             _fix(entry, f"custom_providers.{name}")
+
+    # The keyed ``providers`` schema (v12+) is where the dashboard/desktop
+    # write custom-endpoint credentials — ``providers.<id>.api_key``. It is a
+    # real inline secret and higher-precedence than the env var, so a stale
+    # copy left here shadows a rotation (persistent 401 with a key the UI no
+    # longer shows, #62269) and survives a removal that promised to clear the
+    # credential from EVERY store. Scrub only ``api_key``; ``api`` here is the
+    # base_url alias, not a credential.
+    keyed_providers = user_config.get("providers")
+    if isinstance(keyed_providers, dict):
+        for provider_id, entry in keyed_providers.items():
+            _fix(entry, f"providers.{provider_id}", fields=("api_key",))
 
     if touched:
         require_readable_config_before_write(config_path)
@@ -218,6 +237,15 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     a stale higher-precedence copy cannot shadow the rotation (#62269).
     Suppressed ``env:<VAR>`` pool sources are re-enabled so a deliberate
     re-add through the UI behaves like ``hermes auth add``.
+
+    The save also forces an immediate ``load_pool()`` for every provider
+    registered against this env var so the env-seeded ``credential_pool``
+    entry is materialized to ``auth.json`` right now — the live runtime reads
+    from the pool, and before #96058 the Desktop "Save" action only touched
+    ``.env`` while ``auth.json``'s mtime stayed unchanged, so an OpenCode Go
+    (or any other env-backed provider) request kept 401'ing until the user
+    ran ``hermes auth add <provider> --type api-key`` separately. This makes
+    the Desktop save's effect on disk match what ``hermes auth add`` does.
     """
     from hermes_cli.config import load_env, save_env_value
 
@@ -236,6 +264,19 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
 
         for provider in _providers_for_env_var(env_var):
             unsuppress_credential_source(provider, f"env:{env_var}")
+    except Exception:
+        pass
+
+    # Materialize the env-seeded credential_pool entry to auth.json NOW so the
+    # next request authenticates against the just-saved key. ``load_pool`` is
+    # idempotent and additive-only for env sources (#9331), so re-running it
+    # is safe even when the pool already had this entry. Best-effort: a
+    # failure here must not mask the successful .env write above.
+    try:
+        from agent.credential_pool import load_pool
+
+        for provider in _providers_for_env_var(env_var):
+            load_pool(provider)
     except Exception:
         pass
 

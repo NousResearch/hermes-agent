@@ -14,6 +14,7 @@ import {
   $reviewOpen,
   $reviewRevertTarget,
   $reviewScopeCwd,
+  $reviewScopeTarget,
   $reviewSelectedPath,
   $reviewShipBusy,
   $reviewShipInfo,
@@ -30,9 +31,11 @@ import {
   refreshReview,
   refreshShipInfo,
   requestRevert,
+  revealReview,
   revertReviewFile,
   selectReviewFile,
   stageReviewFile,
+  toggleReview,
   toggleReviewTreeMode,
   unstageReviewFile
 } from './review'
@@ -44,8 +47,10 @@ import { $currentCwd } from './session'
 const requestOneShot = vi.fn(async (_args: unknown) => 'generated message')
 vi.mock('@/lib/oneshot', () => ({ requestOneShot: (args: unknown) => requestOneShot(args) }))
 // refreshRepoStatus is a fire-and-forget side effect of mutations; stub it so it
-// doesn't try to hit the (absent) probe and log.
-vi.mock('./coding-status', () => ({ refreshRepoStatus: vi.fn() }))
+// doesn't try to hit the (absent) probe and log. repoStatusForCwd is read when a
+// new PR binds its session to the branch it came from — no probe here, so no
+// branch either.
+vi.mock('./coding-status', () => ({ refreshRepoStatus: vi.fn(), repoStatusForCwd: () => ({ get: () => null }) }))
 
 function file(path: string, over: Partial<HermesReviewFile> = {}): HermesReviewFile {
   return { path, status: 'modified', staged: false, added: 1, removed: 0, ...over } as HermesReviewFile
@@ -94,6 +99,7 @@ beforeEach(() => {
   $reviewCommitMsgBusy.set(false)
   $reviewRevertTarget.set(undefined)
   $reviewScopeCwd.set(null)
+  $reviewScopeTarget.set('main')
   $currentCwd.set('/repo')
 })
 
@@ -261,6 +267,45 @@ describe('view state', () => {
     expect(review.list).toHaveBeenCalledWith('/tile-worktree', 'uncommitted', null)
   })
 
+  it('openReview remembers the tile composer that owns the scoped worktree', () => {
+    stubReview()
+
+    openReview('/tile-worktree', 'tile:project-b')
+
+    expect($reviewScopeCwd.get()).toBe('/tile-worktree')
+    expect($reviewScopeTarget.get()).toBe('tile:project-b')
+  })
+
+  it('revealReview re-homes the origin when the repo stays the same', () => {
+    stubReview()
+    openReview('/tile-worktree', 'tile:project-a')
+
+    revealReview('/tile-worktree', 'tile:project-b')
+
+    expect($reviewScopeTarget.get()).toBe('tile:project-b')
+  })
+
+  it('narrow toggle re-homes the origin before showing the overlay', () => {
+    const originalMatchMedia = window.matchMedia
+
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({ matches: true }))
+    })
+
+    try {
+      stubReview()
+      openReview('/project-a', 'tile:project-a')
+
+      toggleReview('/project-b', 'tile:project-b')
+
+      expect($reviewScopeCwd.get()).toBe('/project-b')
+      expect($reviewScopeTarget.get()).toBe('tile:project-b')
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia })
+    }
+  })
+
   it('closeReview closes the pane, clears selection, and drops scope', () => {
     stubReview()
     $reviewOpen.set(true)
@@ -272,6 +317,7 @@ describe('view state', () => {
 
     expect($reviewOpen.get()).toBe(false)
     expect($reviewScopeCwd.get()).toBeNull()
+    expect($reviewScopeTarget.get()).toBe('main')
     expect($reviewSelectedPath.get()).toBeNull()
     expect($reviewDiff.get()).toBeNull()
   })

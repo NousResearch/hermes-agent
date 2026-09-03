@@ -469,6 +469,8 @@ export const tr: Translations = {
     copyCliCommand: "CLI komutunu kopyala (harici / yedek için)",
     connect: "Bağlan",
     sessionExpires: "Oturumun süresi {time} sonra dolacak",
+    sessionExpiredNoError:
+      "Oturum açma, sağlayıcıya ulaşmadan süresi doldu. Bu genellikle oturum açma sayfasının açılan sekmede takıldığı anlamına gelir (sunucu tarafı sorun) — oradan oturum açmayı tamamlayın, ardından Yeniden Dene'ye tıklayın. Sorun devam ederse bunun yerine bir API anahtarı veya CLI kullanın.",
     initiatingLogin: "Giriş akışı başlatılıyor…",
     exchangingCode: "Kod, jetonlarla değiştiriliyor…",
     connectedClosing: "Bağlandı! Kapatılıyor…",
@@ -618,6 +620,12 @@ export const tr: Translations = {
       "Panolar, ilgisiz iş akışlarını ayırmanızı sağlar — proje, depo veya alan başına bir pano. Bir panodaki worker'lar başka bir panonun görevlerini asla görmez.",
     slug: "Slug",
     slugHint: "— küçük harf, tire, ör. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Görünen ad",
     displayNameHint: "(isteğe bağlı)",
     description: "Açıklama",

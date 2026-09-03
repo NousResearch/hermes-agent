@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from hermes_cli.config import cfg_get
 
+from agent.skill_utils import EXCLUDED_SKILL_DIRS
+
 try:  # pragma: no cover - exercised via the fail-closed test below
     from agent.file_safety import get_read_block_error
 except ImportError:  # noqa: F401 - sentinel consumed in register_credential_file
@@ -275,13 +277,22 @@ def get_skills_directory_mount(
 
     # Mount external skill dirs
     try:
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
             if ext_dir.is_dir():
                 host_path = _safe_skills_path(ext_dir)
                 mounts.append({
                     "host_path": host_path,
                     "container_path": f"{container_base.rstrip('/')}/external_skills/{idx}",
+                })
+        # Trusted project-local skill dirs (repo checkouts). Separate
+        # namespace so container paths stay stable if external_dirs change.
+        for idx, proj_dir in enumerate(get_project_skills_dirs()):
+            if proj_dir.is_dir():
+                host_path = _safe_skills_path(proj_dir)
+                mounts.append({
+                    "host_path": host_path,
+                    "container_path": f"{container_base.rstrip('/')}/project_skills/{idx}",
                 })
     except ImportError:
         pass
@@ -315,16 +326,19 @@ def _safe_skills_path(skills_dir: Path) -> str:
     safe_dir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
     _safe_skills_tempdir = safe_dir
 
-    for item in skills_dir.rglob("*"):
-        if item.is_symlink():
-            continue
-        rel = item.relative_to(skills_dir)
-        target = safe_dir / rel
-        if item.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-        elif item.is_file():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(item), str(target))
+    # Same exclusion rule as the per-file sync path (_iter_syncable_files):
+    # the sanitized copy is what gets mounted, so it must not carry the
+    # bookkeeping trees either. Prune before descending so a multi-GB
+    # .curator_backups is never even walked.
+    for dirpath, dirnames, filenames in os.walk(skills_dir):
+        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDED_SKILL_DIRS)
+        base = Path(dirpath)
+        (safe_dir / base.relative_to(skills_dir)).mkdir(parents=True, exist_ok=True)
+        for name in filenames:
+            item = base / name
+            if item.is_symlink() or not item.is_file():
+                continue
+            shutil.copy2(str(item), str(safe_dir / item.relative_to(skills_dir)))
 
     def _cleanup():
         if safe_dir.is_dir():
@@ -335,15 +349,40 @@ def _safe_skills_path(skills_dir: Path) -> str:
     return str(safe_dir)
 
 
+def _iter_syncable_files(root: Path):
+    """Yield ``(path, rel)`` for every regular, non-symlink file under *root*
+    that a sandbox should receive.
+
+    Prunes ``agent.skill_utils.EXCLUDED_SKILL_DIRS`` *before* descending, so
+    the walk never enters local bookkeeping and dependency trees (``.hub``
+    download cache, ``.archive``, ``.curator_backups``, ``node_modules``,
+    ``__pycache__``, ``.git``, ...) that the remote agent never reads — the
+    sync path agrees with discovery on what counts as skill content.
+
+    This deliberately does not use ``is_excluded_skill_path()``, which also
+    prunes ``references/``, ``templates/``, ``assets/`` and ``scripts/``.
+    Those hold progressive-disclosure support files and bundled scripts the
+    sandbox does execute, so they must keep syncing.
+    """
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDED_SKILL_DIRS)
+        base = Path(dirpath)
+        for name in filenames:
+            item = base / name
+            if item.is_symlink() or not item.is_file():
+                continue
+            yield item, item.relative_to(root)
+
+
 def iter_skills_files(
     container_base: str = "/root/.hermes",
 ) -> List[Dict[str, str]]:
     """Yield individual (host_path, container_path) entries for skills files.
 
     Includes both the local skills dir and any external dirs configured via
-    skills.external_dirs.  Skips symlinks entirely.  Preferred for backends
-    that upload files individually (Daytona, Modal) rather than mounting a
-    directory.
+    skills.external_dirs.  Skips symlinks and anything under
+    EXCLUDED_SKILL_DIRS entirely.  Preferred for backends that upload files
+    individually (Daytona, Modal) rather than mounting a directory.
     """
     result: List[Dict[str, str]] = []
 
@@ -351,10 +390,7 @@ def iter_skills_files(
     skills_dir = hermes_home / "skills"
     if skills_dir.is_dir():
         container_root = f"{container_base.rstrip('/')}/skills"
-        for item in skills_dir.rglob("*"):
-            if item.is_symlink() or not item.is_file():
-                continue
-            rel = item.relative_to(skills_dir)
+        for item, rel in _iter_syncable_files(skills_dir):
             result.append({
                 "host_path": str(item),
                 "container_path": f"{container_root}/{rel}",
@@ -362,15 +398,21 @@ def iter_skills_files(
 
     # Include external skill dirs
     try:
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
             if not ext_dir.is_dir():
                 continue
             container_root = f"{container_base.rstrip('/')}/external_skills/{idx}"
-            for item in ext_dir.rglob("*"):
-                if item.is_symlink() or not item.is_file():
-                    continue
-                rel = item.relative_to(ext_dir)
+            for item, rel in _iter_syncable_files(ext_dir):
+                result.append({
+                    "host_path": str(item),
+                    "container_path": f"{container_root}/{rel}",
+                })
+        for idx, proj_dir in enumerate(get_project_skills_dirs()):
+            if not proj_dir.is_dir():
+                continue
+            container_root = f"{container_base.rstrip('/')}/project_skills/{idx}"
+            for item, rel in _iter_syncable_files(proj_dir):
                 result.append({
                     "host_path": str(item),
                     "container_path": f"{container_root}/{rel}",
@@ -395,11 +437,21 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/screenshots", "browser_screenshots"),
     ("cache/web", "web_cache"),
     ("cache/delegation", "delegation_cache"),
+    # Oversized tool results (tools/tool_result_storage.py). Host-side is the
+    # single canonical location; mounting/syncing it lets remote backends
+    # read spilled results at the translated path instead of needing a
+    # separate in-sandbox copy.
+    ("cache/spillover", "cache/spillover"),
     # Desktop/clipboard/PDF uploads land in the flat top-level ``images/`` dir
     # (tui_gateway attach RPCs), not under ``cache/``. Mount it so vision can
     # reach uploads inside sandbox containers (#69575). No legacy alias exists,
     # so both tuple slots are ``images``.
     ("images", "images"),
+    # Desktop non-image file attachments (tui_gateway ``file.attach`` staging)
+    # land in the flat top-level ``attachments/`` dir. Mount it so the agent's
+    # file tools can read dropped binaries (zip/pdf/...) from inside sandbox
+    # containers instead of dangling host paths (#76577).
+    ("attachments", "attachments"),
 ]
 
 
@@ -417,13 +469,25 @@ def get_cache_directory_mounts(
     mounts: List[Dict[str, str]] = []
     for new_subpath, old_name in _CACHE_DIRS:
         host_dir = get_hermes_dir(new_subpath, old_name)
-        if host_dir.is_dir():
-            # Always map to the *new* container layout regardless of host layout.
-            container_path = f"{container_base.rstrip('/')}/{new_subpath}"
-            mounts.append({
-                "host_path": str(host_dir),
-                "container_path": container_path,
-            })
+        if not host_dir.is_dir():
+            # Create missing staging dirs instead of skipping them: Docker
+            # snapshots this mount list at container CREATION, so a dir that
+            # appears later (first desktop attachment, first clipboard image)
+            # would dangle for the whole life of a persistent container
+            # (#76577). An empty bind-mounted dir costs nothing; a missing
+            # mount costs the feature. get_hermes_dir() already resolved
+            # new-vs-legacy layout, so creating its answer cannot shadow a
+            # populated legacy dir.
+            try:
+                host_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                continue  # unwritable home (tests, RO mounts) — skip as before
+        # Always map to the *new* container layout regardless of host layout.
+        container_path = f"{container_base.rstrip('/')}/{new_subpath}"
+        mounts.append({
+            "host_path": str(host_dir),
+            "container_path": container_path,
+        })
     return mounts
 
 
@@ -483,14 +547,44 @@ def to_agent_visible_cache_path(
 
     Returns the input unchanged if it is not under any auto-mounted cache
     directory, or if the active terminal backend does not require path
-    translation (only Docker for now).
+    translation (local).
+
+    Per-backend base (mirrors ``_agent_cache_base_for_env`` in
+    tools/image_generation_tool.py, the proven heuristics for where each
+    backend's Hermes cache lands):
+
+    * docker / modal — bind-mounted (docker) or per-file-synced (modal) at
+      ``/root/.hermes`` (the *container_base* default).
+    * ssh / daytona / vercel_sandbox — file-synced under the remote user's
+      home; ``~/.hermes`` is shell-expanded by the remote shell, so tool
+      commands resolve it regardless of the actual remote home. Previously
+      these backends synced the bytes but still rendered the dangling host
+      path (#76577 gap).
+    * singularity — NOT translated: Apptainer auto-binds the host home, so
+      the host path is directly readable and translation would dangle
+      (cache dirs are not remapped into that sandbox).
+
+    Backend is identified by TERMINAL_ENV (same env var
+    tools/terminal_tool.py reads in _get_environment_config).
     """
-    # Only Docker backend requires translation at this time.  Other backends
-    # (Modal, Daytona, Vercel) use different mount semantics and will be
-    # addressed separately if needed.  Backend is identified by TERMINAL_ENV
-    # (same env var tools/terminal_tool.py reads in _get_environment_config).
-    if os.environ.get("TERMINAL_ENV", "local") != "docker":
-        return host_path
+    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    if backend in ("docker", "modal"):
+        pass  # /root/.hermes default
+    elif backend in ("ssh", "daytona", "vercel_sandbox"):
+        container_base = "~/.hermes"
+    else:
+        # Plugin-registered backends declare where synced cache files land
+        # via ``cache_path_base``; None means host paths remain correct.
+        plugin_base = None
+        try:
+            from agent.terminal_env_registry import provider_flag
+
+            plugin_base = provider_flag(backend, "cache_path_base", None)
+        except Exception:
+            plugin_base = None
+        if not plugin_base:
+            return host_path  # local, singularity, unknown: host path is correct
+        container_base = str(plugin_base)
 
     mapped = map_cache_path_to_container(host_path, container_base=container_base)
     return mapped if mapped is not None else host_path

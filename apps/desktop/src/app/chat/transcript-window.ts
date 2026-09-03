@@ -1,5 +1,5 @@
 import type { ChatMessage } from '@/lib/chat-messages'
-import { messageRenderWeight } from '@/lib/render-weight'
+import { messageStoreWeight } from '@/lib/render-weight'
 
 /**
  * Bound what reaches assistant-ui at all.
@@ -77,10 +77,7 @@ export function alignToBranchGroup(messages: readonly ChatMessage[], start: numb
  * Walks newest-first accumulating weight until the budget is met, keeps at
  * least MIN messages, then aligns the cut off a branch-group boundary.
  */
-export function selectTranscriptWindow(
-  messages: readonly ChatMessage[],
-  pages = 1
-): TranscriptWindow {
+export function selectTranscriptWindow(messages: readonly ChatMessage[], pages = 1): TranscriptWindow {
   const budget = TRANSCRIPT_WINDOW_BUDGET * Math.max(1, Math.floor(pages))
 
   if (messages.length === 0) {
@@ -91,7 +88,7 @@ export function selectTranscriptWindow(
   let weight = 0
 
   for (let i = messages.length - 1; i >= 0; i--) {
-    weight += messageRenderWeight(messages[i].parts)
+    weight += messageStoreWeight(messages[i].parts)
     start = i
 
     if (weight >= budget && messages.length - i >= TRANSCRIPT_WINDOW_MIN_MESSAGES) {
@@ -108,4 +105,68 @@ export function selectTranscriptWindow(
   }
 
   return { messages: messages.slice(start), windowed: true }
+}
+
+/**
+ * How far past the budget a window may grow before the cut moves again.
+ * Half a page: each re-cut trims about this much, so streaming causes one
+ * re-cut per ~half page of new content instead of one per flush.
+ */
+export const TRANSCRIPT_WINDOW_SLACK = TRANSCRIPT_WINDOW_BUDGET / 2
+
+export interface TranscriptWindowState {
+  /** Id of the window's first message; null while the transcript is uncut. */
+  anchorId: null | string
+  pages: number
+  window: TranscriptWindow
+}
+
+/**
+ * `selectTranscriptWindow` with a STICKY cut.
+ *
+ * A fresh weight-walk per store flush moves the cut forward as the streaming
+ * tail grows — one message at a time, ~30x/s. Every slide re-indexes the whole
+ * windowed transcript: each row of the thread now renders a DIFFERENT message
+ * (full markdown re-parse + re-highlight per row) and the runtime repository
+ * takes its O(window) rebuild path instead of the one-message update. That —
+ * not the transcript's size — was the long-session collapse: below the budget
+ * the window is pass-through and streaming is O(1); the flush the transcript
+ * outgrew it, every token cost a whole-window re-render.
+ *
+ * So the cut is anchored to a message id and holds while the tail stays within
+ * budget + slack. Streaming then costs a re-cut once per ~half page of content.
+ * The anchor vanishing (session swap, compression rewrite) or a pages change
+ * ("Show earlier") falls through to a fresh walk.
+ */
+export function advanceTranscriptWindow(
+  prev: null | TranscriptWindowState,
+  messages: readonly ChatMessage[],
+  pages = 1
+): TranscriptWindowState {
+  const budget = TRANSCRIPT_WINDOW_BUDGET * Math.max(1, Math.floor(pages))
+
+  if (prev && prev.pages === pages && messages.length > 0) {
+    const start = prev.anchorId === null ? 0 : messages.findIndex(message => message.id === prev.anchorId)
+
+    if (start !== -1) {
+      let weight = 0
+
+      for (let i = messages.length - 1; i >= start; i--) {
+        weight += messageStoreWeight(messages[i].parts)
+      }
+
+      if (weight <= budget + TRANSCRIPT_WINDOW_SLACK) {
+        const window: TranscriptWindow =
+          start === 0
+            ? { messages: messages as ChatMessage[], windowed: prev.anchorId !== null }
+            : { messages: messages.slice(start), windowed: true }
+
+        return { anchorId: prev.anchorId, pages, window }
+      }
+    }
+  }
+
+  const window = selectTranscriptWindow(messages, pages)
+
+  return { anchorId: window.windowed ? window.messages[0].id : null, pages, window }
 }

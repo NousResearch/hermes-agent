@@ -371,15 +371,35 @@ class TestFailureAttribution:
     """
 
     def _make_pool(self, tmp_path, monkeypatch, entries):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Keep host Anthropic/Claude credentials out of this fixture. load_pool()
+        # auto-seeds ~/.claude/.credentials.json and env keys when anthropic is
+        # explicitly configured on the machine, which turns a deliberate
+        # single-entry pool into a multi-entry pool and invalidates isolation
+        # assertions (see test_unmatched_key_does_not_retry_only_pool_entry).
+        for env_var in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ):
+            monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.auth.is_provider_explicitly_configured",
+            lambda provider: False,
+        )
         (hermes_home / "auth.json").write_text(
-            json.dumps({"version": 1, "credential_pool": {"anthropic": entries}})
+            json.dumps({"version": 1, "credential_pool": {"anthropic": entries}}),
+            encoding="utf-8",
         )
         from agent.credential_pool import load_pool
 
-        return load_pool("anthropic")
+        pool = load_pool("anthropic")
+        assert [entry.id for entry in pool.entries()] == [
+            entry["id"] for entry in entries
+        ], "pool fixture leaked host credentials into the test pool"
+        return pool
 
     def _entry(self, idx, key, **overrides):
         entry = {

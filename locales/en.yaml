@@ -83,8 +83,16 @@ gateway:
     always_plural:         "✅ Commands approved (pattern approved permanently) ({count} commands). The agent is resuming..."
 
   background:
-    usage:                 "Usage: /background <prompt>\nExample: /background Summarize the top HN stories today\n\nRuns the prompt in a separate session. You can keep chatting — the result will appear here when done."
+    usage:                 "Usage: /bg <prompt>\nExample: /bg Summarize the top HN stories today\n\nRuns the prompt in a separate session. You can keep chatting — the result will appear here when done."
     started:               "🔄 Background task started: \"{preview}\"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done."
+
+  btw:
+    usage:                 "Usage: /btw <question>\nExample: /btw which file was that error in?\n\nAnswers a quick side question about this conversation without interrupting it. For an independent background task, use /bg <prompt>."
+    no_history:            "No conversation yet — send your question as a normal message instead."
+    no_provider:           "❌ Cannot answer side question: no provider credentials configured."
+    started:               "💬 Side question: \"{preview}\"\nAnswering from a snapshot of this conversation — the current work continues."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw failed: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Session database not available."
@@ -113,6 +121,7 @@ gateway:
     summary_failed:        "⚠️ Summary generation failed ({error}). {count} historical message(s) were removed and replaced with a placeholder; earlier context is no longer recoverable. Consider checking your auxiliary.compression model configuration."
     aborted:               "⚠️ Compression aborted ({error}). No messages were dropped — conversation is unchanged. Run /compress to retry, /reset for a clean session, or check your auxiliary.compression model configuration."
     aux_failed:            "ℹ️ Configured compression model `{model}` failed ({error}). Recovered using your main model — context is intact — but you may want to check `auxiliary.compression.model` in config.yaml."
+    turnhold_deferred:     "ℹ️ Context compression deferred — summary still streaming. Continuing without compression this turn."
     failed:                "Compression failed: {error}"
 
   debug:
@@ -132,8 +141,8 @@ gateway:
 
   fast:
     not_supported:         "⚡ /fast is only available for OpenAI models that support Priority Processing."
-    status:                "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, status"
+    status:                "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|auto|cold|status>`"
+    unknown_arg:           "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, auto, cold, status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (saved to config)\n_(takes effect on next message)_"
     session_only:          "⚡ ✓ Priority Processing: **{label}** (this session only)"
     label_fast:            "FAST"
@@ -143,6 +152,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\n\nCurrent mode: `{mode}`\n\nPick an option:"
     choice_fast:           "fast — Priority Processing on"
     choice_normal:         "normal — standard processing"
+    choice_auto:           "auto — fast for the first seconds of every turn"
+    choice_cold:           "cold — fast for the first turn of a session only"
 
   footer:
     status:                "📎 Runtime footer: **{state}**\nFields: `{fields}`\nPlatform: `{platform}`"
@@ -157,7 +168,7 @@ gateway:
     no_goal_set:           "No goal set."
     paused:                "⏸ Goal paused: {goal}"
     no_resume:             "No goal to resume."
-    resumed:               "▶ Goal resumed: {goal}\nSend any message to continue, or wait — I'll take the next step on the next turn."
+    resumed:               "▶ Goal resumed: {goal}\nContinuing now — I'll take the next step right away."
     invalid:               "Invalid goal: {error}"
     set:                   "⊙ Goal set ({budget}-turn budget): {goal}\nI'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
 
@@ -181,9 +192,15 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "No personalities configured in `{path}/config.yaml`"
@@ -266,6 +283,7 @@ gateway:
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.\nFuture messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "No named sessions found.\nUse `/title My Session` to name your current session, then `/resume My Session` to return to it later."
+    all_requires_admin: "_Note: `--all` (cross-chat listing) requires a configured admin; showing this chat's sessions only._"
     list_header:           "📋 **Named Sessions**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -289,6 +307,9 @@ gateway:
     none_found:            "No checkpoints found for {cwd}"
     invalid_number:        "Invalid checkpoint number. Use 1-{max}."
     restored:              "✅ Restored to checkpoint {hash}: {reason}\nA pre-rollback snapshot was saved automatically."
+    kept_user_edits:       "↷ Kept your hand-edits: {files}\nUse /rollback <N> --all to restore those too."
+    kept_oversize:         "↷ Kept (too large for checkpoints, no stored copy to revert to): {files}"
+    failed_deletes:        "⚠️ Could not remove (left in place): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

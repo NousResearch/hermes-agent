@@ -53,14 +53,20 @@ save_env_value = late("save_env_value")
 _mcp_oauth_flows = LateState("_mcp_oauth_flows")
 _mcp_oauth_flows_lock = LateState("_mcp_oauth_flows_lock")
 _MAX_PENDING_MCP_OAUTH_FLOWS = LateState("_MAX_PENDING_MCP_OAUTH_FLOWS")
+# Config read-modify-write serialization for off-loop handlers (defined in
+# web_server.py; LateState supports ``with``-blocks, so this is the live lock).
+_CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 
 @router.get("/api/mcp/servers")
 async def list_mcp_servers(profile: Optional[str] = None):
     from hermes_cli.mcp_config import _get_mcp_servers
 
-    with _profile_scope(profile):
-        servers = _get_mcp_servers()
+    def _read():
+        with _profile_scope(profile):
+            return _get_mcp_servers()
+
+    servers = await asyncio.to_thread(_read)
     return {
         "servers": [
             _mcp_server_summary(name, cfg) for name, cfg in sorted(servers.items())
@@ -81,20 +87,27 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    with _profile_scope(body.profile or profile):
-        existing = _get_mcp_servers()
-    if name in existing:
-        raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
+    def _run():
+        with _profile_scope(body.profile or profile):
+            # _save_mcp_server does its own load→mutate→save of config.yaml;
+            # serialize the whole cycle against other off-loop config writers.
+            # The duplicate-name check lives under the same lock span so a
+            # concurrent add of the same name can't slip between check and save.
+            with _CONFIG_MUTATION_LOCK:
+                if name in _get_mcp_servers():
+                    raise HTTPException(
+                        status_code=409, detail=f"Server '{name}' already exists"
+                    )
+                if bearer_token is not None:
+                    server_config["headers"] = _save_bearer_auth_token(name, bearer_token)
+                if not _save_mcp_server(name, server_config):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Server '{name}' rejected: suspicious command/args configuration",
+                    )
 
     try:
-        with _profile_scope(body.profile or profile):
-            if bearer_token is not None:
-                server_config["headers"] = _save_bearer_auth_token(name, bearer_token)
-            if not _save_mcp_server(name, server_config):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Server '{name}' rejected: suspicious command/args configuration",
-                )
+        await asyncio.to_thread(_run)
     except HTTPException:
         raise
     except Exception as exc:
@@ -116,8 +129,12 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = 
     """
     from hermes_cli.mcp_config import _replace_mcp_servers
 
-    with _profile_scope(body.profile or profile):
-        ok, issues = _replace_mcp_servers(body.servers)
+    def _run():
+        with _profile_scope(body.profile or profile):
+            with _CONFIG_MUTATION_LOCK:
+                return _replace_mcp_servers(body.servers)
+
+    ok, issues = await asyncio.to_thread(_run)
     if not ok:
         raise HTTPException(status_code=400, detail="; ".join(issues))
     return {"ok": True}
@@ -127,8 +144,12 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = 
 async def remove_mcp_server(name: str, profile: Optional[str] = None):
     from hermes_cli.mcp_config import _remove_mcp_server
 
-    with _profile_scope(profile):
-        removed = _remove_mcp_server(name)
+    def _run():
+        with _profile_scope(profile):
+            with _CONFIG_MUTATION_LOCK:
+                return _remove_mcp_server(name)
+
+    removed = await asyncio.to_thread(_run)
     if not removed:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
     return {"ok": True}
@@ -143,8 +164,11 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
         _probe_single_server,
     )
 
-    with _profile_scope(profile):
-        servers = _get_mcp_servers()
+    def _read():
+        with _profile_scope(profile):
+            return _get_mcp_servers()
+
+    servers = await asyncio.to_thread(_read)
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
 
@@ -186,9 +210,24 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
             "error": "OAuth authentication required — no token found.",
             "tools": [],
         }
+    # Additive-optional per-tool schema size (chars of the converted registry
+    # schema) — the desktop's cost overlay estimates tokens from it. Older
+    # renderers ignore the extra key; failed probes simply omit it.
+    schema_chars = details.get("schema_chars") or {}
     return {
         "ok": True,
-        "tools": [{"name": t, "description": d} for t, d in tools],
+        "tools": [
+            {
+                "name": t,
+                "description": d,
+                **(
+                    {"schema_chars": schema_chars[t]}
+                    if isinstance(schema_chars.get(t), int)
+                    else {}
+                ),
+            }
+            for t, d in tools
+        ],
         "prompts": details.get("prompts", 0),
         "resources": details.get("resources", 0),
     }
@@ -205,9 +244,12 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     from hermes_constants import get_hermes_home
 
     process_home = str(get_hermes_home().expanduser().resolve(strict=False))
-    with _profile_scope(profile):
-        servers = _get_mcp_servers()
-        flow_home = str(get_hermes_home().expanduser().resolve(strict=False))
+
+    def _read():
+        with _profile_scope(profile):
+            return _get_mcp_servers(), str(get_hermes_home().expanduser().resolve(strict=False))
+
+    servers, flow_home = await asyncio.to_thread(_read)
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
     cfg = dict(servers[name])
@@ -273,6 +315,23 @@ async def mcp_oauth_flow_status(flow_id: str, request: Request):
     return snapshot
 
 
+@router.delete("/api/mcp/oauth/flows/{flow_id}")
+async def cancel_mcp_oauth_flow(flow_id: str, request: Request):
+    """Cancel an in-flight MCP OAuth flow (the desktop's inline-card/pill
+    cancel). mark_error unblocks both worker waits, so the worker exits and
+    frees the per-server "already in progress" slot — without this, a renderer
+    that stops polling leaves the flow squatting until its 300s callback
+    timeout and every retry 409s. Idempotent: an already-settled flow is left
+    as-is (approved stays approved)."""
+    _require_token(request)
+    flow = _mcp_oauth_flows.get(flow_id)
+    if flow is None:
+        # Expired/GC'd is the goal state of a cancel — not an error.
+        return {"ok": True, "status": "expired"}
+    flow.mark_error("Cancelled by user")
+    return {"ok": True, "status": flow.snapshot()["status"]}
+
+
 @router.get("/api/mcp/oauth/callback/{server_name:path}")
 async def mcp_oauth_callback(
     server_name: str,
@@ -325,16 +384,20 @@ async def set_mcp_server_enabled(
     flag the agent reads at startup.  Disabled servers stay in config so they
     can be re-enabled without re-entering their settings.
     """
-    with _profile_scope(body.profile or profile):
-        cfg = load_config()
-        servers = cfg.get("mcp_servers")
-        if not isinstance(servers, dict) or name not in servers:
-            raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
-        if not isinstance(servers[name], dict):
-            raise HTTPException(status_code=400, detail="Malformed server config")
-        servers[name]["enabled"] = bool(body.enabled)
-        save_config(cfg)
-    return {"ok": True, "name": name, "enabled": bool(body.enabled)}
+    def _run():
+        with _profile_scope(body.profile or profile):
+            with _CONFIG_MUTATION_LOCK:
+                cfg = load_config()
+                servers = cfg.get("mcp_servers")
+                if not isinstance(servers, dict) or name not in servers:
+                    raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+                if not isinstance(servers[name], dict):
+                    raise HTTPException(status_code=400, detail="Malformed server config")
+                servers[name]["enabled"] = bool(body.enabled)
+                save_config(cfg)
+        return {"ok": True, "name": name, "enabled": bool(body.enabled)}
+
+    return await asyncio.to_thread(_run)
 
 
 @router.get("/api/mcp/catalog")
@@ -355,12 +418,16 @@ async def list_mcp_catalog(profile: Optional[str] = None):
 
     entries = []
     try:
-        with _profile_scope(profile):
-            catalog_entries = list(mcp_catalog.list_catalog())
-            installed_state = {
-                e.name: (mcp_catalog.is_installed(e.name), mcp_catalog.is_enabled(e.name))
-                for e in catalog_entries
-            }
+        def _read():
+            with _profile_scope(profile):
+                catalog = list(mcp_catalog.list_catalog())
+                state = {
+                    e.name: (mcp_catalog.is_installed(e.name), mcp_catalog.is_enabled(e.name))
+                    for e in catalog
+                }
+            return catalog, state
+
+        catalog_entries, installed_state = await asyncio.to_thread(_read)
         for entry in catalog_entries:
             auth = entry.auth
             transport = entry.transport
@@ -392,6 +459,12 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                 if entry.tools.default_enabled is not None
                 else None,
                 "post_install": entry.post_install or "",
+                # Composer-suggestion triggers (desktop brand pills). Present
+                # only for entries whose manifest declares a `suggest` block.
+                "suggest": {
+                    "keywords": list(entry.suggest.keywords),
+                    "hosts": list(entry.suggest.hosts),
+                } if entry.suggest else None,
                 "needs_install": entry.install is not None,
                 "installed": installed_state.get(entry.name, (False, False))[0],
                 "enabled": installed_state.get(entry.name, (False, False))[1],
@@ -430,14 +503,40 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     if entry is None:
         raise HTTPException(status_code=404, detail=f"No catalog entry '{name}'")
 
-    # Persist any supplied env vars first (catalog entries declare which names
-    # they need; we only write the ones the user provided).
+    # Catalog credentials are a closed schema: configuring one MCP must not
+    # become a generic write primitive for unrelated process environment.
+    declared_env = {spec.name for spec in (entry.auth.env or [])}
+    undeclared_env = sorted(set(body.env) - declared_env)
+    if undeclared_env:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Catalog entry '{name}' does not declare environment "
+                f"variable(s): {', '.join(undeclared_env)}"
+            ),
+        )
+
+    # Validate the complete map before the first write. This preserves the
+    # existing writer/install flow while ensuring a mixed valid+invalid request
+    # cannot partially persist credentials.
+    from hermes_cli.config import validate_env_var_name_for_write
+
+    try:
+        for key in body.env:
+            validate_env_var_name_for_write(key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Persist any supplied, declared env vars first.
     effective_profile = body.profile or profile
     if body.env:
-        with _profile_scope(effective_profile):
-            for k, v in body.env.items():
-                if v:
-                    save_env_value(k, v)
+        def _write_env():
+            with _profile_scope(effective_profile):
+                for k, v in body.env.items():
+                    if v:
+                        save_env_value(k, v)
+
+        await asyncio.to_thread(_write_env)
 
     # Git-bootstrap entries can take a while to clone — run via the background
     # action path so the request returns immediately and the UI can tail logs.

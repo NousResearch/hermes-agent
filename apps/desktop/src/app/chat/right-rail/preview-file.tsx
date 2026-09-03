@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import type {
   ComponentProps,
@@ -12,7 +13,6 @@ import { Streamdown } from 'streamdown'
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
-import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
 import { RichCodeBlock } from '@/components/assistant-ui/embeds'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
@@ -23,17 +23,21 @@ import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import {
   desktopFileDiff,
+  desktopFsCacheKey,
   desktopGitRoot,
   readDesktopFileDataUrl,
   readDesktopFileText,
   writeDesktopFileText
 } from '@/lib/desktop-fs'
 import { Check, Pencil, X } from '@/lib/icons'
+import { createMemoizedMathPlugin } from '@/lib/katex-memo'
+import { isComposerChord } from '@/lib/keybinds/chords'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
+import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
-import { $currentCwd } from '@/store/session'
+import { $connection, $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
@@ -41,6 +45,11 @@ const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 const SOURCE_CHUNK_LINES = 200
 const SOURCE_LINE_PX = 20
 const SOURCE_OVERSCAN_LINES = 400
+
+// Math plugin for the static file preview, configured once at module scope.
+// Mirrors the chat transcript's plugin (`markdown-text.tsx`) — same memoized
+// KaTeX wrapper, with `singleDollarTextMath: true` so `$x$` renders inline.
+const previewMathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 
 type EmptyStateTone = 'neutral' | 'warning'
 
@@ -217,6 +226,45 @@ function looksBinaryBytes(bytes: Uint8Array) {
   return suspicious / Math.min(bytes.length, 4096) > 0.12
 }
 
+function dataUrlToBlob(dataUrl: string) {
+  const comma = dataUrl.indexOf(',')
+
+  if (comma < 0 || !dataUrl.startsWith('data:')) {
+    throw new Error('Invalid PDF data URL')
+  }
+
+  const metadata = dataUrl
+    .slice(5, comma)
+    .split(';')
+    .map(part => part.trim().toLowerCase())
+
+  const payload = dataUrl.slice(comma + 1)
+
+  if (metadata[0] !== 'application/pdf' || !metadata.slice(1).includes('base64')) {
+    throw new Error('Invalid PDF data URL type')
+  }
+
+  let binary: string
+
+  try {
+    binary = atob(decodeURIComponent(payload))
+  } catch {
+    throw new Error('Invalid PDF data URL payload')
+  }
+
+  if (!binary.startsWith('%PDF-')) {
+    throw new Error('Invalid PDF file header')
+  }
+
+  const bytes = new Uint8Array(binary.length)
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+
+  return new Blob([bytes], { type: 'application/pdf' })
+}
+
 async function readTextPreview(filePath: string) {
   try {
     return await readDesktopFileText(filePath)
@@ -259,7 +307,11 @@ const MD_TAG_CLASSES = {
   ol: 'mb-4 list-decimal pl-6 marker:text-muted-foreground/70 last:mb-0',
   li: 'mt-1 leading-relaxed',
   blockquote: 'mb-4 border-l-2 border-border pl-3 text-muted-foreground italic last:mb-0',
-  pre: 'mb-4 overflow-hidden rounded-lg border border-border bg-card font-mono text-xs leading-relaxed last:mb-0 [&_pre]:m-0 [&_pre]:overflow-x-auto [&_pre]:bg-transparent! [&_pre]:p-3 [&_pre]:font-mono'
+  pre: 'mb-4 overflow-hidden rounded-lg border border-border bg-card font-mono text-xs leading-relaxed last:mb-0 [&_pre]:m-0 [&_pre]:overflow-x-auto [&_pre]:bg-transparent! [&_pre]:p-3 [&_pre]:font-mono',
+  hr: 'my-6 border-border',
+  th: 'px-3 py-2 text-left text-sm font-semibold text-foreground',
+  td: 'px-3 py-2 align-top text-sm leading-relaxed',
+  thead: 'bg-muted/35 text-muted-foreground'
 } as const
 
 function tagged<T extends keyof typeof MD_TAG_CLASSES>(Tag: T) {
@@ -314,6 +366,47 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
   return <RichCodeBlock code={code} fallback={highlighted} language={language} />
 }
 
+function MarkdownTable({ className, ...rest }: ComponentProps<'table'>) {
+  return (
+    <div className="mb-4 w-full overflow-x-auto rounded-lg border border-border last:mb-0">
+      <table
+        className={cn(
+          'm-0 w-full min-w-[18rem] border-collapse [&_tr]:border-b [&_tr]:border-border last:[&_tr]:border-0',
+          className
+        )}
+        {...rest}
+      />
+    </div>
+  )
+}
+
+function MarkdownImage({ alt, src, ...rest }: ComponentProps<'img'>) {
+  return (
+    <img
+      alt={alt ?? ''}
+      className="my-3 max-h-96 w-auto max-w-full rounded-lg border border-border object-contain shadow-sm"
+      src={src}
+      {...rest}
+    />
+  )
+}
+
+function MarkdownLink({ children, className, href, ...rest }: ComponentProps<'a'>) {
+  const isExternal = /^https?:\/\//i.test(href || '')
+
+  return (
+    <a
+      className={cn('text-foreground underline underline-offset-2 hover:text-primary', className)}
+      href={href}
+      rel={isExternal ? 'noopener noreferrer' : undefined}
+      target={isExternal ? '_blank' : undefined}
+      {...rest}
+    >
+      {children}
+    </a>
+  )
+}
+
 const MARKDOWN_COMPONENTS = {
   h1: tagged('h1'),
   h2: tagged('h2'),
@@ -325,14 +418,29 @@ const MARKDOWN_COMPONENTS = {
   li: tagged('li'),
   blockquote: tagged('blockquote'),
   pre: tagged('pre'),
-  code: MarkdownCode
+  code: MarkdownCode,
+  hr: tagged('hr'),
+  table: MarkdownTable,
+  th: tagged('th'),
+  td: tagged('td'),
+  thead: tagged('thead'),
+  img: MarkdownImage,
+  a: MarkdownLink
 }
 
-function MarkdownPreview({ text }: { text: string }) {
+export function MarkdownPreview({ text }: { text: string }) {
+  const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
+
   return (
     <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
-      <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
-        {text}
+      <Streamdown
+        components={MARKDOWN_COMPONENTS}
+        controls={false}
+        mode="static"
+        parseIncompleteMarkdown={false}
+        plugins={{ math: previewMathPlugin }}
+      >
+        {mathText}
       </Streamdown>
     </div>
   )
@@ -497,7 +605,7 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isAddSelectionShortcut(event)) {
+      if (!isComposerChord(event)) {
         return
       }
 
@@ -579,6 +687,8 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const { t } = useI18n()
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
+  const [pdfError, setPdfError] = useState<string>()
+  const [pdfUrl, setPdfUrl] = useState<string>()
   // User-picked view; null = auto (diff when changed, else rendered markdown,
   // else source). Reset when the previewed file changes.
   const [userMode, setUserMode] = useState<null | PreviewViewMode>(null)
@@ -600,8 +710,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   // hover flag (no state — only the keydown handler reads it).
   const readViewRef = useRef<HTMLDivElement>(null)
   const hoverRef = useRef(false)
+  const connection = useStore($connection)
+  const fsCacheKey = desktopFsCacheKey(connection)
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
+  const isPdf = target.previewKind === 'pdf'
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -620,7 +733,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
-  const blockedByTarget = !isImage && !forcePreview && (target.binary || target.large)
+  const blockedByTarget = !isImage && !isPdf && !forcePreview && (target.binary || target.large)
 
   useEffect(() => {
     let active = true
@@ -632,7 +745,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         return
       }
 
-      if (!isImage && !isText) {
+      if (!isImage && !isPdf && !isText) {
         setState({ loading: false })
 
         return
@@ -641,7 +754,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       setState({ loading: true })
 
       try {
-        if (isImage) {
+        if (isImage || isPdf) {
           // Prefer bytes the caller already handed us (a pasted/dropped
           // screenshot) over re-reading a path that may be transient/unreadable.
           const dataUrl = target.dataUrl || (await readDesktopFileDataUrl(filePath))
@@ -698,7 +811,49 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return () => {
       active = false
     }
-  }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, selfReload, target.dataUrl, target.language])
+  }, [
+    blockedByTarget,
+    filePath,
+    forcePreview,
+    fsCacheKey,
+    isImage,
+    isPdf,
+    isText,
+    reloadKey,
+    selfReload,
+    target.dataUrl,
+    target.language
+  ])
+
+  useEffect(() => {
+    setPdfUrl(undefined)
+    setPdfError(undefined)
+
+    if (!isPdf || !state.dataUrl) {
+      return
+    }
+
+    // Chromium's PDF viewer is blank for large data: URLs in an iframe. Use a
+    // blob URL instead, and revoke it when the target or loaded bytes change.
+    if (typeof URL.createObjectURL !== 'function') {
+      setPdfError('PDF preview requires object URL support')
+
+      return
+    }
+
+    let objectUrl: string
+
+    try {
+      objectUrl = URL.createObjectURL(dataUrlToBlob(state.dataUrl))
+      setPdfUrl(objectUrl)
+    } catch (error) {
+      setPdfError(error instanceof Error ? error.message : String(error))
+
+      return
+    }
+
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [isPdf, state.dataUrl])
 
   // Editing is only offered for whole, readable text — never images, binaries,
   // or files we only loaded the first 512 KB of (saving would drop the tail).
@@ -889,8 +1044,13 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return <PreviewEmptyState body={state.error} title={t.preview.unavailable} />
   }
 
+  if (pdfError) {
+    return <PreviewEmptyState body={pdfError} title={t.preview.unavailable} />
+  }
+
   if (
     !isImage &&
+    !isPdf &&
     !forcePreview &&
     (target.binary || target.large || state.binary || (state.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
   ) {
@@ -918,6 +1078,23 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         />
       </div>
     )
+  }
+
+  if (isPdf && state.dataUrl && pdfUrl) {
+    return (
+      <div className="h-full w-full overflow-hidden bg-transparent">
+        <iframe
+          aria-label={target.label}
+          className="h-full w-full border-0 bg-white"
+          src={pdfUrl}
+          title={target.label}
+        />
+      </div>
+    )
+  }
+
+  if (isPdf && state.dataUrl) {
+    return <PageLoader label={t.preview.loading} />
   }
 
   if (isText && state.text !== undefined) {

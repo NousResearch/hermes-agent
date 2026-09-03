@@ -2,6 +2,7 @@
 
 import json
 from contextlib import contextmanager
+from contextvars import copy_context
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from tools.skill_manager_tool import (
     _delete_skill,
     _write_file,
     _remove_file,
+    _find_skill,
     skill_manage,
 )
 from agent.skill_utils import (
@@ -199,6 +201,38 @@ class TestEditSkill:
         assert "Updated description" in content
 
 
+    def test_edit_existing_skill_by_categorized_path(self, tmp_path):
+        """Categorized names (``category/skill``) must resolve in skill_manage.
+
+        skill_view's ambiguity hint explicitly tells the caller to use the
+        full categorized path (``category/skill-name``), and skills_list
+        reports skills with their category. But ``_find_skill`` only matched
+        the bare directory name, so every skill_manage call that followed
+        that hint failed with "not found in active profile" — the agent then
+        retried repeatedly, burning LLM round trips (top recurring audit
+        finding). Resolution parity with skill_view is the fix.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT, category="software-development")
+            result = _edit_skill("software-development/my-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True, result.get("error")
+        content = (tmp_path / "software-development" / "my-skill" / "SKILL.md").read_text()
+        assert "Updated description" in content
+
+    def test_find_skill_accepts_categorized_path(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT, category="mlops")
+            found = _find_skill("mlops/my-skill")
+        assert found is not None
+        assert found["path"] == tmp_path / "mlops" / "my-skill"
+
+    def test_find_skill_bare_name_still_resolves_nested_skill(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT, category="mlops")
+            found = _find_skill("my-skill")
+        assert found is not None
+        assert found["path"] == tmp_path / "mlops" / "my-skill"
+
     def test_edit_invalid_content_rejected(self, tmp_path):
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
@@ -234,6 +268,28 @@ word word
             result = _patch_skill("my-skill", "word", "replaced")
         assert result["success"] is False
         assert "match" in result["error"].lower()
+
+    def test_patch_missing_old_string_tells_the_model_how_to_recover(self, tmp_path):
+        """#33064 — a bare 'required' error is a dead end.
+
+        The model cannot tell whether it omitted old_string or supplied it wrongly,
+        so it retries blindly and escapes to action='write_file', clobbering the
+        whole skill file. The error must say how to obtain the exact text, and must
+        forbid the whole-file rewrite.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "", "replacement")
+
+        assert result["success"] is False
+        err = result["error"]
+        assert "read" in err.lower(), "must tell the model to read the file first"
+        assert "write_file" in err, "must name the escape hatch it is forbidding"
+        assert "exact" in err.lower()
+
+
+
+
 
     def test_patch_supporting_file_symlink_escape_blocked(self, tmp_path):
         outside_file = tmp_path / "outside.txt"
@@ -341,6 +397,27 @@ class TestRemoveFile:
 
 
 class TestSkillManageDispatcher:
+    @pytest.mark.parametrize("old_string", [None, ""])
+    def test_patch_missing_old_string_carries_recovery_guidance(self, tmp_path, old_string):
+        """#33064 — the actionable error must survive the public dispatch path.
+
+        The dispatcher used to return its own bare "old_string is required"
+        before ever reaching _patch_skill, so the guidance below was
+        unreachable through the tool the model actually calls. Assert on the
+        serialized public result, not the helper's dict.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            raw = skill_manage(action="patch", name="my-skill",
+                               old_string=old_string, new_string="replacement")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        err = result["error"]
+        assert "read" in err.lower(), "must tell the model to read the file first"
+        assert "write_file" in err, "must name the escape hatch it is forbidding"
+        assert "exact" in err.lower()
+
     def test_full_create_via_dispatcher(self, tmp_path):
         """Foreground create does NOT mark the skill as agent-created.
 
@@ -359,6 +436,79 @@ class TestSkillManageDispatcher:
         # entirely (telemetry best-effort) or present with created_by unset.
         rec = usage.get("test-skill") or {}
         assert rec.get("created_by") in {None, "", False}
+
+    def test_successful_mutations_emit_lifecycle_with_correlation(self, tmp_path):
+        with (
+            _skill_dir(tmp_path),
+            patch("tools.skill_provenance.is_background_review", return_value=False),
+            patch("tools.skill_usage.record_created") as record_created,
+            patch("tools.skill_usage.bump_patch") as bump_patch,
+        ):
+            created = json.loads(skill_manage(
+                action="create",
+                name="test-skill",
+                content=VALID_SKILL_CONTENT,
+                task_id="task-mutation",
+                session_id="session-mutation",
+            ))
+            patched = json.loads(skill_manage(
+                action="patch",
+                name="test-skill",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+                task_id="task-mutation",
+                session_id="session-mutation",
+            ))
+            edited = json.loads(skill_manage(
+                action="edit",
+                name="test-skill",
+                content=VALID_SKILL_CONTENT_2,
+                task_id="task-mutation",
+                session_id="session-mutation",
+            ))
+
+        assert created["success"] is True
+        assert patched["success"] is True
+        assert edited["success"] is True
+        record_created.assert_called_once_with(
+            "test-skill",
+            agent_created=False,
+            task_id="task-mutation",
+            session_id="session-mutation",
+        )
+        assert [call.kwargs for call in bump_patch.call_args_list] == [
+            {
+                "action": "patch",
+                "task_id": "task-mutation",
+                "session_id": "session-mutation",
+            },
+            {
+                "action": "edit",
+                "task_id": "task-mutation",
+                "session_id": "session-mutation",
+            },
+        ]
+        assert all(call.args == ("test-skill",) for call in bump_patch.call_args_list)
+
+    def test_failed_mutations_do_not_emit_lifecycle(self, tmp_path):
+        with (
+            _skill_dir(tmp_path),
+            patch("tools.skill_usage.record_created") as record_created,
+            patch("tools.skill_usage.bump_patch") as bump_patch,
+        ):
+            create_result = json.loads(skill_manage(
+                action="create",
+                name="test-skill",
+            ))
+            patch_result = json.loads(skill_manage(
+                action="patch",
+                name="test-skill",
+            ))
+
+        assert create_result["success"] is False
+        assert patch_result["success"] is False
+        record_created.assert_not_called()
+        bump_patch.assert_not_called()
 
 
     def test_background_review_delete_refuses_bundled_even_with_absorbed_into(self, tmp_path):
@@ -389,6 +539,118 @@ class TestSkillManageDispatcher:
         assert result["success"] is False
         assert "bundled" in result["error"].lower()
         assert (tmp_path / "bundled" / "SKILL.md").exists()
+
+
+class TestPatchRecoveryLoop:
+    """#33064 — the recovery guidance must be FOLLOWABLE, not just well-worded.
+
+    Asserting that an error string contains 'read' proves nothing about whether
+    a model obeying it reaches a working patch. These tests walk the loop end to
+    end through the public tool: bad call -> read the error -> do what it says ->
+    patch succeeds, without ever touching action='write_file'.
+    """
+
+    CONTENT = """\
+---
+name: test-skill
+description: A test skill.
+---
+
+# Test Skill
+
+Step 1: Do the thing.
+Step 2: Do the other thing.
+"""
+
+    def test_recovery_loop_reaches_a_working_patch(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", self.CONTENT)
+
+            # The half-formed call that used to dead-end.
+            bad = json.loads(skill_manage(action="patch", name="my-skill",
+                                          new_string="Step 1: Do it better."))
+            assert bad["success"] is False
+            assert "read" in bad["error"].lower()
+
+            # Do exactly what the error says: read the file, copy verbatim, retry.
+            on_disk = (tmp_path / "my-skill" / "SKILL.md").read_text()
+            snippet = "Step 1: Do the thing."
+            assert snippet in on_disk
+            good = json.loads(skill_manage(action="patch", name="my-skill",
+                                           old_string=snippet,
+                                           new_string="Step 1: Do it better."))
+
+        assert good["success"] is True, f"guided retry must succeed, got {good}"
+        after = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "Step 1: Do it better." in after
+        # The recovery must be surgical — that is the whole point of not
+        # falling back to a whole-file rewrite.
+        assert "Step 2: Do the other thing." in after, "unrelated content lost"
+        assert after.startswith("---"), "frontmatter destroyed"
+
+    def test_recovery_never_requires_write_file(self, tmp_path):
+        """The forbidden escape hatch must never be *necessary* to recover."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", self.CONTENT)
+            bad = json.loads(skill_manage(action="patch", name="my-skill",
+                                          old_string="", new_string="x"))
+            assert "write_file" in bad["error"]
+
+            ok = json.loads(skill_manage(action="patch", name="my-skill",
+                                         old_string="Step 2: Do the other thing.",
+                                         new_string="Step 2: Done."))
+        assert ok["success"] is True, f"recovery required write_file? {ok}"
+
+    @pytest.mark.parametrize("kwargs", [
+        {"old_string": None, "new_string": "x"},
+        {"old_string": "", "new_string": "x"},
+        {"old_string": "Step 1: Do the thing.", "new_string": "Step 1: Do the thing."},
+    ])
+    def test_rejected_patch_leaves_file_byte_identical(self, tmp_path, kwargs):
+        """A rejected patch must not partially mutate the skill."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", self.CONTENT)
+            before = (tmp_path / "my-skill" / "SKILL.md").read_text()
+            result = json.loads(skill_manage(action="patch", name="my-skill", **kwargs))
+            after = (tmp_path / "my-skill" / "SKILL.md").read_text()
+
+        assert result["success"] is False
+        assert before == after, "rejected patch mutated the file"
+
+    def test_validation_precedes_skill_lookup(self, tmp_path):
+        """Centralizing validation must not reorder it behind the skill lookup.
+
+        A missing old_string on a nonexistent skill should still report the
+        argument error — reporting 'skill not found' first would send the model
+        chasing the wrong problem.
+        """
+        with _skill_dir(tmp_path):
+            result = json.loads(skill_manage(action="patch", name="does-not-exist",
+                                             new_string="x"))
+        assert result["success"] is False
+        assert "old_string" in result["error"].lower()
+        assert "not found" not in result["error"].lower()
+
+    def test_empty_new_string_still_deletes(self, tmp_path):
+        """new_string='' is legal (delete matched text) and must NOT be rejected."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", self.CONTENT)
+            result = json.loads(skill_manage(action="patch", name="my-skill",
+                                             old_string="Step 2: Do the other thing.\n",
+                                             new_string=""))
+            after = (tmp_path / "my-skill" / "SKILL.md").read_text()
+
+        assert result["success"] is True, f"empty new_string wrongly rejected: {result}"
+        assert "Step 2:" not in after
+
+    def test_missing_new_string_still_rejected(self, tmp_path):
+        """The dispatcher also guarded new_string; _patch_skill must still catch it."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", self.CONTENT)
+            result = json.loads(skill_manage(action="patch", name="my-skill",
+                                             old_string="Step 1: Do the thing."))
+        assert result["success"] is False
+        assert "new_string" in result["error"]
 
 
 class TestSecurityScanGate:
@@ -841,6 +1103,61 @@ class TestCuratorConsolidationDeleteGuard:
         # Skill must remain active on disk — fail closed, no archive.
         assert (skills_root / "active-skill").exists()
 
+    def test_background_review_read_survives_copied_tool_contexts(
+        self, tmp_path, monkeypatch
+    ):
+        """A view in one tool worker authorizes a patch in the next worker."""
+        from tools.skills_tool import skill_view
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+
+        _reset_background_review_read_marks()
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            _create_curator_skill("reviewed", _skill_content("reviewed"))
+
+            viewed = copy_context().run(skill_view, "reviewed")
+            assert json.loads(viewed)["success"] is True
+
+            patched = copy_context().run(
+                skill_manage,
+                action="patch",
+                name="reviewed",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+            )
+            assert json.loads(patched)["success"] is True
+
+        _reset_background_review_read_marks()
+
+    def test_background_review_read_marks_stay_isolated_between_reviews(
+        self, tmp_path, monkeypatch
+    ):
+        """Copied tool contexts share only their own review's read marks."""
+        from tools.skills_tool import skill_view
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+
+        _reset_background_review_read_marks()
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            _create_curator_skill("reviewed", _skill_content("reviewed"))
+
+            first_review = copy_context()
+            _reset_background_review_read_marks()
+            second_review = copy_context()
+
+            viewed = first_review.run(skill_view, "reviewed")
+            assert json.loads(viewed)["success"] is True
+
+            blocked = second_review.run(
+                skill_manage,
+                action="patch",
+                name="reviewed",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+            )
+            result = json.loads(blocked)
+            assert result["success"] is False
+            assert result.get("_read_before_write_required") is True
+
+        _reset_background_review_read_marks()
 
     def test_background_review_support_file_overwrite_requires_that_file_read(self, tmp_path, monkeypatch):
         from tools.skills_tool import skill_view

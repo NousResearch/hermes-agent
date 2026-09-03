@@ -5,15 +5,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
+import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { AlertTriangle, Save } from '@/lib/icons'
-import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
+import { resolveProfileColor } from '@/lib/profile-color'
 import { normalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
-import { $profileColors, refreshProfiles } from '@/store/profile'
+import { $profileColors, profileLabel, refreshProfiles } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -133,7 +133,9 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
                   key={profile.name}
                   menuItems={
                     profile.is_default
-                      ? []
+                      ? // Renaming the default profile sets a presentation-only
+                        // display name (the canonical id stays "default").
+                        [{ icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) }]
                       : [
                           { icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) },
                           {
@@ -162,6 +164,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
       <RenameProfileDialog
         currentName={pendingRename?.name ?? ''}
+        isDefault={pendingRename?.is_default ?? false}
         onClose={() => setPendingRename(null)}
         onRenamed={selectAndRefresh}
         open={pendingRename !== null}
@@ -205,44 +208,18 @@ function ProfileRow({
       active={active}
       lead={
         <ProfileGlyph
+          aria-hidden="true"
           color={resolveProfileColor(profile.name, colors)}
           isDefault={profile.is_default}
           name={profile.name}
         />
       }
       menuItems={menuItems}
-      menuLabel={profile.name}
+      menuLabel={profileLabel(profile)}
       onSelect={onSelect}
       rowKey={profile.name}
-      title={profile.name}
+      title={profileLabel(profile)}
     />
-  )
-}
-
-// Leading glyph for a profile row, mirroring the sidebar rail: the default
-// profile gets the `home` icon; named profiles get a soft color-tinted square
-// with their initial in the profile's color.
-function ProfileGlyph({ color, isDefault, name }: { color: null | string; isDefault: boolean; name: string }) {
-  if (isDefault) {
-    return <Codicon className="shrink-0 text-muted-foreground/70" name="home" size="0.9rem" />
-  }
-
-  const hue = color ?? 'var(--ui-text-quaternary)'
-
-  const initial =
-    name
-      .replace(/[^a-z0-9]/gi, '')
-      .charAt(0)
-      .toUpperCase() || '?'
-
-  return (
-    <span
-      aria-hidden="true"
-      className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
-      style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
-    >
-      {initial}
-    </span>
   )
 }
 
@@ -255,7 +232,7 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
       <header className="space-y-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{profile.name}</h3>
+            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{profileLabel(profile)}</h3>
             {profile.is_default && <PanelPill tone="good">{p.defaultBadge}</PanelPill>}
             {profile.has_env && <PanelPill tone="muted">.env</PanelPill>}
           </div>

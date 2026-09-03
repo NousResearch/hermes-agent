@@ -2,26 +2,38 @@ import { useStore } from '@nanostores/react'
 import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { hudTargetSessionId } from '@/app/hud/handoff'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { resetLayoutTree } from '@/components/pane-shell/tree/store'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { compactNumber } from '@/lib/format'
 import { triggerHaptic } from '@/lib/haptics'
+import { formatModifierToken } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
+import { toggleHud } from '@/store/hud'
 import {
   $fileBrowserOpen,
+  $panesFlipped,
   $sidebarOpen,
   toggleFileBrowserOpen,
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { $unreadSessionCount } from '@/store/session-dot-state'
 
-import { appViewForPath, isOverlayView, SETTINGS_ROUTE } from '../routes'
+import { appViewForPath, isOverlayView } from '../routes'
 
-import { titlebarButtonClass } from './titlebar'
+import {
+  TITLEBAR_ICON_BADGE_SCALE,
+  titlebarButtonClass,
+  titlebarIconSizeCss,
+  titlebarToolClusterClass
+} from './titlebar'
+import { TitlebarIcon } from './titlebar-icon'
 
 export interface TitlebarTool {
   id: string
@@ -35,8 +47,13 @@ export interface TitlebarTool {
   onSelect?: (event?: MouseEvent) => void
   /** Keybind action id — when set, the tooltip shows the label + keybind hint. */
   actionId?: string
+  /** Overlay count on the glyph (unread sessions). Hidden when 0/undefined. */
+  badge?: number
   title?: string
   to?: string
+  /** Durable `data-tour` handle. Tools are addressed by icon and translated
+   *  label otherwise, and neither survives a theme or a locale change. */
+  tour?: string
 }
 
 export type TitlebarToolSide = 'left' | 'right'
@@ -59,15 +76,33 @@ function LayoutGlyph({ modHeld }: { modHeld: boolean }) {
   return (
     <>
       <span className={cn('inline-flex', modHeld && 'group-hover/tool:hidden')}>
-        <Codicon name="layout" />
+        <TitlebarIcon name="layout" />
       </span>
       <span className={cn('relative hidden', modHeld && 'group-hover/tool:inline-flex')}>
-        <Codicon name="layout" />
+        <TitlebarIcon name="layout" />
         <span className="absolute -bottom-1 -right-1.5 grid place-items-center rounded-full bg-(--ui-bg-chrome) p-px">
-          <Codicon className="-scale-x-100" name="refresh" size="0.5625rem" />
+          <TitlebarIcon className="-scale-x-100" name="refresh" size={titlebarIconSizeCss(TITLEBAR_ICON_BADGE_SCALE)} />
         </span>
       </span>
     </>
+  )
+}
+
+/** Overlay count on a titlebar glyph. Hidden when count is 0/undefined. */
+function withCountBadge(icon: ReactNode, count: number | undefined): ReactNode {
+  if (!count) {
+    return icon
+  }
+
+  return (
+    <span className="relative inline-flex">
+      {icon}
+      <span className="pointer-events-none absolute -top-2.5 -right-1.5 z-1">
+        <Badge aria-hidden size="overlay" variant="solid">
+          {compactNumber(count)}
+        </Badge>
+      </span>
+    </span>
   )
 }
 
@@ -101,7 +136,11 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const modHeld = useModifierHeld()
   const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
+  const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
+  const unreadCount = useStore($unreadSessionCount)
+  const unreadBadge = unreadCount > 0 ? unreadCount : undefined
+  const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -122,13 +161,16 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // show/hide affordances.
   const leftEdge = { open: sidebarOpen, toggle: toggleSidebarOpen }
   const rightEdge = { open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
+  const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
+  const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
 
   const leftToolbarTools: TitlebarTool[] = [
     {
       actionId: 'view.toggleSidebar',
-      icon: <Codicon name="layout-sidebar-left" />,
+      badge: panesFlipped ? undefined : unreadBadge,
+      icon: <TitlebarIcon name="layout-sidebar-left" />,
       id: 'sidebar',
-      label: leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar,
+      label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
       onSelect: () => {
         triggerHaptic('tap')
         leftEdge.toggle()
@@ -136,7 +178,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     },
     {
       actionId: 'view.flipPanes',
-      icon: <Codicon name="arrow-swap" />,
+      icon: <TitlebarIcon name="arrow-swap" />,
       id: 'flip-panes',
       label: t.titlebar.swapSidebarSides,
       onSelect: () => {
@@ -149,13 +191,15 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const rightSidebarTool: TitlebarTool = {
     actionId: 'view.toggleRightSidebar',
-    icon: <Codicon name="layout-sidebar-right" />,
+    badge: panesFlipped ? unreadBadge : undefined,
+    icon: <TitlebarIcon name="layout-sidebar-right" />,
     id: 'right-sidebar',
-    label: rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar,
+    label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
     onSelect: () => {
       triggerHaptic('tap')
       rightEdge.toggle()
-    }
+    },
+    tour: 'right-pane-toggle'
   }
 
   // Static system tools — always pinned to the screen's right edge.
@@ -178,28 +222,32 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         triggerHaptic('open')
         toggleLayoutEditMode()
       },
-      title: t.titlebar.layoutEditorTitle
+      title: t.titlebar.layoutEditorTitle(formatModifierToken('mod'))
+    },
+    {
+      // No `title`: TitlebarToolButton passes `title` to TipKeybindLabel as a
+      // text OVERRIDE, so a long sentence there replaces the short label and
+      // crowds the ⌘⇧H hint off the tooltip. Label only — the hint is appended
+      // from the action registry, same as every other tool here.
+      actionId: 'view.toggleHud',
+      icon: <TitlebarIcon name="comment-discussion" />,
+      id: 'hud',
+      label: t.titlebar.enterHud,
+      onSelect: () => {
+        triggerHaptic('open')
+        toggleHud(hudTargetSessionId())
+      }
     },
     {
       active: hapticsMuted,
-      icon: <Codicon name={hapticsMuted ? 'mute' : 'unmute'} />,
+      icon: <TitlebarIcon name={hapticsMuted ? 'mute' : 'unmute'} />,
       id: 'haptics',
       label: hapticsMuted ? t.titlebar.unmuteHaptics : t.titlebar.muteHaptics,
       onSelect: toggleHaptics
     },
     {
-      actionId: 'keybinds.openPanel',
-      icon: <Codicon name="keyboard" />,
-      id: 'keybinds',
-      label: t.titlebar.openKeybinds,
-      onSelect: () => {
-        triggerHaptic('open')
-        navigate(`${SETTINGS_ROUTE}?tab=keybinds`)
-      }
-    },
-    {
       actionId: 'nav.settings',
-      icon: <Codicon name="settings-gear" />,
+      icon: <TitlebarIcon name="settings-gear" />,
       id: 'settings',
       label: t.titlebar.openSettings,
       onSelect: () => {
@@ -224,7 +272,10 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     <>
       <div
         aria-label={t.shell.windowControls}
-        className="fixed left-(--titlebar-controls-left) top-(--titlebar-controls-top) z-70 flex translate-y-0.5 flex-row items-center gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
+        className={cn(
+          titlebarToolClusterClass,
+          'left-(--titlebar-controls-left) top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
+        )}
       >
         {leftToolbarTools
           .filter(tool => !tool.hidden)
@@ -244,7 +295,10 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       {visiblePaneTools.length > 0 && (
         <div
           aria-label={t.shell.paneControls}
-          className="fixed top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))] z-70 flex flex-row items-center gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
+          className={cn(
+            titlebarToolClusterClass,
+            'top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))]'
+          )}
         >
           {visiblePaneTools.map(tool => (
             <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
@@ -254,7 +308,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
       <div
         aria-label={t.shell.appControls}
-        className="fixed right-(--titlebar-tools-right) top-(--titlebar-controls-top) z-70 flex flex-row items-center justify-end gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
+        className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
       >
         {visibleSystemTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
@@ -283,12 +337,13 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
         <Button asChild className={className} size="icon-titlebar" variant="ghost">
           <a
             aria-label={tool.label}
+            data-tour={tool.tour}
             href={tool.href}
             onPointerDown={event => event.stopPropagation()}
             rel="noreferrer"
             target="_blank"
           >
-            {tool.icon}
+            {withCountBadge(tool.icon, tool.badge)}
           </a>
         </Button>
       </Tip>
@@ -301,6 +356,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
         aria-label={tool.label}
         aria-pressed={tool.active ?? undefined}
         className={className}
+        data-tour={tool.tour}
         disabled={tool.disabled}
         onClick={event => {
           if (tool.to) {
@@ -314,7 +370,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
         type="button"
         variant="ghost"
       >
-        {tool.icon}
+        {withCountBadge(tool.icon, tool.badge)}
       </Button>
     </Tip>
   )

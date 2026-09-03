@@ -5,20 +5,29 @@ import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/run
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
-// within seconds. 60s + a hidden-tab skip keeps it honest at a quarter of the
-// old traffic; the visibility listener refreshes immediately on return so a
-// backgrounded window never shows stale health after re-focus.
+// within seconds. 60s + an actively-viewed check keeps traffic low; focus and
+// visibility listeners refresh immediately on return.
 const REFRESH_MS = 60_000
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
-export function useStatusSnapshot(gatewayState: string | undefined, requestGateway: GatewayRequester) {
+export function useStatusSnapshot(
+  gatewayState: string | undefined,
+  requestGateway: GatewayRequester,
+  gatewayScope = ''
+) {
   const [statusSnapshot, setStatusSnapshot] = useState<StatusResponse | null>(null)
   const [inferenceStatus, setInferenceStatus] = useState<RuntimeReadinessResult | null>(null)
 
   useEffect(() => {
     let cancelled = false
     let timer: number | undefined
+
+    // Status and inference readiness belong to one backend. A source switch
+    // can keep gatewayState="open" throughout, so clear the previous source's
+    // snapshot and start a fresh scoped request explicitly.
+    setStatusSnapshot(null)
+    setInferenceStatus(null)
 
     // A closed/connecting gateway cannot have an authoritative live-runtime
     // result. Clear readiness before starting the REST status leg so a hung
@@ -34,9 +43,10 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
     }
 
     const refresh = async () => {
-      // Hidden window: skip the round-trips, keep the timer alive; the
-      // visibilitychange listener repaints immediately on return.
-      if (document.visibilityState !== 'visible') {
+      // macOS commonly leaves an occluded BrowserWindow `visible`; focus is
+      // the missing signal that prevents status + readiness RPCs while the
+      // user is working in another app.
+      if (document.visibilityState !== 'visible' || !document.hasFocus()) {
         scheduleRefresh()
 
         return
@@ -79,8 +89,8 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
       }
     }
 
-    const onVisible = () => {
-      if (document.visibilityState === 'visible' && !cancelled) {
+    const onReturn = () => {
+      if (document.visibilityState === 'visible' && document.hasFocus() && !cancelled) {
         if (timer !== undefined) {
           window.clearTimeout(timer)
         }
@@ -89,18 +99,20 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
       }
     }
 
-    document.addEventListener('visibilitychange', onVisible)
+    document.addEventListener('visibilitychange', onReturn)
+    window.addEventListener('focus', onReturn)
     void refresh()
 
     return () => {
       cancelled = true
-      document.removeEventListener('visibilitychange', onVisible)
+      document.removeEventListener('visibilitychange', onReturn)
+      window.removeEventListener('focus', onReturn)
 
       if (timer !== undefined) {
         window.clearTimeout(timer)
       }
     }
-  }, [gatewayState, requestGateway])
+  }, [gatewayScope, gatewayState, requestGateway])
 
   return { inferenceStatus, statusSnapshot }
 }

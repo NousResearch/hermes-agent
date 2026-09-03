@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -64,13 +65,27 @@ def _save_all(data: Dict[str, Any]) -> None:
 
 
 def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
-    """Return cached entry when fingerprint matches, else None."""
+    """Return cached entry when fingerprint matches (and TTL holds), else None.
+
+    MCP 2026-07-28 (SEP-2549): ``tools/list`` results carry ``ttlMs`` as a
+    freshness hint. When the live discovery path recorded one, an entry
+    older than its TTL is treated as a miss so the next startup re-probes
+    the server instead of serving a stale manifest forever. Entries without
+    a recorded TTL (pre-2026 servers) keep the old never-expires behavior.
+    ``cacheScope`` is irrelevant here: this cache is per-user local disk,
+    which satisfies even ``private``.
+    """
     with _cache_lock:
         entry = _load_all().get(server_name)
     if not isinstance(entry, dict):
         return None
     if entry.get("fingerprint") != fingerprint:
         return None
+    ttl_ms = entry.get("ttl_ms")
+    written_at = entry.get("written_at")
+    if isinstance(ttl_ms, (int, float)) and isinstance(written_at, (int, float)):
+        if (time.time() - written_at) * 1000.0 >= float(ttl_ms):
+            return None
     return entry
 
 
@@ -84,19 +99,34 @@ def write_cache_entry(
     *,
     tools: List[dict],
     utility_tools: Optional[List[dict]] = None,
+    ttl_ms: Optional[float] = None,
+    cache_scope: Optional[str] = None,
 ) -> None:
-    """Persist tool schemas after a successful live connect."""
+    """Persist tool schemas after a successful live connect.
+
+    ``ttl_ms``/``cache_scope`` are the SEP-2549 hints from the server's
+    ``tools/list`` result (2026-07-28 servers). ``written_at`` anchors TTL
+    expiry in :func:`get_cached_entry`.
+    """
     entry = {
         "fingerprint": fingerprint,
         "tools": tools,
         "utility_tools": utility_tools or [],
     }
+    if isinstance(ttl_ms, (int, float)):
+        entry["ttl_ms"] = ttl_ms
+        entry["written_at"] = time.time()
+    if cache_scope:
+        entry["cache_scope"] = cache_scope
     with _cache_lock:
         data = _load_all()
         # Write-through fires on every registration (reconnects,
         # list_changed refreshes); skip the load-all+rewrite churn when the
-        # entry is byte-identical to what is already on disk.
-        if data.get(server_name) == entry:
+        # entry is byte-identical to what is already on disk. TTL'd entries
+        # always rewrite: written_at must advance or the entry would expire
+        # at its ORIGINAL write time no matter how many live reconnects
+        # confirmed it since.
+        if "written_at" not in entry and data.get(server_name) == entry:
             return
         data[server_name] = entry
         _save_all(data)

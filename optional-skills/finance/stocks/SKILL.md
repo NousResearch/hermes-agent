@@ -38,7 +38,7 @@ Invoke through the `terminal` tool. Once installed:
 
 ```
 SCRIPT=~/.hermes/skills/finance/stocks/scripts/stocks_client.py
-python3 $SCRIPT quote AAPL
+python $SCRIPT quote AAPL
 ```
 
 All output is JSON on stdout — pipe through `jq` if you want to slice it.
@@ -46,12 +46,12 @@ All output is JSON on stdout — pipe through `jq` if you want to slice it.
 ## Quick Reference
 
 ```
-python3 $SCRIPT quote AAPL
-python3 $SCRIPT quote AAPL MSFT GOOGL TSLA
-python3 $SCRIPT search "Tesla"
-python3 $SCRIPT history NVDA --range 6mo
-python3 $SCRIPT compare AAPL MSFT GOOGL
-python3 $SCRIPT crypto BTC ETH SOL
+python $SCRIPT quote AAPL
+python $SCRIPT quote AAPL MSFT GOOGL TSLA
+python $SCRIPT search "Tesla"
+python $SCRIPT history NVDA --range 6mo
+python $SCRIPT compare AAPL MSFT GOOGL
+python $SCRIPT crypto BTC ETH SOL
 ```
 
 ## Commands
@@ -89,7 +89,7 @@ Crypto prices. Pass `BTC` (the script appends `-USD` automatically).
 ## Verification
 
 ```
-python3 ~/.hermes/skills/finance/stocks/scripts/stocks_client.py quote AAPL
+python ~/.hermes/skills/finance/stocks/scripts/stocks_client.py quote AAPL
 ```
 
 Returns a JSON object with `symbol: "AAPL"` and a numeric `price` field.

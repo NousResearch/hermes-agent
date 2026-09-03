@@ -37,23 +37,29 @@ class CopilotProfile(ProviderProfile):
                     effort = reasoning_config.get("effort", "medium")
                     # Honor the requested level when the live Copilot catalog
                     # lists it as supported: gpt-5.5/gpt-5.4 DO support
-                    # ``xhigh``. Only downgrade levels the catalog does NOT
-                    # list (e.g. ``xhigh``/``max`` on models capped lower, or
-                    # ``minimal`` where unsupported), choosing the nearest
-                    # weaker supported level rather than forwarding verbatim.
-                    #
-                    # (Previously this unconditionally mapped xhigh->high, a
-                    #  stale guard that silently capped models which do support
-                    #  the higher level.)
+                    # ``xhigh``. Otherwise clamp to the nearest WEAKER
+                    # supported level via the shared ladder helper — the old
+                    # ad-hoc rules dropped everything unrecognized to
+                    # ``medium``, which inverted the ladder: ``ultra`` (the
+                    # strongest ask) resolved weaker than an explicit
+                    # ``high`` (#74295).
                     if effort not in supported_efforts:
-                        if effort == "xhigh" and "high" in supported_efforts:
-                            effort = "high"
-                        elif effort == "minimal" and "low" in supported_efforts:
-                            effort = "low"
-                        elif "medium" in supported_efforts:
-                            effort = "medium"
-                        else:
-                            effort = supported_efforts[0]
+                        from hermes_cli.models import (
+                            clamp_reasoning_effort_to_supported,
+                        )
+
+                        effort = clamp_reasoning_effort_to_supported(
+                            effort, list(supported_efforts)
+                        )
+                        if effort not in supported_efforts:
+                            # Unrecognized/bespoke level the ladder can't
+                            # place — fall back to medium, then to the
+                            # catalog's first entry.
+                            effort = (
+                                "medium"
+                                if "medium" in supported_efforts
+                                else supported_efforts[0]
+                            )
                     if effort in supported_efforts:
                         extra_body["reasoning"] = {"effort": effort}
                 elif supported_efforts:

@@ -37,7 +37,7 @@ class TestSignalArmLogic:
         monkeypatch.setenv("HERMES_EXIT_WATCHDOG_S", "7")
         with patch.object(cli, "_arm_exit_watchdog") as arm:
             cli._arm_exit_watchdog_on_shutdown_signal()
-        arm.assert_called_once_with(timeout_s=14.0)
+        arm.assert_called_once_with(timeout_s=14.0, from_signal=True)
 
 
 
@@ -45,7 +45,7 @@ class TestSignalArmLogic:
         monkeypatch.setenv("HERMES_EXIT_WATCHDOG_S", "not-a-number")
         with patch.object(cli, "_arm_exit_watchdog") as arm:
             cli._arm_exit_watchdog_on_shutdown_signal()
-        arm.assert_called_once_with(timeout_s=60.0)
+        arm.assert_called_once_with(timeout_s=60.0, from_signal=True)
 
     def test_never_raises_even_if_arm_explodes(self, monkeypatch):
         monkeypatch.setenv("HERMES_EXIT_WATCHDOG_S", "7")
@@ -72,6 +72,32 @@ def _handler(signum, frame):
 signal.signal(signal.SIGTERM, _handler)
 print("READY", flush=True)
 while True:  # the wedge: never observes any unwind
+    time.sleep(0.2)
+"""
+
+_CLEANUP_OVERLAP_SRC = """
+import os, signal, sys, threading, time
+sys.path.insert(0, {repo!r})
+import cli
+
+
+def _start_cleanup():
+    # Simulate a slow graceful-cleanup path that starts after signal intent.
+    time.sleep(1.0)
+    cli._cleanup_in_progress = True
+    cli._arm_exit_watchdog(timeout_s=1.5)
+    time.sleep(5.0)
+
+
+def _handler(signum, frame):
+    # Arm the broad signal watchdog, then trigger a cleanup window shortly after.
+    cli._arm_exit_watchdog_on_shutdown_signal()
+    threading.Thread(target=_start_cleanup, daemon=True).start()
+
+
+signal.signal(signal.SIGTERM, _handler)
+print("READY", flush=True)
+while True:
     time.sleep(0.2)
 """
 
@@ -106,6 +132,37 @@ def test_sigterm_on_wedged_process_forces_exit_within_leash():
         assert rc == 0
         # Leash is 2×1s; generous CI slack.
         assert elapsed < 8.0, f"exit took {elapsed:.1f}s; leash should be ~2s"
+    finally:
+        if p.poll() is None:
+            p.kill()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_signal_watchdog_is_skipped_once_cleanup_starts():
+    """If cleanup starts after signal intent, the cleanup-owned watchdog should
+    govern shutdown and the signal watchdog should not hard-kill midway."""
+    env = dict(os.environ, HERMES_EXIT_WATCHDOG_S="1", PYTHONPATH=_REPO_ROOT)
+    env.pop("PYTEST_CURRENT_TEST", None)
+    src = _CLEANUP_OVERLAP_SRC.format(repo=_REPO_ROOT)
+    p = subprocess.Popen(
+        [sys.executable, "-c", src],
+        env=env,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert p.stdout is not None
+        assert p.stdout.readline().strip() == "READY"
+
+        p.send_signal(signal.SIGTERM)
+        t0 = time.time()
+        rc = p.wait(timeout=10)
+        elapsed = time.time() - t0
+        assert rc == 0
+        # Outer watchdog is at 2s, cleanup watchdog at 2.5s (1s delay + 1.5s
+        # timeout). Without the overlap fix this would likely exit earlier at 2s.
+        assert elapsed >= 2.2, f"elapsed={elapsed:.2f}s; expected cleanup watchdog to fire"
+        assert elapsed <= 5.0, f"elapsed={elapsed:.2f}s; expected bounded shutdown"
     finally:
         if p.poll() is None:
             p.kill()

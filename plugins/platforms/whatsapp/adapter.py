@@ -100,6 +100,27 @@ def _listener_pids_on_port(port: int) -> list:
     return pids
 
 
+def _pid_looks_like_node_bridge(pid: int) -> bool:
+    """Fail-closed check that *pid* is plausibly a stale node bridge.
+
+    ``_kill_port_process`` discovers PIDs from a netstat/lsof scan of a TCP
+    port — a bare number naming a *stranger* process (#89614 class: an
+    unverified scan-time PID force-killed later can be anything, including a
+    critical system process). Before any kill, require the live process to
+    actually look like our Baileys bridge: a ``node`` executable. Any
+    ambiguity (process gone, unreadable cmdline) refuses the kill.
+    """
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+        name = (proc.name() or "").lower()
+        cmdline = " ".join(proc.cmdline() or []).lower()
+        return "node" in name or "node" in cmdline.split(" ", 1)[0]
+    except Exception:
+        return False
+
+
 def _kill_port_process(port: int) -> None:
     """Kill any process *listening* on the given TCP port (a stale bridge)."""
     try:
@@ -118,8 +139,22 @@ def _kill_port_process(port: int) -> None:
                     local_addr = parts[1]
                     if local_addr.endswith(f":{port}"):
                         try:
+                            pid = int(parts[4])
+                        except ValueError:
+                            continue
+                        # Never taskkill a bare netstat-scanned PID: verify
+                        # the live process is a node bridge first (fail
+                        # closed). taskkill /F on a mistyped or recycled PID
+                        # is unrecoverable.
+                        if pid <= 0 or not _pid_looks_like_node_bridge(pid):
+                            logger.warning(
+                                "[whatsapp] Not killing PID %s on port %d: "
+                                "process is not a node bridge (or identity "
+                                "unverifiable)", pid, port)
+                            continue
+                        try:
                             subprocess.run(
-                                ["taskkill", "/PID", parts[4], "/F"],
+                                ["taskkill", "/PID", str(pid), "/F"],
                                 capture_output=True, timeout=5,
                                 creationflags=windows_hide_flags(),
                             )
@@ -130,6 +165,11 @@ def _kill_port_process(port: int) -> None:
             # whose connection happens to involve this port number (a browser
             # tab on a local dev server, etc.) must never be killed.
             for pid in _listener_pids_on_port(port):
+                if not _pid_looks_like_node_bridge(pid):
+                    logger.warning(
+                        "[whatsapp] Not killing PID %s on port %d: process is "
+                        "not a node bridge (or identity unverifiable)", pid, port)
+                    continue
                 try:
                     os.kill(pid, signal.SIGTERM)
                 except (ProcessLookupError, PermissionError, OSError):
@@ -600,6 +640,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     )
                     if install_result.returncode != 0:
                         print(f"[{self.name}] npm install failed: {install_result.stderr}")
+                        self._set_fatal_error(
+                            "whatsapp_npm_install_failed",
+                            f"WhatsApp bridge npm install failed. Run `cd {bridge_dir} && {_npm_bin} install` manually, then restart `hermes gateway`.",
+                            retryable=False,
+                        )
                         return False
                     print(f"[{self.name}] Dependencies installed")
                     if _pkg_hash:
@@ -609,6 +654,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             pass  # Stamp is an optimization; install still succeeded
                 except Exception as e:
                     print(f"[{self.name}] Failed to install dependencies: {e}")
+                    self._set_fatal_error(
+                        "whatsapp_npm_install_failed",
+                        f"WhatsApp bridge npm install failed ({e}). Run `cd {bridge_dir} && {_npm_bin} install` manually, then restart `hermes gateway`.",
+                        retryable=False,
+                    )
                     return False
 
             # Ensure session directory exists
@@ -650,6 +700,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                     self._bridge_process = None  # Not managed by us
                                     self._http_session = aiohttp.ClientSession()
                                     self._poll_task = asyncio.create_task(self._poll_messages())
+                                    # Plugin-registered native handlers.
+                                    self._wire_plugin_handlers(None)
                                     return True
                                 stale_reason = (
                                     f"running={running_hash or 'unversioned'}, disk={disk_hash}"
@@ -810,6 +862,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             
             self._mark_connected()
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")
+            # Plugin-registered native handlers.
+            self._wire_plugin_handlers(None)
             return True
             
         except Exception as e:
@@ -1389,7 +1443,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=event.source.profile,
+            profile=self._session_key_profile(event.source),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:

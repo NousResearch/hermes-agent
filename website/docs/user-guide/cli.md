@@ -25,6 +25,11 @@ hermes
 # Single query mode (non-interactive)
 hermes chat -q "Hello"
 
+# Single query from a file or stdin — nothing is shell-interpreted, so
+# arbitrary text (quotes, $(...), backticks) arrives verbatim
+hermes chat --query-file prompt.txt
+hermes chat --query-file - < prompt.txt
+
 # With a specific model
 hermes chat --model "anthropic/claude-sonnet-4"
 
@@ -42,6 +47,8 @@ hermes chat -s github-pr-workflow -q "open a draft PR"
 # Resume previous sessions
 hermes --continue             # Resume the most recent CLI session (-c)
 hermes --resume <session_id>  # Resume a specific session by ID (-r)
+hermes --resume latest        # Resume the most recent session (same as -c)
+hermes --resume latest --in ./dir  # Resume ./dir's latest session, staying in ./dir
 
 # Verbose mode (debug output)
 hermes chat --verbose
@@ -50,6 +57,73 @@ hermes chat --verbose
 hermes -w                         # Interactive mode in worktree
 hermes -w -z "Fix issue #123"     # Single query in worktree
 ```
+
+### Worktree cleanup
+
+`hermes -w` sessions create disposable worktrees under `<repo>/.worktrees/`.
+A conservative pruner runs automatically at startup (it only removes clean,
+fully-merged scratch trees past an age threshold), but preserved trees and
+merged local branches still accumulate on busy machines. Reclaim them
+explicitly:
+
+```bash
+hermes worktree list              # audit: age, size, verdict, reason per tree
+hermes worktree prune             # remove safe trees + delete merged branches
+hermes worktree prune --dry-run   # show the plan without changing anything
+hermes worktree prune --trees-only     # leave local branches alone
+hermes worktree prune --branches-only  # leave worktrees alone
+```
+
+Inside a session, `/worktree prune [--dry-run]` does the same (and never
+touches the tree the session is running in).
+
+Safety guarantees (all modes, any age):
+
+- Uncommitted **tracked** changes are never deleted.
+- **Unique unpushed commits** are never deleted — commits that were
+  rebase/squash-merged upstream are detected via `git cherry`
+  patch-equivalence and count as merged, which is what lets the dominant
+  "merged PR, tree preserved forever" leak finally reclaim.
+- **Pushed open-PR lanes free their disk without losing anything**: when a
+  clean tree's branch head exactly matches what `origin` holds (checked with
+  one `git ls-remote` per sweep), the checkout is redundant — the tree is
+  removed but its **branch ref is kept**, so the lane is one
+  `git worktree add .worktrees/<name> <branch>` away from restored. If the
+  remote can't be reached, the tree is preserved.
+- Trees **in use by a running hermes session** are never touched.
+- **Untracked-only scratch** (PR body drafts, notes) is archived to
+  `~/.hermes/archive/worktree-prune/` before its tree is removed — never
+  destroyed.
+- Branch deletion is content-gated, not name-gated: any local branch whose
+  commits are all on upstream is safe to delete; branches with unique work,
+  checked-out branches, and `main`/`master`/`develop` are always kept.
+
+The same conservative pruner also runs from the cron scheduler (at most once
+every 6 hours, in the background), so gateway-only machines — where nobody
+launches `hermes -w` for days — no longer accumulate merged scratch trees
+between CLI sessions.
+
+When `.worktrees/` grows past 10 trees or 5 GB, startup prints a one-line
+notice pointing at these commands.
+
+### Plugin management
+
+The `hermes plugins` commands manage native Hermes plugins and portable Agent
+Plugins v1 packages through the same opt-in workflow:
+
+```bash
+hermes plugins install owner/repository --no-enable
+hermes plugins list
+hermes plugins enable <plugin-name>
+hermes plugins disable <plugin-name>
+hermes plugins update <plugin-name>
+hermes plugins remove <plugin-name>
+```
+
+Portable packages remain disabled until explicitly enabled. Hermes currently
+loads portable Agent Skills and stdio MCP entries. See the
+[plugin developer guide](/developer-guide/plugins#portable-agent-plugins-v1-packages)
+for the exact supported subset and trust boundary.
 
 ## Interface Layout
 
@@ -73,8 +147,9 @@ A persistent status bar sits above the input area, updating in real time:
 | Context bar | Visual fill indicator with color-coded thresholds |
 | Cost | Estimated session cost (or `n/a` for unknown/zero-priced models) |
 | 🗜️ N | **Context compression count** — how many times the running session has been auto-compressed. Appears once the first compression fires. |
-| ▶ N | **Active background tasks** — how many `/background` prompts are still running in the current session. Appears whenever at least one task is in flight. |
+| ▶ N | **Active background tasks** — how many `/bg` prompts are still running in the current session. Appears whenever at least one task is in flight. |
 | Duration | Elapsed session time |
+| Session title | Once the session has a title, it appears as a gold badge pinned to the far-right edge. Long titles truncate before displacing the essential model and context fields. |
 | ⚠ YOLO | **YOLO mode warning** — shown whenever `HERMES_YOLO_MODE` is on (either `hermes --yolo` at launch or `/yolo` toggled mid-session). Mirrors the banner-line warning so you can't forget you're in auto-approve mode. |
 
 The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 52–75, minimal (model + duration, plus the YOLO badge when active) below 52.
@@ -149,7 +224,8 @@ Common examples:
 | `/model` | Show or change the current model |
 | `/tools` | List currently available tools |
 | `/skills browse` | Browse the skills hub and official optional skills |
-| `/background <prompt>` | Run a prompt in a separate background session |
+| `/bg <prompt>` | Run a prompt in a separate background session |
+| `/btw <question>` | Ask a side question about the current conversation without interrupting it |
 | `/skin` | Show or switch the active CLI skin |
 | `/voice on` | Enable CLI voice mode (press `Ctrl+B` to record) |
 | `/voice tts` | Toggle spoken playback for Hermes replies |
@@ -248,6 +324,14 @@ There are two ways to enter multi-line messages:
   2. Returns the sum
 ```
 
+`Ctrl+J` and backslash continuation are enabled by default, matching Claude Code / Codex / OpenCode multiline shortcuts. On supported terminals such as iTerm2, Hermes also requests extended key reporting so `Shift+Enter` arrives as a distinct newline key. If your terminal sends LF for plain `Enter` and you need the legacy `Ctrl+J`-as-submit fallback, opt out:
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  cli_multiline_shortcuts: false
+```
+
 :::info
 Pasting multi-line text is supported — use any of the newline keys above, or simply paste content directly.
 :::
@@ -263,7 +347,7 @@ Most terminals send the same byte sequence for `Enter` and `Shift+Enter` by defa
 | Windows Terminal Preview 1.25+ | Supported once the Kitty protocol is enabled in settings |
 | macOS Terminal.app, stock Windows Terminal (stable) | Not supported — `Shift+Enter` is indistinguishable from `Enter` |
 
-Where the terminal cannot distinguish them, `Alt+Enter` and `Ctrl+J` continue to work everywhere. **On Windows Terminal specifically, `Alt+Enter` is captured by the terminal (toggles fullscreen) and never reaches Hermes — use `Ctrl+Enter` (delivered as `Ctrl+J`) or `Ctrl+J` directly for a newline.**
+Where the terminal cannot distinguish them, `Alt+Enter` and `Ctrl+J` continue to work by default. **On Windows Terminal specifically, `Alt+Enter` is captured by the terminal (toggles fullscreen) and never reaches Hermes — use `Ctrl+Enter` (delivered as `Ctrl+J`) or `Ctrl+J` directly for a newline.**
 
 ## Redirecting the Agent Mid-Turn
 
@@ -372,6 +456,8 @@ hermes -c                                  # Short form
 hermes -c "my project"                     # Resume a named session (latest in lineage)
 hermes --resume 20260225_143052_a1b2c3     # Resume a specific session by ID
 hermes --resume "refactoring auth"         # Resume by title
+hermes --resume latest                     # Resume the most recent session (same as -c)
+hermes --resume latest --in ./my-project   # Latest session for ./my-project's workspace
 hermes -r 20260225_143052_a1b2c3           # Short form
 ```
 
@@ -413,7 +499,7 @@ When compression triggers, middle turns are summarized while the first 3 and las
 Run a prompt in a separate background session while continuing to use the CLI for other work:
 
 ```
-/background Analyze the logs in /var/log and summarize any errors from today
+/bg Analyze the logs in /var/log and summarize any errors from today
 ```
 
 Hermes immediately confirms the task and gives you back the prompt:
@@ -425,7 +511,7 @@ Hermes immediately confirms the task and gives you back the prompt:
 
 ### How It Works
 
-Each `/background` prompt spawns a **completely separate agent session** in a daemon thread:
+Each `/bg` prompt spawns a **completely separate agent session** in a daemon thread:
 
 - **Isolated conversation** — the background agent has no knowledge of your current session's history. It receives only the prompt you provide.
 - **Same configuration** — the background agent inherits your model, provider, toolsets, reasoning settings, and fallback model from the current session.
@@ -449,8 +535,8 @@ If the task fails, you'll see an error notification instead. If `display.bell_on
 
 ### Use Cases
 
-- **Long-running research** — "/background research the latest developments in quantum error correction" while you work on code
-- **File processing** — "/background analyze all Python files in this repo and list any security issues" while you continue a conversation
+- **Long-running research** — "/bg research the latest developments in quantum error correction" while you work on code
+- **File processing** — "/bg analyze all Python files in this repo and list any security issues" while you continue a conversation
 - **Parallel investigations** — start multiple background tasks to explore different angles simultaneously
 
 :::info

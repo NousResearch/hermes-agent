@@ -206,12 +206,12 @@ def create_blueprint_job(
     optional ``prompt`` becomes the task instruction. Delivery, model, and
     toolsets carry through. Returns the created job dict.
     """
-    from cron.jobs import create_job
+    from cron.scheduler import create_job_with_scheduler_registration
 
     job_spec = blueprint_to_job_spec(spec, name=name)
     if origin is not None:
         job_spec["origin"] = origin
-    return create_job(**job_spec)
+    return create_job_with_scheduler_registration(**job_spec)
 
 
 def register_blueprint_suggestion(spec: BlueprintSpec) -> Optional[Dict[str, Any]]:

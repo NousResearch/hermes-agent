@@ -26,10 +26,12 @@ Wiring
                     overlay if the backend did not).
 
 The outer integration points (multimodal tool-result plumbing, screenshot
-eviction in the Anthropic adapter, image-aware token estimation, the
-COMPUTER_USE_GUIDANCE prompt block, approval hook, and the skill) live
-alongside this package. See agent/anthropic_adapter.py and
-agent/prompt_builder.py for the salvaged hunks from PR #4562.
+eviction in the Anthropic adapter, image-aware token estimation, approval
+hook, and the skill) live alongside this package. See
+agent/anthropic_adapter.py for the salvaged hunks from PR #4562. Model-facing
+guidance (workflow, background-first, the escalate ladder, safety) lives in
+the tool's schema description and each action result's `verdict`, not a
+separate system-prompt block.
 """
 
 from __future__ import annotations

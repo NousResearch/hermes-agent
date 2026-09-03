@@ -24,7 +24,13 @@ from typing import IO, Callable, Iterable, Protocol
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
-from tools.interrupt import is_interrupted
+from tools.interrupt import is_interrupted, is_thread_interrupted
+from tools.environments.path_utils import (
+    _SANDBOX_DIR_HASH_LEN,
+    _SANDBOX_DIR_MAX_LEN,
+    _SANDBOX_DIR_UNSAFE_RE,
+    sanitize_task_id_for_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +39,14 @@ logger = logging.getLogger(__name__)
 # every is_interrupted() state change from _wait_for_process.  Off by default
 # to avoid flooding production gateway logs.
 _DEBUG_INTERRUPT = bool(os.getenv("HERMES_DEBUG_INTERRUPT"))
+
+# Extra seconds the ``run_bounded_sync`` backstop waits past the inner
+# ``_wait_for_process`` deadline. The inner poll loop is what returns
+# partial output + returncode 124; this outer bound only exists for when
+# that loop itself never returns (family A of #94285: a blocked wait
+# that silently disables asyncio timers). Keep it small so a healthy
+# timeout still comes from the inner path.
+_EXECUTE_WAIT_BOUND_GRACE_S = 2.0
 
 if _DEBUG_INTERRUPT:
     # AIAgent's quiet_mode path (run_agent.py) forces the `tools` logger to
@@ -50,6 +64,32 @@ _activity_callback_local = threading.local()
 # enough that the collector never evicts in practice, keeping a single code
 # path for both bounded and unbounded modes.
 _UNBOUNDED_CAPTURE_CHARS = 2**63 - 1
+
+
+class EnvironmentConnectionError(RuntimeError):
+    """Infrastructure/connection-class failure of a terminal backend.
+
+    Raised when the backend itself is unreachable (SSH host down, Docker
+    daemon not running, remote file sync failing on a dead link) — never
+    for a command that merely exited nonzero.  Subclassing RuntimeError
+    keeps every existing ``except RuntimeError`` catcher working.
+
+    ``terminal_tool`` turns this into a structured ``status: "degraded"``
+    tool result (config gate ``terminal.degraded_mode: warn|fail``) so the
+    model gets an actionable reason + retry hint instead of a traceback.
+    The failed backend is never cached, so a later call retries from
+    scratch and simply works once the backend is reachable again.
+    """
+
+    def __init__(self, reason: str, *, retry_hint: str = ""):
+        super().__init__(reason)
+        self.reason = reason
+        self.retry_hint = retry_hint or (
+            "This is an infrastructure failure, not a command failure. "
+            "Verify the backend is reachable (network, service running, "
+            "credentials), then retry the same command — recovery is "
+            "automatic once the backend is back."
+        )
 
 
 class _BoundedOutputCollector:
@@ -86,8 +126,15 @@ class _BoundedOutputCollector:
             return
         try:
             if self._spill_fh is None:
-                self._spill_path.parent.mkdir(parents=True, exist_ok=True)
-                self._spill_fh = open(self._spill_path, "w", encoding="utf-8", errors="replace")
+                from tools.spill_safety import ensure_spill_dir, open_exclusive
+
+                # Raw pre-redaction output: private perms + symlink-refusing
+                # exclusive create (a planted link must fail the spill, never
+                # redirect the write).
+                ensure_spill_dir(self._spill_path.parent, private=True)
+                self._spill_fh = open_exclusive(
+                    self._spill_path, private=True, errors="replace"
+                )
                 # Backfill everything retained so far so the file holds the
                 # stream from byte 0, not just from the overflow point.
                 backlog = "".join(self._head) + "".join(self._tail)
@@ -281,23 +328,51 @@ def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
     newline translation entirely on every platform.  No behaviour change
     on POSIX — the byte sequence is identical to what text-mode would
     produce there.
+
+    Encoding uses ``errors="surrogateescape"`` — the exact inverse of the
+    surrogateescape decode, so original bytes are restored.  For
+    surrogate-free strings it is byte-identical to strict UTF-8.
+    Surrogates outside the round-trip range U+DC80–U+DCFF raise and are
+    recorded on ``proc._hermes_stdin_errors`` while stdin is still closed
+    in ``finally`` so the child sees EOF instead of hanging;
+    ``_wait_for_process`` reads the recorded error and surfaces it as
+    ``stdin_error`` on the result.
     """
 
-    def _write():
-        try:
-            # proc.stdin is a TextIOWrapper when text=True was set on the
-            # Popen.  Its ``.buffer`` attribute is the raw BufferedWriter
-            # that bypasses newline translation.  When Popen was created
-            # in byte mode, proc.stdin is already a BufferedWriter with
-            # no ``.buffer`` attribute — fall back to .write() directly.
-            raw = data.encode("utf-8") if isinstance(data, str) else data
-            target = getattr(proc.stdin, "buffer", proc.stdin)
-            target.write(raw)
-            target.close()
-        except (BrokenPipeError, OSError):
-            pass
+    errors: list[BaseException] = []
+    proc._hermes_stdin_errors = errors
 
-    threading.Thread(target=_write, daemon=True).start()
+    def _write():
+        if proc.stdin is None:
+            errors.append(RuntimeError("process stdin unavailable"))
+            return
+        # Resolve the target BEFORE encoding: a failed encode must still
+        # reach the finally-close, or the child hangs on EOF forever.
+        target = getattr(proc.stdin, "buffer", proc.stdin)
+        try:
+            raw = data.encode("utf-8", "surrogateescape") if isinstance(data, str) else data
+            written = target.write(raw)
+            if written != len(raw):
+                # Buffered writers normally complete or raise; a short write
+                # is a real failure and must be surfaced, not swallowed.
+                raise RuntimeError(f"short stdin write: {written} of {len(raw)} bytes")
+        except (BrokenPipeError, OSError):
+            pass  # child closed stdin early — normal
+        except Exception as exc:
+            # Only reachable with surrogates outside the surrogateescape
+            # round-trip range (e.g. a literal U+D800). Record it so
+            # _wait_for_process can surface it instead of a silent false
+            # success.
+            errors.append(exc)
+        finally:
+            try:
+                target.close()
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=_write, daemon=True)
+    proc._hermes_stdin_thread = thread
+    thread.start()
 
 
 def _popen_bash(
@@ -468,7 +543,8 @@ def _cwd_marker(session_id: str) -> str:
 # as the Python-side contract for the exclusion set; the dump path unsets by
 # name/prefix instead of grepping declare lines (see below / issue #71296).
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
-    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|HERMES_CRON_SESSION)"
+    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
+    "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_)"
 )
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -512,6 +588,14 @@ def _export_dump_excluding_session_vars(
     return (
         "{ ( "
         "unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
+        "${!HERMES_BROWSER_CONTROL_*} "
+        # AI_AGENT / HERMES_AGENT are per-command attribution markers
+        # (re-exported by every _wrap_command with outer-harness-preserving
+        # ${VAR:-default} semantics).  Persisting them into the snapshot
+        # would make the FIRST command's value override a later outer
+        # harness value arriving via the process env, exactly like the
+        # session-var leak this dump already guards against.
+        "AI_AGENT HERMES_AGENT "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; "
         ") || true; } "
@@ -534,6 +618,13 @@ class BaseEnvironment(ABC):
 
     # Subclasses that embed stdin as a heredoc (Modal, Daytona) set this.
     _stdin_mode: str = "pipe"  # "pipe" or "heredoc"
+
+    # True only when commands execute on the SAME host as the Hermes process
+    # (LocalEnvironment). Controller-host facts (sys.platform, Path.home())
+    # only describe the execution target when this is True — remote/container
+    # backends must not inherit controller-side platform behavior (e.g. the
+    # macOS TCC search pruning in tools/file_operations.py).
+    is_local: bool = False
 
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
@@ -832,6 +923,33 @@ class BaseEnvironment(ABC):
             )
             parts.append(f"unset {present} {value}")
 
+        # Harness attribution: every tool subprocess advertises that it runs
+        # under Hermes via the cross-agent ``AI_AGENT`` standard (read by e.g.
+        # huggingface_hub's agent detection) plus the Hermes-specific
+        # ``HERMES_AGENT`` marker.  The value MUST equal our id in the public
+        # agent-harness registry (``hermes-agent`` — see huggingface.js
+        # ``agent-harnesses.ts``); standard-var matching is exact, so any other
+        # value is reported as "unknown".  Setting it here (rather than only in
+        # the host process env) is what carries the marker into REMOTE backends
+        # (Docker/SSH/Modal/Daytona/Singularity/Vercel), whose exec env is not
+        # inherited from the Hermes process.  ``${VAR:-default}`` semantics:
+        # never clobber an outer harness value that arrived via the inherited
+        # process env (Hermes running inside another agent's terminal).
+        parts.append(
+            'export AI_AGENT="${AI_AGENT:-hermes-agent}" '
+            'HERMES_AGENT="${HERMES_AGENT:-true}"'
+        )
+
+        # Non-interactive pager defaults: git log/diff/branch and similar
+        # pager-happy tools hang a captured (non-TTY writing to a pipe is
+        # fine, but PTY mode IS a TTY) or PTY-backed command waiting for `q`.
+        # GIT_PAGER=cat neutralizes git specifically; PAGER=cat catches the
+        # long tail (man, systemctl, psql, ...). ${VAR:-default} semantics:
+        # a user who exported their own pager in the session keeps it.
+        parts.append(
+            'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"'
+        )
+
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.
         quoted_cwd = self._quote_cwd_for_cd(cwd)
@@ -889,7 +1007,12 @@ class BaseEnvironment(ABC):
     # ------------------------------------------------------------------
 
     def _wait_for_process(
-        self, proc: ProcessHandle, timeout: int = 120, *, bounded_capture: bool = False
+        self,
+        proc: ProcessHandle,
+        timeout: int = 120,
+        *,
+        bounded_capture: bool = False,
+        watch_interrupt_tid: int | None = None,
     ) -> dict:
         """Poll-based wait with interrupt checking and stdout draining.
 
@@ -906,6 +1029,11 @@ class BaseEnvironment(ABC):
         Fires the ``activity_callback`` (if set on this instance) every 10s
         while the process is running so the gateway's inactivity timeout
         doesn't kill long-running commands.
+
+        ``watch_interrupt_tid`` is the tool-worker thread that submitted this
+        wait. ``execute()`` may move the wait onto a ``run_bounded_sync``
+        worker; ``/stop`` still interrupts the original worker tid, so the
+        poll loop must honor that bit as well as the current thread's.
 
         Also wraps the poll loop in a ``try/finally`` that guarantees we
         call ``self._kill_process(proc)`` if we exit via ``KeyboardInterrupt``
@@ -1103,7 +1231,7 @@ class BaseEnvironment(ABC):
             _poll_sleep = 0.005
             while proc.poll() is None:
                 _iter_count += 1
-                if is_interrupted():
+                if is_interrupted() or is_thread_interrupted(watch_interrupt_tid):
                     if _DEBUG_INTERRUPT:
                         logger.info(
                             "[interrupt-debug] _wait_for_process INTERRUPT DETECTED "
@@ -1207,7 +1335,22 @@ class BaseEnvironment(ABC):
                 proc.returncode,
             )
 
-        return self._finalize_wait_result(output, output.render(), proc.returncode)
+        # Join the stdin writer thread before reading its error list: a child
+        # that exits without reading stdin can otherwise race ahead of a
+        # recorded encode failure, silently dropping it. The thread cannot
+        # block long after child exit (write raises BrokenPipeError once the
+        # pipe closes); the timeout is a pure safety net.
+        stdin_thread = getattr(proc, "_hermes_stdin_thread", None)
+        if stdin_thread is not None:
+            stdin_thread.join(timeout=5)
+        rendered = output.render()
+        result = self._finalize_wait_result(output, rendered, proc.returncode)
+        stdin_errors = getattr(proc, "_hermes_stdin_errors", None)
+        if stdin_errors:
+            err = str(stdin_errors[0])
+            result["stdin_error"] = err
+            result["output"] = rendered + f"\n[stdin write failed: {err}]"
+        return result
 
     @staticmethod
     def _finalize_wait_result(collector: "_BoundedOutputCollector",
@@ -1240,6 +1383,13 @@ class BaseEnvironment(ABC):
 
         Updates self.cwd and strips the marker from result["output"].
         Used by remote backends (Docker, SSH, Modal, Daytona, Singularity).
+
+        Sets ``result["cwd_observed"]`` when the marker yielded a directory for
+        THIS command. The wrapper prints the marker after the command returns,
+        so a killed / timed-out command never emits one and ``self.cwd`` keeps
+        whatever the previous command left there. That environment is shared by
+        every session, so callers must not attribute an unobserved cwd to the
+        session that ran this command (see terminal_tool's session-cwd record).
         """
         output = result.get("output", "")
         marker = self._cwd_marker
@@ -1256,6 +1406,11 @@ class BaseEnvironment(ABC):
         cwd_path = output[first + len(marker) : last].strip()
         if cwd_path:
             self.cwd = cwd_path
+            result["cwd_observed"] = True
+            # Keep the observation on this command's result as well as on the
+            # shared environment. Concurrent callers must not read self.cwd
+            # after another command has already updated it.
+            result["cwd"] = cwd_path
 
         # Strip the marker line AND the \n we injected before it.
         # The wrapper emits: printf '\n__MARKER__%s__MARKER__\n'
@@ -1307,6 +1462,10 @@ class BaseEnvironment(ABC):
         full-fidelity consumers — file operations ``cat`` reads that feed
         the patch engine, code-execution RPC reads, log reads — MUST leave
         it False: truncating those corrupts data, not just display.
+
+        The wait is bounded by ``agent.deadline.run_bounded_sync`` so a
+        wedged poll loop cannot hang past ``timeout`` and silently disable
+        every asyncio timer in the process (#94285).
         """
         self._before_execute()
 
@@ -1339,12 +1498,85 @@ class BaseEnvironment(ABC):
         # unless login itself is broken — then non-login is the only path.
         login = not self._snapshot_ready and not self._prefer_nonlogin
 
-        proc = self._run_bash(
-            wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
-        )
-        result = self._wait_for_process(
-            proc, timeout=effective_timeout, bounded_capture=bounded_capture
-        )
+        parent_tid = threading.current_thread().ident
+        # Activity callback is thread-local (see set_activity_callback). The
+        # wait runs on the deadline worker, so copy it across or long
+        # commands look idle to cron/gateway heartbeats.
+        parent_activity_cb = get_activity_callback()
+        proc_holder: list = []
+
+        def _spawn_and_wait() -> dict:
+            if parent_activity_cb is not None:
+                set_activity_callback(parent_activity_cb)
+            spawned = self._run_bash(
+                wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
+            )
+            proc_holder.append(spawned)
+            return self._wait_for_process(
+                spawned,
+                timeout=effective_timeout,
+                bounded_capture=bounded_capture,
+                watch_interrupt_tid=parent_tid,
+            )
+
+        def _on_timeout() -> None:
+            if not proc_holder:
+                return
+            spawned = proc_holder[0]
+            try:
+                self._kill_process(spawned)
+            except Exception:
+                logger.debug(
+                    "terminal wait-bound kill_process failed", exc_info=True
+                )
+            pid = getattr(spawned, "pid", None)
+            if not pid:
+                return
+            try:
+                from agent.deadline import kill_process_tree
+
+                kill_process_tree(int(pid))
+            except Exception:
+                logger.debug(
+                    "terminal wait-bound kill_process_tree failed", exc_info=True
+                )
+
+        # Hard wall-clock backstop (#94285): ``_wait_for_process`` already
+        # polls to ``effective_timeout``, but that loop runs on the tool
+        # thread. If that thread is the event-loop thread — or the wait
+        # itself never returns (Windows pipe/poll hang) — every asyncio
+        # timer in the process is silently disabled, including the 420s
+        # sequential-tool deadline and the cron inactivity monitor.
+        # ``run_bounded_sync`` drives expiry from a daemon worker +
+        # ``Event.wait`` so a blocked loop cannot disable it. Grace lets
+        # the inner poll return the partial-output 124 path on a healthy
+        # timeout; the outer bound only fires when that loop is wedged.
+        from agent.deadline import run_bounded_sync
+
+        try:
+            bound_s = float(effective_timeout) + _EXECUTE_WAIT_BOUND_GRACE_S
+        except (TypeError, ValueError):
+            # Defensive: a non-numeric timeout must not silently disable the
+            # backstop (that would recreate the unbounded wait this bound
+            # exists to prevent). Fall back to the module's 120s wait default.
+            bound_s = 120.0 + _EXECUTE_WAIT_BOUND_GRACE_S
+
+        try:
+            bounded = run_bounded_sync(
+                _spawn_and_wait,
+                bound_s,
+                label=f"terminal.wait:{type(self).__name__}",
+                on_timeout=_on_timeout,
+            )
+        except (KeyboardInterrupt, SystemExit):
+            _on_timeout()
+            raise
+
+        if bounded.timed_out:
+            timeout_msg = f"\n[Command timed out after {effective_timeout}s]"
+            result = {"output": timeout_msg.lstrip(), "returncode": 124}
+        else:
+            result = bounded.value
         self._update_cwd(result)
 
         return result

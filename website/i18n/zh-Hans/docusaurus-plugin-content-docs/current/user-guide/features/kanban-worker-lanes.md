@@ -18,7 +18,7 @@ Reviewer       =  人工或人工代理，负责把关"完成"状态
 GitHub PR      =  可上游的产物（可选，适用于代码通道）
 ```
 
-Hermes Kanban 拥有生命周期的真实状态——`ready` → `running` → `blocked` / `done` / `archived`。Worker lane 执行工作，但从不拥有该真实状态；它们所做的一切都通过 `kanban_*` 工具回流至 kanban 内核（对于非 Hermes 外部 worker，则通过 API）。Reviewer 负责把关从"代码变更已写入"到"任务完成"的转换。
+Hermes Kanban 拥有生命周期的真实状态——`ready` → `running` → `review` / `blocked` / `done` / `archived`。Worker lane 执行工作，但从不拥有该真实状态；它们所做的一切都通过 `kanban_*` 工具回流至 kanban 内核（对于非 Hermes 外部 worker，则通过 API）。Reviewer 负责把关从"代码变更已写入"到"任务完成"的转换。
 
 ## 通道需提供的内容
 
@@ -51,27 +51,30 @@ Hermes Kanban 拥有生命周期的真实状态——`ready` → `running` → `
 每次 claim 必须以以下之一结束：
 
 - `kanban_complete(summary=..., metadata=...)` — 任务成功，状态切换为 `done`。
+- `kanban_request_review(summary=..., metadata=..., reviewer=...)` — 同卡实现进入一等审查。默认由内置 `sdlc-review` skill 启动 reviewer；reviewer 可用 `kanban_complete` 批准、用 `kanban_request_changes` 退回原 implementer，或仅在真正需要外部介入时 block。
 - `kanban_block(reason=...)` — 任务等待人工输入，状态切换为 `blocked`。调度器在 `kanban_unblock` 运行时重新生成。
 - worker 进程退出而未调用任何工具。内核回收该进程并发出 `crashed`（PID 已消亡）、`gave_up`（连续失败断路器触发）或 `timed_out`（超过 max_runtime）。这是失败路径；健康的 worker 不会在此结束。
 
 kanban 内核强制要求每次运行恰好由其中一项终止。既未调用任何终止工具又正常退出的 worker 将被视为崩溃。
 
-## 输出与 review-required 约定
+## 输出与审查交接
 
-对于大多数涉及代码变更的任务，worker 完成的那一刻并不意味着真正*完成*——还需要人工审查。kanban 内核不强制执行这一区分（"涉及代码变更的任务"定义模糊，且在每个代码 worker 上强制 block 而非 complete 会破坏不需要审查的流程）。这是叠加在上层的约定：
+代码变更任务必须按照任务图选择审查模型：
 
-- **使用 block 而非 complete**，`reason` 以 `review-required: ` 为前缀，使仪表板 / `hermes kanban show` 将该行显示为等待审查。
-- **先将结构化元数据写入 `kanban_comment`**，因为 `kanban_block` 只携带人类可读的 `reason`。Comment 是持久的注解通道——所有与审计相关的字段（changed_files、tests_run、diff_path 或 PR url、决策记录）都应放在这里。
-- **Reviewer 批准并解除阻塞**，这将重新生成 worker 并附带 comment 线程用于后续跟进；或通过另一条 comment 要求修改，下一次 worker 运行时将通过 `kanban_show` 的上下文看到这些内容。
+- **同卡审查：**调用 `kanban_request_review(summary=..., metadata=..., reviewer=...)`。任务进入 `review`，不会触碰 block 循环计数。默认情况下，调度器使用内置 `sdlc-review` skill 启动 reviewer。Reviewer 用 `kanban_complete` 批准，用 `kanban_request_changes(reason=...)` 关闭审查 run 并将任务退回原 implementer，或只在真正需要外部决策时 block。
+- **预先创建的下游 review/QA/release 卡：**`kanban_show` 会列出 child ID；选择终止动作前，先用 `kanban_show(task_id=...)` 检查这些卡。如果 child 是下游 review/QA/release 阶段，implementation 阶段必须调用 `kanban_complete`。子卡只有在父卡为 `done`/`archived` 后才能启动。不要再请求同卡审查，也不要用 `review-required:` sticky-block 父卡，否则会让下游通道卡死或重复。
+- **纯人工审查看板：**设置 `kanban.review_dispatch: false`。任务会停在 `review`，直到人工批准，或通过 `reopen-review`/仪表盘退回 `ready`/`todo`。
 
-自动注入的 `KANBAN_GUIDANCE` 同时涵盖 `kanban_complete`（真正终态的任务——拼写修复、文档变更、研究报告）和 `review-required` block 模式。
+两种审查模型都在生命周期转换本身携带结构化 `summary` 和 `metadata`。这些字段会持久保存，因此不得写入 secret、token 或原始 PII。
+
+自动注入的 `KANBAN_GUIDANCE` 同时说明两种任务图、同卡审查循环、`kanban_complete` 和真正外部阻塞所用的 `kanban_block`。
 
 ## 日志与审计追踪
 
 调度器将每个任务的 worker stdout/stderr 写入 `<board-root>/logs/<task_id>.log`。日志可通过 kanban 元数据进行审计：
 
 - `task_runs` 行携带 `log_path`、退出码（如有）、摘要和元数据。
-- `task_events` 行携带每次状态转换（`promoted`、`claimed`、`heartbeat`、`completed`、`blocked`、`gave_up`、`crashed`、`timed_out`、`reclaimed`、`claim_extended`）。
+- `task_events` 行携带每次状态转换（`promoted`、`claimed`、`heartbeat`、`completed`、`blocked`、`review_requested`、`changes_requested`、`review_reopened`、`gave_up`、`crashed`、`timed_out`、`reclaimed`、`claim_extended`）。
 - `kanban_show` 同时返回两者，因此 reviewer（或后续 worker）读取任务时无需访问仪表板即可获得完整历史。
 
 仪表板以摘要、元数据块和退出状态徽章渲染运行历史。CLI 用户可运行 `hermes kanban tail <task_id>` 实时跟踪，或运行 `hermes kanban runs <task_id>` 查看历史尝试列表。
@@ -105,6 +108,7 @@ profile 通道的特化形态：orchestrator 是一个 Hermes profile，其工�
 - **运行级重试** — 任务重试时（post-block、post-crash、post-reclaim），worker 可在终止工具上使用 `expected_run_id` 参数，在自身运行已被取代时快速失败。
 - **每任务最大运行时间** — `task.max_runtime_seconds` 对每次运行的挂钟时间进行硬性限制，与 PID 存活状态无关。可捕获真正死锁的 worker——否则存活 PID 延期机制会让其持续运行。
 - **滞留任务检测** — assignee 在 `kanban.stranded_threshold_seconds`（默认 30 分钟）内始终未产生 claim 的 ready 任务，会在 `hermes kanban diagnostics` 中显示为 `stranded_in_ready` 警告。严重程度在 2 倍阈值时升级为 error，在 6 倍时升级为 critical。可通过单一信号捕获拼写错误的 assignee、已删除的 profile 以及宕机的外部 worker 池——与标识无关，无需维护每个看板的白名单。
+- **旧版审查依赖死锁** —— 如果父卡以 `review-required:` sticky-block，而直接子卡仍因依赖停在 `todo`，系统会立即产生 `review_dependency_deadlock` error。该诊断只读：它建议完成已经结束的阶段或解除错误依赖，不会自动删除用户的 block。
 
 ## 相关资源
 

@@ -364,6 +364,99 @@ class TestEnvVarInterpolation:
         assert _env_ref_name(" env:API_KEY ") == "API_KEY"
 
 
+class TestContextVarInterpolation:
+    """Cursor-style context variables: ${userHome}, ${workspaceFolder},
+    ${workspaceFolderBasename}, ${pathSeparator}, ${/}."""
+
+    def test_user_home(self):
+        import os
+
+        from tools.mcp_tool import _interpolate_env_vars
+
+        assert _interpolate_env_vars("${userHome}") == os.path.expanduser("~")
+
+    def test_path_separator_and_slash_shorthand(self):
+        import os
+
+        from tools.mcp_tool import _interpolate_env_vars
+
+        assert _interpolate_env_vars("${pathSeparator}") == os.sep
+        assert _interpolate_env_vars("${/}") == os.sep
+
+    def test_workspace_folder_and_basename(self, monkeypatch):
+        import tools.mcp_tool as mcp_tool
+
+        monkeypatch.setattr(
+            mcp_tool, "_workspace_folder", lambda: "/srv/projects/myapp"
+        )
+        assert mcp_tool._interpolate_env_vars("${workspaceFolder}") == (
+            "/srv/projects/myapp"
+        )
+        assert mcp_tool._interpolate_env_vars(
+            "${workspaceFolderBasename}"
+        ) == "myapp"
+
+    def test_workspace_folder_falls_back_to_cwd(self, monkeypatch):
+        import os
+
+        import tools.file_tools as file_tools
+        from tools.mcp_tool import _workspace_folder
+
+        monkeypatch.setattr(
+            file_tools, "_authoritative_workspace_root", lambda task_id="default": None
+        )
+        assert _workspace_folder() == os.getcwd()
+
+    def test_mixed_string_with_env_and_context_vars(self, monkeypatch):
+        import os
+
+        import tools.mcp_tool as mcp_tool
+
+        monkeypatch.setenv("MY_TOKEN", "tok-1")
+        monkeypatch.setattr(mcp_tool, "_workspace_folder", lambda: "/ws/app")
+        result = mcp_tool._interpolate_env_vars(
+            "${userHome}${/}.cache${/}${workspaceFolderBasename}-${MY_TOKEN}"
+        )
+        home = os.path.expanduser("~")
+        assert result == f"{home}{os.sep}.cache{os.sep}app-tok-1"
+
+    def test_context_names_are_case_sensitive(self, monkeypatch):
+        """${USERHOME} is NOT a context var — it keeps env-var semantics
+        (literal placeholder when unset)."""
+        monkeypatch.delenv("USERHOME", raising=False)
+        from tools.mcp_tool import _interpolate_env_vars
+
+        assert _interpolate_env_vars("${USERHOME}") == "${USERHOME}"
+
+    def test_unknown_ref_keeps_literal_placeholder(self, monkeypatch):
+        monkeypatch.delenv("NOT_A_REAL_VAR_XYZ", raising=False)
+        from tools.mcp_tool import _interpolate_env_vars
+
+        assert _interpolate_env_vars("${NOT_A_REAL_VAR_XYZ}") == (
+            "${NOT_A_REAL_VAR_XYZ}"
+        )
+
+    def test_context_vars_in_nested_config(self, monkeypatch):
+        import os
+
+        import tools.mcp_tool as mcp_tool
+
+        monkeypatch.setattr(mcp_tool, "_workspace_folder", lambda: "/ws/app")
+        cfg = {
+            "command": "npx",
+            "args": ["-y", "server-fs", "${workspaceFolder}"],
+            "cwd": "${workspaceFolder}",
+            "env": {"CACHE": "${userHome}${/}.cache"},
+            "headers": {"X-Ws": "${workspaceFolderBasename}"},
+        }
+        out = mcp_tool._interpolate_env_vars(cfg)
+        home = os.path.expanduser("~")
+        assert out["args"][2] == "/ws/app"
+        assert out["cwd"] == "/ws/app"
+        assert out["env"]["CACHE"] == f"{home}{os.sep}.cache"
+        assert out["headers"]["X-Ws"] == "app"
+
+
 # ---------------------------------------------------------------------------
 # Tests: probe-path env resolution (#37792)
 # ---------------------------------------------------------------------------

@@ -113,6 +113,36 @@ class ToolsSpec:
     # pre-checked (or no filter is written when probe fails).
     default_enabled: Optional[List[str]] = None
 
+    # Exclude-mode counterpart: tool names/glob patterns written to
+    # ``mcp_servers.<name>.tools.exclude`` at install time. Everything NOT
+    # matching stays enabled — including tools the server adds later. Use for
+    # huge auto-generated surfaces (OpenAPI-derived MCPs) where an include
+    # list would be thousands of lines and freeze out new endpoints.
+    # Mutually exclusive with ``default_enabled``.
+    default_excluded: Optional[List[str]] = None
+
+
+@dataclass
+class SuggestSpec:
+    """Composer-suggestion metadata (desktop "brand pill" triggers).
+
+    Optional. When present, UI surfaces (currently the desktop composer)
+    may suggest installing this entry when the user's draft contains one
+    of the keywords as a completed whole word, or pastes a link whose
+    hostname ends with one of the host suffixes. Purely advisory — the
+    install itself always flows through the ordinary validated paths.
+
+    NOTE: GitHub is intentionally NOT in the catalog and must not be
+    suggested here: its hosted MCP requires a per-host OAuth app (generic
+    DCR 404s), and the bundled github/* skills (gh CLI) are the far more
+    capable integration. Point users at the skills instead.
+    """
+
+    # Lowercase whole-word/phrase triggers matched against the draft.
+    keywords: List[str] = field(default_factory=list)
+    # Hostname suffixes ("atlassian.net") matched against pasted links.
+    hosts: List[str] = field(default_factory=list)
+
 
 @dataclass
 class CatalogEntry:
@@ -124,6 +154,7 @@ class CatalogEntry:
     tools: ToolsSpec = field(default_factory=ToolsSpec)
     install: Optional[InstallSpec] = None
     post_install: str = ""
+    suggest: Optional[SuggestSpec] = None
     manifest_path: Path = field(default_factory=Path)
 
 
@@ -257,7 +288,52 @@ def _parse_manifest(path: Path) -> CatalogEntry:
             raise CatalogError(
                 f"{path}: tools.default_enabled must be a list of strings"
             )
-    tools_spec = ToolsSpec(default_enabled=default_enabled)
+    default_excluded = tools_raw.get("default_excluded")
+    if default_excluded is not None:
+        if not isinstance(default_excluded, list) or not all(
+            isinstance(t, str) for t in default_excluded
+        ):
+            raise CatalogError(
+                f"{path}: tools.default_excluded must be a list of strings"
+            )
+    if default_enabled is not None and default_excluded is not None:
+        raise CatalogError(
+            f"{path}: tools.default_enabled and tools.default_excluded are "
+            "mutually exclusive"
+        )
+    tools_spec = ToolsSpec(
+        default_enabled=default_enabled, default_excluded=default_excluded
+    )
+
+    suggest: Optional[SuggestSpec] = None
+    suggest_raw = data.get("suggest")
+    if suggest_raw is not None:
+        if not isinstance(suggest_raw, dict):
+            raise CatalogError(f"{path}: 'suggest' must be a mapping")
+        kw_raw = suggest_raw.get("keywords") or []
+        hosts_raw = suggest_raw.get("hosts") or []
+        if not isinstance(kw_raw, list) or not all(
+            isinstance(k, str) and k.strip() for k in kw_raw
+        ):
+            raise CatalogError(
+                f"{path}: suggest.keywords must be a list of non-empty strings"
+            )
+        if not isinstance(hosts_raw, list) or not all(
+            isinstance(h, str) and h.strip() for h in hosts_raw
+        ):
+            raise CatalogError(
+                f"{path}: suggest.hosts must be a list of non-empty strings"
+            )
+        if not kw_raw and not hosts_raw:
+            raise CatalogError(
+                f"{path}: 'suggest' requires at least one keyword or host"
+            )
+        # Normalize: matching is case-insensitive whole-word / host-suffix,
+        # so store lowercase and let UIs match without re-normalizing.
+        suggest = SuggestSpec(
+            keywords=[k.strip().lower() for k in kw_raw],
+            hosts=[h.strip().lower().lstrip(".") for h in hosts_raw],
+        )
 
     install: Optional[InstallSpec] = None
     install_raw = data.get("install")
@@ -290,6 +366,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         tools=tools_spec,
         install=install,
         post_install=str(data.get("post_install") or ""),
+        suggest=suggest,
         manifest_path=path,
     )
 
@@ -546,6 +623,25 @@ def _read_prior_tool_selection(name: str) -> Optional[List[str]]:
     return None
 
 
+def _read_prior_tool_exclude(name: str) -> Optional[List[str]]:
+    """Return the user's prior `tools.exclude` for *name*, if any.
+
+    The exclude-mode counterpart of :func:`_read_prior_tool_selection`.
+    Read BEFORE a reinstall overwrites the server entry, so a user-edited
+    exclude list survives reinstalling an exclude-mode catalog entry instead
+    of being clobbered by the manifest's ``default_excluded``.
+    """
+    servers = installed_servers()
+    cfg = servers.get(name) or {}
+    tools_cfg = cfg.get("tools") or {}
+    if not isinstance(tools_cfg, dict):
+        return None
+    exclude = tools_cfg.get("exclude")
+    if isinstance(exclude, list) and all(isinstance(t, str) for t in exclude):
+        return list(exclude)
+    return None
+
+
 def _probe_tools(name: str) -> Optional[List[tuple]]:
     """Connect to a freshly-configured MCP and list its tools.
 
@@ -590,8 +686,27 @@ def _write_tools_include(name: str, include: Optional[List[str]]) -> None:
     save_config(cfg)
 
 
+def _write_tools_exclude(name: str, exclude: List[str]) -> None:
+    """Persist ``mcp_servers.<name>.tools.exclude`` (names or glob patterns)."""
+    cfg = load_config()
+    servers = cfg.setdefault("mcp_servers", {})
+    server_entry = servers.get(name) or {}
+    tools_block = server_entry.get("tools") or {}
+    if not isinstance(tools_block, dict):
+        tools_block = {}
+    tools_block["exclude"] = list(exclude)
+    tools_block.pop("include", None)
+    server_entry["tools"] = tools_block
+    servers[name] = server_entry
+    cfg["mcp_servers"] = servers
+    save_config(cfg)
+
+
 def _apply_tool_selection(
-    entry: CatalogEntry, *, prior_selection: Optional[List[str]]
+    entry: CatalogEntry,
+    *,
+    prior_selection: Optional[List[str]],
+    prior_exclude: Optional[List[str]] = None,
 ) -> None:
     """Probe the server and let the user pick which tools to enable.
 
@@ -610,13 +725,63 @@ def _apply_tool_selection(
       - Either way, point the user at ``hermes mcp configure <name>``.
     """
     print()
+
+    # Exclude-mode manifests short-circuit the checklist entirely: the curated
+    # exclude list (names or glob patterns) is written as-is, everything else
+    # stays enabled — including tools the server adds later. Reinstalls
+    # preserve the user's own prior filter in EITHER mode: a prior include
+    # selection falls through to the checklist below, and a prior user-edited
+    # exclude list is re-written verbatim instead of being clobbered by the
+    # manifest defaults.
+    # (No probe announcement here — this path deliberately never probes.)
+    if entry.tools.default_excluded and prior_selection is None:
+        if prior_exclude is not None:
+            _write_tools_exclude(entry.name, prior_exclude)
+            print(color(
+                f"  Kept your existing exclude list ({len(prior_exclude)} "
+                f"entries). Edit mcp_servers.{entry.name}.tools.exclude in "
+                "config.yaml or run "
+                f"`hermes mcp configure {entry.name}` to change.",
+                Colors.GREEN,
+            ))
+            return
+        _write_tools_exclude(entry.name, entry.tools.default_excluded)
+        print(color(
+            f"  Applied manifest exclude list "
+            f"({len(entry.tools.default_excluded)} entries); everything else "
+            f"stays enabled. Edit mcp_servers.{entry.name}.tools.exclude in "
+            "config.yaml or run "
+            f"`hermes mcp configure {entry.name}` to change.",
+            Colors.GREEN,
+        ))
+        return
+
     print(color(f"  Probing '{entry.name}' for available tools...", Colors.CYAN))
     probed = _probe_tools(entry.name)
 
-    # Probe failure path
+    # Probe failure path. Order matters: a reinstall must come out of a
+    # failed probe with the user's previous filter intact (common for OAuth
+    # entries — the entry rewrite precedes first auth, so the server is
+    # regularly unreachable right here), not with the filter reset or wiped.
     if probed is None:
         manifest_default = entry.tools.default_enabled
-        if manifest_default:
+        if prior_selection is not None:
+            _write_tools_include(entry.name, prior_selection)
+            print(color(
+                f"  Couldn\'t probe server. Kept your previous tool "
+                f"selection ({len(prior_selection)} tools). "
+                f"Run `hermes mcp configure {entry.name}` after the server "
+                "is reachable to refine.",
+                Colors.YELLOW,
+            ))
+        elif prior_exclude is not None:
+            _write_tools_exclude(entry.name, prior_exclude)
+            print(color(
+                f"  Couldn\'t probe server. Kept your existing exclude "
+                f"list ({len(prior_exclude)} entries).",
+                Colors.YELLOW,
+            ))
+        elif manifest_default:
             _write_tools_include(entry.name, manifest_default)
             print(color(
                 f"  Couldn\'t probe server. Applied manifest default "
@@ -775,8 +940,10 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
 
     # ── Preserve any prior user tool selection across reinstalls ────────
     # Reading BEFORE we overwrite the entry below so a reinstall pre-checks
-    # whatever the user picked last time.
+    # whatever the user picked last time (include mode) or keeps the user's
+    # edited exclude list (exclude mode).
     prior_selection = _read_prior_tool_selection(entry.name)
+    prior_exclude = _read_prior_tool_exclude(entry.name)
 
     # Build and write the mcp_servers entry (without tools filter yet;
     # _apply_tool_selection() finalizes it below).
@@ -791,7 +958,9 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
         )
 
     # ── Probe + tool selection ──────────────────────────────────────────
-    _apply_tool_selection(entry, prior_selection=prior_selection)
+    _apply_tool_selection(
+        entry, prior_selection=prior_selection, prior_exclude=prior_exclude
+    )
 
     print()
     print(color(

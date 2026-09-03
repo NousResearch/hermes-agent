@@ -148,11 +148,17 @@ class VideoGenProvider(abc.ABC):
                 "min_duration": 1,
                 "supports_audio": True,
                 "supports_negative_prompt": True,
+                "supports_seed": True,
+                "supports_upscale": True,
                 "max_reference_images": 7,
             }
 
-        Used by the tool layer for soft validation and by ``hermes tools``
-        for the picker. Default: text-only.
+        Used by the tool layer for soft validation, for capability-gated
+        param rendering in the dynamic ``video_generate`` schema (args a
+        backend can't honor are not advertised), and by ``hermes tools``
+        for the picker. Default fails closed: text-only, no optional
+        features — a provider that doesn't declare a capability doesn't
+        advertise it.
         """
         return {
             "modalities": ["text"],
@@ -162,6 +168,8 @@ class VideoGenProvider(abc.ABC):
             "min_duration": 1,
             "supports_audio": False,
             "supports_negative_prompt": False,
+            "supports_seed": False,
+            "supports_upscale": False,
             "max_reference_images": 0,
         }
 
@@ -193,6 +201,12 @@ class VideoGenProvider(abc.ABC):
         or :func:`error_response`. ``kwargs`` may contain forward-compat
         parameters future versions of the schema will expose —
         implementations MUST ignore unknown keys (no TypeError).
+
+        Known optional kwarg: ``upscale`` (bool) — when true, the caller
+        requests a post-generation high-resolution pass through the
+        backend's video upscaler. Providers without an upscaler simply
+        ignore it; providers that honor it should report ``upscaled: True``
+        in the response ``extra``.
         """
 
 

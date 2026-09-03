@@ -19,7 +19,8 @@ import {
   formatProbeFailedMessage,
   parseVenvBlockerScanOutput,
   resolveVenvPython,
-  scanVenvBlockers
+  scanVenvBlockers,
+  stopSafeVenvBlockers
 } from './venv-blocker-scan'
 
 // ---------------------------------------------------------------------------
@@ -56,7 +57,7 @@ describe('formatBlockerMessage', () => {
   it('includes PID, name, cmdline, remote-client warning, and retry suggestion', () => {
     const msg = formatBlockerMessage({
       blocked: true,
-      processes: [{ pid: 101, name: 'python.exe', cmdline: 'serve --host 10.0.0.1' }]
+      processes: [{ pid: 101, name: 'python.exe', cmdline: 'serve --host 10.0.0.1', kind: 'other', safeToStop: false }]
     })
 
     assert.ok(msg.includes('PID 101'))
@@ -73,6 +74,12 @@ describe('formatProbeFailedMessage', () => {
     const msg = formatProbeFailedMessage()
     assert.ok(msg.includes('hermes update'))
     assert.ok(msg.includes('retry'))
+  })
+
+  it('distinguishes a timeout from a confirmed blocker', () => {
+    const msg = formatProbeFailedMessage('timed out after 60 seconds')
+    assert.ok(msg.includes('timed out after 60 seconds'))
+    assert.ok(msg.includes('no blocking process was confirmed'))
   })
 })
 
@@ -97,6 +104,124 @@ describe('parseVenvBlockerScanOutput', () => {
     )
 
     assert.equal(o.kind, 'blocked')
+  })
+
+  // Contract fixture (#98336/#98350): the scanner reports exemption
+  // diagnostics (counts + sanitized evidence) alongside the authoritative
+  // blocked/processes fields. The consumer must tolerate those fields today
+  // and must keep enforcing blocked/processes consistency — a future parser
+  // change that either chokes on the diagnostics or silently reinterprets
+  // an exemption as a blocker breaks this fixture.
+  it('tolerates exemption diagnostics while enforcing blocked/processes consistency', () => {
+    const clear = parseVenvBlockerScanOutput(
+      ok({
+        pausable_gateways: 2,
+        deferred_backends: 1,
+        deferred_backend_evidence: [{ pid: 78, purpose: 'serve', port: 9119 }]
+      })
+    )
+
+    assert.equal(clear.kind, 'clear')
+
+    const blocked = parseVenvBlockerScanOutput(
+      ok({
+        blocked: true,
+        processes: [{ pid: 79, name: 'python.exe', cmdline: 'c' }],
+        pausable_gateways: 1,
+        deferred_backends: 1,
+        deferred_backend_evidence: [{ pid: 78, purpose: 'serve', port: 9119 }]
+      })
+    )
+
+    assert.equal(blocked.kind, 'blocked')
+
+    if (blocked.kind !== 'blocked') {
+      return
+    }
+
+    assert.deepEqual(
+      blocked.result.processes.map(p => p.pid),
+      [79]
+    )
+  })
+
+  it('classifies Python http.server blockers as safe local previews with a human label', () => {
+    const o = parseVenvBlockerScanOutput(
+      ok({
+        blocked: true,
+        processes: [
+          {
+            pid: 47484,
+            name: 'python.exe',
+            cmdline: 'C:\\Hermes\\venv\\Scripts\\python.exe -m http.server 8766 --directory C',
+            kind: 'local-preview',
+            safeToStop: true,
+            label: 'Example Preview',
+            port: 8766,
+            createTime: 1722798000.25
+          }
+        ]
+      })
+    )
+
+    assert.equal(o.kind, 'blocked')
+
+    if (o.kind !== 'blocked') {
+      return
+    }
+
+    assert.deepEqual(o.result.processes[0], {
+      pid: 47484,
+      name: 'python.exe',
+      cmdline: 'C:\\Hermes\\venv\\Scripts\\python.exe -m http.server 8766 --directory C',
+      kind: 'local-preview',
+      safeToStop: true,
+      label: 'Example Preview',
+      port: 8766,
+      createTime: 1722798000.25
+    })
+  })
+
+  it('does not trust a truncated http.server command line without scanner identity metadata', () => {
+    const o = parseVenvBlockerScanOutput(
+      ok({
+        blocked: true,
+        processes: [
+          {
+            pid: 47484,
+            name: 'python.exe',
+            cmdline: 'python.exe -m http.server 8766 --directory C'
+          }
+        ]
+      })
+    )
+
+    assert.equal(o.kind, 'blocked')
+
+    if (o.kind !== 'blocked') {
+      return
+    }
+
+    assert.equal(o.result.processes[0]?.kind, 'other')
+    assert.equal(o.result.processes[0]?.safeToStop, false)
+  })
+
+  it('never marks an arbitrary Python process safe to stop', () => {
+    const o = parseVenvBlockerScanOutput(
+      ok({
+        blocked: true,
+        processes: [{ pid: 9, name: 'python.exe', cmdline: 'python.exe important-script.py' }]
+      })
+    )
+
+    assert.equal(o.kind, 'blocked')
+
+    if (o.kind !== 'blocked') {
+      return
+    }
+
+    assert.equal(o.result.processes[0]?.kind, 'other')
+    assert.equal(o.result.processes[0]?.safeToStop, false)
   })
 
   it('malformed JSON', () => {
@@ -174,6 +299,15 @@ describe('scanVenvBlockers', () => {
     }) as any
   }
 
+  function execTimeout(): any {
+    return (async (...args: any[]) => {
+      const e: any = new Error()
+      e.killed = true
+      e.signal = 'SIGTERM'
+      throw e
+    }) as any
+  }
+
   it('clear scan returns clear', async () => {
     assert.equal((await scanVenvBlockers('/r', execReturn(okJson), stubVenv)).kind, 'clear')
   })
@@ -185,6 +319,14 @@ describe('scanVenvBlockers', () => {
   it('non-zero exit is probe-failure', async () => {
     const o = await scanVenvBlockers('/r', execThrow(2, 'ModuleNotFoundError'), stubVenv)
     assert.equal(o.kind, 'probe-failure')
+  })
+
+  it('reports a timed-out subprocess explicitly', async () => {
+    const o = await scanVenvBlockers('/r', execTimeout(), stubVenv)
+    assert.deepEqual(o, {
+      kind: 'probe-failure',
+      error: 'timed out after 60 seconds'
+    })
   })
 
   it('missing venv python is probe-failure', async () => {
@@ -212,7 +354,54 @@ describe('scanVenvBlockers', () => {
     assert.ok(c.cmd.endsWith('python.exe'))
     assert.deepEqual(c.args, ['-m', 'hermes_cli._scan_venv_blockers'])
     assert.equal(c.cwd, '/update/root')
-    assert.equal(typeof c.timeout, 'number')
-    assert.ok(c.timeout > 0)
+    assert.equal(c.timeout, 60_000)
+  })
+})
+
+describe('stopSafeVenvBlockers', () => {
+  it('stops only blockers explicitly classified as safe local previews', async () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+
+    const exec = (async (command: string, args: string[]) => {
+      calls.push({ command, args })
+
+      return { stdout: '', stderr: '' }
+    }) as any
+
+    const outcome = await stopSafeVenvBlockers(
+      '/update/root',
+      {
+        blocked: true,
+        processes: [
+          {
+            pid: 47484,
+            name: 'python.exe',
+            cmdline: 'python.exe -m http.server 8766 --directory C:\\preview',
+            kind: 'local-preview',
+            safeToStop: true,
+            label: 'preview',
+            port: 8766,
+            createTime: 1722798000.25
+          },
+          {
+            pid: 99,
+            name: 'python.exe',
+            cmdline: 'python.exe important-script.py',
+            kind: 'other',
+            safeToStop: false
+          }
+        ]
+      },
+      exec,
+      () => 'C:\\Hermes\\venv\\Scripts\\python.exe'
+    )
+
+    assert.deepEqual(calls, [
+      {
+        command: 'C:\\Hermes\\venv\\Scripts\\python.exe',
+        args: ['-m', 'hermes_cli._scan_venv_blockers', '--terminate-safe', '47484', '1722798000.25']
+      }
+    ])
+    assert.deepEqual(outcome, { stopped: [47484], failed: [] })
   })
 })

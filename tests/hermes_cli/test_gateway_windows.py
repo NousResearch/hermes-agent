@@ -1,12 +1,18 @@
 """Tests for hermes_cli.gateway_windows."""
 
+import logging
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import hermes_cli.gateway as gateway
 import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.setup as setup
+
+
+_BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
 
@@ -26,10 +32,17 @@ def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
 
 
 
+@pytest.mark.windows_only
 def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, tmp_path):
     """No pythonw / base-interpreter detour: the venv console python.exe is
     launched hidden (CREATE_NO_WINDOW) so descendants inherit its hidden
-    console instead of flashing their own (#54220/#56747)."""
+    console instead of flashing their own (#54220/#56747).
+
+    Windows-only: ``_build_gateway_argv()`` asserts the host is Windows and the
+    argv/env overlay it returns is built from real Windows path separators and
+    ``Scripts/python.exe`` layout — a patched ``sys.platform`` covered the
+    branch but not any of that.
+    """
 
     project = tmp_path / "project"
     scripts = project / "venv" / "Scripts"
@@ -53,7 +66,6 @@ def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, t
 
     import hermes_cli.gateway as gateway
 
-    monkeypatch.setattr(gateway_windows.sys, "platform", "win32")
     monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
     monkeypatch.setattr(gateway, "get_python_path", lambda: str(venv_python))
     monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
@@ -65,6 +77,101 @@ def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, t
     assert cwd == str(hermes_home.resolve())
     assert env_overlay["VIRTUAL_ENV"] == str(project / "venv")
     assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
+
+
+@pytest.mark.windows_only
+def test_spawn_detached_marks_primary_breakaway_success(monkeypatch, tmp_path, caplog):
+    """A successful breakaway spawn reports true without a warning."""
+    argv = ["python.exe", "-m", "hermes_cli.main", "gateway", "run"]
+    cwd = str(tmp_path)
+    calls = []
+
+    def fake_popen(call_argv, **kwargs):
+        calls.append((call_argv, kwargs))
+        return SimpleNamespace(pid=12345)
+
+    monkeypatch.setattr(
+        gateway_windows,
+        "_build_gateway_argv",
+        lambda: (argv, cwd, {"HERMES_GATEWAY_DETACHED": "1"}),
+    )
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(gateway_windows.subprocess, "Popen", fake_popen)
+    caplog.set_level(logging.WARNING, logger=gateway_windows.__name__)
+
+    assert gateway_windows._spawn_detached() == 12345
+    assert len(calls) == 1
+    actual_argv, kwargs = calls[0]
+    assert actual_argv == argv
+    assert kwargs["cwd"] == cwd
+    assert kwargs["creationflags"] == gateway_windows.windows_detach_flags()
+    assert kwargs["env"][_BREAKAWAY_MARKER] == "1"
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert kwargs["stdout"] is kwargs["stderr"]
+    assert not caplog.records
+
+
+@pytest.mark.windows_only
+def test_spawn_detached_warns_and_marks_no_breakaway_fallback(
+    monkeypatch, tmp_path, caplog
+):
+    """A denied breakaway retries once with private false metadata."""
+    argv = ["python.exe", "-m", "hermes_cli.main", "gateway", "run"]
+    cwd = str(tmp_path)
+    calls = []
+
+    def fake_popen(call_argv, **kwargs):
+        calls.append((call_argv, kwargs))
+        if len(calls) == 1:
+            error = OSError(13, "Access is denied")
+            error.winerror = 5
+            raise error
+        return SimpleNamespace(pid=23456)
+
+    monkeypatch.setattr(
+        gateway_windows,
+        "_build_gateway_argv",
+        lambda: (
+            argv,
+            cwd,
+            {"HERMES_GATEWAY_DETACHED": "1", "SECRET_SENTINEL": "do-not-log"},
+        ),
+    )
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(gateway_windows.subprocess, "Popen", fake_popen)
+    caplog.set_level(logging.WARNING, logger=gateway_windows.__name__)
+
+    assert gateway_windows._spawn_detached() == 23456
+    assert len(calls) == 2
+    (argv_primary, primary), (argv_fallback, fallback) = calls
+    assert argv_primary == argv_fallback == argv
+    assert primary["cwd"] == fallback["cwd"] == cwd
+    assert primary["creationflags"] == gateway_windows.windows_detach_flags()
+    assert (
+        fallback["creationflags"]
+        == gateway_windows.windows_detach_flags_without_breakaway()
+    )
+    assert primary["stdin"] is fallback["stdin"] is subprocess.DEVNULL
+    assert primary["stdout"] is primary["stderr"]
+    assert fallback["stdout"] is fallback["stderr"]
+    assert Path(primary["stdout"].name) == Path(fallback["stdout"].name)
+    assert primary["close_fds"] is fallback["close_fds"] is True
+    assert primary["env"] is not fallback["env"]
+    assert primary["env"][_BREAKAWAY_MARKER] == "1"
+    assert fallback["env"][_BREAKAWAY_MARKER] == "0"
+    assert {
+        key: value for key, value in primary["env"].items() if key != _BREAKAWAY_MARKER
+    } == {
+        key: value for key, value in fallback["env"].items() if key != _BREAKAWAY_MARKER
+    }
+
+    warnings = [
+        record for record in caplog.records if record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "5" in warnings[0].getMessage()
+    assert "do-not-log" not in warnings[0].getMessage()
+    assert str(tmp_path) not in warnings[0].getMessage()
 
 
 class TestStableWindowsGatewayWorkingDir:
@@ -123,10 +230,17 @@ def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
 
 
 
+@pytest.mark.windows_only
 def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
     """UAC handoff launches console python with SW_HIDE — a single hidden
     console, not console-less pythonw (#54220/#56747), and no visible
-    elevated cmd.exe window left open."""
+    elevated cmd.exe window left open.
+
+    Windows-only: the code path runs behind ``_assert_windows()`` and goes
+    through ``ctypes.windll.shell32``, neither of which exists on a faked
+    host. ShellExecuteW itself stays mocked — it would raise a real UAC
+    prompt — but the host identity is genuine.
+    """
     calls = []
 
     class FakeShell32:
@@ -137,7 +251,6 @@ def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
     class FakeWindll:
         shell32 = FakeShell32()
 
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "_current_profile_cli_args", lambda: ["--profile", "alice"])
     monkeypatch.setattr(gateway_windows.sys, "executable", r"C:\Hermes\venv\Scripts\python.exe")
     monkeypatch.setattr(gateway_windows.ctypes, "windll", FakeWindll(), raising=False)
@@ -154,12 +267,16 @@ def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
 
 
 def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_path):
-    """Install must delete+create so stale minute-repeat task settings are not preserved."""
+    """Install must delete+create so stale minute-repeat task settings are not preserved.
+
+    Host-agnostic on purpose: ``_install_scheduled_task`` only renders the task
+    XML and shells out through ``_exec_schtasks`` (mocked here as the genuine
+    external dependency), so no platform fake is needed.
+    """
     calls = []
     script_path = tmp_path / "Hermes_Gateway_alice.cmd"
     xml_seen = {}
 
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"DOMAIN\\alice")
 
     def fake_schtasks(args):
@@ -245,8 +362,6 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 # the gateway's marker-watcher thread to drain + exit cleanly, then escalates
 # to taskkill if drain times out.
 # ---------------------------------------------------------------------------
-
-
 
 
 

@@ -98,6 +98,94 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_sparse_delta_allows_missing_optional_fields(self, mock_close, mock_create):
+        """Managed stream deltas may omit both content and tool_calls."""
+        from run_agent import AIAgent
+
+        sparse_delta = SimpleNamespace(reasoning_content=None, reasoning=None)
+        chunks = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        index=0,
+                        delta=sparse_delta,
+                        finish_reason=None,
+                    )
+                ],
+                model="test-model",
+                usage=None,
+            ),
+            _make_stream_chunk(
+                content="done", finish_reason="stop", model="test-model"
+            ),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "done"
+        assert response.choices[0].message.tool_calls is None
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_sparse_tool_delta_allows_missing_nested_fields(
+        self, mock_close, mock_create
+    ):
+        """A partial tool delta may contain arguments before its other fields."""
+        from run_agent import AIAgent
+
+        sparse_tool_delta = SimpleNamespace(
+            index=0,
+            function=SimpleNamespace(arguments='{"city":"Paris"}'),
+        )
+        chunks = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        index=0,
+                        delta=SimpleNamespace(tool_calls=[sparse_tool_delta]),
+                    )
+                ],
+                model="test-model",
+                usage=None,
+            ),
+            _make_stream_chunk(finish_reason="tool_calls", model="test-model"),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tool_call = response.choices[0].message.tool_calls[0]
+        assert tool_call.function.name == ""
+        assert tool_call.function.arguments == '{"city":"Paris"}'
+        assert response.choices[0].finish_reason == "tool_calls"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_chat_stream_closes_original_provider_resource(
         self,
         mock_close,
@@ -265,6 +353,49 @@ class TestStreamingCallbacks:
 
 
 
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_list_content_after_tool_call_is_normalized(self, mock_close, mock_create):
+        """OpenAI-compatible content blocks must never reach stream callbacks raw.
+
+        Mistral/NVIDIA can emit a text delta as a list of content-block dicts.
+        The list must be flattened before the first direct stream callback and
+        again after a tool-call has switched the stream to the suppression
+        callback path.
+        """
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content=[{"type": "text", "text": "before tool; "}]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_63734", name="read_file")
+            ]),
+            _make_stream_chunk(content=[{"type": "text", "text": "after tool"}]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        deltas = []
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=deltas.append,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert deltas == ["before tool; ", "after tool"]
+        assert response.choices[0].message.content == "before tool; after tool"
 
 
 # ── Test: Streaming Fallback ────────────────────────────────────────────
@@ -1402,7 +1533,7 @@ class TestBedrockIamStreamingFallback:
         return agent
 
     def test_iam_denial_falls_back_inline_and_disables_streaming(self):
-        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from botocore.exceptions import ClientError
 
         agent = self._make_bedrock_agent()
@@ -1526,7 +1657,7 @@ class TestBedrockStreamLivenessWatchdog:
         """A Bedrock stream that opens then stops yielding events trips the
         watchdog: it bumps the cross-turn stale streak and raises TimeoutError
         instead of hanging forever."""
-        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         import threading as _t
 
         # Tiny stale timeout so the watchdog trips quickly; give-up threshold
@@ -1559,7 +1690,7 @@ class TestBedrockStreamLivenessWatchdog:
     def test_pre_elevated_streak_aborts_before_streaming(self, monkeypatch):
         """A streak already past the give-up threshold aborts at entry with
         RuntimeError — Bedrock never even opens a stream (cross-turn breaker)."""
-        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
 
         monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "5")
 
@@ -1581,7 +1712,7 @@ class TestBedrockStreamLivenessWatchdog:
     def test_successful_stream_resets_streak(self, monkeypatch):
         """A Bedrock stream that completes normally clears any prior stale
         streak so a recovered provider doesn't carry it into later turns."""
-        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
 
         monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "60")
 
@@ -1634,4 +1765,3 @@ class TestBedrockReasoningStaleFloor:
         from agent.chat_completion_helpers import _bedrock_reasoning_stale_floor
 
         assert _bedrock_reasoning_stale_floor(model_id) == expected
-

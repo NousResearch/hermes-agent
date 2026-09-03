@@ -27,6 +27,8 @@ export interface RuntimeReadinessResult {
   source: 'fallback' | 'runtime_check' | 'setup_status'
 }
 
+export type RuntimeReadinessDisplay = 'checking' | 'needs_setup' | 'ready' | 'unavailable'
+
 export type RuntimeReadinessRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
 const DEFAULT_NOT_READY_REASON = 'Add a provider credential before sending your first message.'
@@ -140,6 +142,21 @@ export function interpretRuntimeReadiness(
     reason: unknownReady ? null : (runtimeFailure ?? setupFailure ?? defaultReason),
     source: 'fallback'
   }
+}
+
+export function runtimeReadinessDisplay(status: RuntimeReadinessResult | null): RuntimeReadinessDisplay {
+  if (status === null) {
+    return 'checking'
+  }
+
+  if (status.ready) {
+    return 'ready'
+  }
+
+  // Credentials exist but runtime resolution failed. Calling that "needs
+  // setup" sends users back through onboarding for provider/quota failures
+  // that setup cannot repair; the reason tooltip carries the specific cause.
+  return status.checksDisagree ? 'unavailable' : 'needs_setup'
 }
 
 export async function evaluateRuntimeReadiness(

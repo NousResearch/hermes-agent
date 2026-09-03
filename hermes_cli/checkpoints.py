@@ -27,17 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-
-def _fmt_bytes(n: int) -> str:
-    units = ("B", "KB", "MB", "GB", "TB")
-    size = float(n or 0)
-    for unit in units:
-        if size < 1024 or unit == units[-1]:
-            if unit == "B":
-                return f"{int(size)} {unit}"
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
+from hermes_cli.sizefmt import format_bytes as _fmt_bytes
 
 
 def _fmt_ts(ts: Any) -> str:

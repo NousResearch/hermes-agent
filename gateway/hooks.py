@@ -30,6 +30,8 @@ Context dict passed to ``agent:start`` / ``agent:end`` handlers:
 
 ``agent:end`` adds:
   response     -- agent response text (truncated to 500 chars)
+  model        -- model name that handled the turn
+  provider     -- provider that handled the turn
 
 Handlers posting a follow-up into the same Telegram forum-topic should
 include ``message_thread_id=int(thread_id)`` when ``chat_type == "forum"``

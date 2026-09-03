@@ -11,6 +11,7 @@ import { type PointerEvent as ReactPointerEvent, useCallback, useMemo, useRef, u
 
 import { beginSashDrag, endSashDrag } from '@/components/pane-shell/geometry'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
@@ -37,6 +38,7 @@ import {
   edgeFixedZone,
   fixedTrackSize,
   MIN_PANE_PX,
+  MINIMIZED_TRACK,
   paneChrome,
   type PaneSizing,
   resolveCssPx,
@@ -137,10 +139,10 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   const isCollapsed = (child: LayoutNode) => subtreeGone(child, trackCtx) || (isEmptyZone(child) && !editMode)
 
   // Min/max clamps come from a direct GROUP child's panes (the same clamps
-  // the app's Pane props express) — but ONLY when they can speak for the
-  // zone: a fixed track (pure sidebar stack) or a single-pane zone. A sidebar
-  // pane fronted in a mixed flex stack must not cap it. A fixed STACK
-  // aggregates its panes' clamps (largest-tenant semantics, mirroring the
+  // the app's Pane props express). Floors apply to every zone; caps only when
+  // they can speak for the whole zone: a fixed track (pure sidebar stack) or a
+  // single-pane zone — a sidebar pane fronted in a mixed flex stack must not
+  // cap it. Stacks aggregate clamps (largest-tenant semantics, mirroring the
   // max() track basis) — the active tab's caps must never resize the zone.
   const sizingFor = (child: LayoutNode, track: string | null): PaneSizing | null => {
     if (child.type !== 'group' || child.panes.length === 0) {
@@ -149,20 +151,22 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
     const shownIds = shownPaneIds(child, trackCtx)
 
-    if (track === null && shownIds.length !== 1) {
-      return null
-    }
-
     if (shownIds.length <= 1) {
       return (paneFor(shownIds[0])?.data as PaneSizing | undefined) ?? null
     }
 
-    // Fixed STACK: floors take the largest declared min; caps stay unbounded
-    // unless EVERY pane declares one (a single uncapped tenant uncaps the
-    // zone). Same largest-tenant basis as the track size — never per-tab.
+    // STACKS aggregate floors with largest-tenant semantics (the zone's track
+    // is the max() of its panes' sizes, so its floor is the max() of their
+    // mins) — flex stacks included: the chat zone with session tabs stacked in
+    // must keep the workspace's min width, or a browser sash can crush the
+    // conversation down to the generic 80px floor. Caps only speak for a FIXED
+    // zone; a sidebar pane fronted in a mixed flex stack must not cap it. In a
+    // fixed stack caps stay unbounded unless EVERY pane declares one (a single
+    // uncapped tenant uncaps the zone).
     const all = shownIds.map(id => (paneFor(id)?.data ?? {}) as PaneSizing)
 
-    const cap = (pick: (s: PaneSizing) => string | undefined) => (all.every(pick) ? cssMax(all.map(pick)) : undefined)
+    const cap = (pick: (s: PaneSizing) => string | undefined) =>
+      track !== null && all.every(pick) ? cssMax(all.map(pick)) : undefined
 
     return {
       minWidth: cssMax(all.map(s => s.minWidth)),
@@ -258,6 +262,10 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       document.body.style.cursor = horizontal ? 'col-resize' : 'row-resize'
       document.body.style.userSelect = 'none'
+      // Webview/iframe guests must not swallow the gesture — without this the
+      // drag froze the moment the pointer entered the in-app browser, so the
+      // seam could only shrink it a few px per press.
+      const releaseGuests = guardGuestPointers()
       // Suppress :root geometry-var writes for the gesture (see geometry.ts —
       // each one restyles the whole document; they republish on release).
       beginSashDrag()
@@ -323,13 +331,22 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       const resize = rafCoalesce(previewShift)
       let lastShift: null | number = null
+      let done = false
 
       const onMove = (ev: PointerEvent) => {
         lastShift = Math.max(lo, Math.min(hi, (horizontal ? ev.clientX : ev.clientY) - start))
         resize.push(lastShift)
       }
 
+      // Ends through several racing paths (pointerup, pointercancel, window
+      // blur, lostpointercapture — releasePointerCapture below fires the
+      // latter re-entrantly), so it must run exactly once.
       const cleanup = () => {
+        if (done) {
+          return
+        }
+
+        done = true
         resize.finish()
 
         if (lastShift !== null) {
@@ -367,6 +384,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         // Geometry vars re-enable AFTER the final store commit above, so the
         // release publishes exactly one fresh measurement.
         endSashDrag()
+        releaseGuests()
         document.body.style.cursor = restoreCursor
         document.body.style.userSelect = restoreSelect
 
@@ -379,12 +397,16 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         window.removeEventListener('pointermove', onMove, true)
         window.removeEventListener('pointerup', cleanup, true)
         window.removeEventListener('pointercancel', cleanup, true)
+        window.removeEventListener('blur', cleanup)
+        handle.removeEventListener('lostpointercapture', cleanup)
         persistTree()
       }
 
       window.addEventListener('pointermove', onMove, true)
       window.addEventListener('pointerup', cleanup, true)
       window.addEventListener('pointercancel', cleanup, true)
+      window.addEventListener('blur', cleanup)
+      handle.addEventListener('lostpointercapture', cleanup)
     },
     // trackCtx is derived state rebuilt per render; the drag captures it once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -568,7 +590,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
               collapsed
                 ? { display: 'none' }
                 : minimized
-                  ? { flex: '0 0 auto' }
+                  ? { flex: `0 0 ${MINIMIZED_TRACK}` }
                   : {
                       // One flexbox formula for everything: a sized zone is
                       // grow-0 shrink-1 from its preferred basis (it yields
@@ -626,7 +648,12 @@ function Sash({
     <div
       className={cn(
         'group absolute z-20 [-webkit-app-region:no-drag]',
-        horizontal ? 'inset-y-0 left-0 w-[9px] -translate-x-1/2' : 'inset-x-0 top-0 h-[9px] -translate-y-1/2',
+        // Asymmetric grab band: only 1px reaches into the leading pane so its
+        // edge-hugging 4px scrollbar stays clickable (the old centered 9px band
+        // swallowed it entirely — the pointer got col-resize instead of the
+        // thumb). The trailing side keeps a generous 7px reach; total grab
+        // width stays ~8px so the sash is no harder to hit.
+        horizontal ? 'inset-y-0 left-0 w-[8px] -translate-x-[1px]' : 'inset-x-0 top-0 h-[8px] -translate-y-[1px]',
         disabled ? 'pointer-events-none' : horizontal ? 'cursor-col-resize' : 'cursor-row-resize'
       )}
       onDoubleClick={disabled ? undefined : onDoubleClick}
@@ -640,7 +667,7 @@ function Sash({
       <span
         className={cn(
           'absolute bg-(--ui-stroke-secondary) opacity-10 transition-opacity duration-100 group-hover:opacity-100',
-          horizontal ? 'inset-y-0 left-1/2 w-px -translate-x-1/2' : 'inset-x-0 top-1/2 h-px -translate-y-1/2'
+          horizontal ? 'inset-y-0 left-[1px] w-px -translate-x-1/2' : 'inset-x-0 top-[1px] h-px -translate-y-1/2'
         )}
       />
       {!disabled && (
@@ -648,8 +675,8 @@ function Sash({
           className={cn(
             'absolute bg-(--ui-sash-hover-border) opacity-0 transition-opacity duration-100 group-hover:opacity-100',
             horizontal
-              ? 'inset-y-0 left-1/2 w-(--vscode-sash-hover-size,0.25rem) -translate-x-1/2'
-              : 'inset-x-0 top-1/2 h-(--vscode-sash-hover-size,0.25rem) -translate-y-1/2'
+              ? 'inset-y-0 left-[1px] w-(--vscode-sash-hover-size,0.25rem) -translate-x-1/2'
+              : 'inset-x-0 top-[1px] h-(--vscode-sash-hover-size,0.25rem) -translate-y-1/2'
           )}
         />
       )}

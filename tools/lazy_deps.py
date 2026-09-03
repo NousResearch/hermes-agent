@@ -203,7 +203,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "memory.mem0": ("mem0ai==2.0.10",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
-    "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),
+    "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
     # brotlicffi gives aiohttp a working 2-arg Decompressor.process() for
     # Discord CDN's Brotli-encoded attachments. Without it, aiohttp falls
     # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
@@ -216,22 +216,22 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         # backbone. Pin the patched floor here too so the lazy Discord path
         # can't keep an already-installed vulnerable aiohttp satisfying that
         # range — mirrors the messaging extra and platform.slack.
-        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+        "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
     ),
     "platform.slack": (
-        "slack-bolt==1.29.0",
+        "slack-bolt==1.30.0",
         "slack-sdk==3.43.0",
-        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+        "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
     ),
     "platform.matrix": (
-        "mautrix[encryption]==0.21.0",
+        "mautrix[encryption]==0.21.1",
         "aiosqlite==0.22.1",
         "asyncpg==0.31.0",
         "aiohttp-socks==0.11.0",
         # mautrix (aiohttp>=3,<4) and aiohttp-socks (aiohttp>=3.10.0) only cap
         # aiohttp transitively, so a vulnerable already-installed aiohttp still
         # satisfies both — pin the patched floor here too, like platform.discord.
-        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+        "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
     ),
     "platform.dingtalk": (
         "dingtalk-stream==0.24.3",
@@ -250,7 +250,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
     # installed on demand like every other messaging platform; also exposed
     # as the `teams` extra in pyproject for packagers / explicit installs.
-    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"),  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
+    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
@@ -287,13 +287,23 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
     "tool.vision": ("Pillow==12.3.0",),
+    # Document-to-Markdown extraction for read_file (firecrawl-anydoc, Rust
+    # core, imports as `anydoc`). Widens read_file's auto-extraction beyond
+    # the stdlib .ipynb/.docx/.xlsx to PDF, legacy Office (.doc/.ppt/.xls),
+    # OpenDocument, RTF, and EPUB. Installed on first read of such a file;
+    # the call site uses prompt=False so read_file never blocks on a prompt.
+    # NOTE: bundled in core pyproject dependencies since the hosted-OCR
+    # wiring (keep this lazy pin in lockstep with pyproject) — this entry
+    # survives as the self-heal path for lean/partial installs.
+    "tool.doc_extract": ("firecrawl-anydoc==0.2.4",),  # lockstep with pyproject
     # Computer Use (cua-driver) — the MCP client SDK used to spawn and talk
     # to the cua-driver process over stdio. Matches the `mcp` / `computer-use`
     # extras in pyproject.toml. The one-liner installer pulls this in via
     # `[all]`; lazy-installing here covers lean / partial / broken-extra
     # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
-        "mcp==1.28.1",
+        "mcp==2.0.0",
+        "httpx2==2.7.0",  # mcp 2.x HTTP stack — keep in sync with pyproject [computer-use]
         "starlette==1.3.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
@@ -689,6 +699,84 @@ def _core_constraints_file() -> Optional[Path]:
         return None
 
 
+def _installed_dist_roots(spec: str, target: Optional[Path]) -> set[Path]:
+    """Return the package directories a freshly installed *spec* owns.
+
+    Resolved from the distribution's own file list rather than guessing the
+    import name from the spec — ``python-telegram-bot`` ships ``telegram``,
+    ``firecrawl-anydoc`` ships ``anydoc``, and several specs ship more than
+    one top-level package.
+    """
+    name = _pkg_name_from_spec(spec)
+    try:
+        import importlib.metadata as _md
+
+        if target is not None:
+            dists = list(_md.distributions(name=name, path=[str(target)]))
+            dist = dists[0] if dists else None
+        else:
+            dist = _md.distribution(name)
+    except Exception:
+        return set()
+    if dist is None:
+        return set()
+
+    roots: set[Path] = set()
+    try:
+        for entry in dist.files or ():
+            parts = entry.parts
+            if not parts or parts[0].startswith(".") or parts[0] == "__pycache__":
+                continue
+            # Metadata dirs (``foo-1.0.dist-info``, legacy ``.egg-info``) own
+            # no importable code; compiling them is wasted work.
+            if parts[0].endswith((".dist-info", ".egg-info")):
+                continue
+            root = Path(dist.locate_file(parts[0]))
+            if root.is_dir():
+                roots.add(root)
+    except Exception:
+        return set()
+    return roots
+
+
+def _warm_installed_bytecode(specs: tuple[str, ...], target: Optional[Path]) -> None:
+    """Byte-compile what we just installed, so no user request has to.
+
+    A pip/uv install writes ``.py`` sources and no ``__pycache__`` — and an
+    install of the *same* version still deletes the cache the old copy had.
+    Whoever imports the package next pays the whole compile: for
+    ``anthropic==0.87.0`` (541 modules) on cpython-3.12.13 that measured
+    2.2-2.7s cold against 0.7-1.0s warm, and 10.5s cold under concurrent
+    load.  That bill lands wherever the first import happens, and
+    for a lazily-installed backend that is the foreground of a user request
+    (#100461) — with nothing printed while it runs, so it reads as a hang.
+    Worse, N per-profile daemons cold-starting together each pay it in full
+    before any of them has written the cache.
+
+    Paying it here instead is strictly better: the caller is already waiting
+    on an installer and can see why.  Best-effort — a compile failure never
+    invalidates an install that succeeded.
+    """
+    if sys.dont_write_bytecode:
+        return
+    try:
+        import compileall
+    except Exception:  # pragma: no cover — stdlib, but never break an install
+        return
+
+    for spec in specs:
+        try:
+            roots = _installed_dist_roots(spec, target)
+        except Exception as exc:
+            logger.debug("Bytecode warm skipped for %s: %s", spec, exc)
+            continue
+        for root in roots:
+            try:
+                compileall.compile_dir(str(root), quiet=2, force=False, workers=1)
+            except Exception as exc:
+                logger.debug("Bytecode warm skipped for %s: %s", root, exc)
+
+
 def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
     """Install ``specs`` using the uv → pip → ensurepip ladder.
 
@@ -746,8 +834,15 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             uv_bin = shutil.which("uv")
         if uv_bin:
             try:
+                # --compile-bytecode: uv does NOT write __pycache__ by default
+                # (pip does), so without it the first `import <backend>` in
+                # the foreground of a user request recompiles every module of
+                # the backend *and* its transitive deps (#100461). This covers
+                # the whole install; _warm_installed_bytecode below is the
+                # belt-and-braces pass for the spec's own roots on any tier.
                 r = subprocess.run(
-                    [uv_bin, "pip", "install", *target_args, *constraint_args, *specs],
+                    [uv_bin, "pip", "install", "--compile-bytecode",
+                     *target_args, *constraint_args, *specs],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout, env=uv_env,
                     stdin=subprocess.DEVNULL,
                     creationflags=windows_hide_flags(),
@@ -755,9 +850,20 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 if r.returncode == 0:
                     if target is not None:
                         _activate_target_on_syspath(target)
+                    _warm_installed_bytecode(specs, target)
                     return _InstallResult(True, r.stdout or "", r.stderr or "")
                 logger.debug("uv pip install failed: %s", r.stderr)
-            except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+                # A resolver failure is authoritative. Falling through to pip
+                # here would silently discard uv policy such as exclude-newer
+                # and could install a release that the project quarantined.
+                return _InstallResult(False, r.stdout or "", r.stderr or "")
+            except subprocess.TimeoutExpired as e:
+                logger.debug("uv invocation failed: %s", e)
+                return _InstallResult(False, "", f"uv pip install timed out: {e}")
+            except FileNotFoundError as e:
+                # The resolved uv path disappeared between lookup and spawn.
+                # In that narrow availability failure, the pip tier remains a
+                # valid fallback because uv never evaluated the requirements.
                 logger.debug("uv invocation failed: %s", e)
 
         # Tier 2: python -m pip (with ensurepip bootstrap if needed)
@@ -790,8 +896,10 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 stdin=subprocess.DEVNULL,
                 creationflags=windows_hide_flags(),
             )
-            if r.returncode == 0 and target is not None:
-                _activate_target_on_syspath(target)
+            if r.returncode == 0:
+                if target is not None:
+                    _activate_target_on_syspath(target)
+                _warm_installed_bytecode(specs, target)
             return _InstallResult(r.returncode == 0, r.stdout or "", r.stderr or "")
         except subprocess.TimeoutExpired as e:
             return _InstallResult(False, "", f"pip install timed out: {e}")
@@ -962,12 +1070,23 @@ def is_available(feature: str) -> bool:
     return not feature_missing(feature)
 
 
-def feature_install_command(feature: str) -> Optional[str]:
-    """Return the ``pip install`` command a user could run manually, or None."""
+def feature_install_command(feature: str, *, venv_pip: bool = False) -> Optional[str]:
+    """Return the ``pip install`` command a user could run manually, or None.
+
+    ``venv_pip=True`` targets the running interpreter's pip
+    (``{sys.executable} -m pip install …``) — correct in every layout
+    (default install, ``HERMES_HOME`` overrides, profile installs) and
+    immune to Ubuntu 24.04's PEP 668 ``externally-managed-environment``
+    failure that a bare/system ``pip install`` hint invites.  The default
+    ``uv pip install`` form is kept for contexts that document uv usage.
+    """
     if feature not in LAZY_DEPS:
         return None
     specs = LAZY_DEPS[feature]
-    return "uv pip install " + " ".join(repr(s) for s in specs)
+    joined = " ".join(repr(s) for s in specs)
+    if venv_pip:
+        return f"{sys.executable} -m pip install {joined}"
+    return "uv pip install " + joined
 
 
 @dataclass
@@ -1103,8 +1222,27 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
     Intended for ``hermes update``. Never raises; lazy-install failures
     here must not block the rest of the update flow.
     """
+    return _refresh_features(active_features(), prompt=prompt, restoring=False)
+
+
+def restore_features(features: list[str]) -> dict[str, str]:
+    """Restore features captured before an explicit managed-runtime rebuild.
+
+    Feature names are checked against :data:`LAZY_DEPS`, and installs remain
+    subject to ``security.allow_lazy_installs``. An explicit opt-out therefore
+    leaves the captured feature absent and reports it as skipped.
+    """
+    return _refresh_features(features, prompt=False, restoring=True)
+
+
+def _refresh_features(
+    features: list[str], *, prompt: bool, restoring: bool
+) -> dict[str, str]:
+    """Refresh or restore a known set of allowlisted lazy features."""
     results: dict[str, str] = {}
-    for feature in active_features():
+    for feature in features:
+        if feature not in LAZY_DEPS:
+            continue
         missing = feature_missing(feature)
         if not missing:
             results[feature] = "current"
@@ -1116,8 +1254,12 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
             continue
 
         try:
-            ensure(feature, prompt=prompt)
-            results[feature] = "refreshed"
+            if restoring:
+                ensure(feature, prompt=False)
+                results[feature] = "restored"
+            else:
+                ensure(feature, prompt=prompt)
+                results[feature] = "refreshed"
         except FeatureUnavailable as e:
             # Distinguish "user opted out" or platform-incompatible features
             # from install failures so the update command can render the
@@ -1176,12 +1318,19 @@ def ensure_and_bind(
     """
     try:
         ensure(feature, prompt=prompt)
-    except (FeatureUnavailable, Exception):
+    except FeatureUnavailable as exc:
+        logger.warning("%s", exc)
+        return False
+    except Exception as exc:
+        logger.warning("Failed to ensure feature %r: %s", feature, exc)
         return False
 
     try:
         bindings = importer()
-    except ImportError:
+    except ImportError as exc:
+        logger.warning(
+            "Failed to import feature %r after install: %s", feature, exc
+        )
         return False
 
     target_globals.update(bindings)

@@ -275,6 +275,12 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def test_ntfy_topic_target_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("ntfy", "alerts-channel")
+
+        assert chat_id == "alerts-channel"
+        assert thread_id is None
+        assert is_explicit is True
 
     def test_ntfy_topic_target_bypasses_channel_directory(self):
         ntfy_platform = Platform("ntfy")
@@ -483,6 +489,41 @@ class TestSendToPlatformChunking:
         assert send.await_count >= 3
         for call in send.await_args_list:
             assert len(call.args[2]) <= 2020  # each chunk fits the limit
+
+    def test_signal_long_message_is_chunked(self, monkeypatch):
+        """Standalone Signal sends split at the adapter's 8000-char limit.
+
+        The standalone path (hermes send / cron / MCP) speaks raw JSON-RPC via
+        _send_signal and bypasses SignalAdapter.send(), so the shared
+        truncate_message() pass in _send_to_platform must know Signal's limit
+        (regression for #67279 / #57929 — long sends were rejected whole).
+        """
+        from gateway.platforms.signal import MAX_MESSAGE_LENGTH as SIGNAL_MAX
+        import tools.send_message_tool as smt
+
+        sent = []
+
+        async def fake_send_signal(extra, chat_id, chunk, media_files=None):
+            sent.append(chunk)
+            return {"success": True, "platform": "signal", "chat_id": chat_id}
+
+        monkeypatch.setattr(smt, "_send_signal", fake_send_signal)
+
+        long_msg = "word " * ((SIGNAL_MAX // 5) + 500)  # comfortably over limit
+        result = asyncio.run(
+            _send_to_platform(
+                Platform.SIGNAL,
+                SimpleNamespace(enabled=True, token=None,
+                                extra={"http_url": "http://localhost:8080",
+                                       "account": "+15551234567"}),
+                "+15557654321", long_msg,
+            )
+        )
+        assert result["success"] is True
+        assert len(sent) >= 2, "long Signal message must be split, not sent whole"
+        assert all(len(chunk) <= SIGNAL_MAX for chunk in sent)
+        # No truncation footer — content is delivered in full across chunks
+        assert all("truncated, full output saved to" not in c for c in sent)
 
 
     def test_slack_pre_escaped_entities_not_double_escaped(self, monkeypatch):

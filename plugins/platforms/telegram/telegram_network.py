@@ -56,6 +56,10 @@ def tcp_keepalive_socket_options() -> list[tuple[int, int, int]]:
 # from the (potentially unreachable) IP returned by the local system resolver.
 _DOH_TIMEOUT = 4.0  # seconds — bounded so connect() isn't noticeably delayed
 
+# Bound for the system-resolver leg of the hostname fallback so a wedged OS
+# resolver (broken VPN/DNS) cannot stall the connect walk (#96261).
+_HOSTNAME_DNS_TIMEOUT = 4.0
+
 _DOH_PROVIDERS: list[dict] = [
     {
         "url": "https://dns.google/resolve",
@@ -89,8 +93,10 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     Requests still target https://api.telegram.org/... logically (Host + SNI
     stay on the hostname). TCP connects to a known A-record IP first so a
     blackholed IPv6 AAAA cannot pin initialize(). Equivalent to
-    ``curl --resolve api.telegram.org:443:<ip>``. The dual-stack hostname
-    is last resort for IPv6-only networks.
+    ``curl --resolve api.telegram.org:443:<ip>``. When every configured IPv4
+    literal fails, the system resolver's A records for the hostname are
+    walked next (still pure IPv4, #96261); the dual-stack hostname itself is
+    the last resort for IPv6-only networks.
     """
 
     # Bound every pool. httpx defaults to 100 connections per pool, so a wedged
@@ -162,7 +168,10 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         Eyeballs waits on AAAA until the OS TCP timeout, which can pin the
         event loop so ``_await_with_thread_deadline`` never fires (#87015).
         Known A-record IPs connect over IPv4 immediately. The hostname is
-        kept as a last resort for IPv6-only networks.
+        kept as a last resort for IPv6-only networks; :meth:`_attempt_order_async`
+        inserts the system resolver's A records before it so the dual-stack
+        path is only reached when IPv4 resolution itself yields nothing
+        (#96261).
         """
         order: list[Optional[str]] = []
         if self._sticky_ip is not _UNSET:
@@ -175,11 +184,69 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             order.append(None)
         return order
 
+    async def _resolve_hostname_ipv4(self) -> list[str]:
+        """A records for api.telegram.org from the system resolver (bounded).
+
+        The dual-stack hostname path is the one place a blackholed IPv6 AAAA
+        can pin initialize() (#87015). Resolving the hostname's A records up
+        front lets the connect walk use real IPv4 addresses instead of
+        dropping into the IPv6-capable hostname path. Bounded so a wedged OS
+        resolver cannot add unbounded latency (same pattern as the DoH legs
+        and the discovery-time system-DNS leg — #63309).
+        """
+        try:
+            results = await asyncio.wait_for(
+                asyncio.to_thread(
+                    socket.getaddrinfo, _TELEGRAM_API_HOST, 443, socket.AF_INET
+                ),
+                timeout=_HOSTNAME_DNS_TIMEOUT,
+            )
+        except Exception:
+            logger.debug(
+                "IPv4 resolution for %s did not complete in time", _TELEGRAM_API_HOST
+            )
+            return []
+        seen: set[str] = set()
+        ips: list[str] = []
+        for addr in results:
+            ip = addr[4][0]
+            if ip not in seen:
+                seen.add(ip)
+                ips.append(ip)
+        # Filter through the same validation as configured fallback IPs so a
+        # split-horizon / hijacked resolver pointing api.telegram.org at a
+        # private or loopback address cannot be used as a connect target.
+        return _normalize_fallback_ips(ips)
+
+    async def _attempt_order_async(self) -> list[Optional[str]]:
+        """IPv4-first attempt order, hostname A records resolved up front.
+
+        Extends :meth:`_attempt_order`: the system resolver's A records for
+        api.telegram.org are inserted between the configured fallback IPs and
+        the dual-stack hostname. When every configured IPv4 literal fails
+        (e.g. DoH-discovered IPs the local ISP does not route), the walk
+        still connects over IPv4 via the resolver's own A records instead of
+        falling into the IPv6-capable hostname path, which can pin
+        initialize() when the IPv6 route is blackholed (#96261). The
+        dual-stack hostname remains as the final attempt so IPv6-only
+        networks keep working.
+        """
+        order = self._attempt_order()
+        if None not in order:
+            return order
+        order_without_hostname = [ip for ip in order if ip is not None]
+        resolved = [
+            ip
+            for ip in await self._resolve_hostname_ipv4()
+            if ip not in order_without_hostname
+        ]
+        return order_without_hostname + resolved + [None]
+
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
             return await self._primary.handle_async_request(request)
 
-        attempt_order = self._attempt_order()
+        attempt_order = await self._attempt_order_async()
 
         last_error: Exception | None = None
         for ip in attempt_order:

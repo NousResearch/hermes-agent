@@ -16,6 +16,8 @@ initialize — #87015), then fall through to the dual-stack hostname last,
 and "stick" to whichever path works.
 """
 
+import asyncio
+
 import httpx
 import pytest
 import socket
@@ -238,15 +240,136 @@ class TestFallbackTransport:
 
     @pytest.mark.asyncio
     async def test_hostname_tried_last_when_ipv4_fails(self, monkeypatch):
-        """IPv6-only / seed-IP-blocked hosts still reach the hostname last."""
+        """IPv6-only / no-A-record hosts still reach the hostname last."""
         calls = []
         behavior = {"149.154.167.220": "timeout", "api.telegram.org": "ok"}
         monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+
+        async def _no_a_records(self):
+            return []
+
+        monkeypatch.setattr(
+            tnet.TelegramFallbackTransport, "_resolve_hostname_ipv4", _no_a_records
+        )
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
         resp = await transport.handle_async_request(_telegram_request())
         assert resp.status_code == 200
         assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org"]
         assert transport._sticky_ip is None
+
+
+class TestHostnameFallbackIPv4First:
+    """#96261: the dual-stack hostname must never run while IPv4 A records exist.
+
+    A blackholed IPv6 path to api.telegram.org never errors, so an attempt on
+    the dual-stack hostname can pin initialize() even though IPv4 works. When
+    every configured IPv4 literal fails, the transport resolves the hostname's
+    A records and walks them as IPv4 literals; the dual-stack hostname remains
+    only as the final attempt for IPv6-only networks.
+    """
+
+    @pytest.mark.asyncio
+    async def test_resolved_a_records_used_when_configured_ips_fail(self, monkeypatch):
+        calls = []
+        behavior = {
+            "149.154.167.220": "timeout",
+            "149.154.167.221": "ok",
+        }
+
+        class _HangOnHostname(FakeTransport):
+            async def handle_async_request(self, request):
+                if request.url.host == "api.telegram.org":
+                    raise AssertionError(
+                        "dual-stack hostname was attempted even though IPv4 A records exist"
+                    )
+                return await super().handle_async_request(request)
+
+        def factory(**kwargs):
+            return _HangOnHostname(calls, behavior)
+
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+
+        async def _fake_resolve(self):
+            return ["149.154.167.221", "149.154.167.220"]
+
+        monkeypatch.setattr(
+            tnet.TelegramFallbackTransport, "_resolve_hostname_ipv4", _fake_resolve
+        )
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        resp = await transport.handle_async_request(_telegram_request())
+
+        assert resp.status_code == 200
+        # Configured literal fails → system-DNS A record succeeds → the
+        # dual-stack hostname is never touched, so a blackholed IPv6 path
+        # cannot stall initialization (#96261).
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.167.221"]
+        assert transport._sticky_ip == "149.154.167.221"
+
+    @pytest.mark.asyncio
+    async def test_dual_stack_hostname_still_tried_when_no_a_records(self, monkeypatch):
+        """IPv6-only networks keep the dual-stack hostname as the last resort."""
+        calls = []
+        behavior = {"149.154.167.220": "timeout", "api.telegram.org": "ok"}
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+
+        async def _no_a_records(self):
+            return []
+
+        monkeypatch.setattr(
+            tnet.TelegramFallbackTransport, "_resolve_hostname_ipv4", _no_a_records
+        )
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        resp = await transport.handle_async_request(_telegram_request())
+        assert resp.status_code == 200
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org"]
+        assert transport._sticky_ip is None
+
+    @pytest.mark.asyncio
+    async def test_hostname_resolution_bounded_when_resolver_wedges(self, monkeypatch):
+        """#96261: the A-record resolution leg is bounded — a wedged OS resolver
+        cannot hang the connect walk (same pattern as the DoH legs)."""
+        never = asyncio.Event()
+
+        async def _wedged_to_thread(func, *args, **kwargs):
+            await never.wait()  # never completes — simulates a wedged resolver
+            return []  # pragma: no cover
+
+        monkeypatch.setattr(tnet.asyncio, "to_thread", _wedged_to_thread)
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        start = asyncio.get_running_loop().time()
+        ips = await asyncio.wait_for(transport._resolve_hostname_ipv4(), timeout=10.0)
+        elapsed = asyncio.get_running_loop().time() - start
+        assert ips == []
+        assert elapsed < 9.0  # bounded by _HOSTNAME_DNS_TIMEOUT, not the resolver
+
+    @pytest.mark.asyncio
+    async def test_attempt_order_async_inserts_a_records_before_hostname(self, monkeypatch):
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+
+        async def _fake_resolve(self):
+            return ["149.154.167.221", "149.154.167.220"]
+
+        monkeypatch.setattr(
+            tnet.TelegramFallbackTransport, "_resolve_hostname_ipv4", _fake_resolve
+        )
+        order = await transport._attempt_order_async()
+        assert order == ["149.154.167.220", "149.154.167.221", None]
+
+    @pytest.mark.asyncio
+    async def test_attempt_order_async_keeps_hostname_when_no_a_records(self, monkeypatch):
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+
+        async def _no_a_records(self):
+            return []
+
+        monkeypatch.setattr(
+            tnet.TelegramFallbackTransport, "_resolve_hostname_ipv4", _no_a_records
+        )
+        order = await transport._attempt_order_async()
+        assert order == ["149.154.167.220", None]
 
 
 class TestFallbackTransportPassthrough:

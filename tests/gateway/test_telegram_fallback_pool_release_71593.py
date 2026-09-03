@@ -90,6 +90,15 @@ async def test_failed_fallback_pool_is_discarded_and_closed(monkeypatch):
     monkeypatch.setattr(
         tnet.httpx, "AsyncHTTPTransport", _factory(behavior, closed_log)
     )
+    # Pin the hostname fallback to no A records so this test exercises only the
+    # configured IPs (a live system-DNS answer would otherwise be tried as an
+    # extra IPv4 literal and could succeed — #96261 resolution).
+    async def _no_a_records(self):
+        return []
+
+    monkeypatch.setattr(
+        tnet.TelegramFallbackTransport, "_resolve_hostname_ipv4", _no_a_records
+    )
 
     transport = tnet.TelegramFallbackTransport(
         ["149.154.167.220", "149.154.167.221"]

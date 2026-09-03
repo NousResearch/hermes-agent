@@ -26,7 +26,7 @@ import {
   recoverActiveSourceAfterFailedGatewaySwitch
 } from '@/store/gateway-switch'
 import { notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, ensureGatewayProfile, refreshProfiles } from '@/store/profile'
 import {
   $activeSessionId,
   $awaitingResponse,
@@ -404,6 +404,56 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
+  })
+
+  it('restarts a profile-list fetch that refills during a same-profile gateway switch', async () => {
+    const desktop = fakeDesktop()
+
+    const nextConnection = {
+      ...primaryConn,
+      baseUrl: 'https://next-vps.example.com',
+      connectionId: 'next-vps',
+      wsUrl: 'wss://next-vps.example.com/api/ws?token=t'
+    }
+
+    const nextDescriptor = deferred<typeof nextConnection>()
+    const staleProfiles = deferred<{ profiles: Array<{ is_default: boolean; name: string }> }>()
+
+    const api = vi.fn(async (request: { connectionId?: string; path: string }) => {
+      if (request.path === '/api/profiles/active') {
+        return { active: 'default', current: 'default' }
+      }
+
+      if (request.connectionId === nextConnection.connectionId) {
+        return { profiles: [{ is_default: true, name: 'default' }, { is_default: false, name: 'thanos' }] }
+      }
+
+      return staleProfiles.promise
+    })
+
+    ;(desktop as typeof desktop & { api: typeof api }).api = api
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    desktop.getConnection.mockImplementationOnce(() => nextDescriptor.promise)
+
+    act(() => connectionApplied?.())
+    expect($gatewaySwitching.get()).toBe(true)
+
+    // A background refresh can start after beginGatewaySwitch invalidates the
+    // old slot but before the new route publishes. The commit must strand it.
+    const staleRefresh = refreshProfiles()
+    nextDescriptor.resolve(nextConnection)
+    await flushAsync()
+    await flushAsync()
+
+    await vi.waitFor(() => expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'thanos']))
+
+    staleProfiles.resolve({ profiles: [{ is_default: true, name: 'default' }, { is_default: false, name: 'mali' }] })
+    await staleRefresh
+
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'thanos'])
   })
 
   it('a stale failed Settings switch cannot publish failure or disarm the newer switch owner', async () => {

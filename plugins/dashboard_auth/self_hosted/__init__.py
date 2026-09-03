@@ -185,6 +185,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         client_id: str,
         scopes: str = _DEFAULT_SCOPES,
         client_secret: str = "",
+        allowed_emails: str = "",
     ) -> None:
         if not issuer:
             raise ValueError("issuer is required")
@@ -203,6 +204,19 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         # provisioned-but-blank secret can't flip us into a broken confidential
         # mode that sends an empty client_secret. Non-empty ⇒ confidential.
         self._client_secret = (client_secret or "").strip()
+        # Optional email allowlist — comma-separated. When set, only these
+        # emails can complete login. Empty/unset = allow any (backward compat).
+        # Track "configured" separately so malformed input doesn't disable.
+        self._allowed_emails_raw = allowed_emails or ""
+        self._allowed_emails = {
+            e.strip().lower() for e in (allowed_emails or "").split(",") if e.strip()
+        }
+        # If a non-empty value was provided but produced no valid emails, fail.
+        if self._allowed_emails_raw.strip() and not self._allowed_emails:
+            raise ValueError(
+                "allowed_emails is non-empty but contains no valid email "
+                f"addresses: {allowed_emails!r}"
+            )
 
         # Discovery + JWKS are lazily resolved on first use so plugin
         # registration never makes a network call (the IDP may be down at
@@ -682,6 +696,16 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             raise ProviderError("ID token missing 'sub' (user_id) claim")
 
         email = str(claims.get("email", "") or "")
+        # Reject unverified emails if the IDP provides email_verified.
+        # Some IDPs (Google) always verify, but others allow unverified claims.
+        if "email_verified" in claims and not claims.get("email_verified"):
+            raise ProviderError("Email claim is not verified by the identity provider.")
+        # Email allowlist: when configured, reject identities not on the list.
+        if self._allowed_emails and email.lower() not in self._allowed_emails:
+            raise ProviderError(
+                f"Email '{email}' is not in the allowed list. "
+                f"Contact the administrator."
+            )
         # Standard OIDC display claims, in preference order.
         display_name = str(
             claims.get("name")
@@ -824,6 +848,9 @@ def register(ctx) -> None:
     client_secret = _resolve_setting(
         "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", oidc_cfg.get("client_secret")
     )
+    # Optional email allowlist — config.yaml only (non-secret access policy).
+    # Per AGENTS.md convention, non-secret settings belong in config.yaml, not .env.
+    allowed_emails = oidc_cfg.get("allowed_emails") or ""
 
     if not issuer or not client_id:
         LAST_SKIP_REASON = (
@@ -844,6 +871,7 @@ def register(ctx) -> None:
             client_id=client_id,
             scopes=scopes,
             client_secret=client_secret,
+            allowed_emails=allowed_emails,
         )
     except (ValueError, ProviderError) as exc:
         LAST_SKIP_REASON = (

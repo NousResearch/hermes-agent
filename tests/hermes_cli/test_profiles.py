@@ -760,6 +760,261 @@ class TestRenameProfile:
 
 
 # ===================================================================
+# TestMigrateHonchoProfileHostWrite
+# ===================================================================
+
+class TestMigrateHonchoProfileHostWrite:
+    """The rename-time Honcho rewrite must not degrade the file it rewrites.
+
+    ``_migrate_honcho_profile_host`` rewrites files that carry the Honcho
+    ``apiKey`` — under a browser OAuth grant that is the auto-refreshing
+    access token — and one of its candidates is the global
+    ``~/.honcho/config.json`` shared with every other Honcho-enabled app.
+    """
+
+    @staticmethod
+    def _host_block(profile):
+        return {
+            "hosts": {
+                f"hermes_{profile}": {
+                    "apiKey": "test-honcho-access-token",
+                    "aiPeer": profile,
+                    "workspace": "hermes",
+                    "enabled": True,
+                }
+            }
+        }
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    def test_rewrite_keeps_credential_config_owner_only(self, profile_env):
+        """A rename must not widen the mode of a file holding the apiKey."""
+        tmp_path = profile_env
+        path = tmp_path / ".hermes" / "honcho.json"
+        path.write_text(json.dumps(self._host_block("oldname")))
+        os.chmod(path, 0o600)
+
+        # Pin the umask so the pre-fix temp file is deterministically 0o644.
+        old_umask = os.umask(0o022)
+        try:
+            profiles._migrate_honcho_profile_host("oldname", "newname", tmp_path / "absent")
+        finally:
+            os.umask(old_umask)
+
+        assert path.stat().st_mode & 0o777 == 0o600
+        cfg = json.loads(path.read_text())
+        assert "hermes_oldname" not in cfg["hosts"]
+        assert cfg["hosts"]["hermes_newname"]["apiKey"] == "test-honcho-access-token"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+    def test_rewrite_preserves_a_symlinked_config(self, profile_env):
+        """A managed deployment symlinks honcho.json; the link must survive."""
+        tmp_path = profile_env
+        real = tmp_path / "dotfiles" / "honcho.json"
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_text(json.dumps(self._host_block("oldname")))
+        os.chmod(real, 0o600)
+        link = tmp_path / ".hermes" / "honcho.json"
+        link.symlink_to(real)
+
+        profiles._migrate_honcho_profile_host("oldname", "newname", tmp_path / "absent")
+
+        assert link.is_symlink()
+        assert link.resolve() == real.resolve()
+        assert real.stat().st_mode & 0o777 == 0o600
+        cfg = json.loads(real.read_text())
+        assert cfg["hosts"]["hermes_newname"]["apiKey"] == "test-honcho-access-token"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+    def test_symlinked_config_on_another_filesystem_survives_a_failed_replace(
+        self, profile_env, monkeypatch
+    ):
+        """A cross-device rewrite must never truncate the real credential file.
+
+        ``~/.honcho/config.json`` is commonly a symlink into a dotfiles repo,
+        an encrypted volume or a mounted secrets share — i.e. a different
+        filesystem from ``~/.honcho`` itself.  Staging the temp beside the
+        *link* makes the rename cross-device, and the ``EXDEV`` fallback
+        copies onto the resolved target with the destination opened ``"wb"``,
+        emptying the file that holds the ``apiKey`` before a single
+        replacement byte exists.  A copy that then fails (ENOSPC, I/O error)
+        leaves it truncated, and this loop's ``except OSError: continue``
+        swallows the error, so the user is never told.
+        """
+        import errno
+
+        import utils
+
+        tmp_path = profile_env
+        other_fs = tmp_path / "other_fs"
+        other_fs.mkdir()
+        real = other_fs / "config.json"
+        original = json.dumps(self._host_block("oldname"))
+        real.write_text(original)
+        os.chmod(real, 0o600)
+        link_dir = tmp_path / ".honcho"
+        link_dir.mkdir()
+        link = link_dir / "config.json"
+        link.symlink_to(real)
+
+        genuine_replace = os.replace
+        replaces = []
+
+        def replace_across_filesystems(src, dst, *args, **kwargs):
+            src, dst = os.fspath(src), os.fspath(dst)
+            replaces.append((src, dst))
+            if os.path.dirname(src) != os.path.dirname(dst):
+                # Exactly what renaming between two filesystems returns; the
+                # staging directory is what decides whether it can happen.
+                raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
+            return genuine_replace(src, dst)
+
+        def copyfile_runs_out_of_space(src, dst, **kwargs):
+            # shutil.copyfile opens the destination "wb" first; land a few
+            # bytes, then fail the way a filling disk does.
+            with open(src, "rb") as source, open(dst, "wb") as destination:
+                destination.write(source.read(8))
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+        def copyfileobj_runs_out_of_space(src_handle, dst_handle, *args, **kwargs):
+            dst_handle.write(src_handle.read(8))
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+        monkeypatch.setattr("utils.os.replace", replace_across_filesystems)
+        monkeypatch.setattr("utils.shutil.copyfile", copyfile_runs_out_of_space)
+        monkeypatch.setattr("utils.shutil.copyfileobj", copyfileobj_runs_out_of_space)
+
+        profiles._migrate_honcho_profile_host("oldname", "newname", tmp_path / "absent")
+
+        surviving = real.read_text()
+        assert "test-honcho-access-token" in surviving, (
+            "a failed cross-device replace destroyed the Honcho credential file; "
+            f"it now holds {surviving!r}"
+        )
+        cfg = json.loads(surviving)
+        assert "hermes_oldname" not in cfg["hosts"]
+        assert cfg["hosts"]["hermes_newname"]["apiKey"] == "test-honcho-access-token"
+        assert real.stat().st_mode & 0o777 == 0o600
+        assert link.is_symlink()
+        assert link.resolve() == real.resolve()
+        assert not list(other_fs.glob(".*.tmp"))
+        assert not list(link_dir.glob(".*.tmp"))
+        # The staging directory is what makes EXDEV reachable at all, so pin
+        # it: every rename this rewrite issues stays inside one directory.
+        assert replaces, "the rewrite never reached os.replace"
+        assert all(
+            os.path.dirname(src) == os.path.dirname(dst) for src, dst in replaces
+        ), f"the rewrite staged its temp outside the resolved target's directory: {replaces}"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+    def test_unresolvable_candidate_is_skipped_not_written_through(
+        self, profile_env, monkeypatch
+    ):
+        """A candidate whose real path is unknown must never be written at all.
+
+        The rewrite is only safe when the writer is handed the *resolved*
+        target: it stages its temp beside whatever path it is given, so a
+        symlink stages on the link's filesystem and renames onto the real
+        file's.  ``Path.resolve`` can itself fail — ``ELOOP`` on a symlink
+        cycle, ``ENAMETOOLONG``, ``EACCES`` on a parent directory — and
+        falling back to the unresolved candidate hands the writer exactly the
+        symlink the invariant forbids, reinstating the cross-device truncation
+        of the file that holds the Honcho ``apiKey``.  Skipping the candidate
+        is the only outcome that cannot destroy credentials.
+        """
+        import errno
+
+        import utils
+
+        tmp_path = profile_env
+        other_fs = tmp_path / "other_fs"
+        other_fs.mkdir()
+        real = other_fs / "config.json"
+        real.write_text(json.dumps(self._host_block("oldname")))
+        os.chmod(real, 0o600)
+        link_dir = tmp_path / ".honcho"
+        link_dir.mkdir()
+        link = link_dir / "config.json"
+        link.symlink_to(real)
+        original_bytes = real.read_bytes()
+
+        genuine_resolve = Path.resolve
+
+        def resolve_fails_for_the_link(self, *args, **kwargs):
+            if os.fspath(self) == os.fspath(link):
+                raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), os.fspath(self))
+            return genuine_resolve(self, *args, **kwargs)
+
+        genuine_replace = os.replace
+
+        def replace_across_filesystems(src, dst, *args, **kwargs):
+            src, dst = os.fspath(src), os.fspath(dst)
+            if os.path.dirname(src) != os.path.dirname(dst):
+                raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
+            return genuine_replace(src, dst)
+
+        def copyfile_runs_out_of_space(src, dst, **kwargs):
+            # shutil.copyfile opens the destination "wb" first; land a few
+            # bytes, then fail the way a filling disk does.
+            with open(src, "rb") as source, open(dst, "wb") as destination:
+                destination.write(source.read(8))
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+        written = []
+        genuine_write = utils.atomic_json_write
+
+        def record_write(path, data, **kwargs):
+            written.append(Path(path))
+            return genuine_write(path, data, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", resolve_fails_for_the_link)
+        monkeypatch.setattr(utils, "atomic_json_write", record_write)
+        monkeypatch.setattr("utils.os.replace", replace_across_filesystems)
+        monkeypatch.setattr("utils.shutil.copyfile", copyfile_runs_out_of_space)
+
+        profiles._migrate_honcho_profile_host("oldname", "newname", tmp_path / "absent")
+
+        assert real.read_bytes() == original_bytes, (
+            "a candidate that could not be resolved was written through and the "
+            f"Honcho credential file was destroyed; it now holds {real.read_bytes()!r}"
+        )
+        assert link not in written, (
+            "the rewrite was handed the unresolved symlink, which is exactly the "
+            f"input the resolved-target invariant forbids: {written}"
+        )
+        assert link.is_symlink()
+        assert real.stat().st_mode & 0o777 == 0o600
+        assert not list(other_fs.glob(".*.tmp"))
+        assert not list(link_dir.glob(".*.tmp"))
+
+    def test_unwritable_candidate_still_advances_to_the_next(self, profile_env, monkeypatch):
+        """The fail-soft ``continue`` must survive the switch to the helper."""
+        import utils
+
+        tmp_path = profile_env
+        new_dir = tmp_path / ".hermes" / "profiles" / "newname"
+        new_dir.mkdir(parents=True, exist_ok=True)
+        first = new_dir / "honcho.json"
+        first.write_text(json.dumps(self._host_block("oldname")))
+        second = tmp_path / ".hermes" / "honcho.json"
+        second.write_text(json.dumps(self._host_block("oldname")))
+
+        real_write = utils.atomic_json_write
+
+        def _fail_on_first(path, data, **kwargs):
+            if Path(path) == first:
+                raise OSError("read-only file system")
+            return real_write(path, data, **kwargs)
+
+        monkeypatch.setattr(utils, "atomic_json_write", _fail_on_first)
+
+        profiles._migrate_honcho_profile_host("oldname", "newname", new_dir)
+
+        assert "hermes_oldname" in json.loads(first.read_text())["hosts"]
+        assert "hermes_newname" in json.loads(second.read_text())["hosts"]
+        assert not list(second.parent.glob("*.tmp"))
+
+
+# ===================================================================
 # TestExportImport
 # ===================================================================
 

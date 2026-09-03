@@ -679,6 +679,88 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
     assert server._session_info(None, session)["model"] == "host-model"
 
 
+def test_slash_exec_context_served_in_process_for_local_session(monkeypatch, tmp_path):
+    """Local (non-compute-host) sessions must answer /context in-process.
+
+    /context is a pure session-scoped read (db + history + usage snapshot,
+    no live agent), so gating it behind compute-host isolation — the reason
+    it was routed to the slash worker, which has no agent and replied
+    "No active agent -- send a message first." (#93280) — is wrong.
+    """
+
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("slash worker should not run for /context")
+
+    session = _session(
+        agent=None,
+        history=[{"role": "user", "content": "hello"}],
+        _metadata_mirror={"model": "test-model", "provider": "test-provider"},
+    )
+    server._sessions["sid"] = session
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "context", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "error" not in resp
+    output = resp["result"]["output"]
+    assert "No active agent" not in output
+    assert "Conversation: 1 messages" in output
+    assert "test-model" in output
+
+
+def test_slash_exec_context_still_works_for_compute_host_session(monkeypatch, tmp_path):
+    """Moving "context" to the direct set must not regress compute hosts.
+
+    Regression guard for the #93280 fix: compute-host sessions answer
+    /context from the metadata mirror because their agent is remote; the
+    fix must keep that path working.
+    """
+
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("slash worker should not run for /context")
+
+    session = _session(
+        agent=None,
+        agent_ready=True,
+        _compute_host_active=True,
+        history=[{"role": "user", "content": "hello"}],
+        _metadata_mirror={"model": "host-model", "usage": {"context_used": 100}},
+    )
+    server._sessions["sid"] = session
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "context", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "error" not in resp
+    output = resp["result"]["output"]
+    assert "No active agent" not in output
+    assert "Conversation: 1 messages" in output
+    assert "host-model" in output
+
+
 def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
     class _ImmediateThread:
         def __init__(self, target=None, daemon=None, **_kwargs):
@@ -18805,7 +18887,7 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
             {
                 "id": str(n),
                 "method": "slash.exec",
-                "params": {"command": "/context", "session_id": "race-spawn"},
+                "params": {"command": "/version", "session_id": "race-spawn"},
             }
         )
         results.append(resp)

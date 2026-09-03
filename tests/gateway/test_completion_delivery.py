@@ -203,6 +203,53 @@ def _persist_pending_completion(event):
     })
 
 
+def test_volatile_completion_for_terminal_target_stays_terminal(monkeypatch):
+    from tools import async_delegation
+
+    event = _async_event("deleg_volatile_terminal")
+    event["parent_session_id"] = "ended-parent"
+    event["_volatile_delivery"] = True
+    async_delegation._persist_dispatch({
+        "delegation_id": event["delegation_id"],
+        "session_key": event["session_key"],
+        "origin_ui_session_id": "",
+        "parent_session_id": event["parent_session_id"],
+        "dispatched_at": event["dispatched_at"],
+    })
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    runner._classify_completion_target = AsyncMock(return_value="terminal")
+    transaction = async_delegation._transaction
+
+    def fail_transaction():
+        raise OSError("sqlite unavailable")
+
+    monkeypatch.setattr(async_delegation, "_transaction", fail_transaction)
+    assert asyncio.run(runner._deliver_completion_notification("completion", event)) is False
+
+    monkeypatch.setattr(async_delegation, "_transaction", transaction)
+    assert asyncio.run(runner._deliver_completion_notification("completion", event)) is None
+
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: False)
+    recovered = queue.Queue()
+    assert async_delegation.restore_undelivered_completions(recovered) == 0
+    assert recovered.empty()
+    durable = async_delegation.get_durable_delegation(event["delegation_id"])
+    assert durable is not None
+    assert durable["state"] == "dropped_unpersisted"
+    assert durable["result"] is None
+    assert durable["delivery_state"] == "dropped"
+
+
+def test_volatile_completion_for_terminal_target_without_row_converges():
+    event = _async_event("deleg_volatile_terminal_missing")
+    event["parent_session_id"] = "ended-parent"
+    event["_volatile_delivery"] = True
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    runner._classify_completion_target = AsyncMock(return_value="terminal")
+
+    assert asyncio.run(runner._deliver_completion_notification("completion", event)) is None
+
+
 def test_explicit_kill_returns_output_before_consuming_notification(monkeypatch):
     import tools.process_registry as pr_module
 

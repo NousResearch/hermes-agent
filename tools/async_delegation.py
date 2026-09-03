@@ -323,12 +323,29 @@ def _prune_durable_records() -> None:
 def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
-        conn.execute(
+        cur = conn.execute(
             """UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
                event_json=?, result_json=?, delivery_state='pending'
                WHERE delegation_id=?""",
             (event.get("status", "completed"), event.get("completed_at", now), now,
              json.dumps(event), json.dumps(result), event["delegation_id"]),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("durable delegation row disappeared before completion")
+
+
+def _persist_completion_best_effort(
+    event: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Keep live delivery available when durable completion storage fails."""
+    try:
+        _persist_completion(event, result)
+    except Exception:  # noqa: BLE001 — in-memory delivery must still proceed
+        event["_volatile_delivery"] = True
+        logger.exception(
+            "Async delegation %s: failed to persist completion; "
+            "publishing the in-memory event without restart durability",
+            event.get("delegation_id"),
         )
 
 
@@ -457,11 +474,20 @@ def mark_completion_delivered(delegation_id: str) -> bool:
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         cur = conn.execute(
-            """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?
+            """UPDATE async_delegations SET delivery_state='delivered',
+                      state=CASE WHEN state IN ('running','finalizing') AND event_json IS NULL
+                                 THEN 'delivered_unpersisted' ELSE state END,
+                      delivered_at=?, updated_at=?
                WHERE delegation_id=? AND delivery_state!='delivered'""",
             (now, now, delegation_id),
         )
-        return cur.rowcount == 1
+        if cur.rowcount == 1:
+            return True
+        row = conn.execute(
+            "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        ).fetchone()
+        return row is None or row[0] == "delivered"
 
 
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -485,14 +511,31 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
 
 
 def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
-    """Claim a durable delegation event; non-durable events need no token."""
+    """Claim an event for one consumer, or return ``None`` when already claimed."""
+    if evt.get("_delivery_ack_only"):
+        complete_event_delivery(evt, str(evt.get("_delivery_ack_claim") or ""))
+        return None
     if evt.get("type") != "async_delegation":
         return ""
     delegation_id = str(evt.get("delegation_id") or "")
     if not delegation_id:
         return ""
+    if evt.get("_volatile_delivery"):
+        return ""
     claim_id = f"{consumer}:{__import__('os').getpid()}:{uuid.uuid4().hex}"
-    return claim_id if claim_completion_delivery(delegation_id, claim_id) else None
+    try:
+        return claim_id if claim_completion_delivery(delegation_id, claim_id) else None
+    except Exception:
+        evt["_delivery_claim_requeued"] = True
+        from tools.process_registry import process_registry
+
+        process_registry.completion_queue.put(evt)
+        logger.warning(
+            "Could not claim durable async completion %s; requeued for retry",
+            delegation_id,
+            exc_info=True,
+        )
+        return None
 
 
 def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -528,7 +571,12 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                  AND delivery_claim=?""",
             (now, delegation_id, claim_id),
         )
-        return cur.rowcount == 1
+        if cur.rowcount == 1:
+            return True
+        return conn.execute(
+            "SELECT 1 FROM async_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        ).fetchone() is None
 
 
 def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -550,7 +598,45 @@ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                  AND delivery_claim=?""",
             (now, delegation_id, claim_id),
         )
-        return cur.rowcount == 1
+        if cur.rowcount == 1:
+            return True
+        row = conn.execute(
+            "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        ).fetchone()
+        return row is None or row[0] != "pending"
+
+
+def drop_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+    """Terminally drop a claimed or volatile delegation completion."""
+    if evt.get("type") != "async_delegation":
+        return False
+    delegation_id = str(evt.get("delegation_id") or "")
+    try:
+        if claim_id:
+            return drop_completion_delivery(delegation_id, claim_id)
+        elif evt.get("_volatile_delivery"):
+            with _DB_LOCK, _transaction() as conn:
+                cur = conn.execute(
+                    """UPDATE async_delegations
+                       SET state='dropped_unpersisted', delivery_state='dropped',
+                           updated_at=?, delivery_claim=NULL, delivery_claimed_at=NULL
+                       WHERE delegation_id=? AND state IN ('running','finalizing')
+                         AND event_json IS NULL""",
+                    (time.time(), delegation_id),
+                )
+                if cur.rowcount == 1:
+                    return True
+                row = conn.execute(
+                    "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
+                    (delegation_id,),
+                ).fetchone()
+            return row is None or row[0] != "pending"
+    except Exception:
+        logger.warning(
+            "Could not drop async completion %s", delegation_id, exc_info=True
+        )
+    return False
 
 
 def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -559,23 +645,71 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     with _DB_LOCK, _transaction() as conn:
         cur = conn.execute(
             """UPDATE async_delegations SET delivery_state='delivered',
+                      state=CASE WHEN state IN ('running','finalizing') AND event_json IS NULL
+                                 THEN 'delivered_unpersisted' ELSE state END,
                       delivered_at=?, updated_at=?, delivery_claim=NULL,
                       delivery_claimed_at=NULL
                WHERE delegation_id=? AND delivery_state='pending'
                  AND delivery_claim=?""",
             (now, now, delegation_id, claim_id),
         )
-        return cur.rowcount == 1
+        if cur.rowcount == 1:
+            return True
+        row = conn.execute(
+            "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        ).fetchone()
+        return row is None or row[0] != "pending"
 
 
-def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
-    if claim_id and evt.get("type") == "async_delegation":
-        complete_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
+def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+    if evt.get("type") != "async_delegation":
+        return True
+    delegation_id = str(evt.get("delegation_id") or "")
+    try:
+        if claim_id:
+            acknowledged = complete_completion_delivery(delegation_id, claim_id)
+        elif evt.get("_volatile_delivery"):
+            acknowledged = mark_completion_delivered(delegation_id)
+        else:
+            acknowledged = True
+    except Exception:
+        acknowledged = False
+        logger.warning(
+            "Could not acknowledge async completion %s", delegation_id, exc_info=True
+        )
+    else:
+        if not acknowledged:
+            logger.warning(
+                "Could not acknowledge async completion %s: no durable row matched",
+                delegation_id,
+            )
+    if not acknowledged:
+        evt["_delivery_ack_only"] = True
+        evt["_delivery_ack_claim"] = claim_id
+        evt["_delivery_claim_requeued"] = True
+        from tools.process_registry import process_registry
+
+        process_registry.completion_queue.put(evt)
+        return False
+    evt.pop("_delivery_ack_only", None)
+    evt.pop("_delivery_ack_claim", None)
+    evt.pop("_delivery_claim_requeued", None)
+    return True
 
 
-def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
-    if claim_id and evt.get("type") == "async_delegation":
-        release_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
+def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+    if evt.get("type") != "async_delegation":
+        return False
+    if claim_id and not release_completion_delivery(
+        str(evt.get("delegation_id") or ""), claim_id
+    ):
+        return False
+    evt["_delivery_claim_requeued"] = True
+    from tools.process_registry import process_registry
+
+    process_registry.completion_queue.put(evt)
+    return True
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
@@ -1009,7 +1143,7 @@ def _push_completion_event(
     ):
         if _k in result:
             evt[_k] = result[_k]
-    _persist_completion(evt, result)
+    _persist_completion_best_effort(evt, result)
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -1223,7 +1357,7 @@ def _push_batch_completion_event(
     ):
         if _k in combined:
             evt[_k] = combined[_k]
-    _persist_completion(evt, combined)
+    _persist_completion_best_effort(evt, combined)
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover

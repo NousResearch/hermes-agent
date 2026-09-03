@@ -12757,6 +12757,10 @@ def _notification_poller_loop(
         )
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
+            with session["history_lock"]:
+                session["running"] = False
+            if evt.get("_delivery_claim_requeued"):
+                time.sleep(0.25)
             continue
         try:
             _emit("message.start", sid)
@@ -12773,7 +12777,8 @@ def _notification_poller_loop(
                 _run_prompt_submit(rid, sid, session, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
-            release_event_delivery(evt, _claim)
+            if release_event_delivery(evt, _claim):
+                time.sleep(0.25)
             print(
                 f"[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
@@ -12835,6 +12840,10 @@ def _notification_poller_loop(
         )
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
+            with session["history_lock"]:
+                session["running"] = False
+            if evt.get("_delivery_claim_requeued"):
+                break
             continue
         try:
             _emit("message.start", sid)
@@ -12851,7 +12860,8 @@ def _notification_poller_loop(
                 _run_prompt_submit(rid, sid, session, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
-            release_event_delivery(evt, _claim)
+            if release_event_delivery(evt, _claim):
+                time.sleep(0.25)
             print(
                 f"[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
@@ -12859,6 +12869,8 @@ def _notification_poller_loop(
             )
             with session["history_lock"]:
                 session["running"] = False
+            if evt.get("_delivery_claim_requeued"):
+                break
 
     # Hand any other sessions' events back to the shared queue.
     for evt in deferred:
@@ -14242,13 +14254,16 @@ def _run_prompt_submit(
                 )
                 _claim = claim_event_delivery(_evt, "tui-post-turn")
                 if _claim is None:
+                    with session["history_lock"]:
+                        session["running"] = False
                     continue
                 try:
                     _emit("message.start", sid)
                     _run_prompt_submit(rid, sid, session, synth)
                     complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
-                    release_event_delivery(_evt, _claim)
+                    if release_event_delivery(_evt, _claim):
+                        time.sleep(0.25)
                     print(
                         f"[tui_gateway] completion notification dispatch failed: "
                         f"{type(_n_exc).__name__}: {_n_exc}",

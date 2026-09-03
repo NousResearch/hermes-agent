@@ -231,6 +231,187 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["delegation_id"] == res["delegation_id"]
 
 
+def test_single_completion_is_queued_when_persistence_fails(monkeypatch):
+    def fail_persist(*_args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ad, "_persist_completion", fail_persist)
+    dispatched = ad.dispatch_async_delegation(
+        goal="single", context=None, toolsets=None, role="leaf", model="m",
+        session_key="owner", runner=lambda: {"status": "completed", "summary": "done"},
+    )
+
+    evt = _drain_for(dispatched["delegation_id"])
+    assert evt is not None
+    assert (evt["status"], evt["summary"]) == ("completed", "done")
+
+
+def test_single_completion_is_volatile_when_dispatch_row_disappears():
+    gate = threading.Event()
+
+    def runner():
+        gate.wait(timeout=5)
+        return {"status": "completed", "summary": "actual result"}
+
+    dispatched = ad.dispatch_async_delegation(
+        goal="single", context=None, toolsets=None, role="leaf", model="m",
+        session_key="owner", runner=runner,
+    )
+    with ad._DB_LOCK, ad._transaction() as conn:
+        conn.execute(
+            "DELETE FROM async_delegations WHERE delegation_id=?",
+            (dispatched["delegation_id"],),
+        )
+    gate.set()
+
+    evt = _drain_for(dispatched["delegation_id"])
+    assert evt is not None
+    assert evt["summary"] == "actual result"
+    assert evt["_volatile_delivery"] is True
+    assert ad.claim_event_delivery(evt, "test") == ""
+    assert ad.complete_event_delivery(evt, "") is True
+    assert process_registry.completion_queue.empty()
+
+
+def test_acknowledged_unpersisted_completion_is_terminal_after_restart(monkeypatch):
+    gate = threading.Event()
+
+    def runner():
+        gate.wait(timeout=5)
+        return {"status": "completed", "summary": "done"}
+
+    dispatched = ad.dispatch_async_delegation(
+        goal="single", context=None, toolsets=None, role="leaf", model="m",
+        session_key="owner", runner=runner,
+    )
+    transaction = ad._transaction
+
+    def fail_transaction():
+        raise OSError("sqlite unavailable")
+
+    monkeypatch.setattr(ad, "_transaction", fail_transaction)
+    gate.set()
+    evt = _drain_for(dispatched["delegation_id"])
+    assert evt is not None
+    assert (evt["status"], evt["summary"]) == ("completed", "done")
+
+    claim_id = ad.claim_event_delivery(evt, "test")
+    assert claim_id == ""
+    assert ad.complete_event_delivery(evt, claim_id) is False
+    ack_evt = process_registry.completion_queue.get(timeout=1)
+    assert ack_evt is evt
+    assert ack_evt["_delivery_ack_only"] is True
+
+    monkeypatch.setattr(ad, "_transaction", transaction)
+    assert ad.claim_event_delivery(ack_evt, "ack-retry") is None
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: False)
+
+    recovered = queue.Queue()
+    assert ad.restore_undelivered_completions(recovered) == 0
+    assert recovered.empty()
+    assert process_registry.completion_queue.empty()
+    durable = ad.get_durable_delegation(dispatched["delegation_id"])
+    assert durable is not None
+    assert durable["state"] == "delivered_unpersisted"
+    assert durable["result"] is None
+    assert durable["delivery_state"] == "delivered"
+
+
+def test_missing_durable_row_ack_converges_without_redelivery():
+    now = time.time()
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_missing_at_ack",
+        "session_key": "owner",
+        "status": "completed",
+        "summary": "done",
+        "dispatched_at": now,
+        "completed_at": now,
+    }
+    ad._persist_dispatch({
+        "delegation_id": evt["delegation_id"],
+        "session_key": evt["session_key"],
+        "origin_ui_session_id": "",
+        "parent_session_id": None,
+        "dispatched_at": now,
+    })
+    ad._persist_completion(evt, {"status": "completed", "summary": "done"})
+    claim_id = ad.claim_event_delivery(evt, "test")
+    assert claim_id
+    assert ad.complete_completion_delivery(evt["delegation_id"], "wrong-claim") is False
+    with ad._DB_LOCK, ad._transaction() as conn:
+        conn.execute(
+            "DELETE FROM async_delegations WHERE delegation_id=?",
+            (evt["delegation_id"],),
+        )
+
+    assert ad.complete_event_delivery(evt, claim_id) is True
+    assert process_registry.completion_queue.empty()
+
+
+def test_missing_durable_row_drop_converges():
+    now = time.time()
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_missing_at_drop",
+        "session_key": "owner",
+        "status": "completed",
+        "summary": "done",
+        "dispatched_at": now,
+        "completed_at": now,
+    }
+    ad._persist_dispatch({
+        "delegation_id": evt["delegation_id"],
+        "session_key": evt["session_key"],
+        "origin_ui_session_id": "",
+        "parent_session_id": None,
+        "dispatched_at": now,
+    })
+    ad._persist_completion(evt, {"status": "completed", "summary": "done"})
+    claim_id = ad.claim_event_delivery(evt, "test")
+    assert claim_id
+    assert ad.drop_completion_delivery(evt["delegation_id"], "wrong-claim") is False
+    with ad._DB_LOCK, ad._transaction() as conn:
+        conn.execute(
+            "DELETE FROM async_delegations WHERE delegation_id=?",
+            (evt["delegation_id"],),
+        )
+
+    assert ad.drop_event_delivery(evt, claim_id) is True
+
+
+def test_missing_durable_row_release_requeues_event():
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_missing_at_release",
+    }
+
+    assert ad.release_event_delivery(evt, "claim-token") is True
+    assert process_registry.completion_queue.get(timeout=1) is evt
+
+
+def test_batch_completion_is_queued_when_persistence_fails(monkeypatch):
+    def fail_persist(*_args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ad, "_persist_completion", fail_persist)
+    dispatched = ad.dispatch_async_delegation_batch(
+        goals=["a", "b"], context=None, toolsets=None, role="leaf", model="m",
+        session_key="owner",
+        runner=lambda: {
+            "results": [
+                {"status": "completed", "summary": "a done"},
+                {"status": "completed", "summary": "b done"},
+            ]
+        },
+    )
+
+    evt = _drain_for(dispatched["delegation_id"])
+    assert evt is not None
+    assert evt["status"] == "completed"
+    assert [result["summary"] for result in evt["results"]] == ["a done", "b done"]
+
+
 def test_rich_reinjection_block_is_self_contained():
     def runner():
         return {"status": "completed", "summary": "The answer is 42.",

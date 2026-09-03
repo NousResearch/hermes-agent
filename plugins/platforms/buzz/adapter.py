@@ -910,6 +910,7 @@ class BuzzAdapter(BasePlatformAdapter):
         self._ws_ready: Optional[asyncio.Event] = None
         self._ws_active = False  # True while the WS loop owns inbound delivery
         self._membership_since = 0
+        self._ws_sub_seq = 0  # monotonic counter for WS subscription IDs
         self._lock_key: Optional[str] = None
         # channel_id -> {
         #   "chat_type", "last_ts",
@@ -1809,10 +1810,11 @@ class BuzzAdapter(BasePlatformAdapter):
         """Subscribe to every watched conversation plus membership events
         (kind 44100 p-tagged to us) for live DM discovery."""
         subscriptions: Dict[str, Optional[str]] = {}
-        for index, channel_id in enumerate(list(self._channel_state)):
+        for channel_id in list(self._channel_state):
             if channel_id in self._restricted_channels:
                 continue
-            subscription_id = f"hermes-buzz-{index}"
+            self._ws_sub_seq += 1
+            subscription_id = f"hermes-buzz-{self._ws_sub_seq}"
             subscriptions[subscription_id] = channel_id
             await self._send_channel_subscription(websocket, subscription_id, channel_id)
         if self._self_pubkey:
@@ -1836,7 +1838,10 @@ class BuzzAdapter(BasePlatformAdapter):
         for channel_id in list(self._channel_state):
             if channel_id in before:
                 continue
-            subscription_id = f"hermes-buzz-dm-{len(subscriptions)}"
+            if channel_id in self._restricted_channels:
+                continue
+            self._ws_sub_seq += 1
+            subscription_id = f"hermes-buzz-dm-{self._ws_sub_seq}"
             subscriptions[subscription_id] = channel_id
             await self._send_channel_subscription(websocket, subscription_id, channel_id)
             logger.info("Buzz: subscribed to new conversation %s", channel_id)

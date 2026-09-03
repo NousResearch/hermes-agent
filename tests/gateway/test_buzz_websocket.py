@@ -197,7 +197,7 @@ async def test_websocket_loop_dispatches_frames_and_closes_cleanly(monkeypatch):
     frames = iter(
         [
             json.dumps(
-                ["EVENT", "hermes-buzz-0", {"id": "e1", "kind": 9, "created_at": 2, "content": "hi"}]
+                ["EVENT", "hermes-buzz-1", {"id": "e1", "kind": 9, "created_at": 2, "content": "hi"}]
             ),
         ]
     )
@@ -680,3 +680,96 @@ async def test_ws_discovery_task_cancelled_when_connection_exits(monkeypatch):
 
     assert started, "discovery task was never started with the connection"
     assert all(t.done() for t in started), "discovery task outlived its connection"
+
+
+# ── Monotonic subscription ID (fix: _ws_sub_seq) ──────────────────────────
+@pytest.mark.asyncio
+async def test_subscribe_new_conversations_ids_are_monotonic():
+    """Subscription IDs must be monotonically increasing even after a
+    restricted-CLOSED removes an entry and shrinks the subscriptions dict.
+    Using len() as the counter reuses IDs; _ws_sub_seq must never repeat."""
+    adapter = _make_adapter()
+
+    class _Ws:
+        def __init__(self):
+            self.sent = []
+        async def send(self, raw):
+            self.sent.append(json.loads(raw))
+
+    ws = _Ws()
+    subscriptions: dict = {}
+
+    # Round 1: subscribe to two channels
+    adapter._channel_state["chan-A"] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
+    adapter._channel_state["chan-B"] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
+    before: set = set()
+    await adapter._subscribe_new_conversations(ws, subscriptions, before)
+    assert len(subscriptions) == 2
+
+    # Simulate restricted-CLOSED removing one entry (shrinks dict)
+    removed_id = next(k for k, v in subscriptions.items() if v == "chan-A")
+    del subscriptions[removed_id]
+    assert len(subscriptions) == 1  # dict is smaller now
+
+    # Round 2: subscribe to a third channel
+    adapter._channel_state["chan-C"] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
+    before2 = {"chan-A", "chan-B"}
+    await adapter._subscribe_new_conversations(ws, subscriptions, before2)
+
+    # Check REQ frames sent over the wire — this catches ID reuse even when
+    # dict overwrites hide the collision at the mapping level.
+    sent_ids = [frame[1] for frame in ws.sent if isinstance(frame, list) and frame[0] == "REQ"]
+    assert len(sent_ids) == 3, f"Expected 3 REQ frames, got {len(sent_ids)}: {sent_ids}"
+    assert len(set(sent_ids)) == 3, f"Duplicate REQ subscription IDs: {sent_ids}"
+
+    # Final mapping must contain exactly chan-B and chan-C (chan-A was removed)
+    assert len(subscriptions) == 2, f"Expected 2 subscriptions, got {len(subscriptions)}"
+    assert set(subscriptions.values()) == {"chan-B", "chan-C"}, (
+        f"Wrong channels in subscriptions: {subscriptions}"
+    )
+
+    # chan-B's original ID must still map to chan-B (not overwritten)
+    chan_b_id = next(k for k, v in subscriptions.items() if v == "chan-B")
+    assert chan_b_id in sent_ids, f"chan-B ID {chan_b_id} not found in sent REQ IDs"
+
+    # Sequence numbers must be strictly increasing
+    seqs = [int(sid.split("-")[-1]) for sid in sent_ids if sid.startswith("hermes-buzz-dm-")]
+    assert seqs == sorted(seqs), f"IDs not monotonic: {seqs}"
+    assert len(set(seqs)) == len(seqs), f"Duplicate seq numbers: {seqs}"
+
+
+# ── Monotonic subscription ID across reconnects (site 1: _subscribe_websocket) ──
+@pytest.mark.asyncio
+async def test_subscribe_websocket_ids_monotonic_across_reconnects():
+    """_subscribe_websocket must not reuse subscription IDs across reconnects.
+    Previously used enumerate(index) which resets to 0 on every reconnect,
+    causing relay to silently replace existing REQ frames (NIP-01)."""
+    adapter = _make_adapter()
+    adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+
+    class _Ws:
+        def __init__(self):
+            self.sent = []
+        async def send(self, raw):
+            self.sent.append(json.loads(raw))
+
+    # First connect — collect IDs
+    ws1 = _Ws()
+    subs1 = await adapter._subscribe_websocket(ws1)
+    ids1 = [f[1] for f in ws1.sent if isinstance(f, list) and f[0] == "REQ"
+            and f[1] != _buzz_mod._WS_MEMBERSHIP_SUB_ID]
+
+    # Second connect (reconnect) — collect IDs
+    ws2 = _Ws()
+    subs2 = await adapter._subscribe_websocket(ws2)
+    ids2 = [f[1] for f in ws2.sent if isinstance(f, list) and f[0] == "REQ"
+            and f[1] != _buzz_mod._WS_MEMBERSHIP_SUB_ID]
+
+    assert ids1, "first connect produced no REQ frames"
+    assert ids2, "second connect produced no REQ frames"
+
+    # No ID from reconnect must match any ID from first connect
+    overlap = set(ids1) & set(ids2)
+    assert not overlap, (
+        f"Subscription IDs reused across reconnects (NIP-01 violation): {overlap}"
+    )

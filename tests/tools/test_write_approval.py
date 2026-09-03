@@ -153,8 +153,167 @@ _SKILL = (
 
 
 # ---------------------------------------------------------------------------
-# Pending store CRUD
+# Pending store CRUD — skill-target dedupe (#99661)
 # ---------------------------------------------------------------------------
+
+
+def _patch_payload(name, file_path, old, new):
+    return {
+        "action": "patch",
+        "name": name,
+        "file_path": file_path,
+        "old_string": old,
+        "new_string": new,
+    }
+
+
+def test_skill_stage_same_target_does_not_grow_queue(hermes_home):
+    """A second patch to the same skill/file must not add another pending item.
+
+    Background-review firings are isolated: each rediscovers the same file
+    with a reworded body. Same-target identity, not byte-identical content,
+    is what stops the flood.
+    """
+    from tools import write_approval as wa
+
+    first = wa.stage_write(
+        wa.SKILLS,
+        _patch_payload("agent-github-identity-setup", "SKILL.md",
+                       "Do X.", "Do X, then Y."),
+        summary="patch 1",
+        origin="background_review",
+    )
+    second = wa.stage_write(
+        wa.SKILLS,
+        _patch_payload("agent-github-identity-setup", "SKILL.md",
+                       "Do X.", "Do X, then Y, and also Z."),
+        summary="patch 2 (reworded)",
+        origin="background_review",
+    )
+    assert wa.pending_count(wa.SKILLS) == 1
+    assert len(wa.list_pending(wa.SKILLS)) == 1
+    assert second["id"] == first["id"]
+    assert second.get("deduped") is True
+    # First payload stays on disk — skip, not supersede.
+    assert wa.list_pending(wa.SKILLS)[0]["payload"]["new_string"] == "Do X, then Y."
+
+
+def test_skill_stage_different_file_still_stages(hermes_home):
+    """A patch to a different file of the same skill is a new pending item."""
+    from tools import write_approval as wa
+
+    wa.stage_write(
+        wa.SKILLS,
+        _patch_payload("agent-github-identity-setup", "SKILL.md",
+                       "Do X.", "Do X, then Y."),
+        summary="patch skill.md",
+        origin="background_review",
+    )
+    other = wa.stage_write(
+        wa.SKILLS,
+        _patch_payload("agent-github-identity-setup", "references/github.md",
+                       "token", "app password"),
+        summary="patch references",
+        origin="background_review",
+    )
+    assert wa.pending_count(wa.SKILLS) == 2
+    assert other.get("deduped") is not True
+    files = {
+        r["payload"].get("file_path") for r in wa.list_pending(wa.SKILLS)
+    }
+    assert files == {"SKILL.md", "references/github.md"}
+
+
+def test_skill_stage_normalizes_same_file_path(hermes_home):
+    """./SKILL.md and SKILL.md are the same target."""
+    from tools import write_approval as wa
+
+    wa.stage_write(
+        wa.SKILLS,
+        _patch_payload("demo", "SKILL.md", "a", "b"),
+        summary="plain",
+        origin="background_review",
+    )
+    dup = wa.stage_write(
+        wa.SKILLS,
+        _patch_payload("demo", "./SKILL.md", "a", "c"),
+        summary="dotted",
+        origin="background_review",
+    )
+    assert wa.pending_count(wa.SKILLS) == 1
+    assert dup.get("deduped") is True
+
+
+def test_gated_skill_manage_same_target_does_not_grow_queue(hermes_home):
+    """Production path: skill_manage stages through the approval gate."""
+    from tools.skill_manager_tool import skill_manage
+    from tools import write_approval as wa
+
+    _set_approval("skills", True)
+    r1 = json.loads(skill_manage(
+        action="patch", name="held-skill", file_path="SKILL.md",
+        old_string="step 1", new_string="step 1 (held)",
+    ))
+    r2 = json.loads(skill_manage(
+        action="patch", name="held-skill", file_path="SKILL.md",
+        old_string="step 1", new_string="step 1 (held, again)",
+    ))
+    assert r1.get("staged") is True and r1.get("pending_id")
+    assert r2.get("staged") is True
+    assert r2.get("deduped") is True
+    assert r2["pending_id"] == r1["pending_id"]
+    assert wa.pending_count(wa.SKILLS) == 1
+
+
+def test_skill_stage_batch_same_target_does_not_grow_queue(hermes_home):
+    """A later batch that retouches an already-pending file must not add a row."""
+    from tools import write_approval as wa
+
+    wa.stage_write(
+        wa.SKILLS,
+        _patch_payload("demo", "SKILL.md", "a", "b"),
+        summary="single",
+        origin="background_review",
+    )
+    skipped = wa.stage_write(
+        wa.SKILLS,
+        {
+            "action": "batch",
+            "operations": [
+                {
+                    "action": "patch",
+                    "name": "demo",
+                    "file_path": "SKILL.md",
+                    "old_string": "a",
+                    "new_string": "c",
+                },
+            ],
+        },
+        summary="batch",
+        origin="background_review",
+    )
+    assert wa.pending_count(wa.SKILLS) == 1
+    assert skipped.get("deduped") is True
+
+
+def test_gated_skill_manage_different_file_still_stages(hermes_home):
+    from tools.skill_manager_tool import skill_manage
+    from tools import write_approval as wa
+
+    _set_approval("skills", True)
+    r1 = json.loads(skill_manage(
+        action="write_file", name="held-skill",
+        file_path="references/a.md", file_content="a",
+    ))
+    r2 = json.loads(skill_manage(
+        action="write_file", name="held-skill",
+        file_path="references/b.md", file_content="b",
+    ))
+    assert r1.get("staged") is True
+    assert r2.get("staged") is True
+    assert r2.get("deduped") is not True
+    assert r1["pending_id"] != r2["pending_id"]
+    assert wa.pending_count(wa.SKILLS) == 2
 
 
 # ---------------------------------------------------------------------------

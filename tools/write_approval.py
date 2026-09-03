@@ -45,10 +45,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import posixpath
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 
@@ -128,7 +129,25 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
     Returns a dict with ``id`` and metadata. Best-effort: on disk failure it
     logs and still returns a record (the write is simply lost, which is the
     safe failure for an approval gate — nothing is silently committed).
+
+    Skills pending items are deduped by target: if an existing record already
+    mutates the same skill/file, this returns that record with ``deduped=True``
+    and does not grow the queue. Isolated background-review firings otherwise
+    restage near-duplicate patches to the same file every
+    ``skills.creation_nudge_interval`` iterations.
     """
+    if subsystem == SKILLS:
+        existing = _existing_skill_pending(payload)
+        if existing is not None:
+            skipped = dict(existing)
+            skipped["deduped"] = True
+            logger.info(
+                "Skipping duplicate pending skills write for %s (existing id=%s)",
+                _format_skill_targets(_skill_write_targets(payload)),
+                existing.get("id"),
+            )
+            return skipped
+
     pid = uuid.uuid4().hex[:8]
     record = {
         "id": pid,
@@ -149,6 +168,101 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
     return record
+
+
+# Whole-skill delete conflicts with any pending write to that skill. Other
+# actions key on (skill name, normalized relative file).
+_SKILL_DELETE_FILE = "*"
+
+
+def _normalize_skill_relpath(file_path: Any) -> str:
+    """Return the skill-relative file a pending write would mutate."""
+    raw = file_path.strip() if isinstance(file_path, str) else ""
+    if not raw:
+        return "SKILL.md"
+    # Skills use posix relative paths; collapse ./, //, and leading slashes
+    # so SKILL.md, ./SKILL.md, and /SKILL.md hash to the same target.
+    normalized = posixpath.normpath(raw.replace("\\", "/").lstrip("/"))
+    return normalized if normalized not in {"", "."} else "SKILL.md"
+
+
+def _op_skill_target(
+    op: Dict[str, Any], default_name: str = ""
+) -> Optional[Tuple[str, str]]:
+    name = (op.get("name") or default_name or "").strip()
+    if not name:
+        return None
+    action = op.get("action") or ""
+    # skill_manage full-rewrite patch (content set) always hits SKILL.md
+    # and ignores file_path — same as create/edit.
+    if action == "delete":
+        return (name, _SKILL_DELETE_FILE)
+    if action in {"create", "edit"} or (action == "patch" and op.get("content")):
+        return (name, "SKILL.md")
+    return (name, _normalize_skill_relpath(op.get("file_path")))
+
+
+def _skill_write_targets(payload: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """Return (skill_name, relative_file) pairs a pending payload would mutate."""
+    if not isinstance(payload, dict):
+        return []
+    default_name = (payload.get("name") or "").strip()
+    if payload.get("action") == "batch":
+        targets: List[Tuple[str, str]] = []
+        seen: Set[Tuple[str, str]] = set()
+        for op in payload.get("operations") or []:
+            if not isinstance(op, dict):
+                continue
+            target = _op_skill_target(op, default_name)
+            if target is None or target in seen:
+                continue
+            seen.add(target)
+            targets.append(target)
+        return targets
+    target = _op_skill_target(payload, default_name)
+    return [target] if target is not None else []
+
+
+def _skill_targets_overlap(
+    left: List[Tuple[str, str]], right: List[Tuple[str, str]]
+) -> bool:
+    if not left or not right:
+        return False
+    by_name: Dict[str, Set[str]] = {}
+    for name, rel in left:
+        by_name.setdefault(name, set()).add(rel)
+    for name, rel in right:
+        files = by_name.get(name)
+        if not files:
+            continue
+        if rel == _SKILL_DELETE_FILE or _SKILL_DELETE_FILE in files or rel in files:
+            return True
+    return False
+
+
+def _format_skill_targets(targets: List[Tuple[str, str]]) -> str:
+    if not targets:
+        return "(unknown)"
+    return ", ".join(f"{name}:{rel}" for name, rel in targets)
+
+
+def _existing_skill_pending(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return an existing skills pending record for the same skill/file.
+
+    Two writes to the same target overlap by construction: isolated
+    background-review firings restage near-duplicate patches with
+    reworded bodies, so content-equality is the wrong predicate.
+    """
+    targets = _skill_write_targets(payload)
+    if not targets:
+        return None
+    for record in list_pending(SKILLS):
+        existing_payload = record.get("payload")
+        if not isinstance(existing_payload, dict):
+            continue
+        if _skill_targets_overlap(targets, _skill_write_targets(existing_payload)):
+            return record
+    return None
 
 
 def list_pending(subsystem: str) -> List[Dict[str, Any]]:

@@ -1549,6 +1549,26 @@ _skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
 )
 
 
+def _staged_skill_tool_result(record, gist, decision_message) -> str:
+    """JSON tool result for a newly staged — or duplicate-skipped — skill write."""
+    payload = {
+        "success": True,
+        "staged": True,
+        "pending_id": record["id"],
+        "gist": gist,
+        "message": decision_message,
+    }
+    if record.get("deduped"):
+        payload["deduped"] = True
+        payload["message"] = (
+            f"Already staged for approval as {record['id']} "
+            "(same skill/file). Not duplicating — review with /skills pending."
+        )
+        if record.get("summary"):
+            payload["gist"] = record["summary"]
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _apply_skill_write_gate(action, name, **payload_kwargs):
     """Evaluate the skill write gate. Returns a JSON tool-result string when the
     write should NOT proceed (blocked or staged), or None to perform the real
@@ -1581,11 +1601,7 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         new_string=payload_kwargs.get("new_string") or "",
     )
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
-    return json.dumps(
-        {"success": True, "staged": True, "pending_id": record["id"],
-         "gist": gist, "message": decision.message},
-        ensure_ascii=False,
-    )
+    return _staged_skill_tool_result(record, gist, decision.message)
 
 
 def apply_skill_pending(payload: Dict[str, Any]) -> str:
@@ -1747,11 +1763,7 @@ def _skill_manage_batch(
                 record = wa.stage_write(
                     wa.SKILLS, payload, summary=gist, origin=wa.current_origin()
                 )
-                return json.dumps(
-                    {"success": True, "staged": True, "pending_id": record["id"],
-                     "gist": gist, "message": decision.message},
-                    ensure_ascii=False,
-                )
+                return _staged_skill_tool_result(record, gist, decision.message)
 
     # --- snapshot every touched skill for rollback ---
     snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))

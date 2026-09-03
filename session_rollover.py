@@ -9,6 +9,7 @@ and session_search guidance, never a compaction or an LLM-produced summary.
 from __future__ import annotations
 
 import json
+import sys
 import uuid
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
@@ -18,6 +19,7 @@ END_REASON = "turn_boundary_rollover"
 RECOVERY_GUIDANCE = "Use session_search to recover earlier details if needed."
 _PENDING_KEY = "_turn_boundary_rollover_pending"
 _HANDOFF_KEY = "turn_boundary_handoff"
+_LIFECYCLE_KEY = "turn_boundary_lifecycle"
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,10 @@ class RolloverPolicy:
     ratio: float = 0.0
     safety_margin_tokens: int = 0
     threshold_tokens: Optional[int] = None
+    reserved_output_tokens: int = 0
+    reserved_tool_result_tokens: int = 0
+    reserved_checkpoint_tokens: int = 0
+    closeout_iterations: int = 2
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any] | None) -> "RolloverPolicy":
@@ -50,7 +56,19 @@ class RolloverPolicy:
                 cap = None
         except (TypeError, ValueError):
             cap = None
-        return cls(enabled, ratio, margin, cap)
+        def _nonnegative(name: str, default: int = 0) -> int:
+            try:
+                return max(0, int(raw.get(name, default) or 0))
+            except (TypeError, ValueError):
+                return default
+
+        return cls(
+            enabled, ratio, margin, cap,
+            _nonnegative("reserved_output_tokens"),
+            _nonnegative("reserved_tool_result_tokens"),
+            _nonnegative("reserved_checkpoint_tokens"),
+            max(1, _nonnegative("closeout_iterations", 2)),
+        )
 
     def resolve(self, context_length: int, compression_threshold: int) -> Optional[int]:
         """Return a trigger strictly below the actual compression threshold.
@@ -68,9 +86,10 @@ class RolloverPolicy:
             return None
         if window <= 0 or compression <= 1:
             return None
+        # ``threshold_tokens`` is retained for config-file compatibility and
+        # observability only. A fixed count must never decide rollover across
+        # models with different context windows.
         candidate = int(window * self.ratio)
-        if self.threshold_tokens is not None:
-            candidate = min(candidate, self.threshold_tokens)
         # Strictly less than compression even when the configured headroom is 0.
         ceiling = compression - max(self.safety_margin_tokens, 1)
         if ceiling <= 0:
@@ -84,7 +103,10 @@ class TurnBoundaryRollover:
     def __init__(self, db: Any) -> None:
         self._db = db
 
-    def mark_pending(self, session_id: str, *, threshold_tokens: int) -> bool:
+    def mark_pending(
+        self, session_id: str, *, threshold_tokens: int,
+        lifecycle: Mapping[str, Any] | None = None,
+    ) -> bool:
         """Persist a request after a response has fully committed."""
         if not session_id or threshold_tokens <= 0:
             return False
@@ -98,7 +120,12 @@ class TurnBoundaryRollover:
         patch = getattr(self._db, "patch_session_model_config", None)
         if not callable(patch):
             return False
-        patch(session_id, {_PENDING_KEY: {"threshold_tokens": int(threshold_tokens)}})
+        patch_data: dict[str, Any] = {
+            _PENDING_KEY: {"threshold_tokens": int(threshold_tokens)},
+        }
+        if lifecycle:
+            patch_data[_LIFECYCLE_KEY] = dict(lifecycle)
+        patch(session_id, patch_data)
         return True
 
     def adopt_at_turn_boundary(
@@ -194,6 +221,19 @@ def _model_config(row: Mapping[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def allows_new_work(agent: Any) -> bool:
+    """Fail closed for new tools/delegations once a parent is draining."""
+    db = getattr(agent, "_session_db", None)
+    session_id = str(getattr(agent, "session_id", "") or "")
+    if db is None or not session_id:
+        return True
+    try:
+        state = _model_config(db.get_session(session_id) or {}).get(_LIFECYCLE_KEY)
+    except Exception:
+        return False
+    return not isinstance(state, Mapping) or state.get("state") != "draining"
+
+
 def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:
     """Re-read policy and live model budget after a durably completed response."""
     if not isinstance(result, Mapping) or result.get("failed") or result.get("interrupted"):
@@ -216,14 +256,47 @@ def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:
     try:
         from hermes_cli.config import load_config
         config = load_config() or {}
-        trigger = RolloverPolicy.from_config(config.get("session_rollover")).resolve(
+        policy = RolloverPolicy.from_config(config.get("session_rollover"))
+        trigger = policy.resolve(
             getattr(compressor, "context_length", 0),
             getattr(compressor, "threshold_tokens", 0),
         )
         used = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
-        if trigger is None or used < trigger:
+        if trigger is None:
             return False
-        return TurnBoundaryRollover(db).mark_pending(session_id, threshold_tokens=trigger)
+        from agent.session_lifecycle import LifecycleBudget, LifecycleState, evaluate_lifecycle
+
+        decision = evaluate_lifecycle(LifecycleBudget(
+            context_window_tokens=int(getattr(compressor, "context_length", 0) or 0),
+            prompt_tokens=used,
+            reserved_output_tokens=policy.reserved_output_tokens,
+            reserved_tool_result_tokens=policy.reserved_tool_result_tokens,
+            reserved_checkpoint_tokens=policy.reserved_checkpoint_tokens,
+            max_iterations=int(getattr(agent, "max_iterations", sys.maxsize) or sys.maxsize),
+            iterations_used=int(result.get("api_calls", 0) or 0),
+            api_calls=int(result.get("api_calls", 0) or 0),
+            cache_read_tokens=int(result.get("cache_read_tokens", 0) or 0),
+            compactions=int(result.get("compactions", 0) or 0),
+            in_flight_workers=len(getattr(agent, "_active_children", ()) or ()),
+            closeout_iterations=policy.closeout_iterations,
+        ))
+        if decision.state is not LifecycleState.DRAINING and used < trigger:
+            return False
+        lifecycle = {
+            "state": decision.state.value,
+            "context_utilization": decision.context_utilization,
+            "remaining_context_tokens": decision.remaining_context_tokens,
+            "remaining_iterations": decision.remaining_iterations,
+            "checkpoint": {
+                "goal": str(getattr(agent, "current_goal", "") or ""),
+                "cwd": str(getattr(agent, "cwd", "") or ""),
+                "api_calls": int(result.get("api_calls", 0) or 0),
+                "in_flight_workers": len(getattr(agent, "_active_children", ()) or ()),
+            },
+        }
+        return TurnBoundaryRollover(db).mark_pending(
+            session_id, threshold_tokens=trigger, lifecycle=lifecycle,
+        )
     except Exception:
         return False
 

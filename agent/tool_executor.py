@@ -1109,6 +1109,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
 
+    try:
+        from session_rollover import allows_new_work
+        if not allows_new_work(agent):
+            _append_cancelled_tool_results(messages, tool_calls, reason="session drain")
+            return
+    except Exception:
+        _append_cancelled_tool_results(messages, tool_calls, reason="session drain admission check")
+        return
+
     # Resolve the context-scaled tool-output budget once per turn (cheap, but
     # avoids rebuilding it per result inside the loop below).
     _tool_budget = _budget_for_agent(agent)
@@ -1963,6 +1972,19 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     """
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
+
+    try:
+        from session_rollover import allows_new_work
+        if not allows_new_work(agent):
+            _append_cancelled_tool_results(
+                messages, assistant_message.tool_calls, reason="session drain"
+            )
+            return
+    except Exception:
+        _append_cancelled_tool_results(
+            messages, assistant_message.tool_calls, reason="session drain admission check"
+        )
+        return
 
     # Keep every runtime-tool branch on one bounded execution funnel without
     # duplicating timeout policy across the branch-specific callbacks below.

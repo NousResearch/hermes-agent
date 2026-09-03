@@ -1,15 +1,55 @@
 """Turn-boundary fresh-session rollover persists a compact recovery pointer."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from hermes_state import SessionDB
 from session_rollover import (
     RolloverPolicy,
     TurnBoundaryRollover,
+    allows_new_work,
     consume_handoff_note,
     mark_completed_turn,
 )
+from agent.session_lifecycle import LifecycleBudget, LifecycleState, evaluate_lifecycle
+
+
+def test_oh_my_feed_runaway_fixture_drains_on_relative_budget_before_exhaustion() -> None:
+    """The incident must reserve closeout work without an absolute token cap."""
+    incident = LifecycleBudget(
+        context_window_tokens=272_000,
+        prompt_tokens=201_000,
+        reserved_output_tokens=16_000,
+        reserved_tool_result_tokens=12_000,
+        reserved_checkpoint_tokens=8_000,
+        max_iterations=150,
+        iterations_used=148,
+        api_calls=1_123,
+        cache_read_tokens=142_130_176,
+        compactions=16,
+        in_flight_workers=2,
+        closeout_iterations=2,
+    )
+
+    decision = evaluate_lifecycle(incident)
+
+    assert decision.state is LifecycleState.DRAINING
+    assert decision.accept_new_tools is False
+    assert decision.accept_new_delegations is False
+    assert decision.allow_in_flight_completion is True
+    assert decision.context_utilization == 201_000 / 272_000
+    # High historical counters are observability evidence, not a rollover rule.
+    assert evaluate_lifecycle(replace(incident, api_calls=0, cache_read_tokens=0)).state is LifecycleState.DRAINING
+
+
+def test_draining_parent_refuses_new_work_but_not_completion_delivery(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("parent", source="cli")
+    db.patch_session_model_config("parent", {"turn_boundary_lifecycle": {"state": "draining"}})
+    agent = type("Agent", (), {"_session_db": db, "session_id": "parent"})()
+
+    assert allows_new_work(agent) is False
 
 
 def test_rollover_is_pending_until_a_safe_next_turn_then_preserves_lineage(
@@ -52,7 +92,7 @@ def test_ratio_policy_resolves_every_window_and_stays_below_compression() -> Non
     assert policy.resolve(context_length=900_000, compression_threshold=850_000) == 675_000
 
 
-def test_policy_re_resolves_on_model_switch_and_expert_cap_never_crosses_compression() -> None:
+def test_policy_re_resolves_on_model_switch_without_fixed_token_decision() -> None:
     policy = RolloverPolicy.from_config(
         {
             "enabled": True,
@@ -62,7 +102,7 @@ def test_policy_re_resolves_on_model_switch_and_expert_cap_never_crosses_compres
         }
     )
 
-    assert policy.resolve(context_length=900_000, compression_threshold=810_000) == 800_000
+    assert policy.resolve(context_length=900_000, compression_threshold=810_000) == 808_000
     assert policy.resolve(context_length=272_000, compression_threshold=230_000) == 228_000
 
 

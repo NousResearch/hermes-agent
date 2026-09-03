@@ -864,6 +864,12 @@ DEFAULT_CONFIG = {
         "ratio": 0.0,
         "safety_margin_tokens": 0,
         "threshold_tokens": None,
+        # The reserves are interpreted relative to the active model window;
+        # zero keeps the feature opt-in and preserves current behavior.
+        "reserved_output_tokens": 0,
+        "reserved_tool_result_tokens": 0,
+        "reserved_checkpoint_tokens": 0,
+        "closeout_iterations": 2,
     },
 
     "compression": {

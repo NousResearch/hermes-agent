@@ -13615,7 +13615,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
-            self._pending_input.put(synthetic_message)
+            # Completion is a durable display event, never permission for a
+            # recursive parent model turn. The next user-authorized turn sees
+            # this row in normal session context. Keep the queue fallback for
+            # old/no-persistence CLI embeddings only.
+            db = getattr(self, "_session_db", None)
+            append_delivery = getattr(db, "append_message", None)
+            if event.get("type") == "async_delegation" and callable(append_delivery):
+                append_delivery(
+                    session_key,
+                    "user",
+                    content=synthetic_message,
+                    display_kind="async_delegation_complete",
+                )
+            else:
+                self._pending_input.put(synthetic_message)
             complete_event_delivery(event, claim)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:

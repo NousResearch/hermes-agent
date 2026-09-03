@@ -353,7 +353,7 @@ class CLIAgentSetupMixin:
         }
 
         service_tier = getattr(self, "service_tier", None)
-        if service_tier != "priority":
+        if service_tier not in ("priority", "flex"):
             # None (normal) or auto/cold — the bounded window is applied per
             # request by agent.fast_mode, not pinned into request_overrides.
             route["request_overrides"] = None
@@ -362,6 +362,7 @@ class CLIAgentSetupMixin:
         try:
             overrides = resolve_fast_mode_overrides(
                 route["model"],
+                tier=service_tier,
                 provider=runtime["provider"],
                 base_url=runtime["base_url"],
             )

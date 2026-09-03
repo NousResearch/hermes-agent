@@ -668,6 +668,7 @@ def build_gemini_request(
     stop: Any = None,
     thinking_config: Any = None,
     model: str = "",
+    service_tier: Optional[str] = None,
 ) -> Dict[str, Any]:
     version = _gemini_major_version(model)
     is_gemini3 = version is not None and version >= 3
@@ -677,6 +678,14 @@ def build_gemini_request(
         is_gemini3=is_gemini3,
     )
     request: Dict[str, Any] = {"contents": contents}
+    # Gemini takes the tier as a top-level body field, a sibling of
+    # ``contents`` — NOT inside generationConfig, where it would be ignored
+    # and billed at the standard rate. Accepted values are "flex" and
+    # "priority"; omitting the field means standard.
+    #   https://ai.google.dev/gemini-api/docs/flex-inference
+    #   https://ai.google.dev/gemini-api/docs/generate-content/priority-inference
+    if service_tier:
+        request["service_tier"] = str(service_tier).strip().lower()
     if system_instruction:
         request["systemInstruction"] = system_instruction
 
@@ -1183,6 +1192,7 @@ class GeminiNativeClient:
         top_p: Optional[float] = None,
         stop: Any = None,
         extra_body: Optional[Dict[str, Any]] = None,
+        service_tier: Optional[str] = None,
         timeout: Any = None,
         **_: Any,
     ) -> Any:
@@ -1200,6 +1210,7 @@ class GeminiNativeClient:
             stop=stop,
             thinking_config=thinking_config,
             model=model,
+            service_tier=service_tier,
         )
 
         model = bare_gemini_model_id(model)

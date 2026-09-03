@@ -411,7 +411,7 @@ def _parse_reasoning_config(effort) -> dict | None:
 
 
 def _parse_service_tier_config(raw: str) -> str | None:
-    """Parse a persisted fast-mode preference: None, "priority", "auto", or "cold"."""
+    """Parse a persisted fast-mode preference: None, "priority", "flex", "auto", or "cold"."""
     value = str(raw or "").strip().lower()
     if not value or value in {"normal", "default", "standard", "off", "none"}:
         return None
@@ -419,6 +419,8 @@ def _parse_service_tier_config(raw: str) -> str | None:
         return "priority"
     if value in {"auto", "cold"}:
         return value
+    if value == "flex":
+        return "flex"
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 

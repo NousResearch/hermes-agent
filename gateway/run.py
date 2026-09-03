@@ -9093,7 +9093,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # configured extra_body (chat_template_kwargs, etc.) never reached the
         # model on the gateway path -- only /fast service-tier overrides did.
         service_tier = getattr(self, "_service_tier", None)
-        if service_tier != "priority":
+        if service_tier not in ("priority", "flex"):
             # None (normal) or auto/cold — the bounded window is applied per
             # request by agent.fast_mode, not pinned into request_overrides.
             route["request_overrides"] = base_request_overrides
@@ -9102,6 +9102,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             overrides = resolve_fast_mode_overrides(
                 route["model"],
+                tier=service_tier,
                 provider=runtime["provider"],
                 base_url=runtime["base_url"],
             )
@@ -10632,6 +10633,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "priority"
         if value in {"auto", "cold"}:
             return value
+        if value == "flex":
+            return "flex"
         logger.warning("Unknown service_tier '%s', ignoring", raw)
         return None
 

@@ -28,6 +28,9 @@ import threading
 import atexit
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
+from pathlib import Path
+
+from tools.path_case import check_case_conflicts, rewrite_target_path
 
 logger = logging.getLogger(__name__)
 
@@ -1449,6 +1452,7 @@ def terminal_tool(
     _completion_output_chars: int = 0,
     heartbeat: int = 0,
     persist_on_release: bool = False,
+    case_resolution: Optional[str] = None,
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
@@ -1484,6 +1488,42 @@ def terminal_tool(
             command, background = auto_bg, True
         env = _acquire_env(plan, task_id)
         env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
+
+        from tools.approval import _command_parser_limit_exceeded
+        parser_budget_exceeded = _command_parser_limit_exceeded(command)
+
+        if case_resolution not in (None, "use_existing", "create_variant"):
+            return tool_error(
+                "case_resolution must be 'use_existing' or 'create_variant'."
+            )
+
+        if not parser_budget_exceeded and (
+            case_resolution is None or case_resolution == "use_existing"
+        ):
+            conflicts = check_case_conflicts(env, command, cwd)
+            if conflicts:
+                conflict = conflicts[0]
+                if case_resolution is None:
+                    return json.dumps({
+                        "output": "",
+                        "exit_code": -1,
+                        "status": "case_conflict",
+                        "case_conflict": True,
+                        "requested_path": conflict["requested_path"],
+                        "existing_path": conflict["existing_path"],
+                        "choices": ["use_existing", "create_variant"],
+                        "error": (
+                            f"The requested path {conflict['requested_path']} differs "
+                            f"only by case from existing path {conflict['existing_path']}. "
+                            "Choose use_existing or create_variant."
+                        ),
+                    }, ensure_ascii=False)
+                command = rewrite_target_path(
+                    command,
+                    Path(conflict["requested_path"]),
+                    Path(conflict["existing_path"]),
+                    cwd,
+                )
 
         # Session key for cwd records: the contextvar doesn't cross tool-worker
         # threads, so fall back to the raw task_id (the top-level agent's
@@ -1623,6 +1663,11 @@ TERMINAL_SCHEMA = {
                 "type": "boolean",
                 "default": False,
                 "description": "With background=true: survive session end, /new, compression and other cleanup (not host exit). Only for jobs the user explicitly wants to outlive the conversation."
+            },
+            "case_resolution": {
+                "type": "string",
+                "enum": ["use_existing", "create_variant"],
+                "description": "When a case-only path conflict is reported on a case-sensitive filesystem, choose the existing spelling or explicitly create the requested case variant. Omit to ask the user."
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
@@ -1707,6 +1752,7 @@ def _handle_terminal(args, **kw):
         watch_patterns=watch_patterns,
         heartbeat=heartbeat,
         persist_on_release=persist_on_release,
+        case_resolution=args.get("case_resolution"),
     )
 
 

@@ -93,6 +93,16 @@ class TestAutoVoiceReplyFormat:
         voice_event = _make_event(Platform.TELEGRAM, chat_id="123", message_type=MessageType.VOICE)
         assert runner._should_send_voice_reply(voice_event, "hello", [], already_sent=True) is True
 
+    def test_should_send_voice_reply_global_auto_tts_ignores_text_input(self):
+        """Global voice.auto_tts with no explicit chat mode must not send voice for text input (#100431)."""
+        runner = _make_runner()
+        adapter = _make_adapter(Platform.TELEGRAM)
+        adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+        text_event = _make_event(Platform.TELEGRAM, chat_id="123", message_type=MessageType.TEXT)
+
+        assert runner._should_send_voice_reply(text_event, "hello", []) is False
+
 def _make_runner() -> GatewayRunner:
     with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):
         runner = GatewayRunner.__new__(GatewayRunner)

@@ -465,9 +465,16 @@ class HermesTokenStorage:
         HERMES_HOME/mcp-tokens/<server_name>.cimd-off      -- CIMD refused here
     """
 
-    def __init__(self, server_name: str, *, hermes_home: str | Path | None = None):
+    def __init__(
+        self,
+        server_name: str,
+        *,
+        hermes_home: str | Path | None = None,
+        configured_scope: str | None = None,
+    ):
         self._server_name = _safe_filename(server_name)
         self._hermes_home = Path(hermes_home) if hermes_home is not None else None
+        self._configured_scope = configured_scope
 
     def _tokens_path(self) -> Path:
         return _get_token_dir(self._hermes_home) / f"{self._server_name}.json"
@@ -542,7 +549,46 @@ class HermesTokenStorage:
                 # rather than fail persistence.
                 pass
         _write_json(self._tokens_path(), payload)
+        self._warn_if_scope_not_honoured(payload.get("scope"))
         logger.debug("OAuth tokens saved for %s", self._server_name)
+
+    def _warn_if_scope_not_honoured(self, granted_scope: str | None) -> None:
+        """Warn when the granted token exceeds the configured ``oauth.scope``.
+
+        The MCP SDK unconditionally overwrites ``client_metadata.scope`` with
+        every scope advertised by the server (WWW-Authenticate scope, then PRM
+        ``scopes_supported``, then AS ``scopes_supported``) before client
+        registration, so a configured narrow scope is silently discarded and
+        the client requests — and is granted — maximum privilege
+        (modelcontextprotocol/python-sdk#2317). Until that lands upstream,
+        this is the only Hermes-side signal that the knob did nothing.
+
+        ``offline_access`` is excluded from the comparison: the SDK appends it
+        itself (SEP-2207) whenever the AS supports it and the client has the
+        ``refresh_token`` grant, which Hermes always requests.
+        """
+        if not self._configured_scope or not granted_scope:
+            return
+        try:
+            configured = set(self._configured_scope.split())
+            granted = set(granted_scope.split())
+        except AttributeError:
+            return
+        extras = granted - configured - {"offline_access"}
+        if not extras:
+            return
+        logger.warning(
+            "MCP OAuth '%s': configured oauth.scope=%r was NOT honoured — the "
+            "granted token additionally carries %r (full grant: %r). The MCP "
+            "SDK replaces the configured scope with every scope the server "
+            "advertises before registration (modelcontextprotocol/python-sdk#2317). "
+            "Check the consent screen actually shown; the token may hold more "
+            "privilege than configured.",
+            self._server_name,
+            self._configured_scope,
+            " ".join(sorted(extras)),
+            granted_scope,
+        )
 
     # -- client info -------------------------------------------------------
 
@@ -1911,7 +1957,7 @@ def build_oauth_auth(
     apply_oauth_provider_defaults(
         cfg, server_name=server_name, server_url=server_url
     )
-    storage = HermesTokenStorage(server_name)
+    storage = HermesTokenStorage(server_name, configured_scope=cfg.get("scope"))
 
     if not _is_interactive() and not storage.has_cached_tokens():
         raise OAuthNonInteractiveError(

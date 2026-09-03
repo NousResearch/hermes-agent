@@ -160,6 +160,99 @@ class TestHermesTokenStorage:
         import asyncio
         assert asyncio.run(storage.get_tokens()) is None
 
+    # -- oauth.scope not honoured warning (#101467) --------------------------
+
+    @staticmethod
+    def _token_with_scope(scope):
+        mock_token = MagicMock()
+        payload = {
+            "access_token": "abc123",
+            "token_type": "Bearer",
+        }
+        if scope is not None:
+            payload["scope"] = scope
+        mock_token.model_dump.return_value = payload
+        return mock_token
+
+    def test_granted_scope_exceeding_configured_warns(self, tmp_path, monkeypatch, caplog):
+        """A granted scope wider than the configured oauth.scope must warn.
+
+        Regression for #101467: the MCP SDK overwrites client_metadata.scope
+        with every server-advertised scope before registration, silently
+        discarding the configured narrow scope. The warning is the only
+        Hermes-side signal the knob was ignored.
+        """
+        import logging
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage(
+            "bonusly", configured_scope="user:read recognition:write"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+            asyncio.run(
+                storage.set_tokens(
+                    self._token_with_scope(
+                        "user:read recognition:write billing:administer user:administer"
+                    )
+                )
+            )
+
+        assert "was NOT honoured" in caplog.text
+        assert "billing:administer" in caplog.text
+        assert "user:read recognition:write" in caplog.text
+
+    def test_sdk_appended_offline_access_does_not_warn(self, tmp_path, monkeypatch, caplog):
+        """offline_access is appended by the SDK itself (SEP-2207), not a leak."""
+        import logging
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv", configured_scope="read write")
+
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+            asyncio.run(
+                storage.set_tokens(self._token_with_scope("read write offline_access"))
+            )
+
+        assert "was NOT honoured" not in caplog.text
+
+    def test_granted_subset_of_configured_does_not_warn(self, tmp_path, monkeypatch, caplog):
+        """A server narrowing the grant is the AS's prerogative, not this bug."""
+        import logging
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv", configured_scope="read write admin")
+
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+            asyncio.run(storage.set_tokens(self._token_with_scope("read")))
+
+        assert "was NOT honoured" not in caplog.text
+
+    def test_no_configured_scope_never_warns(self, tmp_path, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+            asyncio.run(
+                storage.set_tokens(self._token_with_scope("read write admin"))
+            )
+
+        assert "was NOT honoured" not in caplog.text
+
+    def test_configured_scope_without_granted_scope_does_not_warn(self, tmp_path, monkeypatch, caplog):
+        """No scope on the token (server omitted it) — nothing to compare."""
+        import logging
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv", configured_scope="read write")
+
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+            asyncio.run(storage.set_tokens(self._token_with_scope(None)))
+
+        assert "was NOT honoured" not in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # build_oauth_auth

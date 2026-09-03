@@ -200,6 +200,172 @@ def test_schedule_task_parks_time_delay_without_dispatching(kanban_home):
         assert any(e.kind == "scheduled" and e.payload == {"reason": "run next week"} for e in events)
 
 
+# ---------------------------------------------------------------------------
+# Live-worker guard for schedule_task / block_task on a `running` task (#102423)
+# ---------------------------------------------------------------------------
+
+
+def _make_running_task_with_alive_worker(conn, title: str = "live worker") -> tuple[str, int]:
+    """Create a task, mark it ``running`` with a known-alive worker PID.
+
+    Uses the test process's own PID (always alive on this host) so we don't
+    need to spawn a child. Returns ``(task_id, worker_pid)``.
+    """
+    t = kb.create_task(conn, title=title, assignee="ops")
+    # Bring the task to ``ready`` then claim it so claim_lock / worker_pid
+    # populate the way the dispatcher would. We bypass the dispatcher's
+    # per-tick atomicity on purpose — the bug fires regardless of how the
+    # card got to ``running`` (operator-initiated transition or
+    # dispatcher-claimed).
+    kb.recompute_ready(conn)
+    host = kb._claimer_id().split(":", 1)[0]
+    kb.claim_task(conn, t, claimer=f"{host}:worker")
+    worker_pid = os.getpid()
+    kb._set_worker_pid(conn, t, worker_pid)
+    task = kb.get_task(conn, t)
+    assert task.status == "running", task.status
+    assert task.worker_pid == worker_pid
+    return t, worker_pid
+
+
+def test_schedule_task_refuses_when_worker_alive_on_running_task(kanban_home):
+    """Reproduces #102423 L1.
+
+    ``schedule_task`` on a ``running`` task with a live worker must NOT
+    silently drop the claim and leave the worker orphaned — the next
+    dispatcher tick would spawn a duplicate. Refuse with a clear reason.
+    """
+    with kb.connect() as conn:
+        t, worker_pid = _make_running_task_with_alive_worker(conn)
+        # Sanity: the worker is alive on this host.
+        assert kb._pid_alive(worker_pid)
+
+        ok, reason = kb.schedule_task(conn, t, reason="oops", with_reason=True)
+
+        assert ok is False, "schedule must refuse when live worker holds the card"
+        assert isinstance(reason, str) and reason, "refusal must include a reason string"
+        assert "running" in reason.lower() or str(worker_pid) in reason or "live" in reason.lower()
+
+        task = kb.get_task(conn, t)
+        assert task.status == "running", "status must NOT have changed"
+        assert task.worker_pid == worker_pid, "worker_pid must NOT have been cleared"
+        assert task.claim_lock is not None, "claim_lock must NOT have been cleared"
+
+
+def test_block_task_refuses_when_worker_alive_on_running_task(kanban_home):
+    """Reproduces #102423 L2.
+
+    ``block_task`` on a ``running`` task with a live worker must refuse,
+    for the same reason — clearing the claim would let a later
+    ``unblock_task`` → ``ready`` chain spawn a duplicate worker.
+    """
+    with kb.connect() as conn:
+        t, worker_pid = _make_running_task_with_alive_worker(conn)
+
+        ok, reason = kb.block_task(conn, t, reason="oops", with_reason=True)
+
+        assert ok is False, "block must refuse when live worker holds the card"
+        assert isinstance(reason, str) and reason, "refusal must include a reason string"
+
+        task = kb.get_task(conn, t)
+        assert task.status == "running"
+        assert task.worker_pid == worker_pid
+        assert task.claim_lock is not None
+
+
+def test_schedule_task_force_allows_with_orphan_event(kanban_home):
+    """Reproduces #102423 L3 + L4.
+
+    ``schedule_task(force=True)`` on a ``running`` task with a live worker
+    must (a) perform the transition, (b) clear the worker PID, AND
+    (c) emit an audit event that records the orphaned PID so an operator
+    can find the live worker process without `pgrep`.
+    """
+    with kb.connect() as conn:
+        t, worker_pid = _make_running_task_with_alive_worker(conn)
+
+        ok, reason = kb.schedule_task(conn, t, reason="manual override", force=True, with_reason=True)
+
+        assert ok is True, f"force=True must permit the transition (got reason={reason!r})"
+        task = kb.get_task(conn, t)
+        assert task.status == "scheduled"
+        assert task.worker_pid is None
+        assert task.claim_lock is None
+
+        events = kb.list_events(conn, t)
+        override_events = [
+            e for e in events
+            if e.kind == "scheduled" and isinstance(e.payload, dict)
+            and e.payload.get("force") is True
+        ]
+        assert override_events, f"expected a force-scheduled event with orphan pid, got {events!r}"
+        payload = override_events[-1].payload
+        assert payload.get("orphaned_pid") == worker_pid, (
+            f"orphaned_pid={payload.get('orphaned_pid')} != worker_pid={worker_pid}"
+        )
+        assert payload.get("reason") == "manual override"
+
+
+def test_schedule_task_proceeds_when_worker_pid_dead(kanban_home):
+    """GREEN path: card stuck in 'running' with a dead worker must still be
+    recoverable without ``force``. The dispatcher / operator may have
+    legitimately failed to clear the row after a host crash.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stuck dead worker", assignee="ops")
+        kb.recompute_ready(conn)
+        host = kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        # PID 1 is init on POSIX and always present, but we want a PID we
+        # can guarantee the host considers gone. Use a very high PID that
+        # cannot be allocated by the kernel in normal operation.
+        kb._set_worker_pid(conn, t, 2_000_000_000)
+        task = kb.get_task(conn, t)
+        assert task.status == "running"
+        assert kb._pid_alive(2_000_000_000) is False, "test premise: high PID must be dead"
+
+        ok, reason = kb.schedule_task(conn, t, reason="clean up dead worker", with_reason=True)
+
+        assert ok is True, f"schedule must proceed when worker is gone (reason={reason!r})"
+        task = kb.get_task(conn, t)
+        assert task.status == "scheduled"
+        assert task.worker_pid is None
+
+
+def test_schedule_task_proceeds_when_worker_pid_none(kanban_home):
+    """GREEN path: a running task without a recorded worker_pid (e.g. legacy
+    row, dispatcher crash mid-claim) must still be schedulable.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="running no pid", assignee="ops")
+        kb.recompute_ready(conn)
+        host = kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        # Don't call _set_worker_pid. The row is ``running`` but PID is NULL.
+        task = kb.get_task(conn, t)
+        assert task.status == "running"
+        assert task.worker_pid is None
+
+        ok, reason = kb.schedule_task(conn, t, reason="legacy row cleanup", with_reason=True)
+
+        assert ok is True, f"schedule must proceed when no PID recorded (reason={reason!r})"
+        task = kb.get_task(conn, t)
+        assert task.status == "scheduled"
+
+
+def test_schedule_task_legacy_single_arg_returns_bool_still_works(kanban_home):
+    """Backwards-compat: callers that pass only ``task_id`` and ``reason``
+    (no ``force``/``with_reason``) must still get the legacy ``bool`` return
+    contract on the workerless path. The bug only manifests when a live
+    worker holds the card.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="normal delay", assignee="ops")
+        # Worker-less path — must be a truthy scalar (legacy contract).
+        result = kb.schedule_task(conn, t, reason="run next week")
+        assert result is True
+
+
 
 
 

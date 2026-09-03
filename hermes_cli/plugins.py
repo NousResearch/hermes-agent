@@ -669,6 +669,51 @@ def _get_enabled_plugins() -> Optional[set]:
         if "enabled" not in plugins_cfg:
             return None
         enabled = plugins_cfg.get("enabled")
+        if isinstance(enabled, str):
+            # A JSON/YAML-ish string instead of a list (e.g.
+            # ``enabled: '["web/rotating-search"]'``) — written by hand or by
+            # a tool that quoted the value. Silently returning None here
+            # disables EVERY plugin, which is indistinguishable from "not
+            # configured yet" and sends capability-providing plugins (web
+            # search/extract backends) into their paid fallbacks without a
+            # word. Coerce what we can and warn loudly.
+            text = enabled.strip()
+            parsed: Optional[list] = None
+            if text:
+                try:
+                    import json
+
+                    candidate = json.loads(text)
+                    if isinstance(candidate, list):
+                        parsed = candidate
+                except Exception:
+                    # Only treat a bracketed/comma-joined value as a list;
+                    # a bare scalar like ``enabled: 'true'`` is a config
+                    # error, not a one-element allow-list.
+                    if text.startswith("[") or "," in text:
+                        parsed = [
+                            part.strip().strip("\"'")
+                            for part in text.strip("[]").split(",")
+                            if part.strip().strip("\"'")
+                        ] or None
+                    else:
+                        parsed = None
+            if parsed is None:
+                logger.warning(
+                    "plugins.enabled in config.yaml is a string that could not "
+                    "be parsed as a list (%r); treating as unset, so NO plugins "
+                    "will load. Fix it with `hermes plugins enable <name>`.",
+                    enabled[:120],
+                )
+                return None
+            logger.warning(
+                "plugins.enabled in config.yaml is a quoted string, not a YAML "
+                "list; recovered %d entries. Re-save it as a list (e.g. run "
+                "`hermes plugins enable <name>`) — otherwise plugin loading "
+                "depends on this fallback.",
+                len(parsed),
+            )
+            return set(parsed)
         if not isinstance(enabled, list):
             return None
         return set(enabled)

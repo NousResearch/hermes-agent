@@ -2151,7 +2151,16 @@ class WeixinAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        is_voice: bool = False,
     ) -> SendResult:
+        """Deliver audio to Weixin as a file attachment.
+
+        ``is_voice`` mirrors the shared ``BasePlatformAdapter.send_voice``
+        keyword set (the gateway media router passes it for MEDIA: audio).
+        Weixin has no proven native voice-bubble path, so every audio send
+        takes the attachment fallback below and the flag is accepted for
+        signature compatibility and ignored.
+        """
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
 

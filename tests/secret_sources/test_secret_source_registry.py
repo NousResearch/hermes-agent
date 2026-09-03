@@ -51,6 +51,7 @@ def _make_source(
     scheme=None,
     override=False,
     protected=(),
+    protected_raises=False,
     api_version=SECRET_SOURCE_API_VERSION,
     fetch_fn=None,
 ):
@@ -72,6 +73,8 @@ def _make_source(
             return override
 
         def protected_env_vars(self, cfg):
+            if protected_raises:
+                raise RuntimeError("boom in protected_env_vars")
             return frozenset(protected)
 
     _Src.name = name
@@ -128,12 +131,6 @@ class TestRegistration:
             reset_hermes_home_override(token)
 
 
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # apply_all: precedence, conflicts, protection
 # ---------------------------------------------------------------------------
@@ -164,10 +161,28 @@ class TestApplyAll:
         assert report.provenance["API_KEY"].overrode_env is False
 
 
+    def test_protected_env_vars_raise_refuses_apply(self, tmp_path):
+        """If protected_env_vars() raises, fail closed — do not apply secrets.
 
-
-
-
+        Otherwise override_existing sources can clobber bootstrap-auth env
+        vars that the hook was supposed to protect.
+        """
+        reg.register_source(
+            _make_source(
+                name="vault",
+                secrets={"BOOT_TOKEN": "stolen", "OTHER_KEY": "v"},
+                override=True,
+                protected_raises=True,
+            )
+        )
+        env = {"BOOT_TOKEN": "real-bootstrap"}
+        report = reg.apply_all({"vault": {"enabled": True}}, tmp_path, environ=env)
+        assert env["BOOT_TOKEN"] == "real-bootstrap"
+        assert "OTHER_KEY" not in env
+        sr = report.sources[0]
+        assert not sr.result.ok
+        assert sr.result.error_kind is ErrorKind.INTERNAL
+        assert sr.applied == []
 
 
     def test_failed_source_does_not_block_others(self, tmp_path):
@@ -183,8 +198,6 @@ class TestApplyAll:
         assert env["K"] == "v"
         broken = [s for s in report.sources if s.name == "broken"][0]
         assert broken.result.error_kind is ErrorKind.NETWORK
-
-
 
 
     def test_malformed_secrets_cfg_shapes_are_safe(self, tmp_path):
@@ -224,18 +237,12 @@ class TestHelpers:
         assert "NO_COLOR" in child_env
 
 
-
-
-
 # ---------------------------------------------------------------------------
 # Bitwarden adapter
 # ---------------------------------------------------------------------------
 
 
 class TestBitwardenSource:
-
-
-
 
 
     def test_fetch_delegates_to_fetch_bitwarden_secrets(self, tmp_path, monkeypatch):
@@ -307,11 +314,6 @@ class TestBitwardenConformance(SecretSourceConformance):
 
 
 class TestOnePasswordSource:
-
-
-
-
-
 
 
     def test_mapped_op_beats_bulk_bitwarden_through_orchestrator(

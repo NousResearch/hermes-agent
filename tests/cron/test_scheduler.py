@@ -215,6 +215,7 @@ class TestResolveDeliveryTarget:
             "platform": "discord",
             "chat_id": "home-parent",
             "thread_id": None,
+            "_resolved_from": "home",
         }
 
     def test_telegram_cron_thread_id_overrides_home_thread_id(self, monkeypatch):
@@ -227,6 +228,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1001234567890",
             "thread_id": "42",
+            "_resolved_from": "home",
         }
 
 
@@ -313,6 +315,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-4004",
             "thread_id": None,
+            "_resolved_from": "home",
         }
 
 

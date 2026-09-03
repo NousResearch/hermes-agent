@@ -37,7 +37,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Protocol
+from typing import Any, Callable, List, Optional, Protocol, Tuple
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -1741,6 +1741,7 @@ def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
 _MIRROR_PROVENANCE_RANK = {
     "origin": 3,
     "origin_fallback": 2,
+    "home": 2,
     "explicit": 1,
 }
 
@@ -1765,6 +1766,13 @@ def _target_mirror_eligible(
       the origin, not a broadcast. Eligible under the same flags as a true
       origin target. (Field report 2026-08-17: brief delivered to the Slack
       DM, mirror silently skipped, reply hit a context-less session.)
+    - ``home``: a user-WRITTEN bare-platform token (``deliver: "slack"``)
+      resolves to the same home channel with the same conversation
+      semantics — a deliberate address, not a broadcast — and is eligible
+      under the same flags as ``origin_fallback``. (Field report
+      2026-09-02: managed crons shipped with ``deliver: slack``, brief
+      delivered but never injected into the live session.) Only tokens
+      produced by expanding ``all`` remain untagged.
     - ``explicit``: a ``platform:chat_id`` target is eligible ONLY when the
       job itself opts in via ``attach_to_session: true`` — the job author
       declaring this target a conversation (managed per-user DM briefings).
@@ -1772,8 +1780,8 @@ def _target_mirror_eligible(
       targets: it must not start writing transcript entries into arbitrary
       explicitly-addressed chats (shared channels, other users' DMs).
 
-    Broadcast expansions (``all``, bare-platform home targets) carry no
-    provenance tag and are never eligible — unchanged invariant.
+    Broadcast expansions (``all``) carry no provenance tag and are never
+    eligible — unchanged invariant.
 
     ``origin_match`` lets the caller pass a precomputed
     ``_target_matches_origin`` result (``_deliver_result`` already computes it
@@ -1789,7 +1797,7 @@ def _target_mirror_eligible(
     if origin_match:
         return True
     resolved_from = target.get("_resolved_from")
-    if resolved_from == "origin_fallback":
+    if resolved_from in ("origin_fallback", "home"):
         # Same activation rules as an origin target: per-job attach wins,
         # else the global flag. This deliberately restates the precedence
         # _cron_mirror_delivery_enabled encodes (keep the two in sync): the
@@ -2491,8 +2499,17 @@ def _origin_delivery_thread(origin: dict):
     return origin.get("thread_id")
 
 
-def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
-    """Resolve one concrete auto-delivery target for a cron job."""
+def _resolve_single_delivery_target(
+    job: dict, deliver_value: str, *, from_broadcast: bool = False
+) -> Optional[dict]:
+    """Resolve one concrete auto-delivery target for a cron job.
+
+    ``from_broadcast`` marks a bare-platform token that was produced by
+    expanding a routing intent (``all``) rather than written by the user.
+    Broadcast expansions resolve without provenance and are never
+    mirror-eligible; a user-written bare-platform token resolves with
+    ``_resolved_from: "home"`` (see ``_target_mirror_eligible``).
+    """
 
     origin = _resolve_origin(job)
 
@@ -2585,6 +2602,13 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         }
 
     platform_name = deliver_value
+    # Provenance for bare-platform home targets: a user-WRITTEN token is a
+    # deliberate address to the operator-configured home channel — the same
+    # destination and conversation semantics as the origin_fallback lane —
+    # so it is mirror-eligible under the same flags. Tokens expanded from
+    # ``all`` are broadcasts and stay untagged (never eligible), preserving
+    # the June origin-scoping invariant (c06ceb3232).
+    home_provenance = None if from_broadcast else "home"
     if origin and origin.get("platform") == platform_name:
         chat_id = _get_home_target_chat_id(platform_name)
         if chat_id:
@@ -2592,11 +2616,16 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                 "platform": platform_name,
                 "chat_id": chat_id,
                 "thread_id": _get_home_target_thread_id(platform_name),
+                "_resolved_from": home_provenance,
             }
         return {
             "platform": platform_name,
             "chat_id": str(origin["chat_id"]),
             "thread_id": origin.get("thread_id"),
+            # No home channel configured: this resolves to the origin chat
+            # itself, which _target_matches_origin already recognizes — no
+            # provenance tag needed (and a broadcast expansion must not
+            # gain one).
         }
 
     if not _is_known_delivery_platform(platform_name):
@@ -2609,6 +2638,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         "platform": platform_name,
         "chat_id": chat_id,
         "thread_id": _get_home_target_thread_id(platform_name),
+        "_resolved_from": home_provenance,
     }
 
 
@@ -2820,21 +2850,29 @@ def _resolve_bot_chat_target(job: dict, profile_arg: str) -> Optional[dict]:
         return None
 
 
-def _expand_routing_tokens(part: str) -> List[str]:
+def _expand_routing_tokens(part: str) -> List[Tuple[str, bool]]:
     """Expand a routing-intent token to concrete platform names.
 
     ``all`` expands to every platform in ``_iter_home_target_platforms()``
     that has a configured home chat_id right now.  Unknown / non-token
     values pass through unchanged as a single-element list, so the caller
     can treat every token uniformly.
+
+    Each result is ``(token, from_broadcast)``. The flag records whether
+    the token was produced by expanding a routing intent (``all``) or
+    written by the user directly — resolution provenance depends on it: a
+    user-written bare-platform token deliberately addresses the home
+    channel (mirror-eligible ``home`` provenance), while the identical
+    token expanded from ``all`` is a broadcast and stays untagged/never
+    eligible (see ``_target_mirror_eligible``).
     """
     token = part.lower()
     if token not in _ROUTING_TOKENS:
-        return [part]
-    expanded: List[str] = []
+        return [(part, False)]
+    expanded: List[Tuple[str, bool]] = []
     for platform_name in _iter_home_target_platforms():
         if _get_home_target_chat_id(platform_name):
-            expanded.append(platform_name)
+            expanded.append((platform_name, True))
     return expanded
 
 
@@ -2876,15 +2914,19 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
 
     raw_parts = [p.strip() for p in deliver.split(",") if p.strip()]
 
-    # Expand routing intents.
-    parts: List[str] = []
+    # Expand routing intents, tracking whether each token came from a
+    # broadcast expansion (``all``) or was written directly by the user —
+    # provenance tagging in _resolve_single_delivery_target depends on it.
+    parts: List[Tuple[str, bool]] = []
     for raw in raw_parts:
         parts.extend(_expand_routing_tokens(raw))
 
     seen = {}
     targets = []
-    for part in parts:
-        target = _resolve_single_delivery_target(job, part)
+    for part, from_broadcast in parts:
+        target = _resolve_single_delivery_target(
+            job, part, from_broadcast=from_broadcast
+        )
         if target:
             key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
             if key not in seen:

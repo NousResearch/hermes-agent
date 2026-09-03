@@ -624,6 +624,77 @@ class TestCliErrorContract:
         assert msg.endswith("...")
 
 
+# ── Display-name resolution / negative caching (#73919) ───────────────────
+
+
+class TestResolveUserName:
+    """A transient CLI failure must not be cached as "no profile"."""
+
+    @pytest.mark.asyncio
+    async def test_success_is_cached(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("users", "get", [{"display_name": "Alice"}], code=0)
+        adapter._run_cli = cli
+
+        name = await adapter._resolve_user_name(OTHER_PUBKEY)
+        assert name == "Alice"
+        assert adapter._user_names[OTHER_PUBKEY] == "Alice"
+
+        # Second call must be served from cache, not re-invoke the CLI.
+        name2 = await adapter._resolve_user_name(OTHER_PUBKEY)
+        assert name2 == "Alice"
+        assert len(cli.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_profile_is_cached_as_npub_prefix(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("users", "get", [], code=0)  # empty profile list, success
+        adapter._run_cli = cli
+
+        name = await adapter._resolve_user_name(OTHER_PUBKEY)
+        expected = hex_to_npub(OTHER_PUBKEY)[:16]
+        assert name == expected
+        assert adapter._user_names[OTHER_PUBKEY] == expected
+
+        await adapter._resolve_user_name(OTHER_PUBKEY)
+        assert len(cli.calls) == 1  # cached, no second CLI call
+
+    @pytest.mark.asyncio
+    async def test_transient_cli_failure_is_not_cached(self):
+        """CLI error (e.g. relay hiccup) must retry on the next poll sweep."""
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        # Queue both responses upfront: _ScriptedCli pops in FIFO order once
+        # more than one response is queued for the same (group, cmd).
+        cli.script("users", "get", "", code=1, stderr='{"error":"relay_error","message":"boom"}')
+        cli.script("users", "get", [{"display_name": "Bob"}], code=0)
+        adapter._run_cli = cli
+
+        name = await adapter._resolve_user_name(OTHER_PUBKEY)
+        assert name == hex_to_npub(OTHER_PUBKEY)[:16]
+        assert OTHER_PUBKEY not in adapter._user_names  # must NOT be cached
+
+        # Next sweep succeeds: the CLI must be re-invoked, not served stale.
+        name2 = await adapter._resolve_user_name(OTHER_PUBKEY)
+        assert name2 == "Bob"
+        assert len(cli.calls) == 2
+        assert adapter._user_names[OTHER_PUBKEY] == "Bob"
+
+    @pytest.mark.asyncio
+    async def test_timeout_failure_is_not_cached(self):
+        """The 124-timeout return code from _exec_buzz must not be cached either."""
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("users", "get", "", code=124, stderr='{"error":"timeout","message":"buzz users timed out after 30.0s"}')
+        adapter._run_cli = cli
+
+        name = await adapter._resolve_user_name(OTHER_PUBKEY)
+        assert name == hex_to_npub(OTHER_PUBKEY)[:16]
+        assert OTHER_PUBKEY not in adapter._user_names
+
+
 # ── Seeding / high-water mark / de-dupe ───────────────────────────────────
 
 

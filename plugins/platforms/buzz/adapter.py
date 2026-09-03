@@ -2672,24 +2672,31 @@ class BuzzAdapter(BasePlatformAdapter):
     async def _resolve_user_name(self, pubkey: str) -> str:
         """Resolve a pubkey to a display name (cached; falls back to npub prefix).
 
-        Failures are cached too (negative caching): without it, every message
-        from a profile-less pubkey re-runs ``users get`` each poll sweep,
-        which amplifies badly when several adapter instances poll in one
-        process.
+        A profile-less pubkey is negative-cached: without it, every message
+        from a member with no display name re-runs ``users get`` each poll
+        sweep, which amplifies badly when several adapter instances poll in
+        one process. That negative cache is only trustworthy when the CLI
+        call itself succeeded (``code == 0``) — a transient failure (relay
+        hiccup, or the 30s ``_exec_buzz`` timeout returning code 124) must
+        NOT be cached, or one bad poll sweep permanently pins that user to
+        their npub prefix for the rest of the gateway process's lifetime.
         """
         cached = self._user_names.get(pubkey)
         if cached is not None:
             return cached
-        name = ""
         code, out, _err = await self._run_cli(["users", "get", "--pubkey", pubkey])
+        name = ""
         if code == 0:
             profiles = _parse_json_list(out)
             if profiles:
                 name = str(profiles[0].get("display_name") or "").strip()
-        if not name:
-            name = (hex_to_npub(pubkey) or pubkey)[:16]
-        self._user_names[pubkey] = name
-        return name
+            if not name:
+                name = (hex_to_npub(pubkey) or pubkey)[:16]
+            self._user_names[pubkey] = name
+            return name
+        # Transient failure: fall back to the npub prefix for this call only,
+        # without caching, so the next poll sweep retries the lookup.
+        return (hex_to_npub(pubkey) or pubkey)[:16]
 
     @staticmethod
     def _trim_seen(state: dict) -> None:

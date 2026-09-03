@@ -605,6 +605,18 @@ class SkillSource(ABC):
         """Unique identifier for this source (e.g. 'github', 'clawhub')."""
         ...
 
+    def is_revision_content_current(
+        self, identifier: str, recorded_revision: str
+    ) -> Optional[bool]:
+        """Return whether an immutable revision still has current skill content."""
+        return None
+
+    def prepare_revision_checks(
+        self, identifiers_and_revisions: List[Tuple[str, str]]
+    ) -> None:
+        """Optionally prefetch shared metadata for a batch of revision checks."""
+        return None
+
     def trust_level_for(self, identifier: str) -> str:
         """Determine trust level for a skill from this source."""
         return "community"
@@ -697,6 +709,7 @@ class GitHubSource(SkillSource):
         # Survives within a single search/install flow, avoiding redundant API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
         self._tree_revisions: Dict[str, str] = {}
+        self._revision_tree_cache: Dict[Tuple[str, str], List[dict]] = {}
         # Per-repo cache of the optional skills.sh.json grouping sidecar,
         # mapping skill_name -> human-readable grouping title. ``None`` means
         # "fetched, no sidecar"; a missing key means "not fetched yet".
@@ -783,6 +796,7 @@ class GitHubSource(SkillSource):
             return None
 
         files: Dict[str, Union[str, bytes]] = {"SKILL.md": skill_md}
+        source_tree_complete = tree is not None
         if tree is not None:
             # Download the FULL skill directory, not just SKILL.md-linked
             # paths. Link-driven fetching silently dropped every support file
@@ -815,6 +829,7 @@ class GitHubSource(SkillSource):
                     return None
                 content = self._fetch_file_bytes(repo, item_path, ref=pinned_ref)
                 if content is None:
+                    source_tree_complete = False
                     logger.warning("Failed to fetch referenced skill support "
                                    "file; continuing without it: %s", item_path)
                     continue
@@ -866,8 +881,66 @@ class GitHubSource(SkillSource):
                     if revision else f"https://github.com/{repo}/{skill_path}"
                 ),
                 "source_revision": revision,
+                "source_tree_complete": source_tree_complete,
             },
         )
+
+    def is_revision_content_current(
+        self, identifier: str, recorded_revision: str
+    ) -> Optional[bool]:
+        """Compare one skill subtree across Git revisions without blob downloads."""
+        parts = identifier.split("/", 2)
+        if len(parts) < 3:
+            return None
+
+        repo = f"{parts[0]}/{parts[1]}"
+        skill_path = parts[2].rstrip("/")
+        current_tree = self._get_repo_tree(repo)
+        if current_tree is None:
+            return None
+        if self._tree_revisions.get(repo) == recorded_revision:
+            return True
+
+        recorded_tree = self._get_repo_tree_at_revision(repo, recorded_revision)
+        if recorded_tree is None:
+            return None
+        recorded_fingerprint = self._skill_tree_fingerprint(recorded_tree, skill_path)
+        if not recorded_fingerprint:
+            return None
+        return self._skill_tree_fingerprint(current_tree[1], skill_path) == recorded_fingerprint
+
+    def prepare_revision_checks(
+        self, identifiers_and_revisions: List[Tuple[str, str]]
+    ) -> None:
+        """Fetch unique current and historical repo trees concurrently."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        repos: set[str] = set()
+        historical: set[Tuple[str, str]] = set()
+        for identifier, revision in identifiers_and_revisions:
+            parts = identifier.split("/", 2)
+            if len(parts) < 3:
+                continue
+            repo = f"{parts[0]}/{parts[1]}"
+            repos.add(repo)
+            historical.add((repo, revision))
+
+        if not repos:
+            return
+        self.auth.get_headers()
+        with ThreadPoolExecutor(max_workers=min(len(repos), 8)) as pool:
+            list(pool.map(self._get_repo_tree, sorted(repos)))
+
+        historical = {
+            item for item in historical
+            if self._tree_revisions.get(item[0]) != item[1]
+        }
+        if historical:
+            with ThreadPoolExecutor(max_workers=min(len(historical), 8)) as pool:
+                list(pool.map(
+                    lambda item: self._get_repo_tree_at_revision(*item),
+                    sorted(historical),
+                ))
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         """Fetch just the SKILL.md metadata for preview."""
@@ -1010,6 +1083,52 @@ class GitHubSource(SkillSource):
             self._tree_revisions[repo] = revision
         self._tree_cache[repo] = (default_branch, entries)
         return (default_branch, entries)
+
+    def _get_repo_tree_at_revision(
+        self, repo: str, revision: str
+    ) -> Optional[List[dict]]:
+        """Fetch and cache a recursive tree at an immutable Git revision."""
+        cache_key = (repo, revision)
+        if cache_key in self._revision_tree_cache:
+            return self._revision_tree_cache[cache_key]
+        if re.fullmatch(r"[0-9a-fA-F]{40}", revision) is None:
+            return None
+
+        response = self._github_get(
+            f"https://api.github.com/repos/{repo}/git/trees/{revision}",
+            params={"recursive": "1"},
+            timeout=30,
+        )
+        if response is None or response.status_code != 200:
+            return None
+        try:
+            tree_data = response.json()
+        except ValueError:
+            return None
+        if tree_data.get("truncated"):
+            return None
+        entries = tree_data.get("tree", [])
+        if not isinstance(entries, list):
+            return None
+        self._revision_tree_cache[cache_key] = entries
+        return entries
+
+    @staticmethod
+    def _skill_tree_fingerprint(
+        entries: List[dict], skill_path: str
+    ) -> Tuple[Tuple[str, str, str, str], ...]:
+        """Return path and Git-object identity for entries inside one skill."""
+        prefix = f"{skill_path.rstrip('/')}/"
+        return tuple(sorted(
+            (
+                str(item.get("path", ""))[len(prefix):],
+                str(item.get("type", "")),
+                str(item.get("mode", "")),
+                str(item.get("sha", "")),
+            )
+            for item in entries
+            if str(item.get("path", "")).startswith(prefix)
+        ))
 
     def _check_rate_limit_response(self, resp: "httpx.Response") -> None:
         """Flag the instance as rate-limited when GitHub returns 403 + exhausted quota."""
@@ -4445,6 +4564,30 @@ def check_for_skill_updates(
     if sources is None:
         sources = create_source_router(auth=auth)
 
+    for source in sources:
+        revision_checks: List[Tuple[str, str]] = []
+        for entry in installed:
+            if not _source_matches(source, entry.get("source", "")):
+                continue
+            metadata = entry.get("metadata")
+            revision = (
+                metadata.get("source_revision", "")
+                if isinstance(metadata, dict)
+                else ""
+            )
+            tree_complete = (
+                metadata.get("source_tree_complete") is True
+                if isinstance(metadata, dict)
+                else False
+            )
+            if revision and tree_complete:
+                revision_checks.append((entry.get("identifier", ""), revision))
+        if revision_checks:
+            try:
+                source.prepare_revision_checks(revision_checks)
+            except Exception:
+                pass
+
     results: List[dict] = []
     for entry in installed:
         identifier = entry.get("identifier", "")
@@ -4465,6 +4608,40 @@ def check_for_skill_updates(
                 "status": "unavailable",
             })
             continue
+
+        metadata = entry.get("metadata")
+        recorded_revision = (
+            metadata.get("source_revision", "")
+            if isinstance(metadata, dict)
+            else ""
+        )
+        source_tree_complete = (
+            metadata.get("source_tree_complete") is True
+            if isinstance(metadata, dict)
+            else False
+        )
+        if recorded_revision and source_tree_complete:
+            revision_matches = False
+            for src in candidate_sources:
+                try:
+                    revision_matches = src.is_revision_content_current(
+                        identifier, recorded_revision
+                    ) is True
+                except Exception:
+                    revision_matches = False
+                if revision_matches:
+                    break
+            if revision_matches:
+                current_hash = entry.get("content_hash", "")
+                results.append({
+                    "name": entry.get("name", ""),
+                    "identifier": identifier,
+                    "source": source_name,
+                    "status": "up_to_date",
+                    "current_hash": current_hash,
+                    "latest_hash": current_hash,
+                })
+                continue
 
         bundle = None
         for src in candidate_sources:

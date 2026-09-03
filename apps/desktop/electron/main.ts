@@ -1574,7 +1574,14 @@ let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
 let remoteHeaderRulesInstalled = false
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
-const hermesLog = []
+// Buffer log lines in a lazily-created array. Kept lazy because module-level
+// init order runs pool-limits loading BEFORE this declaration, and rememberLog
+// is called from that path — eager init here is a temporal-dead-zone crash.
+const hermesLogLazy = { lines: null }
+function hermesLogLines() {
+  if (!hermesLogLazy.lines) hermesLogLazy.lines = []
+  return hermesLogLazy.lines
+}
 const previewWatchers = new Map()
 let previewShortcutActive = false
 let desktopLogBuffer = ''
@@ -1726,10 +1733,10 @@ function rememberLog(chunk) {
   // at the same moment.  ISO-8601 UTC, matching agent.log/gateway.log.
   const stamp = new Date().toISOString()
   const lines = text.split(/\r?\n/).map(line => formatDesktopLogLine(line, stamp))
-  hermesLog.push(...lines)
+  hermesLogLines().push(...lines)
 
-  if (hermesLog.length > 300) {
-    hermesLog.splice(0, hermesLog.length - 300)
+  if (hermesLogLines().length > 300) {
+    hermesLogLines().splice(0, hermesLogLines().length - 300)
   }
 
   desktopLogBuffer += `${lines.join('\n')}\n`
@@ -2879,7 +2886,7 @@ function resolveGhBinary() {
 }
 
 function recentHermesLog() {
-  return hermesLog.slice(-20).join('\n')
+  return hermesLogLines().slice(-20).join('\n')
 }
 
 // ─── Self-update (git-pull against the running backend's hermes root) ──────
@@ -11666,7 +11673,7 @@ async function connectRegistryBackend(
       // is only the routing label. hermes:api uses it to translate explicit
       // self-profile query filters into the backend's namespace.
       remoteProfile: sshConfig.remoteProfile || '',
-      logs: hermesLog.slice(-80),
+      logs: hermesLogLines().slice(-80),
       ...getWindowState()
     }
   }
@@ -11697,7 +11704,7 @@ async function connectRegistryBackend(
     // One host, many profiles: REST paths must carry ?profile= (same contract
     // as the global-remote shared-primary route).
     sharedRemote: true,
-    logs: hermesLog.slice(-80),
+    logs: hermesLogLines().slice(-80),
     ...getWindowState()
   }
 }
@@ -12363,7 +12370,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     return {
       ...remote,
       profile,
-      logs: hermesLog.slice(-80),
+      logs: hermesLogLines().slice(-80),
       ...getWindowState()
     }
   }
@@ -12573,7 +12580,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     token: authToken,
     profile,
     wsUrl,
-    logs: hermesLog.slice(-80),
+    logs: hermesLogLines().slice(-80),
     ...getWindowState()
   }
 }
@@ -12773,7 +12780,7 @@ async function startHermes() {
         error: null
       })
 
-      return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
+      return createPrimaryRemoteConnection(remote, hermesLogLines().slice(-80), getWindowState())
     }
 
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
@@ -13051,7 +13058,7 @@ async function startHermes() {
       authMode: 'token',
       token: authToken,
       wsUrl,
-      logs: hermesLog.slice(-80),
+      logs: hermesLogLines().slice(-80),
       ...getWindowState()
     }
   })().catch(async error => {
@@ -17317,7 +17324,7 @@ ipcMain.handle('hermes:logs:reveal', async () => {
   }
 })
 
-ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
+ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLogLines().slice(-200) }))
 
 // Renderer error-boundary catches (#79428 defect B): the component stack only
 // exists in renderer memory, so the boundary posts it here and we persist it

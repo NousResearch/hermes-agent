@@ -57,6 +57,7 @@ from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional, Set,
 
 from hermes_constants import (
     get_hermes_home,
+    get_process_hermes_home,
     hermes_home_key,
     reset_hermes_home_override,
     set_hermes_home_override,
@@ -2476,6 +2477,18 @@ class PluginContext:
                 "Plugin '%s' tried to register a dashboard-auth provider "
                 "that does not inherit from DashboardAuthProvider. Ignoring.",
                 self.manifest.name,
+            )
+            return
+        launch_scope = hermes_home_key(get_process_hermes_home())
+        if self._manager.scope_key != launch_scope:
+            logger.warning(
+                "Plugin '%s' tried to register dashboard-auth provider %r "
+                "from profile scope %s; ignoring it because dashboard auth "
+                "is owned by launch scope %s.",
+                self.manifest.name,
+                provider.name,
+                self._manager.scope_key,
+                launch_scope,
             )
             return
         registry_name = provider.name

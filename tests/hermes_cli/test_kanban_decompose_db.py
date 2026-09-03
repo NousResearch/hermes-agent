@@ -389,3 +389,107 @@ def test_decompose_fresh_triage_still_sets_root_assignee(kanban_home):
         root = kb.get_task(conn, tid)
     assert root is not None
     assert root.assignee == "orchestrator"
+
+
+def _complete(conn, tid):
+    kb.complete_task(conn, tid)
+
+
+def test_decompose_hold_child_is_operator_hold_and_never_autopromotes(kanban_home):
+    """Change A (2026-09-04 GlobalAside): a decomposed child marked ``hold``
+    must be created as a REAL operator_hold block — never todo/ready — so it
+    cannot auto-promote past an owner approval gate. A prose 'HELD' in the body
+    is not a gate: recompute_ready auto-promotes a todo child the instant its
+    parent completes. Assert:
+      1) child with hold=True -> status 'blocked', block_kind 'operator_hold'
+      2) a blocked 'operator_hold' child whose parent completes is NOT promoted
+         by recompute_ready (sticky block), i.e. no bypass via parent-gating.
+    """
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="ship a feature")
+    children = [
+        # Non-held child: normal todo -> ready on parent completion.
+        {"title": "implement", "assignee": "engineer", "parents": [], "hold": False},
+        # Held terminal deploy child children of the impl child.
+        {"title": "Deploy to production", "assignee": "researcher",
+         "parents": [0], "hold": True},
+    ]
+    with kb.connect() as conn:
+        child_ids = kb.decompose_triage_task(
+            conn, tid, root_assignee="orchestrator", children=children,
+            author="decomposer",
+        )
+    assert child_ids is not None and len(child_ids) == 2
+    impl_id, deploy_id = child_ids
+
+    with kb.connect() as conn:
+        impl = kb.get_task(conn, impl_id)
+        deploy = kb.get_task(conn, deploy_id)
+        assert impl.status == "ready"          # non-held: promoted normally
+        assert deploy.status == "blocked"      # held: parked as a block
+        assert deploy.block_kind == "operator_hold"
+
+    # Complete the impl parent. recompute_ready must NOT promote the held child.
+    with kb.connect() as conn:
+        kb.complete_task(conn, impl_id)
+        kb.recompute_ready(conn)
+
+    with kb.connect() as conn:
+        deploy = kb.get_task(conn, deploy_id)
+        assert deploy.status == "blocked", (
+            "operator_hold child auto-promoted past approval gate — Change A "
+            "regression"
+        )
+        assert deploy.block_kind == "operator_hold"
+
+    # A real unblock (owner approval) is the only exit.
+    with kb.connect() as conn:
+        kb.unblock_task(conn, deploy_id)
+    with kb.connect() as conn:
+        deploy = kb.get_task(conn, deploy_id)
+        # After unblock, if its parent is done it resumes (ready) — the gate
+        # is honoured, not firewalled forever.
+        assert deploy.status in ("ready", "todo")
+
+
+def test_decompose_hold_child_emits_blocked_event(kanban_home):
+    """The held child writes a typed 'blocked' event so escalation-watch,
+    fleet-preflight, stalled-card-watch and _has_sticky_block see the hold."""
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="rollout")
+    children = [{"title": "Release build", "assignee": "researcher",
+                 "parents": [], "hold": True}]
+    with kb.connect() as conn:
+        child_ids = kb.decompose_triage_task(
+            conn, tid, root_assignee="orchestrator", children=children,
+            author="decomposer",
+        )
+    assert child_ids is not None and len(child_ids) == 1
+    with kb.connect() as conn:
+        events = kb.list_events(conn, child_ids[0])
+    assert any(ev.kind == "blocked" for ev in events), (
+        "held deploy child missing typed blocked event"
+    )
+    blocked = [ev for ev in events if ev.kind == "blocked"]
+    assert blocked and blocked[-1].payload.get("kind") == "operator_hold"
+
+
+def test_decompose_hold_false_child_not_blocked(kanban_home):
+    """hold:false (or absent) children keep normal behavior — no over-hold."""
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="feature")
+    for hold_flag in (False, None):
+        with kb.connect() as conn:
+            _tid = kb.create_task(conn, title=f"feature {hold_flag}", triage=True)
+        children = [{"title": "code", "assignee": "researcher",
+                     "parents": [], "hold": hold_flag}]
+        with kb.connect() as conn:
+            child_ids = kb.decompose_triage_task(
+                conn, _tid, root_assignee="orch", children=children,
+                author="decomposer",
+            )
+        assert child_ids is not None and len(child_ids) == 1
+        with kb.connect() as conn:
+            child = kb.get_task(conn, child_ids[0])
+        assert child.status == "ready"
+        assert child.block_kind is None

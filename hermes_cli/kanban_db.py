@@ -7985,6 +7985,17 @@ def decompose_triage_task(
             child_status = "triage" if (
                 child.get("triage") or assignee_unknown
             ) else "todo"
+            # A terminal/deploy child marked "hold" is created as a REAL
+            # operator_hold block (never todo), so recompute_ready() cannot
+            # auto-promote it the moment its parent completes. 2026-09-04
+            # GlobalAside: a deploy card created todo with a prose "HELD"
+            # auto-promoted to ready as soon as its verify parent finished,
+            # one dispatcher tick from deploying past an un-approved gate.
+            # A typed operator_hold at creation is sticky and only a human
+            # unblock ends it — this is the machine guard, not advisory prose.
+            child_block_kind = "operator_hold" if child.get("hold") else None
+            if child_block_kind:
+                child_status = "blocked"
             # Per-child override wins; otherwise inherit the root's
             # workspace. A child that sets workspace_kind without a path
             # falls back to the root path only when kinds match (so a
@@ -8023,8 +8034,9 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by, max_cost) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by, max_cost, "
+                " block_kind) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -8041,12 +8053,25 @@ def decompose_triage_task(
                     # and reached $2.17 with no cap. Children inherit the default
                     # under the $1.00 ceiling; Steve-o re-estimates from there.
                     effective_max_cost(None),
+                    child_block_kind,
                 ),
             )
             _append_event(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
             )
+            if child_block_kind:
+                # Typed hold at creation (mirrors create_task): the kind is what
+                # escalation-watch, fleet-preflight, stalled-card-watch and
+                # _has_sticky_block key on, and the `blocked` event is what
+                # dates the hold. A held deploy child must never auto-promote —
+                # only a human kanban_unblock ends it.
+                _append_event(
+                    conn, new_id, "blocked",
+                    {"reason": "operator_hold at decomposition",
+                     "kind": child_block_kind, "recurrences": 0,
+                     "source_status": "created"},
+                )
             if assignee_unknown:
                 conn.execute(
                     "INSERT INTO task_comments "

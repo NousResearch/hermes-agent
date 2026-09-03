@@ -544,3 +544,140 @@ def test_dry_run_single_task_writes_nothing(kanban_home):
     assert len(all_tasks) == 1
 
 
+
+
+# --- Change A (2026-09-04 GlobalAside): deploy children are operator-held ---
+
+
+def test_deploy_regex_matches_production_shipping_titles():
+    """``_is_deploy_shaped`` matches titles that would ship code / release to
+    a human, and does NOT over-match incidental uses. This is the trigger that
+    forces a real operator_hold so a deployment can never auto-promote past an
+    owner approval gate."""
+    cases = {
+        "Deploy GlobalAside restore to production": True,
+        "Deploy the backend fix": True,
+        "Release v1.2 to prod": True,
+        "Rollout the new build": True,
+        "Go live with the sidebar": True,
+        "Ship-to-prod the dashboard": True,
+        "Implement feature Y": False,
+        "Verify aside renders": False,
+        "Design the card layout": False,
+        "Run the regression suite": False,
+        "Review the GlobalAside diff": False,
+        "Investigate the release notes wording": True,   # 'release' noun — still deploy-ish
+    }
+    for title, expected in cases.items():
+        assert decomp._is_deploy_shaped(title) is expected, title
+
+
+def test_auto_decompose_deploy_child_forced_hold(kanban_home):
+    """Change A backstop: an AUTO-decomposed child whose title is deploy-shaped
+    gets ``hold=True`` even when the LLM omits the flag — so it is created as a
+    real operator_hold downstream and can never auto-promote past approval.
+    A manually-fan-out (non-auto) deploy child keeps ``hold=False`` unless the
+    caller explicitly flags it."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship feature", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test",
+        "tasks": [
+            {"title": "Implement GlobalAside", "body": "build",
+             "assignee": "engineer", "parents": []},                       # idx 0
+            {"title": "Deploy to production", "body": "ship",
+             "assignee": "engineer", "parents": [0]},                      # idx 1, deploy-shaped
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(
+                tid, author=decomp.AUTO_DECOMPOSER_AUTHOR, dry_run=True,
+            )
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout
+    plan = outcome.dry_run_plan
+    assert plan is not None and len(plan) == 2
+    # Impl child: not held.
+    assert plan[0]["hold"] is False
+    # Deploy-shaped child: forced hold TRUE (LLM didn't set it).
+    assert plan[1]["hold"] is True, (
+        "auto-decomposed deploy child not forced to operator_hold — Change A "
+        "backstop regression"
+    )
+
+
+def test_manual_decompose_deploy_child_not_forced(kanban_home):
+    """A MANUAL (non-auto-decomposer) fan-out of a deploy-shaped child must NOT
+    be force-held — the caller (owner/PM) is already committed, mirroring the
+    AC1 decision-shaped asymmetry. Only auto-decomposer children get the
+    backstop hold."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="release feature", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test",
+        "tasks": [
+            {"title": "Deploy to production", "body": "ship",
+             "assignee": "engineer", "parents": []},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me", dry_run=True)
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    plan = outcome.dry_run_plan
+    assert plan is not None and len(plan) == 1
+    assert plan[0]["hold"] is False  # manual deploy NOT auto-held
+
+
+def test_auto_decompose_explicit_hold_respected(kanban_home):
+    """When the LLM explicitly sets hold:true on a non-deploy-shaped child, it
+    is honoured (terminal children like 'release to human' that don't match the
+    deploy regex are still held by explicit intent)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="publish", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test",
+        "tasks": [
+            {"title": "Send approval to owner", "body": "ask",
+             "assignee": "jobsy", "parents": [], "hold": True},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "jobsy"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(
+                tid, author=decomp.AUTO_DECOMPOSER_AUTHOR, dry_run=True,
+            )
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.dry_run_plan is not None
+    assert outcome.dry_run_plan[0]["hold"] is True

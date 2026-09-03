@@ -1832,6 +1832,18 @@ class GatewayKanbanWatchersMixin:
             """Re-resolve (enabled, per_tick) from current config each tick."""
             return _resolve_auto_decompose_settings(_load_config)
 
+        # Failure tracker for WARNING escalation: a triage task that the
+        # decomposer repeatedly fails to process (ok=False) is a silent-stall
+        # risk — it ticks every minute producing nothing, and a spec'd+eligible
+        # card can sit unconsumed for an hour (the 2026-09-04 triage-stall).
+        # We escalate the FIRST failure of each distinct reason to WARNING, then
+        # throttle to one WARNING per task per interval so an actively-stuck
+        # card stays loud without spamming every 60s tick. Benign no-ops
+        # (transient "task moved out of triage", aux-client-unavailable) still
+        # log at debug on the immediate tick.
+        _decompose_fail_first_log: dict[tuple[str, str], float] = {}
+        _DECOMPOSE_FAIL_WARN_INTERVAL = 900  # re-warn a still-stuck card / 15 min
+
         def _auto_decompose_tick(auto_decompose_per_tick: int) -> int:
             """Run the auto-decomposer for up to N triage tasks across all
             boards. Returns the number of triage tasks that were
@@ -1885,6 +1897,10 @@ class GatewayKanbanWatchersMixin:
                             continue
                         if outcome.ok:
                             successes += 1
+                            # Clear any prior failure-escalation state so a card
+                            # that succeeds and later re-enters triage gets a
+                            # fresh WARNING on its next failure.
+                            _decompose_fail_first_log.pop((slug, tid), None)
                             if outcome.fanout and outcome.child_ids:
                                 logger.info(
                                     "kanban auto-decompose [%s]: %s → %d children",
@@ -1896,12 +1912,52 @@ class GatewayKanbanWatchersMixin:
                                     slug, tid,
                                 )
                         else:
-                            # Common no-op reasons (no aux client configured) shouldn't
-                            # spam logs every tick. Log at debug.
-                            logger.debug(
-                                "kanban auto-decompose [%s]: %s skipped: %s",
-                                slug, tid, outcome.reason,
-                            )
+                            # Common no-op reasons (no aux client configured)
+                            # shouldn't spam logs every tick — log at debug on
+                            # the immediate tick. But a REPEATED failure on the
+                            # same task is a silent-stall: the decomposer ticks
+                            # every minute producing nothing, and a spec'd+
+                            # eligible triage card can sit unconsumed for an
+                            # hour (2026-09-04). Escalate the first failure of
+                            # each reason to WARNING, then re-warn the same
+                            # per-task on a 15-min cadence so a stuck card stays
+                            # loud without spamming every 60s tick. A distinct
+                            # reason is logged at WARNING again (it may be a new
+                            # failure mode).
+                            now_ts = time.time()
+                            key = (slug, tid)
+                            last_warn = _decompose_fail_first_log.get(key, 0.0)
+                            if outcome.reason and last_warn == 0.0:
+                                logger.warning(
+                                    "kanban auto-decompose [%s]: %s failed to "
+                                    "decompose: %s",
+                                    slug, tid, outcome.reason,
+                                )
+                                _decompose_fail_first_log[key] = now_ts
+                            elif (
+                                outcome.reason
+                                and (now_ts - last_warn) >= _DECOMPOSE_FAIL_WARN_INTERVAL
+                            ):
+                                logger.warning(
+                                    "kanban auto-decompose [%s]: %s STILL stuck "
+                                    "(%d min): %s",
+                                    slug, tid,
+                                    int((now_ts - last_warn) / 60), outcome.reason,
+                                )
+                                _decompose_fail_first_log[key] = now_ts
+                            elif not outcome.reason:
+                                # No reason at all — genuinely opaque. Log it out
+                                # regardless (rate-limited) so a silent errant
+                                # return is never invisible.
+                                if last_warn == 0.0 or (
+                                    now_ts - last_warn
+                                ) >= _DECOMPOSE_FAIL_WARN_INTERVAL:
+                                    logger.warning(
+                                        "kanban auto-decompose [%s]: %s failed "
+                                        "with no reason",
+                                        slug, tid,
+                                    )
+                                    _decompose_fail_first_log[key] = now_ts
                 finally:
                     if prev_env is None:
                         os.environ.pop("HERMES_KANBAN_BOARD", None)

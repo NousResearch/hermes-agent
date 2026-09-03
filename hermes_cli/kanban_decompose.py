@@ -70,7 +70,8 @@ Output a single JSON object with this exact shape:
         "title": "<concrete task title, imperative voice, <= 80 chars>",
         "body":  "<detailed spec for the worker on this child task>",
         "assignee": "<profile name from the roster, or null for default>",
-        "parents": [<int>, ...]
+        "parents": [<int>, ...],
+        "hold": false
       },
       ...
     ]
@@ -89,6 +90,12 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - Set "hold": true on the FINAL terminal child whose completion ships to
+    production / releases to a human (deploy, release, rollout, go-live). The
+    system creates it as a hard operator_hold — it will NOT dispatch until an
+    owner unblocks it after review. This is mandatory for deploy-shaped tasks:
+    a deploy card without a real hold can auto-run past an owner approval gate
+    and is a serious safety hole. When in doubt, hold.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -162,6 +169,35 @@ def _is_decision_shaped(title: str) -> bool:
     if not title:
         return False
     return bool(_DECISION_TITLE_RE.search(title))
+
+
+# Terminal children that, if they auto-promote, ship code to production or
+# release to a human without an owner sign-off. Their titles read as deploy /
+# release / rollout / ship-to-prod. The auto-decomposer holds these at
+# creation (`operator_hold`) so they can never slip a deployment past an
+# approval gate (2026-09-04 GlobalAside: the deploy card had a prose "HELD"
+# but no DB hold, so it auto-promoted the moment its verify parent completed).
+_DEPLOY_TITLE_RE = re.compile(
+    r"\bdeploy(?:ment)?\b"
+    r"|\brelease\b"
+    r"|\brollout\b"
+    r"|\bship-to?-prod(?:uction)?\b"
+    r"|\bgo live\b"
+    r"|\bput .* into production\b",
+    re.IGNORECASE,
+)
+
+
+def _is_deploy_shaped(title: str) -> bool:
+    """True when a child title names a deploy/release/rollout to production.
+
+    Used to force a real ``operator_hold`` on auto-decomposed deploy children
+    (see ``decompose_task``), so a deployment gate is machine-enforced rather
+    than advisory prose.
+    """
+    if not title:
+        return False
+    return bool(_DEPLOY_TITLE_RE.search(title))
 
 
 @dataclass
@@ -539,6 +575,19 @@ def decompose_task(
         # Clean parent indices: drop non-int and out-of-range.
         clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
         is_auto = (audit_author == AUTO_DECOMPOSER_AUTHOR)
+        # Decision-shaped children park in triage for the PM. Deploy/terminal
+        # children — anything whose completion ships to production or releases
+        # to a human — are the opposite: they MUST be operator-held at creation,
+        # never dispatched toward `done` until an owner unblocks them. A prose
+        # "HELD pending approval" in the body is NOT a gate (recompute_ready
+        # auto-promotes it the moment its parent completes — the 2026-09-04
+        # GlobalAside incident). So any auto-decomposed child whose title is
+        # deploy/release/rollout-shaped (or explicitly flagged `hold`) is
+        # created as a real DB operator_hold block. Over-holding is safe (it
+        # just waits for an unblock); under-holding is the bug we are closing.
+        hold_flag = bool(entry.get("hold"))
+        if is_auto and _is_deploy_shaped(title):
+            hold_flag = True
         children.append({
             "title": title.strip()[:200],
             "body": body.strip(),
@@ -549,6 +598,9 @@ def decompose_task(
             # run cannot self-complete it. Manually-specified (non auto) runs
             # keep current behavior: they are already owner-committed.
             "triage": is_auto and _is_decision_shaped(title),
+            # Terminal/deploy child -> hard operator_hold so it can never
+            # auto-promote past an owner approval gate.
+            "hold": hold_flag,
         })
 
     if dry_run:
@@ -559,6 +611,7 @@ def decompose_task(
                 "assignee": c["assignee"],
                 "parents": c["parents"],
                 "triage": c["triage"],
+                "hold": c["hold"],
             }
             for c in children
         ]

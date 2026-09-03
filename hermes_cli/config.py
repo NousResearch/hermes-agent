@@ -327,23 +327,20 @@ def validate_env_var_name_for_write(key: str) -> None:
     _reject_denylisted_env_var(key)
 
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
-# (path, mtime_ns, size) -> cached expanded config dict.
-# load_config() returns a deepcopy of the cached value when the file
-# hasn't changed since the last load, skipping yaml.safe_load +
-# _deep_merge + _normalize_* + _expand_env_vars (~13 ms/call).
-# save_config() + migrate_config() write via atomic_yaml_write which
-# produces a fresh inode, so stat() sees a new mtime_ns and the next
-# load repopulates automatically — no explicit invalidation hook.
-# Cached tuple is (user_mtime_ns, user_size, managed_mtime_ns, managed_size,
-# merged_value, env_ref_snapshot) — the managed-file signature is folded in so
-# editing the managed-scope config.yaml invalidates the cache (see
-# managed_scope), and the env snapshot invalidates it when a referenced ${VAR}
-# changes value (late .env load, in-process rotation — #58514).
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
-# (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
-# _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
-# the user's on-disk values without defaults merged in.
-_RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+# Content-aware config cache identities are
+# (resolved_path, mtime_ns, size, SHA-256 digest). The digest catches
+# metadata-preserving rewrites; referenced environment values remain part of
+# the merged-config cache validity check.
+_LOAD_CONFIG_CACHE: Dict[str, tuple] = {}
+_RAW_CONFIG_CACHE: Dict[str, tuple] = {}
+
+
+def _canonical_config_path_key(path: Path) -> str:
+    """Return the cache identity shared by config readers and writers."""
+    try:
+        return str(path.resolve(strict=False))
+    except (OSError, RuntimeError):
+        return str(path.absolute())
 # Serializes all config read/write paths. libyaml's C extension is not
 # thread-safe for concurrent safe_load() on the same file, and multiple
 # tool threads (approval.py, browser_tool.py, setup flows) hit
@@ -813,7 +810,7 @@ def get_container_exec_info() -> Optional[dict]:
 
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F811,E402
-from utils import atomic_replace, fast_safe_load
+from utils import atomic_replace, fast_safe_load, read_file_with_signature
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -3638,40 +3635,26 @@ def resolve_ephemeral_system_prompt_from_config(cfg: Optional[Dict[str, Any]]) -
 
 
 def read_raw_config() -> Dict[str, Any]:
-    """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
-
-    Returns the raw YAML dict, or ``{}`` if the file doesn't exist or can't
-    be parsed.  Use this for lightweight config reads where you just need a
-    single value and don't want the overhead of ``load_config()``'s deep-merge
-    + migration pipeline.
-
-    Cached on the config file's (mtime_ns, size) — same strategy as
-    ``load_config()``. Returns a deepcopy on every call since some callers
-    mutate the result before passing to ``save_config()``.
-    """
+    """Read config.yaml as-is, returning a defensive copy."""
     with _CONFIG_LOCK:
-        try:
-            config_path = get_config_path()
-            st = config_path.stat()
-            cache_key = (st.st_mtime_ns, st.st_size)
-        except (FileNotFoundError, OSError):
+        config_path = get_config_path()
+        snapshot = read_file_with_signature(config_path)
+        if snapshot is None:
             return {}
-
-        path_key = str(config_path)
+        content, signature = snapshot
+        path_key = signature[0]
         cached = _RAW_CONFIG_CACHE.get(path_key)
-        if cached is not None and cached[:2] == cache_key:
-            return copy.deepcopy(cached[2])
+        if cached is not None and cached[0] == signature:
+            return copy.deepcopy(cached[1])
 
         try:
-            with open(config_path, encoding="utf-8") as f:
-                data = fast_safe_load(f) or {}
+            data = fast_safe_load(content) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
             return {}
-
         if not isinstance(data, dict):
             data = {}
-        _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
+        _RAW_CONFIG_CACHE[path_key] = (signature, copy.deepcopy(data))
         return data
 
 
@@ -3725,47 +3708,31 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
 
 
 def read_raw_config_readonly() -> Dict[str, Any]:
-    """Fast-path variant of ``read_raw_config()`` for callers that ONLY READ.
+    """Read raw config without copying the content-aware cached value.
 
-    Returns the cached raw-config dict directly, skipping the per-call
-    ``copy.deepcopy`` that ``read_raw_config()`` performs (needed there
-    because some callers mutate the result before ``save_config``).
-
-    **Mutating the returned dict corrupts the in-process cache for every
-    subsequent caller.** Only use on read-only paths — e.g. per-turn policy
-    checks like the shared-metrics gate, which runs 2-3x per agent turn and
-    was paying a full config deepcopy each time.
-
-    Same (mtime_ns, size) freshness key as ``read_raw_config()`` — an edited
-    config.yaml is picked up on the next call.
+    Mutating the returned dict corrupts the in-process cache. Only use this
+    variant on paths that treat the result as immutable.
     """
     with _CONFIG_LOCK:
-        try:
-            config_path = get_config_path()
-            st = config_path.stat()
-            cache_key = (st.st_mtime_ns, st.st_size)
-        except (FileNotFoundError, OSError):
+        config_path = get_config_path()
+        snapshot = read_file_with_signature(config_path)
+        if snapshot is None:
             return {}
-
-        path_key = str(config_path)
+        content, signature = snapshot
+        path_key = signature[0]
         cached = _RAW_CONFIG_CACHE.get(path_key)
-        if cached is not None and cached[:2] == cache_key:
-            return cached[2]
+        if cached is not None and cached[0] == signature:
+            return cached[1]
 
         try:
-            with open(config_path, encoding="utf-8") as f:
-                data = fast_safe_load(f) or {}
+            data = fast_safe_load(content) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
             return {}
-
         if not isinstance(data, dict):
             data = {}
-        # Store and return THE SAME object (identity invariant): the first
-        # caller must see the exact dict later cache hits return, so a test
-        # asserting ``ro1 is ro2`` holds from the very first call.
         cached_copy = copy.deepcopy(data)
-        _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], cached_copy)
+        _RAW_CONFIG_CACHE[path_key] = (signature, cached_copy)
         return cached_copy
 
 
@@ -4097,58 +4064,38 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
     with _CONFIG_LOCK:
         ensure_hermes_home()
         config_path = get_config_path()
-        path_key = str(config_path)
+        user_snapshot = read_file_with_signature(config_path)
+        user_signature = user_snapshot[1] if user_snapshot is not None else None
+        path_key = (
+            user_signature[0]
+            if user_signature is not None
+            else _canonical_config_path_key(config_path)
+        )
 
-        try:
-            st = config_path.stat()
-            user_sig: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
-        except FileNotFoundError:
-            user_sig = None
-
-        # Managed scope: fold the managed config file's (mtime, size) into the
-        # cache signature so editing /etc/hermes/config.yaml invalidates the
-        # cached merged result. (0, 0) means "no managed config file".
+        # Fold the exact managed-config snapshot into the merged-cache key.
         from hermes_cli import managed_scope
 
-        managed_dir = managed_scope.get_managed_dir()
-        managed_cfg_path = (managed_dir / "config.yaml") if managed_dir else None
-        try:
-            mst = managed_cfg_path.stat() if managed_cfg_path else None
-            managed_sig = (mst.st_mtime_ns, mst.st_size) if mst else (0, 0)
-        except OSError:
-            managed_sig = (0, 0)
-
-        # Combined cache signature: user file + managed file. None only when the
-        # user config is absent AND no managed file exists (nothing to cache on).
-        if user_sig is not None:
-            cache_sig: Optional[Tuple[int, int, int, int]] = (
-                user_sig[0],
-                user_sig[1],
-                managed_sig[0],
-                managed_sig[1],
-            )
-        elif managed_sig != (0, 0):
-            cache_sig = (0, 0, managed_sig[0], managed_sig[1])
-        else:
-            cache_sig = None
+        managed_config, managed_signature = (
+            managed_scope.load_managed_config_snapshot()
+        )
+        cacheable = user_signature is not None or managed_signature is not None
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
-            # File signatures match, but the cached expansion is only valid if
-            # every ${VAR} it was expanded against still has the same value.
-            # Without this, a load_config() that ran before load_hermes_dotenv()
-            # pins unexpanded literals (e.g. auxiliary.<task>.api_key) for the
-            # life of the process (#58514).
-            env_snapshot = cached[5] if len(cached) > 5 else {}
+        if (
+            cached is not None
+            and cacheable
+            and cached[0] == user_signature
+            and cached[1] == managed_signature
+        ):
+            env_snapshot = cached[3]
             if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
-                return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
+                return copy.deepcopy(cached[2]) if want_deepcopy else cached[2]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
-        if user_sig is not None:
+        if user_snapshot is not None:
             try:
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = fast_safe_load(f) or {}
+                user_config = fast_safe_load(user_snapshot[0]) or {}
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
@@ -4186,16 +4133,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     lkg_copy: Dict[str, Any] = _cast(
                         Dict[str, Any], _expand_env_vars(copy.deepcopy(lkg))
                     )
-                    if cache_sig is not None:
-                        # Cache under the corrupt file's signature (empty env
-                        # snapshot: always valid) so repeated loads don't
-                        # re-parse the broken file; fixing the file changes the
-                        # signature and triggers a normal reload.
-                        _empty_env: Dict[str, Optional[str]] = {}
+                    if cacheable:
                         _LOAD_CONFIG_CACHE[path_key] = (
-                            cache_sig[0], cache_sig[1],
-                            cache_sig[2], cache_sig[3],
-                            lkg_copy, _empty_env,
+                            user_signature,
+                            managed_signature,
+                            lkg_copy,
+                            {},
                         )
                     return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
 
@@ -4206,7 +4149,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         # against the process environment, never against user-config-defined refs.
         # This deliberately inverts the usual env-over-config precedence for the
         # keys the managed layer pins — see docs/design/managed-scope.md §4.1.
-        managed_config = managed_scope.load_managed_config()
+        # ``managed_config`` was parsed from the same byte snapshot that
+        # produced ``managed_signature`` above. Never read it again here: a
+        # rewrite between fingerprint and parse could otherwise cache one
+        # version's policy under another version's identity.
         if managed_config:
             # Normalize the managed overlay through the same canonicalization as
             # the user config BEFORE merging (parity with
@@ -4222,20 +4168,17 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             managed_expanded = _expand_env_vars(managed_normalized)
             expanded = _deep_merge(expanded, managed_expanded)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
-        if cache_sig is not None:
-            # Cache stores a separate deepcopy so subsequent ``load_config()``
-            # (deepcopy=True) callers can mutate freely without affecting the
-            # cached value, and ``load_config_readonly()`` (deepcopy=False)
-            # callers all see the same stable cached object. The cached tuple is
-            # (user_mtime, user_size, managed_mtime, managed_size, value,
-            # env_ref_snapshot). The snapshot records the environment values
-            # this expansion was made against so later loads can detect env
-            # drift (late .env load, in-process rotation) — see cache hit above.
+        if cacheable:
             cached_copy = copy.deepcopy(expanded)
             env_snapshot = _env_ref_snapshot(normalized)
             if managed_config:
                 _env_ref_snapshot(managed_config, env_snapshot)
-            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
+            _LOAD_CONFIG_CACHE[path_key] = (
+                user_signature,
+                managed_signature,
+                cached_copy,
+                env_snapshot,
+            )
             # On the readonly path return the same cached object subsequent
             # calls will see — keeps "two readonly calls return the same
             # object" invariant that callers may rely on for identity checks.
@@ -4371,6 +4314,7 @@ def save_config(
 
         ensure_hermes_home()
         config_path = get_config_path()
+        path_key = _canonical_config_path_key(config_path)
         require_readable_config_before_write(config_path)
         # Compute explicit user paths BEFORE any normalisation --------
         # _normalize_max_turns_config may inject agent.max_turns from
@@ -4395,7 +4339,7 @@ def save_config(
             normalized = _preserve_env_ref_templates(
                 normalized,
                 raw_existing,
-                _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+                _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key),
             )
 
         # Strip schema-default values so the user's custom settings are not
@@ -4438,8 +4382,8 @@ def save_config(
             extra_content="".join(parts) if parts else None,
         )
         _secure_file(config_path)
-        _RAW_CONFIG_CACHE.pop(str(config_path), None)
-        _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+        _RAW_CONFIG_CACHE.pop(path_key, None)
+        _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(current_normalized)
 
 
 def _parse_env_value(raw_value: str) -> str:

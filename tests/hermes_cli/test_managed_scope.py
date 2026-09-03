@@ -1,5 +1,7 @@
 """Unit tests for hermes_cli.managed_scope (resolver + loaders + key helpers)."""
 import textwrap
+import os
+
 
 import pytest
 
@@ -45,6 +47,29 @@ def test_load_managed_env_and_is_env_managed(tmp_path, monkeypatch):
     }
     assert managed_scope.is_env_managed("OPENAI_API_BASE") is True
     assert managed_scope.is_env_managed("OTHER") is False
+
+def test_same_metadata_rewrite_invalidates_managed_cache(tmp_path, monkeypatch):
+    from hermes_cli import managed_scope
+
+    managed = _write_managed(
+        tmp_path,
+        monkeypatch,
+        config="delegation:\n  routes:\n    alpha: {}\n",
+    )
+    path = managed / "config.yaml"
+    original = path.stat()
+    assert set(managed_scope.load_managed_config()["delegation"]["routes"]) == {"alpha"}
+
+    replacement = "delegation:\n  routes:\n    bravo: {}\n"
+    assert len(replacement.encode()) == original.st_size
+    path.write_text(replacement, encoding="utf-8")
+    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+    rewritten = path.stat()
+    assert (rewritten.st_mtime_ns, rewritten.st_size) == (
+        original.st_mtime_ns,
+        original.st_size,
+    )
+    assert set(managed_scope.load_managed_config()["delegation"]["routes"]) == {"bravo"}
 
 
 

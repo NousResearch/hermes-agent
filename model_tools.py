@@ -39,6 +39,7 @@ from tools.registry import (
     tool_error,
 )
 from toolsets import resolve_toolset, validate_toolset
+from utils import file_content_signature
 
 logger = logging.getLogger(__name__)
 
@@ -320,6 +321,51 @@ def _clear_tool_defs_cache() -> None:
         _tool_defs_cache.clear()
 
 
+def _tool_defs_config_fingerprints() -> tuple[Any, Any]:
+    """Return content identities for config files that affect tool schemas."""
+    try:
+        from hermes_cli.config import get_config_path
+
+        cfg_fp = file_content_signature(get_config_path())
+    except ImportError:
+        cfg_fp = None
+    try:
+        from hermes_cli import managed_scope as _managed_scope
+
+        managed_dir = _managed_scope.get_managed_dir()
+        managed_fp = (
+            file_content_signature(managed_dir / "config.yaml")
+            if managed_dir is not None
+            else None
+        )
+    except Exception:
+        managed_fp = None
+    return cfg_fp, managed_fp
+
+
+def _tool_defs_cache_key(
+    enabled_toolsets: Optional[List[str]],
+    disabled_toolsets: Optional[List[str]],
+    skip_tool_search_assembly: bool,
+    profile_scope: Any,
+    config_fingerprints: tuple[Any, Any],
+) -> tuple:
+    cfg_fp, managed_fp = config_fingerprints
+    return (
+        registry.current_scope_key(),
+        frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
+        frozenset(disabled_toolsets) if disabled_toolsets else None,
+        registry._generation,
+        cfg_fp,
+        managed_fp,
+        bool(os.environ.get("HERMES_KANBAN_TASK")),
+        bool(skip_tool_search_assembly),
+        _is_delegated_child_context(),
+        _is_dispatcher_owned_worker(),
+        profile_scope,
+    )
+
+
 def get_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -344,64 +390,77 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
-    # Fast path: memoized result when the caller doesn't need stdout prints.
-    # The cache key captures every argument-level input; the registry
-    # generation captures registry mutations (MCP refresh, plugin load).
-    # check_fn results are TTL-cached one level down, inside
-    # registry.get_definitions. The config-mtime fingerprint below captures
-    # user-visible config edits that affect dynamic schemas (execute_code
-    # mode, discord action allowlist, etc.) without needing an explicit
-    # invalidate hook on every config-writer.
-    cache_key = None
-    if quiet_mode:
-        try:
-            from hermes_cli.config import get_config_path
-            cfg_path = get_config_path()
-            cfg_stat = cfg_path.stat()
-            cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
-        except (FileNotFoundError, OSError, ImportError):
-            cfg_fp = None
-        profile_scope = check_fn_cache_scope()
-        if profile_scope != CHECK_FN_CACHE_BYPASS:
-            cache_key = (
-                registry.current_scope_key(),
-                frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
-                frozenset(disabled_toolsets) if disabled_toolsets else None,
-                registry._generation,
-                cfg_fp,
-                bool(os.environ.get("HERMES_KANBAN_TASK")),
-                bool(skip_tool_search_assembly),
-                _is_delegated_child_context(),
-                _is_dispatcher_owned_worker(),
-                profile_scope,
-            )
-        with _tool_defs_cache_lock:
-            cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
-        if cached is not None:
-            # Update _last_resolved_tool_names so downstream callers see
-            # consistent state even on a cache hit.
-            global _last_resolved_tool_names
-            _last_resolved_tool_names = [t["function"]["name"] for t in cached]
-            # Return a shallow copy of the list but share the dict references —
-            # schemas are treated as read-only by all known callers.
-            return list(cached)
+    if not quiet_mode:
+        return _compute_tool_definitions(
+            enabled_toolsets,
+            disabled_toolsets,
+            quiet_mode,
+            skip_tool_search_assembly=skip_tool_search_assembly,
+        )
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
-    if quiet_mode and cache_key is not None:
+    # Dynamic tool schemas read config during computation. Bind any cached
+    # result to fingerprints observed both before and after that computation;
+    # otherwise a concurrent rewrite can cache schema B under snapshot A's key.
+    profile_scope = check_fn_cache_scope()
+    cache_enabled = profile_scope != CHECK_FN_CACHE_BYPASS
+    from hermes_cli.config import _CONFIG_LOCK
+
+    for attempt in range(2):
+        # Serialize fingerprinting and dynamic config parsing with config
+        # writers. Atomic external replacements can still occur, so retain
+        # the post-compute identity check and retry below.
+        with _CONFIG_LOCK:
+            before = _tool_defs_config_fingerprints()
+            cache_key = (
+                _tool_defs_cache_key(
+                    enabled_toolsets,
+                    disabled_toolsets,
+                    skip_tool_search_assembly,
+                    profile_scope,
+                    before,
+                )
+                if cache_enabled
+                else None
+            )
+            with _tool_defs_cache_lock:
+                cached = (
+                    _tool_defs_cache.get(cache_key) if cache_key is not None else None
+                )
+            if cached is not None:
+                if _tool_defs_config_fingerprints() == before:
+                    global _last_resolved_tool_names
+                    _last_resolved_tool_names = [
+                        t["function"]["name"] for t in cached
+                    ]
+                    return list(cached)
+                if attempt == 0:
+                    continue
+                # A continuously changing config cannot safely populate a cache.
+                # The cached entry still matches the latest complete `before`
+                # snapshot, so prefer it to crashing or returning a torn schema.
+                _last_resolved_tool_names = [
+                    t["function"]["name"] for t in cached
+                ]
+                return list(cached)
+
+            result = _compute_tool_definitions(
+                enabled_toolsets,
+                disabled_toolsets,
+                quiet_mode,
+                skip_tool_search_assembly=skip_tool_search_assembly,
+            )
+            after = _tool_defs_config_fingerprints()
+            if before != after:
+                if attempt == 0:
+                    continue
+                # A continuously changing config cannot safely populate a cache.
+                return list(result)
+        if cache_key is None:
+            return list(result)
+
         # Cache the freshly-computed list, but hand callers a shallow copy so
-        # downstream mutations (e.g. run_agent appending memory/LCM tool
-        # schemas to self.tools) don't poison the cache. Without this, a
-        # long-lived Gateway process accumulates duplicate tool names across
-        # agent inits and providers that enforce unique tool names
-        # (DeepSeek, Xiaomi MiMo, Moonshot Kimi) reject the request with
-        # HTTP 400. Mirrors the cache-hit path above. (issue #17335)
-        # Bound the cache with LRU eviction so a long-lived Gateway process
-        # doesn't accumulate entries unboundedly across the many distinct
-        # toolset/config fingerprints it sees over its lifetime (#19251).
+        # downstream mutations cannot poison later agent initialization.
         with _tool_defs_cache_lock:
-            # Another thread may have populated this exact key while this
-            # thread computed. Reuse it and serialize capacity eviction.
             cached = _tool_defs_cache.get(cache_key)
             if cached is None:
                 if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
@@ -409,9 +468,8 @@ def get_tool_definitions(
                 _tool_defs_cache[cache_key] = result
                 cached = result
         return list(cached)
-    if quiet_mode:
-        return list(result)
-    return result
+
+    raise AssertionError("unreachable")
 
 
 def _compute_tool_definitions(

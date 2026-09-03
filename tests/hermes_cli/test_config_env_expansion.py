@@ -1,4 +1,6 @@
 """Tests for ${ENV_VAR} substitution in config.yaml values."""
+import os
+
 
 import pytest
 from hermes_cli.config import _expand_env_vars, load_config
@@ -88,6 +90,27 @@ class TestLoadConfigCacheEnvStaleness:
 
         assert first is second
         assert first["providers"]["mistral"]["api_key"] == "key-stable"
+
+    def test_same_metadata_rewrite_invalidates_merged_cache(
+        self, tmp_path, monkeypatch
+    ):
+        config_file = tmp_path / "config.yaml"
+        before = "delegation:\n  routes:\n    alpha: {}\n"
+        after = "delegation:\n  routes:\n    bravo: {}\n"
+        assert len(before) == len(after)
+        config_file.write_text(before, encoding="utf-8")
+        original = config_file.stat()
+        monkeypatch.setitem(load_config.__globals__, "get_config_path", lambda: config_file)
+
+        assert set(load_config()["delegation"]["routes"]) == {"alpha"}
+        config_file.write_text(after, encoding="utf-8")
+        os.utime(config_file, ns=(original.st_atime_ns, original.st_mtime_ns))
+        rewritten = config_file.stat()
+        assert (rewritten.st_mtime_ns, rewritten.st_size) == (
+            original.st_mtime_ns,
+            original.st_size,
+        )
+        assert set(load_config()["delegation"]["routes"]) == {"bravo"}
 
 
 class TestLoadCliConfigExpansion:

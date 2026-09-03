@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import yaml
+from utils import read_file_with_signature
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MANAGED_DIR = Path("/etc/hermes")
 
 _CACHE_LOCK = threading.Lock()
-# path_key -> (mtime_ns, size, parsed)
+# path_key -> (content_signature, parsed)
 _CONFIG_CACHE: Dict[str, tuple] = {}
 _ENV_CACHE: Dict[str, tuple] = {}
 
@@ -78,27 +79,25 @@ def invalidate_managed_cache() -> None:
         _ENV_CACHE.clear()
 
 
-def _cached_read(path: Path, cache: Dict[str, tuple], parse):
-    """Shared (mtime_ns, size)-keyed read. Returns a deepcopy of the parsed value.
+def _cached_read_with_signature(path: Path, cache: Dict[str, tuple], parse):
+    """Read and cache one managed file by path and exact content.
 
-    Returns ``None`` when the file is absent or fails to parse (fail-open). A
-    parse failure is logged LOUDLY — the admin needs to know their policy isn't
-    being applied — but never raises, so a malformed managed file can't brick
-    startup.
+    Returns ``(parsed, signature)``. Parsing and hashing use the same bytes,
+    so equal-(mtime,size) rewrites cannot retain stale policy. The signature
+    remains available when parsing fails, allowing callers to cache their
+    fail-open result only for that exact malformed snapshot.
     """
-    try:
-        st = path.stat()
-    except OSError:
-        return None  # absent
-    key = (st.st_mtime_ns, st.st_size)
-    path_key = str(path)
+    snapshot = read_file_with_signature(path)
+    if snapshot is None:
+        return None, None
+    content, signature = snapshot
+    path_key = signature[0]
     with _CACHE_LOCK:
         hit = cache.get(path_key)
-        if hit is not None and hit[:2] == key:
-            return copy.deepcopy(hit[2])
+        if hit is not None and hit[0] == signature:
+            return copy.deepcopy(hit[1]), signature
     try:
-        with open(path, encoding="utf-8") as f:
-            parsed = parse(f)
+        parsed = parse(content)
     except Exception as exc:  # noqa: BLE001 — fail-open, but LOUD
         logger.warning(
             "managed scope: failed to parse %s: %s — IGNORING this managed file. "
@@ -106,23 +105,33 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
             path,
             exc,
         )
-        return None
+        return None, signature
     with _CACHE_LOCK:
-        cache[path_key] = (key[0], key[1], copy.deepcopy(parsed))
+        cache[path_key] = (signature, copy.deepcopy(parsed))
+    return parsed, signature
+
+
+def _cached_read(path: Path, cache: Dict[str, tuple], parse):
+    parsed, _signature = _cached_read_with_signature(path, cache, parse)
     return parsed
+
+
+def load_managed_config_snapshot() -> "tuple[dict, tuple | None]":
+    """Return managed config and the signature of the bytes it was parsed from."""
+    managed_dir = get_managed_dir()
+    if managed_dir is None:
+        return {}, None
+    parsed, signature = _cached_read_with_signature(
+        managed_dir / "config.yaml",
+        _CONFIG_CACHE,
+        lambda data: yaml.safe_load(data) or {},
+    )
+    return (parsed if isinstance(parsed, dict) else {}), signature
 
 
 def load_managed_config() -> dict:
     """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
-    managed_dir = get_managed_dir()
-    if managed_dir is None:
-        return {}
-    parsed = _cached_read(
-        managed_dir / "config.yaml",
-        _CONFIG_CACHE,
-        lambda f: yaml.safe_load(f) or {},
-    )
-    return parsed if isinstance(parsed, dict) else {}
+    return load_managed_config_snapshot()[0]
 
 
 def load_managed_env() -> Dict[str, str]:
@@ -177,10 +186,10 @@ def apply_managed_overlay(config: dict) -> dict:
         return config
 
 
-def _parse_env(f) -> Dict[str, str]:
+def _parse_env(data: bytes) -> Dict[str, str]:
     out: Dict[str, str] = {}
-    for line in f:
-        line = line.strip()
+    for raw_line in data.splitlines():
+        line = raw_line.decode("utf-8").strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")

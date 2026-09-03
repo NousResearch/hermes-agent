@@ -20,6 +20,34 @@ logger = logging.getLogger(__name__)
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
 
 
+def read_file_with_signature(
+    path: Union[Path, str],
+) -> "tuple[bytes, tuple[str, int, int, str]] | None":
+    """Read a file once and return its bytes with a content-aware identity."""
+    import hashlib
+
+    candidate = Path(path)
+    try:
+        resolved = str(candidate.resolve(strict=False))
+        with candidate.open("rb") as handle:
+            data = handle.read()
+            stat_result = os.fstat(handle.fileno())
+    except (OSError, RuntimeError):
+        return None
+    return data, (
+        resolved,
+        stat_result.st_mtime_ns,
+        stat_result.st_size,
+        hashlib.sha256(data).hexdigest(),
+    )
+
+
+def file_content_signature(path: Union[Path, str]) -> "tuple[str, int, int, str] | None":
+    """Return a path- and content-sensitive identity for a regular file."""
+    snapshot = read_file_with_signature(path)
+    return snapshot[1] if snapshot is not None else None
+
+
 def is_truthy_value(value: Any, default: bool = False) -> bool:
     """Coerce bool-ish values using the project's shared truthy string set."""
     if value is None:

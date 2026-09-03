@@ -15,7 +15,7 @@ Generate images, video, and audio via diffusion workflows.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/comfyui` |
-| Path | `optional-skills/creative\comfyui` |
+| Path | `optional-skills/creative/comfyui` |
 | Version | `5.1.0` |
 | Author | ['kshitijk4poor', 'alt-glitch', 'purzbeats'] |
 | License | MIT |

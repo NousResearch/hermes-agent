@@ -15,7 +15,7 @@ Serve an interactive codebase knowledge graph web UI.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/gitnexus-explorer` |
-| Path | `optional-skills/research\gitnexus-explorer` |
+| Path | `optional-skills/research/gitnexus-explorer` |
 | Version | `1.0.0` |
 | Author | Hermes Agent + Teknium |
 | License | MIT |

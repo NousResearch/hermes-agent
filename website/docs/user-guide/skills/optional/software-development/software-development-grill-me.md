@@ -15,7 +15,7 @@ Adversarial plan interview before implementation.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/software-development/grill-me` |
-| Path | `optional-skills/software-development\grill-me` |
+| Path | `optional-skills/software-development/grill-me` |
 | Version | `2.0.0` |
 | Author | Rafael Zendron (rafaumeu) + Matt Pocock (mattpocock/skills, grilling) + Hermes Agent |
 | License | MIT |

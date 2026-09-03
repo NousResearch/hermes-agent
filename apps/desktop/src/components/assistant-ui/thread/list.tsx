@@ -411,6 +411,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     s.thread.messages.map(message => messagePaintWeight(message.content)).join(',')
   )
 
+  // True while any message is still streaming. A turn finishing (running ->
+  // idle) is when the transcript's height settles - re-pin flush at that edge.
+  const isAnyStreaming = useAuiState(s =>
+    s.thread.messages.some(message => message.status?.type === 'running')
+  )
+
   const { t } = useI18n()
   // Row structure is memoized on the STRUCTURAL signature only, so streaming
   // part-appends can't churn group identity (that would defeat the rows memo
@@ -652,6 +658,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       scrollToBottom()
     }
   })
+
+  // A turn finishing settles the transcript's height. If the user is parked at
+  // the bottom, re-pin flush so the final token isn't left a hair above the true
+  // bottom (the "command finished, the view sat up a little" symptom). Fires
+  // only on the running -> idle edge, and only while still at the bottom, so it
+  // can't yank a reader who scrolled into history.
+  const wasStreamingRef = useRef(isAnyStreaming)
+  useEffect(() => {
+    if (wasStreamingRef.current && !isAnyStreaming) {
+      scrollToBottom('instant')
+    }
+    wasStreamingRef.current = isAnyStreaming
+  }, [isAnyStreaming, scrollToBottom])
 
   // Reset the cap and pin to bottom on mount + every session switch (messages
   // swap in place on a long-lived runtime, so sessionKey is the only signal).

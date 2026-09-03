@@ -1183,7 +1183,7 @@ def _run_claimed_job(
         }
 
 
-def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:
+def _latest_job_output_excerpt(job_id: str, max_chars: int = 20000) -> Optional[str]:
     """Best-effort excerpt of the job's most recent saved output file.
 
     Included in the background-run completion block so the parent agent sees
@@ -1394,6 +1394,89 @@ def _try_dispatch_background_run(
         res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
         duration = round(time.time() - started_at, 2)
         refreshed = get_job(job_id) or {}
+        # Derive real api_calls from usage audit instead of hardcoded 0 (#100180).
+        # The audit is written by cron/scheduler.run_job with the turn's
+        # prompt/completion/total tokens and api_calls. Using it here makes the
+        # completion block's "API calls" honest and gives us a zero-inference
+        # signal to flip false-positive ok to error.
+        real_api_calls = 0
+        real_total_tokens = 0
+        audit_record_found = False
+        try:
+            from cron.scheduler import _usage_audit_path
+            audit_path = _usage_audit_path()
+            if audit_path.exists():
+                # read last matching record for this job
+                latest = None
+                try:
+                    text = audit_path.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    text = ""
+                for line in text.splitlines():
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if rec.get("job_id") == job_id:
+                        latest = rec
+                if latest is not None:
+                    audit_record_found = True
+                    try:
+                        real_api_calls = int(latest.get("api_calls") or 0)
+                    except Exception:
+                        real_api_calls = 0
+                    # Fallback for audits written before api_calls existed (or mocked records): tokens>0 implies >=1 call
+                    if real_api_calls == 0:
+                        try:
+                            if int(latest.get("total_tokens") or 0) > 0:
+                                real_api_calls = 1
+                            elif int(latest.get("prompt_tokens") or 0) > 0:
+                                real_api_calls = 1
+                        except Exception:
+                            pass
+                    try:
+                        real_total_tokens = int(latest.get("total_tokens") or 0)
+                    except Exception:
+                        real_total_tokens = 0
+        except Exception:
+            pass
+        # Zero-inference guard: if the scheduler still recorded ok but audit shows no tokens/calls, correct it here
+        # (defense-in-depth alongside scheduler's own guard). Don't flip no_agent jobs — they intentionally have 0 calls.
+        # Only flip when an audit record was found and confirms zero inference; mocked tests with no audit stay as-is.
+        try:
+            job_for_guard = refreshed or claimed_job or {}
+            if res.get("success") and audit_record_found and real_api_calls == 0 and real_total_tokens == 0 and not job_for_guard.get("no_agent"):
+                # Confirm via output excerpt whether transcript looks truncated (dangling tool_calls)
+                _excerpt_for_check = None
+                try:
+                    _excerpt_for_check = _latest_job_output_excerpt(job_id, max_chars=5000)
+                except Exception:
+                    pass
+                _is_trunc = False
+                if _excerpt_for_check and "<tool_calls>" in _excerpt_for_check and "</tool_calls>" not in _excerpt_for_check:
+                    _is_trunc = True
+                err_msg = "Zero inference calls (no LLM API call was made) — treating as failure (#100180)"
+                if _is_trunc:
+                    err_msg += " — transcript appears truncated mid-tool-call"
+                # Best-effort correction of persisted status so last_status reflects failure
+                try:
+                    from cron.jobs import mark_job_run
+                    _fire_owner = None
+                    _claim = claimed_job.get("fire_claim") if isinstance(claimed_job, dict) else None
+                    if isinstance(_claim, dict):
+                        _fire_owner = str(_claim.get("by") or "") or None
+                    mark_kwargs = {}
+                    if _fire_owner:
+                        mark_kwargs["expected_fire_owner"] = _fire_owner
+                    # Only correct if the persisted status is still ok (avoid overwriting a newer run)
+                    if refreshed.get("last_status") == "ok":
+                        mark_job_run(job_id, False, err_msg, **mark_kwargs)
+                        refreshed = get_job(job_id) or refreshed
+                except Exception:
+                    pass
+                res = {"success": False, "error": err_msg}
+        except Exception:
+            pass
         lines = [
             f"Cron job '{job_name}' ({job_id}) finished its manual run.",
             f"Result: {'ok' if res.get('success') else 'FAILED'}"
@@ -1411,7 +1494,7 @@ def _try_dispatch_background_run(
             "status": "completed" if res.get("success") else "error",
             "summary": "\n".join(lines),
             "error": res.get("error"),
-            "api_calls": 0,
+            "api_calls": real_api_calls,
             "duration_seconds": duration,
         }
 

@@ -7067,6 +7067,70 @@ def run_job(
 {logged_response}
 """
         
+        # #100180 false-positive guard: zero inference must not be recorded as ok.
+        # A turn that completed with zero LLM API calls (and zero tokens) made no
+        # progress — the model was never invoked or the response was truncated
+        # before any tool result. Marking it ok silently skips maintenance.
+        _result_api_calls = result.get("api_calls")
+        _result_total = result.get("total_tokens")
+        _result_prompt = result.get("prompt_tokens")
+        _is_zero_inference = False
+        if _result_api_calls == 0:
+            # api_calls == 0 is definitive when the field is present (turn_finalizer always sets it)
+            if _result_total is None or _result_total == 0:
+                _is_zero_inference = True
+            elif _result_prompt is None or _result_prompt == 0:
+                _is_zero_inference = True
+        # Also detect truncated trace where transcript ends inside a tool_calls block
+        _is_truncated_tool = False
+        if final_response and "<tool_calls>" in final_response and "</tool_calls>" not in final_response:
+            _is_truncated_tool = True
+        if _is_zero_inference and not job.get("no_agent"):
+            logger.warning(
+                "Job '%s' completed with zero inference calls (api_calls=%s, total_tokens=%s) — marking as failure (#100180)",
+                job_name, _result_api_calls, _result_total,
+            )
+            error_msg = "Agent completed with zero inference calls (no LLM API call was made) — treating as failure (#100180)"
+            if _is_truncated_tool:
+                error_msg += " — transcript appears truncated mid-tool-call"
+            _audit_duration_ms = int((time.monotonic() - _audit_t_start) * 1000)
+            _audit_response_silent = _is_cron_silence_response(final_response or "")
+            _write_usage_audit({
+                "ts": _utcnow_iso_ms(),
+                "job_id": job_id,
+                "fire_id": _audit_fire_id,
+                "prompt_tokens": result.get("prompt_tokens"),
+                "completion_tokens": result.get("completion_tokens"),
+                "total_tokens": result.get("total_tokens"),
+                "api_calls": _result_api_calls,
+                "response_silent": _audit_response_silent,
+                "deliver_target": job.get("deliver"),
+                "model": model or None,
+                "duration_ms": _audit_duration_ms,
+                "error": error_msg,
+            })
+            output_failed = f"""# Cron Job: {job_name} (FAILED)
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Prompt
+
+{prompt}
+
+## Error
+
+```
+{error_msg}
+```
+
+## Partial Response
+
+{final_response}
+"""
+            return False, output_failed, "", error_msg
+
         logger.info("Job '%s' completed successfully", job_name)
 
         # Emit one JSONL line per fire for usage audit.
@@ -7079,6 +7143,7 @@ def run_job(
             "prompt_tokens": result.get("prompt_tokens"),
             "completion_tokens": result.get("completion_tokens"),
             "total_tokens": result.get("total_tokens"),
+            "api_calls": result.get("api_calls"),
             "response_silent": _audit_response_silent,
             "deliver_target": job.get("deliver"),
             "model": model or None,
@@ -7102,6 +7167,7 @@ def run_job(
                 "prompt_tokens": None,
                 "completion_tokens": None,
                 "total_tokens": None,
+                "api_calls": 0,
                 "response_silent": False,
                 "deliver_target": job.get("deliver"),
                 "model": model or None,

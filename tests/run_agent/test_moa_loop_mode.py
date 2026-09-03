@@ -609,6 +609,203 @@ def test_references_parallel_without_agent_is_unaffected(monkeypatch):
     assert out[0][1] == "resp-p1"
 
 
+def _inflight_tracking_call_llm(sleep_s, max_inflight, active_now):
+    """Build a call_llm stub that records the peak number of concurrent calls.
+
+    ``max_inflight`` is a one-element list the stub mutates under a lock;
+    ``active_now`` likewise receives the current count on each call entry.
+    """
+    import time
+
+    def fake_call_llm(**kwargs):
+        with active_now["lock"]:
+            active_now["n"] += 1
+            max_inflight[0] = max(max_inflight[0], active_now["n"])
+        try:
+            time.sleep(sleep_s)
+            return _response(f"resp-{kwargs['provider']}")
+        finally:
+            with active_now["lock"]:
+                active_now["n"] -= 1
+
+    return fake_call_llm
+
+
+def test_references_run_sequentially_when_max_workers_one(monkeypatch):
+    """``max_workers=1`` must force a fully sequential fan-out.
+
+    Local JIT-loaded inference servers (LM Studio with
+    ``model.lmstudio_load_mode: jit``) abort concurrent model-load requests,
+    so a preset capped at one concurrent reference must never have more than
+    one advisor call in flight — and every reference still completes, in
+    order (#78011).
+    """
+    import threading
+    import time
+
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
+
+    max_inflight = [0]
+    active_now = {"n": 0, "lock": threading.Lock()}
+    monkeypatch.setattr(
+        moa_loop,
+        "call_llm",
+        _inflight_tracking_call_llm(0.3, max_inflight, active_now),
+    )
+
+    refs = [
+        {"provider": "p1", "model": "ok"},
+        {"provider": "p2", "model": "ok"},
+    ]
+    start = time.monotonic()
+    out = moa_loop._run_references_parallel(
+        refs, [{"role": "user", "content": "hi"}], max_workers=1,
+    )
+    elapsed = time.monotonic() - start
+
+    # Never more than one call in flight → sequential.
+    assert max_inflight[0] == 1
+    # Two 0.3s sleeps back-to-back ⇒ ≥0.6s; a parallel run would be ~0.3s.
+    assert elapsed >= 0.55, f"references did not run sequentially (took {elapsed:.2f}s)"
+    # All references complete, output order matches input order.
+    assert [label for label, _, _ in out] == ["p1:ok", "p2:ok"]
+    assert [text for _, text, _ in out] == ["resp-p1", "resp-p2"]
+
+
+def test_references_cap_concurrency_at_max_workers(monkeypatch):
+    """``max_workers=2`` must bound in-flight calls to 2 even with 3 refs."""
+    import threading
+    import time
+
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
+
+    max_inflight = [0]
+    active_now = {"n": 0, "lock": threading.Lock()}
+    monkeypatch.setattr(
+        moa_loop,
+        "call_llm",
+        _inflight_tracking_call_llm(0.3, max_inflight, active_now),
+    )
+
+    refs = [
+        {"provider": "p1", "model": "ok"},
+        {"provider": "p2", "model": "ok"},
+        {"provider": "p3", "model": "ok"},
+    ]
+    out = moa_loop._run_references_parallel(
+        refs, [{"role": "user", "content": "hi"}], max_workers=2,
+    )
+
+    assert max_inflight[0] == 2
+    assert [text for _, text, _ in out] == ["resp-p1", "resp-p2", "resp-p3"]
+
+
+def test_references_user_cap_overrides_default_ceiling(monkeypatch):
+    """An explicit user cap replaces the default ``_MAX_REFERENCE_WORKERS``
+    ceiling — the ceiling is the fallback for *unset* values only. The
+    executor must receive ``min(user_cap, len(refs))``, never more workers
+    than references."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
+    monkeypatch.setattr(moa_loop, "call_llm", lambda **k: _response("ok"))
+
+    captured = {}
+
+    def spy_executor(max_workers=1, *args, **kwargs):
+        captured["max_workers"] = max_workers
+        return ThreadPoolExecutor(max_workers, *args, **kwargs)
+
+    monkeypatch.setattr(moa_loop, "ThreadPoolExecutor", spy_executor)
+
+    # More refs than the default ceiling: a user cap above 8 must win
+    # (bounded by the reference count, never more workers than refs).
+    refs = [
+        {"provider": f"p{i}", "model": "ok"} for i in range(moa_loop._MAX_REFERENCE_WORKERS + 2)
+    ]
+    out = moa_loop._run_references_parallel(
+        refs, [{"role": "user", "content": "hi"}], max_workers=999,
+    )
+
+    assert captured["max_workers"] == len(refs)
+    assert len(out) == len(refs)
+
+
+def test_references_invalid_max_workers_falls_back_to_ceiling(monkeypatch):
+    """Non-positive / non-int programmatic ``max_workers`` values must fall
+    back to the module ceiling instead of crashing ThreadPoolExecutor or
+    silently serializing via truthiness (0 → parallel, -1 → ValueError)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
+    monkeypatch.setattr(moa_loop, "call_llm", lambda **k: _response("ok"))
+
+    captured = {}
+
+    def spy_executor(max_workers=1, *args, **kwargs):
+        captured["max_workers"] = max_workers
+        return ThreadPoolExecutor(max_workers, *args, **kwargs)
+
+    monkeypatch.setattr(moa_loop, "ThreadPoolExecutor", spy_executor)
+
+    refs = [
+        {"provider": "p1", "model": "ok"},
+        {"provider": "p2", "model": "ok"},
+    ]
+    for bad in (0, -1, -5, True, "3", 1.5, None):
+        captured.clear()
+        out = moa_loop._run_references_parallel(
+            refs, [{"role": "user", "content": "hi"}], max_workers=bad,
+        )
+        assert captured["max_workers"] == 2, bad  # min(ceiling 8, 2 refs)
+        assert len(out) == len(refs), bad
+
+
+def test_aggregate_moa_context_forwards_max_concurrent_references(monkeypatch):
+    """The one-shot /moa path must forward the preset's concurrency cap to
+    the fan-out (#78011)."""
+    from agent import moa_loop
+    from agent.usage_pricing import CanonicalUsage
+
+    outputs = [
+        ("openrouter:advisor", "useful advice", moa_loop._RefAccounting(CanonicalUsage())),
+    ]
+    fanout_kwargs = {}
+
+    def fake_fanout(*args, **kwargs):
+        fanout_kwargs.update(kwargs)
+        return outputs
+
+    monkeypatch.setattr(moa_loop, "_run_references_parallel", fake_fanout)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    moa_loop.aggregate_moa_context(
+        user_prompt="review this",
+        api_messages=[{"role": "user", "content": "review this"}],
+        reference_models=[{"provider": "openrouter", "model": "advisor"}],
+        aggregator={"provider": "openrouter", "model": "aggregator"},
+        max_concurrent_references=1,
+    )
+
+    assert fanout_kwargs["max_workers"] == 1
+
+
 def test_references_parallel_interrupt_aborts_wait(monkeypatch):
     """A user interrupt mid-fanout must stop the wait instead of blocking
     until every reference (including a wedged one) finishes or times out on
@@ -1240,6 +1437,51 @@ moa:
     usage2, cost2 = facade.consume_reference_usage()
     assert usage2.input_tokens == 0
     assert cost2 is None
+
+
+def test_facade_forwards_preset_max_concurrent_references(monkeypatch, tmp_path):
+    """The facade must read ``max_concurrent_references`` from the preset and
+    pass it to the fan-out as ``max_workers`` (#78011)."""
+    from agent import moa_loop
+    from agent.usage_pricing import CanonicalUsage
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      max_concurrent_references: 1
+      reference_models:
+        - provider: openrouter
+          model: advisor
+      aggregator:
+        provider: openrouter
+        model: aggregator
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    fanout_kwargs = {}
+
+    def fake_fanout(*args, **kwargs):
+        fanout_kwargs.update(kwargs)
+        return [(
+            "openrouter:advisor",
+            "advice",
+            moa_loop._RefAccounting(CanonicalUsage()),
+        )]
+
+    monkeypatch.setattr(moa_loop, "_run_references_parallel", fake_fanout)
+    monkeypatch.setattr(moa_loop, "call_llm", lambda **k: _response("acted"))
+
+    facade = moa_loop.MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "go"}], tools=[])
+
+    assert fanout_kwargs["max_workers"] == 1
 
 
 class _CountingCtxLen:

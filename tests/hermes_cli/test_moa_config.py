@@ -72,6 +72,58 @@ def test_exact_preset_matching_skips_disabled_presets():
     assert exact_moa_preset_name(config, "klo") is None
 
 
+def test_normalize_preset_max_concurrent_references():
+    """``max_concurrent_references`` coerces to a positive int or None.
+
+    None (the default) means "no user cap" — the fan-out keeps its module
+    ceiling. 1 forces the fully sequential fan-out local JIT-loaded servers
+    (LM Studio) need (#78011). Invalid values (0, negative, bool, garbage)
+    degrade to None rather than crashing, matching the tolerant-read
+    contract of every other preset key.
+    """
+    preset = normalize_moa_config({"presets": {"p": {}}})["presets"]["p"]
+    assert preset["max_concurrent_references"] is None
+
+    preset = normalize_moa_config(
+        {"presets": {"p": {"max_concurrent_references": 1}}}
+    )["presets"]["p"]
+    assert preset["max_concurrent_references"] == 1
+
+    preset = normalize_moa_config(
+        {"presets": {"p": {"max_concurrent_references": 3}}}
+    )["presets"]["p"]
+    assert preset["max_concurrent_references"] == 3
+
+    # String forms follow _coerce_int_or_none's tolerant path.
+    preset = normalize_moa_config(
+        {"presets": {"p": {"max_concurrent_references": "2"}}}
+    )["presets"]["p"]
+    assert preset["max_concurrent_references"] == 2
+
+    # Non-positive / invalid values degrade to None → default ceiling.
+    for bad in (0, -1, True, False, "abc", 1.5):
+        preset = normalize_moa_config(
+            {"presets": {"p": {"max_concurrent_references": bad}}}
+        )["presets"]["p"]
+        assert preset["max_concurrent_references"] is None, bad
+
+
+def test_normalize_moa_config_flattens_max_concurrent_references():
+    """The top-level flattened view must carry the active preset's cap.
+
+    The one-shot /moa path (conversation_loop) reads the flattened view,
+    not ``presets.<name>``, so the active preset's value must surface at
+    the top level or the knob silently no-ops there (#78011).
+    """
+    cfg = normalize_moa_config(
+        {"default_preset": "local", "presets": {"local": {"max_concurrent_references": 1}}}
+    )
+    assert cfg["max_concurrent_references"] == 1
+
+    # Unset → None (default ceiling), never a KeyError.
+    assert normalize_moa_config({})["max_concurrent_references"] is None
+
+
 
 
 

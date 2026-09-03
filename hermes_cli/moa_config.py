@@ -101,6 +101,26 @@ def _coerce_int_or_none(value: Any) -> int | None:
     return n if n > 0 else None
 
 
+def _coerce_concurrency(value: Any) -> int | None:
+    """Coerce to a positive reference-fan-out concurrency cap, or None.
+
+    ``None`` (the default) means 'no user cap' — the fan-out keeps its
+    module-level ``_MAX_REFERENCE_WORKERS`` ceiling. A positive int caps how
+    many reference advisors run concurrently; 1 forces a fully sequential
+    fan-out, which local JIT-loaded inference servers (e.g. LM Studio with
+    ``model.lmstudio_load_mode: jit``) require — concurrent model-load
+    requests abort each other on a single GPU (#78011). Bools are rejected
+    explicitly: ``true`` must not silently mean '1 concurrent call'.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and not value.is_integer():
+        # Fractional concurrency is meaningless; never silently truncate
+        # 1.5 → 1. (Integral floats like 1.0 still pass through.)
+        return None
+    return _coerce_int_or_none(value)
+
+
 def _coerce_fanout(value: Any) -> str:
     """Normalize the fan-out cadence; unknown values fall back to default.
 
@@ -306,6 +326,13 @@ def _default_preset() -> dict[str, Any]:
         "max_tokens": 4096,
         "reference_max_tokens": None,
         "fanout": "user_turn",
+        # Cap on how many reference advisors run CONCURRENTLY during the
+        # fan-out. None (default) = no user cap — the fan-out still uses the
+        # module-level _MAX_REFERENCE_WORKERS ceiling. Set 1 for a fully
+        # sequential fan-out, which local JIT-loaded inference servers (e.g.
+        # LM Studio with model.lmstudio_load_mode: jit) require — concurrent
+        # load requests abort each other on a single GPU (#78011).
+        "max_concurrent_references": None,
         "enabled": True,
     }
 
@@ -366,6 +393,12 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # last advisor run. Also accepts the mapping form
         # {mode: every_n, n: N}, normalized to the canonical string.
         "fanout": _coerce_fanout(raw.get("fanout")),
+        # Positive int → cap on concurrent advisor calls; anything else
+        # (unset, 0, negative, bool, unparseable) degrades to None → the
+        # default _MAX_REFERENCE_WORKERS ceiling, preserving prior behavior.
+        "max_concurrent_references": _coerce_concurrency(
+            raw.get("max_concurrent_references")
+        ),
     }
 
 
@@ -415,6 +448,9 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "max_tokens": active["max_tokens"],
         "reference_max_tokens": active.get("reference_max_tokens"),
         "fanout": active.get("fanout", "user_turn"),
+        # Flattened for the one-shot /moa path (conversation_loop reads the
+        # top level, not presets.<name>).
+        "max_concurrent_references": active.get("max_concurrent_references"),
         "enabled": active["enabled"],
         # MoA-level (not per-preset) toggles ride at the top level alongside
         # save_traces. privacy_filter: '' (off, default) | 'display' | 'full'

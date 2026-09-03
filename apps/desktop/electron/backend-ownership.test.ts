@@ -314,8 +314,8 @@ test('shutdown coordinator returns one promise and awaits teardown exactly once'
 
   assert.equal(first, second)
   assert.equal(coordinator.hasStarted(), true)
-  await Promise.resolve()
   assert.equal(teardown.mock.calls.length, 1)
+  assert.equal(coordinator.isPending(), true)
 
   let finished = false
   first.then(() => {
@@ -327,6 +327,7 @@ test('shutdown coordinator returns one promise and awaits teardown exactly once'
   completion.resolve()
   await second
   assert.equal(finished, true)
+  assert.equal(coordinator.isPending(), false)
   assert.equal(coordinator.run(), first)
 })
 

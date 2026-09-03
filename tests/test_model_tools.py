@@ -509,3 +509,65 @@ class TestDisabledToolsetsPostureToolset:
             )
         }
         assert "write_file" not in no_file
+
+
+class TestDisabledToolsetsLoggedInQuietMode:
+    """Regression test for #61184 (follow-up to #97101): the stripped-toolset
+    notice must reach ``logger`` regardless of ``quiet_mode``. In -z/oneshot
+    stdout is the machine-read payload, so the print() path is (correctly)
+    suppressed there -- but that must not also suppress the provenance record.
+    Unknown-name and bundle advisories are handled separately (#97146)."""
+
+    def test_disabled_toolset_logged_with_stripped_tools(self, caplog, capsys):
+        import logging
+        from model_tools import _compute_tool_definitions
+
+        with caplog.at_level(logging.INFO, logger="model_tools"):
+            _compute_tool_definitions(
+                disabled_toolsets=["terminal"],
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+
+        records = [
+            r for r in caplog.records
+            if r.name == "model_tools" and "Disabled toolset 'terminal'" in r.getMessage()
+        ]
+        assert records, "stripped toolset was not logged in quiet_mode"
+        assert records[0].levelno == logging.INFO
+        assert "terminal" in records[0].getMessage()
+        # quiet_mode must still keep stdout clean.
+        assert "🚫" not in capsys.readouterr().out
+
+    def test_disabled_legacy_toolset_logged(self, caplog):
+        import logging
+        from model_tools import _LEGACY_TOOLSET_MAP, _compute_tool_definitions
+
+        with caplog.at_level(logging.INFO, logger="model_tools"):
+            _compute_tool_definitions(
+                disabled_toolsets=["terminal_tools"],
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+
+        messages = [r.getMessage() for r in caplog.records if r.name == "model_tools"]
+        assert any("Disabled legacy toolset 'terminal_tools'" in m for m in messages)
+        for tool in _LEGACY_TOOLSET_MAP["terminal_tools"]:
+            assert any(tool in m for m in messages)
+
+    def test_non_quiet_mode_still_prints(self, caplog, capsys):
+        import logging
+        from model_tools import _compute_tool_definitions
+
+        with caplog.at_level(logging.INFO, logger="model_tools"):
+            _compute_tool_definitions(
+                disabled_toolsets=["terminal"],
+                quiet_mode=False,
+                skip_tool_search_assembly=True,
+            )
+
+        assert "🚫 Disabled toolset 'terminal'" in capsys.readouterr().out
+        assert any(
+            "Disabled toolset 'terminal'" in r.getMessage()
+            for r in caplog.records if r.name == "model_tools"
+        )

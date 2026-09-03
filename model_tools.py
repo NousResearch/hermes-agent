@@ -490,11 +490,26 @@ def _compute_tool_definitions(
                 else:
                     resolved = resolve_toolset(toolset_name)
                     tools_to_include.difference_update(resolved)
+                # Always record what was stripped, independent of quiet_mode.
+                # quiet_mode only governs the human-facing stdout stream; in
+                # -z/oneshot stdout is the machine-read payload, so the
+                # provenance of a disabled toolset must go to the log instead
+                # (#61184).
+                logger.info(
+                    "Disabled toolset '%s': stripped %s",
+                    toolset_name,
+                    ", ".join(resolved) if resolved else "no tools",
+                )
                 if not quiet_mode:
                     print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.difference_update(legacy_tools)
+                logger.info(
+                    "Disabled legacy toolset '%s': stripped %s",
+                    toolset_name,
+                    ", ".join(legacy_tools),
+                )
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
             elif not quiet_mode:

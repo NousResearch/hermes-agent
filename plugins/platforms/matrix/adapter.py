@@ -2605,6 +2605,7 @@ class MatrixAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        is_voice: bool = False,
     ) -> SendResult:
         """Upload an audio file as a voice message (MSC3245 native voice).
 

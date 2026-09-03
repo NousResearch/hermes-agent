@@ -500,6 +500,7 @@ class MattermostAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        is_voice: bool = False,
     ) -> SendResult:
         """Upload an audio file."""
         return await self._send_local_file(

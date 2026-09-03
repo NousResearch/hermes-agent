@@ -10673,12 +10673,20 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
     try:
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
+        from hermes_cli.toolset_validation import partition_cli_toolsets
+        from toolsets import validate_toolset
 
         token = set_hermes_home_override(hermes_home)
         try:
             cfg = load_config()
-            toolsets = sorted(_get_platform_tools(cfg, "cli"))
+            resolved = sorted(_get_platform_tools(cfg, "cli"))
+            toolsets, _rejected = partition_cli_toolsets(
+                cfg,
+                resolved,
+                validate_toolset,
+                enabled_mcp_server_names(cfg),
+            )
         finally:
             reset_hermes_home_override(token)
         return toolsets or None

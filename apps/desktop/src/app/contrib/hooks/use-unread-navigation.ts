@@ -2,7 +2,10 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { openSession, type OpenSessionNavigate } from '@/app/open-session'
-import { $activeTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
+import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
+import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
+import { $narrowOverlayChrome } from '@/components/pane-shell/tree/renderer/narrow-overlay-state'
+import { $activeTreeGroup, $layoutTree, $narrowViewport, revealTreePane } from '@/components/pane-shell/tree/store'
 import { $workspaceMode, $workspaceOwnerKey } from '@/components/pane-shell/workspace-scope'
 import { getSession } from '@/hermes'
 import { $activeConnectionId } from '@/store/connections'
@@ -35,6 +38,13 @@ function isStillUnread(target: UnreadSessionTarget): boolean {
         current.connectionId === target.connectionId &&
         current.profile === target.profile
     )
+}
+
+function activePaneId(): string | undefined {
+  const tree = $layoutTree.get()
+  const groupId = $activeTreeGroup.get()
+
+  return tree ? (groupId ? findGroup(tree, groupId) : findGroupOfPane(tree, 'workspace'))?.active : undefined
 }
 
 /** openSession's focus fast path is ID/lineage-only. Until that shared store
@@ -78,6 +88,13 @@ export function useUnreadNavigation(navigate: OpenSessionNavigate, routeToken: s
 
     seen.current = request
     revealTreePane('sessions')
+    const narrow = $narrowViewport.get()
+
+    if (narrow) {
+      // Use the narrow reveal protocol without changing positional dock flags
+      // (the left rail can belong to another pane in a flipped wide layout).
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'sessions', mode: 'open' } }))
+    }
 
     if (pending.current) {
       return
@@ -97,6 +114,37 @@ export function useUnreadNavigation(navigate: OpenSessionNavigate, routeToken: s
 
     pending.current = cancel
     const isCurrent = () => pending.current === cancel && currentRoute.current === capturedRoute
+
+    // Capture AFTER our own reveal. A same-group Terminal tab changes neither
+    // group nor focused session, whereas resizing the group changes neither
+    // its active pane nor the user's intent.
+    const capturedPaneId = activePaneId()
+    cleanups.push(
+      $layoutTree.listen(() => {
+        if (activePaneId() !== capturedPaneId) {
+          cancel()
+        }
+      })
+    )
+
+    cleanups.push(
+      $narrowOverlayChrome.listen(chrome => {
+        if (chrome) {
+          if (chrome.paneId !== 'sessions') {
+            cancel()
+          }
+        } else {
+          // Overlay effects clear then republish chrome, including our own
+          // Sessions reveal and cosmetic updates. Only a settled close wins;
+          // leaving narrow mode alone is not a different pane selection.
+          queueMicrotask(() => {
+            if (isCurrent() && $narrowViewport.get() && $narrowOverlayChrome.get()?.paneId !== 'sessions') {
+              cancel()
+            }
+          })
+        }
+      })
+    )
 
     // Subscribe only during this operation. Synchronous invalidation catches
     // switch-away-and-back and focus-only changes even before React renders.

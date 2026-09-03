@@ -6,7 +6,7 @@ description: "Set up Hermes Agent as a Telegram bot"
 
 # Telegram Setup
 
-Hermes Agent integrates with Telegram as a full-featured conversational bot. Once connected, you can chat with your agent from any device, send voice memos that get auto-transcribed, receive scheduled task results, and use the agent in group chats. The integration is built on [python-telegram-bot](https://python-telegram-bot.org/) and supports text, voice, images, and file attachments.
+Hermes Agent integrates with Telegram as a full-featured conversational bot. Once connected, you can chat with your agent from any device, send voice memos that get auto-transcribed, receive scheduled task results, and use the agent in group chats. The integration is built on [python-telegram-bot](https://python-telegram-bot.org/) and supports text, voice, images, stickers, location/venue pins, albums, and file attachments.
 
 ## Step 1: Create a Bot via BotFather
 
@@ -368,6 +368,22 @@ TELEGRAM_CRON_THREAD_ID=<topic_thread_id>
 ```
 
 `TELEGRAM_CRON_THREAD_ID` overrides `TELEGRAM_HOME_CHANNEL_THREAD_ID` for cron deliveries only. Replies in that topic continue the topic's existing session.
+
+## Rich Inbound Content
+
+Hermes surfaces Telegram's rich inbound message types as follows:
+
+### Stickers
+
+Static stickers (WebP) are downloaded, described by the configured vision model, and injected into the conversation as text (e.g. `[The user sent a sticker …]`). Descriptions are cached by `file_unique_id` in `gateway/sticker_cache.py`, so a repeated sticker costs no extra vision call. Animated and video stickers cannot be analyzed as static images — they are reduced to an emoji placeholder instead.
+
+### Location and venue pins
+
+Location and venue pins become a text turn containing the coordinates, a Google Maps link, and (for venues) the title and address. The agent is prompted to ask what the user wants to find nearby.
+
+### Albums and media groups
+
+A rapid burst of photos (an album) is debounced and delivered to the agent as **one** turn instead of one turn per photo. Messages sharing a `media_group_id` are coalesced into a single event; photo-only groups are merged this way. Tune the debounce window with `HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS` (default `0.8`).
 
 ## Voice Messages
 

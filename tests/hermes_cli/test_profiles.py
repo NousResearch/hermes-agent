@@ -39,6 +39,7 @@ from hermes_cli.profiles import (
     import_profile,
     _get_profiles_root,
     _get_default_hermes_home,
+    _seed_model_config,
     seed_profile_skills,
     has_bundled_skills_opt_out,
     NO_BUNDLED_SKILLS_MARKER,
@@ -171,6 +172,48 @@ class TestCreateProfile:
         cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
         assert cfg["model"]["provider"] == "nous"
         assert cfg["model"]["default"] == "some/model"
+
+
+    def test_model_seed_preserves_existing_config(self, profile_env):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "model:\n  provider: nous\n  default: some/model\n"
+        )
+        profile_dir = default_home / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text(
+            "display:\n  skin: slate\nagent:\n  max_iterations: 42\n"
+        )
+
+        _seed_model_config(profile_dir)
+
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cfg == {
+            "display": {"skin": "slate"},
+            "agent": {"max_iterations": 42},
+            "model": {"provider": "nous", "default": "some/model"},
+        }
+
+
+    def test_model_seed_does_not_replace_existing_model(self, profile_env):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "model:\n  provider: nous\n  default: inherited/model\n"
+        )
+        profile_dir = default_home / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text(
+            "model:\n  provider: custom\n  default: chosen/model\n"
+            "display:\n  skin: mono\n"
+        )
+
+        _seed_model_config(profile_dir)
+
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cfg == {
+            "model": {"provider": "custom", "default": "chosen/model"},
+            "display": {"skin": "mono"},
+        }
 
 
 

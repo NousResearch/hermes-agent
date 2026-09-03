@@ -773,22 +773,23 @@ def _read_config_model(profile_dir: Path) -> tuple:
 def _seed_model_config(profile_dir: Path) -> None:
     """Give a profile created without a clone source a usable model block.
 
-    Such a profile gets its directory tree but no ``config.yaml`` at all, so it
-    resolves no provider and its first turn dies with "No LLM provider
-    configured" — created, but unable to run. Copy the active profile's
-    ``model`` block over at creation time.
+    Copy the active profile's ``model`` block over at creation time, merging it
+    into a config file another creation surface may already have written.
+    Existing config and an explicitly present ``model`` key always win.
 
     This is a copy, not a link: profiles remain independent islands, and
     editing either one afterwards never touches the other. "Fresh" means fresh
     skills and SOUL, not unreachable.
     """
     config_path = profile_dir / "config.yaml"
-    if config_path.exists():
-        return
     try:
         import yaml
         from hermes_constants import get_hermes_home
         from hermes_cli.config import read_user_config_raw
+
+        existing = read_user_config_raw(config_path)
+        if "model" in existing:
+            return
 
         source = get_hermes_home() / "config.yaml"
         if not source.is_file():
@@ -796,8 +797,9 @@ def _seed_model_config(profile_dir: Path) -> None:
         model_cfg = read_user_config_raw(source).get("model")
         if not model_cfg:
             return
+        existing["model"] = model_cfg
         config_path.write_text(
-            yaml.safe_dump({"model": model_cfg}, sort_keys=False),
+            yaml.safe_dump(existing, sort_keys=False),
             encoding="utf-8",
         )
     except Exception:

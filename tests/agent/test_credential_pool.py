@@ -24,6 +24,107 @@ def _jwt_with_claims(claims: dict) -> str:
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
 
 
+def test_oauth_account_subject_prefers_provider_account_id():
+    from agent.credential_pool import _oauth_account_subject
+
+    token = _jwt_with_claims(
+        {
+            "sub": "login-subject",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "account-123",
+            },
+        }
+    )
+
+    assert _oauth_account_subject("openai-codex", token) == "account-123"
+
+
+def test_add_entry_replaces_same_oauth_account_in_place(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    first = PooledCredential(
+        provider="openai-codex",
+        id="stable-id",
+        label="first",
+        auth_type="oauth",
+        priority=0,
+        source="device_code",
+        access_token=_jwt_with_claims({"sub": "same-account"}),
+        refresh_token="first-refresh",
+    )
+    duplicate = PooledCredential(
+        provider="openai-codex",
+        id="duplicate-id",
+        label="duplicate",
+        auth_type="oauth",
+        priority=1,
+        source="manual:device_code",
+        access_token=_jwt_with_claims({"sub": "same-account"}),
+        refresh_token="duplicate-refresh",
+    )
+    pool = CredentialPool("openai-codex", [first, duplicate])
+    replacement = PooledCredential(
+        provider="openai-codex",
+        id="new-id",
+        label="reauthenticated",
+        auth_type="oauth",
+        priority=99,
+        source="manual:device_code",
+        access_token=_jwt_with_claims({"sub": "same-account"}),
+        refresh_token="fresh-refresh",
+    )
+
+    added = pool.add_entry(replacement)
+
+    assert added.id == "stable-id"
+    assert added.priority == 0
+    assert added.refresh_token == "fresh-refresh"
+    assert [entry.id for entry in pool.entries()] == ["stable-id"]
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert [
+        entry["id"]
+        for entry in persisted["credential_pool"]["openai-codex"]
+    ] == ["stable-id"]
+
+
+def test_upsert_matches_same_oauth_account_across_sources():
+    from agent.credential_pool import PooledCredential, _upsert_entry
+
+    original = PooledCredential(
+        provider="openai-codex",
+        id="stable-id",
+        label="original",
+        auth_type="oauth",
+        priority=3,
+        source="device_code",
+        access_token=_jwt_with_claims({"sub": "same-account"}),
+        refresh_token="old-refresh",
+    )
+    entries = [original]
+
+    changed = _upsert_entry(
+        entries,
+        "openai-codex",
+        "manual:device_code",
+        {
+            "auth_type": "oauth",
+            "source": "manual:device_code",
+            "access_token": _jwt_with_claims({"sub": "same-account"}),
+            "refresh_token": "new-refresh",
+        },
+    )
+
+    assert changed is True
+    assert len(entries) == 1
+    assert entries[0].id == "stable-id"
+    assert entries[0].priority == 3
+    assert entries[0].source == "manual:device_code"
+    assert entries[0].refresh_token == "new-refresh"
+
+
 
 
 

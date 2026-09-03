@@ -179,6 +179,7 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
+    "account_subject",
     # Classified failure semantics for the last exhaustion, as decided by
     # agent/error_classifier.py. The raw HTTP status is not enough to size a
     # cooldown: providers return 403 for both an edge throttle (transient,
@@ -187,6 +188,18 @@ _EXTRA_KEYS = frozenset({
     # 60s transient cooldown.
     "failure_reason",
 })
+
+
+def _oauth_account_subject(provider: str, token: str) -> Optional[str]:
+    """Return a stable provider-scoped account id proven by OAuth claims."""
+    claims = _decode_jwt_claims(token)
+    nested = claims.get("https://api.openai.com/auth")
+    if isinstance(nested, dict):
+        account_id = nested.get("chatgpt_account_id")
+        if isinstance(account_id, str) and account_id.strip():
+            return account_id.strip()
+    subject = claims.get("sub")
+    return subject.strip() if isinstance(subject, str) and subject.strip() else None
 
 
 def _normalize_pool_auth_type(provider: str, token: Any, auth_type: Any) -> str:
@@ -234,6 +247,10 @@ class PooledCredential:
             self.access_token,
             self.auth_type,
         )
+        if self.auth_type == AUTH_TYPE_OAUTH and not self.extra.get("account_subject"):
+            subject = _oauth_account_subject(self.provider, self.access_token)
+            if subject:
+                self.extra["account_subject"] = subject
 
     def __getattr__(self, name: str):
         if name in _EXTRA_KEYS:
@@ -2988,6 +3005,35 @@ class CredentialPool:
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
         with self._lock:
+            subject = entry.account_subject if entry.auth_type == AUTH_TYPE_OAUTH else None
+            matching_indices = [
+                idx
+                for idx, existing in enumerate(self._entries)
+                if subject
+                and existing.auth_type == AUTH_TYPE_OAUTH
+                and existing.account_subject == subject
+            ]
+            if matching_indices:
+                existing_idx = matching_indices[0]
+                existing = self._entries[existing_idx]
+                removed_ids = [
+                    self._entries[idx].id for idx in matching_indices[1:]
+                ]
+                replacement = replace(
+                    entry,
+                    id=existing.id,
+                    priority=existing.priority,
+                )
+                self._entries[existing_idx] = replacement
+                duplicate_indices = set(matching_indices[1:])
+                if duplicate_indices:
+                    self._entries = [
+                        item
+                        for idx, item in enumerate(self._entries)
+                        if idx not in duplicate_indices
+                    ]
+                self._persist(removed_ids=removed_ids)
+                return replacement
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
             borrowed_ids = getattr(self, "_borrowed_root_ids", None)
@@ -3010,9 +3056,19 @@ class CredentialPool:
 
 
 def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, payload: Dict[str, Any]) -> bool:
+    incoming_subject = payload.get("account_subject") or _oauth_account_subject(
+        provider, payload.get("access_token", "")
+    )
+    if incoming_subject:
+        payload["account_subject"] = incoming_subject
     matching_indices = []
     for idx, entry in enumerate(entries):
-        if entry.source == source:
+        same_account = (
+            incoming_subject
+            and entry.auth_type == AUTH_TYPE_OAUTH
+            and entry.account_subject == incoming_subject
+        )
+        if entry.source == source or same_account:
             matching_indices.append(idx)
 
     existing_idx = matching_indices[0] if matching_indices else None

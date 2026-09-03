@@ -588,14 +588,23 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # the floor (x-preview-f-free delisted 2026-08-26 — offline fallback must
     # not offer a model that 401s). deepseek-v4-flash-free and mimo-v2.5-free
     # are back on the live list.
+    # Floor = the models the relay currently advertises AND serves keyless
+    # (verified 2026-09-02 with real chat completions; the live path applies
+    # the same curated exclusion list, so this floor only matters when the
+    # relay is unreachable). Removed from the old floor because the relay
+    # advertises but cannot serve them — see
+    # _OPENCODE_FREE_KNOWN_DEAD_MODELS:
+    # deepseek-v4-flash-free (400 "Model is unavailable"),
+    # muse-spark-1.2-contributor-free (500 Internal server error),
+    # nemotron-3-ultra-free / nemotron-3.5-lightning-free (timeouts),
+    # hy3-free (absent from the live catalog). Re-add any of them if the
+    # relay starts serving them again — remove the id from
+    # _OPENCODE_FREE_KNOWN_DEAD_MODELS and it reappears on the next refresh.
     "opencode-free": [
-        "deepseek-v4-flash-free",
-        "hy3-free",
-        "mimo-v2.5-free",
         "laguna-s-2.1-free",
-        "nemotron-3-ultra-free",
-        "nemotron-3.5-lightning-free",
-        "muse-spark-1.2-contributor-free",
+        "mimo-v2.5-free",
+        "ling-3.0-flash-fin-free",
+        "big-pickle",
     ],
     # Synced against https://opencode.ai/docs/go/ + live GET /zen/go/v1/models
     # (2026-08-20).
@@ -5891,6 +5900,24 @@ _OPENCODE_KEYLESS_EXTRA_SLUGS = frozenset({"big-pickle"})
 # catalog even though the suffix looks free. ox-alpha-free is the Go relay's
 # subscription twin of the Zen keyless Ox Alpha (verified 2026-08-21).
 _OPENCODE_FREE_KEYED_SUFFIX_MODELS = frozenset({"ox-alpha-free"})
+# Advertised by the Zen relay's /models dump but its upstream cannot serve
+# them keyless — verified 2026-09-02 with repeated real chat completions:
+# deepseek-v4-flash-free 400s "Model is unavailable" (its promo ended and the
+# relay never de-listed it), muse-spark-1.2-contributor-free 500s,
+# nemotron-3-ultra-free / nemotron-3.5-lightning-free time out. Excluded from
+# the keyless picker rather than probed (probing trips the free relay's rate
+# limiter and burns the user's own quota). If the relay genuinely re-enables
+# one of these, remove it here — the model will reappear in the picker on the
+# next catalog refresh. Re-verify before removing: a real keyless chat
+# completion must return HTTP 200.
+_OPENCODE_FREE_KNOWN_DEAD_MODELS = frozenset(
+    {
+        "deepseek-v4-flash-free",
+        "muse-spark-1.2-contributor-free",
+        "nemotron-3-ultra-free",
+        "nemotron-3.5-lightning-free",
+    }
+)
 
 # In-process memo for _fetch_opencode_free_models(): (fetched_at, ids-or-None).
 # Direct provider_model_ids("opencode-free") callers (model validation, healing)
@@ -5988,11 +6015,21 @@ def _fetch_opencode_free_models(
     ids = [m["id"] for m in items if isinstance(m, dict) and isinstance(m.get("id"), str)]
     # Filter to the anonymous-servable free tier. The Zen dump can contain
     # keyed/Go IDs; only the verified free set belongs in the keyless picker.
+    # big-pickle has no -free suffix but is a keyless free slug (see
+    # _OPENCODE_KEYLESS_EXTRA_SLUGS) and has served non-OpenCode UAs since at
+    # least 2026-09-02, so surface it alongside the suffixed tier. Models in
+    # _OPENCODE_FREE_KNOWN_DEAD_MODELS are advertised by the relay but its
+    # upstream cannot serve them — exclude rather than probe: health-probing
+    # every refresh trips the free relay's rate limiter (429s) and burns the
+    # user's own free-tier quota (observed 2026-09-02).
     live_free = [
         mid
         for mid in ids
-        if mid.lower().endswith("-free")
-        and mid.lower() not in _OPENCODE_FREE_KEYED_SUFFIX_MODELS
+        if (
+            (mid.lower().endswith("-free") and mid.lower() not in _OPENCODE_FREE_KEYED_SUFFIX_MODELS)
+            or mid.lower() in _OPENCODE_KEYLESS_EXTRA_SLUGS
+        )
+        and mid.lower() not in _OPENCODE_FREE_KNOWN_DEAD_MODELS
     ]
     result = live_free if live_free else None
     _set_opencode_free_live_memo(result)

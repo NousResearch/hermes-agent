@@ -32,6 +32,27 @@ def check_mark(ok: bool) -> str:
         return color("✓", Colors.GREEN)
     return color("✗", Colors.RED)
 
+def _plugin_platform_configured(entry) -> bool:
+    """True when the user actually configured this plugin platform.
+
+    ``PlatformEntry.check_fn`` is a passive *dependency* probe ("are the
+    platform's deps importable right now"), not a configuration check —
+    every bundled platform ships its dependencies, so calling it here made
+    ``hermes status`` report A2A, Mattermost, WeCom, … as "configured" for
+    users who never opted into any of them (#102183). ``is_connected`` holds
+    the real verdict (env vars / config.yaml); probe it with a synthetic
+    enabled config the same way ``hermes setup``'s ``_platform_status``
+    does. Only fall back to ``check_fn`` when the platform registered no
+    ``is_connected`` hook, and never when the hook already said "no" — an
+    installed SDK must not override a missing token.
+    """
+    if entry.is_connected is not None:
+        from gateway.config import PlatformConfig
+
+        synthetic = PlatformConfig(enabled=True)
+        return bool(entry.is_connected(synthetic))
+    return bool(entry.check_fn())
+
 def redact_key(key: str) -> str:
     """Redact an API key for display.
 
@@ -547,7 +568,7 @@ def show_status(args):
             # of every remaining plugin platform (matches the other three
             # check_fn call sites).
             try:
-                configured = bool(entry.check_fn())
+                configured = _plugin_platform_configured(entry)
             except Exception:
                 configured = False
             status_str = "configured" if configured else "not configured"

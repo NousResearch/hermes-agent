@@ -81,6 +81,41 @@ _pool_probe_cache: tuple[float, "tuple[int, bool | None] | None"] | None = None
 _DEVICE_LINE_RE = re.compile(r"CUDA\d+:.*\((\d+)\s*MiB,\s*\d+\s*MiB free\)\s*$")
 
 
+def _linux_ram_bytes(
+    meminfo_path: Path = Path("/proc/meminfo"),
+) -> tuple[int, int] | None:
+    """Return Linux physical RAM from procfs, including reclaimable cache.
+
+    ``getconf _AVPHYS_PAGES`` tracks only truly free pages on Linux, while
+    ``MemAvailable`` estimates how much memory can be used without swapping.
+    Older kernels may omit ``MemAvailable``; ``MemFree`` preserves the prior
+    conservative behavior in that case.
+    """
+    try:
+        fields: dict[str, int] = {}
+        for line in meminfo_path.read_text(encoding="utf-8").splitlines():
+            name, separator, value = line.partition(":")
+            if not separator or name not in {"MemTotal", "MemAvailable", "MemFree"}:
+                continue
+            parts = value.split()
+            if len(parts) != 2 or parts[1] != "kB":
+                continue
+            fields[name] = int(parts[0]) * 1024
+
+        total = fields.get("MemTotal")
+        available = fields.get("MemAvailable", fields.get("MemFree"))
+        if (
+            total is None
+            or total <= 0
+            or available is None
+            or not 0 <= available <= total
+        ):
+            return None
+        return total, available
+    except (OSError, ValueError):
+        return None
+
+
 def _ram_bytes() -> tuple[int, int]:
     """(total, available) physical memory, cross-platform stdlib."""
     try:
@@ -103,6 +138,10 @@ def _ram_bytes() -> tuple[int, int]:
         return stat.ullTotalPhys, stat.ullAvailPhys
     except (AttributeError, OSError):
         pass
+    if sys.platform.startswith("linux"):
+        linux_ram = _linux_ram_bytes()
+        if linux_ram is not None:
+            return linux_ram
     if sys.platform == "darwin":
         # macOS getconf has no _PHYS_PAGES/_AVPHYS_PAGES (exit 64, "no such
         # configuration parameter") — the POSIX branch below returns (0, 0)

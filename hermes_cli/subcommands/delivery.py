@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -37,6 +38,10 @@ def build_delivery_parser(subparsers, *, cmd_delivery) -> None:
         "--confirm",
         action="store_true",
         help="Confirm this human-approved state recovery",
+    )
+    unblock.add_argument(
+        "--developer-context-file",
+        help="UTF-8 recovery context for an unaccepted Developer BLOCKED branch HEAD",
     )
 
     for name, help_text in (
@@ -75,11 +80,19 @@ def delivery_command(args, *, runner: "FeatureDeliveryRunner | None" = None) -> 
         print(runner.resume(args.task_id).render())
         return 0
     if args.delivery_command == "unblock":
+        context_file = getattr(args, "developer_context_file", None)
+        developer_context = ()
+        if context_file:
+            context = Path(context_file).read_text(encoding="utf-8")
+            if len(context.encode("utf-8")) > 65_536:
+                raise ValueError("developer context file exceeds 64 KiB")
+            developer_context = (context,)
         print(
             runner.unblock(
                 args.task_id,
                 resume_stage=args.resume_stage,
                 confirmed=args.confirm,
+                developer_context=developer_context,
             ).render()
         )
         return 0

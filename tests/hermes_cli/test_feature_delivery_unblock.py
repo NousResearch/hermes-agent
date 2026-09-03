@@ -298,6 +298,101 @@ def test_unblock_event_preserves_block_history(delivery_env):
     assert events[0].payload["contract_hash"]
 
 
+def test_developer_blocked_commit_is_only_a_resume_starting_point(delivery_env):
+    class CommitThenBlock(FakeExecutor):
+        developer_feedback: tuple[str, ...] = ()
+
+        def execute(self, **kwargs):
+            if kwargs["role"] == "developer" and self.script[0] == ("developer", "commit_blocked"):
+                self.script.pop(0)
+                self.calls.append(("developer", kwargs["target_commit"], kwargs["stage_task_id"]))
+                feature = kwargs["workspace"] / "blocked-work.txt"
+                feature.write_text("unaccepted work\n", encoding="utf-8")
+                git(kwargs["workspace"], "add", "blocked-work.txt")
+                git(kwargs["workspace"], "commit", "-m", "blocked developer work")
+                return {
+                    "task_id": kwargs["task_contract"].task_id,
+                    "agent": "developer",
+                    "status": "BLOCKED",
+                    "commit": None,
+                    "implementation_summary": "runtime unavailable",
+                }
+            if kwargs["role"] == "developer":
+                self.developer_feedback = kwargs["feedback"]
+            return super().execute(**kwargs)
+
+    fake = CommitThenBlock(
+        delivery_env.repo,
+        [
+            ("developer", "ready"),
+            ("tester", "fail"),
+            ("developer", "commit_blocked"),
+            ("developer", "ready"),
+            ("tester", "pass"),
+            ("acceptance", "accept"),
+        ],
+    )
+    runner, root_id = create(delivery_env, fake)
+    blocked = runner.run(root_id)
+    old_developer_commit = blocked.developer_commit
+    blocked_head = git(delivery_env.repo, "rev-parse", delivery_env.contract["branch"])
+    assert blocked.current_state == "BLOCKED"
+    assert blocked.last_stage == "developer"
+    assert blocked.last_report_status == "BLOCKED"
+    assert blocked_head != old_developer_commit
+
+    resumed = runner.unblock(
+        root_id,
+        resume_stage="developer",
+        confirmed=True,
+        developer_context=("complete every remaining contract item",),
+    )
+    assert resumed.current_state == "DEVELOPING"
+    assert resumed.developer_commit == old_developer_commit
+    assert resumed.fix_loops == 1
+
+    delivered = runner.resume(root_id)
+    new_developer_commit = delivered.developer_commit
+    assert fake.calls[3][1] == blocked_head
+    assert new_developer_commit not in {old_developer_commit, blocked_head}
+    assert new_developer_commit == delivered.tested_commit == delivered.accepted_commit
+    assert "complete every remaining contract item" in fake.developer_feedback
+    assert any(item.startswith("LATEST_TESTER_REPORT: ") for item in fake.developer_feedback)
+    with kb.connect() as conn:
+        event = next(
+            event
+            for event in kb.list_events(conn, root_id)
+            if event.kind == "feature_delivery_development_resumed"
+        )
+    assert event.payload["development_resume_head"] == blocked_head
+    assert event.payload["authoritative_developer_commit"] == old_developer_commit
+    assert event.payload["approved_by"] == "human_cli"
+
+
+def test_developer_head_recovery_rejects_dirty_worktree(delivery_env):
+    fake = FakeExecutor(delivery_env.repo, [("developer", "blocked")])
+    runner, root_id = create(delivery_env, fake)
+    runner.run(root_id)
+    with kb.connect() as conn:
+        workspace = Path(kb.get_task(conn, root_id).workspace_path)
+    (workspace / "uncommitted.txt").write_text("dirty\n", encoding="utf-8")
+    with pytest.raises(DeliveryRunnerError, match="dirty_worktree"):
+        runner.unblock(root_id, resume_stage="developer", confirmed=True)
+
+
+def test_tester_block_cannot_adopt_a_moved_head(delivery_env):
+    fake = FakeExecutor(delivery_env.repo, [("developer", "ready"), ("tester", "blocked")])
+    runner, root_id = create(delivery_env, fake)
+    runner.run(root_id)
+    with kb.connect() as conn:
+        workspace = Path(kb.get_task(conn, root_id).workspace_path)
+    (workspace / "drift.txt").write_text("drift\n", encoding="utf-8")
+    git(workspace, "add", "drift.txt")
+    git(workspace, "commit", "-m", "unaccepted drift")
+    with pytest.raises(DeliveryRunnerError, match="commit_mismatch"):
+        runner.unblock(root_id, resume_stage="developer", confirmed=True)
+
+
 def test_ordinary_kanban_unblock_is_unchanged(delivery_env):
     with kb.connect() as conn:
         task_id = kb.create_task(conn, title="ordinary")

@@ -125,9 +125,22 @@ class DeliverySnapshot:
     last_blocked_message: str | None = None
     last_unblock_target: FeatureDeliveryState | None = None
     resume_generation: int = 0
+    development_resume_head: str | None = None
+    developer_recovery_context: tuple[str, ...] = ()
     reports: tuple[StoredStageReport, ...] = ()
 
     def feedback(self) -> tuple[str, ...]:
+        if self.developer_recovery_context:
+            feedback = list(self.developer_recovery_context)
+            for stored in reversed(self.reports):
+                if isinstance(stored.report, TesterReport):
+                    feedback.insert(
+                        0,
+                        "LATEST_TESTER_REPORT: "
+                        + json.dumps(stored.report.model_dump(mode="json"), ensure_ascii=False),
+                    )
+                    break
+            return tuple(feedback)
         for stored in reversed(self.reports):
             report = stored.report
             if isinstance(report, TesterReport) and report.status == TesterReportStatus.TEST_FAIL:
@@ -284,6 +297,7 @@ class FeatureDeliveryRunner:
         *,
         resume_stage: Literal["previous", "developer"] = "previous",
         confirmed: bool = False,
+        developer_context: tuple[str, ...] = (),
     ) -> DeliveryStatus:
         """Authorize one guarded human recovery without running an agent."""
 
@@ -313,8 +327,15 @@ class FeatureDeliveryRunner:
                 target = resolve_resume_target(snapshot.blocked_from_state, resume_stage)
             except ValueError as exc:
                 raise DeliveryRunnerError(str(exc)) from exc
+            resume_commit, development_resume_head = self._resume_commit(
+                contract, metadata, snapshot, target
+            )
+            if developer_context and development_resume_head is None:
+                raise DeliveryRunnerError(
+                    "developer context is only allowed when resuming an unaccepted Developer BLOCKED HEAD"
+                )
             integrity_error = self._validate_resume_integrity(
-                root, contract, metadata, snapshot, target
+                root, contract, metadata, snapshot, target, resume_commit
             )
             if integrity_error:
                 self._record_unblock_rejection(
@@ -339,6 +360,16 @@ class FeatureDeliveryRunner:
                 "timestamp": approved_at,
                 "resume_generation": generation,
             }
+            audit_kind = "feature_delivery_unblocked"
+            if development_resume_head is not None:
+                audit_kind = "feature_delivery_development_resumed"
+                audit.update(
+                    {
+                        "development_resume_head": development_resume_head,
+                        "authoritative_developer_commit": snapshot.developer_commit,
+                        "developer_context": list(developer_context),
+                    }
+                )
             changed = kb.transition_workflow_step_cas(
                 conn,
                 task_id=root.id,
@@ -350,7 +381,7 @@ class FeatureDeliveryRunner:
                     "blocked_reason_code": snapshot.blocked_code,
                     "resume_generation": generation,
                 },
-                audit_event=("feature_delivery_unblocked", audit),
+                audit_event=(audit_kind, audit),
             )
             if not changed:
                 raise DeliveryRunnerError("feature delivery state changed before unblock")
@@ -478,7 +509,13 @@ class FeatureDeliveryRunner:
         metadata: dict,
         snapshot: DeliverySnapshot,
     ) -> None:
-        target = snapshot.developer_commit or contract.base_commit
+        target = (
+            snapshot.development_resume_head
+            if snapshot.last_stage == "developer"
+            and snapshot.last_report_status == DeveloperReportStatus.BLOCKED.value
+            and snapshot.development_resume_head is not None
+            else snapshot.developer_commit or contract.base_commit
+        )
         try:
             workspace = self._feature_workspace(conn, root, contract, metadata)
         except DeliveryRunnerError as exc:
@@ -1084,6 +1121,8 @@ class FeatureDeliveryRunner:
         last_blocked_message = None
         last_unblock_target = None
         resume_generation = 0
+        development_resume_head = None
+        developer_recovery_context: tuple[str, ...] = ()
         for event in kb.list_events(conn, root.id):
             payload = event.payload or {}
             if event.kind == "workflow_step_transitioned":
@@ -1103,14 +1142,22 @@ class FeatureDeliveryRunner:
                     blocked_code = None
                     blocked_message = None
                     blocked_from_state = None
-            elif event.kind == "feature_delivery_unblocked":
+            elif event.kind in {
+                "feature_delivery_unblocked",
+                "feature_delivery_development_resumed",
+            }:
                 try:
+                    development_resume_head = None
+                    developer_recovery_context = ()
                     last_unblock_target = FeatureDeliveryState(
                         payload["resume_target_state"]
                     )
                     resume_generation = max(
                         resume_generation, int(payload["resume_generation"])
                     )
+                    if event.kind == "feature_delivery_development_resumed":
+                        development_resume_head = payload["development_resume_head"]
+                        developer_recovery_context = tuple(payload.get("developer_context", ()))
                 except (KeyError, TypeError, ValueError):
                     continue
             elif event.kind == "feature_delivery_unblock_rejected":
@@ -1169,6 +1216,8 @@ class FeatureDeliveryRunner:
             last_blocked_message=last_blocked_message,
             last_unblock_target=last_unblock_target,
             resume_generation=resume_generation,
+            development_resume_head=development_resume_head,
+            developer_recovery_context=developer_recovery_context,
             reports=tuple(reports),
         )
 
@@ -1219,6 +1268,7 @@ class FeatureDeliveryRunner:
         metadata: dict,
         snapshot: DeliverySnapshot,
         target: FeatureDeliveryState,
+        expected: str,
     ) -> tuple[str, str] | None:
         if target == FeatureDeliveryState.TESTING and snapshot.developer_commit is None:
             return "commit_mismatch", "developer commit is missing"
@@ -1228,7 +1278,6 @@ class FeatureDeliveryRunner:
         ):
             return "commit_mismatch", "tested commit is missing or stale"
 
-        expected = snapshot.developer_commit or contract.base_commit
         repository = Path(metadata["repository"])
         if not self._commit_exists(repository, expected):
             return "commit_mismatch", "resume commit does not exist"
@@ -1254,6 +1303,27 @@ class FeatureDeliveryRunner:
                 if self._git(workspace, "rev-parse", "HEAD") != expected:
                     return "commit_mismatch", "developer worktree HEAD changed while blocked"
         return None
+
+    def _resume_commit(
+        self,
+        contract: TaskContract,
+        metadata: dict,
+        snapshot: DeliverySnapshot,
+        target: FeatureDeliveryState,
+    ) -> tuple[str, str | None]:
+        authoritative = snapshot.developer_commit or contract.base_commit
+        head = self._branch_head(Path(metadata["repository"]), contract.branch)
+        if head == authoritative:
+            return authoritative, None
+        if not (
+            target == FeatureDeliveryState.DEVELOPING
+            and snapshot.blocked_from_state == FeatureDeliveryState.DEVELOPING
+            and snapshot.last_stage == "developer"
+            and snapshot.last_report_status == DeveloperReportStatus.BLOCKED.value
+            and head not in {snapshot.tested_commit, snapshot.accepted_commit}
+        ):
+            return authoritative, None
+        return head, head
 
     def _record_unblock_rejection(
         self,

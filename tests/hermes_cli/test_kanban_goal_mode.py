@@ -128,6 +128,258 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
     assert turns == []  # no extra turns
 
 
+def test_loop_stops_when_worker_already_blocked(monkeypatch):
+    _patch_judge(monkeypatch, ["done"])  # should never be consulted
+    turns = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="do the thing",
+        run_turn=lambda p: turns.append(p) or "x",
+        task_status_fn=lambda: "blocked",
+        block_fn=lambda r: pytest.fail("should not block"),
+        first_response="blocked for review",
+    )
+    assert res["outcome"] == "blocked_by_worker"
+    assert turns == []
+
+
+def test_loop_skips_synthetic_block_if_worker_blocks_on_finalize_nudge(monkeypatch):
+    """Worker calls kanban_block during the finalize-nudge turn.
+
+    The loop must treat that as terminal and must not call block_fn.
+    """
+    _patch_judge(monkeypatch, ["done", "done"])
+    state = {"status": "running"}
+    turns = []
+
+    def _run_turn(prompt):
+        turns.append(prompt)
+        state["status"] = "blocked"
+        return "called kanban_block for review"
+
+    blocked = []
+    res = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="do the thing",
+        run_turn=_run_turn,
+        task_status_fn=lambda: state["status"],
+        block_fn=blocked.append,
+        first_response="looks complete",
+        max_turns=5,
+    )
+    assert res["outcome"] == "blocked_by_worker"
+    assert len(turns) == 1
+    assert blocked == []
+
+
+def test_loop_still_blocks_when_worker_never_calls_terminal(monkeypatch):
+    """Holdout: worker exits without kanban_complete/block → synthetic block."""
+    _patch_judge(monkeypatch, ["done", "done"])
+    turns = []
+    blocked = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="do the thing",
+        run_turn=lambda p: turns.append(p) or "forgot to call the tool",
+        task_status_fn=lambda: "running",
+        block_fn=blocked.append,
+        first_response="looks complete",
+        max_turns=5,
+    )
+    assert res["outcome"] == "blocked_budget"
+    assert res["reason"] == "judged done, never finalized"
+    assert len(turns) == 1
+    assert blocked and "never called kanban_complete after a finalize nudge" in blocked[0]
+
+
+def _goal_loop_block_fn(task_id, expected_run_id):
+    """Mirror cli.py's goal-loop _block wrapper (idempotent finalizer)."""
+
+    def _block(reason: str) -> None:
+        with kb.connect() as conn:
+            if kb.goal_run_already_terminal(conn, task_id, expected_run_id):
+                return
+            kb.block_task(
+                conn,
+                task_id,
+                reason=reason,
+                expected_run_id=expected_run_id,
+            )
+
+    return _block
+
+
+def test_finalize_does_not_overwrite_worker_dependency_block(kanban_home, monkeypatch):
+    """Production bug: kanban_block(kind=dependency) then promote-to-ready.
+
+    Replay cards t_8812f1d4 / t_b121dde5: the worker recorded a
+    REVIEW-REQUIRED block, the dispatcher promoted the card back to
+    ready, and the goal-mode finalizer synthesized a second run that
+    overwrote the original summary/kind. Finalization must no-op.
+    """
+    review_reason = "REVIEW-REQUIRED: merge the repair PR before redeploy"
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Daily production deployment",
+            body="Ship the daily deploy or block for human review.",
+            assignee="replay-agent",
+            goal_mode=True,
+        )
+        claimed = kb.claim_task(conn, tid, claimer="replay-agent:test")
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert kb.block_task(
+            conn,
+            tid,
+            reason=review_reason,
+            kind="dependency",
+            expected_run_id=run_id,
+        )
+        kb.recompute_ready(conn)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status in ("ready", "todo")
+        assert kb.goal_run_status(conn, tid, run_id) == "blocked"
+        assert kb.goal_run_already_terminal(conn, tid, run_id)
+        # Legacy wrapper with no run id must still see the ended terminal run.
+        assert kb.goal_run_already_terminal(conn, tid, None)
+
+    _patch_judge(monkeypatch, ["done", "done"])
+    blocked_reasons: list[str] = []
+    inner_block = _goal_loop_block_fn(tid, run_id)
+
+    def _block(reason: str) -> None:
+        blocked_reasons.append(reason)
+        inner_block(reason)
+
+    def _status():
+        with kb.connect() as conn:
+            return kb.goal_run_status(conn, tid, run_id)
+
+    res = goals.run_kanban_goal_loop(
+        task_id=tid,
+        goal_text="Daily production deployment\n\nShip the daily deploy or block for human review.",
+        run_turn=lambda p: pytest.fail("must not run another turn after a terminal block"),
+        task_status_fn=_status,
+        block_fn=_block,
+        first_response="blocked pending human review of the repair PR",
+        max_turns=5,
+    )
+    assert res["outcome"] == "blocked_by_worker"
+    assert blocked_reasons == []
+
+    with kb.connect() as conn:
+        runs = list(
+            conn.execute(
+                "SELECT id, outcome, summary FROM task_runs WHERE task_id = ? ORDER BY id",
+                (tid,),
+            )
+        )
+        assert len(runs) == 1
+        assert runs[0]["outcome"] == "blocked"
+        assert runs[0]["summary"] == review_reason
+        latest = kb.latest_run(conn, tid)
+        assert latest is not None
+        assert latest.summary == review_reason
+        assert "never called kanban_complete" not in (latest.summary or "")
+
+
+def test_legacy_finalize_wrapper_does_not_synthesize_over_ended_block(kanban_home):
+    """Missing HERMES_KANBAN_RUN_ID must still refuse a synthetic replacement."""
+    review_reason = "REVIEW-REQUIRED: human eyes please"
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="needs review", assignee="worker")
+        claimed = kb.claim_task(conn, tid, claimer="worker:test")
+        assert claimed is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason=review_reason,
+            kind="needs_input",
+            expected_run_id=claimed.current_run_id,
+        )
+        kb.recompute_ready(conn)
+
+    # Old cli.py wrapper: expected_run_id=None, no already-terminal guard.
+    # That path synthesized a zero-duration run and overwrote the summary.
+    # The new guard must no-op even without a run id.
+    with kb.connect() as conn:
+        assert kb.goal_run_already_terminal(conn, tid, None)
+        before = kb.latest_run(conn, tid)
+        assert before is not None
+        before_id = before.id
+        before_task = kb.get_task(conn, tid)
+        assert before_task is not None
+        before_kind = before_task.block_kind
+
+    _goal_loop_block_fn(tid, None)(
+        "Goal-mode worker's output looked complete but it never "
+        "called kanban_complete after a finalize nudge (looks done)."
+    )
+
+    with kb.connect() as conn:
+        runs = list(
+            conn.execute(
+                "SELECT id, summary FROM task_runs WHERE task_id = ? ORDER BY id",
+                (tid,),
+            )
+        )
+        assert len(runs) == 1
+        assert runs[0]["id"] == before_id
+        assert runs[0]["summary"] == review_reason
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.block_kind == before_kind
+
+
+def test_finalize_still_blocks_open_run_without_terminal_call(kanban_home, monkeypatch):
+    """Holdout: no worker terminal action → synthetic block still lands."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Finish the report",
+            body="acceptance: write the report",
+            assignee="worker",
+            goal_mode=True,
+        )
+        claimed = kb.claim_task(conn, tid, claimer="worker:test")
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert not kb.goal_run_already_terminal(conn, tid, run_id)
+
+    _patch_judge(monkeypatch, ["done", "done"])
+    blocked = []
+    inner_block = _goal_loop_block_fn(tid, run_id)
+
+    def _block(reason: str) -> None:
+        blocked.append(reason)
+        inner_block(reason)
+
+    def _status():
+        with kb.connect() as conn:
+            return kb.goal_run_status(conn, tid, run_id)
+
+    res = goals.run_kanban_goal_loop(
+        task_id=tid,
+        goal_text="Finish the report\n\nacceptance: write the report",
+        run_turn=lambda p: "I think I'm done but I forgot the tool",
+        task_status_fn=_status,
+        block_fn=_block,
+        first_response="the report looks finished",
+        max_turns=5,
+    )
+    assert res["outcome"] == "blocked_budget"
+    assert blocked and "never called kanban_complete" in blocked[0]
+    with kb.connect() as conn:
+        latest = kb.latest_run(conn, tid)
+        assert latest is not None
+        assert latest.outcome == "blocked"
+        assert "never called kanban_complete" in (latest.summary or "")
+
+
 
 
 

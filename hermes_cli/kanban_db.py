@@ -4924,6 +4924,51 @@ def goal_run_status(
     return task.status
 
 
+# Statuses the kanban goal loop treats as already-terminal. A successful
+# kanban_block / kanban_complete / review handoff must not be overwritten
+# by a later synthetic finalize block.
+GOAL_TERMINAL_STATUSES = frozenset(
+    {"done", "blocked", "review", "changes_requested", "superseded"}
+)
+GOAL_TERMINAL_RUN_OUTCOMES = frozenset(
+    {
+        "completed",
+        "review_requested",
+        "changes_requested",
+        "blocked",
+        "dependency_wait",
+    }
+)
+
+
+def goal_run_already_terminal(
+    conn: sqlite3.Connection,
+    task_id: str,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Return True if this worker run already performed a terminal action.
+
+    Goal-mode finalization must be idempotent once ``kanban_block`` /
+    ``kanban_complete`` / ``kanban_request_review`` has succeeded. After a
+    ``kind=dependency`` block the dispatcher may promote the card back to
+    ``ready``; ``goal_run_status`` still reports the original run as
+    ``blocked``. When ``expected_run_id`` is missing (legacy wrappers), a
+    prior *ended* terminal run is enough to refuse a synthetic replacement
+    that would overwrite the original summary/kind.
+    """
+    status = goal_run_status(conn, task_id, expected_run_id)
+    if status in GOAL_TERMINAL_STATUSES:
+        return True
+    if expected_run_id is not None:
+        return False
+    run = latest_run(conn, task_id)
+    return bool(
+        run is not None
+        and run.ended_at is not None
+        and run.outcome in GOAL_TERMINAL_RUN_OUTCOMES
+    )
+
+
 def heartbeat_claim(
     conn: sqlite3.Connection,
     task_id: str,

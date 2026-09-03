@@ -2221,14 +2221,18 @@ def run_kanban_goal_loop(
     is that turn's reply. From here we:
 
     1. Check whether the worker already terminated the task (called
-       ``kanban_complete`` / ``kanban_block``). If so, stop — nothing to do.
+       ``kanban_complete`` / ``kanban_block`` / ``kanban_request_review``).
+       If so, stop — nothing to do.
     2. Otherwise judge the latest response against ``goal_text`` (the card's
        title + body). ``continue`` → feed a continuation prompt and run
        another turn IN THE SAME SESSION via ``run_turn``. ``done`` but the
        task is still open → one explicit "call kanban_complete" nudge.
-    3. When the turn budget is exhausted and the worker still hasn't
-       terminated the task, ``block_fn`` is invoked so the card lands in a
+    3. When the turn budget is exhausted, or the judge still says ``done``
+       after that nudge, ``block_fn`` is invoked so the card lands in a
        sticky ``blocked`` state for human review (NOT a silent exit).
+       Finalization is idempotent: ``block_fn`` is skipped if a terminal
+       lifecycle action already succeeded, so a synthetic run cannot
+       replace the original summary/kind.
 
     This function performs NO SessionDB persistence — a worker process is
     ephemeral, so the turn budget lives in a local counter. It is fully
@@ -2258,6 +2262,70 @@ def run_kanban_goal_loop(
     turns_used = 1
     nudged_to_finalize = False
 
+    def _decision_for_status(status):
+        if status == "done":
+            return {
+                "outcome": "completed_by_worker",
+                "turns_used": turns_used,
+                "reason": "worker completed the task",
+            }
+        if status == "blocked":
+            return {
+                "outcome": "blocked_by_worker",
+                "turns_used": turns_used,
+                "reason": "worker blocked the task",
+            }
+        if status == "review":
+            return {
+                "outcome": "review_requested_by_worker",
+                "turns_used": turns_used,
+                "reason": "worker requested review",
+            }
+        if status == "changes_requested":
+            return {
+                "outcome": "changes_requested_by_reviewer",
+                "turns_used": turns_used,
+                "reason": "reviewer requested changes",
+            }
+        if status not in ("running", "ready"):
+            # Reclaimed / archived / unexpected — let the dispatcher own it.
+            return {
+                "outcome": "stopped",
+                "turns_used": turns_used,
+                "reason": f"status={status}",
+            }
+        return None
+
+    def _synthetic_block(reason_msg: str, outcome_reason: str, log_msg: str):
+        """Issue a synthetic block only if the worker has not already terminated.
+
+        Re-reads lifecycle status immediately before calling ``block_fn`` so a
+        successful ``kanban_block`` / ``kanban_complete`` cannot be overwritten
+        by the finalize/budget path (TOCTOU after a promote-to-ready).
+        """
+        try:
+            status = task_status_fn()
+        except Exception as exc:
+            _log(f"kanban goal loop: status check failed ({exc}); stopping")
+            return {"outcome": "stopped", "turns_used": turns_used, "reason": "status check failed"}
+        decision = _decision_for_status(status)
+        if decision is not None:
+            _log(
+                f"kanban goal loop: skip synthetic block for {task_id}; "
+                f"already terminal ({decision['outcome']})"
+            )
+            return decision
+        _log(log_msg)
+        try:
+            block_fn(reason_msg)
+        except Exception as exc:
+            _log(f"kanban goal loop: block_fn failed ({exc})")
+        return {
+            "outcome": "blocked_budget",
+            "turns_used": turns_used,
+            "reason": outcome_reason,
+        }
+
     while True:
         # Did the worker terminate the task itself this turn?
         try:
@@ -2266,25 +2334,26 @@ def run_kanban_goal_loop(
             _log(f"kanban goal loop: status check failed ({exc}); stopping")
             return {"outcome": "stopped", "turns_used": turns_used, "reason": "status check failed"}
 
-        if status == "done":
-            _log(f"kanban goal loop: task {task_id} completed by worker after {turns_used} turn(s)")
-            return {"outcome": "completed_by_worker", "turns_used": turns_used, "reason": "worker completed the task"}
-        if status == "blocked":
-            _log(f"kanban goal loop: task {task_id} blocked by worker after {turns_used} turn(s)")
-            return {"outcome": "blocked_by_worker", "turns_used": turns_used, "reason": "worker blocked the task"}
-        if status == "review":
-            # A legitimate worker-driven terminator (kanban_request_review),
-            # not an unexpected stop: the implementation is done and the task
-            # is awaiting a reviewer. Stop the loop cleanly.
-            _log(f"kanban goal loop: task {task_id} handed off for review by worker after {turns_used} turn(s)")
-            return {"outcome": "review_requested_by_worker", "turns_used": turns_used, "reason": "worker requested review"}
-        if status == "changes_requested":
-            _log(f"kanban goal loop: reviewer returned task {task_id} for changes after {turns_used} turn(s)")
-            return {"outcome": "changes_requested_by_reviewer", "turns_used": turns_used, "reason": "reviewer requested changes"}
-        if status not in ("running", "ready"):
-            # Reclaimed / archived / unexpected — let the dispatcher own it.
-            _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
-            return {"outcome": "stopped", "turns_used": turns_used, "reason": f"status={status}"}
+        decision = _decision_for_status(status)
+        if decision is not None:
+            outcome = decision["outcome"]
+            if outcome == "completed_by_worker":
+                _log(f"kanban goal loop: task {task_id} completed by worker after {turns_used} turn(s)")
+            elif outcome == "blocked_by_worker":
+                _log(f"kanban goal loop: task {task_id} blocked by worker after {turns_used} turn(s)")
+            elif outcome == "review_requested_by_worker":
+                _log(
+                    f"kanban goal loop: task {task_id} handed off for review "
+                    f"by worker after {turns_used} turn(s)"
+                )
+            elif outcome == "changes_requested_by_reviewer":
+                _log(
+                    f"kanban goal loop: reviewer returned task {task_id} "
+                    f"for changes after {turns_used} turn(s)"
+                )
+            else:
+                _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
+            return decision
 
         # Still open — judge whether the latest response satisfies the card.
         # The kanban worker loop has no wait-barrier concept (workers finish
@@ -2314,16 +2383,16 @@ def run_kanban_goal_loop(
         if verdict == "done":
             if nudged_to_finalize:
                 # Already asked once to call kanban_complete and it still
-                # didn't — block for review rather than spin.
-                _log(f"kanban goal loop: task {task_id} judged done but worker won't finalize; blocking")
-                try:
-                    block_fn(
+                # didn't — block for review rather than spin. Re-check first
+                # so a successful worker block is not overwritten.
+                return _synthetic_block(
+                    (
                         f"Goal-mode worker's output looked complete but it never "
                         f"called kanban_complete after a finalize nudge ({reason})."
-                    )
-                except Exception as exc:
-                    _log(f"kanban goal loop: block_fn failed ({exc})")
-                return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "judged done, never finalized"}
+                    ),
+                    "judged done, never finalized",
+                    f"kanban goal loop: task {task_id} judged done but worker won't finalize; blocking",
+                )
             prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
             nudged_to_finalize = True
         else:
@@ -2331,16 +2400,15 @@ def run_kanban_goal_loop(
 
         # Budget check BEFORE spending another turn.
         if turns_used >= max_turns:
-            _log(f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; blocking")
-            try:
-                block_fn(
+            return _synthetic_block(
+                (
                     f"Goal-mode worker exhausted its turn budget "
                     f"({turns_used}/{max_turns}) without completing the task. "
                     f"Last judge verdict: {_truncate(reason, 300)}"
-                )
-            except Exception as exc:
-                _log(f"kanban goal loop: block_fn failed ({exc})")
-            return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "turn budget exhausted"}
+                ),
+                "turn budget exhausted",
+                f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; blocking",
+            )
 
         # Run another turn in the same session.
         try:

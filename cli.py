@@ -21734,6 +21734,14 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     def _block(reason: str) -> None:
         c = _kb.connect()
         try:
+            # Idempotent: a successful kanban_block/complete/review must not
+            # be overwritten by this synthetic finalize/budget block.
+            if _kb.goal_run_already_terminal(c, task_id, worker_run_id):
+                logger.info(
+                    "kanban goal loop: skip synthetic block for %s; run already terminal",
+                    task_id,
+                )
+                return
             _kb.block_task(
                 c,
                 task_id,

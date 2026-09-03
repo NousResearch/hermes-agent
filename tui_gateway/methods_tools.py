@@ -1463,8 +1463,14 @@ def _(rid, params: dict) -> dict:
             session,
             lambda mgr, cwd: mgr.diff(cwd, _resolve_checkpoint_hash(mgr, cwd, target)),
         )
-        raw = r.get("diff", "")[:4000]
-        payload = {"stat": r.get("stat", ""), "diff": raw}
+        full = r.get("diff", "")
+        raw = full[:4000]
+        payload = {
+            "stat": r.get("stat", ""),
+            "diff": raw,
+            "truncated": len(full) > len(raw),
+            "total_length": len(full),
+        }
         rendered = render_diff(raw, session.get("cols", 80))
         if rendered:
             payload["rendered"] = rendered

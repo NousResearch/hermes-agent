@@ -254,7 +254,13 @@ export const opsCommands: SlashCommand[] = [
                 return ctx.transcript.sys('no changes since this checkpoint')
               }
 
-              const text = [r.stat || '', body].filter(Boolean).join('\n\n')
+              const parts = [r.stat || '', body]
+              if (r.truncated) {
+                parts.push(
+                  `… diff truncated — showing 4000 of ${r.total_length ?? body.length} chars`
+                )
+              }
+              const text = parts.filter(Boolean).join('\n\n')
               ctx.transcript.page(text, 'Rollback diff')
             })
           )

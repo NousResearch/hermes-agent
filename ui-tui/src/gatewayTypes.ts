@@ -528,6 +528,8 @@ export interface RollbackDiffResponse {
   diff?: string
   rendered?: string
   stat?: string
+  total_length?: number
+  truncated?: boolean
 }
 
 export interface RollbackRestoreResponse {

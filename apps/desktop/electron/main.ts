@@ -1419,6 +1419,15 @@ const profileDeletionGate = new ProfileDeletionGate()
 // launch constant: mutable at runtime, persisted in userData, applied live.
 // The legacy HERMES_DESKTOP_POOL_* env vars remain the initial-value fallback
 // for scripted/headless setups; after launch the stored preference wins.
+//
+// Desktop log ring buffer and pending flush buffer. Declared BEFORE the
+// pool-limits section: readPersistedPoolLimits() below logs through
+// rememberLog() at module top level, and pushing into an uninitialized
+// buffer crashed every boot (TypeError: Cannot read properties of
+// undefined (reading 'push')). Keep any future module-top-level
+// rememberLog() call after these declarations.
+const hermesLog = []
+let desktopLogBuffer = ''
 const POOL_LIMITS_PATH = path.join(app.getPath('userData'), 'pool-limits.json')
 
 function readPersistedPoolLimits() {
@@ -1572,10 +1581,8 @@ let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
 let remoteHeaderRulesInstalled = false
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
-const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
-let desktopLogBuffer = ''
 let desktopLogFlushTimer = null
 let desktopLogFlushPromise = Promise.resolve()
 let nativeThemeListenerInstalled = false

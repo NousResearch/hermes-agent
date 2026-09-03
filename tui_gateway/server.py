@@ -5578,6 +5578,58 @@ def _overrides_have_routable_provider(overrides: dict) -> bool:
         return False
 
 
+def _row_model_config(row: dict | None) -> dict:
+    """Parse a session row's `model_config` JSON (dict or string form)."""
+    if not row:
+        return {}
+    raw = row.get("model_config")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            logger.debug("failed to parse stored session model_config", exc_info=True)
+    return {}
+
+
+def _row_has_explicit_override(row: dict | None) -> bool:
+    """True when the row carries an EXPLICIT session-scoped model override
+    (written by `config.set model|reasoning --session`). Bot Mode plumbing and
+    canonical sessions normally always follow the profile's current config; the
+    explicit marker is the one sanctioned exception — a deliberate per-session
+    pin that must survive idle reaping and apply on resume."""
+    return bool(_row_model_config(row).get("session_override"))
+
+
+def _persist_session_row_override(
+    session_id: str, patch: dict, model: str = ""
+) -> bool:
+    """Persist an explicit session-scoped model/reasoning override into the
+    session row's `model_config`, stamped with the `session_override` marker so
+    `_stored_session_runtime_overrides` honors it on resume even for Bot Mode
+    plumbing/canonical sessions. Best-effort: a write failure must never break
+    the in-memory switch that already happened."""
+    try:
+        db = _get_db()
+        if db is None:
+            return False
+        row = db.get_session(session_id)
+        if not row:
+            return False
+        config = _row_model_config(row)
+        config.update(patch)
+        config["session_override"] = True
+        if hasattr(db, "update_session_meta"):
+            db.update_session_meta(session_id, json.dumps(config), model or None)
+            return True
+    except Exception:
+        logger.debug("failed to persist session override", exc_info=True)
+    return False
+
+
 def _stored_session_runtime_overrides(row: dict | None) -> dict:
     """Return runtime fields persisted with a stored session.
 
@@ -5616,11 +5668,13 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             _plumbing_marker = None
     else:
         _plumbing_marker = None
-    if _plumbing_marker:
+    # An EXPLICIT per-session override (config.set --session) beats the
+    # plumbing exemption: deliberate pins must survive reaping.
+    if _plumbing_marker and not _row_has_explicit_override(row):
         return {}
     _row_title = str(row.get("title") or "").strip()
     _row_hidden = row.get("hidden")
-    if _row_hidden and _row_title.startswith("Group:"):
+    if _row_hidden and _row_title.startswith("Group:") and not _row_has_explicit_override(row):
         return {}
 
     # Bot-Mode canonical chats (the ONE forever DM per bot) and room plumbing
@@ -5645,7 +5699,7 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             _follow_marker = None
     else:
         _follow_marker = None
-    if _follow_marker:
+    if _follow_marker and not _row_has_explicit_override(row):
         return {}
     # Legacy backfill: canonical Bot Chats created BEFORE the
     # follow_profile_config contract existed carry no marker, yet they are
@@ -5655,7 +5709,7 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     # so mirror that rule here. Without this, every Bot Chat that already
     # exists in the field stays pinned to its stale stored provider until
     # the user deletes it — the exact live-report shape (#89497 / #94818).
-    if _row_title == "Bot Chat":
+    if _row_title == "Bot Chat" and not _row_has_explicit_override(row):
         return {}
 
     raw_config = row.get("model_config")
@@ -14665,6 +14719,14 @@ def _(rid, params: dict) -> dict:
                         "display_model": pending_model,
                         "display_provider": pending_provider,
                     }
+                    # Reap-safe: the queued pick must survive an idle reaper
+                    # between now and the next turn start, so persist it as the
+                    # session's explicit override too.
+                    _persist_session_row_override(
+                        params.get("session_id", ""),
+                        {"model": pending_model, "provider": pending_provider},
+                        model=pending_model,
+                    )
                     return _ok(
                         rid,
                         {
@@ -14734,7 +14796,57 @@ def _(rid, params: dict) -> dict:
                         return _err(rid, 5032, "agent initialization failed")
                     with _session_profile_runtime_scope(session):
                         _persist_live_session_runtime(session)
+                # Reap-safe: persist the applied (or queued) session-scoped
+                # override so an idle reaper cannot lose it before the next
+                # resume. The explicit marker makes _stored_session_runtime_overrides
+                # honor it on resume even for Bot Mode plumbing sessions.
+                if not result.get("confirm_required"):
+                    _persist_session_row_override(
+                        params.get("session_id", ""),
+                        {
+                            "model": result.get("value") or "",
+                            "provider": explicit_provider
+                            or result.get("provider")
+                            or "",
+                        },
+                        model=result.get("value") or "",
+                    )
             else:
+                # A session-scoped write for a session that is not live in this
+                # process: persist it as the row's explicit override instead of
+                # falling through to a GLOBAL config.yaml write. The override is
+                # restored on the next session.resume.
+                if params.get("session_id"):
+                    from hermes_cli.model_switch import parse_model_switch_args as _parse_switch
+
+                    parsed_flags = _parse_switch(value)
+                    if getattr(parsed_flags, "is_session", False) and not getattr(
+                        parsed_flags, "is_global", False
+                    ):
+                        model_input = str(
+                            getattr(parsed_flags, "model_input", "") or ""
+                        ).strip()
+                        provider = str(
+                            getattr(parsed_flags, "explicit_provider", "") or ""
+                        ).strip()
+                        if model_input:
+                            _persist_session_row_override(
+                                params.get("session_id", ""),
+                                {"model": model_input, "provider": provider},
+                                model=model_input,
+                            )
+                            return _ok(
+                                rid,
+                                {
+                                    "key": key,
+                                    "value": model_input,
+                                    "warning": "",
+                                    "confirm_required": False,
+                                    "confirm_message": "",
+                                    "scope": "session",
+                                    "deferred": True,
+                                },
+                            )
                 result = _apply_model_switch(
                     "",
                     {"agent": None},
@@ -15128,6 +15240,16 @@ def _(rid, params: dict) -> dict:
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
             if global_scope or session is None:
+                if session is None and params.get("session_id") and not global_scope:
+                    # A session-scoped reasoning write for a session that is not
+                    # live in this process: persist it as the row's explicit
+                    # override (restored on resume) instead of rewriting the
+                    # profile's global agent.reasoning_effort.
+                    _persist_session_row_override(
+                        params.get("session_id", ""),
+                        {"reasoning_config": parsed},
+                    )
+                    return _ok(rid, {"key": key, "value": arg})
                 _write_config_key("agent.reasoning_effort", arg)
                 if session is not None:
                     session.pop("create_reasoning_override", None)
@@ -15138,6 +15260,11 @@ def _(rid, params: dict) -> dict:
                 # desktop model-menu selection rewrite the user's global
                 # agent.reasoning_effort to the preset default.
                 session["create_reasoning_override"] = parsed
+                # Reap-safe: persist the session-scoped reasoning pin too.
+                _persist_session_row_override(
+                    params.get("session_id", ""),
+                    {"reasoning_config": parsed},
+                )
             if session and session.get("agent") is not None:
                 session["agent"].reasoning_config = parsed
                 _persist_live_session_runtime(session)

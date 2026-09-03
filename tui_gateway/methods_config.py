@@ -212,6 +212,69 @@ def _(rid, params: dict) -> dict:
             )
         except Exception as e:
             return _err(rid, 5013, str(e))
+    if key == "model":
+        # Session-aware model read: the model a session actually runs on.
+        # Precedence: deferred pending switch > persisted per-session override
+        # > live agent (only when it actually has a model) > profile default.
+        # Provider resolution mirrors runtime resolution (config model.provider),
+        # never the slug prefix — "deepseek/deepseek-v4-flash-0731" routed via
+        # Nous Portal must report provider "nous", not "deepseek".
+        try:
+            session = _sessions.get(params.get("session_id", ""))
+            scope = "default"
+            model = ""
+            provider = ""
+            if session is not None:
+                pending = session.get("pending_model_switch") or {}
+                pending_model = str(pending.get("display_model") or "").strip()
+                if pending_model:
+                    model = pending_model
+                    provider = str(pending.get("display_provider") or "").strip()
+                    scope = "session"
+                else:
+                    override = session.get("model_override")
+                    if isinstance(override, dict):
+                        override_model = str(override.get("model") or "").strip()
+                        if override_model:
+                            model = override_model
+                            provider = str(override.get("provider") or "").strip()
+                            scope = "session"
+                    if not model:
+                        agent = session.get("agent")
+                        if agent is not None:
+                            agent_model = str(getattr(agent, "model", "") or "").strip()
+                            if agent_model:
+                                model = agent_model
+                                provider = str(getattr(agent, "provider", "") or "").strip()
+                                scope = "session"
+            # A persisted explicit override (config.set --session) must be
+            # reported BEFORE the profile default: it outranks it, and
+            # _resolve_model() below always returns non-empty, which would
+            # otherwise mask the pin (the old ordering made this branch dead).
+            if not model and session is None and params.get("session_id"):
+                try:
+                    db = _get_db()
+                    row = db.get_session(params.get("session_id", "")) if db else None
+                    if row:
+                        row_cfg = _row_model_config(row)
+                        if row_cfg.get("session_override"):
+                            row_model = str(row_cfg.get("model") or "").strip()
+                            if row_model:
+                                model = row_model
+                                provider = str(row_cfg.get("provider") or "").strip()
+                                scope = "session"
+                except Exception:
+                    logger.debug("failed to read persisted session override", exc_info=True)
+            if not model:
+                model = _resolve_model()
+            if not provider:
+                # The profile's configured provider (what the runtime routes
+                # through), not the model-string prefix.
+                cfg = _load_cfg()
+                provider = str((cfg.get("model") or {}).get("provider") or "").strip() or "unknown"
+            return _ok(rid, {"model": model, "provider": provider, "scope": scope})
+        except Exception as e:
+            return _err(rid, 5013, str(e))
     if key == "profile":
         from hermes_constants import display_hermes_home
 
@@ -262,6 +325,20 @@ def _(rid, params: dict) -> dict:
                 agent_reasoning = getattr(agent, "reasoning_config", None)
                 if isinstance(agent_reasoning, dict):
                     reasoning_config = agent_reasoning
+        elif params.get("session_id"):
+            # A persisted explicit override (config.set --session) for a
+            # session that is not live in this process.
+            try:
+                db = _get_db()
+                row = db.get_session(params.get("session_id", "")) if db else None
+                if row:
+                    row_cfg = _row_model_config(row)
+                    if row_cfg.get("session_override"):
+                        row_reasoning = row_cfg.get("reasoning_config")
+                        if isinstance(row_reasoning, dict):
+                            reasoning_config = row_reasoning
+            except Exception:
+                logger.debug("failed to read persisted reasoning override", exc_info=True)
 
         if isinstance(reasoning_config, dict):
             if reasoning_config.get("enabled") is False:

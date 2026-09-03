@@ -77,12 +77,63 @@ def _extract_inherited_flags(argv: Sequence[str]) -> list[str]:
     return flags
 
 
+def _shebang_tokens(path: str) -> list[str]:
+    """Return the whitespace-split tokens of ``path``'s shebang line.
+
+    ``["/usr/bin/env", "python3"]`` for ``#!/usr/bin/env python3``,
+    ``["/usr/bin/env", "-S", "python3", "-I"]`` for the ``-S`` variant.
+    Returns ``[]`` when the file has no shebang (a compiled binary), is
+    unreadable, or is missing.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            first = fh.readline(128)
+    except OSError:
+        return []
+    if not first.startswith("#!"):
+        return []
+    rest = first[2:].strip()
+    if not rest:
+        return []
+    return rest.split()
+
+
+def _is_env_python_script(path: str) -> bool:
+    """True if ``path`` resolves a python interpreter through ``env`` at exec time.
+
+    A shebang like ``#!/usr/bin/env python3`` asks the kernel to run
+    ``env``, which then looks up ``python3`` on PATH *at exec time*.  The
+    resulting interpreter may not be the one the script's dependencies are
+    installed for (git-install ``hermes`` script vs system python3, say) —
+    so such a script must never be exec'd directly by a hermes process that
+    depends on its own environment.  Pinned shebangs (``#!/opt/venv/bin/python``)
+    and non-python launchers (``#!/usr/bin/env bash`` shims that exec the
+    real python themselves) are trusted; only ``env``-resolved python is
+    considered unsafe.
+    """
+    tokens = _shebang_tokens(path)
+    if not tokens:
+        return False
+    interp = tokens[0]
+    if interp != "env" and not interp.endswith("/env"):
+        return False
+    # Skip env flags (e.g. ``-S``); the first non-flag token is the program.
+    for tok in tokens[1:]:
+        if tok.startswith("-"):
+            continue
+        return tok == "python" or tok.startswith("python")
+    return False
+
+
 def resolve_hermes_bin() -> Optional[str]:
     """Find the hermes entry point.
 
     Priority:
-      1. ``sys.argv[0]`` if it resolves to a real executable.
-      2. ``shutil.which("hermes")`` on PATH.
+      1. ``sys.argv[0]`` if it resolves to a real executable — unless it is
+         a script with an ``env`` shebang (interpreter re-resolved from PATH
+         at exec time), in which case it is demoted to the PATH lookup.
+      2. ``shutil.which("hermes")`` on PATH — the same ``env``-shebang
+         rejection applies here for defense-in-depth.
       3. ``None`` → caller should fall back to ``python -m hermes_cli.main``.
 
     Windows note: ``os.access(path, os.X_OK)`` returns True for ``.py`` and
@@ -103,19 +154,19 @@ def resolve_hermes_bin() -> Optional[str]:
 
     # Absolute path to an executable (covers nix store, venv wrappers, etc.)
     if os.path.isabs(argv0) and os.path.isfile(argv0) and os.access(argv0, os.X_OK):
-        if not (_is_windows and _is_python_script(argv0)):
+        if not (_is_windows and _is_python_script(argv0)) and not _is_env_python_script(argv0):
             return argv0
 
     # Relative path — resolve against CWD
     if not argv0.startswith("-") and os.path.isfile(argv0):
         abs_path = os.path.abspath(argv0)
         if os.access(abs_path, os.X_OK):
-            if not (_is_windows and _is_python_script(abs_path)):
+            if not (_is_windows and _is_python_script(abs_path)) and not _is_env_python_script(abs_path):
                 return abs_path
 
     # PATH lookup
     path_bin = shutil.which("hermes")
-    if path_bin:
+    if path_bin and not _is_env_python_script(path_bin):
         return path_bin
 
     return None
@@ -139,7 +190,17 @@ def build_relaunch_argv(
     bin_path = resolve_hermes_bin()
 
     if bin_path:
-        argv = [bin_path]
+        if _is_env_python_script(bin_path):
+            # Belt-and-suspenders with resolve_hermes_bin: if the resolved
+            # bin is still an ``env``-python script (e.g. a PATH hit on the
+            # source-tree script), exec it under the CURRENT interpreter —
+            # the one this process is already running, which by definition
+            # has hermes' deps. Exec'ing the script directly would re-resolve
+            # ``#!/usr/bin/env python3`` from PATH and could land on a system
+            # python without them.
+            argv = [sys.executable, bin_path]
+        else:
+            argv = [bin_path]
     else:
         argv = [sys.executable, "-m", "hermes_cli.main"]
 

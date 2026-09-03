@@ -272,6 +272,19 @@ TOOLSETS = {
         "tools": ["clarify"],
         "includes": []
     },
+
+    # Native iMessage interactions over Photon — each tool is only offered
+    # when a live Photon adapter is running in this process (the tools'
+    # check_fn enforces it at schema-assembly time; listing them here just
+    # names the bucket). Polls deliver an interactive tap-option card whose
+    # selection streams back as a `poll_option` event and can resolve a
+    # pending `clarify`; effects send a text bubble with a native iMessage
+    # animation. See tools/photon_poll_tool.py and tools/photon_effect_tool.py.
+    "photon_tools": {
+        "description": "Native iMessage polls + bubble effects over Photon (live gateway only)",
+        "tools": ["photon_poll", "photon_effect"],
+        "includes": []
+    },
     
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",

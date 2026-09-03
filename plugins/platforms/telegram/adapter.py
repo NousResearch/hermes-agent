@@ -7228,7 +7228,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # + 버튼 제거 + 접수 표시. 사장 지시: "승인 누르면 승인이 되어야지".
         if data.startswith("apv:"):
             parts = data.split(":", 2)
-            if len(parts) == 3 and parts[1] in ("a", "b", "c"):
+            # 캐리 패치 6호(2026-09-04, spec-first 후속 B): 1~4 = escalate --option 3~4택 버튼(apv:1..4:sid).
+            # 소비부(executor a5 5-0)가 1~4를 ①~④로 기록한다. a/b/c 경로는 그대로.
+            if len(parts) == 3 and parts[1] in ("a", "b", "c", "1", "2", "3", "4"):
                 caller_id = str(getattr(query.from_user, "id", ""))
                 if not self._is_callback_user_authorized(
                     caller_id,
@@ -7258,7 +7260,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.warning("[%s] apv append failed: %s", self.name, _exc)
                     await query.answer(text="⚠ 접수 기록 실패 — 텍스트 회신으로 부탁합니다.")
                     return
-                _label = {"a": "✅ 승인", "b": "❌ 거절", "c": "⏸ 보류"}[choice]
+                _label = {"a": "✅ 승인", "b": "❌ 거절", "c": "⏸ 보류",
+                          "1": "① 선택", "2": "② 선택", "3": "③ 선택", "4": "④ 선택"}[choice]
                 await query.answer(text="%s 접수 — 15분 내 반영됩니다." % _label)
                 try:
                     _orig = getattr(query.message, "text", "") or ""

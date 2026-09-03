@@ -1891,6 +1891,16 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+
+    try:
+        from agent.usage_limits import UsageLimitsConfig
+
+        agent._usage_limits_config = UsageLimitsConfig.from_mapping(
+            _agent_cfg.get("usage_limits", {})
+        )
+    except Exception as _ul_err:
+        _ra().logger.warning("Usage limits config ignored: %s", _ul_err)
+        agent._usage_limits_config = None
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.

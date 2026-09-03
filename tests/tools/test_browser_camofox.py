@@ -115,6 +115,69 @@ class TestCamofoxNavigate:
 
 
 # ---------------------------------------------------------------------------
+# Scroll
+# ---------------------------------------------------------------------------
+
+
+class TestCamofoxScroll:
+    def test_no_session_returns_error(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        result = json.loads(camofox_scroll("down", task_id="no_such_task"))
+        assert result["success"] is False
+        assert "browser_navigate" in result["error"]
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_scrolls_via_evaluate_not_the_wheel(self, mock_post, monkeypatch):
+        """The wheel endpoint is inert in headless Firefox; /evaluate is not."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab1", "url": "https://example.com"})
+        camofox_navigate("https://example.com", task_id="t_scroll")
+
+        mock_post.reset_mock()
+        mock_post.return_value = _mock_response(
+            json_data={"result": {"ok": True, "via": "document", "y": 2500, "max": 9000}}
+        )
+
+        result = json.loads(camofox_scroll("down", task_id="t_scroll", amount=2500))
+        assert result["success"] is True
+        assert result["at"] == 2500
+        assert result["height"] == 9000
+        assert result.get("at_end") is not True
+
+        url, payload = mock_post.call_args.args[0], mock_post.call_args.kwargs["json"]
+        assert url.endswith("/evaluate")
+        assert "2500" in payload["expression"]
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_up_scrolls_by_a_negative_delta(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab1", "url": "https://example.com"})
+        camofox_navigate("https://example.com", task_id="t_scroll_up")
+
+        mock_post.return_value = _mock_response(json_data={"result": {"ok": True, "y": 0, "max": 9000}})
+        camofox_scroll("up", task_id="t_scroll_up", amount=500)
+
+        assert "-500" in mock_post.call_args.kwargs["json"]["expression"]
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_reaching_the_end_is_success_not_failure(self, mock_post, monkeypatch):
+        """Already at the bottom is a normal outcome — flagging it as an error
+        would teach agents to retry a scroll that is already done."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab1", "url": "https://example.com"})
+        camofox_navigate("https://example.com", task_id="t_scroll_end")
+
+        mock_post.return_value = _mock_response(
+            json_data={"result": {"ok": False, "via": "none", "y": 9000, "max": 9000}}
+        )
+
+        result = json.loads(camofox_scroll("down", task_id="t_scroll_end"))
+        assert result["success"] is True
+        assert result["at_end"] is True
+        assert result["at"] == 9000
+
+
+# ---------------------------------------------------------------------------
 # Snapshot
 # ---------------------------------------------------------------------------
 

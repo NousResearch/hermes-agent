@@ -740,18 +740,109 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         return tool_error(redact_browser_typed_text_for_display(str(e), text), success=False)
 
 
-def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
-    """Scroll the page via Camofox."""
+# Scroll by script rather than by wheel. Camofox's POST /tabs/:id/scroll calls
+# page.mouse.wheel() with the mouse wherever Playwright last left it, which is
+# (0,0) on a fresh tab, and in this headless Firefox that wheel event moves
+# nothing at all. Measured on both a plain document (Wikipedia) and a
+# JS-rendered app page: scrollY stayed 0 for amount=500 and amount=2500 alike,
+# while scrollTo(0, 1234) read back 1234 -- so the page and the measurement
+# were both fine and the wheel was simply inert.
+#
+# It is not free, either: it blocks for about as long as the travel would take
+# (1.8s at 500px, 6.5s at 2500px) and can reach camofox's 30s handler timeout
+# under load. /evaluate does the same job in 3-10ms.
+#
+# There is no mouse-move endpoint to aim the wheel with, so this is fixed on
+# the client side.
+_SCROLL_JS = """
+(() => {
+  const delta = %d;
+
+  // 1. The ordinary case: the document scrolls.
+  const se = document.scrollingElement || document.documentElement;
+  if (se) {
+    const before = se.scrollTop;
+    se.scrollBy(0, delta);
+    if (se.scrollTop !== before) {
+      return {ok: true, via: 'document', y: se.scrollTop, max: se.scrollHeight};
+    }
+  }
+
+  // 2. Otherwise the page scrolls an inner pane, and the document stays pinned
+  //    at 0 no matter what you do to it. Take the largest genuinely-scrollable
+  //    element.
+  let best = null, bestArea = 0;
+  for (const el of document.querySelectorAll('*')) {
+    if (el.scrollHeight - el.clientHeight < 50) continue;
+    const oy = getComputedStyle(el).overflowY;
+    if (oy !== 'auto' && oy !== 'scroll') continue;
+    const r = el.getBoundingClientRect();
+    const area = r.width * r.height;
+    if (area > bestArea) { best = el; bestArea = area; }
+  }
+  if (best) {
+    const before = best.scrollTop;
+    best.scrollBy(0, delta);
+    if (best.scrollTop !== before) {
+      return {ok: true, via: 'container', y: best.scrollTop, max: best.scrollHeight};
+    }
+  }
+
+  // 3. Genuinely nowhere to go -- already at the end, or nothing scrollable.
+  return {ok: false, via: 'none', y: se ? se.scrollTop : null,
+          max: se ? se.scrollHeight : null};
+})()
+"""
+
+
+def camofox_scroll(
+    direction: str, task_id: Optional[str] = None, amount: Optional[int] = None
+) -> str:
+    """Scroll the page via Camofox.
+
+    ``amount`` is the pixel distance (default 500, matching camofox's own
+    default for the wheel endpoint this replaces). See _SCROLL_JS above for why
+    this goes through /evaluate.
+
+    The returned payload carries ``at`` (the resulting scroll offset) and
+    ``height``, and adds ``at_end: True`` when nothing moved -- so "the page did
+    not scroll" is something the caller can see rather than infer. That case
+    stays ``success: True`` on purpose: reaching the bottom of a page is a
+    normal outcome, not a failure, and flagging it as one would teach agents to
+    retry a scroll that is already done.
+    """
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
-        _post(
-            f"/tabs/{session['tab_id']}/scroll",
-            {"userId": session["user_id"], "direction": direction},
+        pixels = int(amount) if amount is not None else 500
+        delta = -pixels if direction == "up" else pixels
+
+        data = _post(
+            f"/tabs/{session['tab_id']}/evaluate",
+            {"userId": session["user_id"], "expression": _SCROLL_JS % delta},
         )
-        return json.dumps({"success": True, "scrolled": direction})
+        result = data.get("result") or {}
+
+        if not result.get("ok"):
+            # Not an error: the common cause is already being at the bottom.
+            return json.dumps({
+                "success": True,
+                "scrolled": direction,
+                "at_end": True,
+                "at": result.get("y"),
+                "height": result.get("max"),
+                "note": "Page did not move -- already at the end of the "
+                        "scrollable area, or nothing on the page scrolls.",
+            })
+
+        return json.dumps({
+            "success": True,
+            "scrolled": direction,
+            "at": result.get("y"),
+            "height": result.get("max"),
+        })
     except Exception as e:
         return tool_error(str(e), success=False)
 

@@ -940,6 +940,12 @@ class ChatCompletionsTransport(ProviderTransport):
         # Request overrides (user config)
         overrides = params.get("request_overrides")
         if overrides:
+            # Respect OMIT_TEMPERATURE: a profile that declares temperature
+            # server-managed (Kimi/Moonshot) must never receive one, even from
+            # request_overrides.  Strip it so config.yaml model.temperature
+            # doesn't 400 on providers that reject it.
+            if profile.fixed_temperature is OMIT_TEMPERATURE:
+                overrides = {k: v for k, v in overrides.items() if k != "temperature"}
             for k, v in overrides.items():
                 if k == "extra_body" and isinstance(v, dict):
                     extra_body.update(v)

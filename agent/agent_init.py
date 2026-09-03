@@ -968,7 +968,22 @@ def init_agent(
     # keep it in sync with the active provider.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     agent.service_tier = service_tier
-    agent.request_overrides = dict(request_overrides or {})
+    overrides = dict(request_overrides or {})
+    # Wire config.yaml ``model.temperature`` into the API call.  Without this,
+    # the user-configured temperature never reaches the wire — the transport
+    # only emits ``temperature`` when it appears in request_overrides or via
+    # the per-model fixed-temperature contract.  A caller-provided override
+    # (per-request ``model_options.temperature``) wins over the YAML default.
+    if "temperature" not in overrides:
+        try:
+            from hermes_cli.config import load_config_readonly as _load_cfg
+            _model_cfg = _load_cfg().get("model", {}) or {}
+            _cfg_temp = _model_cfg.get("temperature")
+            if isinstance(_cfg_temp, (int, float)) and type(_cfg_temp) is not bool:
+                overrides["temperature"] = float(_cfg_temp)
+        except Exception as _cfg_err:
+            logger.debug("Failed to load config.yaml for model.temperature: %s", _cfg_err)
+    agent.request_overrides = overrides
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
     

@@ -7757,17 +7757,26 @@ def run_conversation(
                 agent._uniquify_tool_call_ids(assistant_message.tool_calls)
 
                 # Validate tool call names - detect model hallucinations
-                # Repair mismatched tool names before validating
-                for tc in assistant_message.tool_calls:
-                    if tc.function.name not in agent.valid_tool_names:
-                        repaired = agent._repair_tool_call(tc.function.name)
-                        if repaired:
-                            print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
-                            tc.function.name = repaired
-                invalid_tool_calls = [
-                    tc.function.name for tc in assistant_message.tool_calls
-                    if tc.function.name not in agent.valid_tool_names
-                ]
+                # Repair mismatched names before validating. A declared legacy
+                # alias may target an enabled-but-Tool-Search-deferred tool; the
+                # helper grants only that exact call object an exemption, never
+                # a direct deferred canonical call.
+                from agent.agent_runtime_helpers import (
+                    repair_and_classify_tool_call_names,
+                )
+
+                invalid_tool_calls, _legacy_alias_exempt_call_ids = (
+                    repair_and_classify_tool_call_names(
+                        agent,
+                        assistant_message.tool_calls,
+                    )
+                )
+
+                def _tool_call_name_is_valid(tool_call) -> bool:
+                    return (
+                        tool_call.function.name in agent.valid_tool_names
+                        or id(tool_call) in _legacy_alias_exempt_call_ids
+                    )
                 # Mixed batch: at least one valid call alongside the invalid
                 # one(s). Degrading models (observed with gpt-5.6 at very
                 # large context) emit batches like 6 named calls + 1
@@ -7780,7 +7789,7 @@ def run_conversation(
                 # model still halts at 3 while a mostly-coherent one keeps
                 # working.
                 _mixed_invalid_batch = bool(invalid_tool_calls) and any(
-                    tc.function.name in agent.valid_tool_names
+                    _tool_call_name_is_valid(tc)
                     for tc in assistant_message.tool_calls
                 )
                 if _mixed_invalid_batch:
@@ -7789,7 +7798,7 @@ def run_conversation(
                     invalid_preview = invalid_name[:80] + "..." if len(invalid_name) > 80 else invalid_name
                     _n_valid = sum(
                         1 for tc in assistant_message.tool_calls
-                        if tc.function.name in agent.valid_tool_names
+                        if _tool_call_name_is_valid(tc)
                     )
                     agent._buffer_vprint(
                         f"⚠️  Unknown tool '{invalid_preview}' in batch — erroring that call, "
@@ -7828,7 +7837,7 @@ def run_conversation(
                     append_message(messages, assistant_msg)
                     for tc in assistant_message.tool_calls:
                         _tc_name = tc.function.name
-                        if _tc_name not in agent.valid_tool_names:
+                        if not _tool_call_name_is_valid(tc):
                             # See _invalid_tool_name_error_content for the
                             # blank-name anti-priming rationale (#47967).
                             content = _invalid_tool_name_error_content(
@@ -7866,7 +7875,7 @@ def run_conversation(
                     except json.JSONDecodeError as e:
                         if (
                             _mixed_invalid_batch
-                            and tc.function.name not in agent.valid_tool_names
+                            and not _tool_call_name_is_valid(tc)
                         ):
                             # This call never executes — it gets an
                             # invalid-name error result below. Don't let its

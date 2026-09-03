@@ -1,0 +1,26 @@
+# win-gui-test-skill 配置示例
+# 复制为 config.yaml 并修改
+
+# 截图保存目录
+screenshot_dir: ~/Desktop/gui_screenshots
+
+# 日志目录（按日期轮转，保留 14 天）
+log_dir: ~/win-gui-test-logs
+
+# 临时文件目录
+temp_dir: ~/Temp
+
+# 重试策略
+retry:
+  count: 3
+  delay: 1.0
+
+# 超时（秒）
+timeout:
+  window: 10
+  control: 5
+
+# 截图选项
+screenshot:
+  fallback_to_pil: true   # mss 失败时自动用 PIL.ImageGrab
+  format: png

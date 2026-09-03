@@ -1046,6 +1046,12 @@ def ensure_hermes_home():
     ``get_hermes_home()`` and therefore re-run for the new path.
     """
     home = get_hermes_home()
+    # Resolve symlinks so we always operate on the actual directory, not the
+    # link.  This lets ``~/.hermes`` be a symlink to a Git-tracked directory
+    # without ``ensure_hermes_home`` silently skipping subdirectory creation
+    # (because ``Path.is_dir()`` follows the symlink and returns True even
+    # when the link itself has not been processed yet).
+    home = home.resolve()
     key = str(home)
 
     # Named profiles must be created explicitly (e.g. ``hermes profile create``).

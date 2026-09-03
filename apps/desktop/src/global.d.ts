@@ -47,6 +47,23 @@ declare global {
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
       getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
+      // Remote `/api/ws` is dialed from the main process (Node/undici), the same
+      // transport "Test remote" uses. Chromium's renderer WebSocket is file://
+      // Origin + HTTP/2 CONNECT and is not the path that actually works.
+      gatewayWs?: {
+        close: (id: string) => void
+        open: (url: string) => Promise<{ error?: string; id?: string; ok: boolean }>
+        send: (id: string, data: string) => void
+        subscribe: (
+          callback: (event: {
+            code?: number
+            data?: string
+            id: string
+            reason?: string
+            type: 'close' | 'error' | 'message' | 'open'
+          }) => void
+        ) => () => void
+      }
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens

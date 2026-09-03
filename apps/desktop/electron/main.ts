@@ -127,6 +127,18 @@ import {
 } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
 import {
+  httpsOriginFromGatewayWsUrl,
+  isAllowedGatewayWsUrl,
+  openNodeGatewaySocket,
+  shouldDialGatewayFromMain
+} from './gateway-node-socket'
+import {
+  chromiumProxyBypassListForGatewayUrls,
+  collectRemoteGatewayHosts,
+  proxyBypassRulesForGatewayUrls,
+  scutilProxyIsEnabled
+} from './gateway-proxy-bypass'
+import {
   backendScopeKey,
   backendScopePrefix,
   buildAgentRoster,
@@ -9019,8 +9031,102 @@ function installRemoteHeaderRules() {
 
   remoteHeaderRulesInstalled = true
   session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    applyRemoteRequestHeaders(details, callback, headersForRemoteRequest)
+    const origin =
+      details.resourceType === 'websocket' || /\/api\/ws(?:\?|$)/.test(String(details.url || ''))
+        ? httpsOriginFromGatewayWsUrl(details.url)
+        : null
+
+    applyRemoteRequestHeaders(details, result => {
+      if (!origin) {
+        callback(result)
+
+        return
+      }
+
+      const base =
+        result.requestHeaders && Object.keys(result.requestHeaders).length > 0
+          ? result.requestHeaders
+          : details.requestHeaders
+
+      callback({ requestHeaders: { ...base, Origin: origin } })
+    }, headersForRemoteRequest)
   })
+}
+
+function remoteGatewayUrlsFromDisk() {
+  const urls = []
+
+  try {
+    const remoteUrl = readDesktopConnectionConfig()?.remote?.url
+
+    if (remoteUrl) {
+      urls.push(remoteUrl)
+    }
+  } catch {
+    // connection.json may be missing on a first launch
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DESKTOP_CONNECTIONS_REGISTRY_PATH, 'utf8'))
+    const entries = Array.isArray(parsed?.connections) ? parsed.connections : []
+
+    for (const entry of entries) {
+      if (entry && entry.kind === 'remote' && entry.url) {
+        urls.push(entry.url)
+      }
+    }
+  } catch {
+    // registry is optional on older installs
+  }
+
+  return urls
+}
+
+// Chromium WebSockets honor the macOS system proxy; main-process HTTPS does not.
+// Bypass saved remote gateway hosts so renderer /api/ws takes the same TUN/direct
+// path as ticket mint (otherwise HTTP/2 proxy upgrades die as 401 no_cookie).
+async function installGatewayProxyBypass() {
+  const rules = proxyBypassRulesForGatewayUrls(remoteGatewayUrlsFromDisk())
+
+  if (!rules) {
+    return
+  }
+
+  // Chat uses Node WebSocket for remote /api/ws; Chromium setProxy is only
+  // needed when the OS proxy is actually on (home FastLink). At the office
+  // with proxy disabled, skip it so Electron does not look like it is
+  // "using a proxy".
+  if (process.platform === 'darwin') {
+    let proxyOn = false
+
+    try {
+      proxyOn = scutilProxyIsEnabled(execFileSync('/usr/sbin/scutil', ['--proxy'], { encoding: 'utf8' }))
+    } catch {
+      proxyOn = false
+    }
+
+    if (!proxyOn) {
+      rememberLog('[proxy] macOS system proxy is off; skipping Chromium setProxy')
+
+      return
+    }
+  }
+
+  const apply = async (sess, label) => {
+    if (!sess || typeof sess.setProxy !== 'function') {
+      return
+    }
+
+    try {
+      await sess.setProxy({ mode: 'system', proxyBypassRules: rules })
+      rememberLog(`[proxy] Chromium bypass ${label}: ${rules}`)
+    } catch (error) {
+      rememberLog(`[proxy] Chromium bypass ${label} failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  await apply(session.defaultSession, 'default')
+  await apply(session.fromPartition(OAUTH_SESSION_PARTITION), 'oauth')
 }
 
 // Validate + normalize the per-profile remote overrides map read from disk.
@@ -14613,6 +14719,93 @@ ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
 ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => {
   return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile))
 })
+
+const nodeGatewaySockets = new Map()
+
+function allowedHostsForNodeGatewayWs() {
+  return collectRemoteGatewayHosts(remoteGatewayUrlsFromDisk())
+}
+
+function emitNodeGatewayWs(sender, payload) {
+  if (sender.isDestroyed()) {
+    return
+  }
+
+  sender.send('hermes:gateway-ws:event', payload)
+}
+
+ipcMain.handle('hermes:gateway-ws:open', (event, url) => {
+  if (!shouldDialGatewayFromMain(url) || !isAllowedGatewayWsUrl(url, allowedHostsForNodeGatewayWs())) {
+    rememberLog(`[gateway-ws] refused ${redactSecrets(String(url || ''))}`)
+
+    return { ok: false, error: 'Gateway WebSocket URL is not allowed.' }
+  }
+
+  if (typeof globalThis.WebSocket !== 'function') {
+    return { ok: false, error: 'WebSocket is not available in this runtime.' }
+  }
+
+  const id = crypto.randomUUID()
+  const sender = event.sender
+  const headers = headersForRemoteRequest(url)
+
+  try {
+    const handle = openNodeGatewaySocket(url, {
+      WebSocketImpl: globalThis.WebSocket,
+      headers,
+      onOpen: () => emitNodeGatewayWs(sender, { id, type: 'open' }),
+      onMessage: data => emitNodeGatewayWs(sender, { id, type: 'message', data }),
+      onClose: (code, reason) => {
+        nodeGatewaySockets.delete(id)
+        rememberLog(`[gateway-ws] node closed ${redactSecrets(String(url))} code=${code}`)
+        emitNodeGatewayWs(sender, { id, type: 'close', code, reason })
+      },
+      onError: () => {
+        nodeGatewaySockets.delete(id)
+        rememberLog(`[gateway-ws] node error ${redactSecrets(String(url))}`)
+        emitNodeGatewayWs(sender, { id, type: 'error' })
+      }
+    })
+
+    nodeGatewaySockets.set(id, handle)
+    rememberLog(`[gateway-ws] node open ${redactSecrets(String(url))}`)
+    sender.once('destroyed', () => {
+      const live = nodeGatewaySockets.get(id)
+
+      if (live) {
+        live.close()
+        nodeGatewaySockets.delete(id)
+      }
+    })
+
+    return { ok: true, id }
+  } catch (error) {
+    rememberLog(
+      `[gateway-ws] node open failed ${redactSecrets(String(url))}: ${error instanceof Error ? error.message : String(error)}`
+    )
+
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.on('hermes:gateway-ws:send', (_event, payload) => {
+  const id = payload && typeof payload === 'object' ? payload.id : null
+  const data = payload && typeof payload === 'object' ? payload.data : null
+  const handle = typeof id === 'string' ? nodeGatewaySockets.get(id) : null
+
+  if (handle && typeof data === 'string') {
+    handle.send(data)
+  }
+})
+
+ipcMain.on('hermes:gateway-ws:close', (_event, id) => {
+  const handle = typeof id === 'string' ? nodeGatewaySockets.get(id) : null
+
+  if (handle) {
+    handle.close()
+    nodeGatewaySockets.delete(id)
+  }
+})
 ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
     return { ok: false, error: 'invalid-session-id' }
@@ -17645,7 +17838,23 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+{
+  const remoteUrls = remoteGatewayUrlsFromDisk()
+  const chromiumBypass = chromiumProxyBypassListForGatewayUrls(remoteUrls)
+
+  if (chromiumBypass) {
+    app.commandLine.appendSwitch('proxy-bypass-list', chromiumBypass)
+    // Chromium WebSocket to an HTTP/2 peer (Cloudflare) uses RFC 8441 Extended
+    // CONNECT. Gated `/api/ws` is not a public API path, so that request is
+    // JSON 401 `no_cookie` and never reaches the WS handler. Chat now dials
+    // from Node (HTTP/1.1 Upgrade); these switches are a fallback if anything
+    // still uses Chromium WS against the remote host. Must be set before `ready`.
+    app.commandLine.appendSwitch('disable-http2')
+    app.commandLine.appendSwitch('disable-quic')
+  }
+}
+
+app.whenReady().then(async () => {
   // Warm the login-shell PATH resolution immediately so it usually completes
   // before the backend start path awaits the same single-flight promise.
   void ensureLoginShellPath()
@@ -17687,6 +17896,7 @@ app.whenReady().then(() => {
   registerMediaProtocol()
   installEmbedReferer()
   installRemoteHeaderRules()
+  await installGatewayProxyBypass()
   registerDeepLinkProtocol()
 
   ensureWslWindowsFonts()

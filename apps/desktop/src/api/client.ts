@@ -1,5 +1,6 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 
+import { createDesktopGatewaySocket } from '@/lib/desktop-gateway-socket'
 import type { HermesApiRequest } from '@/global'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
@@ -32,7 +33,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
       connectErrorMessage: 'Could not connect to Hermes gateway',
       createRequestId: nextId => nextId,
       notConnectedErrorMessage: 'Hermes gateway is not connected',
-      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
+      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
+      socketFactory: url => createDesktopGatewaySocket(url)
     })
   }
 }

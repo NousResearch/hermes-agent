@@ -18,6 +18,36 @@ def test_entry_without_ttl_never_expires():
     assert sc.get_cached_entry("srv", "fp") is not None
 
 
+def test_entry_with_zero_ttl_never_expires(monkeypatch):
+    """A ``ttl_ms`` of 0 is SEP-2549's "no hint" and must not expire the
+    entry on every read — every current server reports 0, so expiring would
+    defeat ``lazy`` mode entirely (#101007)."""
+    sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=0)
+    entry = sc.get_cached_entry("srv", "fp")
+    assert entry is not None
+    assert "written_at" not in entry, "0-TTL hints should not be persisted"
+    real_time = time.time
+    monkeypatch.setattr(sc.time, "time", lambda: real_time() + 3600.0)
+    assert sc.get_cached_entry("srv", "fp") is not None
+
+
+def test_legacy_zero_ttl_cache_row_still_served(tmp_path, monkeypatch):
+    """Caches written before the fix persist ``ttl_ms: 0`` with a
+    ``written_at``; those rows must read back as hits, not expire."""
+    monkeypatch.setattr(sc, "_cache_path", lambda: tmp_path / "cache.json")
+    sc._save_all(
+        {
+            "srv": {
+                "fingerprint": "fp",
+                "tools": [{"name": "t"}],
+                "ttl_ms": 0,
+                "written_at": 1.0,
+            }
+        }
+    )
+    assert sc.get_cached_entry("srv", "fp") is not None
+
+
 def test_entry_within_ttl_served():
     sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=60_000)
     entry = sc.get_cached_entry("srv", "fp")

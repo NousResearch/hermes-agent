@@ -70,8 +70,11 @@ def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
     MCP 2026-07-28 (SEP-2549): ``tools/list`` results carry ``ttlMs`` as a
     freshness hint. When the live discovery path recorded one, an entry
     older than its TTL is treated as a miss so the next startup re-probes
-    the server instead of serving a stale manifest forever. Entries without
-    a recorded TTL (pre-2026 servers) keep the old never-expires behavior.
+    the server instead of serving a stale manifest forever. A ``ttl_ms`` of
+    ``0`` (or absent) means the server sent no hint — such entries keep the
+    old never-expires behavior (SEP-2549 makes the hint optional; every
+    current server reports ``0``, so treating it as "expire immediately"
+    silently defeats ``lazy`` mode on all of them, #101007).
     ``cacheScope`` is irrelevant here: this cache is per-user local disk,
     which satisfies even ``private``.
     """
@@ -83,7 +86,11 @@ def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
         return None
     ttl_ms = entry.get("ttl_ms")
     written_at = entry.get("written_at")
-    if isinstance(ttl_ms, (int, float)) and isinstance(written_at, (int, float)):
+    if (
+        isinstance(ttl_ms, (int, float))
+        and ttl_ms > 0
+        and isinstance(written_at, (int, float))
+    ):
         if (time.time() - written_at) * 1000.0 >= float(ttl_ms):
             return None
     return entry
@@ -113,7 +120,7 @@ def write_cache_entry(
         "tools": tools,
         "utility_tools": utility_tools or [],
     }
-    if isinstance(ttl_ms, (int, float)):
+    if isinstance(ttl_ms, (int, float)) and ttl_ms > 0:
         entry["ttl_ms"] = ttl_ms
         entry["written_at"] = time.time()
     if cache_scope:

@@ -6698,6 +6698,76 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
 # below — never look up auth env vars ad-hoc.
 
 
+def _sync_client_credential(client) -> Any:
+    """The credential to hand to another client built from *client*.
+
+    The OpenAI SDK accepts either a string api_key or a callable token
+    provider (the ``key_cmd`` / Entra ID contract). When a callable was
+    passed, the SDK stores it in ``_api_key_provider`` and leaves the public
+    ``client.api_key`` attribute as the EMPTY STRING until the first request
+    refreshes it. Copying ``client.api_key`` to build a sibling client
+    therefore silently produces an unauthenticated client that 401s on every
+    request — the failure mode behind vision/aux calls against a key_cmd
+    provider (CLIProxy et al.).
+
+    Returns the token provider when one is installed, else the plain key.
+    """
+    provider = getattr(client, "_api_key_provider", None)
+    if provider is not None:
+        return provider
+    return getattr(client, "api_key", "")
+
+
+def _credential_for_client(credential: Any) -> Any:
+    """Normalize a static credential without consuming refreshable providers."""
+    if callable(credential) and not isinstance(credential, str):
+        return credential
+    return str(credential or "").strip()
+
+
+def _credential_as_text(credential: Any) -> str:
+    """Best-effort string form of a credential, for header-shaping decisions.
+
+    Callable providers are invoked (they are cached token sources); any
+    failure degrades to an empty string rather than breaking client
+    construction.
+    """
+    if callable(credential) and not isinstance(credential, str):
+        try:
+            value = credential()
+        except Exception:
+            return ""
+        if inspect.isawaitable(value):
+            # An async provider can't be resolved synchronously here; the
+            # header shaping that uses this is advisory only.
+            closer = getattr(value, "close", None)
+            if callable(closer):
+                closer()
+            return ""
+        return str(value or "")
+    return str(credential or "")
+
+
+def _as_async_credential(credential: Any) -> Any:
+    """Adapt a credential for ``AsyncOpenAI``.
+
+    ``AsyncOpenAI`` awaits its ``_api_key_provider``, so a synchronous
+    ``CommandTokenSource`` must be wrapped in a coroutine function. Plain
+    strings and already-async providers pass through unchanged.
+    """
+    if not callable(credential) or isinstance(credential, str):
+        return credential
+    if inspect.iscoroutinefunction(credential) or inspect.iscoroutinefunction(
+        getattr(credential, "__call__", None)
+    ):
+        return credential
+
+    async def _async_provider() -> str:
+        return str(credential() or "")
+
+    return _async_provider
+
+
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Convert a sync client to its async counterpart, preserving Codex routing.
 
@@ -6801,7 +6871,7 @@ def resolve_provider_client(
     async_mode: bool = False,
     raw_codex: bool = False,
     explicit_base_url: str = None,
-    explicit_api_key: str = None,
+    explicit_api_key: Any = None,
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
@@ -7111,7 +7181,7 @@ def resolve_provider_client(
             if api_mode == "anthropic_messages":
                 wrap_base = (explicit_base_url or "").strip().rstrip("/")
             custom_key = (
-                (explicit_api_key or "").strip()
+                _credential_for_client(explicit_api_key)
                 or _scoped_key_env("OPENAI_API_KEY")
                 or _read_main_api_key_if_same_host(custom_base)
                 or "no-key-required"  # local servers don't need auth
@@ -7130,7 +7200,7 @@ def resolve_provider_client(
             # OpenRouter or a wrong API-key provider — the main agent already
             # solved this, we just need to reuse its answer. (#45472)
             _main_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
-            _main_key = str(main_runtime.get("api_key") or "").strip()
+            _main_key = _credential_for_client(main_runtime.get("api_key"))
             if _main_base and _main_key:
                 custom_base = _main_base
                 custom_key = _main_key

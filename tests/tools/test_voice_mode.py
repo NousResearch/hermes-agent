@@ -557,6 +557,30 @@ class TestWhisperHallucinationFilter:
         assert is_whisper_hallucination("Thank you for your help with the project.") is False
         assert is_whisper_hallucination("Can you explain this code?") is False
 
+    def test_cjk_hallucinations(self):
+        """Local CJK STT (SenseVoice) emits single ideographic tokens on
+        noise-only clips — those must be filtered like the English set."""
+        from tools.voice_mode import is_whisper_hallucination
+
+        assert is_whisper_hallucination("我。") is True
+        assert is_whisper_hallucination("嗯。") is True
+        assert is_whisper_hallucination("嗯") is True
+        assert is_whisper_hallucination("그") is True
+        assert is_whisper_hallucination("그.") is True
+        assert is_whisper_hallucination("ち？") is True
+        assert is_whisper_hallucination("。") is True
+        assert is_whisper_hallucination("。。") is True
+        assert is_whisper_hallucination("。。。") is True
+        assert is_whisper_hallucination("....") is True
+        assert is_whisper_hallucination("……") is True
+
+    def test_cjk_real_speech_not_filtered(self):
+        from tools.voice_mode import is_whisper_hallucination
+
+        assert is_whisper_hallucination("今天天气不错，我们出去走走吧。") is False
+        assert is_whisper_hallucination("ありがとうございました") is False
+        assert is_whisper_hallucination("안녕하세요") is False
+
 
 # ============================================================================
 # play_audio_file

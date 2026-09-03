@@ -1237,11 +1237,26 @@ WHISPER_HALLUCINATIONS = {
     "amara.org",
     "www.mooji.org",
     "ご視聴ありがとうございました",
+    # CJK/ideographic hallucinations SenseVoice emits on noise-only clips
+    # (seen with local SenseVoice: "我。", "嗯。", "그", "ち？", "....")
+    "我。",
+    "嗯。",
+    "嗯",
+    "그",
+    "그.",
+    "그...",
+    "ち？",
+    "ち?",
+    "。",
+    "。。",
+    "。。。",
+    "....",
+    "……",
 }
 
 # Regex patterns for repetitive hallucinations (e.g. "Thank you. Thank you. Thank you.")
 _HALLUCINATION_REPEAT_RE = re.compile(
-    r'^(?:thank you|thanks|bye|you|ok|okay|the end|\.|\s|,|!)+$',
+    r'^(?:thank you|thanks|bye|you|ok|okay|the end|\.|。|、|…|,|，|!|！|\?|？|\s)+$',
     flags=re.IGNORECASE,
 )
 

@@ -1576,6 +1576,38 @@ IMAGE_GENERATE_SCHEMA = {
 }
 
 
+_IMAGE_CONTROL_SCHEMAS: Dict[str, Dict[str, Any]] = {
+    "size": {
+        "type": "string",
+        "enum": ["auto", "1024x1024", "1536x1024", "1024x1536"],
+        "description": "Optional exact output size. When omitted, aspect_ratio chooses the provider default.",
+    },
+    "quality": {
+        "type": "string",
+        "enum": ["low", "medium", "high", "auto"],
+        "description": "Optional output quality override for this call.",
+    },
+    "n": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4,
+        "description": "Optional number of images to request in one call.",
+    },
+    "output_format": {
+        "type": "string",
+        "enum": ["png", "jpeg", "webp"],
+        "description": "Optional output image format. Defaults to png.",
+    },
+}
+
+
+def _normalize_supported_controls(value: Any) -> list[str]:
+    """Return known controls from a provider capability declaration."""
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [name for name in value if isinstance(name, str) and name in _IMAGE_CONTROL_SCHEMAS]
+
+
 def _read_configured_image_model():
     """Return the value of ``image_gen.model`` from config.yaml, or None."""
     try:
@@ -1621,6 +1653,11 @@ def _dispatch_to_plugin_provider(
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
     upscale: Optional[bool] = None,
+    *,
+    size: Optional[str] = None,
+    quality: Optional[str] = None,
+    n: Optional[int] = None,
+    output_format: Optional[str] = None,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1683,7 +1720,34 @@ def _dispatch_to_plugin_provider(
             "error_type": "provider_not_registered",
         })
 
+    requested_controls = {
+        key: value
+        for key, value in {
+            "size": size,
+            "quality": quality,
+            "n": n,
+            "output_format": output_format,
+        }.items()
+        if value is not None
+    }
+    try:
+        supported_controls = set(_normalize_supported_controls((provider.capabilities() or {}).get("supported_controls")))
+    except Exception:  # noqa: BLE001 - third-party capabilities are advisory
+        supported_controls = set()
+    unsupported_controls = sorted(set(requested_controls) - supported_controls)
+    if unsupported_controls:
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": (
+                f"Provider '{getattr(provider, 'name', '?')}' does not support "
+                f"per-call image control(s): {', '.join(unsupported_controls)}."
+            ),
+            "error_type": "unsupported_parameter",
+        })
+
     kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+    kwargs.update(requested_controls)
     try:
         if configured_model:
             kwargs["model"] = configured_model
@@ -1923,6 +1987,24 @@ def _handle_image_generate(args, **kw):
     if not isinstance(upscale, bool):
         upscale = None
     task_id = kw.get("task_id")
+    requested_controls = {
+        key: args[key]
+        for key in _IMAGE_CONTROL_SCHEMAS
+        if args.get(key) is not None
+    }
+    if requested_controls:
+        active_controls = set(_active_image_capabilities().get("supported_controls") or [])
+        unsupported_controls = sorted(set(requested_controls) - active_controls)
+        if unsupported_controls:
+            return json.dumps({
+                "success": False,
+                "image": None,
+                "error": (
+                    "The active image backend does not support per-call image "
+                    f"control(s): {', '.join(unsupported_controls)}."
+                ),
+                "error_type": "unsupported_parameter",
+            })
 
     # Terminal-backend confinement chokepoint: convert path-like sources to
     # data: URLs via the shared resolver BEFORE any provider dispatch, so
@@ -1941,6 +2023,7 @@ def _handle_image_generate(args, **kw):
         image_url=image_url,
         reference_image_urls=reference_image_urls,
         upscale=upscale,
+        **requested_controls,
     )
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)
@@ -2001,6 +2084,7 @@ def _active_image_capabilities() -> Dict[str, Any]:
     info: Dict[str, Any] = {
         "modalities": ["text"],
         "max_reference_images": 0,
+        "supported_controls": [],
         "supports_upscale": False,
     }
 
@@ -2024,6 +2108,7 @@ def _active_image_capabilities() -> Dict[str, Any]:
                     info["modalities"] = list(caps["modalities"])
                 if caps.get("max_reference_images"):
                     info["max_reference_images"] = int(caps["max_reference_images"])
+                info["supported_controls"] = _normalize_supported_controls(caps.get("supported_controls"))
                 # Plugins opt in explicitly; absent = no upscale param.
                 info["supports_upscale"] = bool(caps.get("supports_upscale"))
                 return info
@@ -2093,7 +2178,7 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
         info = _active_image_capabilities()
     except Exception:  # noqa: BLE001
         info = {"modalities": ["text"], "max_reference_images": 0,
-                "supports_upscale": False}
+                "supported_controls": [], "supports_upscale": False}
 
     modalities = set(info.get("modalities") or ["text"])
     max_refs = int(info.get("max_reference_images") or 0)
@@ -2125,6 +2210,11 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
             " (text-to-image only — the active model cannot edit existing "
             "images)"
         )
+
+    controls = _normalize_supported_controls(info.get("supported_controls"))
+    if controls:
+        for name in controls:
+            properties[name] = _IMAGE_CONTROL_SCHEMAS[name]
 
     if info.get("supports_upscale"):
         properties["upscale"] = _UPSCALE_PARAM

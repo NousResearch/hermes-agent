@@ -3062,7 +3062,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 raise RuntimeError("session_db_unavailable")
             return []
         try:
-            return await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+            resolved_id = session_id
+            if hasattr(db, "resolve_resume_session_id"):
+                resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
+            return await asyncio.to_thread(db.get_messages_as_conversation, resolved_id)
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             if fail_closed:
@@ -6206,6 +6209,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         idempotency_fingerprint = None
+        idempotency_storage_key = None
         if idempotency_key:
             if len(idempotency_key) > 256:
                 return web.json_response(
@@ -6216,18 +6220,21 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                     status=400,
                 )
+            effective_profile = _api_request_profile.get() or ""
+            idempotency_storage_key = f"{effective_profile}:{idempotency_key}" if effective_profile else idempotency_key
             fingerprint_body = dict(body)
             fingerprint_body["_resolved_session_id"] = session_id
             fingerprint_body["_gateway_session_key"] = gateway_session_key
+            fingerprint_body["_request_profile"] = effective_profile
             idempotency_fingerprint = _make_request_fingerprint(
                 fingerprint_body,
                 keys=sorted(fingerprint_body),
             )
 
         def _cached_idempotency_response():
-            if not idempotency_key:
+            if not idempotency_storage_key:
                 return None
-            existing = self._run_idempotency.get(idempotency_key)
+            existing = self._run_idempotency.get(idempotency_storage_key)
             if not existing:
                 return None
             if existing["fingerprint"] != idempotency_fingerprint:
@@ -6578,8 +6585,8 @@ class APIServerAdapter(BasePlatformAdapter):
             "session_id": session_id,
             "status": "started",
         }
-        if idempotency_key and idempotency_fingerprint:
-            self._run_idempotency[idempotency_key] = {
+        if idempotency_storage_key and idempotency_fingerprint:
+            self._run_idempotency[idempotency_storage_key] = {
                 "fingerprint": idempotency_fingerprint,
                 "response": response_payload,
                 "headers": response_headers,

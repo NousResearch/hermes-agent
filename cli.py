@@ -5608,6 +5608,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._provider_require_params = pr.get("require_parameters", False)
         self._provider_data_collection = pr.get("data_collection")
 
+        # General passthrough: unrecognized provider_routing keys are
+        # forwarded as-is into the OpenRouter provider object (typed keys
+        # above always win on conflict; a warning is logged for each
+        # unrecognized key so typos surface). Scoped to OpenRouter — the
+        # Nous profile is guarded separately (see #89430).
+        self._provider_extra: Dict[str, Any] = {}
+        try:
+            from gateway.run import _provider_routing_extra
+
+            self._provider_extra = _provider_routing_extra(pr)
+        except Exception:
+            logger.debug(
+                "provider_routing passthrough: gateway helper unavailable",
+                exc_info=True,
+            )
+
         # OpenRouter Pareto Code router knob — coding-score floor (0.0-1.0).
         # Only applied when model.model == "openrouter/pareto-code".
         # Empty string / None / out-of-range = unset (let OR pick strongest coder).

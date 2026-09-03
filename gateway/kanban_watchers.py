@@ -27,6 +27,34 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _dispatcher_tick_is_unhealthy(
+    *,
+    ready_pending: bool,
+    any_spawned: bool,
+    all_capacity_saturated: bool,
+) -> bool:
+    """Return whether a dispatcher tick represents actionable non-progress.
+
+    A ready queue behind the configured host concurrency cap is deferred work,
+    not a broken dispatcher.  Counting that steady state as unhealthy emits a
+    false profile/credential warning while every available worker slot is busy.
+    """
+    return ready_pending and not any_spawned and not all_capacity_saturated
+
+
+def _dispatcher_capacity_saturated(results: list[tuple[str, Any]]) -> bool:
+    """Return whether every board result reports host-cap saturation.
+
+    One full board must not suppress health telemetry for another board that
+    had capacity but still made no progress.  This signal only classifies
+    host-cap deferral; it does not claim that occupied worker slots are live.
+    """
+    return bool(results) and all(
+        res is not None and getattr(res, "host_capacity_saturated", False)
+        for _slug, res in results
+    )
+
+
 _LOCAL_PATH_RE = re.compile(
     r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|workspace)/[^\s,;]+|"
     r"[A-Za-z]:\\[^\s,;]+)"
@@ -1817,7 +1845,12 @@ class GatewayKanbanWatchersMixin:
                             )
                     # Health telemetry (aggregate across boards)
                     ready_pending = await _to_thread_process_service(_ready_nonempty)
-                    if ready_pending and not any_spawned:
+                    all_capacity_saturated = _dispatcher_capacity_saturated(results or [])
+                    if _dispatcher_tick_is_unhealthy(
+                        ready_pending=ready_pending,
+                        any_spawned=any_spawned,
+                        all_capacity_saturated=all_capacity_saturated,
+                    ):
                         bad_ticks += 1
                     else:
                         bad_ticks = 0

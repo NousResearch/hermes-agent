@@ -151,6 +151,29 @@ def test_max_in_progress_counts_other_boards(
     # Host budget (2) already consumed by the second board → nothing spawns.
     assert not spawns
     assert not res.spawned
+    assert res.host_capacity_saturated is True
+
+
+def test_host_capacity_is_reported_when_board_cap_is_checked_first(
+    kanban_home, all_assignees_spawnable,
+):
+    """A board-local cap must not hide an already-full host cap."""
+    spawns: list = []
+    with kb.connect() as conn:
+        running_id = kb.create_task(conn, title="already-running", assignee="alice")
+        assert kb.claim_task(conn, running_id) is not None
+        kb.create_task(conn, title="waiting-for-slot", assignee="alice")
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn_factory(spawns),
+            max_spawn=1,
+            max_in_progress=1,
+        )
+
+    assert not spawns
+    assert not res.spawned
+    assert res.host_capacity_saturated is True
 
 
 def test_max_in_progress_partial_budget_across_boards(

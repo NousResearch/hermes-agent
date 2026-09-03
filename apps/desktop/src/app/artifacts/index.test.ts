@@ -85,6 +85,64 @@ describe('collectArtifactsForSession', () => {
     expect(artifacts).toHaveLength(0)
   })
 
+  it('indexes files reported in terminal output text', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'terminal-session' }), [
+      {
+        content: JSON.stringify({
+          output: 'wrote: /home/example/project/figure_variance.png and /home/example/project/report.pdf',
+          exit_code: 0
+        }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'terminal'
+      }
+    ])
+
+    const values = artifacts.map(artifact => artifact.value)
+
+    expect(values).toContain('/home/example/project/figure_variance.png')
+    expect(values).toContain('/home/example/project/report.pdf')
+  })
+
+  it('indexes MEDIA-delivered files from terminal stdout', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'terminal-media-session' }), [
+      {
+        content: JSON.stringify({ output: 'done\nMEDIA:/tmp/plot.png', exit_code: 0 }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'terminal'
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toContain('/tmp/plot.png')
+  })
+
+  it('does not scan generic keys of non-terminal tools as shell output', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'search-noise-session' }), [
+      {
+        content: JSON.stringify({ output: 'see /tmp/generated/figure.png for details', query: 'x' }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'web_search'
+      }
+    ])
+
+    expect(artifacts).toHaveLength(0)
+  })
+
+  it('indexes files under a path-only key from terminal output', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'terminal-path-session' }), [
+      {
+        content: JSON.stringify({ path: '/tmp/generated/results.csv', exit_code: 0 }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'terminal'
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toContain('/tmp/generated/results.csv')
+  })
+
   it('keeps explicit generated artifacts from tool output', () => {
     const artifacts = collectArtifactsForSession(makeSession({ id: 'generated-session' }), [
       {

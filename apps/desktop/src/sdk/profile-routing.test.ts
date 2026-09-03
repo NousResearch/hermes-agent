@@ -889,9 +889,15 @@ describe('profile-aware plugin session opens', () => {
     // health check while painting STALE messages. The heuristic alone skips
     // the resume; the explicit-navigation caller must be able to force it.
     $activeGatewayProfile.set('hyoseob')
-    setMockAtom($selectedStoredSessionId, 'bot-chat')
-    setMockAtom($activeSessionId, 'runtime-stale-snapshot')
-    setMockAtom($messages, [{ id: 'stale-history', parts: [], role: 'assistant' }] as never)
+    const resumeTile = vi.fn(async () => 'runtime-stale-snapshot')
+    vi.mocked(sessionTileDelegate).mockReturnValue({ resumeTile } as never)
+    setMockAtom($sessionTiles, [{ runtimeId: 'runtime-stale-snapshot', storedSessionId: 'bot-chat' }] as never)
+    setMockAtom($focusedStoredSessionId, 'bot-chat')
+    setMockAtom($focusedRuntimeId, 'runtime-stale-snapshot')
+    setMockAtom($focusedSessionState, {
+      messages: [{ id: 'stale-history', parts: [], role: 'assistant' }],
+      storedSessionId: 'bot-chat'
+    } as never)
     const swapTargets: Array<null | string> = []
     const unsubscribe = $gatewaySwapTarget.subscribe(value => swapTargets.push(value))
 
@@ -904,7 +910,8 @@ describe('profile-aware plugin session opens', () => {
     })
 
     await Promise.resolve()
-    expect(requestSessionResume).toHaveBeenCalledWith('bot-chat', undefined)
+    expect(resumeTile).toHaveBeenCalledWith('bot-chat', { refreshTranscript: true })
+    expect(requestSessionResume).not.toHaveBeenCalled()
 
     await opening
     unsubscribe()

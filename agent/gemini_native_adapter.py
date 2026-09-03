@@ -41,6 +41,7 @@ except Exception:
     _HERMES_VERSION = "0.0.0"
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+VERTEX_EXPRESS_BASE_URL = "https://aiplatform.googleapis.com/v1beta1"
 
 # Published max output-token ceiling shared by every current Gemini text model
 # (2.5 + 3.x: flash, flash-lite, pro). Used as the default when the caller
@@ -90,9 +91,30 @@ def is_native_gemini_base_url(base_url: str) -> bool:
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
         return False
-    if "generativelanguage.googleapis.com" not in normalized:
+    if normalized.endswith("/openai"):
         return False
-    return not normalized.endswith("/openai")
+    return (
+        "generativelanguage.googleapis.com" in normalized
+        or "aiplatform.googleapis.com" in normalized
+    )
+
+
+def is_vertex_express_key(api_key: str) -> bool:
+    """Vertex Express keys are ``AQ.…``; AI Studio keys are ``AIza…``."""
+    return str(api_key or "").strip().startswith("AQ.")
+
+
+def _is_vertex_express_base_url(base_url: str) -> bool:
+    normalized = str(base_url or "").strip().rstrip("/").lower()
+    return "aiplatform.googleapis.com" in normalized
+
+
+def gemini_model_path(base_url: str, model: str) -> str:
+    """Path under the native host: Studio ``models/…`` vs Express ``publishers/google/models/…``."""
+    name = bare_gemini_model_id(model)
+    if _is_vertex_express_base_url(base_url):
+        return f"publishers/google/models/{name}"
+    return f"models/{name}"
 
 
 def probe_gemini_tier(
@@ -120,7 +142,7 @@ def probe_gemini_tier(
     if normalized_base.lower().endswith("/openai"):
         normalized_base = normalized_base[: -len("/openai")]
 
-    url = f"{normalized_base}/models/{model}:generateContent"
+    url = f"{normalized_base}/{gemini_model_path(normalized_base, model)}:generateContent"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
         "generationConfig": {"maxOutputTokens": 1},
@@ -1128,6 +1150,8 @@ class GeminiNativeClient:
         normalized_base = (base_url or DEFAULT_GEMINI_BASE_URL).rstrip("/")
         if normalized_base.endswith("/openai"):
             normalized_base = normalized_base[: -len("/openai")]
+        if is_vertex_express_key(api_key) and not _is_vertex_express_base_url(normalized_base):
+            normalized_base = VERTEX_EXPRESS_BASE_URL
         self.base_url = normalized_base
         self._default_headers = dict(default_headers or {})
         self.chat = _GeminiChatNamespace(self)
@@ -1206,7 +1230,7 @@ class GeminiNativeClient:
         if stream:
             return self._stream_completion(model=model, request=request, timeout=timeout)
 
-        url = f"{self.base_url}/models/{model}:generateContent"
+        url = f"{self.base_url}/{gemini_model_path(self.base_url, model)}:generateContent"
         response = self._http.post(url, json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
             raise gemini_http_error(response)
@@ -1222,7 +1246,7 @@ class GeminiNativeClient:
         return translate_gemini_response(payload, model=model)
 
     def _stream_completion(self, *, model: str, request: Dict[str, Any], timeout: Any = None) -> Iterator[_GeminiStreamChunk]:
-        url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
+        url = f"{self.base_url}/{gemini_model_path(self.base_url, model)}:streamGenerateContent?alt=sse"
         stream_headers = dict(self._headers())
         stream_headers["Accept"] = "text/event-stream"
 

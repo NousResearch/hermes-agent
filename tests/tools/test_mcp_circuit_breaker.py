@@ -322,6 +322,91 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
         _cleanup(mcp_tool, "srv")
 
 
+def test_app_level_tool_errors_do_not_trip_breaker(monkeypatch, tmp_path):
+    """Application-level tool errors (``result.isError``, e.g. a "not
+    found" lookup) prove the server responded — they must NOT count as
+    consecutive failures. Under the old implementation three of them in
+    a row opened the breaker and every tool on the server fast-failed
+    as "unreachable" for the whole cooldown, despite the server being
+    healthy.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    call_count = {"n": 0}
+
+    async def _call_tool_app_error(*a, **kw):
+        call_count["n"] += 1
+        result = MagicMock()
+        result.isError = True
+        block = MagicMock()
+        block.text = "Prompt not found"
+        result.content = [block]
+        result.structuredContent = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_app_error)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 1):
+            result = handler({})
+            parsed = json.loads(result)
+            assert parsed.get("error") == "Prompt not found", parsed
+
+        # Every call reached the session — none was short-circuited.
+        assert call_count["n"] == mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 1
+
+        # And the breaker stayed fully closed.
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
+def test_app_level_tool_error_closes_partially_tripped_breaker(
+    monkeypatch, tmp_path
+):
+    """A responding server is a reachability success: an ``isError``
+    tool result must reset a below-threshold transport-failure count,
+    exactly like a successful result does.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    async def _call_tool_app_error(*a, **kw):
+        result = MagicMock()
+        result.isError = True
+        block = MagicMock()
+        block.text = "Prompt not found"
+        result.content = [block]
+        result.structuredContent = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_app_error)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        # Two prior transport failures — one below threshold.
+        mcp_tool._server_error_counts["srv"] = (
+            mcp_tool._CIRCUIT_BREAKER_THRESHOLD - 1
+        )
+
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+        result = handler({})
+        parsed = json.loads(result)
+        assert parsed.get("error") == "Prompt not found", parsed
+
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
 def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
     """When the auth-recovery path successfully reconnects the server,
     the breaker should be cleared so subsequent calls aren't gated on a

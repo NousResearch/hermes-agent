@@ -190,6 +190,27 @@ _COMPRESSION_CHILD_SQL = (
     "        AND p.end_reason = 'compression')"
 )
 
+# Compression-lineage marker edges: every lineage CTE pairs the legacy
+# ``_COMPRESSION_CHILD_SQL`` heuristic with the immutable
+# ``$._compression_from`` stamp written by ``publish_compression_child`` and
+# ``_insert_session_row``, so walks survive a reopened parent whose mutable
+# ``end_reason`` was cleared (see ``reopen_session`` / ``ws_orphan_reap``).
+# Kept beside ``_COMPRESSION_CHILD_SQL`` so the next lineage walk cannot take
+# one half of the edge without the other.
+_COMPRESSION_MARKER_PARENT_EDGE_SQL = (
+    "EXISTS (SELECT 1 FROM sessions p"
+    "        WHERE p.id = {a}.parent_session_id"
+    "        AND json_extract(COALESCE({a}.model_config, '{{}}'),"
+    "                        '$._compression_from') = p.id)"
+)
+
+_COMPRESSION_MARKER_CHILD_EDGE_SQL = (
+    "EXISTS (SELECT 1 FROM sessions c"
+    "        WHERE c.parent_session_id = {a}.id"
+    "        AND json_extract(COALESCE(c.model_config, '{{}}'),"
+    "                        '$._compression_from') = {a}.id)"
+)
+
 
 _RESET_END_REASONS = (
     "session_reset",

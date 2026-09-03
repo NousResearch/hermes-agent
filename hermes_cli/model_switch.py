@@ -36,11 +36,13 @@ from hermes_cli.providers import (
     get_label,
     host_mandated_api_mode,
     is_aggregator,
+    normalize_provider,
     resolve_provider_full,
 )
 from hermes_cli.model_normalize import (
     normalize_model_for_provider,
 )
+from hermes_cli.route_identity import normalize_route_base_url
 from agent.models_dev import (
     ModelCapabilities,
     ModelInfo,
@@ -1410,9 +1412,21 @@ def resolve_alias(
     # Reverse lookup: match by model ID so full names (e.g. "kimi-k2.5",
     # "glm-4.7") route through direct aliases instead of falling through
     # to the catalog/OpenRouter.
+    #
+    # Several aliases may expose the same model ID on different providers. Pick
+    # the one served by *current_provider* when it exists, and only fall back to
+    # first-match otherwise — insertion order is not a routing decision, and
+    # picking the wrong alias hands back another provider's base_url.
+    reverse_fallback: Optional[tuple[str, str, str]] = None
     for alias_name, da in DIRECT_ALIASES.items():
-        if da.model.lower() == key:
+        if da.model.lower() != key:
+            continue
+        if normalize_provider(da.provider or "") == normalize_provider(current_provider or ""):
             return (da.provider, da.model, alias_name)
+        if reverse_fallback is None:
+            reverse_fallback = (da.provider, da.model, alias_name)
+    if reverse_fallback is not None:
+        return reverse_fallback
 
     identity = MODEL_ALIASES.get(key)
     if identity is None:
@@ -2263,10 +2277,29 @@ def switch_model(
                 pass
 
     # --- Direct alias override: use exact base_url from the alias if set ---
+    # Only honour an alias that belongs to the provider we are actually
+    # switching to. On an explicit `--provider` switch the alias may have been
+    # resolved by reverse model-ID lookup against a *different* provider, and
+    # adopting its base_url would send requests to the old provider's endpoint
+    # under the new provider's identity.
     if resolved_alias:
         _ensure_direct_aliases()
         _da = DIRECT_ALIASES.get(resolved_alias)
+        if _da is not None and (
+            normalize_provider(_da.provider or "")
+            != normalize_provider(target_provider or "")
+        ):
+            _da = None
+            resolved_alias = ""
         if _da is not None and _da.base_url:
+            # Capture route identity before the alias credential flow mutates
+            # base_url. The runtime resolver may have selected an explicit
+            # transport for this route; superficial URL spelling differences
+            # must not discard it.
+            _same_alias_route = (
+                normalize_route_base_url(_da.base_url)
+                == normalize_route_base_url(base_url)
+            )
             # Credentials above were resolved against the DEFAULT provider.
             # Carrying that key onto the alias's endpoint both 401s and ships
             # the default provider's secret to an unrelated third-party host
@@ -2322,7 +2355,11 @@ def switch_model(
                     or (api_key if _same_host else "")
                     or "no-key-required"
                 )
-            api_mode = ""  # clear so determine_api_mode re-detects from URL
+            # Only a genuine redirect invalidates the runtime resolver's
+            # transport. Equivalent route spellings (for example host case or
+            # a trailing slash) preserve an explicitly configured api_mode.
+            if not _same_alias_route:
+                api_mode = ""
             # Upstream's providers.ollama refinement: pick up the
             # configured key only for the configured native root, and drop
             # both the key and the provider-level headers for any other

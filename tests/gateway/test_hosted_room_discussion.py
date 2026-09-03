@@ -274,7 +274,7 @@ def test_deterministic_task_fits_existing_driver_and_reconstructs_after_restart(
         ("@all inspect this", "research"),
         ("@everyone inspect this", "research"),
         ("inspect this", "research"),
-        ("@unknown inspect this", "research"),
+        ("Email ops@example.com, then inspect this", "research"),
     ],
 )
 def test_mentions_select_handles_or_everyone(
@@ -286,6 +286,546 @@ def test_mentions_select_handles_or_everyone(
     _append_user(db, event_id="user-1", text=text)
 
     assert _next_task(room, db).member.profile == expected_profile
+
+
+def test_punctuated_user_mentions_reach_every_addressed_member(
+    room_db: tuple[Path, dict],
+):
+    db, room = room_db
+    _append_user(
+        db,
+        event_id="user-1",
+        text="@research, @build: and @review. Reply independently.",
+    )
+
+    assert _settle_next(room, db, text="Research ready.").member.profile == (
+        "research"
+    )
+    assert _settle_next(room, db, text="Build ready.").member.profile == "build"
+    assert _settle_next(room, db, text="Review ready.").member.profile == "review"
+
+
+def test_unknown_explicit_mention_does_not_broadcast(
+    room_db: tuple[Path, dict],
+):
+    db, room = room_db
+    _append_user(db, event_id="user-1", text="@unknown inspect this")
+
+    decision = discussion.plan_next_task(
+        room,
+        _events(db),
+        local_profiles=LOCAL_PROFILES,
+    )
+
+    assert decision.status == "settled"
+    assert decision.reason == "unresolved_mention"
+
+
+def test_mentions_use_longest_exact_legacy_handle_before_trailing_punctuation():
+    members = (
+        discussion.DiscussionMember(
+            member_id="member-build",
+            profile="build",
+            handle="build",
+            display_name="Build",
+        ),
+        discussion.DiscussionMember(
+            member_id="member-build-colon",
+            profile="build-colon",
+            handle="build:",
+            display_name="Build Colon",
+        ),
+        discussion.DiscussionMember(
+            member_id="member-all-dot",
+            profile="all-dot",
+            handle="all.",
+            display_name="All Dot",
+        ),
+    )
+
+    assert [member.handle for member in discussion.resolve_mentions(
+        ("@build:. reply",), members, default_all=False
+    )] == ["build:"]
+    assert [member.handle for member in discussion.resolve_mentions(
+        ("@all.. reply",), members, default_all=False
+    )] == ["all."]
+
+
+def test_code_email_escaped_and_unicode_adjacent_tokens_are_not_mentions():
+    members = (
+        discussion.DiscussionMember(
+            member_id="member-build",
+            profile="build",
+            handle="build",
+            display_name="Build",
+        ),
+        discussion.DiscussionMember(
+            member_id="member-review",
+            profile="review",
+            handle="review",
+            display_name="Review",
+        ),
+    )
+
+    text = (
+        "Email ops@example.com and 用户@build. "
+        "Document `@everyone.` and \\@review literally. "
+        "```text\n@build: example only\n```"
+    )
+    assert discussion.resolve_mentions((text,), members, default_all=False) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "@`ignored`everyone.",
+        "````text\n@everyone.\n```\nstill code",
+        "~~~text\n@everyone.\n",
+        "`unterminated @everyone.",
+    ],
+)
+def test_code_masking_never_synthesizes_or_leaks_mentions(text: str):
+    members = tuple(
+        discussion.DiscussionMember(
+            member_id=f"member-{handle}",
+            profile=handle,
+            handle=handle,
+            display_name=handle.title(),
+        )
+        for handle in ("build", "review")
+    )
+
+    assert discussion.resolve_mentions((text,), members, default_all=False) == ()
+
+
+def test_code_masking_preserves_a_boundary_before_a_real_mention():
+    members = (
+        discussion.DiscussionMember(
+            member_id="member-build",
+            profile="build",
+            handle="build",
+            display_name="Build",
+        ),
+    )
+
+    assert discussion.resolve_mentions(
+        ("word`ignored`@build",), members, default_all=False
+    ) == members
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "```text\n```not-a-close\n@build\n```",
+        "~~~text\n~~~not-a-close\n@build\n~~~",
+    ],
+)
+def test_fence_closers_with_trailing_text_do_not_expose_mentions(text: str):
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions((text,), (member,), default_all=False) == ()
+
+
+def test_escaped_backtick_does_not_hide_a_later_real_mention():
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions(
+        ("Use \\` literally, then @build",),
+        (member,),
+        default_all=False,
+    ) == (member,)
+
+
+def test_unknown_token_never_narrows_or_overrides_a_broadcast():
+    members = tuple(
+        discussion.DiscussionMember(
+            member_id=f"member-{handle}",
+            profile=handle,
+            handle=handle,
+            display_name=handle.title(),
+        )
+        for handle in ("build", "review")
+    )
+
+    resolved, unresolved = discussion._mention_resolution(
+        ("@all @build @typo",), members, default_all=True
+    )
+    assert resolved == ()
+    assert unresolved is True
+
+
+def test_combining_mark_email_and_link_destination_are_not_mentions():
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+    text = "cafe\u0301@build [docs](https://example.test/@build)"
+
+    assert discussion.resolve_mentions((text,), (member,), default_all=False) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[docs](url "note ) @build")',
+        "[docs](<mailto:@build(foo>)",
+        "https://example.test/?target=@build",
+        "https://example.test/#@build",
+    ],
+)
+def test_link_titles_angle_destinations_and_bare_urls_do_not_mention(text: str):
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions((text,), (member,), default_all=False) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "https://example.test/(@build)",
+        "https://example.test/~@build",
+        "https://example.test/;@build",
+        "mailto:person@example.test?cc=@build",
+    ],
+)
+def test_bare_uri_spans_do_not_mention_bots(text: str):
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions((text,), (member,), default_all=False) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "查看https://example.test/;@build",
+        "éhttps://example.test/(~@build)",
+    ],
+)
+def test_unicode_adjacent_bare_uri_is_still_masked(text: str):
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions((text,), (member,), default_all=False) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "(https://example.test)@build",
+        "https://example.test,@build",
+        "https://example.test!@build",
+    ],
+)
+def test_visible_mention_after_bare_uri_remains_actionable(text: str):
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions((text,), (member,), default_all=False) == (member,)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "http://[::1]/;@build",
+        "http://[2001:db8::1]/(~@build)",
+    ],
+)
+def test_ipv6_bare_uri_is_fully_masked(text: str):
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions((text,), (member,), default_all=False) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<!-- @everyone. -->",
+        '<a title="@everyone">docs</a>',
+        "<script>@everyone.</script>",
+        "<style>.x{@everyone.}</style>",
+    ],
+)
+def test_hidden_html_does_not_mention_bots(text: str):
+    members = tuple(
+        discussion.DiscussionMember(
+            member_id=f"member-{handle}",
+            profile=handle,
+            handle=handle,
+            display_name=handle.title(),
+        )
+        for handle in ("build", "review")
+    )
+
+    assert discussion.resolve_mentions((text,), members, default_all=False) == ()
+
+
+def test_visible_text_inside_html_element_can_mention_a_bot():
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions(
+        ("<span>@build</span>",), (member,), default_all=False
+    ) == (member,)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '<script>const x="</scripture>"; @build</script>',
+        "<template><template>x</template>@build</template>",
+        "<script>ß</script> @build",
+        "<!DOCTYPE @build>",
+        "<?xml @build?>",
+    ],
+)
+def test_standard_html_visibility_handles_raw_blocks_and_declarations(text: str):
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+    expected = (member,) if text == "<script>ß</script> @build" else ()
+
+    assert discussion.resolve_mentions((text,), (member,), default_all=False) == expected
+
+
+def test_hidden_html_cannot_mask_a_later_visible_mention():
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions(
+        ("<!-- [x](unterminated --> @build",),
+        (member,),
+        default_all=False,
+    ) == (member,)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Intro<br>@build",
+        "<p>Intro</p><p>@build</p>",
+        "&#64;build",
+        "<span>&#64;build</span>",
+    ],
+)
+def test_rendered_html_boundaries_and_entities_preserve_visible_mentions(text: str):
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions((text,), (member,), default_all=False) == (member,)
+
+
+def test_mismatched_hidden_end_tag_does_not_expose_template_content():
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions(
+        ("<template></script>@build</template>",),
+        (member,),
+        default_all=False,
+    ) == ()
+
+
+@pytest.mark.parametrize("tag", ["script", "style", "template"])
+def test_self_closing_hidden_tag_remains_hidden_like_html_rendering(tag: str):
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions(
+        (f"<{tag}/>@build",),
+        (member,),
+        default_all=False,
+    ) == ()
+
+
+def test_self_closing_script_enters_raw_text_until_matching_close():
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions(
+        ("<script/><style/></script>@build",),
+        (member,),
+        default_all=False,
+    ) == (member,)
+
+
+def test_inline_html_does_not_invent_a_text_boundary():
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions(
+        ("word<span></span>@build",),
+        (member,),
+        default_all=False,
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    "tag", ["caption", "details", "dialog", "legend", "menu", "summary"]
+)
+def test_standard_block_elements_keep_visible_mentions_separate(tag: str):
+    members = tuple(
+        discussion.DiscussionMember(
+            member_id=f"member-{handle}",
+            profile=handle,
+            handle=handle,
+            display_name=handle.title(),
+        )
+        for handle in ("build", "review")
+    )
+    text = f"<{tag}>@</{tag}><{tag}>everyone</{tag}>"
+
+    assert discussion.resolve_mentions((text,), members, default_all=False) == ()
+
+
+def test_url_apostrophe_does_not_hide_a_later_visible_mention():
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions(
+        ("[docs](https://example.test/O'Brien) @build",),
+        (member,),
+        default_all=False,
+    ) == (member,)
+
+
+def test_unclosed_link_destination_masks_the_remaining_text_once():
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+    text = "[broken](unterminated " + "](" * 10_000 + " @build"
+
+    assert discussion.resolve_mentions((text,), (member,), default_all=False) == ()
+
+
+def test_literal_unmatched_link_syntax_keeps_its_visible_mention():
+    member = discussion.DiscussionMember(
+        member_id="member-build",
+        profile="build",
+        handle="build",
+        display_name="Build",
+    )
+
+    assert discussion.resolve_mentions(
+        ("](@build)",), (member,), default_all=False
+    ) == (member,)
+
+
+def test_malformed_link_syntax_is_linear_and_does_not_fan_out():
+    members = tuple(
+        discussion.DiscussionMember(
+            member_id=f"member-{handle}",
+            profile=handle,
+            handle=handle,
+            display_name=handle.title(),
+        )
+        for handle in ("build", "review")
+    )
+    text = "](" * (64 * 1024 // 2)
+
+    assert discussion.resolve_mentions((text,), members, default_all=False) == ()
+
+
+def test_bot_handoff_with_unknown_peer_surfaces_unresolved_mention(room_db):
+    db, room = room_db
+    _append_user(db, event_id="user-1", text="@research lead this")
+    _settle_next(room, db, text="@build @typo please continue")
+
+    decision = discussion.plan_next_task(
+        room,
+        _events(db),
+        local_profiles=LOCAL_PROFILES,
+    )
+
+    assert decision.status == "settled"
+    assert decision.reason == "unresolved_mention"
+
+
+def test_long_unknown_mention_is_bounded():
+    members = tuple(
+        discussion.DiscussionMember(
+            member_id=f"member-{handle}",
+            profile=handle,
+            handle=handle,
+            display_name=handle.title(),
+        )
+        for handle in ("build", "review")
+    )
+    text = "@unknown" + "." * (64 * 1024 - len("@unknown"))
+
+    assert discussion.resolve_mentions((text,), members, default_all=False) == ()
 
 
 def test_member_mention_joins_the_next_round_not_the_current_round(

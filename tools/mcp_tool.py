@@ -1454,6 +1454,114 @@ _MCP_RESOURCE_MAX_BYTES = 50 * 1024 * 1024
 _MCP_RESOURCE_MAX_B64_CHARS = _MCP_RESOURCE_MAX_BYTES * 4 // 3 + 4
 
 
+# ---------------------------------------------------------------------------
+# HTTP/SSE wire-body cap (pre-SDK-parse)
+# ---------------------------------------------------------------------------
+# Port of openclaw/openclaw#123194. A hostile or misbehaving remote MCP
+# server can stream an unbounded HTTP catalog/tool-result body; the SDK
+# buffers and JSON-parses it before any of our post-parse limits (resource
+# cap above, tool-result truncation) ever run, so memory blows up during
+# parse. Cap the wire body at the transport layer, before the SDK sees it:
+#
+# - each finite HTTP response body: at most _MCP_HTTP_MAX_BODY_BYTES;
+# - each Server-Sent Events event: at most _MCP_HTTP_MAX_BODY_BYTES, with
+#   the counter reset at every completed event boundary so long-lived SSE
+#   connections have no cumulative limit (keepalives are free);
+# - a Content-Length header above the cap is rejected before reading.
+#
+# On violation the stream raises through the SDK as a read error; the
+# transport TaskGroup teardown/reconnect path (#66092) handles it like any
+# other stream failure, with the byte count named in the message.
+#
+# The legacy Streamable HTTP path (mcp < 1.24.0) manages its httpx client
+# internally and exposes no transport hook, so it stays uncapped — same
+# graceful degradation as the strict_redirect_headers boundary above.
+_MCP_HTTP_MAX_BODY_BYTES = 10 * 1024 * 1024
+
+_SSE_EVENT_BOUNDARIES = (b"\n\n", b"\r\n\r\n")
+
+
+def _make_mcp_body_cap_transport(httpx_mod, inner_transport,
+                                 limit: int = _MCP_HTTP_MAX_BODY_BYTES):
+    """Wrap ``inner_transport`` so every response body is size-capped.
+
+    ``httpx_mod`` must be the SDK's own httpx module (see ``sdk_httpx()``) —
+    the returned transport is handed to that SDK's ``AsyncClient``.
+    """
+
+    class _CappedStream(httpx_mod.AsyncByteStream):
+        def __init__(self, inner, is_sse: bool, url: str):
+            self._inner = inner
+            self._is_sse = is_sse
+            self._url = url
+
+        async def __aiter__(self):
+            counted = 0
+            async for chunk in self._inner:
+                if self._is_sse:
+                    # Reset accounting at the last completed event boundary
+                    # in this chunk: completed events/keepalives don't count
+                    # against the next event's budget.
+                    boundary_end = -1
+                    for sep in _SSE_EVENT_BOUNDARIES:
+                        idx = chunk.rfind(sep)
+                        if idx != -1:
+                            boundary_end = max(boundary_end, idx + len(sep))
+                    if boundary_end != -1:
+                        # Bytes before the boundary belong to now-completed
+                        # events — they still must not exceed the per-event
+                        # cap when combined with the carried prefix.
+                        if counted + boundary_end > limit:
+                            raise httpx_mod.ReadError(
+                                f"MCP SSE event exceeds {limit} bytes "
+                                f"(from {self._url})"
+                            )
+                        counted = len(chunk) - boundary_end
+                    else:
+                        counted += len(chunk)
+                else:
+                    counted += len(chunk)
+                if counted > limit:
+                    kind = "SSE event" if self._is_sse else "HTTP response"
+                    raise httpx_mod.ReadError(
+                        f"MCP {kind} exceeds {limit} bytes (from {self._url})"
+                    )
+                yield chunk
+
+        async def aclose(self):
+            await self._inner.aclose()
+
+    class _BodyCapTransport(httpx_mod.AsyncBaseTransport):
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def handle_async_request(self, request):
+            response = await self._inner.handle_async_request(request)
+            declared = response.headers.get("content-length")
+            if declared is not None:
+                try:
+                    if int(declared) > limit:
+                        await response.aclose()
+                        raise httpx_mod.ReadError(
+                            f"MCP HTTP response declares Content-Length "
+                            f"{declared} > {limit} bytes cap "
+                            f"(from {request.url})"
+                        )
+                except ValueError:
+                    pass  # malformed header — fall through to streamed cap
+            content_type = response.headers.get("content-type", "")
+            is_sse = "text/event-stream" in content_type.lower()
+            response.stream = _CappedStream(
+                response.stream, is_sse, str(request.url),
+            )
+            return response
+
+        async def aclose(self):
+            await self._inner.aclose()
+
+    return _BodyCapTransport(inner_transport)
+
+
 def _mcp_resource_filename(uri: str, mime_type: str) -> str:
     """Derive a safe display filename for an MCP resource.
 
@@ -4027,39 +4135,41 @@ class MCPServerTask:
                 # behind OAuth 2.1 PKCE work. Previously built but never
                 # forwarded — SSE OAuth would silently fail with 401s.
                 _sse_kwargs["auth"] = _oauth_auth
-            if client_cert is not None or ssl_verify is not True:
-                # SSE transport doesn't expose verify/cert as kwargs, so route
-                # them through an httpx_client_factory that wraps the SDK's
-                # defaults (follow_redirects=True) and adds our TLS settings.
-                # The SDK calls the factory with (headers, auth, timeout); we
-                # forward all of those and layer verify/cert on top.
-                # The client MUST come from the SDK's own httpx module
-                # (httpx2 on mcp >= 2.0) — see sdk_httpx().
-                _httpx_mod = sdk_httpx()
+            # Always own the httpx client on SSE: the factory both layers
+            # custom TLS settings (when configured) and installs the
+            # wire-body cap transport so an oversized SSE event fails
+            # before the SDK buffers it (_make_mcp_body_cap_transport).
+            # The client MUST come from the SDK's own httpx module
+            # (httpx2 on mcp >= 2.0) — see sdk_httpx().
+            _httpx_mod = sdk_httpx()
 
-                _cert_for_factory = client_cert
-                _verify_for_factory = ssl_verify
+            _cert_for_factory = client_cert
+            _verify_for_factory = ssl_verify
 
-                def _mcp_http_client_factory(
-                    headers=None, timeout=None, auth=None,
-                ):
-                    kwargs: dict = {
-                        "follow_redirects": True,
-                        "verify": _verify_for_factory,
-                    }
-                    if timeout is not None:
-                        kwargs["timeout"] = timeout
-                    else:
-                        kwargs["timeout"] = _httpx_mod.Timeout(30.0, read=300.0)
-                    if headers is not None:
-                        kwargs["headers"] = headers
-                    if auth is not None:
-                        kwargs["auth"] = auth
-                    if _cert_for_factory is not None:
-                        kwargs["cert"] = _cert_for_factory
-                    return _httpx_mod.AsyncClient(**kwargs)
+            def _mcp_http_client_factory(
+                headers=None, timeout=None, auth=None,
+            ):
+                kwargs: dict = {
+                    "follow_redirects": True,
+                }
+                if timeout is not None:
+                    kwargs["timeout"] = timeout
+                else:
+                    kwargs["timeout"] = _httpx_mod.Timeout(30.0, read=300.0)
+                if headers is not None:
+                    kwargs["headers"] = headers
+                if auth is not None:
+                    kwargs["auth"] = auth
+                _transport_kwargs: dict = {"verify": _verify_for_factory}
+                if _cert_for_factory is not None:
+                    _transport_kwargs["cert"] = _cert_for_factory
+                kwargs["transport"] = _make_mcp_body_cap_transport(
+                    _httpx_mod,
+                    _httpx_mod.AsyncHTTPTransport(**_transport_kwargs),
+                )
+                return _httpx_mod.AsyncClient(**kwargs)
 
-                _sse_kwargs["httpx_client_factory"] = _mcp_http_client_factory
+            _sse_kwargs["httpx_client_factory"] = _mcp_http_client_factory
             try:
                 async with sse_client(**_sse_kwargs) as (read_stream, write_stream):
                     async with ClientSession(
@@ -4113,15 +4223,20 @@ class MCPServerTask:
             client_kwargs: dict = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
-                "verify": ssl_verify,
                 "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
             }
+            # verify/cert live on the inner transport: passing a custom
+            # `transport=` makes client-level verify/cert kwargs inert.
+            _transport_kwargs: dict = {"verify": ssl_verify}
+            if client_cert is not None:
+                _transport_kwargs["cert"] = client_cert
+            client_kwargs["transport"] = _make_mcp_body_cap_transport(
+                httpx, httpx.AsyncHTTPTransport(**_transport_kwargs),
+            )
             if headers:
                 client_kwargs["headers"] = headers
             if _oauth_auth is not None:
                 client_kwargs["auth"] = _oauth_auth
-            if client_cert is not None:
-                client_kwargs["cert"] = client_cert
 
             # Caller owns the client lifecycle — the SDK skips cleanup when
             # http_client is provided, so we wrap in async-with.

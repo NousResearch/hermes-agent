@@ -498,7 +498,7 @@ HERMES_HOME/mcp-credentials/
 └── index.v1.json
 ```
 
-The bundle file is the source of truth. `index.v1.json` contains only non-secret diagnostic mapping—identity digest, server display name, and schema version—and may be rebuilt from bundle headers if necessary. It is not required for loading a known identity.
+The bundle file is the source of truth. `index.v1.json` contains only non-secret diagnostic mapping — identity digest, profile display identifier, server display name, schema version, and a backend-visible status timestamp. The digest, server name, and schema version are rebuildable from bundle headers; the profile identifier and timestamp are index-only conveniences. The index is not required for loading a known identity.
 
 Directory mode is `0700`; bundle files are `0600` on POSIX.
 
@@ -511,7 +511,7 @@ The JSON envelope contains:
   "schema_version": 1,
   "revision": "opaque-random-revision",
   "bundle": {
-    "identity": {},
+    "identity": { "server_name": "...", "server_url": "..." },
     "issuer": "https://issuer.example",
     "protected_resource": {},
     "authorization_server": {},
@@ -523,7 +523,11 @@ The JSON envelope contains:
 }
 ```
 
-Unknown schema versions fail with `migration_required`; corrupt JSON fails with a typed corruption error and is not deleted automatically.
+The serialized `identity` block holds only `server_name` and `server_url` — not `profile_home`. Profile scope is the file's location (`HERMES_HOME/mcp-credentials/`) and its digest-derived name; the digest is recomputed from the requesting identity on load and a mismatch finds no file (`credential_not_found`). The in-memory `OAuthCredentialBundle.identity` is a full `OAuthIdentity`, reconstructed on load by pairing the serialized `server_name`/`server_url` with the requesting `profile_home`.
+
+`tokens` serializes `OAuthTokenRecord` in full, including `accepted_at_utc`, `expires_at`, and `original_expires_in` (§4.2).
+
+Unknown schema versions fail with `migration_required`; corrupt JSON fails with a typed corruption error and is not deleted automatically. A `server_url` that disagrees with the runtime expectation fails with `identity_mismatch`; a stored `issuer` that disagrees fails with `issuer_mismatch`.
 
 ### 9.3 Atomic write
 

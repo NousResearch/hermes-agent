@@ -77,9 +77,10 @@ class FileOAuthCredentialStore:
     def compare_and_swap(identity, expected_revision, bundle) -> StoredBundle: ...
     def replace_authorized(identity, bundle) -> StoredBundle: ...
     def delete(identity) -> bool: ...
+    def administrative_lock(identity, *, timeout) -> ContextManager[None]: ...
 ```
 
-`replace_authorized` requires the administrative lock. `compare_and_swap` takes the mutation lock and verifies revision.
+This is the full `OAuthCredentialStore` protocol from architecture §5.1. `replace_authorized` may only be called while holding the identity's administrative lock. `compare_and_swap` takes the mutation lock and verifies revision.
 
 ## Atomic write protocol
 
@@ -151,7 +152,7 @@ It contains no URL query credentials, tokens, client secrets, authorization code
 - Directory has `0700`.
 - Parent `fsync` is attempted on supported POSIX systems.
 - Unsupported schema and corrupt payload remain intact for diagnosis.
-- Profile and server identity mismatches fail closed: a request whose canonicalized identity digest does not match an existing file returns `credential_not_found`; a bundle whose `server_url` disagrees with the runtime expectation returns `issuer_mismatch`.
+- Profile and server identity mismatches fail closed: a request whose canonicalized identity digest does not match an existing file returns `credential_not_found`; a bundle whose `server_url` disagrees with the runtime expectation returns `identity_mismatch`; a bundle whose stored `issuer` disagrees returns `issuer_mismatch`.
 - `{tilde, trailing slash, embedded ``..``, symlinked parent, ``/var`` vs ``/private/var``}` spellings of one profile home resolve to one digest and one bundle file.
 - No emitted field — log line, `mcp_oauth.refresh_conflict` event, or `OAuthCredentialStatus.revision_prefix` — contains more than 8 hex characters of a revision (bound established in Chunk 4).
 

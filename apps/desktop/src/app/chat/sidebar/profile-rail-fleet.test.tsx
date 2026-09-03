@@ -350,7 +350,19 @@ describe('ProfileRail fleet mode', () => {
     // 11 named on Pandora + local (default, omer) + vps (default) = 14 > 13.
     const container = await renderFleet()
 
-    expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
+    const trigger = screen.getByRole('button', { name: 'Profiles' })
+    expect(trigger).toBeTruthy()
+    expect(trigger.querySelector('.codicon-home')).toBeTruthy()
     expect(container.querySelector('[data-slot="profile-rail-rest-square"]')).toBeNull()
+
+    // The fleet pill only enables all-profiles browsing; unlike the
+    // single-gateway pill it cannot return to default. Keep the active
+    // gateway's home route in the condensed dropdown so crossing the collapse
+    // threshold never strands the user on a named profile.
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    const defaultItem = screen.getByRole('menuitemradio', { name: 'default' })
+    expect(defaultItem).toBeTruthy()
+    fireEvent.click(defaultItem)
+    expect(selectProfile).toHaveBeenCalledWith('default')
   })
 })

@@ -95,6 +95,23 @@ def test_prefetch_recovers_prose_query(retriever_with_facts):
     assert "deployment rollback" in results[0]["content"].lower()
 
 
+def test_probe_exact_unicode_entity_returns_only_linked_facts(tmp_path):
+    store = MemoryStore(str(tmp_path / "unicode_probe.db"), hrr_dim=64)
+    try:
+        linked = "Иван Петров предпочитает поэтапные изменения инфраструктуры."
+        store.add_fact(linked, category="user_pref")
+        store.add_fact(
+            "Unrelated deployment fact about Kubernetes networking.",
+            category="project",
+        )
+
+        results = FactRetriever(store=store, hrr_dim=64).probe("иван петров")
+
+        assert [fact["content"] for fact in results] == [linked]
+    finally:
+        store.close()
+
+
 
 
 # ---------------------------------------------------------------------------

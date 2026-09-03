@@ -122,6 +122,25 @@ def test_real_user_messages_still_extracted_alongside_summary(tmp_path):
     provider.shutdown()
 
 
+@pytest.mark.parametrize(
+    "message,category",
+    [
+        ("Я предпочитаю использовать короткие ответы без лишних повторов", "user_pref"),
+        ("Мне нужно подтверждение перед изменением конфигурации", "user_pref"),
+        ("Мы решили использовать PostgreSQL для постоянного хранения", "project"),
+        ("Проект использует Kubernetes для запуска приложений", "project"),
+    ],
+)
+def test_russian_user_preferences_and_decisions_are_extracted(tmp_path, message, category):
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.on_session_end([_user(message)])
+
+    assert provider._store is not None
+    facts = provider._store.list_facts(category=category, limit=100)
+    assert [fact["content"] for fact in facts] == [message]
+    provider.shutdown()
+
+
 # ---------------------------------------------------------------------------
 # is_compaction_summary_message — public helper contract
 # ---------------------------------------------------------------------------

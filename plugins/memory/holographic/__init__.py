@@ -402,10 +402,15 @@ class HolographicMemoryProvider(MemoryProvider):
             re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
             re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
             re.compile(r'\bI\s+(?:always|never|usually)\s+(.+)', re.IGNORECASE),
+            re.compile(r'\bЯ\s+(?:предпочитаю|люблю|использую|хочу|не\s+хочу)\s+(.+)', re.IGNORECASE),
+            re.compile(r'\bМне\s+(?:нравится|нужно|важно)\s+(.+)', re.IGNORECASE),
+            re.compile(r'\bЯ\s+(?:всегда|никогда|обычно)\s+(.+)', re.IGNORECASE),
         ]
         _DECISION_PATTERNS = [
             re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
             re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
+            re.compile(r'\bМы\s+(?:решили|договорились|выбрали)\s+(.+)', re.IGNORECASE),
+            re.compile(r'\bПроект\s+(?:использует|требует|нуждается\s+в)\s+(.+)', re.IGNORECASE),
         ]
 
         extracted = 0

@@ -43,8 +43,16 @@ from hermes_cli.auth import (
     read_credential_pool,
     write_credential_pool,
 )
-
 logger = logging.getLogger(__name__)
+
+# Process-level memo for _load_config_safe().  get_pool_strategy() calls this
+# once per CredentialPool.__init__(), and list_authenticated_providers() builds
+# one CredentialPool per provider row. The underlying load_config_readonly()
+# already has an in-process cache, but the repeated function calls and their
+# env-snapshot validation still show up in cProfile as ~70 load_config hits.
+# Cache on (config_path, mtime_ns, size) so external edits are observed on the
+# next call while a single picker invocation pays the cost once.
+_LOAD_CONFIG_SAFE_CACHE: Dict[str, Tuple[Tuple[int, int], Optional[dict]]] = {}
 
 
 def _load_config_safe() -> Optional[dict]:
@@ -56,11 +64,28 @@ def _load_config_safe() -> Optional[dict]:
     credential-pool checks the dominant cost of ``model.options`` — the picker
     calls ``load_pool()`` once per provider row, each of which loaded (and
     deep-copied) the full config again.
+
+    This wrapper memoises on ``config.yaml`` (mtime, size) so the 60+ provider
+    rows in a single ``list_authenticated_providers()`` call share one load.
     """
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_cli.config import get_config_path, load_config_readonly
 
-        return load_config_readonly()
+        config_path = get_config_path()
+        key = str(config_path)
+        try:
+            st = config_path.stat()
+            sig: Tuple[int, int] = (st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            sig = (0, 0)
+
+        cached = _LOAD_CONFIG_SAFE_CACHE.get(key)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+
+        config = load_config_readonly()
+        _LOAD_CONFIG_SAFE_CACHE[key] = (sig, config)
+        return config
     except Exception:
         return None
 
@@ -974,6 +999,42 @@ class CredentialPool:
         with self._lock:
             available, _pending = self._available_entries()
             return bool(available)
+
+    def has_available_readonly(self) -> bool:
+        """True if at least one entry is available — computed without writes.
+
+        :meth:`has_available` answers the same question but is not read-only:
+        ``_available_entries`` prunes aged-out DEAD manual entries (rebinding
+        ``self._entries``), re-syncs stale entries from external credential
+        stores, and persists auth.json.  Callers that share one memoized pool
+        instance across read-only consumers (the /model picker caches pools
+        for a whole listing pass) need an order-independent probe instead:
+        this evaluates the same availability predicate on the current entries
+        and never mutates state or touches disk.  Unlike ``has_available``
+        it does not re-sync exhausted entries whose tokens another process
+        refreshed, so it can be conservative right after an out-of-band
+        re-auth; the next mutating consumer syncs as usual.
+        """
+        with self._lock:
+            now = time.time()
+            sole_credential = sum(
+                1 for e in self._entries if e.last_status != STATUS_DEAD
+            ) <= 1
+            for entry in self._entries:
+                # Mirrors _available_entries(clear_expired=False,
+                # refresh=False) minus the mutating prune/sync/persist paths.
+                if entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key:
+                    continue
+                if entry.last_status == STATUS_DEAD:
+                    continue
+                if entry.last_status == STATUS_EXHAUSTED:
+                    exhausted_until = _exhausted_until(
+                        entry, sole_credential=sole_credential
+                    )
+                    if exhausted_until is not None and now < exhausted_until:
+                        continue
+                return True
+            return False
 
     def next_available_at(self) -> Optional[float]:
         """Earliest epoch time (seconds) any entry re-enters rotation.

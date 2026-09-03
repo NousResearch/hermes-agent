@@ -17,6 +17,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from types import SimpleNamespace
 
 from gateway.config import Platform
 
@@ -878,39 +879,285 @@ class TestInboundMediaDispatch:
 # Group-shaped message guard
 # ---------------------------------------------------------------------------
 
-class TestGroupMessageGuard:
-    """Cloud API group support is deferred to v2 (Meta capability-tier
-    gated, different payload shape than DMs). If Meta delivers a
-    group-shaped message — identifiable by a populated ``chat`` field
-    on the message object — the adapter should refuse cleanly rather
-    than silently treating the sender's wa_id as the chat_id (which
-    would route the bot's reply back to the sender as a DM, not the
-    group)."""
+GROUP_JID = "120363012345678901@g.us"
+
+
+def _group_raw(**overrides):
+    raw = {
+        "from": "15551234567",
+        "id": "wamid.group1",
+        "timestamp": "0",
+        "type": "text",
+        "text": {"body": "hi from a group"},
+        "chat": GROUP_JID,  # presence of `chat` = group
+    }
+    raw.update(overrides)
+    return raw
+
+
+class TestGroupMessageGating:
+    """Group-shaped Cloud payloads route through the shared mixin gate.
+
+    Meta's Groups API is open to Official Business Accounts, so a
+    group-shaped message — identifiable by a populated ``chat`` field on the
+    message object — is no longer refused unconditionally. It goes through
+    the same ``group_policy`` / allowlist / mention gate the Baileys adapter
+    uses (#80054), and the reply addresses the group rather than the
+    individual sender.
+    """
 
     @pytest.mark.asyncio
-    async def test_group_shaped_message_dropped_with_warning(self, caplog):
+    async def test_default_policy_still_admits_no_group(self):
+        """Unconfigured WABAs must not start accepting group traffic.
+
+        The production default is "pairing", which admits no group chat, so
+        behavior is unchanged from the previous hard drop — the difference is
+        that it is now a visible policy decision rather than a refusal.
+        """
         adapter = _make_adapter()
+        adapter._group_policy = "pairing"
         adapter.handle_message = AsyncMock()
-        raw = {
-            "from": "15551234567",
-            "id": "wamid.group1",
-            "timestamp": "0",
-            "type": "text",
-            "text": {"body": "hi from a group"},
-            "chat": "120363012345678901@g.us",  # presence of `chat` = group
-        }
-        with caplog.at_level("WARNING"):
-            event = await adapter._build_message_event_from_cloud(
-                raw, {"15551234567": "Alice"}, {}
-            )
-        assert event is None
-        # Warning surfaced so the operator knows group messages are being dropped
-        assert any(
-            "group-shaped" in rec.message
-            for rec in caplog.records
+
+        event = await adapter._build_message_event_from_cloud(
+            _group_raw(), {"15551234567": "Alice"}, {}
         )
-        # Defensive: handler not invoked
+
+        assert event is None
         adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_open_policy_routes_group_and_addresses_the_group(self):
+        """chat_id must be the group JID, never the sender's wa_id.
+
+        Using the sender would send the reply back as a DM instead of into
+        the group the question was asked in.
+        """
+        adapter = _make_adapter()
+        adapter._group_policy = "open"
+
+        event = await adapter._build_message_event_from_cloud(
+            _group_raw(), {"15551234567": "Alice"}, {}
+        )
+
+        assert event is not None
+        assert event.source.chat_id == GROUP_JID
+        assert event.source.chat_id != "15551234567"
+
+    @pytest.mark.asyncio
+    async def test_allowlist_policy_admits_only_listed_groups(self):
+        """Drive the allowlist through the real normalizer, not around it.
+
+        Operator-configured entries pass through _normalize_allow_ids, which
+        is phone-number oriented; a group JID must survive it intact or the
+        allowlist can never match the inbound chat_id (#80054).
+        """
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+        adapter = _make_adapter()
+        adapter._group_policy = "allowlist"
+        adapter._group_allow_from = WhatsAppCloudAdapter._normalize_allow_ids({GROUP_JID})
+
+        admitted = await adapter._build_message_event_from_cloud(
+            _group_raw(), {"15551234567": "Alice"}, {}
+        )
+        assert admitted is not None
+
+        adapter._group_allow_from = WhatsAppCloudAdapter._normalize_allow_ids(
+            {"120363999999999999@g.us"}
+        )
+        refused = await adapter._build_message_event_from_cloud(
+            _group_raw(), {"15551234567": "Alice"}, {}
+        )
+        assert refused is None
+
+    def test_normalizer_preserves_group_jids_but_still_bares_phone_numbers(self):
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+        norm = WhatsAppCloudAdapter._normalize_allow_ids
+        # Group JIDs survive intact — stripping "@g.us" and non-digits would
+        # yield a value that never matches an inbound group chat_id.
+        assert norm({GROUP_JID}) == {GROUP_JID}
+        # Phone-shaped entries still normalize to bare wa_id as before.
+        assert norm({"+1 (555) 123-4567"}) == {"15551234567"}
+        assert norm({"15551234567@s.whatsapp.net"}) == {"15551234567"}
+
+    @pytest.mark.asyncio
+    async def test_gated_group_still_tells_the_operator_why(self, caplog):
+        """The old code warned on every dropped group message.
+
+        That signal must survive the move to policy gating, or a
+        misconfigured group_policy is indistinguishable from silence.
+        """
+        adapter = _make_adapter()
+        adapter._group_policy = "pairing"
+
+        with caplog.at_level("INFO"):
+            event = await adapter._build_message_event_from_cloud(
+                _group_raw(), {"15551234567": "Alice"}, {}
+            )
+
+        assert event is None
+        assert any(
+            "group_policy" in rec.message and "not admitted" in rec.message
+            for rec in caplog.records
+        ), caplog.text
+
+    @pytest.mark.asyncio
+    async def test_require_mention_admits_an_at_mention_on_cloud(self, monkeypatch):
+        """Routing groups is not enough if the mention gate can never pass.
+
+        The gate's group branch consults botIds / mentionedIds /
+        quotedParticipant. Cloud has no structured mention array -- a mention
+        arrives as "@<number>" in the body -- so supplying our own number lets
+        the gate's body-substring check find it. Without it, WHATSAPP_REQUIRE_
+        MENTION=true (the recommended group mode) drops every group message,
+        including ones that @-mention the bot.
+        """
+        monkeypatch.setenv("WHATSAPP_REQUIRE_MENTION", "true")
+        adapter = _make_adapter()
+        adapter._group_policy = "open"
+        adapter._mention_patterns = []
+
+        event = await adapter._build_message_event_from_cloud(
+            _group_raw(text={"body": "@15559998888 what is the status?"}),
+            {"15551234567": "Alice"},
+            {"display_phone_number": "15559998888"},
+        )
+
+        assert event is not None
+
+    @pytest.mark.parametrize(
+        "configured",
+        ["15559998888", "+15559998888", "+1 555 999 8888", "1 (555) 999-8888"],
+    )
+    @pytest.mark.asyncio
+    async def test_business_number_is_matched_whatever_its_format(self, monkeypatch, configured):
+        """Meta may return the business number formatted; a mention in message
+        text is bare digits. Without normalizing, the substring check never
+        matches and the mention gate stays shut with no error at all.
+        """
+        monkeypatch.setenv("WHATSAPP_REQUIRE_MENTION", "true")
+        adapter = _make_adapter()
+        adapter._group_policy = "open"
+        adapter._mention_patterns = []
+
+        event = await adapter._build_message_event_from_cloud(
+            _group_raw(text={"body": "@15559998888 what is the status?"}),
+            {"15551234567": "Alice"},
+            {"display_phone_number": configured},
+        )
+
+        assert event is not None
+
+    @pytest.mark.asyncio
+    async def test_a_different_number_is_not_the_bot(self, monkeypatch):
+        """Normalization must not blur one number into another.
+
+        A business number configured without its country code normalizes to
+        a genuinely different wa_id than the one mentioned in the text, and
+        must not match. The gate's substring fallback would have matched it
+        (5559998888 occurs inside @15559998888), which is exactly why the
+        mention check is pinned to the full "@<wa_id>" form.
+        """
+        monkeypatch.setenv("WHATSAPP_REQUIRE_MENTION", "true")
+        adapter = _make_adapter()
+        adapter._group_policy = "open"
+        adapter._mention_patterns = []
+
+        event = await adapter._build_message_event_from_cloud(
+            _group_raw(text={"body": "@15559998888 what is the status?"}),
+            {"15551234567": "Alice"},
+            {"display_phone_number": "(555) 999-8888"},   # no country code
+        )
+
+        assert event is None
+
+    @pytest.mark.asyncio
+    async def test_require_mention_still_drops_unaddressed_group_chatter(self, monkeypatch):
+        """The anti-spam purpose of require_mention must survive the fix."""
+        monkeypatch.setenv("WHATSAPP_REQUIRE_MENTION", "true")
+        adapter = _make_adapter()
+        adapter._group_policy = "open"
+        adapter._mention_patterns = []
+
+        event = await adapter._build_message_event_from_cloud(
+            _group_raw(text={"body": "just chatting among ourselves"}),
+            {"15551234567": "Alice"},
+            {"display_phone_number": "15559998888"},
+        )
+
+        assert event is None
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "call the office on 15559998888 tomorrow",
+            "invoice 15559998888 is overdue",
+            "ref#15559998888",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_bare_business_number_in_text_is_not_a_mention(self, monkeypatch, body):
+        """A number in the text is not an address to the bot.
+
+        The shared gate falls back to a bare substring search of the body.
+        On Baileys that is a backstop behind structured mentionedIds, but
+        Cloud has no structured mentions -- so left unguarded that fallback
+        becomes the only mention path and any group message quoting the
+        business number (a pasted contact, an invoice or order reference)
+        silently bypasses require_mention.
+        """
+        monkeypatch.setenv("WHATSAPP_REQUIRE_MENTION", "true")
+        adapter = _make_adapter()
+        adapter._group_policy = "open"
+        adapter._mention_patterns = []
+
+        event = await adapter._build_message_event_from_cloud(
+            _group_raw(text={"body": body}),
+            {"15551234567": "Alice"},
+            {"display_phone_number": "15559998888"},
+        )
+
+        assert event is None, f"require_mention bypassed by: {body!r}"
+
+    @pytest.mark.asyncio
+    async def test_require_mention_admits_a_reply_to_the_bot(self, monkeypatch):
+        """context.from identifies the quoted author, so a bare "yes" replying
+        to the bot is addressed at it and must be admitted."""
+        monkeypatch.setenv("WHATSAPP_REQUIRE_MENTION", "true")
+        adapter = _make_adapter()
+        adapter._group_policy = "open"
+        adapter._mention_patterns = []
+
+        addressed = await adapter._build_message_event_from_cloud(
+            _group_raw(text={"body": "yes"}, context={"id": "w0", "from": "15559998888"}),
+            {"15551234567": "Alice"},
+            {"display_phone_number": "15559998888"},
+        )
+        assert addressed is not None
+
+        # A reply to someone else's message is not addressed at the bot.
+        unaddressed = await adapter._build_message_event_from_cloud(
+            _group_raw(text={"body": "yes"}, context={"id": "w0", "from": "15551110000"}),
+            {"15551234567": "Alice"},
+            {"display_phone_number": "15559998888"},
+        )
+        assert unaddressed is None
+
+    @pytest.mark.asyncio
+    async def test_dm_path_is_unaffected(self):
+        """No ``chat`` field means DM: chat_id stays the sender's wa_id."""
+        adapter = _make_adapter()
+        adapter._dm_policy = "open"
+        raw = _group_raw()
+        raw.pop("chat")
+
+        event = await adapter._build_message_event_from_cloud(
+            raw, {"15551234567": "Alice"}, {}
+        )
+
+        assert event is not None
+        assert event.source.chat_id == "15551234567"
 
 
 # =========================================================================
@@ -927,6 +1174,125 @@ class TestGroupMessageGuard:
 # Telegram and Discord have the same hooks; we mirror their callback-id
 # format (cl:, appr:, sc:) so the gateway's existing degrade-to-text
 # fallback works transparently.
+
+
+
+class TestOutboundRecipientType:
+    """Group destinations must be addressed as groups.
+
+    Meta's send API takes recipient_type individual|group; posting a group
+    JID as "individual" is rejected, so routing group messages inbound
+    without this would accept the message and then fail every reply (#80054).
+    """
+
+    def test_recipient_type_derives_from_destination(self):
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+        assert WhatsAppCloudAdapter._recipient_type(GROUP_JID) == "group"
+        assert WhatsAppCloudAdapter._recipient_type("15551234567") == "individual"
+        assert WhatsAppCloudAdapter._recipient_type("") == "individual"
+
+    @pytest.mark.asyncio
+    async def test_text_send_to_group_uses_group_recipient_type(self):
+        adapter = _make_adapter()
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            text = "{}"
+
+            @staticmethod
+            def json():
+                return {"messages": [{"id": "wamid.out1"}]}
+
+        async def _post(url, headers=None, json=None):
+            captured.update(json or {})
+            return _Resp()
+
+        adapter._http_client = SimpleNamespace(post=_post)
+
+        await adapter.send(GROUP_JID, "hello group")
+
+        assert captured["to"] == GROUP_JID
+        assert captured["recipient_type"] == "group"
+
+    @pytest.mark.asyncio
+    async def test_text_send_to_dm_stays_individual(self):
+        adapter = _make_adapter()
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            text = "{}"
+
+            @staticmethod
+            def json():
+                return {"messages": [{"id": "wamid.out2"}]}
+
+        async def _post(url, headers=None, json=None):
+            captured.update(json or {})
+            return _Resp()
+
+        adapter._http_client = SimpleNamespace(post=_post)
+
+        await adapter.send("15551234567", "hello dm")
+
+        assert captured["recipient_type"] == "individual"
+
+    @pytest.mark.asyncio
+    async def test_object_shaped_chat_field_is_understood(self):
+        """Meta has shipped both a bare JID string and an object carrying it."""
+        adapter = _make_adapter()
+        adapter._group_policy = "open"
+
+        event = await adapter._build_message_event_from_cloud(
+            _group_raw(chat={"id": GROUP_JID}), {"15551234567": "Alice"}, {}
+        )
+
+        assert event is not None
+        assert event.source.chat_id == GROUP_JID
+
+    @pytest.mark.asyncio
+    async def test_unaddressable_group_id_is_refused_not_misdelivered(self, caplog):
+        """Inbound and outbound must agree on what a group is.
+
+        send() derives recipient_type from the destination JID. A group id we
+        cannot recognise there would be answered as an individual, so refuse
+        it at intake instead of accepting a message we cannot reply to.
+        """
+        adapter = _make_adapter()
+        adapter._group_policy = "open"
+
+        with caplog.at_level("WARNING"):
+            event = await adapter._build_message_event_from_cloud(
+                _group_raw(chat="120363012345678901"),  # no @g.us suffix
+                {"15551234567": "Alice"}, {},
+            )
+
+        assert event is None
+        assert any("not an addressable" in rec.message for rec in caplog.records), caplog.text
+
+    @pytest.mark.asyncio
+    async def test_unparseable_chat_object_is_refused_not_treated_as_a_dm(self, caplog):
+        """A group envelope we cannot read must never become a DM reply.
+
+        If the `chat` object carries neither a recognised id key nor an
+        addressable JID, falling through would answer the individual sender
+        instead of the group. The previous code dropped any populated `chat`;
+        that refusal is preserved for shapes we cannot address.
+        """
+        adapter = _make_adapter()
+        adapter._group_policy = "open"
+
+        with caplog.at_level("WARNING"):
+            event = await adapter._build_message_event_from_cloud(
+                _group_raw(chat={"unexpected_key": "whatever"}),
+                {"15551234567": "Alice"}, {},
+            )
+
+        assert event is None
+        assert any("not an addressable" in rec.message for rec in caplog.records), caplog.text
+
 
 
 class TestSendClarifyButtons:

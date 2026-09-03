@@ -4548,6 +4548,36 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+def _is_empty_agent_sentinel(text: Any) -> bool:
+    """Return True when *text* is an empty agent reply, not user-facing content.
+
+    Covers three shapes the agent produces when a turn yields no answer:
+
+    * ``None`` / ``""`` / whitespace-only — the response is blank;
+    * the bare ``"(empty)"`` terminal sentinel — set by
+      ``agent/conversation_loop.py`` when the retry/fallback chain (nudge,
+      prefill, empty-retry, provider fallback) is exhausted (#92924);
+    * whitespace-padded variants of the sentinel, which escape every
+      exact-equality comparison and were delivered verbatim to chat surfaces.
+
+    The canonical sentinel lives in ``agent.anthropic_adapter``; importing it
+    lazily keeps gateway startup cheap and avoids a module-load cycle.
+    """
+    if not isinstance(text, str):
+        if text is None:
+            return True
+        text = str(text)
+    try:
+        from agent.anthropic_adapter import _EMPTY_TEXT_PLACEHOLDER
+    except ImportError:
+        # Only the standalone/test edge (``agent`` package not importable)
+        # degrades to the literal.  Narrow on purpose: a syntax error or
+        # other genuine breakage in agent.anthropic_adapter must surface
+        # loudly, not silently pin the fallback literal forever (#92924).
+        _EMPTY_TEXT_PLACEHOLDER = "(empty)"
+    return text.strip() in ("", _EMPTY_TEXT_PLACEHOLDER)
+
+
 def _normalize_empty_agent_response(
     agent_result: dict,
     response: str,
@@ -4560,13 +4590,19 @@ def _normalize_empty_agent_response(
     the case where the agent did work (api_calls > 0) but returned no text.
     Fix for #18765.
 
+    Also treats the agent's ``"(empty)"`` terminal sentinel (and its
+    whitespace-padded variants) as empty so the bare placeholder is never
+    delivered to a chat surface (#92924): when all retries are exhausted the
+    user gets the same friendly fallback as a blank response, mirroring the
+    WeChat adapter's silent empty-chunk filtering.
+
     Also surfaces a retry hint when the agent never ran at all
     (api_calls == 0) for a non-interrupted, non-failed turn -- this is the
     silent-drop pattern observed after ``/stop`` where the next user
     message hits a stale generation token and returns an empty result,
     leaving the platform with nothing to send. (#31884)
     """
-    if response:
+    if response and not _is_empty_agent_sentinel(response):
         return response
 
     if agent_result.get("failed"):
@@ -7177,7 +7213,7 @@ class TurnRunner:
                 and result.get("completed") is not False
             ):
                 _fr = result.get("final_response")
-                if isinstance(_fr, str) and _fr.strip() and _fr != "(empty)":
+                if isinstance(_fr, str) and _fr.strip() and not _is_empty_agent_sentinel(_fr):
                     _final_for_stream = _fr
             if _final_for_stream is not None:
                 # Duck-type safe: test doubles / older consumers may expose a
@@ -23265,7 +23301,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # produce visible content after exhausting all retries (nudge,
             # prefill, empty-retry, fallback).  Sending the raw sentinel
             # looks like a bug; a short explanation is more helpful.
-            if response == "(empty)" and not _intentional_silence:
+            # Compare stripped text (#92924): whitespace-padded sentinel
+            # variants must not slip past the exact-equality check.
+            # The `str(response).strip() != ""` clause deliberately lets a
+            # whitespace-only reply bypass this explainer: that case is
+            # normalized by _normalize_empty_agent_response() below, which
+            # has its own friendly fallback for blank responses.  Only the
+            # non-blank sentinel (incl. padded variants) gets this
+            # tool-results message; this asymmetry is intentional.
+            if (
+                isinstance(response, str)
+                and not _intentional_silence
+                and _is_empty_agent_sentinel(response)
+                and str(response).strip() != ""
+            ):
                 response = (
                     "⚠️ The model returned no response after processing tool "
                     "results. This can happen with some models — try again or "
@@ -32989,7 +33038,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _sc = stream_consumer_holder[0]
         if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
-            _is_empty_sentinel = not _final or _final == "(empty)"
+            _is_empty_sentinel = _is_empty_agent_sentinel(_final)
             # response_previewed means the interim_assistant_callback already
             # saw the final text, but only suppress the normal send if that
             # exact final text was delivered. Unrelated commentary/progress

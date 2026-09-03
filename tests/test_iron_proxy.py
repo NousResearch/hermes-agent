@@ -814,3 +814,136 @@ def test_bitwarden_importerror_raise_without_fallback(
         )
 
 
+
+
+# ---------------------------------------------------------------------------
+# Bind-address selection: bridge detection + proxy.bind_host override
+# ---------------------------------------------------------------------------
+
+
+def _ip_addr_stub(responses):
+    """Build a subprocess.run stub keyed on the interface name.
+
+    ``responses`` maps iface -> (returncode, stdout).  Unlisted ifaces
+    behave like a missing device (rc=1), which is what ``ip`` returns.
+    """
+
+    def _run(cmd, *a, **kw):
+        iface = cmd[-1]
+        rc, out = responses.get(iface, (1, ""))
+        return MagicMock(returncode=rc, stdout=out)
+
+    return _run
+
+
+def test_detect_bridge_prefers_docker0():
+    """docker0 wins when present — preserves pre-existing behaviour."""
+
+    stub = _ip_addr_stub({
+        "docker0": (0, "4: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\n"),
+        "podman0": (0, "5: podman0    inet 10.88.0.1/16 brd 10.88.255.255 scope global podman0\n"),
+    })
+    with patch.object(ip.subprocess, "run", side_effect=stub):
+        assert ip._detect_docker_bridge_ip() == "172.17.0.1"
+
+
+def test_detect_bridge_falls_back_to_podman0():
+    """A podman host with no Docker installed still gets a bridge bind.
+
+    This is the regression: previously only docker0 was probed, so
+    podman-only hosts silently bound loopback and every sandbox lost
+    egress.
+    """
+
+    stub = _ip_addr_stub({
+        "podman0": (0, "5: podman0    inet 10.88.0.1/16 brd 10.88.255.255 scope global podman0\n"),
+    })
+    with patch.object(ip.subprocess, "run", side_effect=stub):
+        assert ip._detect_docker_bridge_ip() == "10.88.0.1"
+
+
+def test_detect_bridge_falls_back_to_cni_podman0():
+    """Older podman (CNI backend) names the bridge cni-podman0."""
+
+    stub = _ip_addr_stub({
+        "cni-podman0": (0, "6: cni-podman0    inet 10.88.0.1/16 scope global cni-podman0\n"),
+    })
+    with patch.object(ip.subprocess, "run", side_effect=stub):
+        assert ip._detect_docker_bridge_ip() == "10.88.0.1"
+
+
+def test_detect_bridge_none_when_no_bridge_exists():
+    """Rootless podman with pasta/slirp4netns has no bridge at all."""
+
+    with patch.object(ip.subprocess, "run", side_effect=_ip_addr_stub({})):
+        assert ip._detect_docker_bridge_ip() is None
+
+
+def test_detect_bridge_skips_unsafe_and_continues():
+    """A hostile/garbage address on one iface must not stop the probe."""
+
+    stub = _ip_addr_stub({
+        # 0.0.0.0 would re-open INADDR_ANY binding — must be rejected.
+        "docker0": (0, "4: docker0    inet 0.0.0.0/0 scope global docker0\n"),
+        "podman0": (0, "5: podman0    inet 10.88.0.1/16 scope global podman0\n"),
+    })
+    with patch.object(ip.subprocess, "run", side_effect=stub):
+        assert ip._detect_docker_bridge_ip() == "10.88.0.1"
+
+
+@pytest.mark.parametrize("bad", [
+    "0.0.0.0",          # INADDR_ANY
+    "127.0.0.1",        # loopback
+    "169.254.1.2",      # link-local / IMDS range
+    "8.8.8.8",          # public
+    "224.0.0.1",        # multicast
+    "240.0.0.1",        # reserved
+    "not-an-ip",
+    "",
+])
+def test_validate_bind_ip_rejects_unsafe(bad):
+    assert ip._validate_bind_ip(bad) is None
+
+
+@pytest.mark.parametrize("good", ["172.17.0.1", "10.88.0.1", "192.168.5.1", "100.64.0.1"])
+def test_validate_bind_ip_accepts_private(good):
+    assert ip._validate_bind_ip(good) == good
+
+
+def test_configured_bind_host_overrides_detection():
+    """proxy.bind_host wins over auto-detection on Linux."""
+
+    with patch.object(ip, "_configured_bind_host", return_value="10.88.0.1"), \
+         patch.object(ip, "_detect_docker_bridge_ip", return_value="172.17.0.1"), \
+         patch.object(ip.platform, "system", return_value="Linux"):
+        assert ip._default_http_listen(9090) == ["10.88.0.1:9090"]
+
+
+def test_bind_falls_back_to_loopback_without_bridge():
+    with patch.object(ip, "_configured_bind_host", return_value=None), \
+         patch.object(ip, "_detect_docker_bridge_ip", return_value=None), \
+         patch.object(ip.platform, "system", return_value="Linux"):
+        assert ip._default_http_listen(9090) == ["127.0.0.1:9090"]
+
+
+def test_configured_bind_host_rejects_unsafe_value(monkeypatch):
+    """An unsafe proxy.bind_host is ignored, not honoured."""
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda *a, **kw: {"proxy": {"bind_host": "0.0.0.0"}},
+    )
+    assert ip._configured_bind_host() is None
+
+
+def test_configured_bind_host_reads_valid_value(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda *a, **kw: {"proxy": {"bind_host": "10.88.0.1"}},
+    )
+    assert ip._configured_bind_host() == "10.88.0.1"
+
+
+def test_configured_bind_host_empty_by_default(monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **kw: {"proxy": {}})
+    assert ip._configured_bind_host() is None

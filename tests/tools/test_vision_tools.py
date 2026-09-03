@@ -1121,3 +1121,176 @@ class TestVisionCpuBurstCap:
             f"analyses were serialized to the cap (peak={calls_peak}); only the "
             "encode burst should be bounded, not the whole call"
         )
+
+
+# ---------------------------------------------------------------------------
+# Request-time fallback across auxiliary.vision.fallback_chain
+# ---------------------------------------------------------------------------
+
+
+_CHAIN_ENTRY = {
+    "provider": "custom",
+    "model": "qwen3.8-27b-vision",
+    "base_url": "http://127.0.0.1:8090/v1",
+    "api_key": "no-key-required",
+}
+
+
+def _resp(content):
+    mock = MagicMock()
+    mock.choices = [MagicMock()]
+    mock.choices[0].message.content = content
+    return mock
+
+
+class TestVisionRequestTimeFallback:
+    """A request-time failure on the resolved primary (removed hosted model,
+    quota 429, timeout) must walk auxiliary.vision.fallback_chain instead of
+    killing the tool call — the resolution-time chain only engages when a
+    client cannot be BUILT, so without this the configured local vision
+    fallback is unreachable from a dead primary."""
+
+    def _vision_cfg(self):
+        return {"auxiliary": {"vision": {}}}
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_chain_on_request_error(self, tmp_path):
+        img = tmp_path / "test.png"
+        img.write_bytes(VALID_PNG)
+
+        async def llm(**kwargs):
+            if "provider" not in kwargs:
+                raise RuntimeError(
+                    "Error code: 404 - Function 'abc': Not found for account")
+            return _resp("chain analysis")
+
+        with (
+            patch("tools.vision_tools._image_to_base64_data_url",
+                  return_value="data:image/png;base64,abc"),
+            patch("tools.vision_tools.async_call_llm",
+                  new_callable=AsyncMock, side_effect=llm) as mock_llm,
+            patch("tools.vision_tools._load_vision_fallback_chain",
+                  return_value=[_CHAIN_ENTRY]),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe"))
+
+        assert result["success"] is True
+        assert "chain analysis" in result["analysis"]
+        assert mock_llm.await_count == 2
+        primary_kwargs = mock_llm.await_args_list[0].kwargs
+        chain_kwargs = mock_llm.await_args_list[1].kwargs
+        assert "provider" not in primary_kwargs
+        assert chain_kwargs["provider"] == "custom"
+        assert chain_kwargs["model"] == "qwen3.8-27b-vision"
+        assert chain_kwargs["base_url"] == "http://127.0.0.1:8090/v1"
+        assert chain_kwargs["api_key"] == "no-key-required"
+        # Task/messages/timeout ride along from the primary call.
+        assert chain_kwargs["task"] == "vision"
+        assert chain_kwargs["messages"] == primary_kwargs["messages"]
+
+    @pytest.mark.asyncio
+    async def test_exhausted_chain_reraises_primary_error(self, tmp_path):
+        img = tmp_path / "test.png"
+        img.write_bytes(VALID_PNG)
+
+        with (
+            patch("tools.vision_tools._image_to_base64_data_url",
+                  return_value="data:image/png;base64,abc"),
+            patch("tools.vision_tools.async_call_llm",
+                  new_callable=AsyncMock,
+                  side_effect=RuntimeError("Error code: 404 - Not Found"),
+            ) as mock_llm,
+            patch("tools.vision_tools._load_vision_fallback_chain",
+                  return_value=[_CHAIN_ENTRY]),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe"))
+
+        assert result["success"] is False
+        assert "404" in result["error"]
+        # Primary + one chain entry; no retry on a hard provider failure.
+        assert mock_llm.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_successful_primary_never_touches_chain(self, tmp_path):
+        img = tmp_path / "test.png"
+        img.write_bytes(VALID_PNG)
+
+        with (
+            patch("tools.vision_tools._image_to_base64_data_url",
+                  return_value="data:image/png;base64,abc"),
+            patch("tools.vision_tools.async_call_llm",
+                  new_callable=AsyncMock, return_value=_resp("ok")) as mock_llm,
+            patch("tools.vision_tools._load_vision_fallback_chain",
+                  return_value=[_CHAIN_ENTRY]) as mock_chain,
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe"))
+
+        assert result["success"] is True
+        assert mock_llm.await_count == 1
+        mock_chain.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_content_retry_stays_on_serving_provider(self, tmp_path):
+        """The empty-content retry must re-serve from the provider that
+        actually answered — not bounce back to the dead primary."""
+        img = tmp_path / "test.png"
+        img.write_bytes(VALID_PNG)
+
+        async def llm(**kwargs):
+            if "provider" not in kwargs:
+                raise RuntimeError("Error code: 429 - quota exceeded")
+            if len(kwargs.get("base_url") or "") > 0:
+                return _resp("")  # chain serves, but empty content
+            return _resp("")
+
+        with (
+            patch("tools.vision_tools._image_to_base64_data_url",
+                  return_value="data:image/png;base64,abc"),
+            patch("tools.vision_tools.async_call_llm",
+                  new_callable=AsyncMock, side_effect=llm) as mock_llm,
+            patch("tools.vision_tools._load_vision_fallback_chain",
+                  return_value=[_CHAIN_ENTRY]),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe"))
+
+        assert result["success"] is True
+        assert mock_llm.await_count == 3
+        retry_kwargs = mock_llm.await_args_list[2].kwargs
+        assert retry_kwargs["provider"] == "custom"
+        assert retry_kwargs["model"] == "qwen3.8-27b-vision"
+        assert retry_kwargs["base_url"] == "http://127.0.0.1:8090/v1"
+
+    @pytest.mark.asyncio
+    async def test_chain_helper_skips_unusable_entries(self):
+        """Entries without a provider, auto providers, and an already-failed
+        unspecified provider are skipped without a call."""
+        from tools import vision_tools as vt
+
+        calls = []
+
+        async def llm(**kwargs):
+            calls.append(kwargs)
+            return _resp("ok")
+
+        chain = [
+            {"model": "m"},                                   # no provider
+            {"provider": "auto", "model": "m"},               # auto sentinel
+            {"provider": "ollama-cloud"},                     # failed primary
+            {"provider": "custom", "model": "v", "api_key": "k"},
+        ]
+        with (
+            patch("tools.vision_tools.async_call_llm",
+                  new_callable=AsyncMock, side_effect=llm),
+            patch("tools.vision_tools._load_vision_fallback_chain",
+                  return_value=chain),
+        ):
+            served = await vt._call_vision_fallback_chain(
+                {"task": "vision", "provider": "ollama-cloud",
+                 "messages": []},
+                RuntimeError("boom"),
+            )
+
+        assert served is not None
+        assert len(calls) == 1
+        assert calls[0]["provider"] == "custom"
+        assert calls[0]["api_key"] == "k"

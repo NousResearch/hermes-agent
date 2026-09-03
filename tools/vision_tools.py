@@ -63,6 +63,78 @@ def _load_auxiliary_client() -> None:
             extract_content_or_reasoning = _ecr
 
 
+
+def _load_vision_fallback_chain() -> list:
+    """Return ``auxiliary.vision.fallback_chain`` entries from config.yaml.
+
+    Kept as its own module-level function so tests can inject a chain without
+    touching on-disk user configuration.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        _cfg = load_config()
+        _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={}) or {}
+        chain = _vision_cfg.get("fallback_chain")
+    except Exception:
+        return []
+    if not isinstance(chain, list):
+        return []
+    return [entry for entry in chain if isinstance(entry, dict)]
+
+
+async def _call_vision_fallback_chain(call_kwargs: dict, primary_error: Exception):
+    """Re-issue a failed vision request across ``auxiliary.vision.fallback_chain``.
+
+    The resolution-time fallback chain only engages when a client cannot be
+    BUILT (missing key, resolver failure); a request-time failure on a
+    healthy-looking primary — a 404 for a removed hosted model, a 429 quota
+    wall, a timeout — otherwise kills the tool call outright. This walks the
+    configured entries in order and returns ``(response, serving_kwargs)`` for
+    the first success, or ``None`` when every entry also fails (the caller
+    re-raises the primary error). ``serving_kwargs`` are the kwargs that
+    produced the response, so callers retrying on empty content stay on the
+    provider that actually served instead of bouncing back to the dead primary.
+    """
+    failed_provider = str(call_kwargs.get("provider") or "").strip().lower()
+    for entry in _load_vision_fallback_chain():
+        provider = str(entry.get("provider") or "").strip()
+        model = str(entry.get("model") or "").strip()
+        if not provider or provider.lower() == "auto":
+            continue
+        if provider.lower() == failed_provider and not model:
+            # Same unspecified provider that already failed.
+            continue
+        entry_kwargs = dict(call_kwargs)
+        entry_kwargs["provider"] = provider
+        if model:
+            entry_kwargs["model"] = model
+        base_url = str(entry.get("base_url") or "").strip()
+        if base_url:
+            entry_kwargs["base_url"] = base_url
+        try:
+            from hermes_cli.fallback_config import resolve_entry_api_key
+            api_key = resolve_entry_api_key(entry)
+        except Exception:
+            api_key = None
+        if api_key:
+            entry_kwargs["api_key"] = api_key
+        logger.warning(
+            "Vision request failed (%s: %.120s); trying fallback_chain "
+            "entry %s/%s",
+            type(primary_error).__name__, primary_error, provider,
+            model or "(default)",
+        )
+        try:
+            response = await async_call_llm(**entry_kwargs)
+        except Exception as _fb_err:
+            logger.warning(
+                "Vision fallback entry %s/%s failed: %s",
+                provider, model or "(default)", _fb_err,
+            )
+            continue
+        return response, entry_kwargs
+    return None
+
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
@@ -1625,6 +1697,7 @@ async def vision_analyze_tool(
         if model:
             call_kwargs["model"] = model
         _load_auxiliary_client()
+        _serving_kwargs = call_kwargs
         # Try full-size image first; on size-related rejection, downscale and retry.
         try:
             response = await async_call_llm(**call_kwargs)
@@ -1644,15 +1717,23 @@ async def vision_analyze_tool(
                 messages[0]["content"][1]["image_url"]["url"] = image_data_url
                 response = await async_call_llm(**call_kwargs)
             else:
-                raise
-        
+                # Request-time failure on the resolved primary (removed hosted
+                # model, quota wall, timeout). The resolution-time chain never
+                # sees this — walk auxiliary.vision.fallback_chain now.
+                _fallback = await _call_vision_fallback_chain(
+                    call_kwargs, _api_err)
+                if _fallback is None:
+                    raise
+                response, _serving_kwargs = _fallback
+
         # Extract the analysis — fall back to reasoning if content is empty
         analysis = extract_content_or_reasoning(response)
 
-        # Retry once on empty content (reasoning-only response)
+        # Retry once on empty content (reasoning-only response). Re-serve from
+        # whichever provider actually answered, not the failed primary.
         if not analysis:
             logger.warning("Vision LLM returned empty content, retrying once")
-            response = await async_call_llm(**call_kwargs)
+            response = await async_call_llm(**_serving_kwargs)
             analysis = extract_content_or_reasoning(response)
 
         analysis_length = len(analysis)

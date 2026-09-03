@@ -837,8 +837,30 @@ async def create_profile_endpoint(body: ProfileCreate):
         collision = profiles_mod.check_alias_collision(body.name)
         if not collision:
             profiles_mod.create_wrapper_script(body.name)
+
+        # Same topology pin as tui_gateway profiles.create: a Bot created
+        # through the machine-level REST twin of New Agent must not inherit
+        # standalone API-server listener intent under multiplex.
+        try:
+            profiles_mod.normalize_created_profile_for_launch_multiplex(
+                path, name=body.name
+            )
+        except Exception as e:
+            try:
+                import shutil
+
+                shutil.rmtree(path, ignore_errors=True)
+            except Exception:
+                pass
+            _log.exception("POST /api/profiles multiplex pin failed; rolled back")
+            raise HTTPException(
+                status_code=500,
+                detail=f"profile create rolled back: multiplex API-server pin failed: {e}",
+            ) from e
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         _log.exception("POST /api/profiles failed")
         raise HTTPException(status_code=500, detail=str(e))

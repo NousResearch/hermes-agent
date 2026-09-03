@@ -580,6 +580,29 @@ def _(rid, params: dict) -> dict:
         except Exception:
             pass
 
+    # Machine-level create (Desktop New Agent / this RPC) must bind the
+    # new named profile to the launch gateway's topology. Under multiplex
+    # the secondary profile keeps inherited API_SERVER_KEY but must pin
+    # platforms.api_server.enabled: false or the multiplexer skips it.
+    # CLI create_profile() is intentionally not rewritten.
+    multiplex_norm = {"applied": False, "multiplex": False, "served": None}
+    try:
+        multiplex_norm = profiles_mod.normalize_created_profile_for_launch_multiplex(
+            path, name=name
+        )
+    except Exception as e:
+        try:
+            import shutil
+
+            shutil.rmtree(path, ignore_errors=True)
+        except Exception:
+            pass
+        return _err(
+            rid,
+            5062,
+            f"profile create rolled back: multiplex API-server pin failed: {e}",
+        )
+
     return _ok(
         rid,
         {
@@ -589,6 +612,7 @@ def _(rid, params: dict) -> dict:
             "soul_written": soul_written,
             "model_set": model_set,
             "mirrored": mirrored,
+            "multiplex": multiplex_norm,
         },
     )
 

@@ -1193,6 +1193,103 @@ def profiles_to_serve(
     return serve
 
 
+def launch_gateway_is_multiplexed() -> bool:
+    """Return True when the machine-level launch/default gateway is multiplexing.
+
+    Topology is owned by the default root, not the profile being created:
+    ``GATEWAY_MULTIPLEX_PROFILES`` (when recognized) wins, else
+    ``<default_root>/config.yaml`` ``gateway.multiplex_profiles``. Same
+    owner as the enroll warning and the multiplexer itself. CLI
+    ``create_profile()`` does not consult this — standalone CLI profiles
+    keep today's independent-gateway behavior.
+    """
+    from gateway.config import _env_multiplex_profiles_override
+    from hermes_cli.config import read_user_config_raw
+    from hermes_constants import get_default_hermes_root
+
+    env_multiplex = _env_multiplex_profiles_override()
+    if env_multiplex is True:
+        return True
+    if env_multiplex is False:
+        return False
+    cfg_path = Path(get_default_hermes_root()) / "config.yaml"
+    if not cfg_path.exists():
+        return False
+    cfg = read_user_config_raw(cfg_path) or {}
+    if not isinstance(cfg, dict):
+        return False
+    return bool(
+        cfg.get("multiplex_profiles")
+        or (cfg.get("gateway") or {}).get("multiplex_profiles")
+    )
+
+
+def pin_secondary_profile_api_server_disabled(profile_dir: Path) -> bool:
+    """Persist ``platforms.api_server.enabled: false`` on a named profile.
+
+    Keeps inherited ``API_SERVER_KEY`` / credential pool available for
+    authentication while refusing a second listener. Uses the canonical
+    config writer under a HERMES_HOME override so ``_enabled_explicit``
+    is set on the next gateway load. Returns True when a write happened.
+    """
+    from hermes_cli.config import read_user_config_raw, save_config
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    profile_dir = Path(profile_dir)
+    if not profile_dir.is_dir():
+        raise FileNotFoundError(f"profile directory does not exist: {profile_dir}")
+
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        cfg = read_user_config_raw() or {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        platforms = cfg.get("platforms")
+        if not isinstance(platforms, dict):
+            platforms = {}
+            cfg["platforms"] = platforms
+        api = platforms.get("api_server")
+        if not isinstance(api, dict):
+            api = {}
+            platforms["api_server"] = api
+        if api.get("enabled") is False:
+            return False
+        api["enabled"] = False
+        save_config(
+            cfg,
+            preserve_keys={("platforms", "api_server", "enabled")},
+        )
+        return True
+    finally:
+        reset_hermes_home_override(token)
+
+
+def normalize_created_profile_for_launch_multiplex(
+    profile_dir: Path,
+    *,
+    name: Optional[str] = None,
+) -> dict:
+    """Post-create pin for machine-level create endpoints (RPC + REST).
+
+    When the launch/default gateway is multiplexing, persist the secondary
+    API-server disable so the multiplexer does not skip the new profile.
+    Does nothing when multiplexing is off. Never called from
+    ``create_profile()`` itself.
+
+    Returns a dict: ``applied`` (pin write), ``multiplex`` (launch topology),
+    ``served`` (name is in ``profiles_to_serve`` after the pin).
+    """
+    profile_dir = Path(profile_dir)
+    if not launch_gateway_is_multiplexed():
+        return {"applied": False, "multiplex": False, "served": None}
+    applied = pin_secondary_profile_api_server_disabled(profile_dir)
+    served = None
+    if name:
+        served_names = {n for n, _ in profiles_to_serve(multiplex=True)}
+        served = name in served_names
+    return {"applied": applied, "multiplex": True, "served": served}
+
+
 def create_profile(
     name: str,
     clone_from: Optional[str] = None,

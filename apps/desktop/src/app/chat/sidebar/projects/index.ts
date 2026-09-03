@@ -3,7 +3,6 @@ export { EnteredProjectContent } from './entered-content'
 export {
   orderProjectsByIds,
   PROJECT_PREVIEW_COUNT,
-  PROJECT_PREVIEW_LOADED,
   projectTreeCwd,
   sortProjectsForOverview,
   useRepoWorktreeMap
@@ -16,6 +15,7 @@ export {
   liveSessionProjectId,
   overlayLiveLanes,
   overlayLivePreviews,
+  PROJECT_PREVIEW_LOADED,
   reconcileEnteredProjectSessions,
   sessionRecency,
   type SidebarProjectTree,

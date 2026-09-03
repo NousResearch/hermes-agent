@@ -1,8 +1,9 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
+import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { desktopGit } from '@/lib/desktop-git'
 import { mapPool } from '@/lib/pool'
 import { $sidebarWorkspaceNodeOpen, toggleWorkspaceNodeCollapsed } from '@/store/layout'
@@ -17,23 +18,70 @@ import { sessionRecency, type SidebarProjectTree } from './workspace-groups'
 export const SIDEBAR_GROUP_PAGE = 5
 
 // Recent sessions VISIBLE under each project in the overview. The preview is a
-// glance, not a list — three rows is the height it gets.
+// glance, not a list — three rows is the height it gets. How many it HOLDS is
+// `PROJECT_PREVIEW_LOADED` (workspace-groups.ts), shared with the store so the
+// fetch depth and the render depth cannot drift.
 export const PROJECT_PREVIEW_COUNT = 3
-
-// How many rows the preview actually HOLDS. The window still shows
-// PROJECT_PREVIEW_COUNT of them; the rest are reachable by scrolling inside it,
-// so a project with a busy week doesn't force a drill-in to see chat number
-// four. Keep it in step with `PROJECT_TREE_PREVIEW_LIMIT` (store/projects.ts),
-// which is what the backend is asked to send.
-export const PROJECT_PREVIEW_LOADED = 10
 
 // Row heights are density-driven (session-row.tsx), and the preview window is
 // defined in ROWS, not pixels — so it has to be measured, not hardcoded, or
 // `comfortable`/`detailed` crop their third row mid-glyph.
 const PREVIEW_ROW_GAP_PX = 1
 
-export function previewWindowMaxHeight(density: SessionListDensity, rows = PROJECT_PREVIEW_COUNT): string {
-  return `${rows * sessionRowEstimate(density) + Math.max(0, rows - 1) * PREVIEW_ROW_GAP_PX}px`
+export function previewWindowMaxHeight(
+  density: SessionListDensity,
+  rows = PROJECT_PREVIEW_COUNT,
+  rowPx?: null | number
+): string {
+  const height = rowPx && rowPx > 0 ? rowPx : sessionRowEstimate(density)
+
+  return `${rows * height + Math.max(0, rows - 1) * PREVIEW_ROW_GAP_PX}px`
+}
+
+/**
+ * The preview window's height, in rows, measured off a real rendered row.
+ *
+ * `sessionRowEstimate` is what its name says — an estimate, sized for the
+ * virtualizer, which only needs to be close. A hard `max-height` is stricter:
+ * if a row ever renders TALLER than its estimate (OS font scaling, a label that
+ * wraps), the cap reintroduces exactly the mid-glyph crop the density-driven
+ * height exists to prevent. So measure the first row and size the window off
+ * it, and keep the estimate only for the frame before that measurement lands.
+ *
+ * The read rides `useResizeObserver` (shared observer, post-layout timing)
+ * rather than a synchronous layout effect — see that hook for why measuring
+ * from a dirty commit thrashes layout.
+ */
+export function usePreviewWindowHeight(
+  density: SessionListDensity,
+  rowCount: number
+): [RefObject<HTMLDivElement | null>, string] {
+  const ref = useRef<HTMLDivElement>(null)
+  // A measurement only describes the density and row set it was taken under.
+  // Keying it means a density switch falls back to that density's estimate for
+  // one frame instead of sizing the new rows with the old rows' height.
+  const key = `${density}:${rowCount}`
+  const [measured, setMeasured] = useState<{ key: string; rowPx: number } | null>(null)
+
+  const measure = useCallback(() => {
+    const first = ref.current?.firstElementChild
+
+    if (!first) {
+      return
+    }
+
+    const rowPx = Math.round(first.getBoundingClientRect().height)
+
+    setMeasured(prev => (rowPx > 0 && (prev?.key !== key || prev.rowPx !== rowPx) ? { key, rowPx } : prev))
+  }, [key])
+
+  useResizeObserver(measure, ref)
+
+  // Once the window is capped its own box stops changing, so row growth
+  // underneath never reaches the observer. Re-measure whenever the key moves.
+  useEffect(measure, [measure])
+
+  return [ref, previewWindowMaxHeight(density, PROJECT_PREVIEW_COUNT, measured?.key === key ? measured.rowPx : null)]
 }
 
 // Max concurrent `git worktree list` probes when a project spans many repos.

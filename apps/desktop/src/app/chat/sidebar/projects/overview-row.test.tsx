@@ -28,9 +28,8 @@ const nodeOpen = vi.hoisted(() => ({ current: false }))
 
 vi.mock('./model', () => ({
   PROJECT_PREVIEW_COUNT: 3,
-  PROJECT_PREVIEW_LOADED: 10,
   latestProjectSessions: () => [],
-  previewWindowMaxHeight: () => '86px',
+  usePreviewWindowHeight: () => [vi.fn(), '86px'],
   useWorkspaceNodeOpen: () => [nodeOpen.current, vi.fn()]
 }))
 

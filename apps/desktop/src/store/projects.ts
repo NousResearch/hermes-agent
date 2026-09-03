@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import {
   liveSessionProjectId,
   NO_PROJECT_ID,
+  PROJECT_PREVIEW_LOADED,
   type SidebarProjectTree
 } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
@@ -380,11 +381,6 @@ interface ProjectTreePayload {
   scoped_session_ids: string[]
 }
 
-// How many recent sessions each project carries in the overview payload. The
-// sidebar SHOWS three (PROJECT_PREVIEW_COUNT) and scrolls the rest inside the
-// preview window, so this is the depth of that little scroller — not the number
-// of rows on screen. Keep the two in step.
-const PROJECT_TREE_PREVIEW_LIMIT = 10
 // The all-profiles fan-out reads one database per profile, so it is allowed the
 // same headroom as the cross-profile session list rather than the interactive
 // default.
@@ -426,7 +422,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
       res = await gatewayRequestOn<ProjectTreePayload>(
         gateway,
         'projects.tree',
-        projectParams({ preview_limit: PROJECT_TREE_PREVIEW_LIMIT }, profile)
+        projectParams({ preview_limit: PROJECT_PREVIEW_LOADED }, profile)
       )
     } catch (error) {
       // A remote source switch can leave the first read RPC on a newly-opened
@@ -440,7 +436,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
       res = await gatewayRequestOn<ProjectTreePayload>(
         gateway,
         'projects.tree',
-        projectParams({ preview_limit: PROJECT_TREE_PREVIEW_LIMIT }, profile)
+        projectParams({ preview_limit: PROJECT_PREVIEW_LOADED }, profile)
       )
     }
 
@@ -488,7 +484,7 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
 
   try {
     const res = await hermesApi<ProjectTreePayload>({
-      path: `/api/profiles/projects/tree?preview_limit=${PROJECT_TREE_PREVIEW_LIMIT}`,
+      path: `/api/profiles/projects/tree?preview_limit=${PROJECT_PREVIEW_LOADED}`,
       timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
     })
 

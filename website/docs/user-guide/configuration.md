@@ -2468,6 +2468,7 @@ browser:
   dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)
   camofox:
     managed_persistence: false   # When true, Camofox sessions persist cookies/logins across restarts
+    vnc_url: ""                  # Optional externally reachable noVNC URL (for example, a Tailnet HTTPS URL)
     user_id: ""                  # Optional externally managed Camofox userId
     session_key: ""              # Optional session key sent when Hermes creates a tab
     adopt_existing_tab: false    # Reuse an existing tab for this identity before creating one

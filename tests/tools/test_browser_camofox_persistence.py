@@ -269,6 +269,63 @@ class TestVncUrlDiscovery:
             assert check_camofox_available() is True
         assert get_vnc_url() == "http://myhost:6080"
 
+    def test_vnc_url_from_camofox_113_status_endpoint(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://myhost:9377")
+        health_resp = _mock_response(json_data={"ok": True})
+        status_resp = _mock_response(json_data={
+            "running": True,
+            "novncPort": 6080,
+            "path": "/vnc.html",
+        })
+        with patch(
+            "tools.browser_camofox.requests.get",
+            side_effect=[health_resp, status_resp],
+        ) as mock_get:
+            assert check_camofox_available() is True
+        assert mock_get.call_args_list[1].args[0] == "http://myhost:9377/vnc/status"
+        assert get_vnc_url() == "http://myhost:6080/vnc.html"
+
+    def test_config_external_vnc_url_overrides_discovery_and_legacy_env(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("CAMOFOX_URL", "http://127.0.0.1:9377")
+        monkeypatch.setenv("CAMOFOX_VNC_URL", "http://legacy.example:6080/vnc.html")
+        config = {"browser": {"camofox": {
+            "vnc_url": "https://gx10.example.ts.net/vnc.html",
+        }}}
+        health_resp = _mock_response(json_data={"ok": True})
+        with (
+            patch("tools.browser_camofox.load_config", return_value=config),
+            patch(
+                "tools.browser_camofox.requests.get", return_value=health_resp
+            ) as mock_get,
+        ):
+            assert check_camofox_available() is True
+        assert mock_get.call_count == 1
+        assert get_vnc_url() == "https://gx10.example.ts.net/vnc.html"
+
+    def test_legacy_external_vnc_url_bridge(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://127.0.0.1:9377")
+        monkeypatch.setenv(
+            "CAMOFOX_VNC_URL", "https://gx10.example.ts.net/vnc.html"
+        )
+        health_resp = _mock_response(json_data={"ok": True})
+        with patch("tools.browser_camofox.requests.get", return_value=health_resp):
+            assert check_camofox_available() is True
+        assert get_vnc_url() == "https://gx10.example.ts.net/vnc.html"
+
+    def test_optional_vnc_status_failure_does_not_fail_browser_health(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("CAMOFOX_URL", "http://myhost:9377")
+        health_resp = _mock_response(json_data={"ok": True})
+        with patch(
+            "tools.browser_camofox.requests.get",
+            side_effect=[health_resp, RuntimeError("optional endpoint unavailable")],
+        ):
+            assert check_camofox_available() is True
+        assert get_vnc_url() is None
+
 
     def test_navigate_includes_vnc_hint(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

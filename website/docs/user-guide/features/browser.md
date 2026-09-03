@@ -315,6 +315,22 @@ Then set in `~/.hermes/.env`:
 CAMOFOX_URL=http://localhost:9377
 ```
 
+Camofox's noVNC viewer is discovered automatically. Hermes supports both the
+legacy `vncPort` field on `/health` and Camofox 1.13's `/vnc/status` response.
+If the discovered host/port is not reachable from the operator's device (for
+example, Camofox is behind a reverse proxy), configure the public or Tailnet
+viewer URL explicitly:
+
+```yaml
+browser:
+  camofox:
+    vnc_url: "https://gx10.example.ts.net/vnc.html"
+```
+
+The structured setting takes precedence over the legacy `CAMOFOX_VNC_URL`
+environment bridge. VNC discovery is optional and never determines whether
+the Camofox browser service itself is healthy.
+
 If Camofox is running in Docker and you want it to open web apps served from the host machine, enable loopback rewriting. `CAMOFOX_URL` should still point at the host-published control API, but page URLs such as `http://127.0.0.1:3000` must be opened from inside the container as `http://host.docker.internal:3000`:
 
 ```yaml

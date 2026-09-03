@@ -359,10 +359,22 @@ describe('clarify and approvals (#90694)', () => {
   }
 
   it('holds the turn open while a member is blocked on clarify, then lands the reply', async () => {
+    let live: Awaited<ReturnType<typeof loadRoom>> | null = null
+    let sawPendingAttention = false
+
     const room = await loadRoom({
       clarifyUntil: { research: { payload: CLARIFY, until: 3 } },
+      // The mirror pass runs while the question is still blocking — this is
+      // the observable proof the gate inspected pending_clarify. Asserting
+      // on $groupNeedsYou/$groupClarify AFTER the turn lands proves nothing:
+      // the clarify has already resolved and its mirror is gone by then.
+      onResumePoll: () => {
+        sawPendingAttention = sawPendingAttention || live!.turns.groupHasPendingClarify(live!.chat.$groupClarify.get(), 'Core')
+      },
       turn: () => 'targeting staging'
     })
+
+    live = room
 
     const thread = room.rounds.sendToGroupChat(
       'Core',
@@ -379,10 +391,9 @@ describe('clarify and approvals (#90694)', () => {
     expect(replies).toHaveLength(1)
     expect(replies[0].text).toBe('targeting staging')
     expect(Object.keys(room.chat.$groupClarify.get())).toHaveLength(0)
-    // The mirror pass ran while the question was blocking, badging the room.
-    // A poll that never inspects pending_clarify leaves this unset — it is the
-    // observable proof the gate executed.
-    expect(room.chat.$groupNeedsYou.get().Core).toBe(true)
+    expect(sawPendingAttention).toBe(true)
+    // Resolved and mirrored away — nothing left to badge.
+    expect(room.turns.groupHasPendingClarify(room.chat.$groupClarify.get(), 'Core')).toBe(false)
   })
 
   it('mirrors a question, badges needs-you, and is idempotent per request', async () => {
@@ -397,16 +408,20 @@ describe('clarify and approvals (#90694)', () => {
     expect(mirrored[0].requestId).toBe('req-clarify-1')
     expect(mirrored[0].question).toBe('Which env should I target?')
     expect(mirrored[0].choices).toEqual(['staging', 'prod'])
-    expect(chat.$groupNeedsYou.get().Core).toBe(true)
+    // Badge is derived from $groupClarify, not a copy — nothing writes
+    // $groupNeedsYou here, so there is nothing to keep in sync.
+    expect(turns.groupHasPendingClarify(chat.$groupClarify.get(), 'Core')).toBe(true)
 
     // Same request again: no new entry, identity preserved.
     turns.syncGroupClarify('Core', member, { pending_clarify: CLARIFY })
 
     expect(Object.values(chat.$groupClarify.get())[0]).toBe(mirrored[0])
 
-    // Question resolved server-side: the mirror clears.
+    // Question resolved server-side: the mirror clears, and so does the
+    // derived badge — no separate cleanup path required.
     expect(turns.syncGroupClarify('Core', member, {})).toBe(false)
     expect(Object.keys(chat.$groupClarify.get())).toHaveLength(0)
+    expect(turns.groupHasPendingClarify(chat.$groupClarify.get(), 'Core')).toBe(false)
   })
 
   it('never mirrors a question for older backends without pending_clarify', async () => {
@@ -465,13 +480,124 @@ describe('clarify and approvals (#90694)', () => {
 
     expect(remaining).toHaveLength(1)
     expect(remaining[0].group).toBe('Other')
+    // The derived badge follows $groupClarify with no separate cleanup step.
+    expect(room.turns.groupHasPendingClarify(room.chat.$groupClarify.get(), 'Core')).toBe(false)
+    expect(room.turns.groupHasPendingClarify(room.chat.$groupClarify.get(), 'Other')).toBe(true)
+  })
+
+  it('keeps the derived badge lit until every clarify in the room is answered', async () => {
+    const room = await loadRoom()
+    const research: GroupMember = { name: 'research', title: '' }
+    const ops: GroupMember = { name: 'ops', title: '' }
+
+    room.turns.syncGroupClarify('Core', research, { pending_clarify: CLARIFY })
+    room.turns.syncGroupClarify('Core', ops, { pending_clarify: { ...CLARIFY, request_id: 'req-2' } })
+
+    expect(room.turns.groupHasPendingClarify(room.chat.$groupClarify.get(), 'Core')).toBe(true)
+
+    const [first, second] = Object.values(room.chat.$groupClarify.get())
+    await room.turns.answerGroupClarify(first, research, 'staging')
+
+    // One of two questions answered — the room still owes the user a reply.
+    expect(room.turns.groupHasPendingClarify(room.chat.$groupClarify.get(), 'Core')).toBe(true)
+
+    await room.turns.answerGroupClarify(second, ops, 'staging')
+
+    // Last pending clarify answered — nothing left to badge.
+    expect(room.turns.groupHasPendingClarify(room.chat.$groupClarify.get(), 'Core')).toBe(false)
+  })
+
+  // $groupNeedsYou (mention attention) and
+  // $groupClarify (pending clarify/approval attention) are independent
+  // sources — resolving one must never clear the other. The roster reads
+  // BOTH: groupNeedsYou[group] || groupHasPendingClarify(clarifies, group).
+  it('resolving the last clarify preserves independent @user mention attention', async () => {
+    const room = await loadRoom()
+    const research: GroupMember = { name: 'research', title: '' }
+
+    // A member addressing @user badges the room — independent of clarify.
+    room.chat.appendGroupChatEntry('Core', { kind: 'member', name: 'research' }, '@user deployment needs a call')
+    expect(room.chat.$groupNeedsYou.get().Core).toBe(true)
+
+    room.turns.syncGroupClarify('Core', research, { pending_clarify: CLARIFY })
+    expect(room.turns.groupHasPendingClarify(room.chat.$groupClarify.get(), 'Core')).toBe(true)
+
+    await room.turns.answerGroupClarify(Object.values(room.chat.$groupClarify.get())[0], research, 'staging')
+
+    // Clarify resolved — but the unrelated mention attention must survive.
+    expect(room.turns.groupHasPendingClarify(room.chat.$groupClarify.get(), 'Core')).toBe(false)
+    expect(room.chat.$groupNeedsYou.get().Core).toBe(true)
+  })
+
+  it('preserves pending clarify attention across a room rename', async () => {
+    const room = await loadRoom()
+    const research: GroupMember = { name: 'research', title: '' }
+
+    // Core has a pending clarify and no @user mention — attention is
+    // entirely clarify-derived, the case a plain group-key swap loses.
+    room.turns.syncGroupClarify('Core', research, { pending_clarify: CLARIFY })
+    expect(room.turns.groupHasPendingClarify(room.chat.$groupClarify.get(), 'Core')).toBe(true)
+    expect(room.chat.$groupNeedsYou.get().Core).toBeFalsy()
+
+    room.turns.renameGroupClarify('Core', 'Renamed')
+
+    // The prompt now belongs to the new name — not the old one.
+    expect(room.turns.groupHasPendingClarify(room.chat.$groupClarify.get(), 'Renamed')).toBe(true)
+    expect(room.turns.groupHasPendingClarify(room.chat.$groupClarify.get(), 'Core')).toBe(false)
+    const [prompt] = Object.values(room.chat.$groupClarify.get())
+    expect(prompt.group).toBe('Renamed')
+
+    // Resolving it under the new name clears attention there.
+    await room.turns.answerGroupClarify(prompt, research, 'staging')
+    expect(room.turns.groupHasPendingClarify(room.chat.$groupClarify.get(), 'Renamed')).toBe(false)
+  })
+
+  it('lets the renamed room\'s current prompt replace a stale mirror already at the destination', async () => {
+    const room = await loadRoom()
+
+    // Current prompt inserted FIRST, stale destination mirror SECOND — a
+    // single-pass rekey that iterates Object.entries in insertion order
+    // would let the stale entry (visited last) clobber the just-migrated
+    // current one. Two passes must let the live room win regardless of
+    // insertion order.
+    room.turns.syncGroupClarify('Core', { name: 'research', title: '' }, { pending_clarify: CLARIFY })
+    room.chat.$groupClarify.set({
+      ...room.chat.$groupClarify.get(),
+      'Renamed::research': {
+        at: Date.now(),
+        choices: [],
+        group: 'Renamed',
+        kind: 'clarify',
+        member: 'research',
+        memberKey: 'research',
+        multiSelect: false,
+        question: 'stale question',
+        questions: null,
+        requestId: 'req-stale',
+        sessionId: null
+      }
+    })
+
+    room.turns.renameGroupClarify('Core', 'Renamed')
+
+    const migrated = room.chat.$groupClarify.get()['Renamed::research']
+    expect(migrated.requestId).toBe(CLARIFY.request_id)
+    expect(Object.keys(room.chat.$groupClarify.get())).toEqual(['Renamed::research'])
   })
 
   it('holds the turn open on a command approval too', async () => {
+    let live: Awaited<ReturnType<typeof loadRoom>> | null = null
+    let sawPendingAttention = false
+
     const room = await loadRoom({
       approvalUntil: { research: { payload: APPROVAL, until: 3 } },
+      onResumePoll: () => {
+        sawPendingAttention = sawPendingAttention || live!.turns.groupHasPendingClarify(live!.chat.$groupClarify.get(), 'Core')
+      },
       turn: () => 'build cleaned'
     })
+
+    live = room
 
     const thread = room.rounds.sendToGroupChat(
       'Core',
@@ -488,7 +614,8 @@ describe('clarify and approvals (#90694)', () => {
     expect(replies).toHaveLength(1)
     expect(replies[0].text).toBe('build cleaned')
     expect(Object.keys(room.chat.$groupClarify.get())).toHaveLength(0)
-    expect(room.chat.$groupNeedsYou.get().Core).toBe(true)
+    expect(sawPendingAttention).toBe(true)
+    expect(room.turns.groupHasPendingClarify(room.chat.$groupClarify.get(), 'Core')).toBe(false)
   })
 
   it('mirrors an approval with its kind, command and server choices', async () => {

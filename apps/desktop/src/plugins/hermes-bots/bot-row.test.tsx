@@ -19,7 +19,7 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { BotRow } from './bot-row'
+import { BotRow, GroupRow } from './bot-row'
 import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
 
@@ -173,5 +173,25 @@ describe('context-menu mutations hydrate the alias first', () => {
 
     expect(route.profile).toBe('worker')
     expect(params).toMatchObject({ name: 'backend-worker', ui_meta: { 'hermes-bots': { pinned: false } } })
+  })
+})
+
+describe('GroupRow renders its needs-you badge from the needsYou prop', () => {
+  const noopGroup = () => undefined
+
+  it('shows the question badge when needsYou is true', () => {
+    render(
+      <GroupRow active={false} group="Core" members={[]} needsYou={true} onDisband={noopGroup} onOpen={noopGroup} />
+    )
+
+    expect(screen.getByLabelText('Needs your input')).toBeTruthy()
+  })
+
+  it('hides the question badge when needsYou is false', () => {
+    render(
+      <GroupRow active={false} group="Core" members={[]} needsYou={false} onDisband={noopGroup} onOpen={noopGroup} />
+    )
+
+    expect(screen.queryByLabelText('Needs your input')).toBeNull()
   })
 })

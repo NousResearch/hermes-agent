@@ -9,7 +9,7 @@
 import { host } from '@hermes/plugin-sdk'
 
 import { recordGroupActivity } from './group-activity'
-import { $groupChats, $groupClarify, $groupNeedsYou, appendGroupChatEntry, updateGroupChat } from './group-chat'
+import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { groupMemberKey, groupSessionOwner } from './group-membership'
 import { botConnectionRoute, requestForBot } from './routing'
@@ -493,16 +493,24 @@ export function syncGroupClarify(group: string, member: GroupMember, state: Grou
           questions: null
         }
   })
-  // A blocked member is a question for the human — badge the room.
-  $groupNeedsYou.set({
-    ...$groupNeedsYou.get(),
-    [group]: true
-  })
 
   return true
 }
 
-/** Drop every mirrored clarify belonging to `group` (disband/rename). */
+/** Whether `group` has any member currently blocked on a clarify or
+ *  approval, given a $groupClarify snapshot. Pure by design: the caller
+ *  (roster-pane) subscribes to $groupClarify itself via useValue and passes
+ *  the live snapshot in, so the subscription actually drives the
+ *  recalculation instead of existing only to force a re-render. $groupClarify
+ *  is the single source of truth for this kind of attention — nothing copies
+ *  it into a second boolean, so there is nothing to keep in sync when a
+ *  prompt resolves, is answered, or the room is disbanded/renamed. */
+export function groupHasPendingClarify(clarifies: Record<string, GroupPrompt>, group: string): boolean {
+  return Object.values(clarifies).some(entry => entry?.group === group)
+}
+
+/** Drop every mirrored clarify belonging to `group` (disband — the room is
+ *  gone, nothing to move the attention to). */
 export function clearGroupClarify(group: string) {
   const all = $groupClarify.get()
   const next: Record<string, GroupPrompt> = {}
@@ -513,6 +521,46 @@ export function clearGroupClarify(group: string) {
       changed = true
     } else {
       next[key] = value
+    }
+  }
+
+  if (changed) {
+    $groupClarify.set(next)
+  }
+}
+
+/** Re-key every mirrored clarify belonging to `oldName` onto `newName`
+ *  (rename). Unlike disband, the room still exists under its new name — a
+ *  pending clarify's attention must follow it, not disappear. Known gap:
+ *  an in-flight member turn captured `oldName` as its closure argument
+ *  (runGroupChatMemberTurnLeased) and keeps polling under that name, so a
+ *  poll that lands after this rename can still re-mirror a NEW entry under
+ *  oldName. That race predates this function and isn't fixed here. */
+export function renameGroupClarify(oldName: string, newName: string) {
+  const all = $groupClarify.get()
+  const next: Record<string, GroupPrompt> = {}
+  let changed = false
+
+  // Preserve every mirror that isn't being renamed. Iteration order matters:
+  // a single pass keyed by insertion order can let a STALE mirror already
+  // stranded at newName (left behind by the in-flight-poll race noted
+  // below) clobber the just-migrated CURRENT mirror if the stale entry
+  // happens to iterate after it. Copying unrelated entries first and
+  // writing the migrated ones last guarantees the live room's prompt
+  // always wins its destination key.
+  for (const [key, value] of Object.entries<GroupPrompt>(all)) {
+    if (value?.group !== oldName) {
+      next[key] = value
+    }
+  }
+
+  for (const value of Object.values<GroupPrompt>(all)) {
+    if (value?.group === oldName) {
+      changed = true
+      // Rebuild the key from the mirror's own memberKey rather than
+      // string-replacing oldName in place — a group name that happens to
+      // be a substring of the member key must not corrupt the rekey.
+      next[`${newName}::${value.memberKey}`] = { ...value, group: newName }
     }
   }
 

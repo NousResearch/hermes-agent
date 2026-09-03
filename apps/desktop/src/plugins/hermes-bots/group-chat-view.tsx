@@ -94,7 +94,7 @@ import {
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
-import { clearGroupClarify } from './group-turns'
+import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify, stripPreviewMarkdown } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
@@ -299,9 +299,9 @@ async function renameGroupChat(oldName: string, newName: string, members: GroupM
     $groupNeedsYou.set(needs)
   }
 
-  // Mirrored clarify cards key by group name; drop the old room's — the
-  // next poll re-mirrors any still-blocking question under the new name.
-  clearGroupClarify(oldName)
+  // Mirrored clarify cards key by group name; a pending prompt's attention
+  // must follow the room to its new name, not disappear.
+  renameGroupClarify(oldName, next)
 
   // Local memberships: swap the name inside each member's canonical groups
   // list (syncs cross-machine via ui_meta). Remote members' seating lives in

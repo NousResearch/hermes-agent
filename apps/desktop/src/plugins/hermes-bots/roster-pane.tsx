@@ -56,10 +56,11 @@ import {
   useRoster
 } from './data'
 import { EditProfileDialog } from './edit-profile-dialog'
-import { $groupChats, $groupChatWorkspace, $groupNeedsYou } from './group-chat'
+import { $groupChats, $groupChatWorkspace, $groupClarify, $groupNeedsYou } from './group-chat'
 import { disbandGroupChat, GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots, groupChatNames, groupLastActivity } from './group-membership'
 import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
+import { groupHasPendingClarify } from './group-turns'
 import { $showHiddenBots, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
 import { displayName } from './labels'
@@ -289,6 +290,7 @@ export function BotsPane() {
   // room beside a live main tab and stick).
   useValue($groupMainTabsRev)
   const groupNeedsYou = useValue($groupNeedsYou)
+  const groupClarify = useValue($groupClarify)
   const groupRooms = useValue($groupChats)
   const rememberedSources = useValue($lastSources)
   const rosterHydrated = useValue($rosterHydrated)
@@ -572,7 +574,7 @@ export function BotsPane() {
       group={row.name}
       key={`group:${row.name}`}
       members={row.members}
-      needsYou={Boolean(groupNeedsYou[row.name])}
+      needsYou={Boolean(groupNeedsYou[row.name]) || groupHasPendingClarify(groupClarify, row.name)}
       onDisband={setDeletingGroup}
       onOpen={openGroupChat}
     />

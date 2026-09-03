@@ -15,6 +15,7 @@ production sources.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 
@@ -22,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "public" / "lunar-city" / "master-assets"
 SOURCE_DIR = OUT_DIR / "sources"
 MANIFEST = OUT_DIR / "master-asset-manifest.json"
+MASTER_SCENE = SOURCE_DIR / "lunar-city-sculpted-master-assets.blend"
+MASTER_SCENE_METADATA = SOURCE_DIR / "lunar-city-sculpted-master-assets-metadata.json"
 
 ACCEPTED_FORMATS = (".blend", ".glb", ".fbx", ".obj")
 
@@ -98,7 +101,27 @@ REQUIRED_ASSETS = [
 
 def mark_present_sources(required_assets: list[dict]) -> None:
     SOURCE_DIR.mkdir(parents=True, exist_ok=True)
+    master_metadata = {}
+    master_assets = {}
+    if MASTER_SCENE.exists() and MASTER_SCENE_METADATA.exists():
+        master_metadata = json.loads(MASTER_SCENE_METADATA.read_text())
+        master_assets = {entry["id"]: entry for entry in master_metadata.get("assets", [])}
     for entry in required_assets:
+        master_asset = master_assets.get(entry["id"])
+        if master_asset:
+            entry["status"] = "sculpted_master_scene_present_unvalidated"
+            entry["selectedSource"] = "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend"
+            entry["sourceBytes"] = MASTER_SCENE.stat().st_size
+            entry["sourceCollection"] = master_asset["collection"]
+            entry["sourceMetadata"] = "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json"
+            entry["evaluatedTriangleCount"] = master_asset["evaluatedTriangleCount"]
+            entry["meshObjectCount"] = master_asset["meshObjectCount"]
+            entry["sculptedSurfaceCount"] = master_asset["sculptedSurfaceCount"]
+            entry["animationRigWireCount"] = master_asset["animationRigWireCount"]
+            entry["textureResolutionTarget"] = master_asset["textureResolutionTarget"]
+            entry["retopologyTarget"] = master_asset["retopologyTarget"]
+            entry["sourceCandidateStatus"] = "authoritative_master_scene_collection"
+            continue
         for ext in ACCEPTED_FORMATS:
             candidate = SOURCE_DIR / f"{entry['id']}{ext}"
             if candidate.exists():
@@ -110,7 +133,7 @@ def mark_present_sources(required_assets: list[dict]) -> None:
 
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    required_assets = [dict(item) for item in REQUIRED_ASSETS]
+    required_assets = [deepcopy(item) for item in REQUIRED_ASSETS]
     mark_present_sources(required_assets)
     present_count = sum(1 for item in required_assets if item["status"] != "missing")
     missing_count = len(required_assets) - present_count
@@ -119,6 +142,16 @@ def main() -> None:
         "productionUse": "production_source_intake",
         "productionReady": False,
         "sourceDirectory": "lunar-city/master-assets/sources",
+        "authoritativeMasterScene": (
+            "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend"
+            if MASTER_SCENE.exists()
+            else None
+        ),
+        "authoritativeMasterSceneMetadata": (
+            "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json"
+            if MASTER_SCENE_METADATA.exists()
+            else None
+        ),
         "acceptedFormats": list(ACCEPTED_FORMATS),
         "pipeline": {
             "source": "full_resolution_high_poly_master_assets",
@@ -139,7 +172,11 @@ def main() -> None:
         },
         "requiredAssets": required_assets,
         "validation": {
-            "failsClosedUntilEveryRequiredMasterExists": True,
+            "failsClosedUntilEveryRequiredMasterExists": missing_count > 0,
+            "usesSingleAuthoritativeMasterScene": MASTER_SCENE.exists() and MASTER_SCENE_METADATA.exists(),
+            "usesPerAssetCollections": bool(present_count) and all(
+                "sourceCollection" in item for item in required_assets if item["status"] != "missing"
+            ),
             "requiresNoRawSoulContent": True,
             "requiresNoPrivateProfileIdentifiers": True,
             "requiresRecognizableReferenceSilhouette": True,

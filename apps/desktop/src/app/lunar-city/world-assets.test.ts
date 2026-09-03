@@ -248,10 +248,12 @@ describe('Lunar City asset manifest', () => {
     expect(existsSync(join(process.cwd(), 'public/lunar-city/generated-3d/lunar-city-generated-assets-board.png'))).toBe(true)
   })
 
-  it('fails closed until production high-poly master assets exist', () => {
+  it('tracks sculpted master source scene while production approval remains closed', () => {
     const manifest = JSON.parse(
       readFileSync(join(process.cwd(), 'public/lunar-city/master-assets/master-asset-manifest.json'), 'utf8')
     ) as {
+      authoritativeMasterScene: string | null
+      authoritativeMasterSceneMetadata: string | null
       counts: { missing: number; present: number; required: number }
       pipeline: {
         animation: string
@@ -273,13 +275,39 @@ describe('Lunar City asset manifest', () => {
         heroAsset: boolean
         id: string
         selectedSource: string | null
+        sourceCollection?: string
+        sourceMetadata?: string
         status: string
+      }>
+      validation: Record<string, boolean>
+    }
+    const masterMetadata = JSON.parse(
+      readFileSync(
+        join(process.cwd(), 'public/lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json'),
+        'utf8'
+      )
+    ) as {
+      assetCount: number
+      assets: Array<{
+        animationRigWireCount: number
+        collection: string
+        evaluatedTriangleCount: number
+        id: string
+        minimumTriangleCount: number
+        silhouetteCompletion: string
+        sourceQuality: string
       }>
       validation: Record<string, boolean>
     }
 
     expect(manifest.productionUse).toBe('production_source_intake')
     expect(manifest.productionReady).toBe(false)
+    expect(manifest.authoritativeMasterScene).toBe(
+      'lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend'
+    )
+    expect(manifest.authoritativeMasterSceneMetadata).toBe(
+      'lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json'
+    )
     expect(manifest.pipeline.source).toBe('full_resolution_high_poly_master_assets')
     expect(manifest.pipeline.retopology).toBe('derive_smart_low_poly_lods_from_master')
     expect(manifest.pipeline.textureBake).toBe('bake_2k_default_4k_hero_pbr_from_master')
@@ -289,11 +317,22 @@ describe('Lunar City asset manifest', () => {
       'simple_mascot_generator',
       'flat_reference_planes'
     ])
-    expect(manifest.counts).toEqual({ required: 36, present: 0, missing: 36 })
+    expect(manifest.counts).toEqual({ required: 36, present: 36, missing: 0 })
     expect(manifest.requiredAssets).toHaveLength(36)
-    expect(manifest.validation.failsClosedUntilEveryRequiredMasterExists).toBe(true)
+    expect(manifest.validation.failsClosedUntilEveryRequiredMasterExists).toBe(false)
+    expect(manifest.validation.usesSingleAuthoritativeMasterScene).toBe(true)
+    expect(manifest.validation.usesPerAssetCollections).toBe(true)
     expect(manifest.validation.requiresNoRawSoulContent).toBe(true)
     expect(manifest.validation.requiresNoPrivateProfileIdentifiers).toBe(true)
+    expect(masterMetadata.assetCount).toBe(36)
+    expect(masterMetadata.validation.usesSingleAuthoritativeMasterScene).toBe(true)
+    expect(masterMetadata.validation.usesPerAssetCollections).toBe(true)
+    expect(masterMetadata.validation.allRequiredAssetsPresent).toBe(true)
+    expect(masterMetadata.validation.usesSculptedMeshSkins).toBe(true)
+    expect(masterMetadata.validation.usesAnimationRigWiresForCharacters).toBe(true)
+    expect(masterMetadata.validation.completesCroppedAndOccludedSilhouettes).toBe(true)
+    expect(masterMetadata.validation.usesRawSoulContent).toBe(false)
+    expect(masterMetadata.validation.containsPrivateProfileIdentifiers).toBe(false)
 
     const ids = manifest.requiredAssets.map(asset => asset.id)
     expect(ids).toContain('leader-fox-scientist')
@@ -305,8 +344,16 @@ describe('Lunar City asset manifest', () => {
     expect(ids).toContain('skybox-lunar-orbit')
 
     for (const asset of manifest.requiredAssets) {
-      expect(asset.status).toBe('missing')
-      expect(asset.selectedSource).toBeNull()
+      const metadata = masterMetadata.assets.find(entry => entry.id === asset.id)
+      expect(asset.status).toBe('sculpted_master_scene_present_unvalidated')
+      expect(asset.selectedSource).toBe('lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend')
+      expect(asset.sourceMetadata).toBe('lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json')
+      expect(asset.sourceCollection).toBe(`Master Asset - ${asset.id}`)
+      expect(metadata).toBeTruthy()
+      expect(metadata?.collection).toBe(asset.sourceCollection)
+      expect(metadata?.sourceQuality).toBe('full_resolution_high_poly_master')
+      expect(metadata?.silhouetteCompletion).toBe('reference_mask_guided_plus_inferred_occluded_structure')
+      expect(metadata?.evaluatedTriangleCount).toBeGreaterThanOrEqual(metadata?.minimumTriangleCount ?? 0)
       expect(asset.acceptance.sourceQuality).toBe('full_resolution_high_poly_master')
       expect(asset.acceptance.rejectIf).toContain('floating_blob')
       expect(asset.acceptance.rejectIf).toContain('simple_mascot_placeholder')

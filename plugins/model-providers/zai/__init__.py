@@ -22,6 +22,13 @@ two enabled levels — ``high`` and ``max`` — on the OpenAI-compatible endpoin
 (per Z.AI / BigModel docs).  Hermes' richer effort scale is collapsed onto
 those two so the user's effort preference actually reaches the model instead
 of being silently dropped.
+
+GLM-5.3 reaches one level lower (``low``/``high``/``max``) but drops the
+``thinking`` toggle: it always thinks, and rejects both a disable marker and
+any effort word outside that set with ``1210``.  So on 5.3 the toggle is
+never sent and an explicit disable resolves to the cheapest level rather
+than to nothing — omitting the field would leave the server default, which
+is the *most* expensive tier.
 """
 
 from __future__ import annotations
@@ -68,9 +75,11 @@ def _is_glm_5_2(model: str | None) -> bool:
 def _is_glm_5_3(model: str | None) -> bool:
     """Detect GLM-5.3 specifically — it has a wider effort vocabulary.
 
-    5.2 accepts only ``high``/``max``; 5.3 accepts a graded
-    ``low``/``medium``/``high``/``max`` scale (verified live, issue #91789),
-    so effort mapping must pick the vocabulary per model.
+    5.2 accepts only ``high``/``max``; 5.3 reaches one level lower with
+    ``low``/``high``/``max`` (the server enumerates that set in its own 1210
+    rejection), so effort mapping must pick the vocabulary per model. 5.3
+    also refuses to turn thinking off at all — see
+    :func:`_glm_5_2_reasoning_effort` and :meth:`ZaiProfile.build_api_kwargs_extras`.
     """
     m = (model or "").strip().lower()
     if not m:
@@ -93,7 +102,12 @@ def _glm_5_2_reasoning_effort(
     if not isinstance(reasoning_config, dict):
         return None
     if reasoning_config.get("enabled") is False:
-        return None
+        # GLM-5.3 has no off switch: the wire rejects a disable with
+        # ``1210 ... cannot be disabled``, and omitting the field leaves the
+        # server default (max — the most expensive tier), so "off" would cost
+        # *more* than any level the user could have asked for. The cheapest
+        # supported level is as close as the wire gets. 5.2 has no such trap.
+        return "low" if _is_glm_5_3(model) else None
 
     effort = (reasoning_config.get("effort") or "").strip().lower()
     if not effort or effort == "none":
@@ -132,10 +146,14 @@ class ZaiProfile(ProviderProfile):
             return extra_body, top_level
 
         # Only emit when the user expressed a preference; omitting the field
-        # keeps the server default (enabled) exactly as before.
+        # keeps the server default (enabled) exactly as before. The disable
+        # marker is skipped for GLM-5.3, which rejects it with 1210 and would
+        # fail every request from a user who turned thinking off; that
+        # preference is carried by ``reasoning_effort: low`` instead.
         if isinstance(reasoning_config, dict):
             enabled = reasoning_config.get("enabled") is not False
-            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+            if enabled or not _is_glm_5_3(model):
+                extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
 
         if _is_glm_5_2(model):
             effort = _glm_5_2_reasoning_effort(reasoning_config, model=model)

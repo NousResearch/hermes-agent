@@ -136,18 +136,22 @@ class TestZaiGLM52ReasoningEffort:
 
 
 class TestZaiGLM53ReasoningEffort:
-    """GLM-5.3's graded low/medium/high/max effort scale (issue #91789).
+    """GLM-5.3's low/high/max effort scale, and its missing off switch.
 
-    Verified live on api.z.ai/api/coding/paas/v4: all four levels accepted
-    with monotonic reasoning-token scaling. Unlike 5.2, low and medium must
-    reach the wire instead of clamping up to high.
+    Unlike 5.2, ``low`` must reach the wire instead of clamping up to high.
+    Unlike every other GLM, thinking cannot be turned off at all: the
+    default ``/api/paas/v4`` route answers a disable — or any effort word
+    outside ``low|high|max`` — with ``1210: This model always engages in
+    thinking and cannot be disabled; please use low, high, or max``
+    (probed live 2026-08-29 on glm-5.3-flash).
     """
 
     @pytest.mark.parametrize(
         ("effort", "expected"),
         [
             ("low", "low"),
-            ("medium", "medium"),
+            # 1210 on the wire: nearest weaker supported level instead.
+            ("medium", "low"),
             ("high", "high"),
             ("max", "max"),
             ("xhigh", "max"),
@@ -180,6 +184,21 @@ class TestZaiGLM53ReasoningEffort:
             model="glm-5.2",
         )
         assert top_level == {"reasoning_effort": "high"}
+
+    def test_disable_becomes_cheapest_level_not_a_disable_marker(self, zai_profile):
+        """``reasoning_effort: none`` on 5.3 must not send the off switch.
+
+        ``parse_reasoning_effort("none")`` yields ``{"enabled": False}``, and
+        sending ``thinking.type=disabled`` for that on 5.3 fails the whole
+        request with 1210. Dropping the field instead would silently leave
+        the server default — ``max``, the most expensive tier — so the
+        disable resolves to the cheapest level the wire accepts.
+        """
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False}, model="glm-5.3-flash",
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "low"}
 
 
 class TestZaiModelGating:

@@ -120,11 +120,20 @@ KIMI_K3_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
 GLM52_EFFORTS: tuple[str, ...] = ("high", "max")
 GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
-#: GLM-5.3 widens the knob to a graded low/medium/high/max scale — verified
-#: live on api.z.ai/api/coding/paas/v4 (issue #91789, 2026-08-21): every
-#: level accepted with monotonic reasoning-token scaling (low=4, medium=11,
-#: high=98, max=125 on the probe prompt). ``xhigh`` requests the top tier.
-GLM53_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
+#: GLM-5.3 widens GLM-5.2's knob downward to low, but the vocabulary is
+#: exactly ``low|high|max`` — the server enumerates it in its own rejection:
+#: ``1210: This model always engages in thinking and cannot be disabled;
+#: please use low, high, or max``. Probed live 2026-08-29 against
+#: api.z.ai/api/paas/v4 (the base_url the zai profile ships) on
+#: glm-5.3-flash: low/high/max pass validation, ``medium`` is rejected 1210
+#: alongside ``minimal``/``xhigh``/``none``. #91789 measured a graded
+#: low/medium/high/max scale on api.z.ai/api/**coding**/paas/v4, which is
+#: the more permissive route and does accept ``medium`` — but declaring
+#: ``medium`` here turned every request at that effort into a hard 1210 on
+#: the default route. The strict route's vocabulary is the safe one to
+#: declare: ``medium`` then clamps to ``low`` (nearest weaker) for coding-
+#: route users instead of failing outright for everyone else.
+GLM53_EFFORTS: tuple[str, ...] = ("low", "high", "max")
 GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
 #: DeepSeek V4 OpenAI-compat endpoint: low/medium/high/max; ``xhigh``

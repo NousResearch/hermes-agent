@@ -805,6 +805,11 @@ prompt_caching:
 # Other providers pick a sensible default automatically.
 #
 # auxiliary:
+#   # When true, surfaces the provenance artifact pyramid (model chain +
+#   # usage trace) for every auxiliary LLM call. Off by default to avoid
+#   # exposing sensitive routing details. See issue #36797.
+#   expose_provenance: false
+#
 #   # Image analysis: vision_analyze tool + browser screenshots
 #   vision:
 #     provider: "auto"

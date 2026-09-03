@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import re
+from collections import deque
 import threading
 import time
 import uuid
@@ -61,6 +62,8 @@ from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
+
+from hermes_cli.config import cfg_get, load_config
 
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
@@ -3717,6 +3720,9 @@ _RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
 
 
 def _relay_auxiliary_call(callback):
+    # When PR #32411's `_FailoverAuxiliaryClient` wrapper merges to origin/main,
+    # this threaded approach will need to integrate inside the wrapper's
+    # per-attempt recording. Plan to revisit in the wrapper integration PR.
     """Give every physical retry in one auxiliary call a shared Relay identity."""
 
     @functools.wraps(callback)
@@ -3730,6 +3736,13 @@ def _relay_auxiliary_call(callback):
             "model": "",
             "response_model": None,
             "api_mode": "chat_completions",
+            "attempts": [],
+            "served_by": None,
+            "served_model": None,
+            "fallback_chain_used": False,
+            "fallback_count": 0,
+            "final_status": "pending",
+            "enabled": cfg_get(load_config(), "auxiliary", "expose_provenance", default=False),
         })
         try:
             return callback(*args, **kwargs)
@@ -3756,6 +3769,13 @@ def _relay_auxiliary_call_async(callback):
             "model": "",
             "response_model": None,
             "api_mode": "chat_completions",
+            "attempts": [],
+            "served_by": None,
+            "served_model": None,
+            "fallback_chain_used": False,
+            "fallback_count": 0,
+            "final_status": "pending",
+            "enabled": cfg_get(load_config(), "auxiliary", "expose_provenance", default=False),
         })
         try:
             return await callback(*args, **kwargs)
@@ -3791,6 +3811,83 @@ def _record_route_info(
     if route_info is not None:
         route_info["provider"] = provider or "auto"
         route_info["model"] = model or "default"
+
+
+def _sanitize_error_message(msg: str) -> str:
+    """Redact bearer tokens, API keys, and basic auth credentials from error messages."""
+    cleaned = re.sub(
+        r'(?i)(bearer\s+|x-api-key\s*[:=]\s*|api[-_]?key\s*[:=]\s*|token\s*[:=]\s*|key\s*[:=]\s*)[^\s,"\x27&]+',
+        r'\1[REDACTED]',
+        str(msg),
+    )
+    cleaned = re.sub(r'(?i)(https?://)[^/\s:@]+:[^/\s@]+@', r'\1[REDACTED]@', cleaned)
+    return cleaned
+
+
+MAX_PROVENANCE_ATTEMPTS = 50
+
+
+def _record_auxiliary_provenance(
+    # When PR #32411's `_FailoverAuxiliaryClient` wrapper merges to origin/main,
+    # this threaded approach will need to integrate inside the wrapper's
+    # per-attempt recording. Plan to revisit in the wrapper integration PR.
+    *,
+    provider: Optional[str],
+    model: Optional[str],
+    status: str,  # "attempted", "success", "failed", "skipped"
+    error: Optional[BaseException] = None,
+    latency_ms: Optional[int] = None,
+) -> None:
+    """Append one entry to the per-call provenance trace."""
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is None:
+        return
+    if not context.get("enabled", False):
+        return
+    raw_attempts = context.get("attempts")
+    if not isinstance(raw_attempts, deque):
+        # Convert legacy list to deque for automatic FIFO cap
+        raw_attempts = deque(raw_attempts or [], maxlen=MAX_PROVENANCE_ATTEMPTS)
+        context["attempts"] = raw_attempts
+    attempts = raw_attempts
+    entry = {
+        "provider": provider or "unknown",
+        "model": model or "default",
+        "status": status,
+    }
+    if error is not None:
+        msg = _sanitize_error_message(str(error))
+        entry["failure"] = msg[:500] + ("..." if len(msg) > 500 else "")
+    if latency_ms is not None:
+        entry["latency_ms"] = int(latency_ms)
+    attempts.append(entry)
+    if status == "success":
+        context["served_by"] = provider
+        context["served_model"] = model
+        context["fallback_count"] = len(attempts) - 1
+        context["fallback_chain_used"] = (len(attempts) - 1) > 0
+        context["final_status"] = "success"
+
+
+def get_auxiliary_provenance() -> Optional[Dict[str, Any]]:
+    """Public provenance reader (replaces private underscore name)."""
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is None or not context.get("enabled", False) or "attempts" not in context:
+        return None
+    return {
+        "task": context.get("task"),
+        "served_by": context.get("served_by"),
+        "served_model": context.get("served_model"),
+        "fallback_chain_used": context.get("fallback_chain_used", False),
+        "fallback_count": context.get("fallback_count", 0),
+        "final_status": context.get("final_status", "pending"),
+        "attempts": list(context.get("attempts", [])),
+        "request_id": context.get("request_id"),
+    }
+
+
+# Backward-compat alias.
+_get_auxiliary_provenance = get_auxiliary_provenance
 
 
 def _relay_auxiliary_metadata(
@@ -9624,6 +9721,43 @@ def _complete_relay_auxiliary_call(*, outcome: str = "success") -> None:
     context = _RELAY_AUX_CALL_CONTEXT.get()
     if context is None:
         return
+    # Update final_status based on actual outcome
+    current_final = context.get("final_status", "pending")
+    attempts = context.get("attempts", [])
+    has_success_attempt = any(
+        a.get("status") == "success" for a in attempts
+    )
+    if outcome == "failed" and current_final == "pending":
+        context["final_status"] = "failed"
+    elif outcome == "success" and current_final == "pending":
+        if has_success_attempt:
+            context["final_status"] = "success"
+        else:
+            # No winning attempt exists (e.g. recovered via response_model).
+            # Populate served_by from response_model if available.
+            if context.get("response_model"):
+                context["served_by"] = context.get("provider", "unknown")
+                context["served_model"] = str(context.get("response_model"))
+            context["final_status"] = "failed"
+
+    # L3 structured log when expose_provenance is on
+    try:
+        if context.get("enabled", False):
+            provenance = {
+                "task": context.get("task"),
+                "served_by": context.get("served_by"),
+                "served_model": context.get("served_model"),
+                "fallback_chain_used": context.get("fallback_chain_used", False),
+                "fallback_count": context.get("fallback_count", 0),
+                "attempts": list(context.get("attempts", [])[-MAX_PROVENANCE_ATTEMPTS:]),
+                "final_status": context.get("final_status", "pending"),
+                "request_id": context.get("request_id"),
+            }
+            logger.info("auxiliary_provenance", extra={"provenance": provenance})
+    except Exception:
+        # Logging must never break the relay finalization.
+        logger.debug("L3 provenance log failed", exc_info=True)
+
     from agent import relay_llm
 
     relay_llm.complete_logical_call(
@@ -10556,6 +10690,11 @@ def _call_llm_impl(
     _record_route_info(
         route_info, _fallback_provider_from_label(request_provider), final_model
     )
+    _record_auxiliary_provenance(
+        provider=_fallback_provider_from_label(request_provider),
+        model=final_model,
+        status="attempted",
+    )
 
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
@@ -10640,23 +10779,38 @@ def _call_llm_impl(
         # ``first_err`` and the existing fallback handling unchanged. Unified home
         # for the transient retry every auxiliary task shares. (PR #16587)
         try:
-            return _validate_llm_response(
-                _relay_sync_completion(
-                    client,
-                    kwargs,
-                    provider=request_provider,
-                    api_mode=resolved_api_mode,
-                    create=lambda request: _create_with_progress(
+            try:
+                response = _validate_llm_response(
+                    _relay_sync_completion(
                         client,
-                        request,
-                        task,
-                        force_stream=_provider_requires_stream(
-                            request_provider, _base_info or resolved_base_url,
+                        kwargs,
+                        provider=request_provider,
+                        api_mode=resolved_api_mode,
+                        create=lambda request: _create_with_progress(
+                            client,
+                            request,
+                            task,
+                            force_stream=_provider_requires_stream(
+                                request_provider, _base_info or resolved_base_url,
+                            ),
                         ),
                     ),
-                ),
-                task,
-                provider=request_provider, base_url=_base_info)
+                    task,
+                    provider=request_provider, base_url=_base_info)
+                _record_auxiliary_provenance(
+                    provider=_fallback_provider_from_label(request_provider),
+                    model=final_model,
+                    status="success",
+                )
+                return response
+            except Exception as exc:
+                _record_auxiliary_provenance(
+                    provider=_fallback_provider_from_label(request_provider),
+                    model=final_model,
+                    status="failed",
+                    error=exc,
+                )
+                raise
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -11119,15 +11273,40 @@ def _call_llm_impl(
                 _record_route_info(
                     route_info, _fallback_provider_from_label(fb_label), fb_model
                 )
-                fb_resp = _call_fallback_candidate_sync(
-                    fb_client, fb_model, fb_label,
-                    task=task, messages=messages,
-                    temperature=temperature, max_tokens=max_tokens,
-                    tools=tools, effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body,
-                    reasoning_config=reasoning_config)
-                if fb_resp is not None:
-                    return fb_resp
+                _record_auxiliary_provenance(
+                    provider=_fallback_provider_from_label(fb_label),
+                    model=fb_model,
+                    status="attempted",
+                )
+                try:
+                    fb_resp = _call_fallback_candidate_sync(
+                        fb_client, fb_model, fb_label,
+                        task=task, messages=messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, effective_timeout=effective_timeout,
+                        effective_extra_body=effective_extra_body,
+                        reasoning_config=reasoning_config)
+                    if fb_resp is not None:
+                        _record_auxiliary_provenance(
+                            provider=_fallback_provider_from_label(fb_label),
+                            model=fb_model,
+                            status="success",
+                        )
+                        return fb_resp
+                    _record_auxiliary_provenance(
+                        provider=_fallback_provider_from_label(fb_label),
+                        model=fb_model,
+                        status="failed",
+                        error=Exception("fallback returned None"),
+                    )
+                except Exception as exc:
+                    _record_auxiliary_provenance(
+                        provider=_fallback_provider_from_label(fb_label),
+                        model=fb_model,
+                        status="failed",
+                        error=exc,
+                    )
+                    raise
                 # The candidate had a stale/unrefreshable credential and was
                 # quarantined — walk the discovery chain once more; unhealthy
                 # entries are skipped so the next viable candidate serves.
@@ -11137,15 +11316,40 @@ def _call_llm_impl(
                     _record_route_info(
                         route_info, _fallback_provider_from_label(fb_label), fb_model
                     )
-                    fb_resp = _call_fallback_candidate_sync(
-                        fb_client, fb_model, fb_label,
-                        task=task, messages=messages,
-                        temperature=temperature, max_tokens=max_tokens,
-                        tools=tools, effective_timeout=effective_timeout,
-                        effective_extra_body=effective_extra_body,
-                        reasoning_config=reasoning_config)
-                    if fb_resp is not None:
-                        return fb_resp
+                    _record_auxiliary_provenance(
+                        provider=_fallback_provider_from_label(fb_label),
+                        model=fb_model,
+                        status="attempted",
+                    )
+                    try:
+                        fb_resp = _call_fallback_candidate_sync(
+                            fb_client, fb_model, fb_label,
+                            task=task, messages=messages,
+                            temperature=temperature, max_tokens=max_tokens,
+                            tools=tools, effective_timeout=effective_timeout,
+                            effective_extra_body=effective_extra_body,
+                            reasoning_config=reasoning_config)
+                        if fb_resp is not None:
+                            _record_auxiliary_provenance(
+                                provider=_fallback_provider_from_label(fb_label),
+                                model=fb_model,
+                                status="success",
+                            )
+                            return fb_resp
+                        _record_auxiliary_provenance(
+                            provider=_fallback_provider_from_label(fb_label),
+                            model=fb_model,
+                            status="failed",
+                            error=Exception("fallback returned None"),
+                        )
+                    except Exception as exc:
+                        _record_auxiliary_provenance(
+                            provider=_fallback_provider_from_label(fb_label),
+                            model=fb_model,
+                            status="failed",
+                            error=exc,
+                        )
+                        raise
             # All fallback layers exhausted — emit a single user-visible
             # warning so the operator knows aux task is about to fail.
             # (#26882) The error itself is re-raised below.
@@ -11434,6 +11638,11 @@ async def _async_call_llm_impl(
     _record_route_info(
         route_info, _fallback_provider_from_label(request_provider), final_model
     )
+    _record_auxiliary_provenance(
+        provider=_fallback_provider_from_label(request_provider),
+        model=final_model,
+        status="attempted",
+    )
 
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish
@@ -11471,16 +11680,31 @@ async def _async_call_llm_impl(
             return await client.chat.completions.create(**_kwargs)
 
         try:
-            return _validate_llm_response(
-                await _relay_async_completion(
-                    client,
-                    kwargs,
-                    provider=request_provider,
-                    api_mode=resolved_api_mode,
-                    create=_acreate,
-                ),
-                task,
-                provider=request_provider, base_url=_client_base)
+            try:
+                response = _validate_llm_response(
+                    await _relay_async_completion(
+                        client,
+                        kwargs,
+                        provider=request_provider,
+                        api_mode=resolved_api_mode,
+                        create=_acreate,
+                    ),
+                    task,
+                    provider=request_provider, base_url=_client_base)
+                _record_auxiliary_provenance(
+                    provider=_fallback_provider_from_label(request_provider),
+                    model=final_model,
+                    status="success",
+                )
+                return response
+            except Exception as exc:
+                _record_auxiliary_provenance(
+                    provider=_fallback_provider_from_label(request_provider),
+                    model=final_model,
+                    status="failed",
+                    error=exc,
+                )
+                raise
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -11879,15 +12103,40 @@ async def _async_call_llm_impl(
                     _fallback_provider_from_label(fb_label),
                     async_fb_model or fb_model,
                 )
-                fb_resp = await _call_fallback_candidate_async(
-                    async_fb, async_fb_model or fb_model, fb_label,
-                    task=task, messages=messages,
-                    temperature=temperature, max_tokens=max_tokens,
-                    tools=tools, effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body,
-                    reasoning_config=reasoning_config)
-                if fb_resp is not None:
-                    return fb_resp
+                _record_auxiliary_provenance(
+                    provider=_fallback_provider_from_label(fb_label),
+                    model=async_fb_model or fb_model,
+                    status="attempted",
+                )
+                try:
+                    fb_resp = await _call_fallback_candidate_async(
+                        async_fb, async_fb_model or fb_model, fb_label,
+                        task=task, messages=messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, effective_timeout=effective_timeout,
+                        effective_extra_body=effective_extra_body,
+                        reasoning_config=reasoning_config)
+                    if fb_resp is not None:
+                        _record_auxiliary_provenance(
+                            provider=_fallback_provider_from_label(fb_label),
+                            model=async_fb_model or fb_model,
+                            status="success",
+                        )
+                        return fb_resp
+                    _record_auxiliary_provenance(
+                        provider=_fallback_provider_from_label(fb_label),
+                        model=async_fb_model or fb_model,
+                        status="failed",
+                        error=Exception("fallback returned None"),
+                    )
+                except Exception as exc:
+                    _record_auxiliary_provenance(
+                        provider=_fallback_provider_from_label(fb_label),
+                        model=async_fb_model or fb_model,
+                        status="failed",
+                        error=exc,
+                    )
+                    raise
                 # Stale/unrefreshable candidate credential — quarantined; walk
                 # the discovery chain once more (unhealthy entries skipped).
                 fb_client, fb_model, fb_label = _try_payment_fallback(
@@ -11901,15 +12150,40 @@ async def _async_call_llm_impl(
                         _fallback_provider_from_label(fb_label),
                         async_fb_model or fb_model,
                     )
-                    fb_resp = await _call_fallback_candidate_async(
-                        async_fb, async_fb_model or fb_model, fb_label,
-                        task=task, messages=messages,
-                        temperature=temperature, max_tokens=max_tokens,
-                        tools=tools, effective_timeout=effective_timeout,
-                        effective_extra_body=effective_extra_body,
-                        reasoning_config=reasoning_config)
-                    if fb_resp is not None:
-                        return fb_resp
+                    _record_auxiliary_provenance(
+                        provider=_fallback_provider_from_label(fb_label),
+                        model=async_fb_model or fb_model,
+                        status="attempted",
+                    )
+                    try:
+                        fb_resp = await _call_fallback_candidate_async(
+                            async_fb, async_fb_model or fb_model, fb_label,
+                            task=task, messages=messages,
+                            temperature=temperature, max_tokens=max_tokens,
+                            tools=tools, effective_timeout=effective_timeout,
+                            effective_extra_body=effective_extra_body,
+                            reasoning_config=reasoning_config)
+                        if fb_resp is not None:
+                            _record_auxiliary_provenance(
+                                provider=_fallback_provider_from_label(fb_label),
+                                model=async_fb_model or fb_model,
+                                status="success",
+                            )
+                            return fb_resp
+                        _record_auxiliary_provenance(
+                            provider=_fallback_provider_from_label(fb_label),
+                            model=async_fb_model or fb_model,
+                            status="failed",
+                            error=Exception("fallback returned None"),
+                        )
+                    except Exception as exc:
+                        _record_auxiliary_provenance(
+                            provider=_fallback_provider_from_label(fb_label),
+                            model=async_fb_model or fb_model,
+                            status="failed",
+                            error=exc,
+                        )
+                        raise
             # All fallback layers exhausted — warn before re-raising. (#26882)
             logger.warning(
                 "Auxiliary %s (async): %s on %s and all fallbacks exhausted "

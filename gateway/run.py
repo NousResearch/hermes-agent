@@ -2463,6 +2463,10 @@ class SecondaryPortBindingConfigError(MultiplexConfigError):
     """A secondary profile conflicts with the multiplexer's shared listener."""
 
 
+class ContractorTurnRejected(RuntimeError):
+    """A contractor policy invariant failed before safe model execution."""
+
+
 class HygieneTurnHoldExceeded(Exception):
     """The hygiene-compression turn-hold budget elapsed while the summary
     model was still streaming progress.
@@ -3153,6 +3157,7 @@ from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.turn_context import TurnContext
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    ContractorTurnContext,
     EphemeralReply,
     MessageEvent,
     MessageType,
@@ -7689,6 +7694,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_task: Optional[asyncio.Task] = None
         self._executor_lock = threading.Lock()
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        self._contractor_agents_lock = threading.Lock()
+        self._contractor_agents: dict[str, Any] = {}
         # Set on gateway stop so the recreate-on-shutdown path can't resurrect
         # the pool during a real shutdown.
         self._executor_closing = False
@@ -18854,6 +18861,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
 
+        # Registry-authorized contractor work is deliberately outside the
+        # ordinary conversation lifecycle. Dispatch before session keys,
+        # control-command resolution, active-turn markers, hooks, or cached
+        # agents can observe or mutate it. The dedicated path revalidates that
+        # the event is internal and pinned to its authorized profile/root.
+        contractor_context = getattr(event, "contractor_context", None)
+        if contractor_context is not None:
+            return await self._handle_contractor_turn(
+                event, source, contractor_context
+            )
+
         # Ignored-channel guard runs FIRST — before startup-restore queueing,
         # plugin hooks, auth, and session setup — so a configured ignored
         # channel can never reach pairing/auth/session state (#51899).
@@ -20998,6 +21016,317 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._async_session_store = facade
         return facade
 
+    @staticmethod
+    def _contractor_tool_names(tools: Any) -> set[str]:
+        """Return normalized function names from an agent tool schema list."""
+        names: set[str] = set()
+        for tool in tools or []:
+            if not isinstance(tool, dict):
+                continue
+            function = tool.get("function")
+            name = function.get("name") if isinstance(function, dict) else tool.get("name")
+            if isinstance(name, str) and name.strip():
+                names.add(name.strip().lower().replace("-", "_"))
+        return names
+
+    @staticmethod
+    def _is_contractor_memory_tool(name: str) -> bool:
+        """Fail closed on built-in or provider-shaped recall/history tools."""
+        return (
+            name in {"memory", "session_search"}
+            or name.startswith("memory_")
+            or name.startswith("session_search_")
+            or name.startswith("conversation_history")
+            or name.endswith("_memory")
+        )
+
+    def _set_active_contractor_agent(self, session_id: str, agent: Any) -> None:
+        lock = getattr(self, "_contractor_agents_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._contractor_agents_lock = lock
+        with lock:
+            agents = getattr(self, "_contractor_agents", None)
+            if agents is None:
+                agents = {}
+                self._contractor_agents = agents
+            if agent is None:
+                agents.pop(session_id, None)
+            else:
+                agents[session_id] = agent
+
+    def _interrupt_contractor_agent(self, session_id: str) -> None:
+        lock = getattr(self, "_contractor_agents_lock", None)
+        agents = getattr(self, "_contractor_agents", None)
+        if lock is None or not isinstance(agents, dict):
+            return
+        with lock:
+            agent = agents.get(session_id)
+        if agent is not None:
+            request_hard_interrupt(
+                agent,
+                "Contractor delivery was cancelled",
+                tool_reason="gateway_turn_cancelled",
+            )
+
+    def _run_contractor_agent_sync(
+        self,
+        prompt: str,
+        source: SessionSource,
+        context: ContractorTurnContext,
+        session_id: str,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> dict[str, Any]:
+        """Construct and run one persistence-isolated agent in the worker pool."""
+        if cancel_event is not None and cancel_event.is_set():
+            raise ContractorTurnRejected("contractor turn was cancelled before execution")
+
+        from agent.skill_utils import parse_config_string_list
+        from run_agent import AIAgent
+
+        user_config = _load_gateway_config()
+        platform_key = _platform_config_key(source.platform)
+        enabled_toolsets = self._resolve_enabled_toolsets_for_source(
+            user_config, source, platform_key
+        )
+        agent_config = user_config.get("agent") or {}
+        if not isinstance(agent_config, dict):
+            agent_config = {}
+        disabled_toolsets = list(
+            parse_config_string_list(agent_config.get("disabled_toolsets")) or []
+        )
+        for stateful_toolset in ("memory", "session_search"):
+            if stateful_toolset not in disabled_toolsets:
+                disabled_toolsets.append(stateful_toolset)
+
+        # Contractor turns deliberately have no conversation key: session
+        # model/reasoning/fast overrides belong to remembered conversations.
+        model, runtime_kwargs = self._resolve_session_agent_runtime(
+            source=None,
+            session_key=None,
+            user_config=user_config,
+        )
+        reasoning_config = self._resolve_session_reasoning_config(
+            source=None,
+            session_key=None,
+            model=model,
+        )
+        service_tier = self._resolve_session_service_tier(
+            source=None,
+            session_key=None,
+        )
+        self._reasoning_config = reasoning_config
+        self._service_tier = service_tier
+        turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+
+        configured_routing = user_config.get("provider_routing")
+        provider_routing = (
+            configured_routing
+            if isinstance(configured_routing, dict)
+            else getattr(self, "_provider_routing", {}) or {}
+        )
+        agent = AIAgent(
+            model=turn_route["model"],
+            **turn_route["runtime"],
+            **_checkpoint_agent_kwargs(user_config),
+            max_iterations=_current_max_iterations(),
+            quiet_mode=True,
+            verbose_logging=False,
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            ephemeral_system_prompt=None,
+            prefill_messages=None,
+            reasoning_config=reasoning_config,
+            service_tier=service_tier,
+            request_overrides=turn_route.get("request_overrides"),
+            providers_allowed=provider_routing.get("only"),
+            providers_ignored=provider_routing.get("ignore"),
+            providers_order=provider_routing.get("order"),
+            provider_sort=provider_routing.get("sort"),
+            provider_require_parameters=provider_routing.get(
+                "require_parameters", False
+            ),
+            provider_data_collection=provider_routing.get("data_collection"),
+            session_id=session_id,
+            platform=platform_key,
+            user_id=source.user_id,
+            user_id_alt=source.user_id_alt,
+            user_name=source.user_name,
+            chat_id=source.chat_id,
+            chat_name=source.chat_name,
+            chat_type=source.chat_type,
+            thread_id=source.thread_id,
+            gateway_session_key=None,
+            session_db=None,
+            fallback_model=self._refresh_fallback_model(),
+            skip_context_files=False,
+            load_soul_identity=True,
+            skip_memory=True,
+            skip_background_review=True,
+        )
+        self._set_active_contractor_agent(session_id, agent)
+        try:
+            # Cancellation can arrive while the relatively heavy agent
+            # constructor is still loading plugins and tool schemas. The async
+            # caller cannot interrupt an agent that has not registered yet, so
+            # re-check its shared signal after registration and before the first
+            # model request.
+            if cancel_event is not None and cancel_event.is_set():
+                raise ContractorTurnRejected(
+                    "contractor turn was cancelled before execution"
+                )
+
+            # Set before the first run so lazy session-DB acquisition and every
+            # persistence hook are disabled even if a provider path asks for it.
+            agent._persist_disabled = True
+            agent.memory_notifications = "off"
+
+            memory_state = any(
+                (
+                    getattr(agent, "_memory_manager", None) is not None,
+                    getattr(agent, "_memory_store", None) is not None,
+                    bool(getattr(agent, "_memory_enabled", False)),
+                    bool(getattr(agent, "_user_profile_enabled", False)),
+                )
+            )
+            if memory_state:
+                raise ContractorTurnRejected(
+                    "contractor agent initialized persistent memory state"
+                )
+            forbidden = sorted(
+                name
+                for name in self._contractor_tool_names(getattr(agent, "tools", []))
+                if self._is_contractor_memory_tool(name)
+            )
+            if forbidden:
+                raise ContractorTurnRejected(
+                    "contractor agent exposed forbidden memory/history tool(s): "
+                    + ", ".join(forbidden)
+                )
+
+            result = agent.run_conversation(
+                prompt,
+                conversation_history=[],
+                task_id=session_id,
+            )
+            if not isinstance(result, dict):
+                raise ContractorTurnRejected(
+                    "contractor agent returned an invalid execution result"
+                )
+            return result
+        finally:
+            self._set_active_contractor_agent(session_id, None)
+            self._cleanup_agent_resources(agent)
+
+    async def _handle_contractor_turn(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        context: ContractorTurnContext,
+    ) -> str:
+        """Run one registry-pinned turn without session/history persistence."""
+        if not isinstance(context, ContractorTurnContext):
+            raise ContractorTurnRejected("contractor context has an invalid type")
+        if getattr(event, "internal", False) is not True:
+            raise ContractorTurnRejected("contractor turns must be internal events")
+        source_profile = str(getattr(source, "profile", "") or "").strip()
+        if source_profile != context.profile_name:
+            raise ContractorTurnRejected(
+                "contractor profile does not match the authorized route"
+            )
+        command_id = str(getattr(event, "message_id", "") or "").strip()
+        if not command_id:
+            raise ContractorTurnRejected("contractor turn requires a command identity")
+        session_id = f"contractor:{context.contractor_id}:{command_id}"
+        profile_home = self._resolve_profile_home_for_source(source)
+
+        async with _async_profile_runtime_scope(profile_home):
+            from agent.skill_commands import _build_skill_message, _load_skill_payload
+            from gateway.session_context import clear_session_vars, set_session_vars
+
+            platform_value = (
+                source.platform.value
+                if hasattr(source.platform, "value")
+                else str(source.platform)
+            )
+            tokens = set_session_vars(
+                platform=platform_value,
+                chat_id=str(source.chat_id or ""),
+                chat_type=str(source.chat_type or ""),
+                chat_name=str(source.chat_name or ""),
+                thread_id=str(source.thread_id or ""),
+                user_id=str(source.user_id or ""),
+                user_id_alt=str(source.user_id_alt or ""),
+                user_name=str(source.user_name or ""),
+                scope_id=str(getattr(source, "scope_id", "") or ""),
+                session_key=session_id,
+                session_id=session_id,
+                message_id=command_id,
+                profile=context.profile_name,
+                cwd=context.project_root,
+                async_delivery=False,
+                cron_session="",
+            )
+            try:
+                # Resolve the complete ordered set before rendering any one
+                # skill. Rendering may expand configured inline shell blocks;
+                # a missing later requirement must therefore fail before any
+                # skill-side preprocessing, model call, or agent tool runs.
+                loaded_skills: list[tuple[Any, Any, str, str]] = []
+                for required_skill in context.required_skills:
+                    loaded = _load_skill_payload(required_skill, task_id=command_id)
+                    if loaded is None:
+                        raise ContractorTurnRejected(
+                            f"required contractor skill {required_skill!r} is unavailable"
+                        )
+                    loaded_skill, skill_dir, display_name = loaded
+                    loaded_skills.append(
+                        (loaded_skill, skill_dir, display_name, required_skill)
+                    )
+
+                skill_parts: list[str] = []
+                for loaded_skill, skill_dir, display_name, required_skill in loaded_skills:
+                    activation_note = (
+                        f'[IMPORTANT: The "{display_name}" skill is required for '
+                        "this contractor turn. Follow its instructions.]"
+                    )
+                    part = _build_skill_message(
+                        loaded_skill,
+                        skill_dir,
+                        activation_note,
+                        session_id=session_id,
+                    )
+                    if not str(part or "").strip():
+                        raise ContractorTurnRejected(
+                            f"required contractor skill {required_skill!r} is empty"
+                        )
+                    skill_parts.append(part)
+                prompt = "\n\n".join([*skill_parts, str(event.text or "")])
+                cancel_event = threading.Event()
+                try:
+                    result = await self._run_in_executor_with_context(
+                        self._run_contractor_agent_sync,
+                        prompt,
+                        source,
+                        context,
+                        session_id,
+                        cancel_event,
+                    )
+                except asyncio.CancelledError:
+                    cancel_event.set()
+                    self._interrupt_contractor_agent(session_id)
+                    raise
+            finally:
+                clear_session_vars(tokens)
+
+        if (
+            not isinstance(result, dict)
+            or result.get("failed") is True
+            or result.get("completed") is not True
+        ):
+            raise ContractorTurnRejected("contractor agent did not complete successfully")
+        return str(result.get("final_response") or "")
+
     async def _mark_durable_active_turn(
         self,
         event: "MessageEvent",
@@ -21230,6 +21559,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
+        contractor_context = getattr(event, "contractor_context", None)
+        if contractor_context is not None:
+            return await self._handle_contractor_turn(
+                event, source, contractor_context
+            )
+
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")

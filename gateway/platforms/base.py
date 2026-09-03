@@ -2510,6 +2510,60 @@ class ProcessingOutcome(Enum):
     CANCELLED = "cancelled"
 
 
+@dataclass(frozen=True)
+class ContractorTurnContext:
+    """Registry-authorized policy for one ephemeral contractor turn.
+
+    This is an internal gateway contract, not a caller-extensible options
+    mapping.  The Bloodbank adapter owns registry resolution and constructs
+    this value only after it has pinned the profile and project root.  Hermes
+    validates the invariants again before it creates an agent.
+    """
+
+    contractor_id: str
+    contractor_version: int
+    memory_policy: str
+    continuity: bool
+    required_skills: tuple[str, ...]
+    profile_name: str
+    project_root: str
+
+    def __post_init__(self) -> None:
+        contractor_id = str(self.contractor_id or "")
+        if not contractor_id or contractor_id != contractor_id.strip():
+            raise ValueError("contractor_id must be a non-empty canonical string")
+        if type(self.contractor_version) is not int or self.contractor_version < 1:
+            raise ValueError("contractor_version must be a positive integer")
+        if self.memory_policy != "none":
+            raise ValueError("memory_policy must be exactly 'none'")
+        if self.continuity is not False:
+            raise ValueError("continuity must be exactly false")
+        if not isinstance(self.required_skills, tuple) or not self.required_skills:
+            raise ValueError("required_skills must be a non-empty ordered tuple")
+        normalized_skills: list[str] = []
+        for skill in self.required_skills:
+            if not isinstance(skill, str) or not skill.strip() or skill != skill.strip():
+                raise ValueError(
+                    "required_skills entries must be non-empty canonical strings"
+                )
+            normalized_skills.append(skill)
+        if len(set(normalized_skills)) != len(normalized_skills):
+            raise ValueError("required_skills must not contain duplicates")
+        profile_name = str(self.profile_name or "")
+        if not profile_name or profile_name != profile_name.strip():
+            raise ValueError("profile_name must be a non-empty canonical string")
+        root = Path(str(self.project_root or "")).expanduser()
+        if not root.is_absolute():
+            raise ValueError("project_root must be an absolute path")
+        try:
+            resolved_root = root.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("project_root must resolve to an existing directory") from exc
+        if not resolved_root.is_dir():
+            raise ValueError("project_root must resolve to an existing directory")
+        object.__setattr__(self, "project_root", str(resolved_root))
+
+
 @dataclass
 class MessageEvent:
     """
@@ -2600,10 +2654,15 @@ class MessageEvent:
     timestamp: datetime = field(default_factory=datetime.now)
 
     # Whether this event may resolve gateway commands or pending control
-    # prompts. Kept last to preserve positional construction compatibility.
+    # prompts.
     # Proactive plugin events set this to False so untrusted payload text
     # remains conversational input.
     allow_gateway_control: bool = True
+
+    # Typed, registry-resolved policy for a one-shot contractor invocation.
+    # Kept last to preserve positional construction compatibility. Ordinary
+    # chat adapters leave it unset and retain the existing session path.
+    contractor_context: Optional[ContractorTurnContext] = None
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

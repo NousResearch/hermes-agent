@@ -410,6 +410,42 @@ is_termux() {
 #                              $HERMES_HOME/hermes-agent — then preserve it)
 #
 # Always no-op when the user set --dir or $HERMES_INSTALL_DIR.
+
+uv_isolated_state_env() {
+    # Export the Hermes-private uv state environment for one install kind:
+    #   user     — state tree under $HERMES_HOME (default user-scoped install)
+    #   fhs-root — Hermes-owned system tree (root/FHS install)
+    # Every axis is OVERRIDDEN, never defaulted: an inherited UV_* from the
+    # caller's environment must never become Hermes' write target, so the
+    # user's own uv tool store / download cache / python store / ~/.local/bin
+    # shims / Windows registry never gain Hermes entries.  Mirrors
+    # managed_uv_env() in hermes_cli/managed_uv.py — keep the two in sync.
+    local _layout="${1:-user}"
+    if [ "$_layout" = "fhs-root" ]; then
+        # World-traversable python store for the shared venv: default uv paths
+        # land in /root/.local/share/uv, which non-root users cannot traverse
+        # — leaving the shared /usr/local/bin/hermes wrapper unable to exec
+        # the venv python (#21457).  The python-store path predates the uv
+        # isolation change and is kept verbatim to avoid migrating existing
+        # root installs' stores; the cache/tool dirs are new pins and use
+        # Hermes' own namespace so a real system uv never shares them.
+        export UV_PYTHON_INSTALL_DIR="/usr/local/share/uv/python"
+        export UV_PYTHON_BIN_DIR="/usr/local/share/uv/bin"
+        export UV_CACHE_DIR="/var/cache/hermes/uv"
+        export UV_TOOL_DIR="/usr/local/share/hermes/uv/tools"
+    else
+        export UV_PYTHON_INSTALL_DIR="$HERMES_HOME/python"
+        export UV_CACHE_DIR="$HERMES_HOME/cache/uv"
+        export UV_TOOL_DIR="$HERMES_HOME/uv/tools"
+        # User-scoped installs suppress python shims via UV_PYTHON_INSTALL_BIN=0
+        # below, so no shim dir is needed — clear any inherited value so a uv
+        # that ignored the switch could never fall back to a caller's dir.
+        unset UV_PYTHON_BIN_DIR
+    fi
+    export UV_PYTHON_INSTALL_BIN=0
+    export UV_PYTHON_INSTALL_REGISTRY=0
+}
+
 resolve_install_layout() {
     if [ "$INSTALL_DIR_EXPLICIT" = true ]; then
         log_info "Install directory: $INSTALL_DIR (explicit)"
@@ -434,13 +470,11 @@ resolve_install_layout() {
         fi
         INSTALL_DIR="/usr/local/lib/hermes-agent"
         ROOT_FHS_LAYOUT=true
-        # Place uv-managed Python under /usr/local/share so the venv interpreter
-        # is world-readable.  Default uv paths land in /root/.local/share/uv,
-        # which non-root users can't traverse — leaving the shared
-        # /usr/local/bin/hermes wrapper unable to exec the bad-interpreter venv
-        # python.  See #21457.
-        export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-/usr/local/share/uv/python}"
-        export UV_PYTHON_BIN_DIR="${UV_PYTHON_BIN_DIR:-/usr/local/share/uv/bin}"
+        # Root-FHS installs are inside the uv isolation invariant too — see
+        # uv_isolated_state_env: every uv state axis is OVERRIDDEN to a
+        # Hermes-owned location (world-traversable python store for the
+        # shared venv, #21457), never inherited or left at uv's defaults.
+        uv_isolated_state_env fhs-root
         log_info "Root install on Linux — using FHS layout"
         log_info "  Code:    $INSTALL_DIR"
         log_info "  Command: /usr/local/bin/hermes"
@@ -583,24 +617,17 @@ install_uv() {
         return 0
     fi
 
-    # Contain uv python writes inside Hermes' own tree. Root FHS installs
-    # already pin this in resolve_install_layout (world-readable
-    # /usr/local/share — keep that pin intact, including the bin shim dir);
-    # everyone else OVERRIDES any inherited value with $HERMES_HOME/python so
-    # `uv python install` and `uv venv --python` never write into the user's
-    # uv python store, ~/.local/bin shims, or the Windows registry. Same
-    # contract as install.ps1's Set-UvPythonIsolationEnv: Hermes must never
-    # write into a directory the user configured for their own toolchain, even
-    # when they exported one. UV_CACHE_DIR / UV_TOOL_DIR get the same
-    # treatment — `uv tool install` / `uvx` and every download cache must stay
-    # inside HERMES_HOME, so the user's own `uv tool list` and ~/.cache/uv
-    # never gain Hermes entries.
-    if [ "$ROOT_FHS_LAYOUT" != "true" ]; then
-        export UV_PYTHON_INSTALL_DIR="$HERMES_HOME/python"
-        export UV_PYTHON_INSTALL_BIN=0
-        export UV_PYTHON_INSTALL_REGISTRY=0
-        export UV_CACHE_DIR="$HERMES_HOME/cache/uv"
-        export UV_TOOL_DIR="$HERMES_HOME/uv/tools"
+    # Contain every uv state write inside a Hermes-owned tree.  Layout is a
+    # property of the install kind: user-scoped installs own a state tree
+    # under $HERMES_HOME; root-FHS installs own a world-traversable system
+    # tree (see uv_isolated_state_env).  Every axis is OVERRIDDEN there,
+    # never defaulted — an inherited UV_* must never become Hermes' write
+    # target, so the user's own uv (tool list, cache, python store) never
+    # gains Hermes entries.
+    if [ "$ROOT_FHS_LAYOUT" = "true" ]; then
+        uv_isolated_state_env fhs-root
+    else
+        uv_isolated_state_env user
     fi
 
     # Migrate the old managed binaries before resolving uv. The old bin/

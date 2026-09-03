@@ -135,6 +135,68 @@ def _install_uv_body() -> str:
     return body
 
 
+_UV_STATE_ENV_SIG = "uv_isolated_state_env() {\n"
+
+
+def _uv_state_env_fn() -> str:
+    """Return install.sh's uv_isolated_state_env() verbatim (pure shell)."""
+    text = INSTALL_SH.read_text(encoding="utf-8")
+    _, marker, rest = text.partition(_UV_STATE_ENV_SIG)
+    assert marker, "install.sh is missing uv_isolated_state_env()"
+    body, end, _ = rest.partition("\n}\n")
+    assert end, "install.sh has an unterminated uv_isolated_state_env()"
+    return marker + body + end
+
+
+def _run_uv_state_env_harness(home: Path, layout: str) -> str:
+    """Execute uv_isolated_state_env() with HOSTILE inherited UV_* values and
+    print the five resulting axes, so tests prove the branch really executes
+    and defeats the inherited values (not that the strings merely occur in
+    the source)."""
+    harness = home / "state-env-harness.sh"
+    harness.write_text(
+        "#!/bin/bash\n"
+        "set -eu\n"
+        f"HERMES_HOME='{_bash_path(home / 'hermes')}'\n"
+        "export UV_CACHE_DIR=/evil/cache UV_TOOL_DIR=/evil/tools\n"
+        "export UV_PYTHON_INSTALL_DIR=/evil/python UV_PYTHON_INSTALL_BIN=1\n"
+        "export UV_PYTHON_INSTALL_REGISTRY=1 UV_PYTHON_BIN_DIR=/evil/bin\n"
+        + _uv_state_env_fn()
+        + f"\nuv_isolated_state_env {layout}\n"
+        + 'echo "$UV_CACHE_DIR|$UV_TOOL_DIR|$UV_PYTHON_INSTALL_DIR|$UV_PYTHON_INSTALL_BIN|$UV_PYTHON_INSTALL_REGISTRY|${UV_PYTHON_BIN_DIR:-unset}"\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", _bash_path(harness)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is unavailable")
+def test_user_layout_defeats_hostile_inherited_uv_state(tmp_path: Path) -> None:
+    """Behavioral guard for the common install path: hostile inherited UV_*
+    values must be overridden to the $HERMES_HOME tree."""
+    out = _run_uv_state_env_harness(tmp_path, "user")
+    home = _bash_path(tmp_path / "hermes")
+    assert out == f"{home}/cache/uv|{home}/uv/tools|{home}/python|0|0|unset"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is unavailable")
+def test_fhs_root_layout_defeats_hostile_inherited_uv_state(tmp_path: Path) -> None:
+    """Behavioral guard for the root-FHS branch (the previous gap): hostile
+    inherited UV_* values must be overridden to Hermes' own system tree, with
+    the python store staying world-traversable under /usr/local/share (#21457)."""
+    out = _run_uv_state_env_harness(tmp_path, "fhs-root")
+    assert (
+        out
+        == "/var/cache/hermes/uv|/usr/local/share/hermes/uv/tools|/usr/local/share/uv/python|0|0|/usr/local/share/uv/bin"
+    )
+
+
 def test_install_uv_runs_installer_with_uv_unmanaged_install() -> None:
     body = _install_uv_body()
 
@@ -149,13 +211,16 @@ def test_install_uv_runs_installer_with_uv_unmanaged_install() -> None:
 
 
 def test_install_uv_pins_state_dirs_inside_hermes_home() -> None:
-    """uv's tool store, download cache, and python store must stay inside
-    HERMES_HOME so the user's own uv (tool list, cache, pythons) never gains
-    Hermes entries."""
+    """install_uv() must route its uv environment through uv_isolated_state_env
+    (the per-layout Hermes-owned pins).  The VALUES themselves are asserted
+    behaviorally by test_user_layout_defeats_hostile_inherited_uv_state /
+    test_fhs_root_layout_defeats_hostile_inherited_uv_state — this guard only
+    proves install_uv actually invokes it (a refactor that stopped calling it
+    would leave the behavioral tests passing against a dead function)."""
     body = _install_uv_body()
 
-    assert 'export UV_CACHE_DIR="$HERMES_HOME/cache/uv"' in body
-    assert 'export UV_TOOL_DIR="$HERMES_HOME/uv/tools"' in body
+    assert 'uv_isolated_state_env fhs-root' in body or 'uv_isolated_state_env user' in body
+    assert 'uv_isolated_state_env fhs-root' in body and 'uv_isolated_state_env user' in body
 
 
 def test_install_browser_use_cli_pins_state_dirs() -> None:

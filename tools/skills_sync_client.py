@@ -896,7 +896,14 @@ class SyncClient:
             raise SyncError(f"put_objects failed: {r.status_code}", status=r.status_code)
         return r.json() if r.content else {}
 
-    def cas_ref(self, name: str, from_hash: Optional[str], to_hash: str) -> Dict[str, Any]:
+    def cas_ref(
+        self,
+        name: str,
+        from_hash: Optional[str],
+        to_hash: str,
+        *,
+        collective: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """POST /v1/sync/refs/:name -- atomic compare-and-swap (sync contract).
 
         Raises :class:`SyncConflict` (carrying the actual head) on 409.
@@ -908,9 +915,12 @@ class SyncClient:
         from "proposed, awaiting review" (202) without exceptions — a 202 is a
         SUCCESS-shaped outcome, never to be presented as live (error table §5).
         """
+        cas_body: Dict[str, Any] = {"from": from_hash, "to": to_hash}
+        if collective is not None:
+            cas_body["collective"] = collective
         r = self._session.post(
             self._url(f"refs/{name}"),
-            json={"from": from_hash, "to": to_hash},
+            json=cas_body,
             timeout=self.timeout,
         )
         if r.status_code == 202:
@@ -2018,6 +2028,7 @@ def propose_skill(
     *,
     identity: Optional[Dict[str, Any]] = None,
     message: Optional[str] = None,
+    collective: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Propose a local skill's current content to the org canonical set.
 
@@ -2092,7 +2103,9 @@ def propose_skill(
 
         client.put_objects(objects.objects, org_scope=True)
         try:
-            result = client.cas_ref(org_head_ref(org_id), base_head, commit_hash)
+            result = client.cas_ref(
+                org_head_ref(org_id), base_head, commit_hash, collective=collective
+            )
             break
         except SyncConflict as conflict:
             if attempts >= _ORG_CAS_MAX_ATTEMPTS:

@@ -5991,10 +5991,11 @@ def run_conversation(
                     # Fall through to normal error handling if compression
                     # is exhausted or didn't help.
 
-                # Eager fallback for rate-limit errors (429 or quota exhaustion)
-                # and transport errors (connection failure / timeout / provider
-                # overloaded).  Rate limits and billing: switch immediately —
-                # the primary provider won't recover within the retry window.
+                # Eager fallback for deterministic model availability failures,
+                # rate-limit errors (429 or quota exhaustion), and transport
+                # errors (connection failure / timeout / provider overloaded).
+                # Model-not-found, rate limits, and billing: switch immediately —
+                # the primary route won't recover within the retry window.
                 # Transport errors: allow 1 retry first (transient hiccups
                 # recover), then fall back if the provider is truly unreachable.
                 is_rate_limited = classified.reason in {
@@ -6021,6 +6022,7 @@ def run_conversation(
                     FailoverReason.timeout,
                     FailoverReason.overloaded,
                 }
+                _is_model_unavailable = classified.reason == FailoverReason.model_not_found
                 # Z.AI Coding Plan GLM-5.2 overload 429s classify as
                 # `overloaded` (to spare the credential pool), but `overloaded`
                 # is excluded from `is_rate_limited` — the gate for the adaptive
@@ -6034,7 +6036,8 @@ def run_conversation(
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
                 _should_fallback = (
-                    (is_rate_limited and _wrapped_output_cap_budget is None)
+                    _is_model_unavailable
+                    or (is_rate_limited and _wrapped_output_cap_budget is None)
                     or (_is_transport_failure and retry_count >= 2)
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
@@ -6074,6 +6077,10 @@ def run_conversation(
                                 agent._buffer_status(
                                     "⚠️ Billing or credits exhausted — switching to fallback provider..."
                                 )
+                        elif _is_model_unavailable:
+                            agent._buffer_status(
+                                "⚠️ Model unavailable — switching to fallback provider..."
+                            )
                         elif _is_transport_failure:
                             agent._buffer_status(
                                 "⚠️ Provider unreachable — switching to fallback provider..."

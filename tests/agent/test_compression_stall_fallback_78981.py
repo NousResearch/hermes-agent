@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import threading
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import agent.conversation_compression as cc
 from agent.context_compressor import (
     ContextCompressor,
     pin_summary_route,
@@ -129,6 +130,61 @@ def test_stalled_summary_attempts_configured_fallback_chain():
     assert msgs == compressed, "the fallback attempt's compression must be published"
     assert prompt == "summarized-prompt"
     assert not timeouts, "no continue-without-compression degrade after a recovery"
+
+
+def test_worker_first_deadline_abort_attempts_fallback_exactly_once(monkeypatch):
+    """A worker that publishes its deadline abort before the host timeout
+    branch wins must take the same single fallback path as host-first expiry."""
+    original = [{"role": "user", "content": "keep-me"}]
+    compressed = [{"role": "user", "content": "fallback summary"}]
+    fallback = MagicMock(return_value=(compressed, "fallback-prompt"))
+
+    def worker(fence: CompressionCommitFence):
+        fence._deadline = 0.0
+        fence.mark_route_deadline_abort()
+        return original, "primary-aborted"
+
+    monkeypatch.setattr(cc, "_retry_compression_on_fallback_chain", fallback)
+
+    msgs, prompt = run_compress_context_with_progress_timeout(
+        worker=worker,
+        messages=original,
+        system_prompt_fallback="degraded-prompt",
+        idle_timeout_seconds=1.0,
+        total_ceiling_seconds=1.0,
+    )
+
+    fallback.assert_called_once()
+    assert msgs == compressed
+    assert prompt == "fallback-prompt"
+
+
+def test_completed_structural_noop_never_attempts_deadline_fallback(monkeypatch):
+    """An unchanged result is not itself a route failure.
+
+    Safe no-op, deferred and would-grow outcomes all return the original
+    transcript without publishing a route-deadline abort.
+    """
+    original = [{"role": "user", "content": "keep-me"}]
+    fallback = MagicMock()
+
+    def worker(fence: CompressionCommitFence):
+        fence._deadline = 0.0
+        return original, "safe-noop"
+
+    monkeypatch.setattr(cc, "_retry_compression_on_fallback_chain", fallback)
+
+    msgs, prompt = run_compress_context_with_progress_timeout(
+        worker=worker,
+        messages=original,
+        system_prompt_fallback="degraded-prompt",
+        idle_timeout_seconds=1.0,
+        total_ceiling_seconds=1.0,
+    )
+
+    fallback.assert_not_called()
+    assert msgs is original
+    assert prompt == "safe-noop"
 
 
 def test_retry_runs_on_a_host_published_fence():

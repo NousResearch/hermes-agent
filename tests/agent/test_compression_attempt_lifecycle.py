@@ -68,6 +68,60 @@ def _messages():
 
 
 class TestWorkerTeardownOnCeiling:
+    def test_worker_deadline_cancellation_is_published_to_waiting_host(
+        self, tmp_path: Path
+    ):
+        """The transaction must distinguish deadline unwind from safe no-op."""
+        _db, agent = _build_agent(tmp_path, "WORKER_DEADLINE_SIGNAL")
+        live = _messages()
+        fence = CompressionCommitFence(total_ceiling_seconds=5.0)
+
+        def abort_at_deadline(messages, **_kwargs):
+            fence._deadline = 0.0
+            raise AuxiliaryExplicitCancellation()
+
+        agent.context_compressor.compress = abort_at_deadline
+        out, _prompt = compress_context(
+            agent,
+            live,
+            "sys",
+            approx_tokens=500_000,
+            force=True,
+            commit_fence=fence,
+        )
+
+        assert out == _messages()
+        assert fence.route_deadline_aborted is True
+
+    def test_explicit_user_cancellation_is_not_published_as_route_deadline(
+        self, tmp_path: Path
+    ):
+        """A simultaneous expired deadline must not relabel an explicit stop."""
+        _db, agent = _build_agent(tmp_path, "EXPLICIT_CANCEL_SIGNAL")
+        live = _messages()
+        fence = CompressionCommitFence(total_ceiling_seconds=5.0)
+        calls = []
+
+        def abort_for_user(messages, **_kwargs):
+            calls.append(messages)
+            fence._deadline = 0.0
+            agent._hard_interrupt_requested.set()
+            raise AuxiliaryExplicitCancellation()
+
+        agent.context_compressor.compress = abort_for_user
+        out, _prompt = compress_context(
+            agent,
+            live,
+            "sys",
+            approx_tokens=500_000,
+            force=True,
+            commit_fence=fence,
+        )
+
+        assert calls
+        assert out == _messages()
+        assert fence.route_deadline_aborted is False
+
     def test_cooperative_worker_joined_within_grace(self):
         """A worker that exits promptly after cancel is joined on the
         total-ceiling path; the lease is released normally (no retention) —

@@ -152,6 +152,28 @@ def test_xai_adapter_not_authenticated_when_no_pool_entry(tmp_path, monkeypatch)
     assert not XAIGrokAdapter().is_authenticated()
 
 
+def test_xai_adapter_forwards_the_image_endpoints():
+    """Image generation must be reachable through the proxy.
+
+    xAI OAuth subscription bearers expire every 6 hours and their refresh lives
+    in the Hermes process, so an external app (e.g. a Django service) cannot
+    hold one. Routing its image calls through the proxy is the only way to use
+    the subscription instead of a separately-metered console API key — which
+    requires these OpenAI-compatible image paths to be forwarded, not 404'd.
+    """
+    allowed = XAIGrokAdapter().allowed_paths
+    assert "/images/generations" in allowed
+    assert "/images/edits" in allowed
+    assert "/image-generation-models" in allowed
+
+
+def test_xai_adapter_does_not_forward_unknown_paths():
+    """The allowlist stays an allowlist — no blanket passthrough."""
+    allowed = XAIGrokAdapter().allowed_paths
+    assert "/api-key" not in allowed
+    assert "/" not in allowed
+
+
 def test_xai_adapter_retry_rotates_pool_entry_on_429(tmp_path, monkeypatch):
     """429 from xAI must rotate to the next pool entry, not attempt refresh.
 

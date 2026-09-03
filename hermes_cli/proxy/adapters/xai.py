@@ -17,6 +17,12 @@ _POOL_PROVIDER = "xai-oauth"
 # xAI's public API is OpenAI-compatible for the endpoints Hermes commonly
 # uses. The Responses endpoint is included because Hermes' native xAI runtime
 # uses codex_responses mode.
+#
+# The image endpoints are included so an external app (e.g. a Django newsroom
+# that must not hold a raw bearer) can generate images through the proxy on the
+# operator's OAuth subscription. They are the same OpenAI-compatible shape as
+# the text endpoints and need the same 401-refresh / 429-rotation handling the
+# adapter already provides.
 _ALLOWED_PATHS: FrozenSet[str] = frozenset(
     {
         "/responses",
@@ -24,6 +30,9 @@ _ALLOWED_PATHS: FrozenSet[str] = frozenset(
         "/completions",
         "/embeddings",
         "/models",
+        "/images/generations",
+        "/images/edits",
+        "/image-generation-models",
     }
 )
 

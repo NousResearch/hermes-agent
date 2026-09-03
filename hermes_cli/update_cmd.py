@@ -2206,13 +2206,13 @@ def _fix_install_ownership(install_root: Path) -> None:
         return
 
     try:
-        real_uid = int(os.getenv("SUDO_UID") or os.getuid())
-        real_gid = int(os.getenv("SUDO_GID") or os.getgid())
+        real_uid = int(os.getenv("SUDO_UID") or os.getuid())  # windows-footgun: ok — guarded by os.name == "nt" early return above
+        real_gid = int(os.getenv("SUDO_GID") or os.getgid())  # windows-footgun: ok — guarded by os.name == "nt" early return above
     except Exception:
         return
 
     # Skip if already running as the target user
-    if os.getuid() == real_uid and os.getgid() == real_gid:
+    if os.getuid() == real_uid and os.getgid() == real_gid:  # windows-footgun: ok — guarded by os.name == "nt" early return above
         return
 
     # Walk the install tree and chown root-owned files
@@ -2234,6 +2234,9 @@ def _fix_install_ownership(install_root: Path) -> None:
                 pass
     if fixed:
         logger.info("Post-update: fixed ownership of %d root-owned file(s)/dir(s)", fixed)
+
+
+def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
     """Update Hermes Agent by downloading a ZIP archive.
 
     Used on Windows when git file I/O is broken (antivirus, NTFS filter

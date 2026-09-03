@@ -49,6 +49,42 @@ def _safe_review_reason(value: Any, limit: int = 160) -> str:
     return reason
 
 
+def _count_board_running(kb_mod: Any, slug: str) -> int:
+    """Count ``status='running'`` tasks on one board. Returns 0 on any failure."""
+    conn = None
+    try:
+        conn = kb_mod.connect(board=slug)
+        return int(
+            conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+            ).fetchone()[0]
+        )
+    except Exception:
+        return 0
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _effective_board_max_in_progress(board_running: int, remaining_global: int) -> int:
+    """Map gateway-wide remaining slots onto a board-local ``dispatch_once`` cap.
+
+    Older ``dispatch_once`` computed ``remaining = max_in_progress - board_running``.
+    Passing ``board_running + remaining_global`` therefore left exactly
+    ``remaining_global`` spawn slots for that board (#78122).
+
+    Current ``dispatch_once`` is already host-level (OOF-30): it subtracts
+    running tasks on every active board. Callers must pass the gateway-wide
+    cap unchanged, not this rewritten value, or remaining capacity is
+    subtracted twice. The helper stays for tests and for any board-local
+    adapter that still uses the old remaining formula.
+    """
+    return max(0, int(board_running)) + max(0, int(remaining_global))
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -1361,10 +1397,11 @@ class GatewayKanbanWatchersMixin:
         if max_spawn is not None:
             logger.info("kanban dispatcher: max_spawn=%s", max_spawn)
 
-        # Cap the number of simultaneously running tasks so slow workers
-        # (local LLMs, resource-constrained hosts) don't pile up and time
-        # out. When set, the dispatcher skips spawning when the board
-        # already has this many tasks in 'running' status.
+        # Cap simultaneously running tasks across ALL active boards in one
+        # gateway tick (#78122 / OOF-30). ``dispatch_once`` now counts running
+        # rows on every board (host-level), so the gateway passes this cap
+        # through unchanged. Without a host-wide ceiling, N boards could
+        # oversubscribe by N× on older board-local remaining math.
         raw_max_in_progress = kanban_cfg.get("max_in_progress", None)
         max_in_progress = None
         if raw_max_in_progress is not None:
@@ -1384,7 +1421,10 @@ class GatewayKanbanWatchersMixin:
                     )
                     max_in_progress = None
                 else:
-                    logger.info("kanban dispatcher: max_in_progress=%s", max_in_progress)
+                    logger.info(
+                        "kanban dispatcher: max_in_progress=%s (gateway-wide)",
+                        max_in_progress,
+                    )
         # When the operator never set kanban.max_in_progress, fall back to a
         # memory-derived default (OOF-30/OOF-77): unbounded fan-out on small
         # hosted VMs has repeatedly swap-thrashed the whole machine. Explicit
@@ -1452,9 +1492,9 @@ class GatewayKanbanWatchersMixin:
 
         # Read kanban.max_in_progress_per_profile — per-profile concurrency
         # cap (#21582). When set, no single profile gets more than N
-        # workers running at once, even if the global max_in_progress
-        # would allow it. Prevents one profile's local model / API quota
-        # / browser pool from being overwhelmed by a fan-out.
+        # workers running at once on a board, even if gateway-wide
+        # max_in_progress would allow it. Prevents one profile's local
+        # model / API quota / browser pool from being overwhelmed by a fan-out.
         raw_per_profile = kanban_cfg.get("max_in_progress_per_profile", None)
         max_in_progress_per_profile = None
         if raw_per_profile is not None:
@@ -1522,7 +1562,10 @@ class GatewayKanbanWatchersMixin:
                 or "database disk image is malformed" in msg
             )
 
-        def _tick_once_for_board(slug: str) -> "Optional[object]":
+        def _tick_once_for_board(
+            slug: str,
+            board_max_in_progress: "Optional[int]",
+        ) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
             Runs in a worker thread via `asyncio.to_thread`. `board=slug`
@@ -1530,6 +1573,11 @@ class GatewayKanbanWatchersMixin:
             `_default_spawn` see the right paths. The per-board DB is
             opened explicitly so concurrent boards never share a
             connection handle or accidentally claim across each other.
+
+            ``board_max_in_progress`` is the gateway-wide host cap for this
+            tick. ``dispatch_once`` already subtracts running work on every
+            board, so this is the configured/memory-derived ceiling — not a
+            board-local rewrite of remaining slots.
             """
             conn = None
             fingerprint = _board_db_fingerprint(slug)
@@ -1567,7 +1615,7 @@ class GatewayKanbanWatchersMixin:
                     conn,
                     board=slug,
                     max_spawn=max_spawn,
-                    max_in_progress=max_in_progress,
+                    max_in_progress=board_max_in_progress,
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
@@ -1617,15 +1665,41 @@ class GatewayKanbanWatchersMixin:
             Enumerating boards on every tick keeps the dispatcher honest
             when users create a new board mid-run: no restart required,
             the next tick picks it up automatically.
+
+            When ``max_in_progress`` is set, remaining capacity is re-counted
+            gateway-wide before each board and the board order follows
+            ``list_boards`` (default first, then alphabetical) — deterministic,
+            not round-robin (#78122). The cap passed into ``dispatch_once`` is
+            the host-wide ceiling; ``dispatch_once`` itself counts running
+            work on every board (OOF-30), so rewriting it with
+            ``_effective_board_max_in_progress`` would double-subtract.
             """
             try:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            slugs = [b.get("slug") or _kb.DEFAULT_BOARD for b in boards]
             out: list[tuple[str, "Optional[object]"]] = []
-            for b in boards:
-                slug = b.get("slug") or _kb.DEFAULT_BOARD
-                out.append((slug, _tick_once_for_board(slug)))
+            for slug in slugs:
+                if max_in_progress is not None:
+                    # Re-count before each board so a prior board's spawns (or a
+                    # failed spawn that still left a running row) are visible
+                    # to later boards in the same tick (#78122). dispatch_once
+                    # also re-counts host-wide (OOF-30); this keeps the
+                    # gateway tick honest even if a board DB is mid-write.
+                    running_by_board = {
+                        other: _count_board_running(_kb, other) for other in slugs
+                    }
+                    remaining = max(
+                        0, max_in_progress - sum(running_by_board.values())
+                    )
+                    logger.debug(
+                        "kanban dispatcher: board %s remaining=%s running=%s",
+                        slug,
+                        remaining,
+                        running_by_board[slug],
+                    )
+                out.append((slug, _tick_once_for_board(slug, max_in_progress)))
             return out
 
         def _ready_nonempty() -> bool:

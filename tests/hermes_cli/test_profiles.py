@@ -114,6 +114,20 @@ class TestGetProfileDir:
 class TestCreateProfile:
     """Tests for create_profile()."""
 
+    def test_clone_all_excludes_credential_stores(self, profile_env):
+        source = create_profile("source", no_alias=True)
+        (source / ".env").write_text("FAKE_TOKEN=must-not-copy\n")
+        (source / "auth.json").write_text('{"credential_pool":{"fake":[]}}')
+        (source / "config.yaml").write_text("model: test\n")
+
+        target = create_profile(
+            "target", clone_from="source", clone_all=True, no_alias=True
+        )
+
+        assert not (target / "auth.json").exists()
+        assert "FAKE_TOKEN" not in (target / ".env").read_text()
+        assert (target / "config.yaml").exists()
+
 
     def test_seeds_placeholder_env_file(self, profile_env):
         """Fresh profiles get their own .env (owner-only) so channel/env
@@ -1175,5 +1189,4 @@ class TestResolveProfileEnvSpelling:
         # No HERMES_HOME: the platform default root applies (existing contract).
         monkeypatch.delenv("HERMES_HOME", raising=False)
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
-
 

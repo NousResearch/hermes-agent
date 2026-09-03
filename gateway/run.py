@@ -9440,12 +9440,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return len(self._running_agents)
 
     def _active_work_count(self) -> int:
-        """All agent work the gateway must expose and drain as one total."""
+        """All agent work the gateway must expose and drain as one total.
+
+        Async delegations are daemon-thread work owned by this process. A
+        planned restart must wait for them too; otherwise the requesting chat
+        turn can finish, the restart proceeds, and completed child work is
+        discarded when the process exits.
+        """
+        try:
+            from tools.async_delegation import active_count
+
+            async_delegations = max(0, int(active_count()))
+        except Exception:
+            logger.debug(
+                "Active async-delegation count unavailable during drain",
+                exc_info=True,
+            )
+            async_delegations = 0
         return (
             self._running_agent_count()
             + self._active_cron_job_count()
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
+            + async_delegations
         )
 
     def _active_cron_job_count(self) -> int:

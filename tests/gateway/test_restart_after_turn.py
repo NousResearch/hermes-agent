@@ -53,3 +53,17 @@ def test_load_restart_after_turn_timeout_preserves_zero(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HERMES_RESTART_AFTER_TURN_TIMEOUT", "0")
     assert GatewayRunner._load_restart_after_turn_timeout() == 0.0
+
+
+def test_active_work_count_includes_async_delegations(monkeypatch):
+    """A planned restart must not kill detached subagents after the parent turn."""
+    import tools.async_delegation as async_delegation
+
+    runner = object.__new__(GatewayRunner)
+    monkeypatch.setattr(runner, "_running_agent_count", lambda: 0)
+    monkeypatch.setattr(runner, "_active_cron_job_count", lambda: 0)
+    monkeypatch.setattr(runner, "_active_api_run_count", lambda: 0)
+    monkeypatch.setattr(runner, "_active_deferred_agent_worker_count", lambda: 0)
+    monkeypatch.setattr(async_delegation, "active_count", lambda: 1)
+
+    assert runner._active_work_count() == 1

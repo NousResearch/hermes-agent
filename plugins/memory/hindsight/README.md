@@ -46,7 +46,7 @@ Points the plugin at an existing Hindsight instance you're already running (Dock
 
 ## Config
 
-Config file: `~/.hermes/hindsight/config.json`
+Config file: `$HERMES_HOME/hindsight/config.json` (for the default profile, `$HERMES_HOME` is `~/.hermes`)
 
 ### Connection
 
@@ -69,14 +69,17 @@ Config file: `~/.hermes/hindsight/config.json`
 | Key | Default | Description |
 |-----|---------|-------------|
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
-| `recall_prefetch_method` | `recall` | Auto-recall method: `recall` (raw facts) or `reflect` (LLM synthesis) |
-| `recall_max_tokens` | `4096` | Maximum tokens for recall results |
+| `recall_prefetch_method` | `recall` | Auto-recall method: `recall` (ranked results filtered by `auto_recall_types` / `recall_types`) or `reflect` (LLM synthesis) |
+| `recall_max_tokens` | `4096` | Maximum tokens for explicit `hindsight_recall` results |
+| `auto_recall_budget` | value of `recall_budget` | Thoroughness for automatic recall |
+| `auto_recall_max_tokens` | value of `recall_max_tokens` | Maximum tokens requested by automatic recall when `recall_prefetch_method` is `recall` |
 | `recall_max_input_chars` | `800` | Maximum input query length for auto-recall |
 | `recall_prompt_preamble` | — | Custom preamble for recalled memories in context |
 | `recall_tags` | — | Tags to filter when searching memories |
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |
-| `recall_types` | `observation` | Fact types surfaced by recall (both auto-recall and the `hindsight_recall` tool). Comma-separated string or JSON list. **Default narrowed to `observation` only** (see "Behavior change" below). Set to `observation,world,experience` to also include raw facts. |
-| `auto_recall` | `true` | Automatically recall memories before each turn |
+| `recall_types` | `observation` | Fact types surfaced by the `hindsight_recall` tool and used as the auto-recall fallback. Comma-separated string or JSON list. |
+| `auto_recall_types` | value of `recall_types` | Optional fact types for automatic recall only. Set this to `observation` while broadening `recall_types` when prompt injection should stay dense but explicit lookup must include recent raw facts. |
+| `auto_recall` | `true` | Automatically recall memories. With `recall_sync: false`, the background result is injected on the next turn and labeled as previous-turn context. |
 | `recall_sync` | `false` | Recall synchronously against the *current* message each turn (higher relevance, adds recall latency). Default off: recall runs in the background and is injected on the next turn. |
 | `recall_indicator` | `true` | Show a `👁️ Hindsight — recalled N memories` status line when auto-recall injects memory. Turn off for customer-facing agents. |
 
@@ -86,19 +89,19 @@ Config file: `~/.hermes/hindsight/config.json`
 >
 > Per [Hindsight's docs](https://hindsight.vectorize.io/developer/observations), observations are the **consolidated** knowledge layer Hindsight builds on top of raw facts: deduplicated beliefs grounded in evidence, refined as new facts arrive, with proof counts and freshness signals. Raw `world` / `experience` facts are the individual supporting evidence that feeds them. For per-turn context injection, observations are denser per token and avoid feeding the model multiple raw facts that one observation already summarizes.
 >
-> Restore the broad recall with `"recall_types": "observation,world,experience"` (string or JSON list) in `~/.hermes/hindsight/config.json`. This applies to **both** auto-recall and the `hindsight_recall` tool — both read the same `recall_types` setting (the tool schema has no per-call `types` argument), so narrowing the default narrows both paths.
+> Restore broad explicit recall with `"recall_types": "observation,world,experience"` (string or JSON list) in `$HERMES_HOME/hindsight/config.json`. To keep automatic prompt injection observation-only, also set `"auto_recall_types": "observation"`.
 
 ### Retain
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `auto_retain` | `true` | Automatically retain conversation turns |
-| `retain_async` | `true` | Process retain asynchronously on the Hindsight server |
-| `retain_every_n_turns` | `1` | Retain every N turns (1 = every turn) |
+| `retain_async` | `true` | Controls explicit `hindsight_retain` tool calls. Automatic conversation writes run on the background writer and always wait for the server result so lifecycle durability can be confirmed. Append writes use a process-scoped document, are serialized, and reconcile an ambiguous failure with an idempotent local-document replacement before later deltas continue. |
+| `retain_every_n_turns` | `1` | Retain every N turns (1 = every turn). A partial batch is flushed on session switch and shutdown. |
 | `retain_context` | `conversation between Hermes Agent and the User` | Context label for retained memories |
 | `retain_tags` | — | Default tags applied to retained memories; merged with per-call tool tags |
 | `retain_source` | — | Opt-in `metadata.source` attached to retained memories (identifies the storing client, e.g. `hermes`). Empty by default — no attribution tag ships unless you set it. |
-| `retain_indicator` | `true` | Show a `👁️ Hindsight — saving to memory…` status line when a turn is saved. Turn off for customer-facing agents. |
+| `retain_indicator` | `true` | Show a `👁️ Hindsight — saving to memory…` status line when a turn is queued for persistence. Turn off for customer-facing agents. |
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 
@@ -121,7 +124,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `llm_model` | per-provider | Model name (e.g. `gpt-4o-mini`, `qwen/qwen3.5-9b`) |
 | `llm_base_url` | — | Endpoint URL for `openai_compatible` (e.g. `http://192.168.1.10:8080/v1`) |
 
-The LLM API key is stored in `~/.hermes/.env` as `HINDSIGHT_LLM_API_KEY`.
+The LLM API key is stored in `$HERMES_HOME/.env` as `HINDSIGHT_LLM_API_KEY`.
 
 ## Tools
 

@@ -46,13 +46,16 @@ def test_blank_and_missing_are_noops(monkeypatch):
     assert _ENV not in os.environ
 
 
-def test_invalid_and_negative_ignored(monkeypatch):
+def test_invalid_negative_and_nonfinite_ignored(monkeypatch):
     import os
 
     _export({"port_health_grace_timeout": "not-a-number"})
     assert _ENV not in os.environ
     _export({"port_health_grace_timeout": -5})
     assert _ENV not in os.environ
+    for value in ("NaN", "inf", "-inf"):
+        _export({"port_health_grace_timeout": value})
+        assert _ENV not in os.environ
 
 
 def test_explicit_env_wins_over_config(monkeypatch):

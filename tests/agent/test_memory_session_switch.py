@@ -164,6 +164,8 @@ def _make_hindsight_provider():
     provider._parent_session_id = ""
     provider._document_id = "old-sid-20260101_000000_000000"
     provider._session_turns = ["turn-1", "turn-2"]
+    provider._last_retained_turn_count = 0
+    provider._append_retain_progress = hindsight_mod._AppendRetainProgress()
     provider._turn_counter = 2
     provider._turn_index = 2
     # Attrs read by _build_metadata / _build_retain_kwargs when the
@@ -187,6 +189,9 @@ def _make_hindsight_provider():
     provider._prefetch_thread = None
     provider._prefetch_lock = threading.Lock()
     provider._prefetch_result = ""
+    provider._prefetch_count = 0
+    provider._prefetch_generation = 0
+    provider._lifecycle_lock = threading.RLock()
     # Sync thread tracking (legacy alias at the writer).
     provider._sync_thread = None
     # Writer queue infra the flush-on-switch path enqueues onto. We stub
@@ -206,6 +211,8 @@ def _make_hindsight_provider():
     provider._mode = "cloud"
     provider._api_url = ""
     provider._api_key = ""
+    provider._bank_id_template = ""
+    provider._static_bank_id = "test-bank"
     provider._client = None
     provider._resolve_retain_target = lambda fb: (fb, None)
     # Stub the network-touching helper so any enqueued flush closure is

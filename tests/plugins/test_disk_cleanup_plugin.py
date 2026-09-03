@@ -419,3 +419,390 @@ class TestBundledDiscovery:
         mgr.discover_and_load()
         assert "memory" not in mgr._plugins
         assert "context_engine" not in mgr._plugins
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for #75403 — durable test files must not be auto-deleted
+# ---------------------------------------------------------------------------
+
+class TestDurableTestFileProtection75403:
+    """A file named ``test_*`` / ``tmp_*`` inside a durable project/config
+    tree must never be treated as disposable, and a pre-existing file the
+    agent merely edited must never be auto-tracked for deletion."""
+
+    # --- Layer 1: guess_category must not infer disposability from a
+    # basename inside durable project trees -------------------------------
+
+    def test_guess_category_excludes_durable_project_trees(self, _isolate_env):
+        dg = _load_lib()
+        for tree in ("patches", "projects", "skins", "themes", "contributors"):
+            p = _isolate_env / tree / "tests" / "test_manager.py"
+            p.parent.mkdir(parents=True)
+            p.write_text("x")
+            assert dg.guess_category(p) is None, (
+                f"{tree}/ test file must not be disposable (#75403)"
+            )
+
+    def test_guess_category_excludes_backups_profiles_optional_skills(self, _isolate_env):
+        dg = _load_lib()
+        for tree in ("backups", "profiles", "optional-skills"):
+            p = _isolate_env / tree / "tmp_snapshot.json"
+            p.parent.mkdir(parents=True)
+            p.write_text("x")
+            assert dg.guess_category(p) is None, (
+                f"{tree}/ tmp file must not be disposable (#75403)"
+            )
+
+    # --- Layer 2: the empty-directory sweep must never prune durable
+    # project trees --------------------------------------------------------
+
+    def test_quick_does_not_sweep_empty_durable_project_dirs(self, _isolate_env):
+        dg = _load_lib()
+        durable_empty = _isolate_env / "patches" / "tests" / "empty"
+        durable_empty.mkdir(parents=True)
+        dg.quick()
+        assert (_isolate_env / "patches").exists(), (
+            "patches/ durable tree must not be swept (#75403)"
+        )
+
+    # --- Layer 3: pre-existing files must not be auto-tracked when a tool
+    # merely edits them ---------------------------------------------------
+
+    def test_preexisting_test_file_not_tracked_on_edit(self, _isolate_env):
+        pi = _load_plugin_init()
+        p = _isolate_env / "scratch" / "test_existing.py"
+        p.parent.mkdir(parents=True)
+        p.write_text("original")  # exists BEFORE the tool call
+        # pre_tool_call snapshots pre-existence
+        pi._on_pre_tool_call(
+            tool_name="write_file",
+            args={"path": str(p), "content": "edited"},
+            task_id="t75403a", session_id="s75403a",
+        )
+        # post_tool_call (file merely edited) must NOT track it
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": str(p), "content": "edited"},
+            result="OK",
+            task_id="t75403a", session_id="s75403a",
+        )
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or json.loads(tracked_file.read_text()) == []
+
+    def test_preexisting_test_file_in_durable_tree_not_tracked(self, _isolate_env):
+        pi = _load_plugin_init()
+        p = _isolate_env / "patches" / "tests" / "test_manager.py"
+        p.parent.mkdir(parents=True)
+        p.write_text("x")
+        pi._on_pre_tool_call(
+            tool_name="write_file",
+            args={"path": str(p)},
+            task_id="t75403c", session_id="s75403c",
+        )
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": str(p)},
+            result="OK",
+            task_id="t75403c", session_id="s75403c",
+        )
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or json.loads(tracked_file.read_text()) == []
+
+    def test_newly_created_test_file_still_tracked(self, _isolate_env):
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_brand_new.py"
+        # pre_tool_call fires while the file does not yet exist
+        pi._on_pre_tool_call(
+            tool_name="write_file",
+            args={"path": str(p), "content": "x"},
+            task_id="t75403b", session_id="s75403b",
+        )
+        # the tool then creates the file
+        p.write_text("x")
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": str(p), "content": "x"},
+            result="OK",
+            task_id="t75403b", session_id="s75403b",
+        )
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        data = json.loads(tracked_file.read_text())
+        assert len(data) == 1
+        assert data[0]["category"] == "test"
+
+    # --- Layer 4: stale tracked entries must not be deleted ---------
+
+    def test_quick_skips_stale_test_entry_for_durable_tree(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "patches" / "tests" / "test_manager.py"
+        p.parent.mkdir(parents=True)
+        p.write_text("x")
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(p),
+            "category": "test",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+            "size": 1,
+        }]))
+        summary = dg.quick()
+        assert summary["deleted"] == 0, (
+            "stale test entry in durable tree must not be deleted (#75403)"
+        )
+        assert p.exists()
+
+    def test_dry_run_omits_stale_test_entry_for_durable_tree(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "patches" / "tests" / "test_manager.py"
+        p.parent.mkdir(parents=True)
+        p.write_text("x")
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(p),
+            "category": "test",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+            "size": 1,
+        }]))
+        auto, prompt = dg.dry_run()
+        assert len(auto) == 0, "stale test entry must not appear in dry-run auto"
+        assert len(prompt) == 0
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for concurrency/data-loss blockers fixed in #75464
+# ---------------------------------------------------------------------------
+
+class TestTerminalResultOnlyPathProtection:
+    """Terminal result-only paths must NEVER be auto-tracked because their
+    pre-existence is unknowable at pre-call time (#75464 blocker)."""
+
+    def test_result_only_path_not_tracked(self, _isolate_env):
+        """A path that appears ONLY in terminal result (not in command args)
+        must not be auto-tracked, even if it matches test patterns."""
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_result_only.py"
+        p.write_text("x")  # file exists, but path only in result, not command
+        # pre_tool_call: command does NOT contain the path
+        pi._on_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "echo 'done'"},
+            task_id="t_res", session_id="s_res",
+        )
+        # post_tool_call: result contains the path, but command didn't
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={"command": "echo 'done'"},
+            result=f"created {p}\n",
+            task_id="t_res", session_id="s_res",
+        )
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or json.loads(tracked_file.read_text()) == []
+
+    def test_command_arg_path_still_tracked(self, _isolate_env):
+        """A path that appears in command args IS eligible for tracking
+        (pre-existence was snapshotted)."""
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_cmd_arg.py"
+        # File does NOT pre-exist — it's being created
+        pi._on_pre_tool_call(
+            tool_name="terminal",
+            args={"command": f"touch {p}"},
+            task_id="t_cmd", session_id="s_cmd",
+        )
+        p.write_text("x")  # created by the command
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={"command": f"touch {p}"},
+            result="OK",
+            task_id="t_cmd", session_id="s_cmd",
+        )
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        data = json.loads(tracked_file.read_text())
+        assert len(data) == 1
+        assert data[0]["category"] == "test"
+
+    def test_existing_command_arg_path_not_tracked(self, _isolate_env):
+        """A pre-existing path in command args must NOT be auto-tracked
+        (it was snapshotted pre-call and thus is merely being edited)."""
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_existing_arg.py"
+        p.write_text("original")  # exists before the tool call
+        pi._on_pre_tool_call(
+            tool_name="terminal",
+            args={"command": f"echo foo >> {p}"},
+            task_id="t_exist", session_id="s_exist",
+        )
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={"command": f"echo foo >> {p}"},
+            result="OK",
+            task_id="t_exist", session_id="s_exist",
+        )
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or json.loads(tracked_file.read_text()) == []
+
+
+class TestTwoSessionInterleaving:
+    """Two concurrent sessions must not interfere with each other's
+    pre-existence snapshots (#75464 concurrency blocker)."""
+
+    def test_session_a_end_does_not_erase_session_b_snapshot(self, _isolate_env):
+        """Ending session A must not clear session B's pre-existing snapshots."""
+        pi = _load_plugin_init()
+        p_b = _isolate_env / "test_session_b.py"
+        p_b.write_text("pre-existing for B")
+
+        # Session B: snapshot pre-existence
+        pi._on_pre_tool_call(
+            tool_name="write_file",
+            args={"path": str(p_b), "content": "edited"},
+            task_id="tb", session_id="session_B",
+        )
+        # Session A ends (should NOT affect session B's snapshot)
+        pi._on_session_end(session_id="session_A", completed=True, interrupted=False)
+
+        # Session B: post_tool_call should still see the pre-existing snapshot
+        # and NOT track the file
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": str(p_b), "content": "edited"},
+            result="OK",
+            task_id="tb", session_id="session_B",
+        )
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or json.loads(tracked_file.read_text()) == []
+
+    def test_session_b_post_still_protects_preexisting_file(self, _isolate_env):
+        """After session A ends, session B's post_tool_call still correctly
+        protects its pre-existing file from auto-tracking."""
+        pi = _load_plugin_init()
+        p_b = _isolate_env / "test_session_b_protected.py"
+        p_b.write_text("durable")
+
+        # Session A: create and track a new file (unrelated)
+        p_a = _isolate_env / "test_session_a_new.py"
+        pi._on_pre_tool_call(
+            tool_name="write_file",
+            args={"path": str(p_a), "content": "new"},
+            task_id="ta", session_id="session_A",
+        )
+        p_a.write_text("new")
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": str(p_a), "content": "new"},
+            result="OK",
+            task_id="ta", session_id="session_A",
+        )
+
+        # Session B: snapshot pre-existing file
+        pi._on_pre_tool_call(
+            tool_name="write_file",
+            args={"path": str(p_b), "content": "modified"},
+            task_id="tb", session_id="session_B",
+        )
+
+        # Session A ends
+        pi._on_session_end(session_id="session_A", completed=True, interrupted=False)
+        # Session A's file should be cleaned up
+        assert not p_a.exists(), "session A's new test file should be cleaned"
+
+        # Session B: post_tool_call must still protect p_b
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": str(p_b), "content": "modified"},
+            result="OK",
+            task_id="tb", session_id="session_B",
+        )
+        # p_b must NOT be in tracked.json
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_data = json.loads(tracked_file.read_text()) if tracked_file.exists() else []
+        p_b_resolved = str(p_b.resolve())
+        assert not any(e["path"] == p_b_resolved for e in tracked_data), (
+            "session B's pre-existing file must not be tracked"
+        )
+        assert p_b.exists(), "session B's durable file must survive"
+
+
+    def test_explicit_tool_call_ids_isolate_snapshots(self, _isolate_env):
+        """Each production-shaped tool call must consume only its own snapshot.
+
+        A and B share task/session identity, so the explicit call IDs are the
+        only discriminator. Ending an unrelated session must also leave both
+        snapshots available.
+        """
+        pi = _load_plugin_init()
+        p_a = _isolate_env / "test_call_a.py"
+        p_b = _isolate_env / "test_call_b.py"
+        p_a.write_text("durable A")
+        p_b.write_text("durable B")
+
+        hook_context = {"task_id": "shared-task", "session_id": "shared-session"}
+        pi._on_pre_tool_call(
+            tool_name="write_file",
+            args={"path": str(p_a), "content": "edited A"},
+            tool_call_id="call-A",
+            **hook_context,
+        )
+        pi._on_pre_tool_call(
+            tool_name="write_file",
+            args={"path": str(p_b), "content": "edited B"},
+            tool_call_id="call-B",
+            **hook_context,
+        )
+
+        # An unrelated session ending must not clear either in-flight call.
+        pi._on_session_end(session_id="unrelated-session")
+
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": str(p_a), "content": "edited A"},
+            result="OK",
+            tool_call_id="call-A",
+            **hook_context,
+        )
+        # If call IDs collide, call B's snapshot is consumed here and this
+        # post hook will incorrectly auto-track B as a disposable new file.
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": str(p_b), "content": "edited B"},
+            result="OK",
+            tool_call_id="call-B",
+            **hook_context,
+        )
+
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or json.loads(tracked_file.read_text()) == []
+        assert p_a.exists() and p_b.exists()
+
+
+class TestDryRunNoDelete:
+    """dry_run must never delete files — it's a read-only preview."""
+
+    def test_dry_run_does_not_delete_tracked_files(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "test_dry.py"
+        p.write_text("data")
+        dg.track(str(p), "test", silent=True)
+        assert p.exists()
+        auto, prompt = dg.dry_run()
+        # File should still exist — dry_run is non-destructive
+        assert p.exists(), "dry_run must never delete files"
+        # But it should show up in auto-delete preview
+        assert any(i["path"] == str(p) for i in auto)
+
+    def test_dry_run_no_side_effects(self, _isolate_env):
+        """dry_run must not modify tracked.json or the filesystem."""
+        dg = _load_lib()
+        p = _isolate_env / "test_dry2.py"
+        p.write_text("x")
+        dg.track(str(p), "test", silent=True)
+        tracked_before = json.loads(
+            (_isolate_env / "disk-cleanup" / "tracked.json").read_text()
+        )
+        dg.dry_run()
+        tracked_after = json.loads(
+            (_isolate_env / "disk-cleanup" / "tracked.json").read_text()
+        )
+        assert tracked_before == tracked_after, "dry_run must not mutate tracked.json"
+        assert p.exists(), "dry_run must not delete files"

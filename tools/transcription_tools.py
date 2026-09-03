@@ -741,7 +741,7 @@ def _run_command_stt(
         "env": delegated_child_subprocess_env(scrubbed),
     }
     if os.name == "nt":
-        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        popen_kwargs["creationflags"] = windows_hide_flags()
     else:
         popen_kwargs["start_new_session"] = True
 

@@ -233,6 +233,25 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # API Server run dispatch hook. Fired by POST /v1/runs after auth/body
+    # validation and session/run_id allocation, before local _create_agent().
+    # Call sites short-circuit on has_hook(), so when nothing subscribes no
+    # dispatch payload is built. Hook callbacks are invoked off the event-loop
+    # thread; callbacks may perform blocking routing I/O without stalling other
+    # gateway requests.
+    # The payload is sanitized: no request objects, auth headers, environment,
+    # secrets, or mutable adapter state are exposed. Plugins should accept
+    # **kwargs for forward compatibility. Return values influence flow:
+    #   {"action": "accept"|"handled", "dispatch": {...}} -> externally handled
+    #   {"action": "reject"|"error", "error": "...", "status_code": 400} -> fail
+    #   {"action": "pass"} / None -> normal local API-server run
+    # Unknown non-None decisions fail closed with a 400 instead of silently
+    # falling through to local execution.
+    # Kwargs include: run_id, session_id, input, instructions,
+    #   conversation_history, previous_response_id, requested_model,
+    #   requested_provider, target_aliases, metadata, capabilities, status_url,
+    #   events_url.
+    "api_server_run_dispatch",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.
@@ -396,6 +415,7 @@ VALID_HOOKS: Set[str] = {
 # Support for a shell response shape can lift an event out of this set.
 SHELL_UNSUPPORTED_HOOKS: Set[str] = {
     "transform_api_error_classification",
+    "api_server_run_dispatch",
 }
 
 # Timeout coverage is an allowlist for the agent-turn hot path, not every

@@ -13,6 +13,7 @@ import yaml
 
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
+    SHELL_UNSUPPORTED_HOOKS,
     VALID_HOOKS,
     PluginContext,
     PluginManager,
@@ -807,6 +808,46 @@ class TestPluginHooks:
         )
         assert len(results) == 1
         assert results[0] == {"action": "skip", "reason": "test"}
+
+    def test_api_server_run_dispatch_hook_is_valid_and_additive(self, tmp_path, monkeypatch):
+        """Run dispatch hook is validated and keeps additive **kwargs compatibility."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "api_run_dispatcher",
+            register_body=(
+                'ctx.register_hook("api_server_run_dispatch", '
+                'lambda target_aliases, **kw: {"action": "accept", '
+                '"dispatch": {"target": target_aliases.get("target_agent"), '
+                '"run_id": kw.get("run_id")}})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "api_server_run_dispatch" in VALID_HOOKS
+        assert "api_server_run_dispatch" in SHELL_UNSUPPORTED_HOOKS
+        assert mgr.has_hook("api_server_run_dispatch") is True
+        results = mgr.invoke_hook(
+            "api_server_run_dispatch",
+            run_id="run_123",
+            session_id="run-session",
+            input="queue",
+            instructions=None,
+            conversation_history=[],
+            previous_response_id=None,
+            requested_model="gpt-test",
+            requested_provider="openai",
+            target_aliases={"target_agent": "martina"},
+            metadata={"source": {"surface": "test"}},
+            capabilities={"hook": "api_server_run_dispatch"},
+            status_url="/v1/runs/run_123",
+            events_url="/v1/runs/run_123/events",
+            future_field="accepted because callback has **kw",
+        )
+        assert results == [{"action": "accept", "dispatch": {"target": "martina", "run_id": "run_123"}}]
 
 
 

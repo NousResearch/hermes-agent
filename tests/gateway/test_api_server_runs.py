@@ -284,6 +284,166 @@ class TestStartRun:
         mock_create.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_run_dispatch_hook_accepts_sanitized_payload_not_local_agent(self, adapter, monkeypatch):
+        app = _create_runs_app(adapter)
+        dispatch_decision = {"target_profile": "martina", "task_id": "task-martina-1"}
+        seen = {}
+
+        def _invoke_hook(hook_name, **kwargs):
+            seen["thread_id"] = threading.get_ident()
+            seen["hook_name"] = hook_name
+            seen["payload"] = kwargs
+            return [{"action": "accepted", "dispatch": dispatch_decision}]
+
+        event_loop_thread_id = threading.get_ident()
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: True)
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _invoke_hook)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "show my workspace queue",
+                        "instructions": "stay concise",
+                        "conversation_history": [{"role": "user", "content": "previous"}],
+                        "previous_response_id": "resp_previous",
+                        "model": "gpt-test",
+                        "provider": "openai",
+                        "target_agent": "martina",
+                        "metadata": {"client": "mobile"},
+                        "source": {"surface": "test"},
+                    },
+                    headers={"Authorization": "Bearer secret-token"},
+                )
+                assert resp.status == 202
+                data = await resp.json()
+                run_id = data["run_id"]
+                assert data["status"] == "accepted"
+                assert data["status_url"] == f"/v1/runs/{run_id}"
+                assert data["events_url"] == f"/v1/runs/{run_id}/events"
+                assert data["dispatch"] == dispatch_decision
+                mock_create.assert_not_called()
+
+                status_resp = await cli.get(f"/v1/runs/{run_id}")
+                status_data = await status_resp.json()
+                assert status_data["status"] == "accepted"
+                assert status_data["dispatch"] == dispatch_decision
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                events_body = await events_resp.text()
+                assert "run.dispatch_accepted" in events_body
+                assert "task-martina-1" in events_body
+
+        payload = seen["payload"]
+        assert seen["thread_id"] != event_loop_thread_id
+        assert seen["hook_name"] == "api_server_run_dispatch"
+        assert payload["run_id"].startswith("run_")
+        assert payload["session_id"] == payload["run_id"]
+        assert payload["input"] == "show my workspace queue"
+        assert payload["instructions"] == "stay concise"
+        assert payload["conversation_history"] == [{"role": "user", "content": "previous"}]
+        assert payload["previous_response_id"] == "resp_previous"
+        assert payload["requested_model"] == "gpt-test"
+        assert payload["requested_provider"] == "openai"
+        assert payload["target_aliases"] == {"target_agent": "martina"}
+        assert "history" not in payload
+        assert "model" not in payload
+        assert "target" not in payload
+        assert payload["metadata"] == {
+            "metadata": {"client": "mobile"},
+            "source": {"surface": "test"},
+        }
+        assert payload["capabilities"]["hook"] == "api_server_run_dispatch"
+        assert payload["status_url"] == f"/v1/runs/{payload['run_id']}"
+        assert payload["events_url"] == f"/v1/runs/{payload['run_id']}/events"
+        for forbidden in ("request", "headers", "authorization", "auth", "adapter", "body", "gateway_session_key"):
+            assert forbidden not in payload
+
+    @pytest.mark.asyncio
+    async def test_run_dispatch_hook_pass_allows_default_local_execution(self, adapter, monkeypatch):
+        app = _create_runs_app(adapter)
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: True)
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda _name, **_kwargs: [{"action": "pass"}])
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello", "agent_id": "ghost"})
+                assert resp.status == 202
+                data = await resp.json()
+                assert data["status"] == "started"
+
+                for _ in range(40):
+                    if mock_create.called:
+                        break
+                    await asyncio.sleep(0.05)
+                mock_create.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_dispatch_hook_rejects_without_local_execution(self, adapter, monkeypatch):
+        app = _create_runs_app(adapter)
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: True)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda _name, **_kwargs: [{"action": "reject", "status_code": 409, "error": "no route available"}],
+        )
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post("/v1/runs", json={"input": "hello", "agent_id": "ghost"})
+                assert resp.status == 409
+                data = await resp.json()
+                assert "no route available" in data["error"]["message"]
+                mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_dispatch_hook_unknown_action_fails_closed(self, adapter, monkeypatch):
+        app = _create_runs_app(adapter)
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: True)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda _name, **_kwargs: [{"action": "aczept"}],
+        )
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post("/v1/runs", json={"input": "hello", "agent_id": "ghost"})
+                assert resp.status == 400
+                data = await resp.json()
+                assert "unknown action" in data["error"]["message"]
+                mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_dispatch_payload_not_built_when_hook_absent(self, adapter, monkeypatch):
+        app = _create_runs_app(adapter)
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: False)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            MagicMock(side_effect=AssertionError("hook should not be invoked")),
+        )
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_api_run_dispatch_payload") as mock_payload,
+                patch.object(adapter, "_create_agent") as mock_create,
+            ):
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello", "agent_id": "ghost"})
+                assert resp.status == 202
+                data = await resp.json()
+                assert data["status"] == "started"
+                mock_payload.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_start_passes_request_model_provider_options_to_create_agent(self, adapter):
         app = _create_runs_app(adapter)
         model_options = {"reasoning_effort": "medium", "service_tier": "priority"}

@@ -619,6 +619,33 @@ async def _handle_runs(
         or self._declared_conversation_session(gateway_session_key)
         or run_id
     )
+    dispatch_decision = None
+    if self._has_api_run_dispatch_hook():
+        dispatch_payload = self._api_run_dispatch_payload(
+            body=body,
+            raw_input=raw_input,
+            instructions=instructions,
+            conversation_history=conversation_history,
+            previous_response_id=previous_response_id,
+            session_id=session_id,
+            run_id=run_id,
+            agent_overrides=agent_overrides,
+        )
+        dispatch_decision = await asyncio.to_thread(
+            self._dispatch_api_run, dispatch_payload
+        )
+    if dispatch_decision and dispatch_decision.get("action") == "rejected":
+        try:
+            status_code = int(dispatch_decision.get("status_code", 400))
+        except (TypeError, ValueError):
+            status_code = 400
+        if status_code < 400 or status_code > 599:
+            status_code = 400
+        return web.json_response(
+            _openai_error(str(dispatch_decision.get("error") or "Run dispatch rejected")),
+            status=status_code,
+        )
+
     # Approval queues gate host-side tool execution and must be isolated
     # per API run. Client-provided session IDs and memory session keys are
     # conversation/memory scopes, not authorization namespaces: multiple
@@ -704,6 +731,38 @@ async def _handle_runs(
                 headers=headers,
             )
         self._run_idempotency_ids.add(run_id)
+
+    if dispatch_decision and dispatch_decision.get("action") == "accepted":
+        dispatch = dispatch_decision.get("dispatch") or {}
+        accepted_event = {
+            "event": "run.dispatch_accepted",
+            "run_id": run_id,
+            "timestamp": time.time(),
+            "dispatch": dispatch,
+        }
+        q.put_nowait(accepted_event)
+        q.put_nowait(None)
+        self._run_approval_sessions.pop(run_id, None)
+        self._set_run_status(
+            run_id,
+            "accepted",
+            session_id=session_id,
+            dispatch=dispatch,
+            last_event="run.dispatch_accepted",
+        )
+        response_headers = (
+            {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
+        )
+        return web.json_response(
+            {
+                "run_id": run_id,
+                "status": "accepted",
+                **self._api_run_urls(run_id),
+                "dispatch": dispatch,
+            },
+            status=202,
+            headers=response_headers,
+        )
 
     # Background task outlives the HTTP response (and thus the middleware
     # profile scope). Capture now and re-enter inside the task/executor.

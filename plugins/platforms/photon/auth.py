@@ -912,7 +912,9 @@ def register_user_if_absent(
     same phone number already exists (the official CLI does no dedup, so we
     add it here to make ``setup`` safely re-runnable).
     """
-    existing = find_user_by_phone(project_id, project_secret, phone_number)
+    existing = find_routable_user(
+        list_users(project_id, project_secret), phone_number,
+    )
     if existing is not None:
         return existing, False
     user = create_user(
@@ -939,6 +941,79 @@ def user_assigned_line(user: Optional[Dict[str, Any]]) -> Optional[str]:
         return None
     val = user.get("assignedPhoneNumber")
     return str(val) if val else None
+
+
+def user_opted_in(user: Optional[Dict[str, Any]]) -> bool:
+    """True when the delivery plane will route messages for this user.
+
+    The row must carry ``meta.opt_in``, which the service sets once the human
+    has sent one message from ``phoneNumber`` to the row's
+    ``assignedPhoneNumber``. A row without it looks registered everywhere but
+    never sends or receives — outbound fails with "Target not allowed for
+    this project". Client-supplied meta is ignored on create, so the flag
+    cannot be produced through the API. (Ported from qwibitai/nanoclaw#3181.)
+    """
+    if not user:
+        return False
+    meta = user.get("meta")
+    return bool(isinstance(meta, dict) and meta.get("opt_in"))
+
+
+def find_routable_user(
+    users: List[Dict[str, Any]], phone_number: str,
+) -> Optional[Dict[str, Any]]:
+    """Return the row that decides routing for ``phone_number``.
+
+    When duplicates exist for the same number, an opted-in row wins over
+    whichever happens to list first — opt-in is scoped to one
+    user-number/assigned-line pair, so only that row routes.
+    """
+    target = _normalize_phone(phone_number)
+    match: Optional[Dict[str, Any]] = None
+    for user in users:
+        if _normalize_phone(user.get("phoneNumber") or "") != target:
+            continue
+        if user_opted_in(user):
+            return user
+        if match is None:
+            match = user
+    return match
+
+
+def wait_for_opted_in_user(
+    project_id: str,
+    project_secret: str,
+    phone_number: str,
+    *,
+    timeout_s: float = 300.0,
+    interval_s: float = 5.0,
+    on_waiting: Optional[Callable[[int], None]] = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> Optional[Dict[str, Any]]:
+    """Poll until ``phone_number``'s user row exists AND is opted in.
+
+    A row starts un-opted-in whatever created it; the flag lands only after
+    the human sends a message from their phone to the row's assigned line.
+    Transient list failures are counted as missed polls (the whole point of
+    the wait is to ride out the operator's manual step). Returns the opted-in
+    row, or ``None`` after ``timeout_s`` (attempt-count based so tests with an
+    instant ``sleep_fn`` stay deterministic).
+    """
+    max_attempts = max(1, int(timeout_s / interval_s))
+    for attempt in range(1, max_attempts + 1):
+        try:
+            user = find_routable_user(
+                list_users(project_id, project_secret), phone_number,
+            )
+            if user_opted_in(user):
+                return user
+        except Exception as exc:  # noqa: BLE001 — transient API failure = missed poll
+            logger.debug("photon: opt-in poll failed (attempt %d): %s", attempt, exc)
+        if on_waiting is not None:
+            on_waiting(attempt)
+        if attempt < max_attempts:
+            sleep_fn(interval_s)
+    return None
 
 
 def load_user_numbers() -> Tuple[Optional[str], Optional[str]]:

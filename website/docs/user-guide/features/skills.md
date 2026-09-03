@@ -630,6 +630,24 @@ in the pending JSON file). Memory writes have the same gate under
 > (dangerous-pattern heuristics), not an approval gate — the two are
 > independent. See [Guard on agent-created skill writes](/user-guide/configuration#guard-on-agent-created-skill-writes).
 
+### Which writes are attributed (and which are not)
+
+The write-approval gate applies only to `skill_manage`. Generic file tools
+can still land content in `~/.hermes/skills/` (and each profile's
+`skills/` directory) without staging. Those writes are **not** blocked —
+that is the current trust model — but they **are** attributed:
+
+| Write path | Approval gate | Audit ledger (`~/.hermes/skills/.curator_ledger.jsonl`) | `agent.log` apply line |
+|---|---|---|---|
+| `skill_manage` (create / edit / patch / write_file / remove_file / delete) | Yes, when `skills.write_approval` is on | Yes (`action` is the skill_manage verb) | Yes |
+| `write_file` / `patch` targeting a live skills tree | No | Yes (`action` is `write_file` or `patch`; `evidence.source` names the file tool) | Yes |
+| `terminal`, a raw editor, MCP filesystem, or any other out-of-process write | No | **No — intentionally unlogged** | No |
+
+`hermes curator ledger` lists the attributed events. A drift detector
+that only correlates against this ledger will correctly flag a
+shell/`cat` write as unattributed; it should not treat a `write_file`
+bypass as "no apply event."
+
 ## Skills Hub
 
 Browse, search, install, and manage skills from online registries, `skills.sh`, direct well-known skill endpoints, and official optional skills.

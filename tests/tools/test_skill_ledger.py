@@ -558,3 +558,100 @@ def test_backup_fill_ignores_tar_path_traversal(ledger_env):
     )
     # Malicious members are not.
     assert not any(p.endswith("evil.md") or p.endswith("outside.md") for p in paths)
+
+
+# ---------------------------------------------------------------------------
+# File-tool skill-tree writes (observability for write_file / patch bypass)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_skill_tree_write_same_profile(ledger_env):
+    from tools import skill_ledger
+
+    skill_md = ledger_env["skills"] / "obs-gap" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(VALID_SKILL_CONTENT.replace("my-skill", "obs-gap"), encoding="utf-8")
+    hit = skill_ledger.classify_skill_tree_write(str(skill_md))
+    assert hit is not None
+    assert hit["skill"] == "obs-gap"
+    assert hit["path"] == str(skill_md.resolve())
+
+
+def test_classify_skill_tree_write_skips_sidecars_and_outsiders(ledger_env, tmp_path):
+    from tools import skill_ledger
+
+    usage = ledger_env["skills"] / ".usage.json"
+    usage.write_text("{}", encoding="utf-8")
+    assert skill_ledger.classify_skill_tree_write(str(usage)) is None
+
+    hub = ledger_env["skills"] / ".hub" / "lock.json"
+    hub.parent.mkdir()
+    hub.write_text("{}", encoding="utf-8")
+    assert skill_ledger.classify_skill_tree_write(str(hub)) is None
+
+    outsider = tmp_path / "notes.txt"
+    outsider.write_text("hi", encoding="utf-8")
+    assert skill_ledger.classify_skill_tree_write(str(outsider)) is None
+
+
+def test_write_file_to_skills_is_ledgered(ledger_env, monkeypatch):
+    """write_file landing in ~/.hermes/skills must leave an apply event
+    even when skills.write_approval is on (the gate only covers skill_manage)."""
+    from tools import skill_ledger, write_approval as wa
+    from tools.file_tools import write_file_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(ledger_env["home"]))
+    monkeypatch.setattr(wa, "write_approval_enabled", lambda subsystem: True)
+
+    target = ledger_env["skills"] / "obs-gap" / "SKILL.md"
+    content = VALID_SKILL_CONTENT.replace("name: my-skill", "name: obs-gap")
+    result = json.loads(write_file_tool(str(target), content))
+    assert not result.get("error"), result
+    assert target.exists()
+    assert wa.pending_count("skills") == 0
+
+    rows = [r for r in skill_ledger.list_entries() if r.get("skill") == "obs-gap"]
+    assert rows, "write_file to a skills tree must append a ledger apply event"
+    entry = rows[0]
+    assert entry["action"] == "write_file"
+    assert entry["evidence"].get("source") == "write_file"
+    assert entry["evidence"].get("path", "").endswith("SKILL.md")
+
+
+def test_patch_to_skills_is_ledgered(ledger_env, monkeypatch):
+    from tools import skill_ledger
+    from tools.file_tools import patch_tool, write_file_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(ledger_env["home"]))
+    target = ledger_env["skills"] / "obs-gap" / "SKILL.md"
+    content = VALID_SKILL_CONTENT.replace("name: my-skill", "name: obs-gap")
+    assert not json.loads(write_file_tool(str(target), content)).get("error")
+
+    patched = json.loads(
+        patch_tool(
+            mode="replace",
+            path=str(target),
+            old_string="Original body.",
+            new_string="Patched body.",
+        )
+    )
+    assert not patched.get("error"), patched
+    assert "Patched body." in target.read_text(encoding="utf-8")
+
+    patch_rows = [
+        r for r in skill_ledger.list_entries(skill="obs-gap") if r["action"] == "patch"
+    ]
+    assert patch_rows
+    assert patch_rows[0]["evidence"].get("source") == "patch"
+
+
+def test_write_file_outside_skills_is_not_ledgered(ledger_env, tmp_path, monkeypatch):
+    from tools import skill_ledger
+    from tools.file_tools import write_file_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(ledger_env["home"]))
+    outsider = tmp_path / "notes.txt"
+    result = json.loads(write_file_tool(str(outsider), "hello"))
+    assert not result.get("error"), result
+    assert outsider.exists()
+    assert skill_ledger.list_entries() == []

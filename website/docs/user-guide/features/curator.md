@@ -149,7 +149,7 @@ The same subcommands are available as the `/curator` slash command inside a runn
 
 ## Audit ledger and single-edit rollback
 
-Whole-run snapshots answer "undo everything the last curator pass did" — but sometimes you want to know *who changed what* and undo exactly one mutation. Every skill mutation — curator auto-transitions, agent `skill_manage` calls, and your own CLI archive/restore/purge — appends one entry to the append-only JSONL ledger at `~/.hermes/skills/.curator_ledger.jsonl`:
+Whole-run snapshots answer "undo everything the last curator pass did" — but sometimes you want to know *who changed what* and undo exactly one mutation. Every attributed skill mutation — curator auto-transitions, agent `skill_manage` calls, generic `write_file` / `patch` hits on a live skills tree, and your own CLI archive/restore/purge — appends one entry to the append-only JSONL ledger at `~/.hermes/skills/.curator_ledger.jsonl`. Raw shell, editor, and MCP filesystem writes are **not** ledgered (see [Which writes are attributed](/user-guide/features/skills#which-writes-are-attributed-and-which-are-not)):
 
 - **actor** — `curator` (background review fork / auto-transitions), `agent` (foreground agent tool calls), or `user` (CLI commands)
 - **action** — `create`, `edit`, `patch`, `delete`, `write_file`, `remove_file`, `archive`, `restore`, `purge`, `rollback`

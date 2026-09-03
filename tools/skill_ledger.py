@@ -5,6 +5,11 @@ Every skill mutation — regardless of actor — appends one JSONL entry to
 before/after file manifests whose contents are stored content-addressed
 (sha256-deduped) under ``~/.hermes/.curator_backups/blobs/``.
 
+``skill_manage`` is the primary writer. Generic file tools (``write_file``,
+``patch``) that land in a live skills tree also append here so a later
+integrity check can tell an attributed bypass from an unlogged one. Raw
+shell / editor / MCP filesystem writes stay out of this ledger on purpose.
+
 Design decisions (Teknium-approved):
   - JSONL, not the state DB: the ledger is a durable, human-greppable audit
     trail that survives DB resets and is trivially rsync/backup friendly.
@@ -411,6 +416,17 @@ def append_entry(
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        path_hint = ""
+        if isinstance(evidence, dict):
+            path_hint = str(evidence.get("path") or evidence.get("file_path") or "")
+        logger.info(
+            "skill apply event: action=%s skill=%s actor=%s id=%s%s",
+            action,
+            skill,
+            entry["actor"],
+            entry["id"],
+            f" path={path_hint}" if path_hint else "",
+        )
         return entry["id"]
     except Exception as e:
         logger.warning("skill_ledger: failed to append entry (%s) — mutation unaffected", e)
@@ -450,6 +466,156 @@ def record_mutation(
     except Exception as e:
         logger.warning("skill_ledger: record_mutation failed (%s) — mutation unaffected", e)
         return None
+
+
+# --------------------------------------------------------------------------------------
+# File-Tool Skill-Tree Writes
+# --------------------------------------------------------------------------------------
+
+_SKILL_SIDECAR_DIRS = {".hub", ".archive", ".org", ".curator_backups"}
+
+
+def _frontmatter_name(skill_md: Path) -> Optional[str]:
+    """Best-effort ``name:`` from a SKILL.md frontmatter block."""
+    try:
+        text = skill_md.read_text(encoding="utf-8")[:2048]
+    except OSError:
+        return None
+    if not text.lstrip().startswith("---"):
+        return None
+    for line in text.splitlines()[1:]:
+        stripped = line.strip()
+        if stripped == "---":
+            break
+        if stripped.startswith("name:"):
+            return stripped.split(":", 1)[1].strip().strip("'\"") or None
+    return None
+
+
+def _match_under_skills(target: Path, skills_root: Path) -> Optional[Dict[str, Any]]:
+    """If *target* is under *skills_root*, return skill identity metadata."""
+    try:
+        root = skills_root.resolve()
+        rel = target.relative_to(root)
+    except (ValueError, OSError):
+        return None
+    if not rel.parts:
+        return None
+    first = rel.parts[0]
+    if first.startswith(".") or first in _SKILL_SIDECAR_DIRS:
+        return None
+
+    if target.name == "SKILL.md":
+        skill_dir = target.parent
+    else:
+        skill_dir = target.parent
+        current = skill_dir
+        while current != root and current.parent != current:
+            if (current / "SKILL.md").exists():
+                skill_dir = current
+                break
+            current = current.parent
+        else:
+            skill_dir = root / first
+
+    skill_name = _frontmatter_name(skill_dir / "SKILL.md") or skill_dir.name
+    return {
+        "skill": skill_name,
+        "skill_dir": str(skill_dir),
+        "path": str(target),
+    }
+
+
+def classify_skill_tree_write(path: str) -> Optional[Dict[str, Any]]:
+    """Return skill identity when *path* lands in a live Hermes skills tree.
+
+    Covers ``<HERMES_HOME>/skills/**``, ``<root>/profiles/<name>/skills/**``,
+    and configured external skill dirs. Sidecar files (``.usage.json``,
+    ``.curator_ledger.jsonl``, ``.hub``, ``.archive``) return None.
+    """
+    try:
+        target = Path(os.path.expanduser(str(path))).resolve()
+    except OSError:
+        return None
+
+    homes: List[Path] = []
+    try:
+        homes.append(Path(get_hermes_home()).resolve())
+    except (OSError, RuntimeError):
+        pass
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        root = Path(get_default_hermes_root()).resolve()
+        if root not in homes:
+            homes.append(root)
+    except (OSError, RuntimeError):
+        pass
+
+    for home in homes:
+        hit = _match_under_skills(target, home / "skills")
+        if hit:
+            return hit
+        try:
+            rel = target.relative_to(home / "profiles")
+        except ValueError:
+            rel = None
+        if rel is not None and len(rel.parts) >= 3 and rel.parts[1] == "skills":
+            hit = _match_under_skills(
+                target, home / "profiles" / rel.parts[0] / "skills"
+            )
+            if hit:
+                return hit
+
+    try:
+        from agent.skill_utils import get_external_skills_dirs
+
+        for ext in get_external_skills_dirs():
+            hit = _match_under_skills(target, Path(ext))
+            if hit:
+                return hit
+    except Exception:
+        pass
+    return None
+
+
+def record_file_tool_skill_write(
+    source: str,
+    paths: List[str],
+    session_id: Optional[str] = None,
+) -> None:
+    """Ledger a ``write_file`` / ``patch`` hit on a live skills tree.
+
+    Observability only: does not stage, approve, or block the write.
+    ``evidence.source`` is the file tool name so a later audit can tell
+    these apart from ``skill_manage`` apply events.
+    """
+    if not paths:
+        return
+    seen: set[str] = set()
+    for raw in paths:
+        if not raw or raw in seen:
+            continue
+        seen.add(raw)
+        info = classify_skill_tree_write(raw)
+        if not info:
+            continue
+        evidence: Dict[str, Any] = {
+            "source": source,
+            "path": info["path"],
+            "tool": source,
+        }
+        if session_id:
+            evidence["session_id"] = session_id
+        after_root = Path(info["skill_dir"])
+        if not after_root.exists():
+            after_root = Path(info["path"])
+        record_mutation(
+            source,
+            info["skill"],
+            after_root=after_root,
+            evidence=evidence,
+        )
 
 
 def capture_before(

@@ -2273,6 +2273,21 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     return None
 
 
+def _record_skill_tree_write(
+        source: str, paths: list[str], session_id: str | None = None) -> None:
+    """Best-effort ledger entry when a generic file tool hits a skills tree.
+
+    ``write_file`` / ``patch`` bypass ``skill_manage`` (and its approval
+    gate). Recording the write is observability only — never raises.
+    """
+    try:
+        from tools.skill_ledger import record_file_tool_skill_write
+
+        record_file_tool_skill_write(source, paths, session_id=session_id)
+    except Exception:
+        logger.debug("skill-tree write ledger failed", exc_info=True)
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False,
                     session_id: str | None = None) -> str:
@@ -2323,6 +2338,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 result_dict["_warning"] = stale_warning
             if not result_dict.get("error"):
                 _mark_verification_stale(task_id, [path], session_id=session_id)
+                _record_skill_tree_write("write_file", [path], session_id=session_id)
             _update_read_timestamp(path, task_id)
             return json.dumps(result_dict, ensure_ascii=False)
 
@@ -2355,6 +2371,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             _update_read_timestamp(path, task_id)
             if not result_dict.get("error"):
                 file_state.note_write(task_id, _resolved)
+                _record_skill_tree_write(
+                    "write_file", [_resolved], session_id=session_id
+                )
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -2544,6 +2563,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _reset_patch_failures(task_id, [
                     _r for _r in (_path_to_resolved.get(_p) for _p in _paths_to_check) if _r
                 ])
+                _record_skill_tree_write(
+                    "patch", _resolved_modified, session_id=session_id
+                )
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
         # Suppressed when patch_replace already attached a rich "Did you mean?"

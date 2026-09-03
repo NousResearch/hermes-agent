@@ -168,9 +168,13 @@ describe('unread target navigation', () => {
     const open = vi.fn()
 
     await expect(
-      openNextValidUnread([target('a'), target('b')], async () => {
-        throw new Error('offline')
-      }, open)
+      openNextValidUnread(
+        [target('a'), target('b')],
+        async () => {
+          throw new Error('offline')
+        },
+        open
+      )
     ).resolves.toBeNull()
     expect(open).not.toHaveBeenCalled()
   })
@@ -184,6 +188,32 @@ describe('unread target navigation', () => {
       'open failed'
     )
     expect(open).toHaveBeenCalledOnce()
+  })
+
+  it('leaves a declined ambiguous target untouched and advances to the next', async () => {
+    const open = vi.fn(candidate => candidate.id !== 'ambiguous')
+
+    await expect(openNextValidUnread([target('ambiguous'), target('next')], async () => null, open)).resolves.toEqual(
+      target('next')
+    )
+    expect(open).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops a cancelled ladder before opening or probing another target', async () => {
+    let current = true
+    const open = vi.fn()
+
+    const preflight = vi.fn(async () => {
+      current = false
+
+      return null
+    })
+
+    await expect(
+      openNextValidUnread([target('first'), target('second')], preflight, open, () => current)
+    ).resolves.toBeNull()
+    expect(preflight).toHaveBeenCalledOnce()
+    expect(open).not.toHaveBeenCalled()
   })
 
   it('keeps profile-only and ambient preflight scopes distinct', () => {

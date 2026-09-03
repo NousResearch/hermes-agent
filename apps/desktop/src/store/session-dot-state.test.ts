@@ -18,6 +18,7 @@ import {
   $sessionDotStateById,
   $unreadSessionCount,
   $unreadSessionIds,
+  $unreadSessionTargets,
   hasLiveTurn,
   showsRunningArc,
   unreadSessionCount,
@@ -298,6 +299,64 @@ describe('$unreadSessionIds (titlebar navigation)', () => {
 
     expect($unreadSessionIds.get()).toEqual(['message', 'regular'])
   })
+
+  it.each([
+    [
+      { connection_id: 'source-a', profile: 'ops' },
+      { connection_id: 'source-b', profile: 'ops' }
+    ],
+    [
+      { connection_id: 'source-a', profile: 'ops' },
+      { connection_id: 'source-a', profile: 'other' }
+    ],
+    [{ profile: 'ops' }, { connection_id: 'source-b', profile: 'ops' }]
+  ])('qualifies eligibility before ranking duplicate IDs (%j / %j)', (unreadOwner, readOwner) => {
+    $sessions.set([
+      storedRow('twin', { ...unreadOwner, last_active: 100, unread: true }),
+      storedRow('twin', { ...readOwner, last_active: 200, unread: false })
+    ])
+
+    expect($unreadSessionTargets.get()).toEqual([
+      {
+        id: 'twin',
+        kind: 'session',
+        profile: unreadOwner.profile,
+        ...('connection_id' in unreadOwner ? { connectionId: unreadOwner.connection_id } : {})
+      }
+    ])
+    expect($unreadSessionCount.get()).toBe(1)
+  })
+
+  it('does not assign an ID-only runtime unread marker to either source twin', () => {
+    $sessions.set([
+      storedRow('twin', { connection_id: 'a', unread: false }),
+      storedRow('twin', { connection_id: 'b', unread: false })
+    ])
+    $unreadFinishedSessionIds.set(['twin'])
+
+    expect($sessionDotStateById.get().twin).toBe('unread')
+    expect($unreadSessionTargets.get()).toEqual([])
+  })
+
+  it.each([true, false])('does not attribute an unscoped optimistic write (%s) to a source twin', value => {
+    $sessions.set([
+      storedRow('twin', { connection_id: 'a', unread: true }),
+      storedRow('twin', { connection_id: 'b', unread: false })
+    ])
+    $unreadFinishedSessionIds.set(['twin'])
+    $unreadWriteGuard.set(new Map([['twin', { at: Date.now(), value }]]))
+
+    expect($unreadSessionTargets.get()).toEqual([])
+    $unreadWriteGuard.set(new Map())
+    expect($unreadSessionTargets.get()).toMatchObject([{ id: 'twin', connectionId: 'a' }])
+  })
+
+  it('qualifies a messaging twin as well as regular sessions', () => {
+    $sessions.set([storedRow('twin', { connection_id: 'a', unread: true })])
+    $messagingSessions.set([storedRow('twin', { connection_id: 'b', unread: false, last_active: 200 })])
+
+    expect($unreadSessionTargets.get()).toMatchObject([{ id: 'twin', kind: 'session', connectionId: 'a' }])
+  })
 })
 
 describe('unreadSessionTargets', () => {
@@ -318,13 +377,10 @@ describe('unreadSessionTargets', () => {
 
   it('carries a trimmed profile and registry connection owner', () => {
     expect(
-      unreadSessionTargets(
-        { local: 'unread', remote: 'unread' },
-        [
-          { connection_id: ' conn-a ', id: 'remote', last_active: 20, profile: ' research ' },
-          { id: 'local', last_active: 10 }
-        ]
-      )
+      unreadSessionTargets({ local: 'unread', remote: 'unread' }, [
+        { connection_id: ' conn-a ', id: 'remote', last_active: 20, profile: ' research ' },
+        { id: 'local', last_active: 10 }
+      ])
     ).toEqual([
       { connectionId: 'conn-a', id: 'remote', kind: 'session', profile: 'research' },
       { id: 'local', kind: 'session' }

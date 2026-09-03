@@ -94,7 +94,7 @@ describe('narrow overlay of a stacked zone', () => {
     expect(queryByTestId('sessions-body')).toBeNull()
   })
 
-  it('keeps the stripless form for a zone with a single collapsible', () => {
+  it('keeps live title controls for a zone with a single collapsible', () => {
     // Direct set: declareDefaultTree only ADOPTS into an existing tree — it
     // would keep the beforeEach zone (with bots) instead of replacing it.
     $layoutTree.set(split('row', [group(['sessions']), group(['workspace'])]))
@@ -104,7 +104,18 @@ describe('narrow overlay of a stacked zone', () => {
     revealPane('sessions')
 
     expect(getByTestId('sessions-body')).toBeTruthy()
-    expect(overlayTab('sessions')).toBeNull()
+    expect(overlayTab('sessions')).toBeTruthy()
+    expect(getByTestId('sessions-live-title').textContent).toBe('sessions 2')
+  })
+
+  it('keeps an ordinary single pane stripless', () => {
+    $layoutTree.set(split('row', [group(['bots']), group(['workspace'])]))
+    const { getByTestId } = render(<NarrowOverlays />)
+
+    revealPane('bots')
+
+    expect(getByTestId('bots-body')).toBeTruthy()
+    expect(overlayTab('bots')).toBeNull()
   })
 
   it('renders the pane live tab title and updates its unread count', () => {

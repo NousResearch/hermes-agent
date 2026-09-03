@@ -5,11 +5,8 @@ import { useLocation, useNavigate } from 'react-router'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { isPaneActiveInLayoutGroup } from '@/components/pane-shell/tree/model'
-import {
-  $hiddenStripTabs,
-  $layoutTree,
-  resetLayoutTree
-} from '@/components/pane-shell/tree/store'
+import { $narrowOverlayChrome } from '@/components/pane-shell/tree/renderer/narrow-overlay-state'
+import { $hiddenStripTabs, $layoutTree, $narrowViewport, resetLayoutTree } from '@/components/pane-shell/tree/store'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -163,6 +160,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const hiddenStripTabs = useStore($hiddenStripTabs)
   const layoutTree = useStore($layoutTree)
+  const narrow = useStore($narrowViewport)
+  const narrowOverlay = useStore($narrowOverlayChrome)
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
@@ -188,13 +187,17 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // show/hide affordances.
   const leftEdge = { open: sidebarOpen, toggle: toggleSidebarOpen }
   const rightEdge = { open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
-  const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
-  const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
+  // Narrow toggles use fixed reveal aliases (chat-sidebar / file-browser),
+  // independent of the wide tree's physical flip and docked-open flags.
+  const leftVisible = narrow ? narrowOverlay?.paneId === 'sessions' : leftEdge.open
+  const rightVisible = narrow ? narrowOverlay?.paneId === 'files' : rightEdge.open
+  const leftLabel = leftVisible ? t.titlebar.hideSidebar : t.titlebar.showSidebar
+  const rightLabel = rightVisible ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
 
   const leftUnreadBadge = unreadBadgeForEdge(
     'left',
-    panesFlipped,
-    leftEdge.open,
+    narrow ? false : panesFlipped,
+    narrow ? !!narrowOverlay?.tabIds.includes('sessions') : leftEdge.open,
     unreadCount,
     workspaceMode === 'sessions',
     sessionsPaneActive
@@ -202,8 +205,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const rightUnreadBadge = unreadBadgeForEdge(
     'right',
-    panesFlipped,
-    rightEdge.open,
+    narrow ? false : panesFlipped,
+    narrow ? !!narrowOverlay?.tabIds.includes('sessions') : rightEdge.open,
     unreadCount,
     workspaceMode === 'sessions',
     sessionsPaneActive

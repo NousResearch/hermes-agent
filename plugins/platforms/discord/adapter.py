@@ -77,6 +77,8 @@ _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.
 
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_COMMAND_SYNC_TIMEOUT_BACKOFF_SECONDS = 30.0
+_DISCORD_COMMAND_SYNC_MAX_ATTEMPTS = 3
 # Discord enforces a hard cap of 100 global application (slash) commands per
 # app. Registering more makes the ENTIRE sync fail with error 30032
 # ("Maximum number of application commands reached"), which silently breaks
@@ -1426,6 +1428,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # on reconnect (see #18187). Without this, the old client remains
             # connected to Discord gateway and both fire on_message, causing
             # double responses.
+            await self._cancel_post_connect_initialization()
             if self._client is not None:
                 try:
                     if not self._client.is_closed():
@@ -1453,11 +1456,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
 
-                if adapter_self._post_connect_task and not adapter_self._post_connect_task.done():
-                    adapter_self._post_connect_task.cancel()
-                adapter_self._post_connect_task = asyncio.create_task(
-                    adapter_self._run_post_connect_initialization()
-                )
+                adapter_self._start_post_connect_initialization()
                 if adapter_self._missed_message_backfill_enabled():
                     adapter_self._ensure_missed_message_backfill_task()
 
@@ -2247,12 +2246,7 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning("[%s] Error during disconnect: %s", self.name, e, exc_info=True)
 
-        if self._post_connect_task and not self._post_connect_task.done():
-            self._post_connect_task.cancel()
-            try:
-                await self._post_connect_task
-            except asyncio.CancelledError:
-                pass
+        await self._cancel_post_connect_initialization()
         if self._missed_message_backfill_task and not self._missed_message_backfill_task.done():
             self._missed_message_backfill_task.cancel()
             try:
@@ -2314,24 +2308,23 @@ class DiscordAdapter(BasePlatformAdapter):
         payload = json.dumps(desired, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-    def _command_sync_skip_reason(self, app_id: Any, fingerprint: str) -> Optional[str]:
+    def _command_sync_already_synced(self, app_id: Any, fingerprint: str) -> bool:
         entry = self._read_command_sync_state().get(self._command_sync_state_key(app_id))
         if not isinstance(entry, dict):
-            return None
-        now = time.time()
-        retry_after_until = float(entry.get("retry_after_until") or 0)
-        if retry_after_until > now:
-            remaining = max(1, int(retry_after_until - now))
-            return f"Discord asked us to wait before syncing slash commands; retry in {remaining}s"
+            return False
         last_success_at = float(entry.get("last_success_at") or 0)
         last_attempt_at = float(entry.get("last_attempt_at") or 0)
-        if (
+        return bool(
             entry.get("fingerprint") == fingerprint
             and last_success_at
             and last_success_at >= last_attempt_at
-        ):
-            return "same slash-command fingerprint already synced"
-        return None
+        )
+
+    def _command_sync_cooldown_remaining(self, app_id: Any) -> float:
+        entry = self._read_command_sync_state().get(self._command_sync_state_key(app_id))
+        if not isinstance(entry, dict):
+            return 0.0
+        return max(0.0, float(entry.get("retry_after_until") or 0) - time.time())
 
     def _record_command_sync_attempt(self, app_id: Any, fingerprint: str) -> None:
         state = self._read_command_sync_state()
@@ -2463,6 +2456,32 @@ class DiscordAdapter(BasePlatformAdapter):
         if interval > 0:
             await asyncio.sleep(interval)
 
+    async def _sleep_for_command_sync_retry(self, seconds: float) -> None:
+        """Sleep between bounded post-connect synchronization attempts."""
+        if seconds > 0:
+            await asyncio.sleep(seconds)
+
+    def _start_post_connect_initialization(self) -> None:
+        """Start deferred initialization once per active Discord client."""
+        task = self._post_connect_task
+        if task and not task.done():
+            return
+        self._post_connect_task = asyncio.create_task(
+            self._run_post_connect_initialization()
+        )
+
+    async def _cancel_post_connect_initialization(self) -> None:
+        """Cancel and await deferred initialization before replacing its client."""
+        task = self._post_connect_task
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if self._post_connect_task is task:
+            self._post_connect_task = None
+
     async def _run_post_connect_initialization(self) -> None:
         """Finish non-critical startup work after Discord is connected."""
         if not self._client:
@@ -2480,43 +2499,79 @@ class DiscordAdapter(BasePlatformAdapter):
 
             app_id = getattr(self._client, "application_id", None) or getattr(getattr(self._client, "user", None), "id", None)
             fingerprint = self._desired_command_sync_fingerprint()
-            skip_reason = self._command_sync_skip_reason(app_id, fingerprint)
-            if skip_reason:
-                logger.info("[%s] Skipping Discord slash command sync: %s", self.name, skip_reason)
-                return
-            self._record_command_sync_attempt(app_id, fingerprint)
-
-            http = getattr(self._client, "http", None)
-            has_ratelimit_timeout = http is not None and hasattr(http, "max_ratelimit_timeout")
-            previous_ratelimit_timeout = getattr(http, "max_ratelimit_timeout", None) if has_ratelimit_timeout else None
-            if has_ratelimit_timeout:
-                http.max_ratelimit_timeout = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
-
-            try:
-                # Discord's per-app command-management bucket is small, and
-                # discord.py can otherwise sit inside one long retry sleep
-                # before surfacing the 429. Keep the whole sync bounded and
-                # persist Discord's retry-after when it refuses the batch.
-                summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
-            except Exception as e:
-                if not self._is_discord_rate_limit(e):
-                    raise
-                retry_after = self._extract_discord_retry_after(e)
-                if retry_after is None:
-                    # Rate-limited but no retry-after signal — back off for a
-                    # conservative default so we don't slam the bucket again.
-                    retry_after = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
-                self._record_command_sync_rate_limit(app_id, fingerprint, retry_after)
-                logger.warning(
-                    "[%s] Discord rate-limited slash command sync; retrying after %.0fs",
+            if self._command_sync_already_synced(app_id, fingerprint):
+                logger.info(
+                    "[%s] Skipping Discord slash command sync: same slash-command fingerprint already synced",
                     self.name,
-                    retry_after,
                 )
                 return
-            finally:
-                if has_ratelimit_timeout:
-                    http.max_ratelimit_timeout = previous_ratelimit_timeout
+            cooldown = self._command_sync_cooldown_remaining(app_id)
+            if cooldown > 0:
+                logger.info(
+                    "[%s] Waiting %.0fs for Discord slash-command rate-limit cooldown",
+                    self.name,
+                    cooldown,
+                )
+                await self._sleep_for_command_sync_retry(cooldown)
+            summary: Optional[Dict[str, int]] = None
+            for attempt in range(_DISCORD_COMMAND_SYNC_MAX_ATTEMPTS):
+                self._record_command_sync_attempt(app_id, fingerprint)
 
+                http = getattr(self._client, "http", None)
+                has_ratelimit_timeout = http is not None and hasattr(http, "max_ratelimit_timeout")
+                previous_ratelimit_timeout = getattr(http, "max_ratelimit_timeout", None) if has_ratelimit_timeout else None
+                if has_ratelimit_timeout and http is not None:
+                    http.max_ratelimit_timeout = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
+
+                retry_after = None
+                try:
+                    # Discord's per-app command-management bucket is small, and
+                    # discord.py can otherwise sit inside one long retry sleep
+                    # before surfacing the 429. Keep each attempt bounded and
+                    # persist Discord's retry-after when it refuses the batch.
+                    summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
+                except asyncio.TimeoutError:
+                    retry_after = _DISCORD_COMMAND_SYNC_TIMEOUT_BACKOFF_SECONDS
+                    if attempt + 1 < _DISCORD_COMMAND_SYNC_MAX_ATTEMPTS:
+                        logger.warning(
+                            "[%s] Slash command sync timed out — Discord rate-limit bucket "
+                            "may be saturated; retrying after %.0fs",
+                            self.name,
+                            retry_after,
+                        )
+                except Exception as e:
+                    if not self._is_discord_rate_limit(e):
+                        raise
+                    retry_after = self._extract_discord_retry_after(e)
+                    if retry_after is None:
+                        # Rate-limited but no retry-after signal — back off for a
+                        # conservative default so we don't slam the bucket again.
+                        retry_after = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
+                    self._record_command_sync_rate_limit(app_id, fingerprint, retry_after)
+                    if attempt + 1 < _DISCORD_COMMAND_SYNC_MAX_ATTEMPTS:
+                        logger.warning(
+                            "[%s] Discord rate-limited slash command sync; retrying after %.0fs",
+                            self.name,
+                            retry_after,
+                        )
+                finally:
+                    if has_ratelimit_timeout and http is not None:
+                        http.max_ratelimit_timeout = previous_ratelimit_timeout
+
+                if retry_after is None:
+                    break
+                if attempt + 1 >= _DISCORD_COMMAND_SYNC_MAX_ATTEMPTS:
+                    logger.warning(
+                        "[%s] Slash command sync exhausted %d attempts; "
+                        "will retry on next reconnect",
+                        self.name,
+                        _DISCORD_COMMAND_SYNC_MAX_ATTEMPTS,
+                    )
+                    return
+                await self._sleep_for_command_sync_retry(retry_after)
+
+            if summary is None:  # pragma: no cover - loop exits only after success
+                raise RuntimeError("Discord slash command sync completed without a summary")
             self._record_command_sync_success(app_id, fingerprint, summary)
             logger.info(
                 "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
@@ -3363,6 +3418,15 @@ class DiscordAdapter(BasePlatformAdapter):
             current_existing_payload = self._existing_command_to_payload(current)
             current_payload = self._canonicalize_app_command_payload(current_existing_payload)
             desired_payload = self._canonicalize_app_command_payload(desired)
+            # Discord expands omitted install/context policy fields to the
+            # application's defaults. Treat those server-filled values as
+            # unchanged when Hermes did not explicitly manage the field.
+            for defaulted_field in ("contexts", "integration_types"):
+                if (
+                    desired.get(defaulted_field) is None
+                    and defaulted_field in current_payload
+                ):
+                    desired_payload[defaulted_field] = current_payload[defaulted_field]
             if current_payload == desired_payload:
                 unchanged += 1
                 continue

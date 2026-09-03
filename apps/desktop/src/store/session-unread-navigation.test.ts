@@ -57,32 +57,32 @@ describe('unread target navigation', () => {
 
   it('pins an untagged primary row to the active registered gateway', () => {
     const item = target('primary', { profile: 'default' })
-    const route = { connectionId: 'work-vps', profile: 'default' }
+    const route = { connectionId: 'remote-primary', profile: 'default' }
 
-    expect(profileScopeForUnreadTarget(item, 'work-vps')).toEqual(route)
-    expect(ownerRouteForUnreadTarget(item, 'work-vps')).toEqual(route)
+    expect(profileScopeForUnreadTarget(item, 'remote-primary')).toEqual(route)
+    expect(ownerRouteForUnreadTarget(item, 'remote-primary')).toEqual(route)
   })
 
   it('uses the backend target profile from the exact registered route', () => {
-    const item = target('primary', { profile: 'claude-martin' })
+    const item = target('primary', { profile: 'remote-alias' })
 
     const routes = [
       {
-        connectionId: 'work-vps',
+        connectionId: 'remote-primary',
         mode: 'remote' as const,
-        profile: 'claude-martin',
+        profile: 'remote-alias',
         targetProfile: 'default'
       }
     ]
 
-    expect(profileScopeForUnreadTarget(item, 'work-vps', routes)).toEqual({
-      connectionId: 'work-vps',
+    expect(profileScopeForUnreadTarget(item, 'remote-primary', routes)).toEqual({
+      connectionId: 'remote-primary',
       profile: 'default'
     })
-    expect(ownerRouteForUnreadTarget(item, 'work-vps', routes)).toEqual({
-      connectionId: 'work-vps',
+    expect(ownerRouteForUnreadTarget(item, 'remote-primary', routes)).toEqual({
+      connectionId: 'remote-primary',
       mode: 'remote',
-      profile: 'claude-martin',
+      profile: 'remote-alias',
       targetProfile: 'default'
     })
   })
@@ -91,34 +91,34 @@ describe('unread target navigation', () => {
     const item = target('primary', { profile: 'work' })
     const routes = [{ connectionId: 'other', profile: 'work', targetProfile: 'default' }]
 
-    expect(profileScopeForUnreadTarget(item, 'work-vps', routes)).toEqual({
-      connectionId: 'work-vps',
+    expect(profileScopeForUnreadTarget(item, 'remote-primary', routes)).toEqual({
+      connectionId: 'remote-primary',
       profile: 'work'
     })
   })
 
   it('tries profile routing before the active registry fallback for a primary row', () => {
-    const item = target('primary', { profile: 'claude-martin' })
+    const item = target('primary', { profile: 'remote-alias' })
 
     const routes = [
       {
-        connectionId: 'work-vps',
+        connectionId: 'remote-primary',
         mode: 'remote' as const,
-        profile: 'claude-martin',
+        profile: 'remote-alias',
         targetProfile: 'default'
       }
     ]
 
-    expect(preflightCandidatesForUnreadTarget(item, 'work-vps', routes)).toEqual([
-      { ownerRoute: null, scope: 'claude-martin' },
+    expect(preflightCandidatesForUnreadTarget(item, 'remote-primary', routes)).toEqual([
+      { ownerRoute: null, scope: 'remote-alias' },
       {
         ownerRoute: {
-          connectionId: 'work-vps',
+          connectionId: 'remote-primary',
           mode: 'remote',
-          profile: 'claude-martin',
+          profile: 'remote-alias',
           targetProfile: 'default'
         },
-        scope: { connectionId: 'work-vps', profile: 'default' }
+        scope: { connectionId: 'remote-primary', profile: 'default' }
       }
     ])
   })
@@ -126,7 +126,7 @@ describe('unread target navigation', () => {
   it('uses only the exact owner for a tagged secondary row', () => {
     const item = target('secondary', { connectionId: 'homelab', profile: 'research' })
 
-    expect(preflightCandidatesForUnreadTarget(item, 'work-vps')).toEqual([
+    expect(preflightCandidatesForUnreadTarget(item, 'remote-primary')).toEqual([
       {
         ownerRoute: { connectionId: 'homelab', profile: 'research' },
         scope: { connectionId: 'homelab', profile: 'research' }
@@ -138,8 +138,8 @@ describe('unread target navigation', () => {
     const item = target('secondary', { connectionId: 'homelab', profile: 'research' })
     const route = { connectionId: 'homelab', profile: 'research' }
 
-    expect(profileScopeForUnreadTarget(item, 'work-vps')).toEqual(route)
-    expect(ownerRouteForUnreadTarget(item, 'work-vps')).toEqual(route)
+    expect(profileScopeForUnreadTarget(item, 'remote-primary')).toEqual(route)
+    expect(ownerRouteForUnreadTarget(item, 'remote-primary')).toEqual(route)
   })
 
   it('keeps a stale newest target unread and falls through to the next', async () => {

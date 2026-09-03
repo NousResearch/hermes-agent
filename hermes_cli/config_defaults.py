@@ -2190,6 +2190,25 @@ DEFAULT_CONFIG = {
                                      # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
                                  # "medium", "low", "minimal", "none" (empty = inherit)
+        # Allow the agent to pick a per-task model when fanning out work, e.g.
+        # comparing the same task across several models. When True, each
+        # delegate_task entry may carry a `model` field naming a model
+        # ("opus", "gpt-5", "glm") — resolved leniently against the parent's
+        # current provider (aggregator-aware), falling back to delegation.provider.
+        # Off by default: the documented contract is that subagents inherit the
+        # parent model, and per-task model selection can route work to a more
+        # expensive model than the user expects. Opt in deliberately.
+        "allow_model_selection": False,
+        # Allow the agent to name a per-task Hermes profile when fanning out
+        # work. When True, each delegate_task entry may carry a `profile` field
+        # naming a profile under the Hermes profiles root. The child loads that
+        # profile's SOUL.md, IDENTITY.md, and AGENTS.md as its system prompt
+        # identity, and reads model/provider from its config.yaml when not
+        # explicitly overridden — so the child "becomes" the named bot rather
+        # than a generic subagent. Off by default: loading arbitrary profile
+        # files into a child prompt is a trust boundary that should be
+        # deliberate.
+        "allow_profile_identity": False,
         "max_concurrent_children": 10,  # unified concurrency cap: max parallel children per batch
                                        # AND max concurrent background (background=true)
                                        # delegation units. New async dispatches beyond the cap

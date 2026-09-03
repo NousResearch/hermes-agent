@@ -512,6 +512,8 @@ delegation:
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  # allow_model_selection: false            # Let the agent pick a per-task model when fanning out (default: false)
+  # allow_profile_identity: false           # Let the agent name a per-task Hermes profile so the child becomes that bot (default: false)
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints
@@ -538,6 +540,34 @@ delegation:
 When `base_url` points at an Anthropic-compatible endpoint — for example a path ending in `/anthropic`, an Azure Foundry Claude route, or a MiniMax `/anthropic` proxy — `api_mode` is auto-detected as `anthropic_messages` so the subagent uses the right wire format without you setting anything. Set `api_mode` explicitly when the auto-detection guess is wrong (rare).
 
 `delegation.request_overrides` works on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so it always takes effect. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. Explicit values merge **over** runtime- or parent-derived overrides: explicit top-level keys win, and `extra_body` is deep-merged one level, so a provider's own request personality (e.g. `thinking: {type: disabled}`) survives unless your key redefines it. See [Configuration → Delegation](../configuration.md#delegation) for details.
+
+### Per-task model selection
+
+By default every subagent inherits the parent's model (or `delegation.model` if set). Set `allow_model_selection: true` to let the agent name a model **per task** when it fans work out — for example, reviewing the same code with several models in parallel:
+
+```yaml
+delegation:
+  allow_model_selection: true
+```
+
+With the flag on, `delegate_task` gains an optional `model` field (on both the single-goal call and each entry in a `tasks` batch). The agent names a model the way a human would — `"opus"`, `"gpt-5"`, `"glm"`, or a full `"vendor/model"` slug — and Hermes resolves it leniently through the same pipeline as the `/model` command: the **provider is resolved, not dictated**, preferring whatever provider backs your current model. Unresolvable names return a clear per-task error instead of silently falling back to the default model.
+
+The flag is off by default because per-task routing can send work to a more expensive model than you expect, and because the schema field only appears when you opt in (keeping the tool surface minimal otherwise).
+
+This feature shares a common origin with the [kilocode-port](https://github.com/NousResearch/hermes-agent/tree/kilocode-port/per-task-delegation-model) branch (Kilo-Org/kilocode#11786). Both implementations use the same config key (`allow_model_selection`), resolver function (`_resolve_task_model_creds`), and `switch_model()` pipeline. This fork's version adds provider-anchoring fixes, stale ACP field clearing, and integrates with per-task profile identity.
+
+### Per-task profile identity
+
+Set `allow_profile_identity: true` to let the agent name a **Hermes profile** per task. When a task carries a `profile` field, the child loads that profile's `SOUL.md`, `IDENTITY.md`, and `AGENTS.md` as its system prompt identity, and reads `model`/`provider` from its `config.yaml` when the task doesn't explicitly override them. The child "becomes" the named bot rather than a generic subagent.
+
+```yaml
+delegation:
+  allow_profile_identity: true
+```
+
+This is useful for multi-role workflows where a single `delegate_task` batch dispatches specialized bots — for example, a code reviewer profile, a test validator profile, and a security auditor profile — each with its own identity, rules, and model configuration.
+
+The flag is off by default because loading arbitrary profile files into a child prompt is a trust boundary that should be deliberate. Both flags can be combined: a task can name both a `model` and a `profile`, with the explicit model taking precedence over the profile's config. Note that a profile's `config.yaml` model/provider fallback only applies when `allow_model_selection` is also `true`, since the model resolution pipeline is needed to resolve the profile's model to concrete credentials.
 
 :::tip
 The agent handles delegation automatically based on the task complexity. You don't need to explicitly ask it to delegate — it will do so when it makes sense.

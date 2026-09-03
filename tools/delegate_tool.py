@@ -1089,6 +1089,297 @@ def _get_inherit_mcp_toolsets() -> bool:
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
 
+def _get_allow_model_selection() -> bool:
+    """Whether delegate_task tasks may carry a per-task ``model`` field.
+
+    Ported (adapted) from Kilo-Org/kilocode#11786. Config key and
+    resolver name match the upstream kilocode-port branch so the two
+    implementations converge on a single design.
+
+    Config key: delegation.allow_model_selection (bool, default False).
+    Off by default — subagents inherit the parent model unless the user opts
+    in, since per-task model routing can send work to a more expensive model
+    than expected.
+    """
+    cfg = _load_config()
+    return is_truthy_value(cfg.get("allow_model_selection"), default=False)
+
+
+def _get_allow_profile_identity() -> bool:
+    """Whether delegate_task tasks may carry a per-task ``profile`` field.
+
+    Config key: delegation.allow_profile_identity (bool, default False).
+    Off by default — subagents use a generic identity unless the user opts in,
+    since loading arbitrary profile files into a child prompt is a trust
+    boundary that should be deliberate.
+    """
+    cfg = _load_config()
+    return is_truthy_value(cfg.get("allow_profile_identity"), default=False)
+
+
+def _resolve_task_model_creds(model_name: str, parent_agent, base_creds: dict) -> dict:
+    """Resolve a per-task model NAME to a full credential bundle.
+
+    Ported (adapted) from Kilo-Org/kilocode#11786. Our version adds two
+    fixes over the upstream kilocode-port branch: (1) provider anchoring
+    on the effective delegation provider from base_creds (not the parent
+    agent's provider), and (2) clearing stale ACP/pin fields on
+    cross-provider switches.
+
+    Reuses the existing aggregator-aware ``model_switch.switch_model()``
+    pipeline (the same resolution chain the ``/model`` command uses) so name
+    matching, vendor/model slug conversion, fuzzy aliasing, and
+    cross-provider fallback all come for free instead of being reinvented
+    here.
+
+    Resolution anchors on the parent agent's current provider/credentials, so
+    a bare name like "opus" stays on the parent's aggregator when available.
+    On failure, raises ValueError with the resolver's message so the caller
+    can surface a clear per-task error rather than silently falling back to
+    the default model (which would mask the agent's intent).
+
+    Returns a creds dict shaped like ``_resolve_delegation_credentials`` output
+    (model / provider / base_url / api_key / api_mode), starting from
+    ``base_creds`` and overriding only the fields the switch resolves.
+    """
+    name = (model_name or "").strip()
+    if not name:
+        return base_creds
+
+    from hermes_cli.model_switch import switch_model
+
+    parent_provider = getattr(parent_agent, "provider", "") or ""
+    parent_model = getattr(parent_agent, "model", "") or ""
+    parent_base_url = getattr(parent_agent, "base_url", "") or ""
+    parent_api_key = getattr(parent_agent, "api_key", "") or ""
+
+    user_providers = {}
+    custom_providers = None
+    try:
+        from cli import CLI_CONFIG
+
+        user_providers = CLI_CONFIG.get("providers") or {}
+        custom_providers = CLI_CONFIG.get("custom_providers")
+    except Exception:
+        try:
+            from hermes_cli.config import load_config
+
+            _full = load_config()
+            user_providers = _full.get("providers") or {}
+            custom_providers = _full.get("custom_providers")
+        except Exception:
+            pass
+
+    result = switch_model(
+        raw_input=name,
+        current_provider=parent_provider,
+        current_model=parent_model,
+        current_base_url=parent_base_url,
+        current_api_key=parent_api_key,
+        is_global=False,
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+    )
+
+    if not result.success:
+        raise ValueError(
+            result.error_message
+            or f"Could not resolve model '{name}' for this subagent."
+        )
+
+    creds = dict(base_creds)
+    creds["model"] = result.new_model or creds.get("model")
+    if result.target_provider and result.target_provider != parent_provider:
+        creds["provider"] = result.target_provider
+        creds["base_url"] = result.base_url or None
+        creds["api_key"] = result.api_key or None
+        creds["api_mode"] = result.api_mode or None
+    return creds
+
+
+def _resolve_profile_model_creds(
+    profile_identity: Dict[str, Optional[str]],
+    parent_agent,
+    base_creds: dict,
+) -> dict:
+    """Resolve a profile's config.yaml model (+ provider) to a creds bundle.
+
+    The profile's ``model`` and ``provider`` are ONE routing unit (P1 #2):
+    when BOTH are configured, the model resolves against the PROFILE's
+    provider — not the parent/delegation provider — so a parent on provider
+    A running a profile configured for provider B actually lands on B (the
+    right endpoint, credentials, and billing) instead of silently resolving
+    the name against A's catalog.
+
+    Resolution precedence:
+
+    1. Profile model + provider → full runtime-provider resolution anchored
+       on the profile's provider (same system the ``delegation.provider``
+       pin uses, so base_url/api_key/api_mode/request_overrides all come
+       from the profile's provider, not the parent's).
+    2. Profile model only → ``_resolve_task_model_creds`` against the
+       parent/delegation anchor (prior behavior, unchanged).
+    3. Neither → ``base_creds`` untouched.
+
+    Raises ValueError with a user-facing message when the profile's
+    provider cannot be resolved or has no API key — a misconfigured profile
+    must fail the dispatch loudly, never silently fall back to the parent's
+    credentials on a provider the user explicitly moved away from.
+    """
+    profile_model = str(profile_identity.get("model") or "").strip()
+    profile_provider = str(profile_identity.get("provider") or "").strip()
+    if not profile_model:
+        return base_creds
+    if not profile_provider:
+        # No provider in the profile config — resolve the model name
+        # against the parent/delegation anchor (prior behavior).
+        return _resolve_task_model_creds(profile_model, parent_agent, base_creds)
+
+    # Both model and provider: resolve as one routing unit against the
+    # profile's provider.
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(
+            requested=profile_provider, target_model=profile_model
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"profile provider '{profile_provider}' could not be resolved: {exc}. "
+            f"Check that the provider is configured (API key set, valid provider "
+            f"name) in the profile's config.yaml."
+        ) from exc
+
+    runtime_api_key = runtime.get("api_key", "")
+    if not runtime_api_key:
+        raise ValueError(
+            f"profile provider '{profile_provider}' resolved but has no API "
+            f"key. Set the appropriate environment variable or run 'hermes "
+            f"auth' so the profile's provider can be used."
+        )
+
+    creds = dict(base_creds)
+    # The profile's explicitly configured model wins over the provider's
+    # own default (same precedence as the delegation.provider pin).
+    creds["model"] = profile_model or runtime.get("model")
+    runtime_provider_name = runtime.get("provider")
+    creds["provider"] = (
+        profile_provider
+        if runtime_provider_name == _RUNTIME_PROVIDER_CUSTOM
+        else (runtime_provider_name or profile_provider)
+    )
+    creds["base_url"] = runtime.get("base_url")
+    creds["api_key"] = runtime_api_key
+    creds["api_mode"] = runtime.get("api_mode")
+    creds["request_overrides"] = runtime.get("request_overrides") or {}
+    creds["max_output_tokens"] = runtime.get("max_output_tokens")
+    # Cross-provider switch: stale ACP/pin fields carried over from the
+    # base bundle would force _build_child_agent back onto the pinned
+    # transport (and its copilot-acp provider override), silently rerouting
+    # the child away from the profile's provider. Replace them with the
+    # profile provider's own runtime values (same clearing pattern as
+    # _resolve_task_model_creds applies to provider-scoped fields).
+    creds["command"] = runtime.get("command")
+    creds["args"] = list(runtime.get("args") or [])
+    return creds
+
+
+def _validate_profile_name(name: Optional[str]) -> bool:
+    """Validate a profile name before ANY filesystem access.
+
+    Two controls, both required before ``profile_path.is_dir()`` can ever run:
+
+    1. ``^[A-Za-z0-9_-]+$`` — path-traversal guard (e.g. ``../../.ssh``
+       can never match, so the name can't escape the profiles root).
+    2. Length <= 255 — filesystem component limit. A regex-valid name
+       longer than the limit would raise ``OSError: ENAMETOOLONG`` from
+       the directory probe below, so it is rejected here instead.
+    """
+    import re
+
+    if not isinstance(name, str):
+        return False
+    if not re.match(r"^[A-Za-z0-9_-]+$", name):
+        return False
+    if len(name) > 255:
+        return False
+    return True
+
+
+def _load_profile_identity(profile_name: str) -> Optional[Dict[str, Optional[str]]]:
+    """Load a named Hermes profile's identity files and model config.
+
+    Returns ``None`` when the named profile directory does not exist. All file
+    and config reads are best-effort so a partial or malformed profile still
+    spawns with whichever identity data is available.
+
+    The ``profile_name`` is validated by ``_validate_profile_name`` (regex +
+    length) to prevent path traversal (e.g. ``../../.ssh``) and
+    ENAMETOOLONG filesystem errors.
+    """
+    if not _validate_profile_name(profile_name):
+        return None
+
+    from hermes_constants import get_default_hermes_root
+
+    profile_path = get_default_hermes_root() / "profiles" / profile_name
+    try:
+        if not profile_path.is_dir():
+            return None
+    except OSError:
+        # ENAMETOOLONG and friends: the guard above already rejects the
+        # known-bad shapes, but a hostile filesystem (or an OS with a
+        # smaller component limit) can still raise here — degrade to
+        # "profile not found" instead of crashing the delegation call.
+        logger.debug(
+            "profile_path.is_dir() raised for %r; treating as not found",
+            profile_name,
+        )
+        return None
+
+    result: Dict[str, Optional[str]] = {
+        "soul": None,
+        "identity": None,
+        "agents": None,
+        "model": None,
+        "provider": None,
+        # The validated name, so downstream consumers (child construction,
+        # usage attribution) don't have to re-derive it from the caller's
+        # task dict.
+        "_profile_name": profile_name,
+    }
+    for key, filename in (
+        ("soul", "SOUL.md"),
+        ("identity", "IDENTITY.md"),
+        ("agents", "AGENTS.md"),
+    ):
+        try:
+            content = (profile_path / filename).read_text(encoding="utf-8").strip()
+            result[key] = content or None
+        except Exception:
+            pass
+
+    try:
+        import yaml
+
+        config = yaml.safe_load(
+            (profile_path / "config.yaml").read_text(encoding="utf-8")
+        )
+        model_cfg = config.get("model", {}) if isinstance(config, dict) else {}
+        if isinstance(model_cfg, dict):
+            for key, config_key in (
+                ("model", "default"),
+                ("provider", "provider"),
+            ):
+                value = model_cfg.get(config_key)
+                if isinstance(value, str) and value.strip():
+                    result[key] = value
+    except Exception:
+        pass
+
+    return result
+
+
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""
     if not name:
@@ -1235,20 +1526,46 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    profile_identity: Optional[Dict[str, Optional[str]]] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
-    When role='orchestrator', appends a delegation-capability block
-    modeled on OpenClaw's buildSubagentSystemPrompt (canSpawn branch at
-    inspiration/openclaw/src/agents/subagent-system-prompt.ts:63-95).
+    When ``profile_identity`` is provided (from a per-task ``profile`` field),
+    the child's identity comes from that profile's SOUL.md, IDENTITY.md, and
+    AGENTS.md files instead of the generic subagent preamble. This lets a
+    delegation task spawn a child that "becomes" a named bot (e.g. a code
+    reviewer, a test validator) rather than a generic leaf.
+
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
-    parts = [
-        "You are a focused subagent working on a specific delegated task.",
-        "",
-        f"YOUR TASK:\n{goal}",
-    ]
+    if profile_identity and (
+        profile_identity.get("soul") or profile_identity.get("identity")
+    ):
+        parts = [
+            value
+            for value in (
+                profile_identity.get("soul"),
+                profile_identity.get("identity"),
+                profile_identity.get("agents"),
+            )
+            if value
+        ]
+        parts.append(f"\nYOUR TASK:\n{goal}")
+    else:
+        if profile_identity:
+            logger.warning(
+                "Profile has no SOUL.md or IDENTITY.md; using generic child identity."
+            )
+        parts = [
+            "You are a focused subagent working on a specific delegated task.",
+            "",
+        ]
+        if profile_identity:
+            agents_content = profile_identity.get("agents")
+            if agents_content:
+                parts.append(agents_content)
+        parts.append(f"YOUR TASK:\n{goal}")
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -1761,6 +2078,8 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Per-task profile identity files, loaded by delegate_task before child construction.
+    profile_identity: Optional[Dict[str, Optional[str]]] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1874,6 +2193,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        profile_identity=profile_identity,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -2189,6 +2509,11 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    # Stash the delegated profile name for downstream attribution
+    # (usage ledger, registry display). Reads the validated name the
+    # dispatcher stored in the identity dict — never the raw task field.
+    if profile_identity and profile_identity.get("_profile_name"):
+        child._delegate_profile = profile_identity["_profile_name"]
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -3926,6 +4251,8 @@ def delegate_task(
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
+    profile: Optional[str] = None,
     background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None,
     action: Optional[str] = None,
@@ -4066,6 +4393,10 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         single_task: Dict[str, Any] = {"goal": goal, "context": context, "role": top_role}
+        if model:
+            single_task["model"] = model
+        if profile:
+            single_task["profile"] = profile
         if output_schema is not None:
             single_task["output_schema"] = output_schema
         task_list = [single_task]
@@ -4176,6 +4507,19 @@ def delegate_task(
     # toolset resolution never leaks into the parent (shared with the plugin
     # subagent-lifecycle API).
     children = []
+    allow_model_selection = _get_allow_model_selection()
+    allow_profile_identity = _get_allow_profile_identity()
+
+    # ── Pass 1: atomic preflight ─────────────────────────────────────────
+    # Resolve EVERY task's model/profile/credentials into immutable plans
+    # BEFORE any child is constructed. If any task fails resolution, the
+    # whole batch is refused with zero children built — a mid-batch failure
+    # can never orphan an already-constructed child (SessionDB handle open,
+    # registered in _active_children, live transcript created) with no
+    # cleanup path. Construction (Pass 2) is then all-or-nothing by
+    # construction: it consumes pre-resolved plans and does no I/O that can
+    # fail per-task model/profile resolution.
+    task_plans: List[Dict[str, Any]] = []
     for i, t in enumerate(task_list):
         # Per-task role beats top-level; normalise again so unknown
         # per-task values warn and degrade to leaf uniformly.
@@ -4188,6 +4532,82 @@ def delegate_task(
             from tools.delegation_output_schema import append_output_contract
 
             _child_context = append_output_contract(_child_context, _task_schema)
+
+        # Per-task model selection (gated behind delegation.allow_model_selection).
+        # When enabled and a task names a model, resolve it leniently via the
+        # shared model_switch pipeline; otherwise fall back to the delegation
+        # default creds. The flag-off path is byte-identical to prior behavior.
+        task_creds = creds
+        task_model_request = (t.get("model") or "").strip() if isinstance(t, dict) else ""
+        if task_model_request and allow_model_selection:
+            try:
+                task_creds = _resolve_task_model_creds(
+                    task_model_request, parent_agent, creds
+                )
+            except ValueError as exc:
+                return tool_error(
+                    f"Task {i}: could not resolve model "
+                    f"'{task_model_request}': {exc}"
+                )
+
+        # Per-task profile identity (gated behind delegation.allow_profile_identity).
+        # When enabled and a task names a profile, load its SOUL.md,
+        # IDENTITY.md, AGENTS.md, and model/provider config so the child
+        # becomes that bot rather than a generic subagent. The profile's
+        # model/provider can also serve as a fallback when the task does not
+        # explicitly name a model.
+        _profile_identity = None
+        _profile_name = (t.get("profile") or "").strip() if isinstance(t, dict) else ""
+        if _profile_name and allow_profile_identity:
+            _profile_identity = _load_profile_identity(_profile_name)
+            if _profile_identity is None:
+                return tool_error(
+                    f"Task {i}: profile '{_profile_name}' not found. Check "
+                    f"that it exists under the Hermes profiles root as "
+                    f"profiles/{_profile_name}/."
+                )
+            # Profile config fills missing model/provider when the task
+            # doesn't explicitly override them. The profile's model and
+            # provider are one routing unit (P1 #2): resolve against the
+            # PROFILE's provider, never the parent's.
+            if not task_model_request:
+                _profile_model = _profile_identity.get("model")
+                if _profile_model and allow_model_selection:
+                    try:
+                        task_creds = _resolve_profile_model_creds(
+                            _profile_identity, parent_agent, creds
+                        )
+                    except ValueError as exc:
+                        return tool_error(
+                            f"Task {i}: profile '{_profile_name}' model "
+                            f"'{_profile_model}' could not be resolved: {exc}"
+                        )
+
+        task_plans.append(
+            {
+                "index": i,
+                "task": t,
+                "role": effective_role,
+                "context": _child_context,
+                "schema": _task_schema,
+                "creds": task_creds,
+                "profile_identity": _profile_identity,
+            }
+        )
+
+    # ── Pass 2: construction ─────────────────────────────────────────────
+    # Consume the pre-resolved plans. No model resolution or profile loading
+    # happens here, so a resolution failure can never strike after some
+    # children already exist.
+    for plan in task_plans:
+        i = plan["index"]
+        t = plan["task"]
+        effective_role = plan["role"]
+        _child_context = plan["context"]
+        _task_schema = plan["schema"]
+        task_creds = plan["creds"]
+        _profile_identity = plan["profile_identity"]
+
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i,
@@ -4196,18 +4616,19 @@ def delegate_task(
                 # Subagents always inherit the parent's toolsets; the model
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_request_overrides=task_creds.get("request_overrides"),
+                override_max_tokens=task_creds.get("max_output_tokens"),
+                override_acp_command=task_creds.get("command"),
+                override_acp_args=task_creds.get("args"),
+                profile_identity=_profile_identity,
                 role=effective_role,
             )
         except ValueError as exc:
@@ -5152,7 +5573,8 @@ def _build_top_level_description() -> str:
         "yourself before telling the user the operation succeeded.\n"
         + restrictions_rule +
         "- Children inherit the parent model unless pinned via "
-        "delegation.provider / delegation.model in config.yaml."
+        "delegation.provider / delegation.model in config.yaml, or routed "
+        "per-task via the optional model/profile fields (when enabled)."
     )
 
 
@@ -5206,6 +5628,58 @@ def _build_dynamic_schema_overrides() -> dict:
         k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()
     }
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
+
+    # Per-task model selection and profile identity. Only advertise these
+    # fields to the model when the user has opted in via
+    # delegation.allow_model_selection / delegation.allow_profile_identity —
+    # otherwise the schema is byte-identical to prior behavior, preserving the
+    # "subagents inherit the parent model" contract. The flags are stable
+    # per-session config values, so toggling between sessions (not
+    # mid-conversation) keeps prompt caching valid.
+    _opt_model = _get_allow_model_selection()
+    _opt_profile = _get_allow_profile_identity()
+    if _opt_model or _opt_profile:
+        import copy as _copy
+
+        _tasks_prop = _copy.deepcopy(overrides_params["properties"]["tasks"])
+        if _opt_model:
+            _model_prop = {
+                "type": "string",
+                "description": (
+                    "Optional model for this subagent (e.g. 'opus', 'gpt-5', "
+                    "'glm', or a full 'vendor/model' slug). Names are matched "
+                    "leniently and resolved to a concrete provider "
+                    "automatically, preferring your current provider. Omit "
+                    "to inherit the parent model."
+                ),
+            }
+            overrides_params["properties"]["model"] = dict(_model_prop)
+            _tasks_prop["items"]["properties"]["model"] = dict(_model_prop)
+            _tasks_prop["items"]["properties"]["model"]["description"] = (
+                "Optional per-task model (e.g. 'opus', 'gpt-5', 'glm', or a "
+                "'vendor/model' slug). Resolved leniently; omit to inherit "
+                "the parent model."
+            )
+        if _opt_profile:
+            _profile_prop = {
+                "type": "string",
+                "description": (
+                    "Optional Hermes profile name for this subagent. When "
+                    "set, the child loads that profile's SOUL.md, "
+                    "IDENTITY.md, and AGENTS.md as its system prompt "
+                    "identity, and reads model/provider from its "
+                    "config.yaml when not explicitly overridden. The child "
+                    "becomes the named bot, not a generic subagent."
+                ),
+            }
+            overrides_params["properties"]["profile"] = dict(_profile_prop)
+            _tasks_prop["items"]["properties"]["profile"] = dict(_profile_prop)
+            _tasks_prop["items"]["properties"]["profile"]["description"] = (
+                "Optional per-task Hermes profile name. The child loads that "
+                "profile's identity files and model config, becoming the "
+                "named bot rather than a generic subagent."
+            )
+        overrides_params["properties"]["tasks"] = _tasks_prop
 
     return {
         "description": _build_top_level_description(),
@@ -5373,6 +5847,8 @@ registry.register(
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
+        model=args.get("model"),
+        profile=args.get("profile"),
         background=_model_background_value(args, kw.get("parent_agent")),
         output_schema=args.get("output_schema"),
         action=args.get("action"),

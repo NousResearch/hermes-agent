@@ -1136,11 +1136,45 @@ class PhotonAdapter(BasePlatformAdapter):
                 )
 
             if stream.get("ok") is not False:
+                self._degraded_since_ms = None
                 continue
 
             state = str(stream.get("state") or "unknown")
             degraded_for_ms = stream.get("degradedForMs")
             last_issue = str(stream.get("lastIssue") or "unknown stream issue")
+
+            # Optionally tolerate brief upstream degradation before escalating.
+            # Without a grace window, *any* ok=False /healthz poll becomes
+            # UPSTREAM_STREAM_DEGRADED and kills the gateway process; launchd
+            # KeepAlive then restarts it. Observed production blips were
+            # sub-5s network hiccups the sidecar recovers from on its own
+            # ("still retrying"), which turned into a restart storm.
+            #
+            # Default 0 preserves historical immediate-fatal behaviour. Set
+            # PHOTON_DEGRADED_FATAL_MS (milliseconds) to require sustained
+            # degradation before escalating. Prefer the sidecar's own
+            # degradedForMs when present; otherwise time across successive
+            # polls.
+            fatal_after_ms = float(os.environ.get("PHOTON_DEGRADED_FATAL_MS") or 0)
+            if isinstance(degraded_for_ms, (int, float)) and not isinstance(degraded_for_ms, bool):
+                # Prefer the sidecar's own measurement — it survives our restarts.
+                persisted_ms = float(degraded_for_ms)
+                self._degraded_since_ms = None
+            else:
+                # No duration reported: time it ourselves across successive polls.
+                now_ms = time.monotonic() * 1000.0
+                if getattr(self, "_degraded_since_ms", None) is None:
+                    self._degraded_since_ms = now_ms
+                persisted_ms = now_ms - self._degraded_since_ms
+
+            if persisted_ms < fatal_after_ms:
+                logger.warning(
+                    "[photon] upstream stream degraded but tolerating"
+                    " (state=%s, degradedForMs=%s, fatal at %.0fms): %s",
+                    state, degraded_for_ms, fatal_after_ms, last_issue,
+                )
+                continue
+
             message = (
                 "Photon upstream stream degraded"
                 f" (state={state}, degradedForMs={degraded_for_ms}): "

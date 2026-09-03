@@ -549,6 +549,10 @@ declare global {
       // renderer can still open the FindBar when the OS compositor has
       // already grabbed the chord (#81727, e.g. Pop!_OS / GNOME).
       onOpenFindBarRequested: (callback: () => void) => () => void
+      // macOS Edit undo/redo (#101309): main claims ⌘Z / ⌘⇧Z and menu clicks
+      // share these channels so the composer coalesced stack wins.
+      onEditUndoRequested: (callback: () => void) => () => void
+      onEditRedoRequested: (callback: () => void) => () => void
     }
   }
 }

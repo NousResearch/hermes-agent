@@ -180,6 +180,7 @@ import {
 } from './external-terminal'
 import { type FaviconIo, resolveFavicon } from './favicon'
 import { findGitBash as _findGitBash } from './find-git-bash'
+import { installEditUndoShortcut, type EditHistoryAction } from './edit-undo'
 import {
   installFindShortcut,
   installFoundInPageForwarder,
@@ -6515,6 +6516,22 @@ function sendClosePreviewRequested() {
   webContents.send('hermes:close-preview-requested')
 }
 
+function sendEditHistory(action: EditHistoryAction) {
+  const win = BrowserWindow.getFocusedWindow() || mainWindow
+
+  if (!win || win.isDestroyed()) {
+    return
+  }
+
+  const { webContents } = win
+
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
+
+  webContents.send(action === 'undo' ? 'hermes:edit-undo' : 'hermes:edit-redo')
+}
+
 /**
  * Run a browser gesture on the guest page the user is actually in, if any.
  *
@@ -6808,8 +6825,13 @@ function buildApplicationMenu() {
   template.push({
     label: 'Edit',
     submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
+      // NO accelerator: `{ role: 'undo' }` / `{ role: 'redo' }` register ⌘Z /
+      // ⌘⇧Z on macOS and the menu bar consumes them before the page sees the
+      // chord (electron#18295, same class as ⌘W). That ran Chromium's native
+      // one-letter undo and bypassed the composer's coalesced stack (#101309).
+      // Click still undoes via IPC; `installEditUndoShortcut` owns the chord.
+      { click: () => sendEditHistory('undo'), label: 'Undo' },
+      { click: () => sendEditHistory('redo'), label: 'Redo' },
       { type: 'separator' },
       { role: 'cut' },
       { role: 'copy' },
@@ -13152,6 +13174,13 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   installPreviewShortcut(win)
   installDevToolsShortcut(win)
   installBrowserNavGestures(win)
+
+  // macOS only: the application menu exists solely there, and `{ role: 'undo' }`
+  // was the accelerator that stole ⌘Z from the composer's stack (#101309).
+  // Windows / Linux leave Ctrl+Z on the renderer's keydown path.
+  if (IS_MAC) {
+    installEditUndoShortcut(win)
+  }
 
   // Claim Ctrl/Cmd+F in the main process — on Pop!_OS / GNOME-based Linux
   // distros the Ctrl+F keydown does not reach the renderer's `view.findInPage`

@@ -537,5 +537,20 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes:open-find-bar', listener)
 
     return () => ipcRenderer.removeListener('hermes:open-find-bar', listener)
+  },
+  // macOS Edit undo/redo (#101309): menu items have no accelerator;
+  // `before-input-event` claims ⌘Z / ⌘⇧Z and lands here so the rich composer
+  // stack (or native execCommand) can run.
+  onEditUndoRequested: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:edit-undo', listener)
+
+    return () => ipcRenderer.removeListener('hermes:edit-undo', listener)
+  },
+  onEditRedoRequested: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:edit-redo', listener)
+
+    return () => ipcRenderer.removeListener('hermes:edit-redo', listener)
   }
 })

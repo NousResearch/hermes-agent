@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
+import { performEditHistory } from '@/app/chat/composer/perform-edit-history'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
@@ -95,6 +96,23 @@ export function useDesktopIntegrations({
   // to us (close-preview-requested IPC) and we decide tab-vs-window.
   useEffect(() => {
     window.hermesDesktop?.setPreviewShortcutActive?.(true)
+  }, [])
+
+  // macOS Edit → Undo/Redo and the main-process ⌘Z intercept land here so the
+  // rich composer stack (or native execCommand for ordinary fields) runs
+  // instead of Chromium's one-letter undo (#101309).
+  useEffect(() => {
+    const offUndo = window.hermesDesktop?.onEditUndoRequested?.(() => {
+      performEditHistory('undo')
+    })
+    const offRedo = window.hermesDesktop?.onEditRedoRequested?.(() => {
+      performEditHistory('redo')
+    })
+
+    return () => {
+      offUndo?.()
+      offRedo?.()
+    }
   }, [])
 
   const restoredRef = useRef(false)

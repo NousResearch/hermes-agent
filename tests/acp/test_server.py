@@ -61,7 +61,12 @@ def agent(mock_manager):
 async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
     resp = await agent.new_session(cwd="/tmp")
 
-    assert resp.config_options is None
+    # Edit-approval policies remain modes, not config options. The model
+    # selector is advertised via configOptions (category: "model"); assert the
+    # config options carry no edit-approval entry rather than being empty.
+    config_ids = {opt.id for opt in (resp.config_options or [])}
+    assert "edit_approval_policy" not in config_ids
+    assert config_ids <= {"model"}
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [(mode.id, mode.name) for mode in resp.modes.available_modes] == [
@@ -82,7 +87,10 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     state = agent.session_manager.get_session(resp.session_id)
 
     assert isinstance(update, SetSessionConfigOptionResponse)
-    assert update.config_options == []
+    # Per ACP spec, the response echoes the complete config-option set. The
+    # edit-approval policy is still applied via modes, so it must not appear as
+    # a config option, but the model selector may.
+    assert all(opt.id != "edit_approval_policy" for opt in update.config_options)
     assert getattr(state, "mode", None) == "accept_edits"
 
 
@@ -390,7 +398,10 @@ class TestSessionConfiguration:
         )
 
         assert mode_result == {}
-        assert config_result["configOptions"] == []
+        assert all(
+            opt.get("id") != "edit_approval_policy"
+            for opt in config_result["configOptions"]
+        )
 
 
 

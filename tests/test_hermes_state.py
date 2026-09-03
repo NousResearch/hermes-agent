@@ -5364,7 +5364,7 @@ class TestSessionFKSelfHeal:
         session = db.get_session("orphan_s1")
         assert session is not None
         assert session["id"] == "orphan_s1"
-        assert session["source"] == "unknown"
+        assert session["source"] == "self-healed"
         assert session["message_count"] == 1
 
     def test_append_messages_batch_self_heals_missing_session(self, tmp_path):
@@ -5382,5 +5382,5 @@ class TestSessionFKSelfHeal:
         session = db.get_session("orphan_s2")
         assert session is not None
         assert session["id"] == "orphan_s2"
-        assert session["source"] == "unknown"
+        assert session["source"] == "self-healed"
         assert session["message_count"] == 2

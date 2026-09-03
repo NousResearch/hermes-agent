@@ -207,6 +207,11 @@ def get_sessions(
                 compact_rows=not full,
                 include_pinned=True,
                 **scope)
+            if sessions:
+                roots = [s.get("_lineage_root_id") or s["id"] for s in sessions]
+                revisions = db.get_display_revisions(roots)
+                for session, root_id in zip(sessions, roots):
+                    session["display_revision"] = revisions[root_id]
             total = db.session_count(exclude_children=True, **scope)
             now = time.time()
             row_profile = profile_name or _cron_default_profile()
@@ -499,7 +504,6 @@ async def get_session_latest_descendant(session_id: str, profile: Optional[str] 
         "requested_session_id": path[0] if path else session_id, "session_id": latest, "path": path,
         "changed": bool(path and latest != path[0])}
 
-
 def _project_for_display(messages: list) -> list:
     """Replace compaction summaries with their display-only projection."""
     from agent.compaction_display import project_compaction_message_for_display
@@ -527,38 +531,71 @@ def _project_for_display(messages: list) -> list:
 
 @manage_router.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(
-    session_id: str, profile: Optional[str] = None, limit: Optional[int] = Query(None, ge=0),
-    offset: int = Query(0, ge=0), order: Optional[str] = Query(None),
-    include_compacted: bool = Query(False)):
+    session_id: str,
+    profile: Optional[str] = None,
+    limit: Optional[int] = Query(None, ge=0),
+    offset: int = Query(0, ge=0),
+    order: Optional[str] = Query(None),
+    include_compacted: bool = Query(False),
+    known_display_revision: Optional[str] = Query(None),
+):
+    # Keep the established positional function signature intact for internal
+    # callers and tests. FastAPI supplies the appended query value as a string;
+    # a direct call that omits it leaves the Query default object here.
+    raw_known_display_revision = (
+        known_display_revision if isinstance(known_display_revision, str) else None
+    )
+    parsed_known_display_revision: Optional[int] = None
+    if raw_known_display_revision is not None:
+        valid_revision = (
+            bool(raw_known_display_revision)
+            and len(raw_known_display_revision) <= 19
+            and all("0" <= character <= "9" for character in raw_known_display_revision)
+        )
+        parsed_revision = int(raw_known_display_revision) if valid_revision else None
+        if parsed_revision is None or parsed_revision > (1 << 63) - 1:
+            raise HTTPException(
+                status_code=400,
+                detail="known_display_revision must be a non-negative integer",
+            )
+        parsed_known_display_revision = parsed_revision
+
     if order not in (None, "oldest", "latest"):
-        raise HTTPException(status_code=400, detail="order must be one of: oldest, latest")
+        raise HTTPException(
+            status_code=400,
+            detail="order must be one of: oldest, latest",
+        )
 
     def _read(db):
         sid = _resolve_session_id(db, session_id)
         if not sid:
             return None
-        sid = db.resolve_resume_session_id(sid)
-        # Always page (an omitted limit used to load whole transcripts). Explicit
-        # pagination anchors at the start; the default view is the latest page.
         default_page = limit is None
         latest_page = order == "latest" or (order is None and default_page)
         _limit = 500 if default_page else min(limit, 500)
-        return sid, _limit, db.get_messages(
-            sid, limit=_limit, offset=offset, latest=latest_page,
-            include_compacted=include_compacted)
+        try:
+            return db.get_display_message_page(
+                sid,
+                limit=_limit,
+                offset=offset,
+                latest=latest_page,
+                include_compacted=include_compacted,
+                known_display_revision=parsed_known_display_revision,
+            )
+        except KeyError:
+            return None
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
     if result is None:
-        raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    sid, _limit, messages = result
-    projected_messages = _project_for_display(messages)
-    return {
-        "session_id": sid,
-        "messages": projected_messages,
-        "pagination": {
-            "limit": _limit, "offset": offset,
-            "order": order or ("latest" if limit is None else "oldest"),
-            "returned": len(projected_messages)}}
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not result["unchanged"]:
+        from agent.compaction_display import suppress_redundant_compaction_projection_sources
+
+        display_messages = suppress_redundant_compaction_projection_sources(
+            result["messages"]
+        )
+        result["messages"] = _project_for_display(display_messages)
+    return result
 
 
 @manage_router.delete("/api/sessions/{session_id}")

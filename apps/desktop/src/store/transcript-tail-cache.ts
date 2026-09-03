@@ -1,62 +1,51 @@
 import type { ChatMessage } from '@/lib/chat-messages'
 import { withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 
-// ── Durable transcript-tail cache (#89206 "feels instant" layer) ────────────
-// The in-memory warm cache (sessionStateByRuntimeIdRef) makes same-window
-// re-opens instant, but dies with the window — so every app launch, backend
-// reap, or profile respawn pays a full network round-trip before ANYTHING
-// paints, and on a cold multi-profile boot that round-trip sits behind a
-// backend spawn. This cache persists a bounded tail of each stored session's
-// transcript in localStorage: a wake paints the cached tail at ~0ms, the
-// paint-first hydration completes immediately, and the REST prefetch /
-// runtime resume reconcile the authoritative transcript when they land
-// (the existing reconcilers already treat painted content as "previous").
-//
-// Scope and bounds:
-//   - TAIL ONLY (last TAIL_MESSAGES), size-capped per entry; oversized
-//     messages evict the entry rather than truncating a message mid-parts.
-//   - LRU across MAX_ENTRIES sessions; corrupt entries self-evict.
-//   - Same trust domain as state.db on the same disk — no new exposure.
-//   - Keyed by stored session id (durable identity), never runtime id,
-//     SCOPED by the owning {connectionId, profile} (#94828). Stored ids are
-//     only unique WITHIN one profile's state.db, and localStorage survives
-//     profile switches in the same window: an unscoped key let profile A's
-//     tail be painted against profile B's backend, which then retried a
-//     session id that does not exist there ("session not found") on every
-//     wake. The scope mirrors the in-memory twin's transcriptTailKey
-//     (transcript-tail.ts). Entries persisted before scoping shipped (v1,
-//     bare-id keys) carry no owner and are unreachable by construction —
-//     they are swept once per window so a stale tail can never paint again.
-
-const PREFIX = 'hermes.transcript-tail.v2:'
-const LEGACY_ROOT = 'hermes.transcript-tail.v1'
-const INDEX_KEY = 'hermes.transcript-tail.v2-index'
+const PREFIX = 'hermes.transcript-tail.v3:'
+const INDEX_KEY = 'hermes.transcript-tail.v3-index'
+const LEGACY_ROOTS = ['hermes.transcript-tail.v1', 'hermes.transcript-tail.v2'] as const
 const TAIL_MESSAGES = 40
 const MAX_ENTRY_BYTES = 256 * 1024
 const MAX_ENTRIES = 50
 
-/** Owning scope of an entry — same shape the REST layer threads through
- *  `getLatestSessionMessages(id, scope)` and the in-memory twin stores in
- *  each TranscriptTailState. */
-export type TranscriptTailScope =
-  | null
-  | string
-  | {
-      connectionId?: null | string
-      profile?: null | string
-    }
+export interface TranscriptTailAuthority {
+  connectionId: string
+  profile: string
+  lineageRootId: string
+  resolvedTipId: string
+  displayRevision: number
+}
 
-interface CacheEntry {
+interface NormalizedTranscriptTailAuthority extends TranscriptTailAuthority {}
+
+export type TranscriptTailCoverage = 'latest-page' | 'latest-page-tail'
+
+export interface TranscriptTailPagination {
+  limit: number
+  offset: number
+  order: 'latest'
+  returned: number
+}
+
+export interface TranscriptTailCacheEntry extends TranscriptTailAuthority {
+  coverage: TranscriptTailCoverage
+  storedSessionId: string
   messages: ChatMessage[]
+  pagination?: TranscriptTailPagination
   savedAt: number
+}
+
+export interface SaveTranscriptTailOptions {
+  pagination?: Omit<TranscriptTailPagination, 'order'> & { order: 'latest' | 'oldest' }
 }
 
 let legacyPurged = false
 
-/** One-time sweep of pre-scoping v1 entries (#94828): a bare-id key cannot
- *  be attributed to a profile, so it must never paint again. Best effort —
- *  worst case a stale entry lingers unread until quota eviction. */
-function purgeLegacyV1(store: Storage): void {
+function isLegacyCacheKey(key: string): boolean {
+  return LEGACY_ROOTS.some(root => key === root || key === `${root}-index` || key.startsWith(`${root}:`))
+}
+
+function purgeLegacyCaches(store: Storage): void {
   if (legacyPurged) {
     return
   }
@@ -67,7 +56,7 @@ function purgeLegacyV1(store: Storage): void {
     for (let index = 0; index < store.length; index += 1) {
       const key = store.key(index)
 
-      if (key && key.startsWith(LEGACY_ROOT)) {
+      if (key && isLegacyCacheKey(key)) {
         doomed.push(key)
       }
     }
@@ -76,12 +65,9 @@ function purgeLegacyV1(store: Storage): void {
       store.removeItem(key)
     }
 
-    // Only latch on a completed sweep: a mid-sweep throw retries on the next
-    // storage() touch instead of leaving a partial purge latched for the
-    // window's lifetime.
     legacyPurged = true
   } catch {
-    // best effort
+    // Best effort. Retry the sweep on the next valid cache access.
   }
 }
 
@@ -89,7 +75,7 @@ function storage(): Storage | null {
   try {
     const store = window.localStorage
 
-    purgeLegacyV1(store)
+    purgeLegacyCaches(store)
 
     return store
   } catch {
@@ -97,99 +83,417 @@ function storage(): Storage | null {
   }
 }
 
-function normalizedScope(scope?: TranscriptTailScope): { connectionId: string; profile: string } | null {
-  if (typeof scope === 'string') {
-    return { connectionId: '', profile: scope.trim() || 'default' }
+function normalizedStoredSessionId(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null
   }
 
-  if (!scope) {
+  return value.trim() || null
+}
+
+function normalizedAuthority(value: unknown): NormalizedTranscriptTailAuthority | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const authority = value as Partial<TranscriptTailAuthority>
+  const lineageRootId = typeof authority.lineageRootId === 'string' ? authority.lineageRootId.trim() : ''
+  const resolvedTipId = typeof authority.resolvedTipId === 'string' ? authority.resolvedTipId.trim() : ''
+  const displayRevision = authority.displayRevision
+
+  if (
+    !lineageRootId ||
+    !resolvedTipId ||
+    typeof displayRevision !== 'number' ||
+    !Number.isFinite(displayRevision) ||
+    !Number.isInteger(displayRevision) ||
+    displayRevision < 0
+  ) {
     return null
   }
 
   return {
-    connectionId: String(scope.connectionId ?? '').trim(),
-    profile: String(scope.profile ?? '').trim() || 'default'
+    connectionId: String(authority.connectionId ?? '').trim(),
+    displayRevision,
+    lineageRootId,
+    profile: String(authority.profile ?? '').trim() || 'default',
+    resolvedTipId
   }
 }
 
-/** Index identity of an entry: the bare stored id (legacy/unscoped callers)
- *  or the JSON [connectionId, profile, storedId] composite. */
-function entrySuffix(storedSessionId: string, scope?: TranscriptTailScope): string {
-  const scoped = normalizedScope(scope)
+function normalizedPagination(value: unknown): TranscriptTailPagination | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined
+  }
 
-  return scoped ? JSON.stringify([scoped.connectionId, scoped.profile, storedSessionId]) : storedSessionId
+  const pagination = value as Partial<TranscriptTailPagination>
+  const validInteger = (candidate: unknown): candidate is number =>
+    typeof candidate === 'number' && Number.isFinite(candidate) && Number.isInteger(candidate) && candidate >= 0
+
+  if (
+    !validInteger(pagination.limit) ||
+    !validInteger(pagination.offset) ||
+    !validInteger(pagination.returned) ||
+    pagination.order !== 'latest'
+  ) {
+    return undefined
+  }
+
+  return {
+    limit: pagination.limit,
+    offset: pagination.offset,
+    order: 'latest',
+    returned: pagination.returned
+  }
+}
+
+function entrySuffix(storedSessionId: string, authority: NormalizedTranscriptTailAuthority): string {
+  return JSON.stringify([
+    authority.connectionId,
+    authority.profile,
+    storedSessionId,
+    authority.lineageRootId,
+    authority.resolvedTipId,
+    authority.displayRevision
+  ])
+}
+
+function readIndexState(store: Storage): { ids: string[]; valid: boolean } {
+  try {
+    const raw = store.getItem(INDEX_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+
+    return Array.isArray(parsed)
+      ? { ids: parsed.filter(id => typeof id === 'string'), valid: true }
+      : { ids: [], valid: false }
+  } catch {
+    return { ids: [], valid: false }
+  }
 }
 
 function readIndex(store: Storage): string[] {
-  try {
-    const raw = store.getItem(INDEX_KEY)
-    const parsed = raw ? JSON.parse(raw) : []
-
-    return Array.isArray(parsed) ? parsed.filter(id => typeof id === 'string') : []
-  } catch {
-    return []
-  }
+  return readIndexState(store).ids
 }
 
-function writeIndex(store: Storage, ids: string[]): void {
+function writeIndex(store: Storage, ids: string[]): boolean {
   try {
     store.setItem(INDEX_KEY, JSON.stringify(ids))
+
+    return true
   } catch {
-    // Quota — drop the index; entries become orphaned and are rewritten lazily.
+    return false
   }
 }
 
-function touchIndex(store: Storage, suffix: string): void {
-  const ids = readIndex(store).filter(id => id !== suffix)
-  ids.push(suffix)
+function actualV3Keys(store: Storage): string[] {
+  const keys: string[] = []
 
-  while (ids.length > MAX_ENTRIES) {
-    const evicted = ids.shift()
+  for (let index = 0; index < store.length; index += 1) {
+    const key = store.key(index)
 
-    if (evicted) {
+    if (key?.startsWith(PREFIX)) {
+      keys.push(key)
+    }
+  }
+
+  return keys
+}
+
+interface V3NamespaceSnapshot {
+  entries: Array<[key: string, raw: string]>
+  indexRaw: string | null
+}
+
+function snapshotV3Namespace(store: Storage): V3NamespaceSnapshot | null {
+  try {
+    const entries = actualV3Keys(store).flatMap(key => {
+      const raw = store.getItem(key)
+
+      return raw === null ? [] : ([[key, raw]] as Array<[string, string]>)
+    })
+
+    return { entries, indexRaw: store.getItem(INDEX_KEY) }
+  } catch {
+    return null
+  }
+}
+
+function restoreV3Namespace(store: Storage, snapshot: V3NamespaceSnapshot): void {
+  try {
+    for (const key of actualV3Keys(store)) {
       try {
-        store.removeItem(PREFIX + evicted)
+        store.removeItem(key)
       } catch {
         // best effort
       }
     }
-  }
 
-  writeIndex(store, ids)
+    try {
+      store.removeItem(INDEX_KEY)
+    } catch {
+      // best effort
+    }
+
+    const restoredSuffixes = new Set<string>()
+
+    for (const [key, raw] of snapshot.entries) {
+      try {
+        store.setItem(key, raw)
+        restoredSuffixes.add(key.slice(PREFIX.length))
+      } catch {
+        // Keep restoring independent entries.
+      }
+    }
+
+    if (snapshot.indexRaw === null) {
+      return
+    }
+
+    try {
+      const parsed = JSON.parse(snapshot.indexRaw)
+      const indexedSuffixes = Array.isArray(parsed) ? parsed.filter(value => typeof value === 'string') : []
+      const fullyRestored = snapshot.entries.every(([key]) => restoredSuffixes.has(key.slice(PREFIX.length)))
+      const restoredIndexRaw = fullyRestored
+        ? snapshot.indexRaw
+        : JSON.stringify(indexedSuffixes.filter(suffix => restoredSuffixes.has(suffix)))
+
+      store.setItem(INDEX_KEY, restoredIndexRaw)
+    } catch {
+      try {
+        store.removeItem(INDEX_KEY)
+      } catch {
+        // best effort; never fabricate an index for entries we could not restore
+      }
+    }
+  } catch {
+    // best effort recovery only
+  }
 }
 
-/** Persist the tail of a session's transcript. No-op on empty/oversized.
- *  Pass the session's owning scope ({connectionId, profile}, or just the
- *  profile name) so the entry can only ever be read against that backend. */
+interface DiscoveredEntry {
+  entry: TranscriptTailCacheEntry
+  key: string
+  savedAt: number
+  storedSessionId: string
+  suffix: string
+}
+
+function validatePersistedEntry(raw: string, key: string): DiscoveredEntry | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<TranscriptTailCacheEntry>
+    const storedSessionId = normalizedStoredSessionId(parsed?.storedSessionId)
+    const authority = normalizedAuthority(parsed)
+    const savedAt = parsed?.savedAt
+
+    if (
+      !parsed ||
+      !storedSessionId ||
+      !authority ||
+      typeof savedAt !== 'number' ||
+      !Number.isFinite(savedAt) ||
+      savedAt < 0 ||
+      !Array.isArray(parsed.messages) ||
+      parsed.messages.length === 0 ||
+      !entryMatches(parsed as TranscriptTailCacheEntry, storedSessionId, authority)
+    ) {
+      return null
+    }
+
+    const pagination = normalizedPagination(parsed.pagination)
+    const declaredCoverage =
+      parsed.coverage === 'latest-page' || parsed.coverage === 'latest-page-tail'
+        ? parsed.coverage
+        : 'latest-page-tail'
+    const coverage =
+      declaredCoverage === 'latest-page' && pagination && pagination.returned !== parsed.messages.length
+        ? 'latest-page-tail'
+        : declaredCoverage
+    const entry: TranscriptTailCacheEntry = {
+      ...(parsed as TranscriptTailCacheEntry),
+      coverage,
+      ...(pagination ? { pagination } : {})
+    }
+
+    const suffix = entrySuffix(storedSessionId, authority)
+
+    return key === PREFIX + suffix ? { entry, key, savedAt, storedSessionId, suffix } : null
+  } catch {
+    return null
+  }
+}
+
+function discoverEntry(store: Storage, key: string): DiscoveredEntry | null {
+  try {
+    const raw = store.getItem(key)
+
+    return raw ? validatePersistedEntry(raw, key) : null
+  } catch {
+    return null
+  }
+}
+
+function orderedDiscoveredEntries(store: Storage, discovered: DiscoveredEntry[]): DiscoveredEntry[] {
+  const indexPosition = new Map<string, number>()
+
+  readIndex(store).forEach((suffix, position) => {
+    if (!indexPosition.has(suffix)) {
+      indexPosition.set(suffix, position)
+    }
+  })
+
+  return [...discovered].sort((left, right) => {
+    const bySavedAt = left.savedAt - right.savedAt
+
+    if (bySavedAt !== 0) {
+      return bySavedAt
+    }
+
+    const leftPosition = indexPosition.get(left.suffix) ?? Number.MAX_SAFE_INTEGER
+    const rightPosition = indexPosition.get(right.suffix) ?? Number.MAX_SAFE_INTEGER
+
+    return leftPosition - rightPosition || left.suffix.localeCompare(right.suffix)
+  })
+}
+
+function persistActualSurvivorIndex(store: Storage): boolean {
+  try {
+    const survivors = actualV3Keys(store).flatMap(key => {
+      const entry = discoverEntry(store, key)
+
+      return entry ? [entry] : []
+    })
+
+    return writeIndex(
+      store,
+      orderedDiscoveredEntries(store, survivors).map(entry => entry.suffix)
+    )
+  } catch {
+    return false
+  }
+}
+
+function reconcileIndexUnsafe(store: Storage, touchedSuffix: string): boolean {
+  const corruptKeys: string[] = []
+  const discovered = orderedDiscoveredEntries(
+    store,
+    actualV3Keys(store).flatMap(key => {
+      const entry = discoverEntry(store, key)
+
+      if (!entry) {
+        corruptKeys.push(key)
+
+        return []
+      }
+
+      return [entry]
+    })
+  )
+
+  const ordered = discovered.map(entry => entry.suffix).filter(suffix => suffix !== touchedSuffix)
+  const touched = discovered.find(entry => entry.suffix === touchedSuffix)
+
+  if (touched) {
+    ordered.push(touchedSuffix)
+  }
+
+  const evicted = ordered.slice(0, Math.max(0, ordered.length - MAX_ENTRIES))
+  const kept = ordered.slice(evicted.length)
+
+  if (!writeIndex(store, kept)) {
+    return false
+  }
+
+  for (const suffix of evicted) {
+    try {
+      store.removeItem(PREFIX + suffix)
+    } catch {
+      // best effort; the next reconciliation sees and re-evicts the orphan
+    }
+  }
+
+  for (const key of corruptKeys) {
+    try {
+      store.removeItem(key)
+    } catch {
+      // best effort
+    }
+  }
+
+  return true
+}
+
+function reconcileIndex(store: Storage, touchedSuffix: string): boolean {
+  try {
+    return reconcileIndexUnsafe(store, touchedSuffix)
+  } catch {
+    return false
+  }
+}
+
+function entryMatches(
+  entry: TranscriptTailCacheEntry,
+  storedSessionId: string,
+  authority: NormalizedTranscriptTailAuthority
+): boolean {
+  return (
+    entry.storedSessionId === storedSessionId &&
+    entry.connectionId === authority.connectionId &&
+    entry.profile === authority.profile &&
+    entry.lineageRootId === authority.lineageRootId &&
+    entry.resolvedTipId === authority.resolvedTipId &&
+    entry.displayRevision === authority.displayRevision
+  )
+}
+
 export function saveTranscriptTail(
   storedSessionId: string,
   messages: ChatMessage[],
-  scope?: TranscriptTailScope
+  proof: TranscriptTailAuthority,
+  options: SaveTranscriptTailOptions = {}
 ): void {
-  const id = (storedSessionId ?? '').trim()
-  const store = storage()
+  const id = normalizedStoredSessionId(storedSessionId)
+  const authority = normalizedAuthority(proof)
 
-  if (!store || !id || !Array.isArray(messages) || messages.length === 0) {
+  // Validate before touching storage: invalid proof must not purge legacy
+  // state, move the LRU, or alter an existing entry.
+  if (!id || !authority || !Array.isArray(messages) || messages.length === 0) {
     return
   }
 
-  const entry: CacheEntry = { messages: messages.slice(-TAIL_MESSAGES), savedAt: Date.now() }
+  const store = storage()
 
+  if (!store) {
+    return
+  }
+
+  const pagination = normalizedPagination(options.pagination)
+  const retainedMessages = messages.slice(-TAIL_MESSAGES)
+  let entry: TranscriptTailCacheEntry = {
+    ...authority,
+    coverage: retainedMessages.length === messages.length ? 'latest-page' : 'latest-page-tail',
+    messages: retainedMessages,
+    ...(pagination ? { pagination } : {}),
+    savedAt: Date.now(),
+    storedSessionId: id
+  }
   let serialized: string
 
   try {
     serialized = JSON.stringify(entry)
   } catch {
-    return // non-serializable parts (live handles) — skip, never throw
+    return
   }
 
   if (serialized.length > MAX_ENTRY_BYTES) {
-    // Retry with a shorter tail before giving up; a session dominated by a
-    // few huge tool results still caches its recent turns.
-    const shorter: CacheEntry = { messages: messages.slice(-8), savedAt: entry.savedAt }
+    const shorterMessages = messages.slice(-8)
+    entry = {
+      ...entry,
+      coverage: shorterMessages.length === messages.length ? 'latest-page' : 'latest-page-tail',
+      messages: shorterMessages
+    }
 
     try {
-      serialized = JSON.stringify(shorter)
+      serialized = JSON.stringify(entry)
     } catch {
       return
     }
@@ -199,37 +503,77 @@ export function saveTranscriptTail(
     }
   }
 
-  const suffix = entrySuffix(id, scope)
+  const suffix = entrySuffix(id, authority)
+  const key = PREFIX + suffix
+  let previousRaw: string | null
 
   try {
-    store.setItem(PREFIX + suffix, serialized)
-    touchIndex(store, suffix)
+    previousRaw = store.getItem(key)
   } catch {
-    // Quota exceeded — evict everything and retry once (small cache >> stale cache).
+    return
+  }
+
+  const rollbackEntry = (): void => {
+    try {
+      if (previousRaw === null) {
+        store.removeItem(key)
+      } else {
+        store.setItem(key, previousRaw)
+      }
+    } catch {
+      // best effort; storage is already unavailable
+    }
+  }
+
+  try {
+    store.setItem(key, serialized)
+
+    if (!reconcileIndex(store, suffix)) {
+      rollbackEntry()
+    }
+  } catch {
+    const snapshot = snapshotV3Namespace(store)
+
+    if (!snapshot) {
+      return
+    }
+
     try {
       clearTranscriptTails()
-      store.setItem(PREFIX + suffix, serialized)
-      touchIndex(store, suffix)
+      store.setItem(key, serialized)
+
+      if (!reconcileIndex(store, suffix)) {
+        restoreV3Namespace(store, snapshot)
+      }
     } catch {
-      // Storage genuinely unavailable; instant paint just won't happen.
+      restoreV3Namespace(store, snapshot)
+      // Storage unavailable; instant paint remains an optional optimization.
     }
   }
 }
 
-/** Cached tail for a stored session, or null. Corrupt entries self-evict.
- *  Only entries saved under the SAME owning scope are returned (#94828). */
-export function loadTranscriptTail(storedSessionId: string, scope?: TranscriptTailScope): ChatMessage[] | null {
-  const id = (storedSessionId ?? '').trim()
-  const store = storage()
+export function loadTranscriptTail(
+  storedSessionId: string,
+  proof: TranscriptTailAuthority
+): TranscriptTailCacheEntry | null {
+  const id = normalizedStoredSessionId(storedSessionId)
+  const authority = normalizedAuthority(proof)
 
-  if (!store || !id) {
+  if (!id || !authority) {
     return null
   }
 
-  let raw: null | string = null
+  const store = storage()
+
+  if (!store) {
+    return null
+  }
+
+  const suffix = entrySuffix(id, authority)
+  let raw: string | null
 
   try {
-    raw = store.getItem(PREFIX + entrySuffix(id, scope))
+    raw = store.getItem(PREFIX + suffix)
   } catch {
     return null
   }
@@ -239,43 +583,48 @@ export function loadTranscriptTail(storedSessionId: string, scope?: TranscriptTa
   }
 
   try {
-    const parsed = JSON.parse(raw) as CacheEntry
+    const validated = validatePersistedEntry(raw, PREFIX + suffix)
 
-    if (!parsed || !Array.isArray(parsed.messages) || parsed.messages.length === 0) {
-      throw new Error('empty')
+    if (!validated || !entryMatches(validated.entry, id, authority)) {
+      throw new Error('invalid transcript-tail entry')
     }
 
-    // Repair, don't just trust: a tail persisted by an older build (or by a
-    // producer bug) can carry two `tool-call` parts with one `toolCallId`
-    // inside a single message. This path paints DIRECTLY into the view, and a
-    // poisoned entry is re-read identically on every launch — the "one pane
-    // permanently broken" shape of #87857. Renaming at read keeps already-
-    // affected installs from crash-looping forever on upgraded builds.
-    return parsed.messages.map(withUniqueToolCallIdsWithinMessage)
+    return {
+      ...validated.entry,
+      messages: validated.entry.messages.map(withUniqueToolCallIdsWithinMessage)
+    }
   } catch {
     try {
-      store.removeItem(PREFIX + entrySuffix(id, scope))
+      store.removeItem(PREFIX + suffix)
     } catch {
       // best effort
     }
+
+    writeIndex(
+      store,
+      readIndex(store).filter(indexedSuffix => indexedSuffix !== suffix)
+    )
 
     return null
   }
 }
 
-/** Drop one session's cached tail (session deleted / cache poisoned). With a
- *  scope, only that scope's entry is dropped — other backends' tails for the
- *  same stored id stay intact. */
-export function dropTranscriptTail(storedSessionId: string, scope?: TranscriptTailScope): void {
-  const id = (storedSessionId ?? '').trim()
+export function dropTranscriptTail(storedSessionId: string, proof?: TranscriptTailAuthority): void {
+  const id = normalizedStoredSessionId(storedSessionId)
+  const authority = normalizedAuthority(proof)
+
+  if (!id || !authority) {
+    return
+  }
+
   const store = storage()
 
-  if (!store || !id) {
+  if (!store) {
     return
   }
 
   try {
-    const suffix = entrySuffix(id, scope)
+    const suffix = entrySuffix(id, authority)
 
     store.removeItem(PREFIX + suffix)
     writeIndex(
@@ -287,56 +636,63 @@ export function dropTranscriptTail(storedSessionId: string, scope?: TranscriptTa
   }
 }
 
-/** Drop EVERY scope's entry for a stored id. Delete-path only: the save-path
- *  scope (ownerRoute) and the delete-path scope (the removed row's
- *  connection_id) are derived from different sources, so a shape drift
- *  between them would orphan the entry until LRU eviction (#94914 review,
- *  defect 1). A DELETED stored id cannot be legitimately reused, so sweeping
- *  all scopes is safe there — but never on the failed-resume path, where a
- *  same-id twin in another profile must keep its own tail. */
 export function dropTranscriptTailEverywhere(storedSessionId: string): void {
-  const id = (storedSessionId ?? '').trim()
-  const store = storage()
+  const id = normalizedStoredSessionId(storedSessionId)
 
-  if (!store || !id) {
+  if (!id) {
     return
   }
 
-  try {
-    const namesId = (entry: string): boolean => {
-      if (entry === id) {
-        return true
-      }
+  const store = storage()
 
-      if (!entry.startsWith('[')) {
-        return false
-      }
-
-      try {
-        const parsed = JSON.parse(entry)
-
-        return Array.isArray(parsed) && parsed[2] === id
-      } catch {
-        return false
-      }
-    }
-
-    const index = readIndex(store)
-
-    for (const entry of index.filter(namesId)) {
-      store.removeItem(PREFIX + entry)
-    }
-
-    writeIndex(
-      store,
-      index.filter(entry => !namesId(entry))
-    )
-  } catch {
-    // best effort
+  if (!store) {
+    return
   }
+
+  const storedIdFromSuffix = (key: string): string | null => {
+    try {
+      const parsed = JSON.parse(key.slice(PREFIX.length))
+
+      return Array.isArray(parsed) && typeof parsed[2] === 'string' ? parsed[2].trim() || null : null
+    } catch {
+      return null
+    }
+  }
+
+  const storedIdFromEntry = (key: string): string | null => {
+    try {
+      const raw = store.getItem(key)
+      const parsed = raw ? JSON.parse(raw) : null
+
+      return normalizedStoredSessionId(parsed?.storedSessionId)
+    } catch {
+      return null
+    }
+  }
+
+  let keys: string[]
+
+  try {
+    keys = actualV3Keys(store)
+  } catch {
+    return
+  }
+
+  for (const key of keys) {
+    if (storedIdFromEntry(key) !== id && storedIdFromSuffix(key) !== id) {
+      continue
+    }
+
+    try {
+      store.removeItem(key)
+    } catch {
+      // One inaccessible entry must not prevent later scopes from being removed.
+    }
+  }
+
+  persistActualSurvivorIndex(store)
 }
 
-/** Wipe the whole cache (connection/mode re-home, quota recovery). */
 export function clearTranscriptTails(): void {
   const store = storage()
 
@@ -344,9 +700,9 @@ export function clearTranscriptTails(): void {
     return
   }
 
-  for (const id of readIndex(store)) {
+  for (const key of actualV3Keys(store)) {
     try {
-      store.removeItem(PREFIX + id)
+      store.removeItem(key)
     } catch {
       // best effort
     }

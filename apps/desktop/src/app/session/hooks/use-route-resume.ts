@@ -1,6 +1,7 @@
 import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import { isNewChatRoute } from '@/app/routes'
+import { isCompletedSessionOpenPerfFixture } from '@/app/session/hooks/use-session-actions/session-open-perf-fixture'
 import { type SessionResumeRequest, setResumeExhaustedSessionId } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import { markSelectionRestore } from '@/store/session-states'
@@ -125,6 +126,15 @@ export function useRouteResume({
     }
 
     if (routedSessionId) {
+      // A controlled perf round intentionally leaves its synthetic route in
+      // place while restoring the surrounding renderer stores. Do not let the
+      // ordinary stranded-route self-heal turn that private id into a real
+      // backend lookup after the fixture has released its injected transport.
+      // Normal production resolves this helper to the typed no-op module.
+      if (isCompletedSessionOpenPerfFixture(routedSessionId)) {
+        return
+      }
+
       const cachedRuntime = runtimeIdByStoredSessionIdRef.current.get(routedSessionId)
 
       const alreadyActive =

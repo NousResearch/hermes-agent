@@ -7,6 +7,7 @@ import type { SessionProfileRoute } from '@/store/session-request-router'
 import { markSelectionRestore } from '@/store/session-states'
 
 import { useRouteResume } from './use-route-resume'
+import { runSessionOpenPerfFixture, setSessionOpenPerfFixtureRunner } from './use-session-actions/session-open-perf-fixture'
 
 // The hook only arms the boot-restore one-shot; the listener consuming it lives
 // in the real store (covered by session-states.test.ts). Mock the module so the
@@ -242,6 +243,43 @@ describe('useRouteResume', () => {
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
     expect(resumeSession).toHaveBeenCalledWith('session-2', true)
+  })
+
+  it('does not turn a completed synthetic perf route into a real resume', async () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map<string, string>() }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
+    setSessionOpenPerfFixtureRunner(async () => undefined)
+    await runSessionOpenPerfFixture({
+      delayRuntimeMs: 0,
+      fetchLatest: async () => ({ messages: [], session_id: 'completed-perf-session' }),
+      requestGateway: async () => ({}),
+      storedSessionId: 'completed-perf-session'
+    })
+
+    render(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/completed-perf-session"
+        resumeSession={resumeSession}
+        routedSessionId="completed-perf-session"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
   })
 
   it('arms the boot-restore one-shot for the FIRST resume only (⌘R tab persistence)', () => {

@@ -4,24 +4,45 @@ export type TranscriptProvenanceScope =
   string | null | undefined | { connectionId?: string | null; profile?: string | null }
 
 export function createPersistedDisplayTranscriptProvenance({
+  displayRevision,
   lineageRootId,
+  resolvedTipId,
   scope,
   storedSessionId
 }: {
   storedSessionId: string
   lineageRootId: string | null
+  resolvedTipId: string | null
+  displayRevision: number
   scope: TranscriptProvenanceScope
-}): PersistedDisplayTranscriptProvenance {
+}): PersistedDisplayTranscriptProvenance | null {
   const connectionId = typeof scope === 'object' && scope ? (scope.connectionId ?? '').trim() : ''
   const rawProfile = typeof scope === 'string' ? scope : scope?.profile
+  const normalizedStoredSessionId = storedSessionId.trim()
+  const normalizedLineageRootId = lineageRootId?.trim() ?? ''
+  const normalizedResolvedTipId = resolvedTipId?.trim() ?? ''
+
+  if (
+    !normalizedStoredSessionId ||
+    !normalizedLineageRootId ||
+    !normalizedResolvedTipId ||
+    typeof displayRevision !== 'number' ||
+    !Number.isFinite(displayRevision) ||
+    !Number.isInteger(displayRevision) ||
+    displayRevision < 0
+  ) {
+    return null
+  }
 
   return {
     connectionId,
     coverage: 'latest-page',
-    lineageRootId,
+    displayRevision,
+    lineageRootId: normalizedLineageRootId,
     profile: rawProfile?.trim() || 'default',
+    resolvedTipId: normalizedResolvedTipId,
     source: 'persisted-display',
-    storedSessionId
+    storedSessionId: normalizedStoredSessionId
   }
 }
 
@@ -38,6 +59,8 @@ export function hasPersistedDisplayTranscriptProvenance(
     actual.profile === expected.profile &&
     actual.storedSessionId === expected.storedSessionId &&
     actual.lineageRootId === expected.lineageRootId &&
+    actual.resolvedTipId === expected.resolvedTipId &&
+    actual.displayRevision === expected.displayRevision &&
     actual.coverage === expected.coverage
   )
 }

@@ -652,6 +652,9 @@ const ChatViewContent = memo(function ChatViewContent({
       data-chat-unfocused={surfaceFocused ? undefined : ''}
       data-composer-surface-id={composerSurfaceId}
       data-composer-target={composerScope.target}
+      data-hermes-perf-session={
+        import.meta.env.DEV || import.meta.env.VITE_PERF_PROBE === '1' ? (selectedSessionId ?? undefined) : undefined
+      }
       data-session-anchor={sessionAnchor}
     >
       <Backdrop />

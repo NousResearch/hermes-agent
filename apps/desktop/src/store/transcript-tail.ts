@@ -40,7 +40,10 @@ export const $transcriptTailBySessionId = atom<Record<string, TranscriptTailStat
 const TRANSCRIPT_TAIL_LIMIT = 256
 let transcriptTailOrder: string[] = []
 
-type TailPage = Pick<SessionMessagesResponse, 'messages' | 'pagination'>
+type TailPage = {
+  messages: readonly unknown[]
+  pagination?: SessionMessagesResponse['pagination']
+}
 
 function normalizedScope(profile?: TranscriptProfileScope): { connectionId: string; profile: string } | null {
   if (typeof profile === 'string') {
@@ -88,9 +91,15 @@ function tailStateFromPage(page: TailPage, profile?: TranscriptProfileScope): Tr
     return { nextOffset: page.messages.length, possiblyTruncated: false, profile }
   }
 
+  // `messages` is the renderer projection and can contain fewer rows than the
+  // backend consumed (for example, a suppressed repair pair). Pagination is
+  // raw-page authority: advancing by the projected length would overlap the
+  // next request and can make the oldest row permanently unreachable.
+  const rawReturned = pagination.returned
+
   return {
-    nextOffset: pagination.offset + page.messages.length,
-    possiblyTruncated: page.messages.length >= pagination.limit,
+    nextOffset: pagination.offset + rawReturned,
+    possiblyTruncated: rawReturned >= pagination.limit,
     profile
   }
 }

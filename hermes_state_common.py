@@ -109,8 +109,27 @@ _PREVIEW_RAW_SUBQUERY_SQL = (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messa
 
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
-# /branch child (kept visible, never cascade-deleted): stable marker OR legacy end_reason heuristic.
-_BRANCH_CHILD_SQL = ("json_extract(COALESCE({a}.model_config, '{{}}'), '$._branched_from') IS NOT NULL"
+# A stable branch/delegate marker describes an edge, not a lineage property:
+# compression carries model_config forward, so it only applies when it names
+# this row's immediate parent.
+_BRANCH_MARKER_CHILD_SQL = (
+    "json_extract(COALESCE({a}.model_config, '{{}}'), '$._branched_from')"
+    " = {a}.parent_session_id"
+)
+_DELEGATE_MARKER_CHILD_SQL = (
+    "json_extract(COALESCE({a}.model_config, '{{}}'), '$._delegate_from')"
+    " = {a}.parent_session_id"
+    " OR ({a}.parent_session_id IS NULL"
+    " AND COALESCE(CAST(json_extract(COALESCE({a}.model_config, '{{}}'),"
+    " '$._delegate_from') AS TEXT), '') != '')"
+)
+_NOT_BRANCH_MARKER_CHILD_SQL = f"COALESCE(({_BRANCH_MARKER_CHILD_SQL}), 0) = 0"
+_NOT_DELEGATE_MARKER_CHILD_SQL = f"COALESCE(({_DELEGATE_MARKER_CHILD_SQL}), 0) = 0"
+
+
+# /branch child (kept visible, never cascade-deleted): stable, parent-bound marker OR legacy heuristic.
+_BRANCH_CHILD_SQL = (_BRANCH_MARKER_CHILD_SQL
+    +
     " OR EXISTS (SELECT 1 FROM sessions p            WHERE p.id = {a}.parent_session_id"
     "            AND p.end_reason = 'branched'            AND {a}.started_at >= p.ended_at)")
 _COMPRESSION_CHILD_SQL = ("EXISTS (SELECT 1 FROM sessions p        WHERE p.id = {a}.parent_session_id"
@@ -195,6 +214,11 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
 
 
 SCHEMA_VERSION = 30
+
+# Highest message id that existed before exact source-to-clone provenance was
+# available in this store. Only rows at or below this immutable boundary may
+# use the historical payload-equality display fallback.
+MESSAGE_CLONE_LINEAGE_LEGACY_CEILING_KEY = "message_clone_lineage_legacy_ceiling"
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -339,6 +363,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );
 
+CREATE TABLE IF NOT EXISTS conversation_display_revisions (
+    lineage_root_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -364,6 +394,12 @@ CREATE TABLE IF NOT EXISTS messages (
     api_content TEXT,
     display_kind TEXT,
     display_metadata TEXT
+);
+
+-- Exact identity for protected-tail copies created during compaction.
+CREATE TABLE IF NOT EXISTS message_clone_lineage (
+    source_message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    clone_message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -493,6 +529,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
+CREATE INDEX IF NOT EXISTS idx_message_clone_lineage_source
+    ON message_clone_lineage(source_message_id);
 -- Partial index for the Insights assistant tool-call scan
 -- (agent/insights.py _get_tool_usage / _get_skill_usage): those queries filter
 -- messages by role='assistant' AND tool_calls IS NOT NULL, a small fraction of

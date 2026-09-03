@@ -146,12 +146,22 @@ export async function attach({ port = 9222, match } = {}) {
  */
 // Chromium switches that stop frame-production throttling for a window that
 // isn't foregrounded (the perf window usually sits behind the IDE/terminal).
-const ANTI_THROTTLE_FLAGS = [
+export const PERF_ELECTRON_FLAGS = [
   '--disable-background-timer-throttling',
   '--disable-renderer-backgrounding',
   '--disable-backgrounding-occluded-windows',
-  '--disable-features=CalculateNativeWinOcclusion'
+  '--disable-features=CalculateNativeWinOcclusion',
+  // The isolated, synthetic perf renderer has no GPU requirement. Windows
+  // hosts missing the GPU helper's runtime DLL otherwise die before CDP opens;
+  // this flag is passed only to the spawned benchmark child, never the user's
+  // installed/running Desktop or any system setting.
+  '--disable-gpu'
 ]
+
+// Existing Electron bootstrap support, consumed before `app.ready`. Scope it
+// to the synthetic isolated perf child; it never reaches the installed Desktop
+// or modifies a user/system environment variable.
+export const PERF_ELECTRON_ENV = { HERMES_DESKTOP_DISABLE_GPU: '1' }
 
 /**
  * Spawn an isolated instance and connect the perf driver. Two render modes:
@@ -237,6 +247,7 @@ export async function startIsolatedInstance({
     // real boot sequence.
     const env = {
       ...process.env,
+      ...PERF_ELECTRON_ENV,
       HERMES_HOME: home,
       // The app's dev-CDP resolver (electron/dev-cdp.ts) appends its own
       // remote-debugging-port switch AFTER argv, so on a non-default --port the
@@ -253,7 +264,7 @@ export async function startIsolatedInstance({
     const spawnAt = Date.now()
     const electron = spawn(
       electronBin,
-      ['.', `--user-data-dir=${userData}`, `--remote-debugging-port=${port}`, ...ANTI_THROTTLE_FLAGS],
+      ['.', `--user-data-dir=${userData}`, `--remote-debugging-port=${port}`, ...PERF_ELECTRON_FLAGS],
       { cwd: DESKTOP_DIR, stdio: ['ignore', 'inherit', 'inherit'], env }
     )
     children.push(electron)

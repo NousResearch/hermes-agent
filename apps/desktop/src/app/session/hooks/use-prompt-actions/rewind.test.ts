@@ -634,6 +634,28 @@ describe('optimistic rewind/reload turn-clock seeding (#86795)', () => {
     expect(next.turnStartedAt).toBeGreaterThanOrEqual(before)
   })
 
+  it('applyRewindOptimistic invalidates persisted-display authority', () => {
+    const next = applyRewindOptimistic(
+      seeded({
+        transcriptAuthorityEpoch: 3,
+        transcriptProvenance: {
+          connectionId: 'conn-1',
+          coverage: 'latest-page',
+          displayRevision: 7,
+          lineageRootId: 'root-1',
+          profile: 'default',
+          resolvedTipId: 'tip-1',
+          source: 'persisted-display',
+          storedSessionId: 'stored-1'
+        }
+      }),
+      0
+    )
+
+    expect(next.transcriptAuthorityEpoch).toBe(4)
+    expect(next.transcriptProvenance).toBeUndefined()
+  })
+
   it('applyReloadOptimistic arms busy with a fresh turn clock', () => {
     const state = seeded({ turnLive: true, turnStartedAt: Date.now() - 60_000 })
     const plan = planReload(state.messages, null)
@@ -646,5 +668,30 @@ describe('optimistic rewind/reload turn-clock seeding (#86795)', () => {
     expect(next.busy).toBe(true)
     expect(next.turnLive).toBe(false)
     expect(next.turnStartedAt).toBeGreaterThanOrEqual(before)
+  })
+
+  it('applyReloadOptimistic invalidates persisted-display authority', () => {
+    const state = seeded({
+      transcriptAuthorityEpoch: 3,
+      transcriptProvenance: {
+        connectionId: 'conn-1',
+        coverage: 'latest-page',
+        displayRevision: 7,
+        lineageRootId: 'root-1',
+        profile: 'default',
+        resolvedTipId: 'tip-1',
+        source: 'persisted-display',
+        storedSessionId: 'stored-1'
+      }
+    })
+
+    const plan = planReload(state.messages, null)
+
+    expect(plan).not.toBeNull()
+
+    const next = applyReloadOptimistic(state, plan!)
+
+    expect(next.transcriptAuthorityEpoch).toBe(4)
+    expect(next.transcriptProvenance).toBeUndefined()
   })
 })

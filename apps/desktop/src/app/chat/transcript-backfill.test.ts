@@ -52,6 +52,22 @@ describe('transcript tail bookkeeping', () => {
     expect(transcriptBackfillAvailable('stored-1')).toBe(true)
   })
 
+  it('uses raw pagination authority when projection suppresses one row from a full page', () => {
+    recordTranscriptTail('stored-1', {
+      // One raw pair was suppressed by display projection, so only 119 rows
+      // survive even though the backend consumed a full 120-row page.
+      messages: Array.from({ length: 119 }, (_, index) => row(index + 121, `tail${index}`)),
+      pagination: { limit: 120, offset: 0, order: 'latest', returned: 120 }
+    })
+
+    expect(transcriptTailState('stored-1')).toEqual({
+      nextOffset: 120,
+      possiblyTruncated: true,
+      profile: undefined
+    })
+    expect(transcriptBackfillAvailable('stored-1')).toBe(true)
+  })
+
   it('marks a short page as complete', () => {
     recordTranscriptTail('stored-1', {
       messages: [row(1, 'only')],
@@ -66,6 +82,11 @@ describe('transcript tail bookkeeping', () => {
       messages: Array.from({ length: 700 }, (_, index) => row(index, `m${index}`))
     })
 
+    expect(transcriptTailState('stored-1')).toEqual({
+      nextOffset: 700,
+      possiblyTruncated: false,
+      profile: undefined
+    })
     expect(transcriptBackfillAvailable('stored-1')).toBe(false)
   })
 
@@ -199,6 +220,41 @@ describe('backfillOlderTranscriptPage', () => {
     expect(applyOlderPage.mock.calls[0][0].map((m: ChatMessage) => m.rowId)).toEqual([1, 2])
     // A short older page means the transcript is now fully loaded.
     expect(transcriptBackfillAvailable('stored-1')).toBe(false)
+  })
+
+  it('advances by raw returned rows so a suppressed tail pair cannot overlap or make the oldest row unreachable', async () => {
+    const current = Array.from({ length: 119 }, (_, index) => chat(`tail-${index + 121}`, index + 121))
+
+    recordTranscriptTail('stored-1', {
+      messages: current,
+      pagination: { limit: 120, offset: 0, order: 'latest', returned: 120 }
+    })
+    vi.mocked(getOlderSessionMessages).mockImplementation(async (_id, _profile, offset) => {
+      // Offset 119 would overlap row 121 and permanently skip row 1. Offset
+      // 120 reaches the exact adjacent raw page.
+      const firstRow = offset === 120 ? 1 : 2
+
+      return {
+        messages: Array.from({ length: 120 }, (_, index) => row(firstRow + index, `older${index}`)),
+        pagination: { limit: 120, offset, order: 'latest', returned: 120 },
+        session_id: 'stored-1'
+      } as never
+    })
+
+    let merged = current
+    const applied = await backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => true,
+      applyOlderPage: older => {
+        merged = mergeOlderTranscriptPage(merged, older)
+      }
+    })
+
+    expect(applied).toBe(true)
+    expect(getOlderSessionMessages).toHaveBeenCalledWith('stored-1', undefined, 120)
+    expect(merged.map(message => message.rowId)).toEqual(Array.from({ length: 239 }, (_, index) => index + 1))
+    expect(new Set(merged.map(message => message.rowId)).size).toBe(239)
+    expect(transcriptTailState('stored-1')).toMatchObject({ nextOffset: 240, possiblyTruncated: true })
   })
 
   it('backfills the matching connection when two owners share one session id', async () => {

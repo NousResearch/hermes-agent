@@ -19487,8 +19487,15 @@ def _maybe_open_browser(
 
     import webbrowser
 
+    from hermes_constants import is_wsl
+
+    # WSL has no DISPLAY/WAYLAND_DISPLAY but can still open the Windows-side
+    # browser, so it counts as having a display.
+    _is_wsl = is_wsl()
+
     _has_display = (
         sys.platform != "linux"
+        or _is_wsl
         or bool(os.environ.get("DISPLAY"))
         or bool(os.environ.get("WAYLAND_DISPLAY"))
     )
@@ -19508,6 +19515,26 @@ def _maybe_open_browser(
     def _open():
         try:
             time.sleep(1.0)
+            if _is_wsl:
+                # webbrowser.open() on WSL often fails silently (no native
+                # browser registered in the Linux side); delegate to the
+                # Windows host via powershell.exe instead.
+                try:
+                    import subprocess
+
+                    subprocess.Popen(
+                        [
+                            "powershell.exe",
+                            "-NoProfile",
+                            "-Command",
+                            f"Start-Process '{_open_url}'",
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return
+                except Exception:
+                    pass  # Fall through to standard webbrowser.
             webbrowser.open(_open_url)
         except Exception:
             pass

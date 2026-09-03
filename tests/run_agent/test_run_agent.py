@@ -1638,6 +1638,16 @@ class TestBuildAssistantMessage:
         assert result["content"] == "Hello!"
         assert result["finish_reason"] == "stop"
 
+    def test_assistant_message_preserves_phone_numbers_but_redacts_secrets(self, agent):
+        token = "sk-ABCDEF0123456789abcdef0123"
+        msg = _mock_assistant_msg(
+            content=f"Call +15551234567 with [tel](tel:+15551234567), not {token}."
+        )
+        result = agent._build_assistant_message(msg, "stop")
+
+        assert "+15551234567" in result["content"]
+        assert "tel:+15551234567" in result["content"]
+        assert token not in result["content"]
 
 
 

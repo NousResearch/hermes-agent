@@ -150,3 +150,73 @@ def test_sanitize_model_override():
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
     }
+
+
+def test_runner_drops_stale_override_after_restart(store_factory, caplog):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_model_override(
+        session_key,
+        {
+            "model": "claude-sonnet",
+            "provider": "removed-provider",
+            "base_url": "https://removed.example/v1",
+        },
+    )
+
+    runner = _make_runner(store_factory())
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        side_effect=RuntimeError("Provider removed from config"),
+    ):
+        with caplog.at_level("INFO", logger="gateway.run"):
+            runner._rehydrate_session_model_override(session_key)
+
+    # A stale override whose provider can no longer be resolved must be
+    assert runner._session_model_overrides.get(session_key) is None
+    assert "Dropping stale persisted /model override" in caplog.text
+
+
+def test_runner_rehydrates_keyless_local_override(store_factory):
+    """A keyless-but-valid provider (Ollama resolves api_key='') is
+    legitimate: rehydration must keep it and the apply gate must honor it."""
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_model_override(
+        session_key,
+        {
+            "model": "qwen3:8b",
+            "provider": "ollama",
+            "base_url": "http://127.0.0.1:11434/v1",
+        },
+    )
+
+    runner = _make_runner(store_factory())
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={
+            "api_key": "",
+            "api_mode": "chat_completions",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "provider": "custom",
+        },
+    ):
+        runner._rehydrate_session_model_override(session_key)
+
+    override = runner._session_model_overrides[session_key]
+    assert override["model"] == "qwen3:8b"
+    assert override["provider"] == "ollama"
+    assert override["base_url"] == "http://127.0.0.1:11434/v1"
+    # Marked keyless so the apply gates treat it as valid, not stale.
+    assert override["keyless"] is True
+
+    model, rt = runner._apply_session_model_override(
+        session_key,
+        "default-model",
+        {"provider": "anthropic", "api_key": "ant-key"},
+    )
+    assert model == "qwen3:8b"
+    assert rt["provider"] == "ollama"
+    assert rt["base_url"] == "http://127.0.0.1:11434/v1"

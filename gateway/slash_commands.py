@@ -2023,8 +2023,11 @@ class GatewaySlashCommandsMixin:
                             "api_mode": result.api_mode,
                             "request_overrides": dict(result.request_overrides or {}),
                             "capabilities": dict(result.runtime_capabilities or {}),
+                            # The switch validated this provider; an empty
+                            # api_key means it legitimately resolves without
+                            # one (e.g. local Ollama).
+                            "keyless": not result.api_key,
                         }
-
                         # Write-through the non-secret parts to the session
                         # store so the picked model survives a gateway restart
                         # (api_key is never persisted).
@@ -2338,6 +2341,9 @@ class GatewaySlashCommandsMixin:
                 "api_mode": result.api_mode,
                 "request_overrides": dict(result.request_overrides or {}),
                 "capabilities": dict(result.runtime_capabilities or {}),
+                # The switch validated this provider; an empty api_key means
+                # it legitimately resolves without one (e.g. local Ollama).
+                "keyless": not result.api_key,
             }
             if one_turn:
                 if not hasattr(self, "_pending_one_turn_model_restores"):

@@ -8250,7 +8250,14 @@ def _pid_alive(pid: Optional[int]) -> bool:
                 text=True, encoding='utf-8', errors='replace',
                 timeout=1,
                 check=False,
+                # Darwin: close_fds=False keeps CPython on the posix_spawn fast
+                # path so the threaded gateway never fork()s to run `ps`.
+                close_fds=False,
             )
+            if proc.returncode < 0:
+                # ps killed by signal (#97296): the probe itself died, not the
+                # worker. Inconclusive -> keep the os.kill(pid, 0) answer.
+                return True
             if proc.returncode != 0:
                 return False
             if "Z" in (proc.stdout or "").strip():
@@ -10945,16 +10952,35 @@ def _default_spawn(
 
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
+    _spawn_cwd = workspace if os.path.isdir(workspace) else None
+    if sys.platform == "darwin":
+        # Darwin: keep CPython 3.11 on the posix_spawn fast path (#97296) so the
+        # threaded gateway never fork()s (workers died -11 at fork, 0-byte logs).
+        # Gates: no cwd=, start_new_session=False, close_fds=False. cwd applied
+        # in-shell; exec keeps proc.pid on the worker so _pid_alive stays true.
+        import shlex as _shlex
+        _sh = " ".join(_shlex.quote(a) for a in cmd)
+        if _spawn_cwd:
+            _sh = "cd " + _shlex.quote(_spawn_cwd) + " && exec " + _sh
+        else:
+            _sh = "exec " + _sh
+        _spawn_cmd = ["/bin/sh", "-c", _sh]
+        _spawn_kwargs = {"start_new_session": False, "close_fds": False}
+    else:
+        _spawn_cmd = cmd
+        _spawn_kwargs = {
+            "cwd": _spawn_cwd,
+            "start_new_session": True,
+            "creationflags": subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+        }
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
-            cwd=workspace if os.path.isdir(workspace) else None,
+            _spawn_cmd,
             stdin=subprocess.DEVNULL,
             stdout=log_f,
             stderr=subprocess.STDOUT,
             env=env,
-            start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            **_spawn_kwargs,
         )
     except FileNotFoundError:
         log_f.close()

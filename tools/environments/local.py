@@ -2144,6 +2144,17 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
+        # Darwin (#97296): keep CPython 3.11 on the posix_spawn fast path so a
+        # threaded parent (Desktop serve / gateway) never fork()s. Gates that
+        # must hold: no cwd=, start_new_session=False, close_fds=False.
+        # cwd is applied in-shell instead. Local mitigation, not upstream.
+        if sys.platform == "darwin":
+            import shlex as _shlex
+            args = args[:-1] + ["cd " + _shlex.quote(_popen_cwd) + "\n" + args[-1]]
+            _popen_kwargs.update(start_new_session=False, close_fds=False)
+        else:
+            _popen_kwargs.update(start_new_session=True, cwd=_popen_cwd)
+
         proc = subprocess.Popen(
             args,
             text=True,
@@ -2153,8 +2164,6 @@ class LocalEnvironment(BaseEnvironment):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=_popen_cwd,
             **_popen_kwargs,
         )
         if not _IS_WINDOWS:
@@ -2223,6 +2232,25 @@ class LocalEnvironment(BaseEnvironment):
                     pgid = getattr(proc, "_hermes_pgid", None)
                     if pgid is None:
                         raise
+
+                if pgid == os.getpgrp():
+                    # Darwin posix_spawn path (#97296): child shares OUR process
+                    # group; killpg would take down Desktop serve / gateway.
+                    try:
+                        import psutil
+                        for _child in psutil.Process(proc.pid).children(recursive=True):
+                            try:
+                                _child.kill()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=2.0)
+                    except Exception:
+                        pass
+                    return
 
                 # Snapshot the descendant set BEFORE the first signal: once
                 # the wrapper dies its children reparent to init and a parent

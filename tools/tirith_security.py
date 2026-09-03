@@ -780,6 +780,10 @@ def check_command_security(command: str) -> dict:
             text=True, encoding='utf-8', errors='replace',
             timeout=timeout,
             stdin=subprocess.DEVNULL,
+            # Darwin: close_fds=False keeps CPython 3.11 on the posix_spawn
+            # fast path (#97296); default True forces fork -> tirith exits -11
+            # in a threaded parent and trips the circuit breaker. Local fix.
+            close_fds=(platform.system() != "Darwin"),
         )
     except OSError as exc:
         # Covers FileNotFoundError, PermissionError, exec format error.

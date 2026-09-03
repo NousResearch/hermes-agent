@@ -1936,6 +1936,11 @@ export interface DiskPressureStatus {
 export interface SessionInfo {
   id: string;
   source: string | null;
+  chat_id?: string | null;
+  chat_type?: string | null;
+  thread_id?: string | number | null;
+  display_name?: string | null;
+  origin_json?: string | null;
   model: string | null;
   title: string | null;
   started_at: number;

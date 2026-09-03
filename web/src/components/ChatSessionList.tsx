@@ -27,6 +27,7 @@ import { useSearchParams } from "react-router";
 
 import { useI18n } from "@/i18n";
 import { api, type SessionInfo } from "@/lib/api";
+import { telegramThreadLabel } from "@/lib/session-labels";
 import { cn, timeAgo } from "@/lib/utils";
 
 const SESSION_LIMIT = 30;
@@ -181,6 +182,7 @@ export function ChatSessionList({
       <div className="flex flex-col gap-0.5">
         {sessions.map((s) => {
           const isActive = s.id === activeSessionId;
+          const telegramLabel = telegramThreadLabel(s);
           return (
             <ListItem
               key={s.id}
@@ -205,7 +207,12 @@ export function ChatSessionList({
                     <span>{s.message_count} msgs</span>
                   </>
                 )}
-                {s.source && s.source !== "cli" && (
+                {telegramLabel ? (
+                  <>
+                    <span aria-hidden>·</span>
+                    <span className="truncate">{telegramLabel}</span>
+                  </>
+                ) : s.source && s.source !== "cli" && (
                   <>
                     <span aria-hidden>·</span>
                     <span className="truncate">{s.source}</span>

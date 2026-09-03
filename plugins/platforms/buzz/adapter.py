@@ -1283,6 +1283,28 @@ class BuzzAdapter(BasePlatformAdapter):
                 text = pattern.sub("\x00", text)
         return found
 
+    def _outbound_recipient_pubkeys(
+        self,
+        metadata: Optional[Dict[str, Any]],
+        mention_pubkeys: Optional[List[str]] = None,
+    ) -> List[str]:
+        """Merge visible mentions with the triggering Buzz user's p-tag.
+
+        The gateway stamps ``reply_recipient_id`` from the inbound
+        ``SessionSource.user_id``. Keeping this transport-only avoids changing
+        the generated reply text while making the response discoverable by
+        Buzz's #p-based Inbox/Activity and notification paths.
+        """
+        recipients = list(mention_pubkeys or [])
+        candidate = str((metadata or {}).get("reply_recipient_id") or "").strip().lower()
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", candidate)
+            and candidate != getattr(self, "_self_pubkey", None)
+            and candidate not in recipients
+        ):
+            recipients.append(candidate)
+        return recipients
+
     async def _run_message_send(
         self,
         args: List[str],
@@ -1358,7 +1380,10 @@ class BuzzAdapter(BasePlatformAdapter):
         )
         if reply_target and self._reply_to_mode != "off":
             args += ["--reply-to", str(reply_target)]
-        mention_pubkeys = await self._mention_pubkeys_for(chat_id, content)
+        mention_pubkeys = self._outbound_recipient_pubkeys(
+            meta,
+            await self._mention_pubkeys_for(chat_id, content),
+        )
         code, out, err = await self._run_message_send(args, content, mention_pubkeys)
         if code != 0:
             return SendResult(
@@ -1508,7 +1533,10 @@ class BuzzAdapter(BasePlatformAdapter):
         )
         if reply_target and self._reply_to_mode != "off":
             args += ["--reply-to", str(reply_target)]
-        code, out, err = await self._run_message_send(args, caption or "")
+        mention_pubkeys = self._outbound_recipient_pubkeys(metadata)
+        code, out, err = await self._run_message_send(
+            args, caption or "", mention_pubkeys
+        )
         if code != 0:
             return SendResult(
                 success=False,
@@ -1576,7 +1604,10 @@ class BuzzAdapter(BasePlatformAdapter):
         )
         if reply_target and self._reply_to_mode != "off":
             args += ["--reply-to", str(reply_target)]
-        code, out, err = await self._run_message_send(args, caption or "")
+        mention_pubkeys = self._outbound_recipient_pubkeys(metadata)
+        code, out, err = await self._run_message_send(
+            args, caption or "", mention_pubkeys
+        )
         if code != 0:
             return SendResult(
                 success=False,

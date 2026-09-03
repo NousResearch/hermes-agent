@@ -2,6 +2,7 @@
 
 import os
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -21,6 +22,35 @@ from gateway.platforms.base import (
     _prefix_within_utf16_limit,
     cache_audio_from_bytes,
 )
+
+
+def test_thread_metadata_carries_triggering_user_id():
+    import gateway.platforms.base as base
+
+    source = SimpleNamespace(
+        platform="buzz",
+        thread_id="thread-root",
+        user_id="A" * 64,
+        profile=None,
+    )
+
+    assert base._thread_metadata_for_source(source) == {
+        "thread_id": "thread-root",
+        "reply_recipient_id": "A" * 64,
+    }
+
+
+def test_thread_metadata_omits_empty_triggering_user_id():
+    import gateway.platforms.base as base
+
+    source = SimpleNamespace(
+        platform="buzz",
+        thread_id=None,
+        user_id=None,
+        profile=None,
+    )
+
+    assert base._thread_metadata_for_source(source) is None
 
 
 def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):

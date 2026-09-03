@@ -151,6 +151,13 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         scope_id = getattr(source, "scope_id", None)
         if scope_id:
             metadata["slack_team_id"] = str(scope_id)
+    # Carry the triggering sender as platform-neutral delivery context. Most
+    # adapters do not need it; recipient-addressed protocols such as Nostr can
+    # translate it into their native notification tag without changing the
+    # assistant's visible reply text.
+    reply_recipient_id = str(getattr(source, "user_id", None) or "").strip()
+    if reply_recipient_id:
+        metadata["reply_recipient_id"] = reply_recipient_id
     if not metadata:
         return None
     if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":

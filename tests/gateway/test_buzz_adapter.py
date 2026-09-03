@@ -2208,6 +2208,60 @@ class TestBuzzAdapterSend:
         assert args[args.index("--reply-to") + 1] == "root-event-abc"
 
     @pytest.mark.asyncio
+    async def test_send_p_tags_triggering_user_for_buzz_inbox(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-notify"})
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            CHANNEL,
+            "reply without a visible mention",
+            metadata={"reply_recipient_id": OTHER_PUBKEY},
+        )
+
+        assert result.success is True
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--mention") + 1] == OTHER_PUBKEY
+
+    @pytest.mark.asyncio
+    async def test_send_deduplicates_triggering_user_and_visible_mention(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("channels", "members", [OTHER_PUBKEY])
+        cli.script("users", "get", [{"pubkey": OTHER_PUBKEY, "display_name": "John"}])
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-dedupe"})
+        adapter._run_cli = cli
+
+        await adapter.send(
+            CHANNEL,
+            "Thanks @John",
+            metadata={"reply_recipient_id": OTHER_PUBKEY},
+        )
+
+        args, _stdin = [
+            call for call in cli.calls if call[0][:2] == ["messages", "send"]
+        ][0]
+        assert args.count("--mention") == 1
+        assert args[args.index("--mention") + 1] == OTHER_PUBKEY
+
+    @pytest.mark.asyncio
+    async def test_send_ignores_invalid_buzz_recipient_metadata(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-invalid"})
+        adapter._run_cli = cli
+
+        await adapter.send(
+            CHANNEL,
+            "reply",
+            metadata={"reply_recipient_id": "not-a-pubkey"},
+        )
+
+        args, _stdin = cli.calls[0]
+        assert "--mention" not in args
+
+    @pytest.mark.asyncio
     async def test_send_prefers_stable_thread_root_over_latest_reply(self):
         adapter = _make_adapter()
         cli = _ScriptedCli()

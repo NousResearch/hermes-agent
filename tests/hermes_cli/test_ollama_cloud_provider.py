@@ -28,7 +28,7 @@ class TestOllamaCloudProviderRegistry:
 
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-    "GOOGLE_API_KEY", "GEMINI_API_KEY", "OLLAMA_API_KEY",
+    "GOOGLE_API_KEY", "GEMINI_API_KEY", "OLLAMA_API_KEY", "OLLAMA_BASE_URL",
     "GLM_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY",
     "MINIMAX_API_KEY", "DEEPSEEK_API_KEY",
 )
@@ -78,6 +78,44 @@ class TestOllamaCloudCredentials:
         assert result["provider"] == "ollama-cloud"
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "ollama-key"
+        assert result["base_url"] == "https://ollama.com/v1"
+
+    def test_host_only_ollama_base_url_keeps_v1(self, monkeypatch):
+        """OLLAMA_BASE_URL=https://ollama.com must not drop /v1 (#85417)."""
+        monkeypatch.setenv("OLLAMA_API_KEY", "ollama-secret")
+        monkeypatch.setenv("OLLAMA_BASE_URL", "https://ollama.com")
+        creds = resolve_api_key_provider_credentials("ollama-cloud")
+        assert creds["base_url"] == "https://ollama.com/v1"
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="ollama-cloud")
+        assert result["base_url"] == "https://ollama.com/v1"
+
+    def test_pool_then_host_only_config_base_url_keeps_v1(self, monkeypatch):
+        """Config model.base_url=https://ollama.com after a default pool URL (#85417)."""
+        from types import SimpleNamespace
+
+        from hermes_cli.runtime_provider import _resolve_runtime_from_pool_entry
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {
+                "provider": "ollama-cloud",
+                "base_url": "https://ollama.com",
+                "default": "deepseek-v4-pro",
+            },
+        )
+        entry = SimpleNamespace(
+            runtime_base_url="https://ollama.com/v1",
+            base_url="https://ollama.com/v1",
+            runtime_api_key="pool-key",
+            access_token="",
+            source="pool",
+        )
+        result = _resolve_runtime_from_pool_entry(
+            provider="ollama-cloud",
+            entry=entry,
+            requested_provider="ollama-cloud",
+        )
         assert result["base_url"] == "https://ollama.com/v1"
 
 

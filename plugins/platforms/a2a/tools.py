@@ -582,8 +582,42 @@ _HANDLERS = {
 }
 
 
+def _a2a_tools_available() -> bool:
+    """check_fn for the outbound client tools: serve them ONLY when the
+    operator has opted into A2A somehow — peers configured under
+    ``a2a_agents`` in config.yaml, or the inbound platform enabled
+    (a peer-reachable Hermes plausibly dials back).
+
+    Maintainer-directed (#95681): these registered unconditionally, so
+    every session on every install paid ~561 tok/call for tools whose
+    only possible output without config is 'no peers configured'. A2A is
+    unrelated to Bot Mode (bots talk over gateway RPCs) — for most
+    installs this toolset is foreign-agent plumbing they never enabled.
+    Config adds mid-session surface at the next compaction (#97073).
+    """
+    cfg = {}
+    try:
+        cfg = _load_config()
+        if cfg.get("a2a_agents"):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import os as _os
+
+        if _os.getenv("A2A_PORT"):
+            return True
+        platforms = cfg.get("platforms") or {}
+        a2a_cfg = platforms.get("a2a") or {}
+        if isinstance(a2a_cfg, dict) and a2a_cfg.get("enabled"):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
 def register_tools(ctx) -> None:
-    """Register the client tools in the ``a2a`` toolset."""
+    """Register the client tools in the ``a2a`` toolset (config-gated)."""
     for name, schema in _SCHEMAS.items():
         function_schema = schema["function"]
         ctx.register_tool(
@@ -593,4 +627,5 @@ def register_tools(ctx) -> None:
             handler=_HANDLERS[name],
             description=function_schema["description"],
             emoji="\U0001f9e9",  # puzzle piece
+            check_fn=_a2a_tools_available,
         )

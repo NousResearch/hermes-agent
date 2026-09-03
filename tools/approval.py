@@ -265,6 +265,32 @@ def _is_cron_approval_context() -> bool:
         return env_var_enabled("HERMES_CRON_SESSION")
 
 
+#: Gateway platforms that are programmatic/unattended: no human is on the
+#: other end to answer an approval prompt, and the adapter has no
+#: ``send_exec_approval`` / ``/approve`` surface. Approval decisions for
+#: these sessions are governed by ``approvals.unattended_mode`` config
+#: (default deny), mirroring ``approvals.cron_mode`` — never by an
+#: interactive round-trip that would block for the full approval timeout
+#: with nobody to answer (#37284, #87509).
+_UNATTENDED_APPROVAL_PLATFORMS = frozenset({
+    "webhook",
+    "msgraph_webhook",
+    "api_server",
+})
+
+
+def _is_unattended_platform_approval_context() -> bool:
+    """True when the session platform is a programmatic/unattended surface.
+
+    Webhook, msgraph_webhook, and api_server sessions bind
+    ``HERMES_SESSION_PLATFORM`` like chat gateways do, but there is no human
+    who can resolve a pending approval. Treating them as gateway approval
+    contexts blocks the session for the full approval timeout (60-300s) and
+    then fails closed anyway — the deadlock in #37284/#87509.
+    """
+    return _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
+
+
 def _is_single_query_approval_context() -> bool:
     """True when the current approval decision is from a single-query (-q) session.
 
@@ -303,8 +329,18 @@ def _is_gateway_approval_context() -> bool:
     ``approvals.cron_mode`` config, not interactive resolve — letting cron
     fall through to the gateway branch would submit a pending approval
     with no listener and block the job indefinitely.
+
+    Unattended programmatic platforms (webhook, msgraph_webhook, api_server)
+    are excluded for the same reason: those adapters have no
+    ``send_exec_approval`` and no way to receive ``/approve`` replies.
+    Submitting a pending approval there blocks the session for the full
+    approval timeout (60-300 s) with no human who can resolve it (#37284,
+    #87509). Their dangerous-command handling is governed by
+    ``approvals.unattended_mode`` config (default deny), mirroring cron.
     """
     if _is_cron_approval_context():
+        return False
+    if _is_unattended_platform_approval_context():
         return False
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
@@ -2980,6 +3016,14 @@ def clear_session(session_key: str) -> None:
         shutdown_kernels_for_owner(session_key)
     except Exception:
         pass
+    # Remote session kernels (docker/ssh/modal) share the owner model and
+    # the disposal boundary.
+    try:
+        from tools.code_kernel_remote import shutdown_remote_kernels_for_owner
+
+        shutdown_remote_kernels_for_owner(session_key)
+    except Exception:
+        pass
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:
@@ -3405,6 +3449,16 @@ def _get_approval_config() -> dict:
 
 def _get_approval_mode() -> str:
     """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
+    try:
+        from gateway.hosted_room_execution_policy import (
+            current_room_execution_policy,
+        )
+
+        room_policy = current_room_execution_policy()
+        if room_policy is not None:
+            return room_policy.approval_mode
+    except Exception:
+        pass
     mode = _get_approval_config().get("mode", "manual")
     return _normalize_approval_mode(mode)
 
@@ -3496,6 +3550,25 @@ def _get_single_query_approval_mode() -> str:
         from hermes_cli.config import load_config_readonly
         config = load_config_readonly()
         mode = str(cfg_get(config, "approvals", "single_query_mode", default="deny")).lower().strip()
+        if mode in {"approve", "off", "allow", "yes"}:
+            return "approve"
+        return "deny"
+    except Exception:
+        return "deny"
+
+
+def _get_unattended_approval_mode() -> str:
+    """Read the unattended-platform approval mode from config.
+
+    Governs webhook / msgraph_webhook / api_server sessions (the
+    ``_UNATTENDED_APPROVAL_PLATFORMS`` set). Returns 'deny' or 'approve';
+    default deny — an unattended programmatic session should never silently
+    run a flagged action unless the operator explicitly trusts it.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+        mode = str(cfg_get(config, "approvals", "unattended_mode", default="deny")).lower().strip()
         if mode in {"approve", "off", "allow", "yes"}:
             return "approve"
         return "deny"
@@ -3692,6 +3765,7 @@ def _run_approval_gate(
     approval_callback=None,
     cron_deny_message: str,
     single_query_deny_message: str,
+    unattended_deny_message: str = "",
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
@@ -3791,6 +3865,26 @@ def _run_approval_gate(
                     "description": description,
                 }
             # cron_mode: approve — fall through to auto-approve below.
+        elif _is_unattended_platform_approval_context():
+            # Unattended programmatic platforms (webhook/msgraph_webhook/
+            # api_server): respect unattended_mode config. Resolves instantly
+            # — never a pending approval nobody can answer (#37284, #87509).
+            if _get_unattended_approval_mode() == "deny":
+                return {
+                    "approved": False,
+                    "message": unattended_deny_message or (
+                        f"BLOCKED: approval required ({description}) but this "
+                        "session runs on an unattended platform "
+                        f"({_get_session_platform()}) with no user present to "
+                        "approve it. Find an alternative approach that avoids "
+                        "this action. To allow flagged actions on unattended "
+                        "platforms, set approvals.unattended_mode: approve in "
+                        "config.yaml."
+                    ),
+                    "pattern_key": pattern_key,
+                    "description": description,
+                }
+            # unattended_mode: approve — fall through to auto-approve below.
         elif fail_closed_when_no_human:
             # Non-cron, non-interactive, no gateway: no human can answer.
             # The plugin-escalation path opts in to fail-closed here so a
@@ -4840,6 +4934,66 @@ def check_all_command_guards(command: str, env_type: str,
                             ),
                         }
                     # else: tirith_fail_open is True — allow as before
+        # Unattended programmatic platforms (webhook/msgraph_webhook/
+        # api_server): respect unattended_mode config (#37284, #87509).
+        # Mirrors the cron branch above, tirith parity included.
+        if _is_unattended_platform_approval_context() and not _is_cron_approval_context():
+            if _get_unattended_approval_mode() == "deny":
+                _ua_platform = _get_session_platform()
+                is_dangerous, _pk, description = detect_dangerous_command(command)
+                if is_dangerous:
+                    return {
+                        "approved": False,
+                        "message": (
+                            f"BLOCKED: Command flagged as dangerous ({description}) "
+                            f"but this session runs on an unattended platform "
+                            f"({_ua_platform}) with no user present to approve it. "
+                            "Find an alternative approach that avoids this command. "
+                            "To allow dangerous commands on unattended platforms, "
+                            "set approvals.unattended_mode: approve in config.yaml."
+                        ),
+                    }
+                # Tirith parity with the cron branch: content-level threats
+                # are caught even when pattern detection misses.
+                try:
+                    from tools.tirith_security import check_command_security
+                    _ua_tirith = check_command_security(command)
+                    if _ua_tirith.get("action") in ("block", "warn"):
+                        _ua_desc = _format_tirith_description(_ua_tirith)
+                        return {
+                            "approved": False,
+                            "message": (
+                                f"BLOCKED: {_ua_desc} "
+                                f"but this session runs on an unattended platform "
+                                f"({_ua_platform}) with no user present to approve it. "
+                                "Find an alternative approach that avoids this command. "
+                                "To allow dangerous commands on unattended platforms, "
+                                "set approvals.unattended_mode: approve in config.yaml."
+                            ),
+                        }
+                except ImportError:
+                    _ua_fail_open = True  # safe default if config is unreadable
+                    try:
+                        from hermes_cli.config import load_config_readonly as _load_cfg
+                        _sec = (_load_cfg() or {}).get("security", {}) or {}
+                        if _sec.get("tirith_enabled", True):
+                            _ua_fail_open = _sec.get("tirith_fail_open", True)
+                    except Exception:
+                        pass
+                    if not _ua_fail_open:
+                        return {
+                            "approved": False,
+                            "message": (
+                                "BLOCKED: the Tirith security scanner could not be "
+                                "imported and security.tirith_fail_open is false, "
+                                "so this command cannot be silently allowed — and "
+                                f"this session runs on an unattended platform "
+                                f"({_ua_platform}) with no user present to approve it. "
+                                "Find an alternative approach, install tirith, or set "
+                                "approvals.unattended_mode: approve in config.yaml."
+                            ),
+                        }
+                    # else: tirith_fail_open is True — allow as before
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---
@@ -5361,6 +5515,29 @@ def check_execute_code_guard(code: str, env_type: str,
                     "to approve it. Use normal tools instead, or set "
                     "approvals.cron_mode: approve only if this cron profile "
                     "is intentionally trusted."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "blocked",
+                "user_consent": False,
+            }
+        return {"approved": True, "message": None}
+
+    # Unattended programmatic platforms (webhook/msgraph_webhook/api_server):
+    # no user is present to approve arbitrary code either. Mirrors the cron
+    # branch above; governed by approvals.unattended_mode (#37284, #87509).
+    if _is_unattended_platform_approval_context():
+        if _get_unattended_approval_mode() == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: execute_code runs arbitrary local Python "
+                    "(including subprocess calls that bypass shell-string "
+                    "approval checks). This session runs on an unattended "
+                    f"platform ({_get_session_platform()}) with no user "
+                    "present to approve it. Use normal tools instead, or set "
+                    "approvals.unattended_mode: approve only if sessions on "
+                    "this surface are intentionally trusted."
                 ),
                 "pattern_key": pattern_key,
                 "description": description,

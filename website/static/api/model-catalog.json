@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-27T11:03:10Z",
+  "updated_at": "2026-09-02T16:31:43Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -12,6 +12,10 @@
         "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
       },
       "models": [
+        {
+          "id": "anthropic/claude-fable-5.1",
+          "description": ""
+        },
         {
           "id": "anthropic/claude-fable-5",
           "description": ""
@@ -81,6 +85,10 @@
           "description": ""
         },
         {
+          "id": "google/gemini-3.8-flash",
+          "description": ""
+        },
+        {
           "id": "google/gemini-3.7-flash",
           "description": ""
         },
@@ -109,6 +117,10 @@
           "description": ""
         },
         {
+          "id": "qwen/qwen3.8-flash",
+          "description": ""
+        },
+        {
           "id": "moonshotai/kimi-k3",
           "description": "recommended"
         },
@@ -131,6 +143,10 @@
         },
         {
           "id": "xiaomi/mimo-v2.5-pro",
+          "description": ""
+        },
+        {
+          "id": "tencent/hy4-preview",
           "description": ""
         },
         {
@@ -202,6 +218,9 @@
       },
       "models": [
         {
+          "id": "anthropic/claude-fable-5.1"
+        },
+        {
           "id": "anthropic/claude-fable-5"
         },
         {
@@ -247,6 +266,9 @@
           "id": "google/gemini-3.1-pro-preview"
         },
         {
+          "id": "google/gemini-3.8-flash"
+        },
+        {
           "id": "google/gemini-3.7-flash"
         },
         {
@@ -268,6 +290,9 @@
           "id": "qwen/qwen3.8-max"
         },
         {
+          "id": "qwen/qwen3.8-flash"
+        },
+        {
           "id": "moonshotai/kimi-k3"
         },
         {
@@ -285,6 +310,9 @@
         },
         {
           "id": "xiaomi/mimo-v2.5-pro"
+        },
+        {
+          "id": "tencent/hy4-preview"
         },
         {
           "id": "tencent/hy3"

@@ -32,6 +32,7 @@ def _build_telegram_stubs():
     telegram_ext_mod.Application = object
     telegram_ext_mod.CommandHandler = object
     telegram_ext_mod.CallbackQueryHandler = object
+    telegram_ext_mod.InlineQueryHandler = object
     telegram_ext_mod.MessageHandler = object
     telegram_ext_mod.ContextTypes = SimpleNamespace(DEFAULT_TYPE=type(None))
     telegram_ext_mod.filters = SimpleNamespace()

@@ -559,32 +559,16 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
 
 
 def get_cross_profile_warning(path: str) -> Optional[str]:
-    """Return a model-facing warning string when ``path`` is cross-profile.
+    """RETIRED (maintainer decision): always returns ``None``.
 
-    Returns ``None`` when the write is in-scope (same profile) or outside
-    Hermes entirely. Caller is expected to surface the warning to the
-    agent as a tool-result error, NOT to silently allow the write — the
-    agent must either get explicit user direction to proceed, or pass
-    ``cross_profile=True`` to its write tool.
-
-    This is defense-in-depth: the terminal tool runs as the same OS user
-    and can write any of these paths without going through this guard.
-    Treat the guard as a confusion-reducer, not a security boundary.
+    The cross-profile write guard was removed — profiles were never
+    isolated (same OS user; the terminal tool writes anywhere), so the
+    block was ceremony that cost every schema real tokens and taught a
+    bypass arg. The system prompt's active-profile hint remains the only
+    steering; the classifier below survives for that hint and for
+    diagnostics. Kept as a stub so external callers/plugins fail soft.
     """
-    info = classify_cross_profile_target(path)
-    if info is None:
-        return None
-    return (
-        f"Cross-profile write blocked by soft guard: {info['target_path']} "
-        f"belongs to Hermes profile {info['target_profile']!r}, but the "
-        f"agent is running under profile {info['active_profile']!r}. "
-        f"Editing another profile's {info['area']}/ will affect that "
-        f"profile's future sessions, not the one you are currently in. "
-        f"Confirm with the user before proceeding. To bypass this guard "
-        f"after explicit user direction, retry the call with "
-        f"``cross_profile=True``. (Defense-in-depth — not a security "
-        f"boundary; the terminal tool can still bypass.)"
-    )
+    return None
 
 
 # ---------------------------------------------------------------------------

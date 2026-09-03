@@ -82,18 +82,22 @@ def pin_env(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_pin_fails_loudly_when_write_does_not_land(pin_env, capsys):
+def test_pin_fails_loudly_when_write_does_not_land(pin_env, capsys, monkeypatch):
     """A skill that passes `is_agent_created()` but fails
     `is_curation_eligible()` must produce a NONZERO exit and an explanatory
     error — not a success message over a silent no-write.
 
     Real trigger: PROTECTED_BUILTIN_SKILLS blocks by NAME. A user's own skill
-    literally named ``plan`` is not in the bundled manifest, so
-    ``is_agent_created()`` says True — but ``is_protected_builtin()`` makes it
-    ineligible, and ``set_pinned()`` silently no-ops through
-    ``_mutate(require_curation_eligible=True)``."""
+    whose name collides with a protected entry is not in the bundled
+    manifest, so ``is_agent_created()`` says True — but
+    ``is_protected_builtin()`` makes it ineligible, and ``set_pinned()``
+    silently no-ops through ``_mutate(require_curation_eligible=True)``.
+
+    The shipped set is currently empty (``plan`` graduated to a built-in
+    command), so the collision is staged with a monkeypatched sentinel."""
     env = pin_env
-    name = "plan"  # collides with the protected built-in name
+    name = "sentinel-protected-skill"  # collides with the (patched) protected name
+    monkeypatch.setattr(env["usage"], "PROTECTED_BUILTIN_SKILLS", {name})
 
     _make_skill(env["skills"], name)
 

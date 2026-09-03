@@ -33,6 +33,7 @@ import contextlib
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 import logging
 import os
 import uuid
@@ -251,6 +252,21 @@ def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
     """
     header = data[:64]
     if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        # Magic bytes alone are insufficient: native vision history is
+        # immutable, so reject corrupt PNGs before they can be embedded.
+        # Pillow is an optional dependency — when it is missing we fall back
+        # to header-only sniffing (the full-decode gate in
+        # _validate_raster_image_decodable is likewise skipped without PIL);
+        # only an actual failed verify() rejects the bytes.
+        try:
+            from PIL import Image
+        except ImportError:
+            return "image/png"
+        try:
+            with Image.open(BytesIO(data)) as image:
+                image.verify()
+        except Exception:
+            return None
         return "image/png"
     if header.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
@@ -272,6 +288,30 @@ def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
 _ANTHROPIC_SUPPORTED_MEDIA_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp"}
 )
+
+
+def _supported_media_types() -> frozenset:
+    """Formats the ACTIVE main model's server can decode.
+
+    Cloud providers take everything in _ANTHROPIC_SUPPORTED_MEDIA_TYPES.
+    The managed llama-server decodes with stb_image — no WebP — and an
+    undecodable image part fails SILENTLY (no error; the model never sees
+    an image and confabulates). Narrow the set so normalization converts
+    those formats to PNG before they enter the request or history."""
+    try:
+        from agent.auxiliary_client import _runtime_main_value
+        from hermes_cli.local_runtime.capabilities import (
+            ACCEPTED_IMAGE_MIMES,
+            is_managed_provider,
+        )
+
+        if is_managed_provider(
+                str(_runtime_main_value("provider") or ""),
+                str(_runtime_main_value("base_url") or "")):
+            return ACCEPTED_IMAGE_MIMES
+    except Exception:  # noqa: BLE001 — best-effort narrowing only
+        pass
+    return _ANTHROPIC_SUPPORTED_MEDIA_TYPES
 
 
 def _rasterize_svg_to_png(svg_path: Path, out_path: Path) -> bool:
@@ -337,7 +377,7 @@ def _normalize_to_supported_image(
     the image is base64-embedded into conversation history, so an unsupported
     media_type can never reach the provider and wedge the session.
     """
-    if detected_mime in _ANTHROPIC_SUPPORTED_MEDIA_TYPES:
+    if detected_mime in _supported_media_types():
         return image_path, detected_mime, None
 
     out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
@@ -377,6 +417,66 @@ def _normalize_to_supported_image(
         f"and could not be converted to PNG (install Pillow for raster "
         f"conversion). Convert it to PNG or JPEG and try again.",
     )
+
+
+# Full raster validation runs on untrusted images in a shared CPU executor.
+# Bound animated-image work by both iteration count and total decoded area so a
+# compact file cannot monopolize a worker with an effectively unbounded number
+# of frames. Images at or below both limits still have every frame decoded.
+_VISION_MAX_VALIDATED_FRAME_COUNT = 100
+_VISION_MAX_VALIDATED_AGGREGATE_PIXELS = 100_000_000
+
+
+def _validate_raster_image_decodable(image_path: Path) -> Optional[str]:
+    """Return an error when Pillow cannot completely decode every image frame.
+
+    Magic-byte MIME sniffing and ``Image.open`` only inspect container headers.
+    A timed-out download can therefore look like a supported PNG/JPEG/GIF/WebP
+    while its pixel stream is truncated. Native vision results are retained in
+    conversation history, so embedding those bytes poisons every later provider
+    request. Verify structure, then reopen and force every frame within the
+    validation resource limits to decode before the image can enter history.
+    """
+    try:
+        from PIL import Image as _PILImage
+        from PIL import ImageSequence as _PILImageSequence
+    except ImportError:
+        # Pillow is optional — without it we cannot decode-validate, so pass
+        # the image through unvalidated rather than rejecting everything.
+        return None
+    try:
+        with _PILImage.open(image_path) as image:
+            image.verify()
+        with _PILImage.open(image_path) as image:
+            validated_pixels = 0
+            for frame_number, frame in enumerate(
+                _PILImageSequence.Iterator(image), start=1
+            ):
+                if frame_number > _VISION_MAX_VALIDATED_FRAME_COUNT:
+                    return (
+                        "Image validation rejected animation: "
+                        f"frame {frame_number} exceeds the maximum "
+                        f"{_VISION_MAX_VALIDATED_FRAME_COUNT} validated frames."
+                    )
+
+                frame_pixels = frame.width * frame.height
+                next_validated_pixels = validated_pixels + frame_pixels
+                if (
+                    next_validated_pixels
+                    > _VISION_MAX_VALIDATED_AGGREGATE_PIXELS
+                ):
+                    return (
+                        "Image validation rejected animation: aggregate decoded "
+                        f"pixel count would reach {next_validated_pixels} at frame "
+                        f"{frame_number}, exceeding the maximum "
+                        f"{_VISION_MAX_VALIDATED_AGGREGATE_PIXELS}."
+                    )
+
+                frame.load()
+                validated_pixels = next_validated_pixels
+    except Exception as exc:
+        return f"Image could not be fully decoded: {exc}"
+    return None
 
 
 def _is_retryable_download_error(error: Exception) -> bool:
@@ -1226,6 +1326,12 @@ async def _vision_analyze_native(
             should_cleanup = True
             image_size_bytes = temp_image_path.stat().st_size
 
+        decode_error = await _run_encode_on_cpu_executor(
+            _validate_raster_image_decodable, temp_image_path,
+        )
+        if decode_error:
+            return tool_error(decode_error, success=False)
+
         # Optional region zoom: crop BEFORE the downscale/embed-cap pipeline
         # so the cropped area gets the full resolution budget.
         _crop_offset: dict = {}
@@ -1725,15 +1831,16 @@ from tools.registry import registry, tool_error
 
 VISION_ANALYZE_SCHEMA = {
     "name": "vision_analyze",
+    # Dieted (#95681): routing mechanics (native attach vs aux-model text
+    # fallback) removed — the route is automatic and the native path's own
+    # tool result says "you can see it natively now"; the schema doesn't
+    # need to predict plumbing. Region keeps its flow teaching: it's
+    # pre-effect guidance (a model that doesn't know crops keep full
+    # resolution never zooms).
     "description": (
-        "Load an image into the conversation so you can see it. Accepts a "
-        "URL, local file path, or data URL. When your active model has "
-        "native vision, the image is attached to your context directly "
-        "and you read the pixels yourself on the next turn — call this "
-        "any time the user references an image (filepath in their message, "
-        "URL in tool output, screenshot from the browser, etc.). For "
-        "non-vision models, falls back to an auxiliary vision model that "
-        "returns a text description."
+        "Load an image into the conversation so you can see it. Call it "
+        "any time the user references an image — then answer from what "
+        "you see."
     ),
     "parameters": {
         "type": "object",
@@ -1744,7 +1851,7 @@ VISION_ANALYZE_SCHEMA = {
             },
             "question": {
                 "type": "string",
-                "description": "Your specific question or request about the image. Optional context the model uses on the next turn after seeing the image."
+                "description": "Your question or request about the image."
             },
             "region": {
                 "type": "array",
@@ -1752,12 +1859,11 @@ VISION_ANALYZE_SCHEMA = {
                 "minItems": 4,
                 "maxItems": 4,
                 "description": (
-                    "Optional [x1, y1, x2, y2] crop region in pixel coordinates "
-                    "of the ORIGINAL image, applied before any downscaling so "
-                    "the region keeps full resolution. Intended flow: load the "
-                    "full image first, then call again with a region to zoom "
-                    "into a detail (small text, UI element, fine print). "
-                    "Coordinates are clamped to the image bounds."
+                    "Optional [x1, y1, x2, y2] crop in ORIGINAL-image pixel "
+                    "coordinates, applied before any downscaling — the crop "
+                    "keeps full resolution. Load the full image first, then "
+                    "re-call with a region to zoom into small text or fine "
+                    "detail."
                 )
             }
         },

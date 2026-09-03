@@ -11,7 +11,13 @@ import pytest
 
 import hermes_state
 from agent.session_activity import ActivityProvenance
-from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
+from hermes_state import (
+    FTS_SQL,
+    FTS_STORAGE_VERSION,
+    SCHEMA_SQL,
+    SCHEMA_VERSION,
+    SessionDB,
+)
 
 
 class _NoFtsCursor(sqlite3.Cursor):
@@ -280,6 +286,83 @@ class TestConnectionLifecycle:
         healed = SessionDB(db_path=db_path, read_only=False)
         healed.close()
         assert list(tmp_path.glob("*malformed-backup*"))
+
+    def test_read_only_open_retries_transient_wal_ioerr(self, tmp_path, monkeypatch):
+        """A transient SQLITE_IOERR on a read-only open must retry, not raise.
+
+        A ``mode=ro`` connection cannot perform WAL recovery (recovery would
+        need to write the -shm index, which read-only mode refuses), so a
+        concurrent checkpoint / WAL reset / frame-flush on the writer side can
+        surface "disk I/O error" to a reader on a perfectly healthy database
+        (#100436). The transition window is millisecond-scale; a bounded retry
+        must let the open succeed instead of 500-ing the /api/sessions poll
+        and every other read-only opener.
+        """
+        import sqlite3
+
+        from hermes_cli.sqlite_safe_read import has_live_connection
+
+        db_path = tmp_path / "state.db"
+        writable = SessionDB(db_path=db_path)
+        writable.create_session("wal-race", source="cli")
+        writable.close()
+
+        real_connect = hermes_state._connect_tracked_db
+        attempts = []
+
+        def flaky_connect(*args, **kwargs):
+            attempts.append(kwargs.get("uri"))
+            if len(attempts) == 1:
+                # First open lands inside the writer's WAL transition window.
+                raise sqlite3.OperationalError("disk I/O error")
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr(hermes_state, "_connect_tracked_db", flaky_connect)
+        # Keep the test fast: one backoff tick is enough; the retry budget
+        # itself is exercised by the attempt count below.
+        monkeypatch.setattr(hermes_state, "_READ_ONLY_IOERR_RETRY_BACKOFF_S", 0.0)
+
+        read_only = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert read_only._fts_enabled is True
+            matches = read_only.search_messages("wal-race")
+        finally:
+            read_only.close()
+
+        assert len(attempts) >= 2, "the transient IOERR must be retried"
+        assert has_live_connection(db_path) is False  # no leaked connections
+
+    def test_read_only_open_exhausts_retry_budget_for_persistent_ioerr(
+        self, tmp_path, monkeypatch
+    ):
+        """A persistent SQLITE_IOERR must exhaust the budget and raise.
+
+        The retry exists to ride out a millisecond WAL transition — a
+        storage layer that keeps failing after the full budget is genuinely
+        broken and must surface the error (and not loop forever).
+        """
+        import sqlite3
+
+        db_path = tmp_path / "state.db"
+        writable = SessionDB(db_path=db_path)
+        writable.create_session("broken-disk", source="cli")
+        writable.close()
+
+        attempts = []
+
+        def bad_connect(*args, **kwargs):
+            attempts.append(1)
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(hermes_state, "_connect_tracked_db", bad_connect)
+        monkeypatch.setattr(hermes_state, "_READ_ONLY_IOERR_RETRY_BACKOFF_S", 0.0)
+        budget = hermes_state._READ_ONLY_IOERR_RETRY_ATTEMPTS
+
+        with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+            SessionDB(db_path=db_path, read_only=True)
+
+        # budget + 1 = the initial attempt plus `budget` retries.
+        assert len(attempts) == budget + 1
 
 
 # =========================================================================
@@ -1698,7 +1781,7 @@ class TestSchemaInit:
         assert binding["user_id"] == "208214988"
         assert binding["session_key"] == "telegram:dm:208214988:thread:17585"
         assert binding["session_id"] == "topic-session"
-        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        assert db.get_meta("telegram_dm_topic_schema_version") == "3"
         db.close()
 
 
@@ -2675,6 +2758,24 @@ class TestCompressionChainProjection:
         assert db.get_compression_tip("mid1") == "tip1"
         assert db.get_compression_tip("tip1") == "tip1"
 
+    def test_list_serves_full_lineage_ids_for_projected_rows(self, db):
+        """The projected tip row must carry every chain id. Root and tip
+        alone are not enough client-side: a persisted tile or route can hold
+        a MIDDLE segment's id (it was the tip when opened), and without the
+        intermediates that surface cannot prove it names this conversation —
+        which is how one chat ends up open twice after a compaction."""
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.create_session("solo", "cli")
+        db.append_message("solo", "user", "standalone")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+        assert tip_row["_lineage_ids"] == ["root1", "mid1", "tip1"]
+        solo_row = next(s for s in sessions if s["id"] == "solo")
+        assert solo_row.get("_lineage_ids") is None
+
 
 
     def test_list_surfaces_tip_for_compressed_root(self, db):
@@ -2912,6 +3013,7 @@ class TestVacuum:
 
     def test_auto_maintenance_records_successful_vacuum(self, db, monkeypatch):
         monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.5)  # ratio gate open
         vacuum_calls = []
         monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
 
@@ -2923,6 +3025,7 @@ class TestVacuum:
 
     def test_auto_maintenance_skips_recent_vacuum(self, db, monkeypatch):
         monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.5)  # ratio gate open
         db.set_meta("last_vacuum", str(time.time()))
         vacuum_calls = []
         monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
@@ -2937,6 +3040,7 @@ class TestVacuum:
 
     def test_auto_maintenance_retries_after_vacuum_interval(self, db, monkeypatch):
         monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.5)  # ratio gate open
         db.set_meta("last_vacuum", str(time.time() - 31 * 86400))
         vacuum_calls = []
         monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
@@ -2951,6 +3055,7 @@ class TestVacuum:
 
     def test_auto_maintenance_retries_after_failed_vacuum(self, db, monkeypatch):
         monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.5)  # ratio gate open
         vacuum_calls = []
 
         def fail_first_vacuum():
@@ -2970,6 +3075,97 @@ class TestVacuum:
         assert second["vacuumed"] is True
         assert vacuum_calls == [True, True]
         assert db.get_meta("last_vacuum") is not None
+
+    # ── freelist-ratio gate (#54189) ─────────────────────────────────────
+    def test_auto_maintenance_skips_vacuum_below_freelist_ratio(self, db, monkeypatch):
+        """A prune that frees few pages on a dense DB must NOT trigger VACUUM."""
+        monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 1)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.05)
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
+
+        result = db.maybe_auto_prune_and_vacuum(min_interval_hours=0)
+
+        assert result["pruned"] == 1
+        assert result["vacuumed"] is False
+        assert result["freelist_ratio"] == 0.05
+        assert vacuum_calls == []
+        assert db.get_meta("last_vacuum") is None
+        # The prune itself still counts as a maintenance run.
+        assert db.get_meta("last_auto_prune") is not None
+
+    def test_auto_maintenance_vacuums_above_freelist_ratio(self, db, monkeypatch):
+        monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 1)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.40)
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
+
+        result = db.maybe_auto_prune_and_vacuum(min_interval_hours=0)
+
+        assert result["vacuumed"] is True
+        assert result["freelist_ratio"] == 0.40
+        assert vacuum_calls == [True]
+
+    def test_auto_maintenance_freelist_ratio_exactly_at_threshold_skips(self, db, monkeypatch):
+        """Gate is strictly greater-than: 25.0% reclaimable does not VACUUM."""
+        from hermes_state import AUTO_VACUUM_MIN_FREELIST_RATIO
+
+        monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 1)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: AUTO_VACUUM_MIN_FREELIST_RATIO)
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
+
+        result = db.maybe_auto_prune_and_vacuum(min_interval_hours=0)
+
+        assert result["vacuumed"] is False
+        assert vacuum_calls == []
+
+    def test_auto_maintenance_unknown_freelist_ratio_falls_back_to_time_throttle(self, db, monkeypatch):
+        """If the pragmas cannot be read, don't silently disable VACUUM forever."""
+        monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 1)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: None)
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
+
+        result = db.maybe_auto_prune_and_vacuum(min_interval_hours=0)
+
+        assert result["vacuumed"] is True
+        assert result["freelist_ratio"] is None
+        assert vacuum_calls == [True]
+
+    def test_auto_maintenance_ratio_gate_threshold_is_overridable(self, db, monkeypatch):
+        monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 1)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.10)
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
+
+        result = db.maybe_auto_prune_and_vacuum(
+            min_interval_hours=0, min_vacuum_freelist_ratio=0.05
+        )
+
+        assert result["vacuumed"] is True
+        assert vacuum_calls == [True]
+
+    def test_freelist_ratio_reads_real_pragmas(self, db):
+        """Real-DB check: freeing most of the file pushes the ratio past the gate."""
+        from hermes_state import AUTO_VACUUM_MIN_FREELIST_RATIO
+
+        db.create_session(session_id="keep", source="cli")
+        db.append_message(session_id="keep", role="user", content="hi")
+        for i in range(6):
+            sid = f"bulk{i}"
+            db.create_session(session_id=sid, source="cli")
+            for _ in range(20):
+                db.append_message(session_id=sid, role="assistant", content="z" * 4000)
+        db._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        dense = db._freelist_ratio()
+        assert dense is not None and dense < AUTO_VACUUM_MIN_FREELIST_RATIO
+
+        for i in range(6):
+            db.delete_session(f"bulk{i}")
+        db._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        sparse = db._freelist_ratio()
+        assert sparse is not None and sparse > AUTO_VACUUM_MIN_FREELIST_RATIO
 
     def test_wal_size_limit_is_bounded(self, db):
         """journal_size_limit must be a finite bound, not SQLite's -1 default.
@@ -3101,7 +3297,8 @@ class TestAutoMaintenance:
         )
         db._conn.commit()
 
-    def test_first_run_prunes_and_vacuums(self, db):
+    def test_first_run_prunes_and_skips_vacuum_when_little_reclaimable(self, db):
+        """Pruning two empty sessions frees almost nothing → prune yes, VACUUM no."""
         self._make_old_ended(db, "old1", days_old=100)
         self._make_old_ended(db, "old2", days_old=100)
         db.create_session(session_id="new", source="cli")  # active, must survive
@@ -3109,11 +3306,39 @@ class TestAutoMaintenance:
         result = db.maybe_auto_prune_and_vacuum(retention_days=90)
         assert result["skipped"] is False
         assert result["pruned"] == 2
-        assert result["vacuumed"] is True
+        assert result["vacuumed"] is False  # freelist ratio gate (#54189)
+        assert result["freelist_ratio"] is not None
+        assert result["freelist_ratio"] <= 0.25
         assert result.get("error") is None
         assert db.get_session("old1") is None
         assert db.get_session("old2") is None
         assert db.get_session("new") is not None
+
+    def test_first_run_prunes_and_vacuums_when_mostly_reclaimable(self, db):
+        """Pruning the bulk of the file's pages crosses the 25% gate → VACUUM runs."""
+        db.create_session(session_id="new", source="cli")  # active, must survive
+        db.append_message(session_id="new", role="user", content="hi")
+        for i in range(6):
+            sid = f"old{i}"
+            self._make_old_ended(db, sid, days_old=100)
+            for _ in range(20):
+                db.append_message(session_id=sid, role="assistant", content="z" * 4000)
+            # Keep the row aged: append_message bumps activity, prune ages by
+            # latest message, so push the message timestamps back too.
+            db._conn.execute(
+                "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+                (time.time() - 100 * 86400, sid),
+            )
+        db._conn.commit()
+
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90)
+        assert result["skipped"] is False
+        assert result["pruned"] == 6
+        assert result["freelist_ratio"] > 0.25
+        assert result["vacuumed"] is True
+        assert result.get("error") is None
+        assert db.get_session("new") is not None
+        assert db.get_meta("last_vacuum") is not None
 
     def test_second_call_within_interval_skips(self, db):
         self._make_old_ended(db, "old", days_old=100)
@@ -3412,6 +3637,160 @@ class TestFTSExternalContentMigration:
             # A new write is indexed live by the legacy triggers.
             db.append_message("s1", role="user", content="AFTEROPEN token")
             assert len(db.search_messages("AFTEROPEN")) == 1
+        finally:
+            db.close()
+
+    @pytest.mark.parametrize("with_message", [False, True])
+    def test_v23_rebuild_from_trigram_tool_calls_projection(
+        self, tmp_path, with_message
+    ):
+        """v23 installs built with historical trigram projection should be
+        repaired via optimize-storage: trigram must drop tool_calls while
+        standard messages_fts keeps indexing them."""
+        db_path = tmp_path / "v23-toolcalls.db"
+
+        # Build an external-content DB that is already at schema version 23,
+        # but with the old tool_calls-inclusive trigram projection.
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(SCHEMA_SQL)
+        conn.executescript(FTS_SQL)
+        conn.executescript(
+            """
+            DROP TRIGGER IF EXISTS messages_fts_trigram_insert;
+            DROP TRIGGER IF EXISTS messages_fts_trigram_delete;
+            DROP TRIGGER IF EXISTS messages_fts_trigram_update;
+            DROP TABLE IF EXISTS messages_fts_trigram;
+            DROP VIEW IF EXISTS messages_fts_trigram_src;
+
+            CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
+                SELECT id, role, content, tool_name, tool_calls
+                FROM messages
+                WHERE role <> 'tool';
+
+            CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(
+                content,
+                tool_name,
+                tool_calls,
+                content='messages_fts_trigram_src',
+                content_rowid='id',
+                tokenize='trigram'
+            );
+
+            CREATE TRIGGER messages_fts_trigram_insert AFTER INSERT ON messages
+            WHEN new.role <> 'tool'
+            BEGIN
+                INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
+                VALUES (new.id, new.content, new.tool_name, new.tool_calls);
+            END;
+
+            CREATE TRIGGER messages_fts_trigram_delete AFTER DELETE ON messages
+            WHEN old.role <> 'tool'
+            BEGIN
+                INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
+                VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
+            END;
+
+            CREATE TRIGGER messages_fts_trigram_update
+            AFTER UPDATE OF content, tool_name, tool_calls, role ON messages
+            WHEN (old.content IS NOT new.content
+                OR old.tool_name IS NOT new.tool_name
+                OR old.tool_calls IS NOT new.tool_calls
+                OR old.role IS NOT new.role)
+            BEGIN
+                INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
+                SELECT 'delete', old.id, old.content, old.tool_name, old.tool_calls
+                WHERE old.role <> 'tool';
+                INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
+                SELECT new.id, new.content, new.tool_name, new.tool_calls
+                WHERE new.role <> 'tool';
+            END;
+            """
+        )
+        # Simulate the historical v23 projection shipped before this fix.
+        conn.execute(
+            "INSERT OR REPLACE INTO state_meta (key, value) VALUES ('fts_storage_version', '1')"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO state_meta (key, value) VALUES ('fts_optimize_available', '1')"
+        )
+        conn.commit()
+        conn.close()
+
+        if with_message:
+            conn = sqlite3.connect(str(db_path))
+            conn.execute(
+                "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+                ("s1", "cli", time.time()),
+            )
+            conn.execute(
+                "INSERT INTO messages (session_id, timestamp, role, content, tool_name, tool_calls) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "s1",
+                    time.time(),
+                    "assistant",
+                    "部署完成 assistant content",
+                    "legacyTool",
+                    '{"name": "legacy", "arguments": "UNIQUE_TOOLCALL_TOKEN_43701"}',
+                ),
+            )
+            conn.commit()
+            assert conn.execute(
+                "SELECT rowid FROM messages_fts_trigram WHERE messages_fts_trigram MATCH 'UNIQUE_TOOLCALL_TOKEN_43701'"
+            ).fetchall()
+            conn.close()
+
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._conn is not None
+            assert db.fts_optimize_available() is True
+            assert db.get_meta("fts_storage_version") == "1"
+
+            original_ensure = db._ensure_fts_schema
+
+            def interrupt_after_demote(cursor, table_name, ddl):
+                if table_name == "messages_fts_trigram":
+                    raise RuntimeError("injected trigram rebuild interruption")
+                return original_ensure(cursor, table_name, ddl)
+
+            db._ensure_fts_schema = interrupt_after_demote
+            with pytest.raises(RuntimeError, match="injected trigram"):
+                db.optimize_fts_storage(vacuum=False)
+
+            db.close()
+            db = SessionDB(db_path=db_path)
+            assert db._conn is not None
+            assert db.get_meta("fts_rebuild_high_water") is None
+            assert db.get_meta("fts_rebuild_progress") is None
+            assert db._has_fts_trash(db._conn) is True
+            assert db.fts_optimize_available() is True
+            assert db.get_meta("fts_storage_version") == "1"
+            if with_message:
+                assert db._conn.execute(
+                    "SELECT 1 FROM messages_fts_trigram "
+                    "WHERE messages_fts_trigram MATCH '部署完成' LIMIT 1"
+                ).fetchone()
+
+            result = db.optimize_fts_storage(vacuum=False)
+            assert result["ok"] is True
+
+            if with_message:
+                # messages_fts stays in the tool-calls search path.
+                assert len(db.search_messages("UNIQUE_TOOLCALL_TOKEN_43701")) == 1
+                # New trigram schema excludes tool_calls from trigram projection.
+                assert not db._conn.execute(
+                    "SELECT 1 FROM messages_fts_trigram WHERE messages_fts_trigram MATCH 'UNIQUE_TOOLCALL_TOKEN_43701' LIMIT 1"
+                ).fetchone()
+                assert db._conn.execute(
+                    "SELECT 1 FROM messages_fts_trigram "
+                    "WHERE messages_fts_trigram MATCH '部署完成' LIMIT 1"
+                ).fetchone()
+            trigger_sql = db._conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'trigger' AND name = 'messages_fts_trigram_update'"
+            ).fetchone()[0]
+            assert "tool_calls" not in trigger_sql
+            assert db.get_meta("fts_storage_version") == str(FTS_STORAGE_VERSION)
         finally:
             db.close()
 
@@ -4260,6 +4639,63 @@ def test_gateway_session_recovery_does_not_cross_newer_reset_boundary(
     ) is None
 
 
+def test_peer_fallback_never_adopts_a_sibling_profiles_row(tmp_path, monkeypatch):
+    """#74285: the peer-tuple fallback is fenced by the store's own profile.
+
+    A Telegram DM peer tuple (chat_id == user_id, no thread) is identical for
+    every bot, so a legacy sibling-profile row sitting in this store — written
+    before the per-profile partition — must lose to the older own row, and
+    with no own row recovery must return nothing rather than the sibling's.
+    """
+    import hermes_state
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    store = SessionDB(db_path=root / "state.db")  # owner: default
+    try:
+        peer = {"user_id": "42", "chat_id": "42", "chat_type": "dm"}
+        store.create_session("sibling", "telegram", session_key="agent:bot2:telegram:dm:42",
+                             profile_name="bot2", **peer)
+        store.append_message("sibling", "user", "bot2's conversation")
+
+        def recover():
+            return store.find_latest_gateway_session_for_peer(
+                source="telegram", session_key="agent:main:telegram:dm:42", **peer
+            )
+
+        assert recover() is None  # only the sibling exists: fail closed
+
+        store.create_session("own", "telegram", session_key="agent:main:telegram:dm:42:old", **peer)
+        store.append_message("own", "user", "default's conversation")
+        store._execute_write(
+            lambda c: c.execute("UPDATE sessions SET last_activity_at = 1 WHERE id = 'own'")
+        )
+        assert recover()["id"] == "own"  # older own row beats newer sibling row
+    finally:
+        store.close()
+
+
+def test_child_inherits_parent_profile_only_within_its_key_namespace(db):
+    """#88381: parent→child ``profile_name`` COALESCE is fenced by ``agent:<ns>:``.
+
+    A default child (``agent:main:``) forked from a sibling profile's row must
+    not be durably mislabelled as that profile's; same-namespace and keyless
+    (CLI/subagent) children keep inheriting.
+    """
+    db.create_session("parent", "telegram", session_key="agent:bot2:telegram:dm:42",
+                      profile_name="bot2")
+    db.create_session("cross", "telegram", parent_session_id="parent",
+                      session_key="agent:main:telegram:dm:42")
+    db.create_session("same", "telegram", parent_session_id="parent",
+                      session_key="agent:bot2:telegram:dm:42:r2")
+    db.create_session("keyless", "cli", parent_session_id="parent")
+    assert db.get_session("cross")["profile_name"] is None
+    assert db.get_session("same")["profile_name"] == "bot2"
+    assert db.get_session("keyless")["profile_name"] == "bot2"
+
+
 
 
 
@@ -4573,6 +5009,66 @@ class TestGetMessagesPagination:
             db.assert_resume_safe("tip", max_messages=4)
         assert exc_info.value.message_count == 5
         assert exc_info.value.limit == 4
+
+    def test_resume_safety_tip_only_counts_the_tip_segment(self, db):
+        """A deep compression lineage behind a small tip resumes tip-only.
+
+        The Desktop Bot Chat shape: many compaction segments (~29k rows of
+        lineage) and a small live tip. Callers that never materialize the
+        ancestors (deferred / omit_messages / lazy resume, tip-only model
+        restore) must be bounded by the tip alone, and the message must name
+        the scope it counted.
+        """
+        prev = None
+        for i in range(6):
+            sid = f"seg-{i}"
+            kwargs = {"parent_session_id": prev} if prev else {}
+            db.create_session(session_id=sid, source="tui", **kwargs)
+            db.append_messages_batch(
+                sid,
+                [{"role": "user", "content": f"{sid}-{j}"} for j in range(4)],
+            )
+            if i < 5:
+                db.end_session(sid, "compression")
+            prev = sid
+
+        assert db.get_resume_message_count("seg-5") == 24
+        assert db.get_resume_message_count("seg-5", tip_only=True) == 4
+        with pytest.raises(hermes_state.SessionResumeTooLargeError) as full:
+            db.assert_resume_safe("seg-5", max_messages=10)
+        assert "across its lineage" in str(full.value)
+        assert db.assert_resume_safe("seg-5", max_messages=10, tip_only=True) == 4
+        with pytest.raises(hermes_state.SessionResumeTooLargeError) as tip:
+            db.assert_resume_safe("seg-5", max_messages=3, tip_only=True)
+        assert tip.value.message_count == 4
+        assert "in its tip segment" in str(tip.value)
+
+    def test_resume_guard_counts_exactly_what_a_branch_resume_loads(self, db):
+        """An explicit /branch copy owns its transcript: the guard and the
+        resume readers must agree that its lineage is itself alone."""
+        db.create_session(session_id="parent", source="tui")
+        db.append_messages_batch(
+            "parent",
+            [{"role": "user", "content": f"parent-{i}"} for i in range(6)],
+        )
+        db.create_session(
+            session_id="branch",
+            source="tui",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+        db.append_messages_batch(
+            "branch",
+            [{"role": "user", "content": f"branch-{i}"} for i in range(2)],
+        )
+
+        _, display = db.get_resume_conversations("branch")
+        assert len(display) == 2
+        assert db.get_ancestor_display_prefix("branch") == []
+        # Before: the guard walked parent_session_id and counted 8, so a branch
+        # could be refused for rows a resume would never load.
+        assert db.get_resume_message_count("branch") == 2
+        assert db.assert_resume_safe("branch", max_messages=5) == 2
 
     def test_export_safety_is_bounded_to_the_requested_active_segment(self, db):
         db.create_session(session_id="root", source="cli")

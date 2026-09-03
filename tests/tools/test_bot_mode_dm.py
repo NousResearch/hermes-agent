@@ -225,7 +225,10 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     result = json.loads(
         bot_mode_dm.message_agent_tool(
             target="@researcher",
-            message='status? give me the "final" numbers $(and this is not shell)',
+            message=(
+                'status? give me the "PAYLOAD_SENTINEL_7A91" numbers '
+                "$(and this is not shell)"
+            ),
             agent=agent,
         )
     )
@@ -256,13 +259,42 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
         "-Q",
     ]
     # message body rides the temp file, never the command line
-    assert "final" not in command
+    assert "PAYLOAD_SENTINEL_7A91" not in command
     assert "$(" not in command
 
     # attribution prefix applied server-side; body verbatim inside the file
     content = Path(dm_file).read_text(encoding="utf-8")
     assert content.startswith("Message from 🤖 hermes (@hermes): ")
     assert '$(and this is not shell)' in content
+
+
+def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
+    tmp_path, monkeypatch
+):
+    """A secondary-profile bot's peer DM must run in the registry-owning
+    profile (#93935). `hermes peer` resolves bot_peers through
+    profile-scoped load_config(); unpinned, the subprocess inherits the
+    calling bot's profile and dies with "No peer named" even though the
+    tool-side roster (read from the machine-root config) validated the
+    target."""
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, peers=("spark",))
+    # A reviewer-profile gateway context: the agent's session db lives under
+    # that profile's home, so _agent_home() resolves there while the
+    # machine-root config (home/config.yaml) still holds the registry.
+    reviewer_home = home / "profiles" / "reviewer"
+    reviewer_home.mkdir(parents=True)
+    agent = _FakeAgent(reviewer_home, title="Bot Chat")
+
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
+    )
+    assert result["status"] == "sent"
+    mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
+    assert mode == "stdin"
+    # The registry the tool validated against is the machine root's — the
+    # default profile's home — so the CLI runs there, not in reviewer.
+    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
 
 
 def test_peer_delivery_command(tmp_path, monkeypatch):
@@ -277,7 +309,7 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     assert "spark" in result["to"]
     mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
     assert mode == "stdin"
-    assert transport_argv == ["hermes", "peer", "dm", "spark/researcher"]
+    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark/researcher"]
 
     # bare peer name targets the peer's main agent
     result2 = json.loads(
@@ -286,7 +318,7 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     assert result2["status"] == "sent"
     mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
-    assert transport_argv == ["hermes", "peer", "dm", "spark"]
+    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
 
 
 def test_named_profile_sender_prefix(tmp_path, monkeypatch):
@@ -387,6 +419,59 @@ def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     )
 
     assert returncode == 7
+    assert not dm_file.exists()
+
+
+def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
+    """#100523: the CLI's single-owner lease refusal is a delivery FAILURE the
+    sender can read, not a raw exit-1 with the payload silently gone."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hi", encoding="utf-8")
+    child = tmp_path / "owned.py"
+    child.write_text(
+        "import sys\n"
+        "print('Session abc already has a live owner (desktop, pid 1).', file=sys.stderr)\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+
+    returncode = bot_mode_dm._run_delivery(
+        [sys.executable, str(child), "-p", "ops"], str(dm_file), stdin_file=False
+    )
+
+    assert returncode == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reason"] == "target_busy"
+    assert "NOT delivered" in payload["error"]
+
+
+def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
+    tmp_path, monkeypatch
+):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    calls = []
+    responses = [
+        subprocess.CompletedProcess([], 1, stdout="", stderr="HTTP 429 rate limit"),
+        subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    ]
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return responses.pop(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    returncode = bot_mode_dm._run_delivery(
+        ["hermes", "-p", "researcher"], str(dm_file), stdin_file=False
+    )
+
+    assert returncode == 0
+    assert len(calls) == 2
+    assert [kwargs["stdin"] for _argv, kwargs in calls] == [
+        subprocess.DEVNULL,
+        subprocess.DEVNULL,
+    ]
     assert not dm_file.exists()
 
 

@@ -158,8 +158,12 @@ _ENV_ASSIGN_RE = re.compile(
 # Lowercase env names: only underscore-boundary forms (``openai_key=…``,
 # ``FAL_KEY=…``, ``db_pw=…``) — NOT bare ``password=``/``token=``/``secret=``,
 # which appear in prose, URLs, and form bodies (issue #77484).
+# Anchor each attempt to the start of an identifier run.  Without the
+# lookbehind, ``re.sub`` retries the greedy ``[a-z0-9_]+`` prefix at every byte
+# of a long non-matching opaque payload, making strict compaction redaction
+# quadratic while holding the GIL (#99255).
 _ENV_ASSIGN_LOWER_RE = re.compile(
-    rf"([a-z0-9_]+(?:_|^)(?:key|pass|pw|token|secret|password|passwd|credential|auth)(?=[^a-z0-9_]|$))\s*=\s*(['\"]?)(\S+)\2",
+    rf"(?<![a-z0-9_])([a-z0-9_]+(?:_|^)(?:key|pass|pw|token|secret|password|passwd|credential|auth)(?=[^a-z0-9_]|$))\s*=\s*(['\"]?)(\S+)\2",
     re.IGNORECASE,
 )
 
@@ -200,7 +204,14 @@ _ENV_LOOKUP_VALUE_RE = re.compile(
 # ``(?:[A-Za-z0-9_\-]+\.)+`` (exponential backtracking on long dotted runs).
 # The ``*`` runs bordering {_SECRET_CFG_NAMES} must stay backtrackable
 # (secret words are matchable by the class, e.g. ``app.api.key=…``).
+# The lookbehind anchors each attempt to the start of a key run: without it,
+# ``re.sub`` retries the backtrackable ``*`` prefix at every byte of a long
+# non-matching dotted run, making the sub quadratic whenever the text contains
+# a secret keyword anywhere (the ``_CFG_SECRET_WORD_RE`` pre-gate only skips
+# secret-free text). Match set is unchanged — any match starting mid-run
+# implies a leftmost match starting at the run start (#99255).
 _CFG_DOTTED_RE = re.compile(
+    rf"(?<![A-Za-z0-9_.\-])"
     rf"([A-Za-z0-9_\-]++\.[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*+"
     rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]++)"
     rf"={_CFG_VALUE}",
@@ -259,6 +270,16 @@ _KEY_KEYWORD_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Key names that are credential-specific even when their values are short or
+# human-readable. Bare ``token`` / ``key`` are intentionally absent: those
+# words also describe model limits, tensor names, cache keys, and other public
+# technical values. Their assignments are gated on value shape below.
+_STRONG_KEY_KEYWORD_RE = re.compile(
+    r"(?:api|auth|access|refresh|session|id|bearer)[ _.\\-]?(?:key|token)"
+    r"|key[ _.\\-]?material|secret|passwd|password|pass|pw|credential|auth|bearer",
+    re.IGNORECASE,
+)
+
 
 def _is_word_start(s: str, i: int) -> bool:
     """True if position ``i`` in ``s`` begins a word (not mid-word)."""
@@ -314,6 +335,42 @@ def _key_has_secret_keyword(key: str) -> bool:
         if _is_word_start(key, m.start()) and _is_word_end(key, m.end()):
             return True
     return False
+
+
+def _key_has_strong_secret_keyword(key: str) -> bool:
+    """Return whether ``key`` names an unambiguously credential-bearing field."""
+    for match in _STRONG_KEY_KEYWORD_RE.finditer(key):
+        if _is_word_start(key, match.start()) and _is_word_end(key, match.end()):
+            return True
+    return False
+
+
+def _looks_like_opaque_credential(value: str) -> bool:
+    """Return whether an ambiguous token/key value has credential-like shape.
+
+    Known vendor prefixes and JWTs have dedicated redactors. This catches the
+    remaining opaque family without treating short technical scalars such as
+    ``CPU``, ``local``, or training captions as secrets merely because their
+    key contains ``token`` or ``key``.
+    """
+    if value == "***" or value.startswith("«redacted:"):
+        return True
+    if len(value) >= 16 and re.fullmatch(r"[A-Fa-f0-9]+", value):
+        return True
+    if len(value) >= 20 and re.fullmatch(r"[A-Za-z0-9_./+=-]+", value):
+        return True
+    if len(value) < 12:
+        return False
+    classes = sum(
+        bool(re.search(pattern, value))
+        for pattern in (r"[a-z]", r"[A-Z]", r"[0-9]")
+    )
+    return classes >= 2
+
+
+def _assignment_value_requires_redaction(key: str, value: str) -> bool:
+    """Apply value-aware gating to key-name-only assignment matches."""
+    return _key_has_strong_secret_keyword(key) or _looks_like_opaque_credential(value)
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
@@ -859,6 +916,8 @@ def redact_sensitive_text(
                 # embedded matching inside the helper.
                 if not _key_has_secret_keyword(name):
                     return m.group(0)
+                if not _assignment_value_requires_redaction(name, value):
+                    return m.group(0)
                 return f"{name}={quote}{_mask_token(value)}{quote}"
             text = _ENV_ASSIGN_RE.sub(_redact_env, text)
             # Lowercase env names (``openai_key=…``). Skip URLs — the query
@@ -894,6 +953,8 @@ def redact_sensitive_text(
                 # not a leaked secret value.
                 if _ENV_LOOKUP_VALUE_RE.match(value):
                     return m.group(0)
+                if not _assignment_value_requires_redaction(key, value):
+                    return m.group(0)
                 return f'{key}: "{_mask_token(value)}"'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
 
@@ -912,6 +973,8 @@ def redact_sensitive_text(
                 # ``Secretary: J.Smith`` / ``tokenizer: cl100k_base`` are
                 # document text, not credentials (nearai/ironclaw#6129).
                 if not _key_has_secret_keyword(key):
+                    return m.group(0)
+                if not _assignment_value_requires_redaction(key, value):
                     return m.group(0)
                 return f"{key}{sep}{_mask_token(value)}"
             text = _YAML_ASSIGN_RE.sub(_redact_yaml, text)

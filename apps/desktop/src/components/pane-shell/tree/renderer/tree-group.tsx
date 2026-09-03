@@ -39,7 +39,6 @@ import { hiddenPaneProps, PaneGroupContext, PaneLifecycleContext, PaneVisibleCon
 import {
   $workspaceMode,
   $workspaceOwnerKey,
-  contributesToWorkspace,
   rememberActivePane,
   resolveRememberedActivePane,
   workspaceScopeKey
@@ -268,10 +267,7 @@ export function TreeGroup({
   // Edit mode forces toggle-hidden panes visible so they can be rearranged
   // (mirrors tree-split's paneGone) — restores itself on exit.
   const paneShown = (id: string) =>
-    Boolean(paneFor(id)) &&
-    contributesToWorkspace(paneFor(id), workspaceMode, workspaceOwnerKey) &&
-    (editMode || !hiddenPanes.has(id)) &&
-    !(narrow && paneChrome(paneFor(id)).collapsible)
+    Boolean(paneFor(id)) && (editMode || !hiddenPanes.has(id)) && !(narrow && paneChrome(paneFor(id)).collapsible)
 
   const shown = node.panes.filter(paneShown)
   const memoryKey = workspaceScopeKey(workspaceMode, workspaceOwnerKey)

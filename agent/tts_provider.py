@@ -241,6 +241,22 @@ class TTSProvider(abc.ABC):
             "if your backend supports it."
         )
 
+    def warm(self) -> None:
+        """Speech output was just turned on; pre-load so the first reply is hot.
+
+        Optional. Called from the TTS lease path (Desktop read-aloud / voice
+        conversation, ``/voice tts``) when this provider is the configured
+        ``tts.provider`` — e.g. ask a local model server to load its model.
+        Best-effort: exceptions are logged at debug and ignored. Default: no-op.
+        """
+
+    def release(self) -> None:
+        """The last speech-output lease was released; free resident resources.
+
+        Optional counterpart of :meth:`warm` — e.g. tell a local model server
+        to unload. Best-effort; default: no-op.
+        """
+
     @property
     def voice_compatible(self) -> bool:
         """Whether output is suitable for voice-bubble delivery.

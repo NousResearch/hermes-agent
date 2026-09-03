@@ -235,7 +235,7 @@ hermes slack manifest --write
 
 ### 旧版 `/hermes <子命令>` 仍然有效
 
-为了向后兼容旧版 manifest，你仍然可以输入 `/hermes btw run the tests`——Hermes 会以与 `/btw run the tests` 相同的方式路由它。自由形式的问题也有效：`/hermes what's the weather?` 会被当作普通消息处理。
+为了向后兼容旧版 manifest，你仍然可以输入 `/hermes bg run the tests`——Hermes 会以与 `/bg run the tests` 相同的方式路由它。自由形式的问题也有效：`/hermes what's the weather?` 会被当作普通消息处理。
 
 ### 在话题（thread）中使用命令（`!cmd` 前缀）
 

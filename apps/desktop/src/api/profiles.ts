@@ -25,12 +25,11 @@ export function createProfile(body: ProfileCreatePayload): Promise<{ name: strin
 
 // Explicit (connection, profile) pin for a profile that lives on a gateway
 // other than the foreground one — the fleet profile rail edits a remote
-// square's SOUL/name in place. Same contract as deleteProfile's scope.
+// square's SOUL/name in place. capabilityScoped now forwards a `'local'` pin
+// itself (it must, or a remote registry PRIMARY absorbs "This device" reads),
+// so this is a plain alias kept for the call sites' self-documenting name.
 function profileOwnerScoped(scope?: ProfileScope): { connectionId?: string; profile?: string } {
-  return {
-    ...capabilityScoped(scope),
-    ...(scope && typeof scope === 'object' && scope.connectionId?.trim() === 'local' ? { connectionId: 'local' } : {})
-  }
+  return capabilityScoped(scope)
 }
 
 export function renameProfile(

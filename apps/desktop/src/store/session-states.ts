@@ -56,7 +56,12 @@ import {
   setSessions
 } from './session'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
-import { requestForSessionProfile, type SessionOwnerRoute, type SessionOwnerScope } from './session-request-router'
+import {
+  requestForSessionProfile,
+  type SessionOwnerRoute,
+  type SessionOwnerScope,
+  type SessionProfileRoute
+} from './session-request-router'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -78,9 +83,22 @@ export const $sessionStates = atom<Record<string, ClientSessionState>>({})
 
 const sessionScopeByRuntimeId = new Map<string, string>()
 
+// Structured twin of the scope ledger: the same inbound events also carry the
+// exact (connectionId, profile) owner, which the composite scope string
+// cannot give back. Consumed as the LAST rung of knownOwnerForSession so a
+// runtime whose event source already proved its owner can still route
+// session-scoped RPCs (approval.respond) when every durable binding
+// (tile / hint / row) is absent — while durable stored identity keeps
+// outranking it (#97511).
+const sessionOwnerByRuntimeId = new Map<string, SessionOwnerRoute>()
+
 export function recordSessionEventScope(event: { connectionId?: string; profile?: string; session_id?: string }): void {
   if (event.session_id && event.connectionId) {
     sessionScopeByRuntimeId.set(event.session_id, registryBackendScopeKey(event.connectionId, event.profile))
+    sessionOwnerByRuntimeId.set(event.session_id, {
+      connectionId: event.connectionId,
+      profile: String(event.profile ?? '').trim() || 'default'
+    })
   }
 }
 
@@ -501,6 +519,7 @@ export function dropSessionState(runtimeId: string) {
   clearWatchdog(runtimeId)
   clearSessionProviderWait(runtimeId)
   sessionScopeByRuntimeId.delete(runtimeId)
+  sessionOwnerByRuntimeId.delete(runtimeId)
 
   const current = $sessionStates.get()
   setSessionStalled(current[runtimeId]?.storedSessionId, false)
@@ -527,6 +546,7 @@ export function clearAllSessionStates() {
   settledExpiry.clear()
   clearAllProviderWaits()
   sessionScopeByRuntimeId.clear()
+  sessionOwnerByRuntimeId.clear()
   $stalledSessionIds.set([])
   $sessionStates.set({})
 }
@@ -965,6 +985,13 @@ export function openTileGatewayScopes(): Set<string> {
  * `profile` stamp) was already loaded for the sidebar's cron section. The
  * hint outranks the row for the same reason as contrib/wiring's ladder: a
  * row can be stamped from the ambient profile and carries no connection.
+ * Last rung: the owner recorded from the inbound runtime event itself
+ * (sessionOwnerByRuntimeId, #97511) — an orphan runtime whose tile/hint/row
+ * binding is absent or stale still routes through the exact
+ * (connectionId, profile) its events proved, while every durable rung above
+ * keeps outranking it, so a stored-id collision never inherits a stale
+ * runtime ledger entry. Untagged events record nothing, so unknown owners in
+ * multi-profile topology still fail closed.
  * Returns undefined when no owner is known — the caller fails closed
  * (assertSessionOwnerResolved), never falls to "active".
  */
@@ -978,7 +1005,8 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
   return (
     sessionTileOwnerRoute(storedSessionId) ??
     getSessionOwnerHint(storedSessionId) ??
-    knownSessionOwner(ownerLookupSessionRows(), storedSessionId)
+    knownSessionOwner(ownerLookupSessionRows(), storedSessionId) ??
+    sessionOwnerByRuntimeId.get(sessionId)
   )
 }
 
@@ -1071,10 +1099,73 @@ export function storedSessionIdForRuntimeId(sessionId: string): null | string {
   return mirrored || null
 }
 
+const BOT_CHAT_SCOPE_KEY = 'hermes.desktop.botChatSessions.v1'
+
+/** Stored ids last opened as a bot's chat. A tile carries `workspaceMode`, but
+ *  a bot chat normally lands in MAIN — `in-place` mints no tile when there is
+ *  none to front — and main has no tile to carry the scope on. Kept here so a
+ *  surface can still tell a companion chat from a working session, persisted
+ *  so that survives a relaunch the way tile scope does. */
+export const $botChatSessionIds = atom<ReadonlySet<string>>(
+  new Set((readJson<unknown>(BOT_CHAT_SCOPE_KEY) as unknown[] | null)?.filter(id => typeof id === 'string') ?? [])
+)
+
+/** The bot-mode scope each stored id was last opened under, for the main tab
+ *  (which has no tile to carry one). Window-local: the caption falls back to
+ *  the stored title until the chat is opened again. */
+export const $botChatScopes = atom<Readonly<Record<string, SessionTileWorkspaceScope>>>({})
+
+function rememberBotChatScope(storedSessionId: string, scope: SessionTileWorkspaceScope): void {
+  const isBotChat = scope.workspaceMode === 'bots'
+  const current = $botChatSessionIds.get()
+  const { [storedSessionId]: previous, ...rest } = $botChatScopes.get()
+
+  const changed = isBotChat
+    ? previous?.workspaceOwnerKey !== scope.workspaceOwnerKey || previous?.workspaceTabTitle !== scope.workspaceTabTitle
+    : Boolean(previous)
+
+  if (changed) {
+    $botChatScopes.set(isBotChat ? { ...rest, [storedSessionId]: scope } : rest)
+  }
+
+  if (current.has(storedSessionId) === isBotChat) {
+    return
+  }
+
+  const next = new Set(current)
+
+  if (isBotChat) {
+    next.add(storedSessionId)
+  } else {
+    next.delete(storedSessionId)
+  }
+
+  $botChatSessionIds.set(next)
+  writeJson(BOT_CHAT_SCOPE_KEY, next.size ? [...next] : null)
+}
+
+/** True while this live session is a bot's chat rather than a working session.
+ *  Surfaces read it to drop coding chrome that means nothing in a companion
+ *  conversation — the composer's branch/worktree rail. */
+export function isBotChatSession(sessionId: null | string | undefined): boolean {
+  const stored = sessionId ? storedSessionIdForRuntimeId(sessionId) : null
+
+  return Boolean(stored && $botChatSessionIds.get().has(stored))
+}
+
 export function setSessionTileWorkspaceScope(storedSessionId: string, scope: SessionTileWorkspaceScope): boolean {
+  // Before the tile lookup: openSession routes every open through here, and a
+  // bot chat usually has no tile to record the scope on.
+  rememberBotChatScope(storedSessionId, scope)
+
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
   const workspaceOwnerKey = scope.workspaceMode === 'bots' ? scope.workspaceOwnerKey : undefined
-  const ownerRoute = scope.workspaceMode === 'bots' ? scope.ownerRoute : undefined
+  // Sessions-mode re-opens (sidebar click on an already-tiled session) pass no
+  // route; that is absence of information, not a revocation — keep the exact
+  // owner the tile was opened with (a branch child's parent connection) so a
+  // plain re-open can't unpin the owning socket. Bot scopes stay authoritative
+  // both ways: they always name their route explicitly.
+  const ownerRoute = scope.workspaceMode === 'bots' ? scope.ownerRoute : (scope.ownerRoute ?? tile?.ownerRoute)
   const workspaceTabTitle = scope.workspaceMode === 'bots' ? scope.workspaceTabTitle : undefined
 
   if (
@@ -1158,8 +1249,15 @@ export function resetTileRuntimeBindings(
   const preservedStoredIds = new Set(
     tiles
       .filter(
+        // Any tile with an EXACT owner route — bot tabs always, and a
+        // sessions tile whose opener stamped one (a branch child on its
+        // parent's connection). Its runtime lives on that owner's socket,
+        // not the ambient gateway, so an unrelated connection's reconnect
+        // must not drop the binding: each drop re-arms the tile's resume,
+        // and a flapping sibling connection turns that into 4+ re-resumes
+        // inside the storm window — latching the "keeps losing its backend
+        // runtime" card over a session that is actually healthy.
         tile =>
-          tile.workspaceMode === 'bots' &&
           Boolean(tile.ownerRoute?.connectionId) &&
           (!(reconnected || liveConnectionIds) || !belongsToReconnectedRuntime(tile))
       )
@@ -1311,9 +1409,17 @@ export function openSessionTile(
   dir: TileDock = 'right',
   anchor?: string,
   before?: null | string,
-  workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
+  explicitScope?: SessionTileWorkspaceScope
 ) {
   const tiles = $sessionTiles.get()
+  const existing = tiles.find(t => t.storedSessionId === storedSessionId)
+
+  // No scope on an already-open tile is a MOVE (a split drag re-docking a tab),
+  // not a re-scope: keep the workspace it lives in instead of re-bucketing it
+  // into Sessions — a Bot tab used to vanish from the Bot workspace on drop.
+  const workspaceScope: SessionTileWorkspaceScope = explicitScope ?? {
+    workspaceMode: existing?.workspaceMode ?? 'sessions'
+  }
 
   // Opening a session in a tab/tile is "reading" it — clear its unread dot
   // exactly like main-thread resume does. Previously only
@@ -1323,7 +1429,9 @@ export function openSessionTile(
   markSessionRead(storedSessionId)
   ackStoredSessionId(storedSessionId)
 
-  if (workspaceScope.workspaceMode === 'sessions' && storedSessionId === $selectedStoredSessionId.get()) {
+  const aliases = lineageAliases(storedSessionId, $sessions.get())
+
+  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
     return
   }
 
@@ -1331,14 +1439,22 @@ export function openSessionTile(
 
   const workspaceOwnerKey = workspaceScope.workspaceMode === 'bots' ? workspaceScope.workspaceOwnerKey : undefined
 
-  if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
+  if (!tiles.some(t => aliases.includes(t.storedSessionId))) {
     saveTiles([
       ...tiles,
       {
         anchor: dock,
         before,
         dir,
-        ownerRoute: workspaceScope.workspaceMode === 'bots' ? workspaceScope.ownerRoute : undefined,
+        // The owner route pins the owning backend's socket in the gateway
+        // keep-set (openTileGatewayScopes / foregroundSessionScopes) for as
+        // long as the tile is open. Bot tabs always carry one; a sessions-mode
+        // tile carries one when its opener knows the exact owner — e.g. a
+        // branch child created on its parent's owning connection, whose
+        // draft runtime is otherwise orphan-reaped the moment the pruner
+        // closes the unpinned socket (the resume/reclaim flicker loop,
+        // #93892 shape).
+        ownerRoute: workspaceScope.ownerRoute,
         storedSessionId,
         workspaceMode: workspaceScope.workspaceMode,
         workspaceOwnerKey,
@@ -1351,7 +1467,9 @@ export function openSessionTile(
     return
   }
 
-  setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
+  if (explicitScope) {
+    setSessionTileWorkspaceScope(storedSessionId, explicitScope)
+  }
 
   // Already open: relocate the existing pane to the drop target (pane-mirror
   // only docks on first adoption, so a re-drag must move the tree pane itself).
@@ -1419,8 +1537,16 @@ export function focusOpenSession(
   storedSessionId: string,
   workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
 ): 'main' | 'tile' | null {
-  if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
-    const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
+  // Compression rotates a conversation's tip id while tiles stay keyed by
+  // whichever segment id they were opened with. An exact-id test right after
+  // a rotation said "not open" for a conversation that IS on screen, and
+  // callers opened the same chat in a second tab. Match any id of the
+  // lineage instead, and front the tile under ITS key.
+  const aliases = lineageAliases(storedSessionId, $sessions.get())
+  const tile = $sessionTiles.get().find(t => aliases.includes(t.storedSessionId))
+
+  if (tile) {
+    const paneId = `${TILE_PANE_PREFIX}${tile.storedSessionId}`
     revealTreePane(paneId) // un-dismiss + adopt + front in its group
     const tree = $layoutTree.get()
     const group = tree ? findGroupOfPane(tree, paneId) : null
@@ -1434,7 +1560,7 @@ export function focusOpenSession(
 
   // Already the main session: front the workspace tab and drop tile focus so
   // the readouts + sidebar highlight come home (a no-op when main is focused).
-  if (workspaceScope.workspaceMode === 'sessions' && storedSessionId === $selectedStoredSessionId.get()) {
+  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
     revealTreePane('workspace')
     noteActiveTreeGroup(null)
 
@@ -1452,11 +1578,52 @@ export function focusOpenSession(
  *  with open tabs comes back to the one the user left, instead of re-opening
  *  its canonical Bot Chat beside them: nothing records a tab close except the
  *  tile bucket forgetting it, so any open path that ignores the open set
- *  resurrects closed chats on every bot switch. */
-export function focusWorkspaceOwnerSessionTile(workspaceOwnerKey: string): null | string {
-  const owned = $sessionTiles
+ *  resurrects closed chats on every bot switch.
+ *
+ *  `isStaleTile`: the caller's reconciliation probe against backend truth
+ *  (hermes-agent#90102). The tile bucket is a Local Storage cache, and a
+ *  persisted bot tile can outlive the session it names — a superseded
+ *  "Bot Chat" from the retired pointer design, a re-minted canonical row, a
+ *  finished session that stopped being the bot's chat. Fronting such a tile
+ *  made the row's click target a stale (often hidden) session forever while
+ *  the preview described the live one. A tile the probe rejects is DISCARDED
+ *  (resurrecting it would just front the stale session again — same
+ *  no-undo rationale as discardSessionTile) and never fronted, so the caller
+ *  falls through to its authoritative open. No probe = the old behavior. */
+export function focusWorkspaceOwnerSessionTile(
+  workspaceOwnerKey: string,
+  isStaleTile?: (tile: SessionTile) => boolean,
+  onlyStoredIds?: readonly string[]
+): null | string {
+  const allOwned = $sessionTiles
     .get()
     .filter(tile => tile.workspaceMode === 'bots' && tile.workspaceOwnerKey === workspaceOwnerKey)
+
+  let owned = allOwned
+
+  if (typeof isStaleTile === 'function') {
+    const stale = allOwned.filter(tile => {
+      try {
+        return isStaleTile(tile)
+      } catch {
+        // A throwing probe must not break the click path — keep the tile.
+        return false
+      }
+    })
+
+    for (const tile of stale) {
+      discardSessionTile(tile.storedSessionId)
+    }
+
+    owned = allOwned.filter(tile => !stale.includes(tile))
+  }
+
+  // `onlyStoredIds`: the sessions this call may front (Bot Mode passes the
+  // canonical chat's registry id + lineage tip). Other tabs in the owner's
+  // zone stay open; they are simply not what the caller asked for.
+  if (onlyStoredIds) {
+    owned = owned.filter(tile => onlyStoredIds.includes(tile.storedSessionId))
+  }
 
   if (owned.length === 0) {
     return null
@@ -1581,6 +1748,112 @@ export function discardSessionTile(storedSessionId: string) {
   }
 
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
+}
+
+/**
+ * Drop every persisted tile owned by a profile that is being deleted — the
+ * profile's own session-tile bucket and any Bot Mode tile whose ownerRoute
+ * points at it (matched by desktop profile name, or by exact connection /
+ * backend target profile when a source-scoped route is given).
+ *
+ * A leftover tile RESURRECTS the deleted profile on the next launch: Bot tab
+ * restore re-dials the profile's backend, whose ensure_hermes_home() re-creates
+ * the profile directory the delete just removed (hermes-agent#94235). Same
+ * discard (no ⌘⇧T) semantics as discardSessionTile — undoing the delete of the
+ * owning profile would resolve to a 404 again.
+ */
+export function dropTilesForProfile(
+  profile: string,
+  route?: { connectionId?: string; profile?: string; targetProfile?: string }
+): void {
+  // A route without profile has no owner side to match: it would silently fall
+  // into the local-delete branch below and require `ownerConnection === 'local'`,
+  // dropping nothing remotely owned while appearing to succeed. Both current
+  // call sites always populate profile, so refuse the malformed shape loudly
+  // instead of letting a future caller misuse the optional route (Enough1122
+  // review of #94426).
+  if (route && !route.profile?.trim()) {
+    throw new Error('dropTilesForProfile: route without profile cannot be scoped')
+  }
+
+  const name = normalizeProfileKey(profile)
+  // Route fields go through the SAME canonicalization as `name` below — a
+  // source-scoped delete must not be defeated by stray whitespace around a
+  // profile name that a non-route delete trims away.
+  const routeProfile = route?.profile ? normalizeProfileKey(route.profile) : ''
+  const routeTarget = route?.targetProfile ? normalizeProfileKey(route.targetProfile) : ''
+  const routeConnection = String(route?.connectionId ?? '').trim()
+
+  const ownerMatches = (owner: SessionProfileRoute | undefined): boolean => {
+    if (!owner) {
+      return false
+    }
+
+    const ownerProfile = normalizeProfileKey(owner.profile)
+    const ownerTarget = normalizeProfileKey(owner.targetProfile)
+    const ownerConnection = String(owner.connectionId ?? '').trim()
+
+    if (routeProfile) {
+      // Source-scoped delete: the route's desktop profile name, backend target,
+      // and connection must all agree with the tile's owner route.
+      if (ownerProfile !== routeProfile) {
+        return false
+      }
+
+      if (routeTarget && ownerTarget !== routeTarget) {
+        return false
+      }
+
+      return !routeConnection || ownerConnection === routeConnection
+    }
+
+    // Desktop-local delete: also require the tile's owner connection to be the
+    // LOCAL connection. A same-named bot on another connection is a different
+    // agent — the deleted local profile never owned it, and dropping its tile
+    // would orphan a live conversation (hermes-agent#94235). Tiles persisted
+    // before ownerRoute.connectionId existed carry no id; that empty string IS
+    // the local connection (the only source a pre-connectionId tile could have
+    // been opened on), so treat it as 'local' — otherwise those legacy tiles
+    // survive every local delete and resurrect the profile on relaunch.
+    return (ownerProfile === name || ownerTarget === name) && (ownerConnection || 'local') === 'local'
+  }
+
+  // The profile's own sessions bucket (Bot tiles live in the shared bucket
+  // and are keyed by ownerRoute, not by bucket).
+  delete tilesByProfile[name]
+
+  const botTiles = tilesByProfile[BOTS_TILE_BUCKET]
+
+  if (botTiles) {
+    const remaining = botTiles.filter(tile => !ownerMatches(tile.ownerRoute))
+
+    if (remaining.length > 0) {
+      tilesByProfile[BOTS_TILE_BUCKET] = remaining
+    } else {
+      delete tilesByProfile[BOTS_TILE_BUCKET]
+    }
+  }
+
+  // Live atom: drop the deleted profile's Bot tiles, and — when the deleted
+  // profile IS the live gateway's profile — the session tiles in view (they
+  // belong to that bucket; the caller re-homes afterwards).
+  const live = $sessionTiles.get()
+
+  const next = live.filter(tile =>
+    // Bot tiles map to the shared Bot bucket (keyed by ownerRoute here): drop
+    // the deleted profile's bots, matched by owner.
+    tile.workspaceMode === 'bots'
+      ? !ownerMatches(tile.ownerRoute)
+      : // Session tiles map to the owning profile's own bucket: drop only when
+        // the deleted profile IS the live gateway's profile.
+        profileKey() !== name
+  )
+
+  if (next.length !== live.length) {
+    $sessionTiles.set(next)
+  }
+
+  persistTiles()
 }
 
 /** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.

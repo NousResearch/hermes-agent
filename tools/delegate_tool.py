@@ -53,7 +53,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
-        "cronjob",  # no scheduling more work in the parent's name
+        "cronjob_manage",  # no scheduling more work in the parent's name
     ]
 )
 
@@ -160,6 +160,63 @@ _active_subagents: Dict[str, Dict[str, Any]] = {}
 # delegation attribution even though the live registry entry is gone.
 _RECENT_SUBAGENTS_CAP = 200
 _recent_subagents: Dict[str, Dict[str, Any]] = {}
+
+
+# Terminal child statuses that mean "the subagent did NOT deliver a usable
+# result". Shared by the CLI spinner echo, the gateway failure notice, and
+# the parent-facing failure summary so every surface agrees on what counts
+# as a failure.
+SUBAGENT_FAILURE_STATUSES = frozenset({"failed", "error", "timeout"})
+
+
+def _clean_error_text(error: Any, max_chars: int = 200) -> str:
+    """Reduce an arbitrary error payload to one clean human-readable line.
+
+    Provider/SDK errors routinely arrive as multi-line tracebacks or JSON
+    walls. For a chat-facing notice we want the single most informative
+    line: the exception message (last line of a traceback) or the first
+    non-empty line otherwise, hard-capped in length.
+    """
+    text = str(error or "").strip()
+    if not text:
+        return ""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    # A traceback's last line is the actual exception message.
+    line = lines[-1] if lines[0].startswith("Traceback") else lines[0]
+    if len(line) > max_chars:
+        line = line[: max_chars - 3] + "..."
+    return line
+
+
+def format_subagent_failure_line(
+    goal: Optional[str],
+    status: Optional[str],
+    error: Any = None,
+    duration_seconds: Any = None,
+) -> str:
+    """One clean, human-readable line describing a failed subagent.
+
+    Rendered directly to the user (CLI spinner echo, gateway platform
+    notice) — no JSON, no traceback, no internal field names. Example:
+
+        ⚠️ Subagent failed — "research competitor pricing": Error code: 404 —
+        model not found (after 12s)
+    """
+    goal_label = (goal or "").strip().replace("\n", " ")
+    if len(goal_label) > 60:
+        goal_label = goal_label[:57] + "..."
+    verb = "timed out" if status == "timeout" else "failed"
+    line = f"⚠️ Subagent {verb}"
+    if goal_label:
+        line += f' — "{goal_label}"'
+    err = _clean_error_text(error)
+    if err:
+        line += f": {err}"
+    if isinstance(duration_seconds, (int, float)) and duration_seconds > 0:
+        line += f" (after {round(duration_seconds)}s)"
+    return line
 
 
 def get_subagent_attribution(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -1345,6 +1402,41 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
     )
 
 
+_BATCH_ORDINALS: Dict[str, int] = {}
+_BATCH_ORDINALS_LOCK = threading.Lock()
+
+
+def format_batch_tag(delegation_id: Optional[str]) -> str:
+    """Short human tag identifying which delegation batch a line belongs to.
+
+    ``deleg_6a664903`` → ``set 1`` (first batch seen in this process),
+    the next distinct id → ``set 2``, and so on. Several batches (a parent's
+    fan-out plus a child's nested fan-out, or two concurrent tools) print
+    interleaved ``[n/N]`` progress lines to the same console; without a batch
+    tag a ``✓ [3/3]`` and a ``✓ [3/9]`` are indistinguishable, and a raw hex
+    slice (``[b2ac 3/9]``) is attributable but unreadable. Empty string when
+    no id is known so callers can concatenate unconditionally.
+    """
+    if not isinstance(delegation_id, str) or not delegation_id:
+        return ""
+    with _BATCH_ORDINALS_LOCK:
+        n = _BATCH_ORDINALS.get(delegation_id)
+        if n is None:
+            n = len(_BATCH_ORDINALS) + 1
+            _BATCH_ORDINALS[delegation_id] = n
+    return f"set {n}"
+
+
+def _batch_prefix(delegation_id: Optional[str], task_index: int, task_count: int) -> str:
+    """``[set 2 · 3/9] `` for batch children, ``[set 2] `` for a lone child,
+    ``[3/9] `` / ``""`` when the batch id is unknown."""
+    tag = format_batch_tag(delegation_id)
+    if task_count > 1:
+        inner = f"{tag} · {task_index + 1}/{task_count}" if tag else f"{task_index + 1}/{task_count}"
+        return f"[{inner}] "
+    return f"[{tag}] " if tag else ""
+
+
 def _emit_parent_console(parent_agent, line: str) -> None:
     """Emit a human-readable progress line to the parent's console.
 
@@ -1397,8 +1489,14 @@ def _build_child_progress_callback(
     if not spinner and not parent_cb:
         return None  # No display → no callback → zero behavior change
 
-    # Show 1-indexed prefix only in batch mode (multiple tasks)
-    prefix = f"[{task_index + 1}] " if task_count > 1 else ""
+    # Show 1-indexed prefix only in batch mode (multiple tasks). The batch tag
+    # (short delegation id) is resolved lazily from session_ref because the
+    # callback is built before delegate_task stamps ``_delegation_id`` on the
+    # child; delegate_task drops the id into the same shared ref.
+    def _prefix() -> str:
+        deleg = session_ref.get("delegation_id") if session_ref else None
+        return _batch_prefix(deleg, task_index, task_count)
+
     goal_label = (goal or "").strip()
 
     # Gateway: batch tool names, flush periodically
@@ -1427,6 +1525,8 @@ def _build_child_progress_callback(
         # event lets UIs open/inspect the subagent's session directly.
         if session_ref and session_ref.get("session_id"):
             kw["child_session_id"] = str(session_ref["session_id"])
+        if session_ref and session_ref.get("delegation_id"):
+            kw["delegation_id"] = str(session_ref["delegation_id"])
         kw["tool_count"] = _tool_count[0]
         return kw
 
@@ -1453,13 +1553,28 @@ def _build_child_progress_callback(
                     (goal_label[:55] + "...") if len(goal_label) > 55 else goal_label
                 )
                 try:
-                    spinner.print_above(f" {prefix}├─ 🔀 {short}")
+                    spinner.print_above(f" {_prefix()}├─ 🔀 {short}")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.start", preview=preview or goal_label or "", **kwargs)
             return
 
         if event_type == "subagent.complete":
+            # Failed child: echo one clean reason line into the CLI tree so
+            # the human sees WHY, not just a vanished branch. Gateway-side
+            # rendering happens in TurnRunner.progress_callback off the
+            # relayed event below.
+            if spinner and kwargs.get("status") in SUBAGENT_FAILURE_STATUSES:
+                _fail_line = format_subagent_failure_line(
+                    goal_label,
+                    kwargs.get("status"),
+                    error=kwargs.get("summary") or preview,
+                    duration_seconds=kwargs.get("duration_seconds"),
+                )
+                try:
+                    spinner.print_above(f" {_prefix()}├─ {_fail_line}")
+                except Exception as e:
+                    logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.complete", preview=preview, **kwargs)
             return
 
@@ -1491,7 +1606,7 @@ def _build_child_progress_callback(
             if spinner:
                 short = (text[:55] + "...") if len(text) > 55 else text
                 try:
-                    spinner.print_above(f' {prefix}├─ 💭 "{short}"')
+                    spinner.print_above(f' {_prefix()}├─ 💭 "{short}"')
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.thinking", preview=text)
@@ -1511,12 +1626,12 @@ def _build_child_progress_callback(
             summary_text = tool_name or preview or ""
             if spinner and summary_text:
                 try:
-                    spinner.print_above(f" {prefix}├─ 🔀 {summary_text}")
+                    spinner.print_above(f" {_prefix()}├─ 🔀 {summary_text}")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             if parent_cb:
                 try:
-                    parent_cb("subagent_progress", f"{prefix}{summary_text}")
+                    parent_cb("subagent_progress", f"{_prefix()}{summary_text}")
                 except Exception as e:
                     logger.debug("Parent callback relay failed: %s", e)
             return
@@ -1538,7 +1653,7 @@ def _build_child_progress_callback(
             from agent.display import get_tool_emoji
 
             emoji = get_tool_emoji(tool_name or "")
-            line = f" {prefix}├─ {emoji} {tool_name}"
+            line = f" {_prefix()}├─ {emoji} {tool_name}"
             if short:
                 line += f'  "{short}"'
             try:
@@ -1551,14 +1666,14 @@ def _build_child_progress_callback(
             _batch.append(tool_name or "")
             if len(_batch) >= _BATCH_SIZE:
                 summary = ", ".join(_batch)
-                _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
+                _relay("subagent.progress", preview=f"🔀 {_prefix()}{summary}")
                 _batch.clear()
 
     def _flush():
         """Flush remaining batched tool names to gateway on completion."""
         if parent_cb and _batch:
             summary = ", ".join(_batch)
-            _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
+            _relay("subagent.progress", preview=f"🔀 {_prefix()}{summary}")
             _batch.clear()
 
     _callback._flush = _flush
@@ -1567,6 +1682,30 @@ def _build_child_progress_callback(
 
 def _normalized_runtime_url(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
+
+
+def _inherit_parent_capabilities(
+    parent_agent, override_provider, override_base_url
+) -> Optional[dict]:
+    """Return the parent's endpoint-trust capability map for a child, or None.
+
+    The trusted-proxy capability map (``agent.capabilities``, e.g.
+    ``openai_native_compaction`` from a custom_providers entry) is a trust
+    decision scoped to one provider+endpoint. A child inherits it ONLY when
+    it runs against the parent's exact route — any delegation override that
+    changes provider or base_url stays DEFAULT-DENY, matching the /model
+    switch posture (#94036/#97292).
+    """
+    if override_provider or override_base_url:
+        return None
+    parent_caps = getattr(parent_agent, "capabilities", None)
+    if not isinstance(parent_caps, dict):
+        return None
+    return {
+        key: value
+        for key, value in parent_caps.items()
+        if isinstance(key, str) and isinstance(value, bool)
+    }
 
 
 def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> Optional[str]:
@@ -1786,6 +1925,16 @@ def _build_child_agent(
     if not override_base_url:
         effective_base_url = _inherit_parent_base_url(parent_agent, effective_base_url)
     effective_api_key = override_api_key or parent_api_key
+    # Same-class follow-up to #94036/#97292: the trusted-proxy capability map
+    # (`agent.capabilities`, e.g. ``openai_native_compaction`` from a
+    # custom_providers entry) is an endpoint-scoped trust decision. Children
+    # inherit it ONLY when they run against the parent's exact provider and
+    # base_url — a provider- or endpoint-changing delegation override stays
+    # DEFAULT-DENY, matching the /model switch posture. Without this, a child
+    # on the same trusted proxy silently falls back to local summarization.
+    child_capabilities = _inherit_parent_capabilities(
+        parent_agent, override_provider, override_base_url
+    )
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
     # different provider than the parent — each provider has its own API surface
     # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
@@ -1943,13 +2092,13 @@ def _build_child_agent(
     parent_session_db = getattr(parent_agent, "_session_db", None)
     if parent_session_db is not None:
         try:
-            from hermes_state import SessionDB
+            from hermes_state import get_shared_session_db
 
             _parent_db_path = getattr(parent_session_db, "db_path", None)
             child_session_db = (
-                SessionDB(db_path=_parent_db_path)
+                get_shared_session_db(_parent_db_path)
                 if _parent_db_path is not None
-                else SessionDB()
+                else get_shared_session_db()
             )
         except Exception:
             logger.debug(
@@ -1967,6 +2116,7 @@ def _build_child_agent(
                 api_key=effective_api_key,
                 model=effective_model,
                 provider=effective_provider,
+                capabilities=child_capabilities,
                 api_mode=effective_api_mode,
                 acp_command=effective_acp_command,
                 acp_args=effective_acp_args,
@@ -1994,9 +2144,17 @@ def _build_child_agent(
                 provider_require_parameters=child_provider_require_parameters,
                 provider_data_collection=child_provider_data_collection,
                 request_overrides=(
-                    dict(override_request_overrides or {})
-                    if override_provider
-                    else dict(getattr(parent_agent, "request_overrides", {}) or {})
+                    # override_request_overrides is honored whenever set —
+                    # including the inherit branch (override_provider=None),
+                    # where _resolve_delegation_credentials already merged
+                    # delegation.request_overrides OVER the parent's values.
+                    dict(override_request_overrides)
+                    if override_request_overrides is not None
+                    else (
+                        {}
+                        if override_provider
+                        else dict(getattr(parent_agent, "request_overrides", {}) or {})
+                    )
                 ),
                 openrouter_min_coding_score=child_openrouter_min_coding_score,
                 tool_progress_callback=child_progress_cb,
@@ -2009,7 +2167,8 @@ def _build_child_agent(
             # don't outlive the failed spawn.
             if child_session_db is not None:
                 try:
-                    child_session_db.close()
+                    from hermes_state import release_or_close
+                    release_or_close(child_session_db)
                 except Exception:
                     pass
             raise
@@ -2022,6 +2181,9 @@ def _build_child_agent(
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
+    # Same shared ref receives the batch id once delegate_task stamps it, so
+    # the display prefix and relayed events can tag which batch this is.
+    child._progress_identity_ref = child_session_ref
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
     # Stash the post-degrade role for introspection (leaf if the
@@ -2464,9 +2626,35 @@ def _run_single_child(
 ) -> Dict[str, Any]:
     """
     Run a pre-built child agent. Called from within a thread.
-    Returns a structured result dict.
+    Returns a structured result dict with a ``status`` and ``exit_reason``
+    that are derived honestly from the child's structured completion fields.
+
+    ``status`` ∈ {``"completed"``, ``"interrupted"``, ``"failed"``}:
+        * ``"completed"``  — the child reached a normal finish (may still have
+          hit its iteration budget; see ``exit_reason``).
+        * ``"interrupted"`` — the child was interrupted (``interrupted=True``).
+        * ``"failed"``    — a structured failure (``failed=True`` or a non-empty
+          ``error``) or a summary-less/invalid terminal state.
+
+    ``exit_reason`` ∈ {``"completed"``, ``"max_iterations"``, ``"interrupted"``,
+    ``"error"``}:
+        * ``"completed"``       — normal finish.
+        * ``"max_iterations"``  — genuine per-child iteration-budget exhaustion
+          (``completed=False`` with no failure fields).
+        * ``"interrupted"``     — interrupted by the parent.
+        * ``"error"``           — provider rejection / terminal failure; NOT
+          budget exhaustion (this is the case #97655 fixed).
+
+    ``truncated`` is derived as ``exit_reason == "max_iterations"`` only, so the
+    parent-visible truncation flag stays truthful for all of the above.
     """
     child_start = time.monotonic()
+    # A timed-out Future may still be unwinding on its daemon worker. Closing
+    # the child from this owner thread before that Future settles races every
+    # resource the conversation's finally path still touches (notably its
+    # owned SessionDB). The timeout branch flips this when close ownership is
+    # handed to a Future done-callback instead.
+    _child_close_deferred = False
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
@@ -2944,6 +3132,63 @@ def _run_single_child(
                     f"{_late_pending_steer}]"
                 )
             _attach_worktree(_error_entry)
+            if is_timeout and not _child_future.done():
+                # request_hard_interrupt() is cooperative: the worker still
+                # executes run_conversation's finally path before its Future
+                # becomes done. child.close() tears down that same agent's
+                # clients, messages, and owned SQLite handle, so calling it in
+                # our outer finally while the worker is alive can close SQLite
+                # underneath its final activity write. Future callbacks run
+                # only after the worker has fully returned (or raised), which
+                # is the first safe close boundary.
+                def _close_after_timed_out_worker(_done_future) -> None:
+                    try:
+                        close = getattr(child, "close", None)
+                        if callable(close):
+                            close()
+                    except Exception:
+                        logger.debug(
+                            "Failed to close timed-out child after worker exit",
+                            exc_info=True,
+                        )
+
+                _child_future.add_done_callback(_close_after_timed_out_worker)
+                _child_close_deferred = True
+
+                # Bounded drain (#94248 native half): the deferred close above
+                # only fires once the abandoned worker unwinds, but that worker
+                # is typically parked inside an in-flight OpenSSL read (Codex /
+                # httpx). Never hard-close that transport from this thread —
+                # releasing FDs under a live SSL read is the #29507/#70773
+                # native-corruption family. Instead shutdown() the child's
+                # pooled sockets, which is FD-safe from any thread and settles
+                # the blocked read with EOF/EPIPE so the worker can unwind and
+                # trigger the deferred close. One immediate sweep plus one
+                # delayed re-sweep (covers a fresh connection opened between
+                # the interrupt and the first sweep); a worker that still
+                # doesn't settle keeps its resources until process exit rather
+                # than risking a cross-thread FD release.
+                _drain = getattr(child, "_drain_transports_after_abandonment", None)
+                if callable(_drain):
+                    def _drain_once(phase: str) -> None:
+                        try:
+                            _drain(reason=f"delegate_timeout_{phase}")
+                        except Exception:
+                            logger.debug(
+                                "Timed-out child transport drain (%s) failed",
+                                phase,
+                                exc_info=True,
+                            )
+
+                    _drain_once("immediate")
+
+                    def _drain_resweep() -> None:
+                        if not _child_future.done():
+                            _drain_once("resweep")
+
+                    _resweep_timer = threading.Timer(5.0, _drain_resweep)
+                    _resweep_timer.daemon = True
+                    _resweep_timer.start()
             return _error_entry
         finally:
             # Shut down executor without waiting — if the child thread
@@ -3049,6 +3294,26 @@ def _run_single_child(
 
         if interrupted:
             status = "interrupted"
+        elif result.get("failed") or result.get("error"):
+            # A structured failure (provider rejection / terminal exception)
+            # must WIN over the summary-presence heuristic below. The child's
+            # conversation loop returns the error text as final_response, so an
+            # error-shaped summary would otherwise be labeled "completed" here
+            # despite completed=False. The heuristic is only a fallback for
+            # legacy/mock results that omit the structured failure fields.
+            # (Community report Aug 2026; #97655.)
+            status = "failed"
+        elif _schema_valid is False:
+            # T1-24 follow-up: a schema was declared and the final answer —
+            # after the one bounded retry — still violates it (empty `{}`
+            # fallback included). A summary exists, but it is unusable under
+            # the contract the caller asked for, so it must not be reported
+            # as a completed delegation: the batch line would print ✓ and
+            # orchestrators that read only status/icon would accept an
+            # empty verdict. schema_valid/schema_errors (below) carry the
+            # detail; status has to agree with them. _schema_valid stays
+            # None on schema-less runs, which never take this branch.
+            status = "failed"
         elif summary and not _empty_sentinel:
             # A summary means the subagent produced usable output.
             # exit_reason ("completed" vs "max_iterations") already
@@ -3098,9 +3363,15 @@ def _run_single_child(
         # Determine exit reason
         if interrupted:
             exit_reason = "interrupted"
+        elif result.get("failed") or result.get("error"):
+            # Provider rejection / terminal failure. Do NOT report this as
+            # iteration-budget exhaustion — "max_iterations" is only truthful
+            # when the child actually hit its per-delegation iteration cap.
+            exit_reason = "error"
         elif completed:
             exit_reason = "completed"
         else:
+            # Genuine budget exhaustion: completed=False with no failure.
             exit_reason = "max_iterations"
 
         # Extract token counts (safe for mock objects)
@@ -3108,6 +3379,10 @@ def _run_single_child(
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
 
+        # --- result entry contract (see _run_single_child docstring) ---
+        # status ∈ {completed, interrupted, failed}
+        # exit_reason ∈ {completed, max_iterations, interrupted, error}
+        # truncated is exactly (exit_reason == "max_iterations").
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
@@ -3162,7 +3437,28 @@ def _run_single_child(
             else "unknown"
         )
         if status == "failed":
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
+            if _schema_valid is False and summary and not _empty_sentinel:
+                # The child DID respond — the response just violates the
+                # declared contract. Name that instead of the generic
+                # "no response" error; schema_errors (below) hold the
+                # validator's specifics verbatim.
+                entry["error"] = (
+                    "Final answer does not satisfy the declared "
+                    "output_schema (after 1 retry)."
+                    if _schema_retries
+                    else "Final answer does not satisfy the declared "
+                    "output_schema."
+                )
+            else:
+                entry["error"] = result.get(
+                    "error", "Subagent did not produce a response."
+                )
+            # Classified reason from the child loop (e.g. "rate_limit",
+            # "billing", "server_error") — lets the parent distinguish a
+            # quota wall from a real task error without parsing prose.
+            _failure_reason = result.get("failure_reason")
+            if isinstance(_failure_reason, str) and _failure_reason:
+                entry["failure_reason"] = _failure_reason
 
         # T1-24: schema-validation outcome — emitted ONLY when a schema was
         # requested, so legacy (schema-less) payloads keep their exact shape.
@@ -3367,11 +3663,13 @@ def _run_single_child(
         # Close tool resources (terminal sandboxes, browser daemons,
         # background processes, httpx clients) so subagent subprocesses
         # don't outlive the delegation.
-        try:
-            if hasattr(child, "close"):
-                child.close()
-        except Exception:
-            logger.debug("Failed to close child agent after delegation")
+        if not _child_close_deferred:
+            try:
+                close = getattr(child, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                logger.debug("Failed to close child agent after delegation")
 
         # The AIAgent turn boundary normally closes the child scope itself. This
         # fallback covers failures before that boundary starts, but must not pop
@@ -3839,6 +4137,18 @@ def delegate_task(
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
         task_list, context, model=creds.get("model"), provider=creds.get("provider")
     )
+    # Announce the batch tag once so the later ``[tag n/N]`` completion lines
+    # (and any nested batch's lines interleaving with them) are attributable.
+    if n_tasks > 1 and live_deleg_id:
+        _hdr = f"🔀 [{format_batch_tag(live_deleg_id)}] delegating {n_tasks} tasks"
+        _hdr_spinner = getattr(parent_agent, "_delegate_spinner", None)
+        if _hdr_spinner:
+            try:
+                _hdr_spinner.print_above(f"  {_hdr}")
+            except Exception:
+                _emit_parent_console(parent_agent, f"  {_hdr}")
+        else:
+            _emit_parent_console(parent_agent, f"  {_hdr}")
 
     # Capture the ORIGINATING session's wake target BEFORE any child agent is
     # constructed: _build_child_agent() -> AIAgent() -> agent_init calls
@@ -3927,6 +4237,9 @@ def delegate_task(
         # attribution (child-started background processes report under it).
         if live_deleg_id:
             setattr(child, "_delegation_id", live_deleg_id)
+            _ident_ref = getattr(child, "_progress_identity_ref", None)
+            if isinstance(_ident_ref, dict):
+                _ident_ref["delegation_id"] = live_deleg_id
         children.append((i, t, child))
 
     def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:
@@ -4062,7 +4375,18 @@ def delegate_task(
                         status = entry.get("status", "?")
                         icon = "✓" if status == "completed" else "✗"
                         remaining = n_tasks - completed_count
-                        completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                        _tag = format_batch_tag(live_deleg_id)
+                        _slot = f"{_tag} · {idx+1}/{n_tasks}" if _tag else f"{idx+1}/{n_tasks}"
+                        completion_line = f"{icon} [{_slot}] {label}  ({dur}s)"
+                        # Failed/errored/timed-out children: say WHY on the
+                        # same line, cleaned to one short human-readable
+                        # fragment — a bare ✗ reads as "silently dropped".
+                        if status in SUBAGENT_FAILURE_STATUSES:
+                            _err_line = _clean_error_text(
+                                entry.get("error"), max_chars=120
+                            )
+                            if _err_line:
+                                completion_line += f" — {_err_line}"
                         if spinner_ref:
                             try:
                                 spinner_ref.print_above(completion_line)
@@ -4075,7 +4399,7 @@ def delegate_task(
                         if spinner_ref and remaining > 0:
                             try:
                                 spinner_ref.update_text(
-                                    f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining"
+                                    f"🔀 {'[' + _tag + '] ' if _tag else ''}{remaining} task{'s' if remaining != 1 else ''} remaining"
                                 )
                             except Exception as e:
                                 logger.debug("Spinner update_text failed: %s", e)
@@ -4456,6 +4780,43 @@ def _resolve_child_credential_pool(
     return None
 
 
+def _merge_request_overrides(runtime_overrides, explicit_overrides):
+    """Merge explicit ``delegation.request_overrides`` over runtime-derived ones.
+
+    Precedence contract: the explicit config key WINS over runtime-derived
+    (provider-catalog or parent-inherited) overrides. Top-level keys from the
+    explicit dict replace same-named runtime keys; the ``extra_body`` sub-dict
+    is deep-merged ONE level — runtime ``extra_body`` keys survive unless the
+    explicit dict redefines that exact key. This keeps provider personality
+    (e.g. ``thinking: {type: disabled}``) intact while letting users layer
+    routing hints (e.g. ``extra_body.provider = {"sort": "throughput"}``) on
+    top.
+
+    Both inputs are deep-copied (``copy.deepcopy``) so transport-side mutation
+    of the child's request kwargs can never leak back into the loaded config
+    dict or the provider runtime cache.
+
+    Returns ``None`` when both sides are empty/non-dict.
+    """
+    import copy as _copy
+
+    runtime_overrides = runtime_overrides if isinstance(runtime_overrides, dict) else None
+    explicit_overrides = explicit_overrides if isinstance(explicit_overrides, dict) else None
+    if not runtime_overrides and not explicit_overrides:
+        return None
+    merged = _copy.deepcopy(runtime_overrides) if runtime_overrides else {}
+    explicit = _copy.deepcopy(explicit_overrides) if explicit_overrides else {}
+    runtime_extra = merged.get("extra_body")
+    explicit_extra = explicit.pop("extra_body", None)
+    merged.update(explicit)
+    if isinstance(runtime_extra, dict) and isinstance(explicit_extra, dict):
+        runtime_extra.update(explicit_extra)
+        merged["extra_body"] = runtime_extra
+    elif explicit_extra is not None:
+        merged["extra_body"] = explicit_extra
+    return merged or None
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -4483,6 +4844,18 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
+    # delegation.request_overrides: explicit per-child request settings from
+    # config. Honored on EVERY resolution branch (direct base_url, named
+    # provider, and parent-inherit) so the key never silently no-ops.
+    # Precedence: explicit merges OVER runtime/parent-derived overrides via
+    # _merge_request_overrides (top-level explicit keys win; extra_body is
+    # deep-merged one level). Non-dict values are ignored.
+    explicit_request_overrides = (
+        cfg.get("request_overrides")
+        if isinstance(cfg.get("request_overrides"), dict)
+        else None
+    )
+
     # Native-SDK providers (Bedrock, Vertex, Google GenAI) speak their own
     # wire protocol — they cannot be reached via OpenAI chat_completions against
     # a base_url. For these, always fall through to resolve_runtime_provider()
@@ -4494,6 +4867,24 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
 
     if configured_base_url and not _is_native_sdk_provider:
+        # delegation.request_overrides: an explicit dict of per-child request
+        # settings merged into the child's API kwargs by the transport's
+        # profile path. Keys are top-level kwargs (e.g. service_tier); an
+        # "extra_body" sub-dict is merged into extra_body. This is how a
+        # direct-endpoint delegation (provider=custom) forwards OpenRouter
+        # routing hints such as extra_body.provider = {"sort": "throughput"}
+        # to its children — the child's CustomProfile does not emit provider
+        # preferences, and the parent-inheritance path is deliberately cleared
+        # when delegation.provider/base_url overrides the parent (see the
+        # provider-preference clearing in _build_child_agent).
+        #
+        # Precedence: explicit delegation.request_overrides MERGES OVER any
+        # runtime-derived overrides (see _merge_request_overrides) — top-level
+        # explicit keys win; extra_body is deep-merged one level so runtime
+        # extra_body keys survive unless the explicit key redefines them.
+        # (explicit_request_overrides is parsed once at the top of this
+        # function and applied to every branch.)
+
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This
@@ -4531,23 +4922,67 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
             api_mode = configured_api_mode
 
+        # A provider configured ALONGSIDE base_url means the user wants that
+        # provider's request personality on an explicit endpoint. This
+        # short-circuit runs before the resolve_runtime_provider() call below,
+        # so without this block the runtime-carried request_overrides
+        # (extra_body / extra_headers, e.g. `thinking: {type: disabled}`) and
+        # max_output_tokens are silently dropped for subagents (#65035).
+        # Best-effort: the explicit endpoint worked before this change even
+        # when the provider can't resolve, so a resolution failure only skips
+        # the overrides — it must not fail the dispatch.
+        request_overrides = None
+        max_output_tokens = None
+        if configured_provider:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                runtime = resolve_runtime_provider(
+                    requested=configured_provider, target_model=configured_model
+                )
+                request_overrides = dict(runtime.get("request_overrides") or {}) or None
+                max_output_tokens = runtime.get("max_output_tokens")
+            except Exception as exc:
+                logger.debug(
+                    "delegation.base_url: runtime resolution for provider '%s' "
+                    "failed; proceeding without request_overrides: %s",
+                    configured_provider,
+                    exc,
+                )
+
+        # Explicit delegation.request_overrides merges OVER the runtime-derived
+        # overrides (explicit wins; extra_body deep-merged one level).
+        request_overrides = _merge_request_overrides(
+            request_overrides, explicit_request_overrides
+        )
+
         return {
             "model": configured_model,
             "provider": provider,
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "request_overrides": request_overrides,
+            "max_output_tokens": max_output_tokens,
         }
 
     if not configured_provider:
-        # No provider override — child inherits everything from parent
+        # No provider override — child inherits everything from parent.
+        # delegation.request_overrides still applies: merge the explicit key
+        # OVER the parent's own request_overrides so the config key works even
+        # in pure-inherit setups (never a silent no-op). None when neither
+        # side has values → _build_child_agent falls back to the parent's
+        # request_overrides unchanged.
         return {
             "model": configured_model,
             "provider": None,
             "base_url": None,
             "api_key": None,
             "api_mode": None,
-            "request_overrides": None,
+            "request_overrides": _merge_request_overrides(
+                getattr(parent_agent, "request_overrides", None),
+                explicit_request_overrides,
+            ),
             "max_output_tokens": None,
         }
 
@@ -4591,7 +5026,13 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
-        "request_overrides": dict(runtime.get("request_overrides") or {}),
+        # Explicit delegation.request_overrides merges OVER the named
+        # provider's runtime overrides (explicit wins; extra_body deep-merged
+        # one level) — same precedence as the direct-base_url branch above.
+        "request_overrides": _merge_request_overrides(
+            runtime.get("request_overrides"), explicit_request_overrides
+        )
+        or {},
         "max_output_tokens": runtime.get("max_output_tokens"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),

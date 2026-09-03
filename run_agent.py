@@ -1077,6 +1077,7 @@ class AIAgent:
         return (
             self.quiet_mode
             and not self.tool_progress_callback
+            and not getattr(self, "suppress_status_output", False)
             and getattr(self, "platform", "") == "cli"
         )
 

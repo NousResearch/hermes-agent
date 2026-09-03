@@ -113,12 +113,21 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
         def _print_exit_summary(self, clear_screen=True):
             calls.append("summary")
 
+    def drain_delegations(fake_cli, *, run_turn, owned_session_ids=None):
+        calls.append(("drain", fake_cli.session_id))
+        run_turn("delegation completion")
+
     monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
     monkeypatch.setattr(cli_mod.atexit, "register", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         cli_mod,
         "_finalize_single_query",
         lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_drain_oneshot_async_delegations",
+        drain_delegations,
     )
 
     cli_mod.main(query="hello", quiet=False, toolsets="terminal")
@@ -128,6 +137,8 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
         "query-label",
         "advisories",
         ("chat", "hello", None),
+        ("drain", "single-query-session"),
+        ("chat", "delegation completion", None),
         "summary",
         ("finalize", "single-query-session"),
     ]
@@ -184,6 +195,10 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
             calls.append(("init", kwargs))
             return True
 
+    def drain_delegations(fake_cli, *, run_turn, owned_session_ids=None):
+        calls.append(("drain", fake_cli.session_id))
+        run_turn("delegation completion")
+
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
     monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
@@ -193,6 +208,11 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
         "_finalize_single_query",
         lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
     )
+    monkeypatch.setattr(
+        cli_mod,
+        "_drain_oneshot_async_delegations",
+        drain_delegations,
+    )
 
     with pytest.raises(SystemExit) as exc_info:
         cli_mod.main(query="hello", quiet=True, toolsets="terminal")
@@ -200,4 +220,65 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
     assert exc_info.value.code == 1
     assert ("claim", "cli", True) in calls
     assert ("run", "hello", []) in calls
+    assert ("drain", "quiet-session") in calls
+    assert ("run", "delegation completion", []) in calls
     assert calls[-1] == ("finalize", "quiet-session")
+
+
+def test_quiet_single_query_emits_only_final_delegation_followup(monkeypatch, capsys):
+    calls = []
+
+    class FakeAgent:
+        session_id = "quiet-session"
+
+        def run_conversation(self, user_message, conversation_history):
+            calls.append(user_message)
+            if user_message == "delegation completion":
+                return {"final_response": "complete", "failed": False}
+            return {"final_response": "pending", "failed": False}
+
+    class FakeCLI:
+        def __init__(self, **kwargs):
+            self.provider = "test-provider"
+            self.model = "test-model"
+            self.session_id = kwargs.get("session_id") or "quiet-session"
+            self.conversation_history = []
+            self._active_agent_route_signature = "same-route"
+            self.agent = None
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            return True
+
+        def _ensure_runtime_credentials(self):
+            return True
+
+        def _resolve_turn_agent_config(self, effective_query):
+            return {
+                "signature": "same-route",
+                "model": None,
+                "runtime": None,
+                "request_overrides": None,
+            }
+
+        def _init_agent(self, **kwargs):
+            self.agent = FakeAgent()
+            return True
+
+    def drain_delegations(fake_cli, *, run_turn, owned_session_ids=None):
+        calls.append("drain")
+        run_turn("delegation completion")
+
+    monkeypatch.setattr(cli, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(
+        cli,
+        "_finalize_single_query",
+        lambda fake_cli: calls.append("finalize"),
+    )
+    monkeypatch.setattr(cli, "_drain_oneshot_async_delegations", drain_delegations)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(query="hello", quiet=True, toolsets="terminal")
+
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == "complete"
+    assert calls == ["hello", "drain", "delegation completion", "finalize"]

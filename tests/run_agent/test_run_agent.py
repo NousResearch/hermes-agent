@@ -1914,6 +1914,14 @@ class TestExecuteToolCalls:
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
 
+    def test_quiet_tool_output_suppressed_in_parseable_quiet_mode(self, agent):
+        agent.quiet_mode = True
+        agent.platform = "cli"
+        agent.tool_progress_callback = None
+        agent.suppress_status_output = True
+
+        assert agent._should_emit_quiet_tool_messages() is False
+
 
 
     def test_vprint_suppressed_in_parseable_quiet_mode(self, agent):

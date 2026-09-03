@@ -100,6 +100,13 @@ def test_single_query_main_skips_clear_on_exit_summary(monkeypatch):
         "_finalize_single_query",
         lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
     )
+    monkeypatch.setattr(
+        cli_mod,
+        "_drain_oneshot_async_delegations",
+        lambda fake_cli, *, run_turn, owned_session_ids=None: calls.append(
+            ("drain", fake_cli.session_id)
+        ),
+    )
 
     cli_mod.main(query="hello", quiet=False, toolsets="terminal")
 
@@ -108,12 +115,68 @@ def test_single_query_main_skips_clear_on_exit_summary(monkeypatch):
         "query-label",
         "advisories",
         ("chat", "hello", None),
+        ("drain", "sq-test"),
         ("summary", False),  # <-- clear_screen=False for single-query
         ("finalize", "sq-test"),
     ]
     assert len(clear_calls) == 0, (
         "_clear_terminal_on_exit must NOT be called in single-query mode"
     )
+
+
+def test_single_query_delegation_drain_interrupt_exits_cleanly(monkeypatch):
+    calls = []
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.console = SimpleNamespace(print=lambda *_a, **_kw: None)
+            self.session_id = "sq-interrupt"
+            self.agent = SimpleNamespace(
+                session_id="sq-interrupt",
+                platform="cli",
+            )
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            return True
+
+        def _show_security_advisories(self):
+            pass
+
+        def chat(self, query, images=None):
+            calls.append(("chat", query))
+            return "done"
+
+        def _print_exit_summary(self, clear_screen=True):
+            calls.append("summary")
+
+    def interrupt_drain(fake_cli, *, run_turn, owned_session_ids=None):
+        calls.append("drain")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli_mod, "_drain_oneshot_async_delegations", interrupt_drain)
+    monkeypatch.setattr(
+        cli_mod,
+        "_emit_interrupted_session_end",
+        lambda fake_cli, *, reason: calls.append(("interrupted", reason)),
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_finalize_single_query",
+        lambda fake_cli: calls.append("finalize"),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli_mod.main(query="hello", quiet=False, toolsets="terminal")
+
+    assert exc.value.code == 130
+    assert calls == [
+        ("chat", "hello"),
+        "drain",
+        ("interrupted", "keyboard_interrupt"),
+        "finalize",
+    ]
 
 
 # ── Verify interactive mode still clears ────────────────────────────────────

@@ -1470,6 +1470,109 @@ def _wait_for_oneshot_background_completions(cli) -> None:
         )
 
 
+def _drain_oneshot_async_delegations(
+    cli,
+    *,
+    run_turn,
+    owned_session_ids=None,
+) -> int:
+    """Keep a one-shot parent alive until its delegated work is adjudicated.
+
+    ``delegate_task`` completions are conversation turns, not mere process
+    notifications.  A ``-q``/``-Q`` parent that exits after its first response
+    interrupts process-local children during ``_run_cleanup`` and can never
+    inspect their verdicts.  Stay alive, route each owned completion through
+    the same notification rail as the interactive CLI, and run the resulting
+    synthetic turn before allowing teardown.  Follow-up turns may delegate
+    again, so the gate repeats until both the owned live set and notification
+    queue are empty.
+
+    The wait is intentionally not given a second arbitrary timeout: async
+    delegation already owns bounded capacity, stale-child detection, explicit
+    interruption, and provider/tool deadlines.  A shutdown signal still raises
+    through this loop and reaches the normal cleanup path.
+    """
+    from tools.async_delegation import has_live_for_session
+
+    session_id = str(
+        getattr(getattr(cli, "agent", None), "session_id", None)
+        or getattr(cli, "session_id", None)
+        or ""
+    )
+    if not session_id:
+        return 0
+
+    session_ids = {
+        str(item)
+        for item in (owned_session_ids or ())
+        if str(item or "")
+    }
+    session_ids.add(session_id)
+
+    def _owned_live() -> bool:
+        current_id = str(
+            getattr(getattr(cli, "agent", None), "session_id", None)
+            or getattr(cli, "session_id", None)
+            or ""
+        )
+        if current_id:
+            session_ids.add(current_id)
+        return any(
+            has_live_for_session(parent_session_id=owned_id)
+            for owned_id in tuple(session_ids)
+        )
+
+    processed = 0
+    live = _owned_live()
+    while True:
+        cli._drain_process_notifications("cli-one-shot")
+        drained = 0
+        while True:
+            try:
+                synthetic_message = cli._pending_input.get_nowait()
+            except queue.Empty:
+                break
+            if not synthetic_message:
+                continue
+            run_turn(synthetic_message)
+            processed += 1
+            drained += 1
+
+        if not live and drained == 0:
+            return processed
+
+        live = _owned_live()
+        if not live:
+            # Close the completion race: a worker may have transitioned to a
+            # terminal state immediately after the drain above but before the
+            # liveness read. Drain once more, then require a second stable
+            # no-live observation before exit.
+            cli._drain_process_notifications("cli-one-shot")
+            race_drained = 0
+            while True:
+                try:
+                    synthetic_message = cli._pending_input.get_nowait()
+                except queue.Empty:
+                    break
+                if not synthetic_message:
+                    continue
+                run_turn(synthetic_message)
+                processed += 1
+                race_drained += 1
+            live = _owned_live()
+            if not live and race_drained == 0:
+                logger.info(
+                    "One-shot async-delegation drain complete for session %s: "
+                    "processed=%d",
+                    session_id,
+                    processed,
+                )
+                return processed
+
+        if live:
+            time.sleep(0.1)
+
+
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
     try:
@@ -22312,6 +22415,10 @@ def main(
                         # (they check agent.tool_progress_mode, initialized
                         # from display.tool_progress at construction).
                         cli.agent.tool_progress_mode = "off"
+                        oneshot_delegation_session_ids = {
+                            str(cli.session_id or ""),
+                            str(getattr(cli.agent, "session_id", "") or ""),
+                        }
                         try:
                             result = cli.agent.run_conversation(
                                 user_message=effective_query,
@@ -22331,19 +22438,11 @@ def main(
                         ):
                             cli.session_id = cli.agent.session_id
                         response = result.get("final_response", "") if isinstance(result, dict) else str(result)
-                        # Surface backend errors that produced no visible output
-                        # (e.g. invalid model slug → provider 4xx). Mirrors the
-                        # interactive CLI path. Write to stderr so piped stdout
-                        # stays clean for automation wrappers.
-                        if (
-                            not response
-                            and isinstance(result, dict)
-                            and result.get("error")
-                            and (result.get("failed") or result.get("partial"))
-                        ):
-                            print(f"Error: {result['error']}", file=sys.stderr)
-                        elif response:
-                            print(response)
+                        # Defer machine-readable stdout until every owned
+                        # delegation follow-up has completed. If a follow-up
+                        # adjudicates the child result, that is the one final
+                        # answer -Q should emit, not the earlier "still pending"
+                        # response plus a second answer.
 
                         # Kanban goal-loop mode: a worker spawned for a
                         # goal_mode card keeps working in THIS session until an
@@ -22357,6 +22456,58 @@ def main(
                                 _run_kanban_goal_loop_q(cli, response)
                             except Exception as _goal_exc:
                                 logger.debug("kanban goal loop failed: %s", _goal_exc)
+
+                        quiet_followup_results = []
+                        quiet_agent = cli.agent
+                        assert quiet_agent is not None
+
+                        def _run_quiet_delegation_turn(synthetic_message):
+                            followup = quiet_agent.run_conversation(
+                                user_message=synthetic_message,
+                                conversation_history=cli.conversation_history,
+                            )
+                            quiet_followup_results.append(followup)
+                            if (
+                                getattr(cli.agent, "session_id", None)
+                                and cli.agent.session_id != cli.session_id
+                            ):
+                                cli.session_id = cli.agent.session_id
+                            return followup
+
+                        try:
+                            _drain_oneshot_async_delegations(
+                                cli,
+                                run_turn=_run_quiet_delegation_turn,
+                                owned_session_ids=oneshot_delegation_session_ids,
+                            )
+                        except KeyboardInterrupt:
+                            _emit_interrupted_session_end(
+                                cli,
+                                reason="keyboard_interrupt",
+                            )
+                            print(
+                                f"\nsession_id: {cli.session_id}",
+                                file=sys.stderr,
+                            )
+                            sys.exit(130)
+                        if quiet_followup_results:
+                            result = quiet_followup_results[-1]
+                        response = (
+                            result.get("final_response", "")
+                            if isinstance(result, dict)
+                            else str(result)
+                        )
+                        # Surface backend errors that produced no visible output
+                        # on stderr so -Q stdout remains one final answer.
+                        if (
+                            not response
+                            and isinstance(result, dict)
+                            and result.get("error")
+                            and (result.get("failed") or result.get("partial"))
+                        ):
+                            print(f"Error: {result['error']}", file=sys.stderr)
+                        elif response:
+                            print(response)
 
                         # Session ID goes to stderr so piped stdout is clean.
                         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
@@ -22410,8 +22561,21 @@ def main(
                 # Surface security advisories before the agent runs — short
                 # banner, doesn't depend on the welcome banner being shown.
                 cli._show_security_advisories()
-                cli.chat(query, images=single_query_images or None)
-                cli._print_exit_summary(clear_screen=False)
+                oneshot_delegation_session_ids = {str(cli.session_id or "")}
+                try:
+                    cli.chat(query, images=single_query_images or None)
+                    _drain_oneshot_async_delegations(
+                        cli,
+                        run_turn=cli.chat,
+                        owned_session_ids=oneshot_delegation_session_ids,
+                    )
+                    cli._print_exit_summary(clear_screen=False)
+                except KeyboardInterrupt:
+                    _emit_interrupted_session_end(
+                        cli,
+                        reason="keyboard_interrupt",
+                    )
+                    sys.exit(130)
         finally:
             _finalize_single_query(cli)
         return

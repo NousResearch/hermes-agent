@@ -6114,10 +6114,29 @@ class AIAgent:
     def _request_anthropic_client_key(self) -> tuple:
         """Cache key covering everything that forces a fresh client: credential
         rotation, base URL / region changes, timeout changes (model switch),
-        and the 1M-context beta flag."""
-        if getattr(self, "provider", None) == "bedrock":
+        and the 1M-context beta flag.
+
+        ``key[0]`` is the provider discriminator that
+        ``_create_request_anthropic_client`` dispatches on, so every provider
+        that needs a non-default SDK MUST have a branch here as well as there.
+        A provider missing from this function silently keys as ``"direct"`` and
+        gets a direct-Anthropic client pointed at a non-Anthropic base_url.
+        """
+        _provider = getattr(self, "provider", None)
+        if _provider == "bedrock":
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
             return ("bedrock", region)
+        if _provider == "vertex":
+            # Claude-on-Vertex. The timeout belongs in the key because
+            # ``build_anthropic_vertex_client`` bakes it into the client (a
+            # ``/model`` switch changes it); project and region because they
+            # decide the publisher route. No API key — ADC, not a bearer.
+            return (
+                "vertex",
+                getattr(self, "_vertex_project_id", None),
+                getattr(self, "_vertex_region", None) or "global",
+                get_provider_request_timeout(self.provider, self.model),
+            )
         return (
             "direct",
             self._anthropic_api_key,
@@ -6147,9 +6166,14 @@ class AIAgent:
         keeps a second concurrent call from sharing one pool's close/abort
         lifecycle — it gets a fresh untracked client instead.
 
-        Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock,
-        1M-beta drop) but returns a fresh/cached client instead of swapping
-        the shared one.
+        Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock +
+        Vertex, 1M-beta drop) but returns a fresh/cached client instead of
+        swapping the shared one. The provider dispatch MUST stay in sync with
+        ``_rebuild_anthropic_client`` AND with
+        ``_request_anthropic_client_key``: this client is what actually carries
+        every in-flight request, so a provider that is special-cased there but
+        not here silently regresses to a direct-Anthropic client pointed at a
+        non-Anthropic base_url.
         """
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
@@ -6182,6 +6206,24 @@ class AIAgent:
         if key[0] == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             client = build_anthropic_bedrock_client(key[1])
+        elif key[0] == "vertex":
+            # Claude-on-Vertex — same dispatch as ``_rebuild_anthropic_client``.
+            # Only reachable when api_mode resolved to anthropic_messages
+            # (Gemini on Vertex uses chat_completions and never builds an
+            # Anthropic client). Project + region were stashed on the agent
+            # during init from the runtime dict and travel in the cache key.
+            #
+            # Without this branch the ``else`` below builds a direct Anthropic
+            # client whose base_url is the display-only Vertex publisher URL,
+            # so the SDK POSTs to ``…/publishers/anthropic/v1/messages``
+            # instead of ``…/publishers/anthropic/models/<model>:rawPredict``
+            # and every call 404s.
+            from agent.anthropic_vertex_adapter import build_anthropic_vertex_client
+            client = build_anthropic_vertex_client(
+                key[1],
+                key[2],
+                timeout=key[3],
+            )
         else:
             from agent.anthropic_adapter import build_anthropic_client
             client = build_anthropic_client(
@@ -7103,10 +7145,24 @@ class AIAgent:
         rebuilt client carries the reduced beta set.
         """
         _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
-        if getattr(self, "provider", None) == "bedrock":
+        _provider = getattr(self, "provider", None)
+        if _provider == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
             self._anthropic_client = build_anthropic_bedrock_client(region)
+        elif _provider == "vertex":
+            # Claude-on-Vertex path — only reachable here because
+            # api_mode was resolved to anthropic_messages upstream (Gemini
+            # on Vertex uses chat_completions and never rebuilds an
+            # anthropic client). Project + region were stashed on the
+            # agent during init from the runtime dict.
+            from agent.anthropic_vertex_adapter import build_anthropic_vertex_client
+            project_id = getattr(self, "_vertex_project_id", None)
+            region = getattr(self, "_vertex_region", None) or "global"
+            self._anthropic_client = build_anthropic_vertex_client(
+                project_id, region,
+                timeout=get_provider_request_timeout(self.provider, self.model),
+            )
         else:
             from agent.anthropic_adapter import build_anthropic_client
             self._anthropic_client = build_anthropic_client(

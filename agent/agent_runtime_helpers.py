@@ -1489,14 +1489,28 @@ def try_recover_primary_transport(
         agent.request_overrides = dict(rt.get("request_overrides") or {})
 
         if agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
-            agent._anthropic_client = build_anthropic_client(
-                rt["anthropic_api_key"], rt["anthropic_base_url"],
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
-            )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
+            # Anthropic-on-Vertex uses the shared ``vertex`` provider — the
+            # dispatch to AnthropicVertex vs. the OpenAI-compat Gemini path is
+            # decided at runtime-resolution time by ``is_anthropic_vertex_model``.
+            # Inside this ``anthropic_messages`` branch, ``provider=="vertex"``
+            # is unambiguous: it means Claude-on-Vertex.
+            if agent.provider == "vertex":
+                from agent.anthropic_vertex_adapter import build_anthropic_vertex_client
+                agent._vertex_project_id = rt.get("vertex_project_id")
+                agent._vertex_region = rt.get("vertex_region") or "global"
+                agent._anthropic_client = build_anthropic_vertex_client(
+                    agent._vertex_project_id, agent._vertex_region,
+                    timeout=get_provider_request_timeout(agent.provider, agent.model),
+                )
+            else:
+                from agent.anthropic_adapter import build_anthropic_client
+                agent._anthropic_client = build_anthropic_client(
+                    rt["anthropic_api_key"], rt["anthropic_base_url"],
+                    timeout=get_provider_request_timeout(agent.provider, agent.model),
+                )
             agent.client = None
         elif (agent.provider or "").strip().lower() == "moa":
             # MoA is a virtual provider with empty client_kwargs — rebuilding
@@ -1789,14 +1803,31 @@ def restore_primary_runtime(agent) -> bool:
             agent.client = build_moa_facade(agent, agent.model)
             agent._anthropic_client = None
         elif agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
+            # ``build_anthropic_client`` is imported inside the non-Vertex
+            # branch below rather than here, so the Vertex path never pulls in
+            # the direct-Anthropic adapter.
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
-            agent._anthropic_client = build_anthropic_client(
-                rt["anthropic_api_key"], rt["anthropic_base_url"],
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
-            )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
+            # Anthropic-on-Vertex uses the shared ``vertex`` provider — the
+            # dispatch to AnthropicVertex vs. the OpenAI-compat Gemini path is
+            # decided at runtime-resolution time by ``is_anthropic_vertex_model``.
+            # Inside this ``anthropic_messages`` branch, ``provider=="vertex"``
+            # is unambiguous: it means Claude-on-Vertex.
+            if agent.provider == "vertex":
+                from agent.anthropic_vertex_adapter import build_anthropic_vertex_client
+                agent._vertex_project_id = rt.get("vertex_project_id")
+                agent._vertex_region = rt.get("vertex_region") or "global"
+                agent._anthropic_client = build_anthropic_vertex_client(
+                    agent._vertex_project_id, agent._vertex_region,
+                    timeout=get_provider_request_timeout(agent.provider, agent.model),
+                )
+            else:
+                from agent.anthropic_adapter import build_anthropic_client
+                agent._anthropic_client = build_anthropic_client(
+                    rt["anthropic_api_key"], rt["anthropic_base_url"],
+                    timeout=get_provider_request_timeout(agent.provider, agent.model),
+                )
             agent.client = None
         else:
             agent.client = agent._create_openai_client(
@@ -3133,11 +3164,26 @@ def switch_model(
         # provider genuinely has none. Re-selecting the SAME provider with
         # an empty base_url (e.g. a credential-only refresh) is still fine
         # to keep the current URL. See #47828.
+        #
+        # Exception: the cloud partner-model SDKs genuinely have no base_url.
+        # ``AnthropicVertex`` and ``AnthropicBedrock`` derive their endpoint
+        # from project/region internally
+        # (``…/publishers/anthropic/models/<model>:rawPredict``), so
+        # ``switch_model()`` correctly resolves an empty base_url for them and
+        # the guard's premise — "empty means resolution failed" — does not
+        # hold. Raising here would make ``/model anthropic/claude-*`` on
+        # ``provider: vertex`` unusable. Nothing is inherited in this case
+        # either: the branch below leaves ``agent.base_url`` untouched, and
+        # the Anthropic client is rebuilt from project/region rather than from
+        # ``agent.base_url``.
         old_norm_provider = (old_provider or "").strip().lower()
         new_norm_provider = (new_provider or "").strip().lower()
+        cloud_sdk_derives_endpoint = (api_mode or "") == "anthropic_messages" and (
+            new_norm_provider in {"vertex", "bedrock"}
+        )
         if base_url:
             agent.base_url = base_url
-        elif old_norm_provider != new_norm_provider:
+        elif old_norm_provider != new_norm_provider and not cloud_sdk_derives_endpoint:
             raise ValueError(
                 f"switch_model: no base_url resolved for provider "
                 f"'{new_provider}' (switching from '{old_provider}'); "
@@ -3195,42 +3241,127 @@ def switch_model(
             agent._client_kwargs = {}
             agent.client = build_moa_facade(agent, agent.model)
         elif api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import (
-                build_anthropic_client,
-                resolve_anthropic_token,
-                _is_oauth_token,
-            )
-            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
-            # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own
-            # API key — falling back would send Anthropic credentials to third-party endpoints.
-            _is_native_anthropic = new_provider == "anthropic"
-            effective_key = (api_key or agent.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or agent.api_key or "")
+            # Anthropic Claude on Vertex → construct via the AnthropicVertex
+            # SDK, not the native Anthropic client. Unambiguous inside this
+            # anthropic_messages guard: ``new_provider == "vertex"`` here
+            # can only mean Claude-on-Vertex, because Gemini-on-Vertex uses
+            # chat_completions (the else-branch below). Mirrors the parallel
+            # branches in ``try_recover_primary_transport`` and
+            # ``restore_primary_runtime`` above so a Gemini-on-Vertex →
+            # Claude-on-Vertex ``/model`` switch mid-conversation builds
+            # the right client. Fixes an upstream review-caught gap where
+            # this construction site was unconditionally using
+            # ``build_anthropic_client``, leaving mid-session Vertex Claude
+            # switches to hit the native Anthropic endpoint with no API
+            # key.
+            if new_provider == "vertex":
+                from agent.anthropic_vertex_adapter import (
+                    build_anthropic_vertex_client,
+                    get_anthropic_vertex_config,
+                )
+                # Resolve project/region freshly. ``switch_model`` has no
+                # runtime dict to consume from (unlike the restore paths
+                # that get one from ``_primary_runtime``), and the agent
+                # may have started on a non-Vertex provider whose
+                # ``_vertex_project_id``/``_vertex_region`` attrs aren't
+                # yet set. The resolver reuses the shared vertex-adapter
+                # credential chain, so a session already on Gemini-on-
+                # Vertex sees the same config surface without a re-read.
+                project_id, region = get_anthropic_vertex_config()
+                agent._vertex_project_id = project_id
+                agent._vertex_region = region or "global"
+                # Placeholder — the AnthropicVertex SDK mints its own
+                # bearer tokens per request from google-auth; nothing
+                # observable goes on the wire under this key. Kept
+                # non-empty so downstream code that treats ``api_key``
+                # presence as "auth resolved" continues to work.
+                agent.api_key = "vertex-adc"
+                agent._anthropic_api_key = "vertex-adc"
+                agent._anthropic_base_url = getattr(agent, "_anthropic_base_url", None)
+                agent._anthropic_client = build_anthropic_vertex_client(
+                    agent._vertex_project_id, agent._vertex_region,
+                    timeout=get_provider_request_timeout(agent.provider, agent.model),
+                )
+                # ``_is_anthropic_oauth`` is the Anthropic-native OAuth
+                # bearer state — irrelevant on the Vertex path where auth
+                # is Google-side and handled internally by AnthropicVertex.
+                agent._is_anthropic_oauth = False
+                agent.client = None
+                agent._client_kwargs = {}
+            elif new_provider == "bedrock":
+                # Same bug class as the Vertex branch above, and predates it:
+                # Bedrock-hosted Claude also speaks Anthropic Messages but
+                # authenticates through the AWS SDK, against a base_url with
+                # no ``/v1/messages`` route. ``agent_init``,
+                # ``run_agent._rebuild_anthropic_client`` and
+                # ``run_agent._create_request_anthropic_client`` all dispatch
+                # on ``provider == "bedrock"``; this site did not, so a
+                # ``/model`` switch on Bedrock replaced a working
+                # AnthropicBedrock client with a direct Anthropic one and
+                # every call after the switch failed. Restarting the session
+                # recovered it (agent_init gets it right), which is likely why
+                # it went unnoticed.
+                from agent.anthropic_adapter import build_anthropic_bedrock_client
+                agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
+                # Prefer the region named by the endpoint we are switching TO;
+                # fall back to the region stashed at init, then AWS's default.
+                # Mirrors the regex agent_init.py runs over the resolved
+                # base_url.
+                _region_match = re.search(
+                    r"bedrock-runtime\.([a-z0-9-]+)\.", agent._anthropic_base_url or ""
+                )
+                _br_region = (
+                    _region_match.group(1)
+                    if _region_match
+                    else (getattr(agent, "_bedrock_region", None) or "us-east-1")
+                )
+                agent._bedrock_region = _br_region
+                # Placeholder, same rationale as the vertex branch: the
+                # AnthropicBedrock SDK signs requests via the AWS credential
+                # chain, so no Anthropic API key goes on the wire.
+                agent.api_key = "aws-sdk"
+                agent._anthropic_api_key = "aws-sdk"
+                agent._anthropic_client = build_anthropic_bedrock_client(_br_region)
+                agent._is_anthropic_oauth = False
+                agent.client = None
+                agent._client_kwargs = {}
+            else:
+                from agent.anthropic_adapter import (
+                    build_anthropic_client,
+                    resolve_anthropic_token,
+                    _is_oauth_token,
+                )
+                # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
+                # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own
+                # API key — falling back would send Anthropic credentials to third-party endpoints.
+                _is_native_anthropic = new_provider == "anthropic"
+                effective_key = (api_key or agent.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or agent.api_key or "")
 
-            # MiniMax OAuth: swap static string for a per-request callable token
-            # provider so the rebuilt client survives 15-min token expiry. See
-            # the matching block in agent_init.py for the full rationale.
-            if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
-                try:
-                    from hermes_cli.auth import build_minimax_oauth_token_provider
-                    effective_key = build_minimax_oauth_token_provider()
-                except Exception as _mm_exc:  # noqa: BLE001
-                    import logging as _logging
-                    _logging.getLogger(__name__).warning(
-                        "MiniMax OAuth: failed to install per-request token provider "
-                        "on switch (%s); using static bearer.",
-                        _mm_exc,
-                    )
+                # MiniMax OAuth: swap static string for a per-request callable token
+                # provider so the rebuilt client survives 15-min token expiry. See
+                # the matching block in agent_init.py for the full rationale.
+                if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
+                    try:
+                        from hermes_cli.auth import build_minimax_oauth_token_provider
+                        effective_key = build_minimax_oauth_token_provider()
+                    except Exception as _mm_exc:  # noqa: BLE001
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "MiniMax OAuth: failed to install per-request token provider "
+                            "on switch (%s); using static bearer.",
+                            _mm_exc,
+                        )
 
-            agent.api_key = effective_key
-            agent._anthropic_api_key = effective_key
-            agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
-            agent._anthropic_client = build_anthropic_client(
-                effective_key, agent._anthropic_base_url,
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
-            )
-            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent.client = None
-            agent._client_kwargs = {}
+                agent.api_key = effective_key
+                agent._anthropic_api_key = effective_key
+                agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
+                agent._anthropic_client = build_anthropic_client(
+                    effective_key, agent._anthropic_base_url,
+                    timeout=get_provider_request_timeout(agent.provider, agent.model),
+                )
+                agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
+                agent.client = None
+                agent._client_kwargs = {}
         else:
             effective_key = api_key or agent.api_key
             effective_base = base_url or agent.base_url
@@ -3446,6 +3577,15 @@ def switch_model(
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
+        # Anthropic-on-Vertex: stash project + region so restore/rebuild
+        # can reconstruct AnthropicVertex without re-reading config.yaml.
+        # Guarded above by ``api_mode == "anthropic_messages"``, so
+        # ``provider == "vertex"`` here can only mean Claude-on-Vertex.
+        if agent.provider == "vertex":
+            agent._primary_runtime.update({
+                "vertex_project_id": getattr(agent, "_vertex_project_id", None),
+                "vertex_region": getattr(agent, "_vertex_region", None),
+            })
 
     # ── Reset fallback state ──
     agent._fallback_activated = False

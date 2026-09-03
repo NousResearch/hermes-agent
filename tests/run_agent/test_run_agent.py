@@ -1997,10 +1997,19 @@ class TestRetryAfterCap:
         agent.run_conversation("hello")
         return next((m for m in captured if "Waiting" in m), "")
 
-    def test_retry_after_under_cap_is_honored(self, agent):
-        # 300s > old 120s cap but < new 600s cap → used verbatim.
-        status = self._drive_once(agent, 300)
-        assert "Waiting 300.0s" in status
+    def test_retry_after_under_cap_is_jittered_above_floor(self, agent):
+        # Respect the provider's 300s floor, but decorrelate concurrent callers
+        # so a gateway fleet does not wake and retry at the exact same instant.
+        with patch("agent.conversation_loop.jittered_backoff", return_value=307.5) as jitter:
+            status = self._drive_once(agent, 300)
+
+        assert "Waiting 307.5s" in status
+        jitter.assert_called_once_with(
+            1,
+            base_delay=300.0,
+            max_delay=300.0,
+            jitter_ratio=0.05,
+        )
 
 
 

@@ -2,6 +2,47 @@ import { describe, expect, it } from 'vitest'
 
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 
+describe('preprocessMarkdown currency escaping', () => {
+  it('escapes currency dollars followed by a space then a digit (US$ 5M, R$ 15.4M)', () => {
+    // Regression: "US$ 5M" used to be parsed by remark-math as `$...$` inline
+    // math, and KaTeX rendered the whole following prose run as math, mangling
+    // accents and swallowing spaces.
+    const input = '(US$ 5M), então a feature significa a mesma coisa em qualquer hora. R$ 15.4M por dia.'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('(US\\$ 5M)')
+    expect(output).toContain('R\\$ 15.4M')
+    expect(output).not.toContain('US$ 5M')
+    expect(output).not.toContain('R$ 15.4M')
+    expect(output).toContain('então a feature significa')
+  })
+
+  it('escapes tight currency amounts ($5 and $10)', () => {
+    expect(preprocessMarkdown('$5 and $10')).toBe('\\$5 and \\$10')
+  })
+
+  it('escapes spaced currency pairs in prose ($ 1.99 and $ 2.99)', () => {
+    expect(preprocessMarkdown('$ 1.99 and $ 2.99')).toBe('\\$ 1.99 and \\$ 2.99')
+  })
+
+  it('preserves balanced numeric inline math ($4\\in A$)', () => {
+    expect(preprocessMarkdown('$4\\in A$')).toBe('$4\\in A$')
+  })
+
+  it('preserves balanced numeric inline math with a leading space ($ 4\\in A$)', () => {
+    expect(preprocessMarkdown('$ 4\\in A$')).toBe('$ 4\\in A$')
+  })
+
+  it('leaves display math and code fences untouched', () => {
+    expect(preprocessMarkdown('$$x^2$$')).toBe('$$x^2$$')
+
+    const fenced = ['```text', '$5 stays literal', '```'].join('\n')
+
+    expect(preprocessMarkdown(fenced)).toContain('$5 stays literal')
+  })
+})
+
 describe('preprocessMarkdown', () => {
   it('strips inline accidental triple-backtick starts', () => {
     const input = [

@@ -108,6 +108,7 @@ CONFIGURABLE_TOOLSETS = [
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text/image/reference)"),
     ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
+    ("xai_code_interpreter", "🧮 xAI Code Interpreter", "xai_code_interpreter (server-side Python sandbox)"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("stt",             "🎙️ Speech-to-Text",           "voice transcription (gateway voice messages + voice mode)"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -156,7 +157,19 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a"}
+# xai_code_interpreter stays default-off: server-side billing + distinct
+# from local execute_code; enable explicitly in hermes tools.
+_DEFAULT_OFF_TOOLSETS = {
+    "homeassistant",
+    "spotify",
+    "discord",
+    "discord_admin",
+    "video",
+    "video_gen",
+    "x_search",
+    "xai_code_interpreter",
+    "a2a",
+}
 
 
 # Config-only capabilities: they appear in `hermes tools` for provider/API-key
@@ -564,6 +577,38 @@ TOOL_CATEGORIES = {
             "(uses your subscription quota instead of API spend)."
         ),
         "icon": "🐦",
+        "providers": [
+            {
+                "name": "xAI Grok OAuth (SuperGrok / Premium+)",
+                "badge": "subscription",
+                "tag": "Browser login at accounts.x.ai — no API key required",
+                "env_vars": [],
+                "post_setup": "xai_grok",
+            },
+            {
+                "name": "xAI API key",
+                "badge": "paid",
+                "tag": "Direct xAI API billing via XAI_API_KEY",
+                "env_vars": [
+                    {
+                        "key": "XAI_API_KEY",
+                        "prompt": "xAI API key",
+                        "url": "https://console.x.ai/",
+                    },
+                ],
+            },
+        ],
+    },
+    "xai_code_interpreter": {
+        "name": "xAI Code Interpreter",
+        "setup_title": "Select xAI Credential Source",
+        "setup_note": (
+            "Runs Python in xAI's hosted code_interpreter sandbox via the "
+            "Responses API. This is separate from local execute_code — no "
+            "host filesystem or Hermes tools. SuperGrok OAuth is preferred "
+            "when both credential sources are set."
+        ),
+        "icon": "🧮",
         "providers": [
             {
                 "name": "xAI Grok OAuth (SuperGrok / Premium+)",

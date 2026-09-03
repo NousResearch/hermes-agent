@@ -245,3 +245,37 @@ class TestAnnotationCaptureAtDiscovery:
         assert mcp_tool._annotation_read_only_hint(
             SimpleNamespace()
         ) is False
+
+    def test_snake_case_mcp_fields_preserve_schema_and_read_only_hint(self):
+        """MCP 2.x field names survive discovery and schema-cache writes."""
+        from tools.registry import ToolRegistry
+
+        schema = {
+            "type": "object",
+            "properties": {"sql": {"type": "string"}},
+            "required": ["sql"],
+        }
+        server = mcp_tool.MCPServerTask("srv")
+        server.session = MagicMock()
+        server._tools = [
+            SimpleNamespace(
+                name="query",
+                description="Run a query",
+                input_schema=schema,
+                annotations=SimpleNamespace(read_only_hint=True),
+            )
+        ]
+        config = {
+            "trust": "untrusted",
+            "tools": {"resources": False, "prompts": False},
+        }
+
+        with patch("tools.registry.registry", ToolRegistry()), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             patch("tools.mcp_schema_cache.write_cache_entry") as write_cache:
+            mcp_tool._register_server_tools("srv", server, config)
+
+        assert mcp_tool._tool_read_only_hints["srv"]["query"] is True
+        cached_tool = write_cache.call_args.kwargs["tools"][0]
+        assert cached_tool["inputSchema"] == schema
+        assert cached_tool["annotations"] == {"readOnlyHint": True}

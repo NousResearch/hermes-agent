@@ -239,6 +239,28 @@ class TestLiveCatalog:
         assert xai_mod._resolve_edit_model("grok-imagine-image-2.0") == "grok-imagine-image-quality"
 
 
+    def test_edit_model_calls_load_xai_config_once(self, monkeypatch):
+        """_resolve_edit_model must call _load_xai_config() exactly once.
+        The previous implementation called it twice — once for isinstance()
+        and once for .get() — causing two deepcopies and a TOCTOU window.
+        """
+        import plugins.image_gen.xai as xai_mod
+        call_count = []
+        original = xai_mod._load_xai_config
+
+        def counting_load():
+            call_count.append(1)
+            return original()
+
+        monkeypatch.setattr(xai_mod, "_load_xai_config", counting_load)
+        monkeypatch.setattr(xai_mod, "_LIVE_CACHE", None)
+        monkeypatch.delenv("XAI_IMAGE_MODEL", raising=False)
+        xai_mod._resolve_edit_model()
+        assert len(call_count) == 1, (
+            f"_load_xai_config() called {len(call_count)} times; expected 1"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Generate tests
 # ---------------------------------------------------------------------------

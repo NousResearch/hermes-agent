@@ -458,3 +458,81 @@ async def test_iter_candidates_keeps_latest_messages_when_window_exceeds_limit(a
     assert got == [2, 3, 4]
 
 
+
+
+@pytest.mark.asyncio
+async def test_recovered_dispatch_claims_dedup_id(adapter):
+    """Backfilled messages must enter the dedup cache.
+
+    Regression: the backfill path admitted with claim=False, so a recovered
+    message never entered the dedup cache — a live gateway replay of the same
+    event (Discord replays missed events on resume) was admitted again and
+    the user got two runs / two replies.
+    """
+    bot_user = adapter._client.user
+    message = make_message(
+        message_id=555,
+        content=f"<@{bot_user.id}> please ingest",
+        mentions=[bot_user],
+    )
+
+    assert await adapter._dispatch_recovered_message(message) is True
+    assert adapter._handle_message.call_count == 1
+    assert adapter._dedup.contains("555") is True
+
+    # A live replay of the same message must now be dropped.
+    admitted, _ = adapter._discord_message_admission(message, claim=True)
+    assert admitted is False
+    assert adapter._handle_message.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_recovered_dispatch_second_attempt_dropped(adapter):
+    """A second backfill dispatch of the same message is a no-op."""
+    bot_user = adapter._client.user
+    message = make_message(
+        message_id=777,
+        content=f"<@{bot_user.id}> please ingest",
+        mentions=[bot_user],
+    )
+
+    assert await adapter._dispatch_recovered_message(message) is True
+    assert await adapter._dispatch_recovered_message(message) is False
+    assert adapter._handle_message.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_recovered_dispatch_releases_claim_for_retry(adapter, monkeypatch):
+    """A dispatch that raises must release the claimed dedup ID.
+
+    The backfill now claims the ID at dispatch time; the scan loop's error
+    path calls discard() so a transient failure doesn't permanently suppress
+    the message from a later retry (or the live replay).
+    """
+    bot_user = adapter._client.user
+    message = make_message(
+        message_id=888,
+        content=f"<@{bot_user.id}> please ingest",
+        mentions=[bot_user],
+    )
+
+    async def fake_candidates(_channels):
+        yield message
+
+    monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "123")
+    monkeypatch.setattr(adapter, "_iter_missed_message_backfill_candidates", fake_candidates)
+    monkeypatch.setattr(adapter, "_should_backfill_discord_message", AsyncMock(return_value=True))
+    monkeypatch.setattr(adapter, "_missed_message_backfill_max_dispatches", lambda: 10)
+    monkeypatch.setattr(adapter, "_missed_message_backfill_channels", lambda: {"123"})
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    # First pass: dispatch fails -> claim must be released by the error path.
+    adapter._handle_message = AsyncMock(side_effect=RuntimeError("transient"))
+    await adapter._run_missed_message_backfill()
+    assert adapter._dedup.contains("888") is False
+
+    # Retry with a healthy handler: the message dispatches and stays claimed.
+    adapter._handle_message = AsyncMock(return_value=True)
+    await adapter._run_missed_message_backfill()
+    assert adapter._handle_message.call_count == 1
+    assert adapter._dedup.contains("888") is True

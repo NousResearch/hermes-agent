@@ -333,6 +333,11 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # the merged-config cache validity check.
 _LOAD_CONFIG_CACHE: Dict[str, tuple] = {}
 _RAW_CONFIG_CACHE: Dict[str, tuple] = {}
+
+
+def _canonical_config_path_key(path: Path) -> str:
+    """Return the cache identity shared by config readers and writers."""
+    return str(path.resolve(strict=False))
 # Serializes all config read/write paths. libyaml's C extension is not
 # thread-safe for concurrent safe_load() on the same file, and multiple
 # tool threads (approval.py, browser_tool.py, setup flows) hit
@@ -4061,7 +4066,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         path_key = (
             user_signature[0]
             if user_signature is not None
-            else str(config_path.resolve(strict=False))
+            else _canonical_config_path_key(config_path)
         )
 
         # Fold the exact managed-config snapshot into the merged-cache key.
@@ -4306,6 +4311,7 @@ def save_config(
 
         ensure_hermes_home()
         config_path = get_config_path()
+        path_key = _canonical_config_path_key(config_path)
         require_readable_config_before_write(config_path)
         # Compute explicit user paths BEFORE any normalisation --------
         # _normalize_max_turns_config may inject agent.max_turns from
@@ -4330,7 +4336,7 @@ def save_config(
             normalized = _preserve_env_ref_templates(
                 normalized,
                 raw_existing,
-                _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+                _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key),
             )
 
         # Strip schema-default values so the user's custom settings are not
@@ -4373,8 +4379,8 @@ def save_config(
             extra_content="".join(parts) if parts else None,
         )
         _secure_file(config_path)
-        _RAW_CONFIG_CACHE.pop(str(config_path), None)
-        _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+        _RAW_CONFIG_CACHE.pop(path_key, None)
+        _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(current_normalized)
 
 
 def _parse_env_value(raw_value: str) -> str:

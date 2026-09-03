@@ -228,6 +228,38 @@ class TestLoadConfigParseFailure:
             err = capsys.readouterr().err
             assert "previously loaded config" in err
 
+    def test_saved_config_is_last_known_good_through_symlinked_home(
+        self, tmp_path, capsys
+    ):
+        """Writer and loader must address last-known-good state by one path."""
+        import time
+
+        real_home = tmp_path / "real-home"
+        real_home.mkdir()
+        linked_home = tmp_path / "linked-home"
+        try:
+            linked_home.symlink_to(real_home, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(linked_home)}):
+            save_config(
+                {
+                    "model": {"default": "test/saved-model"},
+                    "approvals": {"deny": ["curl*evil.com*"]},
+                }
+            )
+            time.sleep(0.05)
+            (real_home / "config.yaml").write_text(
+                "approvals:\n  deny: [unclosed\n", encoding="utf-8"
+            )
+
+            after = load_config()
+
+        assert after["model"]["default"] == "test/saved-model"
+        assert after["approvals"]["deny"] == ["curl*evil.com*"]
+        assert "previously loaded config" in capsys.readouterr().err
+
 
 
 

@@ -657,15 +657,21 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
             del os.environ["HERMES_SPINNER_PAUSE"]
 
 def _safe_command_preview(command: Any, limit: int = 200) -> str:
-    """Return a log-safe preview for possibly-invalid command values."""
+    """Return a force-redacted, bounded description for command logs."""
     if command is None:
         return "<None>"
     if isinstance(command, str):
-        return command[:limit]
+        if "\n" in command or len(command) > limit:
+            return (
+                f"<command chars={len(command)} "
+                f"lines={command.count(chr(10)) + 1}>"
+            )
+        return _redact_terminal_error_text(command)[:limit]
     try:
-        return repr(command)[:limit]
+        rendered = repr(command)
     except Exception:
         return f"<{type(command).__name__}>"
+    return _redact_terminal_error_text(rendered)[:limit]
 
 def _looks_like_env_assignment(token: str) -> bool:
     """Return True when *token* is a leading shell environment assignment."""

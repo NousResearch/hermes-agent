@@ -20,7 +20,7 @@ from typing import Optional
 
 
 # ── Error-code constants used by WeComStreamExpiredError and the adapter ──────
-STREAM_EXPIRED_ERRCODE = 846608  # >6 min without update — stream is dead
+STREAM_EXPIRED_ERRCODE = 846608  # 10 min from first frame — stream is dead
 
 
 class StreamFrameResult(Enum):
@@ -50,11 +50,14 @@ class StreamFrameResult(Enum):
 class WeComStreamExpiredError(RuntimeError):
     """Raised when WeCom returns errcode 846608 or 846604 (stream/req expired).
 
-    WeCom's stream protocol caps a stream session at ~6 minutes from the
-    first frame. After that window the server refuses further updates with
-    846608 (stream update window) or 846604 (req_id reply-request window) and
-    the reply flow is dead — callers must fall back to a proactive
-    ``aibot_send_msg`` to deliver the remaining content.
+    WeCom's stream protocol caps a stream session at 10 minutes from the
+    first ``finish=false`` frame. This deadline is ABSOLUTE — keep-alive
+    (finish=false) frames do NOT refresh it. After the window the server
+    refuses further updates with 846608 (stream update window) or 846604
+    (req_id reply-request window) — including a late ``finish=true`` — and
+    the reply flow is dead. Callers must either rotate to a fresh stream
+    BEFORE the deadline (see the adapter's stream rotation) or fall back to a
+    proactive ``aibot_send_msg`` to deliver the remaining content.
     """
 
     def __init__(self, errcode: int = STREAM_EXPIRED_ERRCODE, errmsg: str = ""):
@@ -97,3 +100,28 @@ class StreamTurn:
         # timer firing on a dead turn.  None when keep-alive is disabled or
         # the turn has no armed timer.
         self.keepalive_handle: Optional[asyncio.TimerHandle] = None
+
+    def rotate(self) -> None:
+        """Swap in a fresh stream_id and reset the age clock for rotation.
+
+        WeCom binds an ABSOLUTE 10-minute deadline to a stream (from its first
+        ``finish=false`` frame) that keep-alive cannot refresh.  When the turn
+        nears that deadline the adapter finishes the current stream and calls
+        this to open a *new* bubble on the SAME req_id for the remaining
+        content: a new ``stream_id`` (WeCom keys a bubble by stream id, so a
+        new id yields a new bubble), the age clock reset to now, and the seed
+        flag cleared so the next frame re-seeds.
+
+        ``req_id`` and ``accumulated_text`` are preserved — the reply channel
+        is unchanged and the new bubble continues from the accumulated content.
+        ``last_sent_content`` is cleared so the first frame on the new stream is
+        never dedup-skipped against what the old bubble already showed, and the
+        intermediate-frame counter is reset so the new bubble gets its own
+        MAX_INTERMEDIATE_FRAMES budget.
+        """
+        self.stream_id = f"stream_{uuid.uuid4().hex[:12]}"
+        self.start_time = time.monotonic()
+        self.seeded = False
+        self.last_sent_content = ""
+        self._last_frame_sent_at = 0.0
+        self._intermediate_frames_sent = 0

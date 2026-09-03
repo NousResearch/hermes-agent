@@ -160,32 +160,42 @@ MAX_STREAM_CONTENT_LENGTH = 20480  # WeCom server-enforced byte limit per frame
 # silently dropped — finalize still sends unconditionally.
 MAX_INTERMEDIATE_FRAMES = 85
 
-# ── Stream-level keep-alive (aligned with wecom-openclaw-plugin PR #90) ──────
-# WeCom binds a ~6-minute lifetime timer to each *reply stream* (stream_id +
-# req_id).  The connection-level ping (_heartbeat_loop) does NOT refresh it —
-# it only keeps the WS socket open.  Long turns (e.g. the daily-report cron,
-# which spends minutes fetching data / rendering charts with no LLM tokens to
-# push) let that window elapse, so the finalize frame lands on a dead stream
-# and comes back 846604 / 846608 — a real delivery risk in group chats, which
-# cannot fall back to a proactive send.  See docs/wecom-stream-keepalive-*.md.
+# ── Stream-level keep-alive & rotation (aligned with wecom-openclaw-plugin) ──
+# WeCom binds an ABSOLUTE 10-minute lifetime to each *reply stream* (stream_id
+# + req_id), measured from the first finish=false frame.  The connection-level
+# ping (_heartbeat_loop) does NOT refresh it — it only keeps the WS socket
+# open.  CRITICAL: keep-alive (finish=false) frames do NOT refresh it either —
+# the 10-min timer is absolute, verified by direct testing (frames succeed for
+# the first 10 min then 846608 rejects everything, including a late
+# finish=true, and the client render freezes at exactly 10 min).  Long turns
+# (e.g. the daily-report cron, which spends minutes fetching data / rendering
+# charts with no LLM tokens to push) let that window elapse, so the finalize
+# frame lands on a dead stream and comes back 846604 / 846608 — a real delivery
+# risk in group chats, which cannot fall back to a proactive send.  See
+# docs/wecom-stream-keepalive-*.md.
 #
 # Two independent defences, both defaulting to the SAFE (non-aggressive) side:
 #
-#   Layer 2 — clock fallback (always on, zero new uplink frames):
-#     finalize computes stream age from StreamTurn.start_time; past
-#     STREAM_SAFE_DURATION_SECONDS it declines the finish=true frame (which
-#     would almost certainly hit 846604/846608) and returns False so the
-#     gateway consumer's existing fallback send() path delivers the content.
+#   Layer 2 — clock rotation (always on):
+#     the frame path computes stream age from StreamTurn.start_time; at
+#     STREAM_SAFE_DURATION_SECONDS (9.5 min, safely inside the 10-min wall) it
+#     proactively finishes the current stream and rotates to a FRESH stream_id
+#     (a new bubble) on the same req_id for the remaining content, so the
+#     answer keeps flowing instead of freezing at the deadline.  If rotation
+#     itself fails the turn falls back to the gateway consumer's send() path.
 #
 #   Layer 1 — keep-alive heartbeat (OFF by default; opt-in via config):
 #     every STREAM_KEEPALIVE_INTERVAL_SECONDS re-send the already-accumulated
-#     text as a finish=false frame to refresh the server window.  Never sends a
-#     placeholder (that would pollute last_sent_content and could strand the
-#     user on "still working…"); when there is no accumulated text yet the tick
-#     is simply skipped.  Guarded off by default because a heartbeat frame is an
-#     extra intermediate frame sharing the finalize's req_id, which widens the
-#     ack race the double-send coordination depends on (see ANALYSIS §4.2).
-STREAM_SAFE_DURATION_SECONDS = 330.0  # 5.5 min — Layer 2 clock fallback
+#     text as a finish=false frame.  NOTE: this does NOT refresh the absolute
+#     10-min stream window (keep-alive frames cannot); it only keeps the client
+#     bubble visibly updating within that window.  Never sends a placeholder
+#     (that would pollute last_sent_content and could strand the user on "still
+#     working…"); when there is no accumulated text yet the tick is simply
+#     skipped.  Guarded off by default because a heartbeat frame is an extra
+#     intermediate frame sharing the finalize's req_id, which widens the ack
+#     race the double-send coordination depends on (see ANALYSIS §4.2).
+STREAM_SAFE_DURATION_SECONDS = 570.0  # 9.5 min — Layer 2 rotation trigger,
+# safely inside WeCom's absolute 10-min stream wall (846608).
 STREAM_KEEPALIVE_INTERVAL_SECONDS = 120.0  # 2 min — Layer 1 heartbeat cadence
 STREAM_KEEPALIVE_ENABLED_DEFAULT = False  # Layer 1 off unless config opts in
 
@@ -322,8 +332,9 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
             except (TypeError, ValueError):
                 return default
 
-        # Layer 2 clock fallback: decline the finalize frame once the stream is
-        # older than this, so we don't hand the server a doomed finish=true.
+        # Layer 2 clock rotation: when the stream nears this age (safely inside
+        # WeCom's absolute 10-min wall) rotate to a fresh stream/bubble instead
+        # of handing the server a doomed finish=true on the dying stream.
         self._stream_safe_duration_seconds = _extra_float(
             "stream_safe_duration_seconds", STREAM_SAFE_DURATION_SECONDS
         )
@@ -1593,7 +1604,9 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
     # Structurally mirrors the idle-flush timer: a per-turn asyncio TimerHandle
     # stored on the StreamTurn, cancelled on every turn-exit path.  The only
     # difference from idle-flush is cadence (minutes vs 250ms) and intent
-    # (refresh the server's 6-min stream window vs ship a partial buffer).
+    # (keep the client bubble visibly updating within the 10-min window vs ship
+    # a partial buffer).  Keep-alive does NOT extend that window — Layer 2
+    # rotation is what carries content past the 10-min wall.
 
     def _cancel_keepalive(self, turn: StreamTurn) -> None:
         """Cancel a pending keep-alive timer on the turn (no-op if unarmed)."""
@@ -1663,8 +1676,12 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         turn: StreamTurn,
         turn_id: Optional[str],
     ) -> None:
-        """Re-send the accumulated text as a finish=false frame to refresh the
-        WeCom server's stream window, then re-arm for the next interval.
+        """Re-send the accumulated text as a finish=false frame to keep the
+        WeCom client bubble visibly updating, then re-arm for the next interval.
+
+        NOTE: this does NOT extend the stream's absolute 10-min window — that is
+        Layer 2 rotation's job.  Keep-alive only avoids a stale-looking bubble
+        during content-sparse stretches inside the window.
 
         Deliberately conservative (see ANALYSIS §4.2/§5):
 
@@ -1729,6 +1746,70 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
             self._stream_turns.pop(f"{turn.chat_id}:{turn_id}", None)
         else:
             self._cleanup_stream_turn(turn.chat_id, turn.req_id)
+
+    async def _rotate_stream(self, turn: StreamTurn, turn_id: Optional[str]) -> bool:
+        """Close the current stream and rotate the turn to a fresh bubble.
+
+        Called from the frame path (Layer 2) when the stream nears WeCom's
+        absolute 10-min wall.  Sends ``finish=true`` on the *current* stream so
+        the existing bubble is sealed cleanly while it is still within the
+        window, then rotates the turn (new stream_id, reset clock, cleared seed
+        flag) on the SAME req_id.  The turn stays live and registered, so the
+        next frame re-seeds and continues the answer in a new bubble.
+
+        Timers are cancelled before the close and the keep-alive is re-armed
+        against the fresh stream after rotation.
+
+        Returns ``True`` when the old stream was sealed and the turn is ready to
+        continue on a fresh bubble; ``False`` when the close itself failed
+        (stream already dead), in which case the caller should retire the turn
+        and fall back to the consumer's send() path.
+        """
+        old_stream_id = turn.stream_id
+        # Cancel timers first — neither should fire during/after the swap.
+        self._cancel_idle_flush(turn)
+        self._cancel_keepalive(turn)
+
+        # Seal the old bubble with whatever it last showed.  Use the accumulated
+        # text (falls back to last_sent_content) and disambiguate against the
+        # last intermediate frame the same way finalize does, so the server does
+        # not silently drop a duplicate-content finish frame.
+        close_text = turn.accumulated_text or turn.last_sent_content or ""
+        if close_text and close_text == turn.last_sent_content:
+            close_text = close_text + "\u200b"  # zero-width space
+        try:
+            await self._send_stream_reply(
+                turn.req_id, old_stream_id, close_text, finish=True,
+            )
+        except WeComStreamExpiredError:
+            # The stream is already past the wall — we lost the race to seal it.
+            # Retire the turn so the caller falls back to a proactive send.
+            logger.info(
+                "[%s] Stream rotation: old stream %s already expired on close "
+                "(chat=%s) — retiring turn, falling back to send.",
+                self.name, old_stream_id, turn.chat_id,
+            )
+            turn.expired = True
+            self._retire_turn(turn, turn_id)
+            self._stream_expired_chats.add(turn.chat_id)
+            return False
+        except Exception as exc:
+            logger.warning(
+                "[%s] Stream rotation: failed to close old stream %s (chat=%s): "
+                "%s — retiring turn, falling back to send.",
+                self.name, old_stream_id, turn.chat_id, exc,
+            )
+            self._retire_turn(turn, turn_id)
+            return False
+
+        # Old bubble sealed — swap in a fresh stream on the same req_id.
+        turn.rotate()
+        logger.info(
+            "[%s] Stream rotated for chat %s: %s -> %s (new bubble, req_id "
+            "unchanged), continuing remaining content.",
+            self.name, turn.chat_id, old_stream_id, turn.stream_id,
+        )
+        return True
 
     def _find_active_turn_for_chat(self, chat_id: str) -> Optional[StreamTurn]:
         """Find the most recent active (non-finalized) turn for a chat."""
@@ -2827,6 +2908,46 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                 )
                 return StreamFrameResult.FAILED
 
+            # ── Layer 2 clock rotation ───────────────────────────────────────
+            # WeCom binds an ABSOLUTE 10-min deadline to a stream from its first
+            # frame; keep-alive cannot refresh it.  Once the stream nears the
+            # safe duration (9.5 min), proactively seal the current bubble with
+            # finish=true — still inside the window, so it lands — and rotate to
+            # a fresh stream_id on the same req_id.  turn.rotate() clears the
+            # seed flag, so the seed block below re-seeds the new bubble and this
+            # frame (intermediate OR finalize) then sends on the fresh stream,
+            # continuing the answer instead of freezing at the wall.
+            #
+            # SKIP when Layer 1 keep-alive is enabled: with the heartbeat active
+            # the historical behaviour was to trust the stream past the clock;
+            # keep that contract (keep-alive users opt out of rotation).  If such
+            # a stream truly has expired, the _send_stream_reply below raises
+            # WeComStreamExpiredError and the except block handles it.
+            if (
+                turn.seeded
+                and not turn.expired
+                and not self._stream_keepalive_enabled
+            ):
+                stream_age = time.monotonic() - turn.start_time
+                if stream_age >= self._stream_safe_duration_seconds:
+                    logger.info(
+                        "[%s] Stream age %.0fs >= safe duration %.0fs for chat "
+                        "%s — rotating to a fresh bubble (Layer 2). finalize=%s",
+                        self.name, stream_age,
+                        self._stream_safe_duration_seconds, chat, finalize,
+                    )
+                    rotated = await self._rotate_stream(turn, turn_id)
+                    if not rotated:
+                        # Close failed — turn already retired inside
+                        # _rotate_stream; fall back to the consumer's send().
+                        logger.debug(
+                            "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
+                            "rotation_close_failed", chat, turn_id,
+                        )
+                        return StreamFrameResult.FAILED
+                    # turn.rotate() cleared last_sent_content, so the frame below
+                    # is never dedup-skipped against the sealed old bubble.
+
             # First frame for this turn: send seed ONLY if not already seeded.
             # The GatewayStreamConsumer sends the initial empty seed frame itself
             # (stream_consumer.py:461), so we must not duplicate it here.
@@ -2847,8 +2968,9 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                     turn.stream_id, turn.req_id,
                 )
                 # Stream is now open on the server — arm the keep-alive timer
-                # (Layer 1) so long, content-sparse turns refresh the 6-min
-                # window.  No-op when keep-alive is disabled by config.
+                # (Layer 1) so long, content-sparse turns keep the bubble
+                # visibly updating within the 10-min window.  No-op when
+                # keep-alive is disabled by config.
                 self._arm_keepalive(turn, turn_id=turn_id)
                 # If caller sent empty text (consumer's explicit seed call),
                 # we're done — don't send another empty frame below.
@@ -2858,48 +2980,13 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
             # Send the frame
             _is_indeterminate = False  # set to True on indeterminate settlement
             if finalize:
-                # ── Layer 2 clock fallback ───────────────────────────────
-                # If the stream is older than the safe duration, the finish
-                # frame would almost certainly hit 846604/846608.  Decline it
-                # up front: mark the turn expired, retire it (cancels both
-                # timers), and return False so the gateway consumer's existing
-                # fallback send() path delivers the content exactly once — the
-                # same contract the WeComStreamExpiredError path already uses
-                # (stream_consumer.py rolls back _final_content_delivered on a
-                # False finalize).  Zero new uplink frames; safe for groups in
-                # the sense that it does not make delivery any worse than the
-                # current 846608 fallback.
-                #
-                # SKIP entirely when Layer 1 keep-alive is enabled: the
-                # heartbeat has been refreshing the stream window every
-                # STREAM_KEEPALIVE_INTERVAL_SECONDS, so an old stream_age does
-                # NOT mean the stream is dead.  Declining a still-live stream on
-                # a blind clock read would force the consumer's send() fallback
-                # to re-deliver content the intermediate frames already put on
-                # screen — the exact duplicate-bubble bug this guards against.
-                # If the stream truly HAS expired, the _send_stream_reply(
-                # finish=True) below will hit 846604/846608 and raise
-                # WeComStreamExpiredError, which the except block turns into the
-                # real (finalize-only) fallback.
-                if not self._stream_keepalive_enabled:
-                    stream_age = time.monotonic() - turn.start_time
-                    if stream_age >= self._stream_safe_duration_seconds:
-                        logger.info(
-                            "[%s] Stream age %.0fs >= safe duration %.0fs for chat "
-                            "%s — declining finalize frame, falling back to "
-                            "proactive send (Layer 2 clock fallback).",
-                            self.name, stream_age,
-                            self._stream_safe_duration_seconds, chat,
-                        )
-                        turn.expired = True
-                        self._retire_turn(turn, turn_id)
-                        self._stream_expired_chats.add(chat)
-                        logger.debug(
-                            "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
-                            "layer2_clock_fallback", chat, turn_id,
-                        )
-                        return StreamFrameResult.FAILED
-
+                # Layer 2 clock rotation already ran up-front (before the seed
+                # block), so if the stream was near the 10-min wall the turn has
+                # already been sealed and rotated onto a fresh stream — this
+                # finalize now lands on that new bubble.  If the stream truly
+                # expired despite rotation, _send_stream_reply(finish=True) below
+                # raises WeComStreamExpiredError and the except block runs the
+                # (finalize-only) send() fallback.
                 self._cancel_idle_flush(turn)
                 self._cancel_keepalive(turn)
 

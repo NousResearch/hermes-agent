@@ -106,11 +106,31 @@ export function useVoiceRecorder({
     }
   }
 
+  /**
+   * Discard the in-flight dictation: drop the captured audio, never transcribe.
+   * The mic button only ever *commits* a recording, so without this the user has
+   * no way out of a dictation they've changed their mind about — they'd have to
+   * pay for a transcription they don't want. Cancelling is a no-op unless we are
+   * actually recording; a transcription already in flight is past the point of
+   * recall (the audio has left for the STT provider).
+   */
+  const cancelDictation = () => {
+    if (!recording) {
+      return
+    }
+
+    clearTimers()
+    handle.cancel()
+    setElapsedSeconds(0)
+    setVoiceStatus('idle')
+    focusInput()
+  }
+
   const voiceActivityState: VoiceActivityState = {
     elapsedSeconds,
     level,
     status: voiceStatus
   }
 
-  return { dictate, voiceActivityState, voiceStatus }
+  return { cancelDictation, dictate, voiceActivityState, voiceStatus }
 }

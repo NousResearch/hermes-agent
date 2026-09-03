@@ -2151,6 +2151,7 @@ export interface Translations {
     stopShort: string
     endConversation: string
     endShort: string
+    cancelDictation: string
     stopDictation: string
     transcribingDictation: string
     voiceControls: string

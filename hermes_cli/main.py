@@ -11684,6 +11684,65 @@ def cmd_profile(args):
             print(f"Error: {e}")
             sys.exit(1)
 
+    elif action == "share":
+        from hermes_cli.bot_transfer import (
+            ensure_profile_bot_id,
+            get_profile_bot_id,
+            profile_is_cloneable,
+            set_profile_cloneable,
+        )
+        from hermes_cli.profiles import get_profile_dir
+
+        name = args.profile_name
+        try:
+            profile_dir = get_profile_dir(name)
+            if not profile_dir.is_dir():
+                raise FileNotFoundError(f"Profile '{name}' does not exist.")
+            if args.allow_pull or args.deny_pull:
+                allowed = bool(args.allow_pull)
+                bot_id = set_profile_cloneable(name, allowed)
+            else:
+                allowed = profile_is_cloneable(name)
+                bot_id = get_profile_bot_id(profile_dir)
+            state = "allowed" if allowed else "denied"
+            print(f"Remote pull: {state} for '{name}'")
+            if bot_id:
+                print(f"Bot ID:      {bot_id}")
+            elif args.allow_pull:
+                print(f"Bot ID:      {ensure_profile_bot_id(profile_dir)}")
+        except (ValueError, FileNotFoundError, OSError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "pull":
+        from hermes_cli.bot_transfer import BotTransferError, pull_bot_profile
+
+        try:
+            profile_dir, bot_id = pull_bot_profile(
+                args.profile_name,
+                remote=getattr(args, "remote_url", None),
+                name=getattr(args, "clone_name", None),
+            )
+            print(f"✓ Pulled bot '{profile_dir.name}' ({bot_id})")
+            print(f"  Path: {profile_dir}")
+        except (BotTransferError, ValueError, FileExistsError, FileNotFoundError, OSError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "push":
+        from hermes_cli.bot_transfer import BotTransferError, push_bot_profile
+
+        try:
+            remote_name, bot_id = push_bot_profile(
+                args.profile_name,
+                remote=getattr(args, "remote_url", None),
+                name=getattr(args, "clone_name", None),
+            )
+            print(f"✓ Pushed bot '{remote_name}' ({bot_id})")
+        except (BotTransferError, ValueError, FileExistsError, FileNotFoundError, OSError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
     elif action == "export":
         from hermes_cli.profiles import export_profile, get_profile_export_path
 

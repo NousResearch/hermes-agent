@@ -151,6 +151,48 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         help="Profile name (default: inferred from archive)",
     )
 
+    profile_share = profile_subparsers.add_parser(
+        "share", help="Control whether a profile may be pulled from this gateway"
+    )
+    profile_share.add_argument("profile_name", help="Profile to share")
+    share_policy = profile_share.add_mutually_exclusive_group()
+    share_policy.add_argument(
+        "--allow-pull",
+        action="store_true",
+        help="Allow authenticated remote clients to clone this bot",
+    )
+    share_policy.add_argument(
+        "--deny-pull",
+        action="store_true",
+        help="Disable remote cloning for this bot",
+    )
+
+    profile_pull = profile_subparsers.add_parser(
+        "pull", help="Clone a bot from an authenticated remote gateway"
+    )
+    profile_pull.add_argument("profile_name", help="Remote profile to clone")
+    profile_pull.add_argument(
+        "--from",
+        dest="remote_url",
+        help="Remote gateway URL (default: gateway.proxy_url)",
+    )
+    profile_pull.add_argument(
+        "--name", dest="clone_name", help="Local name for the cloned bot"
+    )
+
+    profile_push = profile_subparsers.add_parser(
+        "push", help="Clone a local bot to an opt-in remote gateway"
+    )
+    profile_push.add_argument("profile_name", help="Local profile to clone")
+    profile_push.add_argument(
+        "--to",
+        dest="remote_url",
+        help="Remote gateway URL (default: gateway.proxy_url)",
+    )
+    profile_push.add_argument(
+        "--name", dest="clone_name", help="Name to use on the remote gateway"
+    )
+
     # ---------- Distribution subcommands (issue #20456) ----------
     profile_install = profile_subparsers.add_parser(
         "install",

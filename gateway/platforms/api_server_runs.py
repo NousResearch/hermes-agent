@@ -547,12 +547,15 @@ async def _handle_runs(
     session_id = body.get("session_id") or stored_session_id
     route = self._resolve_route(body.get("model"))
     agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
-    selection_error = self._request_route_conflict_error(
-        session_id=session_id,
-        gateway_session_key=gateway_session_key,
-        requested_model=agent_overrides.get("requested_model"),
-        requested_provider=agent_overrides.get("requested_provider"),
-        route=route,
+    selection_error = (
+        agent_overrides.get("request_error")
+        or self._request_route_conflict_error(
+            session_id=session_id,
+            gateway_session_key=gateway_session_key,
+            requested_model=agent_overrides.get("requested_model"),
+            requested_provider=agent_overrides.get("requested_provider"),
+            route=route,
+        )
     )
     if selection_error:
         return web.json_response(_openai_error(selection_error), status=400)

@@ -725,6 +725,39 @@ def is_grok_46_family(model: str) -> bool:
     return name == "grok-4.6" or name.startswith("grok-4.6-")
 
 
+# OpenAI/Codex Responses models that ACCEPT the ``reasoning.effort`` dial
+# on api.openai.com /v1/responses.  The Responses API rejects ANY
+# reasoning field on non-reasoning models (gpt-4o*, gpt-4.1*, ...) with
+# 400 "Unsupported parameter: 'reasoning.effort' is not supported with
+# this model" (#101424).  Verified Aug 2026: the o-series and gpt-5
+# family accept the dial; everything else rejects it.  Conservative by
+# design, mirroring the grok allowlist above: a model not listed here
+# gets no effort dial rather than a 400.
+_OPENAI_EFFORT_CAPABLE_PREFIXES = (
+    "gpt-5",
+    "o1",
+    "o3",
+    "o4",
+    "o5",
+)
+
+
+def openai_responses_supports_reasoning_effort(model: str) -> bool:
+    """Return whether an OpenAI/Codex Responses model accepts
+    ``reasoning.effort``.
+
+    Allowlist by prefix, matching bare ``gpt-5.6`` / ``o4-mini`` and
+    aggregator-prefixed ``openai/gpt-5.6`` alike (mirrors
+    ``grok_supports_reasoning_effort``).
+    """
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    if "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    return any(name.startswith(prefix) for prefix in _OPENAI_EFFORT_CAPABLE_PREFIXES)
+
+
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",

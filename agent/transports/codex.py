@@ -640,8 +640,27 @@ class ResponsesApiTransport(ProviderTransport):
             if _supported is None:
                 # OpenAI/Codex Responses backend — per-model vocabulary
                 # (live-verified: "max" is gpt-5.6-only, "minimal" always
-                # rejected). #68365 premise confirmed.
-                _supported = codex_supported_efforts(model)
+                # rejected). #68365 premise confirmed.  Only OpenAI's OWN
+                # Responses surfaces 400 when a non-reasoning model
+                # receives any reasoning field; OpenAI-compatible third
+                # parties (BYOK endpoints, proxies) accept the legacy
+                # vocabulary, so the family gate is scoped to the native
+                # OpenAI providers (#101424).
+                from agent.model_metadata import (
+                    openai_responses_supports_reasoning_effort,
+                )
+
+                _openai_native = (
+                    (params.get("provider") or "").strip().lower()
+                    in ("openai-api", "openai-codex")
+                )
+                if (
+                    _openai_native
+                    and not openai_responses_supports_reasoning_effort(model)
+                ):
+                    reasoning_enabled = False
+                else:
+                    _supported = codex_supported_efforts(model)
         reasoning_effort = clamp_effort(reasoning_effort, _supported)
 
         response_tools = _responses_tools(tools)

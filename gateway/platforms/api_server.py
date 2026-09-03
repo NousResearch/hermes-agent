@@ -491,6 +491,64 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
     }
 
 
+_DEFAULT_MODEL_ALIAS = "default"
+
+
+def _providers_agree(left: str, right: str) -> bool:
+    """True when two provider slugs resolve to the same provider.
+
+    Alias-aware: ``anthropic`` and an alias that normalizes to it (e.g. a
+    custom entry whose canonical id is ``anthropic``) count as agreeing.
+    """
+    a = (left or "").strip().lower()
+    b = (right or "").strip().lower()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    try:
+        from hermes_cli.models import normalize_provider
+
+        return bool(normalize_provider(a)) and normalize_provider(a) == normalize_provider(b)
+    except Exception:
+        return False
+
+
+def _split_prefixed_model_identifier(model: str) -> tuple[str, str]:
+    """Split a provider-prefixed model id into ``(provider, bare_model)``.
+
+    Two prefixed forms reach the API surface, and neither is a valid wire
+    model id:
+    - ``@anthropic:claude-sonnet-5`` — the WebUI model-picker format
+      (#101424; ``GET /api/models`` advertises prefixed ids so a pick is
+      unambiguous across providers);
+    - ``anthropic::claude-sonnet-5`` — the browser-runtime / session
+      format (see ``_session_runtime_request_from_body``).
+
+    The prefix is a routing hint; the remainder is the real model id.
+    Bare ids, ``vendor/model`` slash ids (handled downstream by
+    ``normalize_model_for_provider``), and anything that fails the
+    provider-slug shape check are returned unchanged with an empty
+    provider.
+    """
+    text = (model or "").strip()
+    if not text:
+        return "", text
+    provider = ""
+    bare = text
+    if text.startswith("@"):
+        provider, sep, bare = text[1:].partition(":")
+        if not sep:
+            return "", text
+    elif "::" in text:
+        provider, sep, bare = text.partition("::")
+        if not sep:
+            return "", text
+    if provider and re.match(r"^[a-zA-Z0-9_.-]{2,64}$", provider) and bare.strip():
+        return provider, bare.strip()
+    return "", text
+
+
 def _request_agent_overrides(
     body: Any,
     *,
@@ -513,18 +571,49 @@ def _request_agent_overrides(
     endpoints (session chat, /v1/runs) always allow it.  A request that
     sends an explicit ``provider`` is unambiguously Hermes-aware and is
     always honored.
+
+    Returns a dict that may carry ``request_error`` (a 400-worthy message,
+    e.g. a provider-prefixed model id disagreeing with ``provider``) which
+    callers surface before honoring anything else.
     """
     if not isinstance(body, dict):
         return {}
 
     overrides: Dict[str, Any] = {}
     provider = _clean_request_string(body.get("provider"))
+    model = _clean_request_string(body.get("model"))
+
+    # Provider-prefixed ids (``@anthropic:claude-sonnet-5`` from the WebUI
+    # picker, ``anthropic::claude-sonnet-5`` from the browser runtime) are
+    # routing hints, not wire model names — a prefixed id 404s on the
+    # provider API (#101424).  Split the prefix off, route on it when no
+    # explicit provider is given, and reject a prefix that disagrees with
+    # an explicit ``provider`` instead of guessing which one wins.
+    prefix_provider, prefixed_model = _split_prefixed_model_identifier(model)
+    if prefix_provider:
+        if provider and not _providers_agree(provider, prefix_provider):
+            overrides["request_error"] = (
+                f"model '{model}' is prefixed with provider "
+                f"'{prefix_provider}', which does not match the request's "
+                f"'provider': '{provider}'. Drop the prefix or the "
+                "'provider' field."
+            )
+            return overrides
+        model = prefixed_model
+        provider = provider or prefix_provider
+
     if provider:
         overrides["requested_provider"] = provider
 
-    model = _clean_request_string(body.get("model"))
     if model and model != virtual_model and (provider or allow_bare_model):
-        overrides["requested_model"] = model
+        if model == _DEFAULT_MODEL_ALIAS:
+            # ``default`` is a resolution instruction, not a model id:
+            # leave ``requested_model`` unset so the agent falls back to
+            # ``model.default`` from config.  A prefix provider above (or
+            # an explicit one) still routes the request (#101424).
+            pass
+        else:
+            overrides["requested_model"] = model
 
     model_options = body.get("model_options")
     if isinstance(model_options, dict):
@@ -4777,12 +4866,15 @@ class APIServerAdapter(BasePlatformAdapter):
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None
             agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
-            selection_error = self._request_route_conflict_error(
-                session_id=session_id,
-                gateway_session_key=gateway_session_key,
-                requested_model=agent_overrides.get("requested_model"),
-                requested_provider=agent_overrides.get("requested_provider"),
-                route=route,
+            selection_error = (
+                agent_overrides.get("request_error")
+                or self._request_route_conflict_error(
+                    session_id=session_id,
+                    gateway_session_key=gateway_session_key,
+                    requested_model=agent_overrides.get("requested_model"),
+                    requested_provider=agent_overrides.get("requested_provider"),
+                    route=route,
+                )
             )
             if selection_error:
                 return web.json_response(_openai_error(selection_error), status=400)
@@ -4887,12 +4979,15 @@ class APIServerAdapter(BasePlatformAdapter):
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None
             agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
-            selection_error = self._request_route_conflict_error(
-                session_id=session_id,
-                gateway_session_key=gateway_session_key,
-                requested_model=agent_overrides.get("requested_model"),
-                requested_provider=agent_overrides.get("requested_provider"),
-                route=route,
+            selection_error = (
+                agent_overrides.get("request_error")
+                or self._request_route_conflict_error(
+                    session_id=session_id,
+                    gateway_session_key=gateway_session_key,
+                    requested_model=agent_overrides.get("requested_model"),
+                    requested_provider=agent_overrides.get("requested_provider"),
+                    route=route,
+                )
             )
             if selection_error:
                 return web.json_response(_openai_error(selection_error), status=400)
@@ -5302,12 +5397,15 @@ class APIServerAdapter(BasePlatformAdapter):
             virtual_model=self._model_name,
             allow_bare_model=self._direct_model_requests,
         )
-        selection_error = self._request_route_conflict_error(
-            session_id=session_id,
-            gateway_session_key=gateway_session_key,
-            requested_model=agent_overrides.get("requested_model"),
-            requested_provider=agent_overrides.get("requested_provider"),
-            route=route,
+        selection_error = (
+            agent_overrides.get("request_error")
+            or self._request_route_conflict_error(
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+                requested_model=agent_overrides.get("requested_model"),
+                requested_provider=agent_overrides.get("requested_provider"),
+                route=route,
+            )
         )
         if selection_error:
             return web.json_response(_openai_error(selection_error), status=400)
@@ -6476,12 +6574,15 @@ class APIServerAdapter(BasePlatformAdapter):
             virtual_model=self._model_name,
             allow_bare_model=self._direct_model_requests,
         )
-        selection_error = self._request_route_conflict_error(
-            session_id=session_id,
-            gateway_session_key=gateway_session_key,
-            requested_model=agent_overrides.get("requested_model"),
-            requested_provider=agent_overrides.get("requested_provider"),
-            route=route,
+        selection_error = (
+            agent_overrides.get("request_error")
+            or self._request_route_conflict_error(
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+                requested_model=agent_overrides.get("requested_model"),
+                requested_provider=agent_overrides.get("requested_provider"),
+                route=route,
+            )
         )
         if selection_error:
             return web.json_response(_openai_error(selection_error), status=400)

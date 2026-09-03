@@ -473,6 +473,58 @@ def test_delete_archived_task_removes_related_rows(kanban_home):
         assert conn.execute("SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?", (tid,)).fetchone()[0] == 0
 
 
+def test_unarchive_task_restores_to_todo_and_preserves_history(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="restore me", assignee="worker")
+        kb.add_comment(conn, tid, "user", "keep this comment")
+        kb.claim_task(conn, tid)
+        kb.complete_task(conn, tid, result="done")
+        comments_before = len(kb.list_comments(conn, tid))
+        runs_before = len(kb.list_runs(conn, tid))
+
+        assert kb.archive_task(conn, tid) is True
+        assert kb.get_task(conn, tid).status == "archived"
+
+        assert kb.unarchive_task(conn, tid) is True
+        task = kb.get_task(conn, tid)
+        # No parents -> recompute_ready promotes todo -> ready.
+        assert task.status == "ready"
+        assert task.claim_lock is None
+        assert task.worker_pid is None
+
+        # History survives intact.
+        assert len(kb.list_comments(conn, tid)) == comments_before
+        assert len(kb.list_runs(conn, tid)) == runs_before
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "archived" in kinds
+        assert "unarchived" in kinds
+        payload = [
+            e.payload for e in kb.list_events(conn, tid) if e.kind == "unarchived"
+        ][-1]
+        assert payload["restored_status"] == "todo"
+
+
+def test_unarchive_task_with_incomplete_parent_stays_in_todo(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        child = kb.create_task(conn, title="child", parents=[parent], assignee="worker")
+        assert kb.archive_task(conn, child) is True
+
+        assert kb.unarchive_task(conn, child) is True
+        # Parent is not done -> must land in todo and stay there.
+        assert kb.get_task(conn, child).status == "todo"
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, child).status == "todo"
+
+
+def test_unarchive_task_refuses_non_archived_task(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="live one", assignee="worker")
+        assert kb.unarchive_task(conn, tid) is False
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kb.unarchive_task(conn, "t_does_not_exist") is False
+
+
 def test_delete_task_removes_task_and_cascades(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="to-delete", assignee="alice")

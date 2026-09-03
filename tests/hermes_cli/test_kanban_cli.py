@@ -70,6 +70,32 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_run_slash_unarchive_restores_archived_task(kanban_home):
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="swept by mistake", assignee="alice")
+        kb.add_comment(conn, tid, "user", "still here")
+        assert kb.archive_task(conn, tid) is True
+
+    out = kc.run_slash(f"unarchive {tid}")
+    assert f"Unarchived {tid}" in out
+
+    with kb.connect_closing() as conn:
+        # No parents -> promoted out of 'todo' by recompute_ready.
+        assert kb.get_task(conn, tid).status == "ready"
+        assert [c.body for c in kb.list_comments(conn, tid)] == ["still here"]
+        assert "unarchived" in [e.kind for e in kb.list_events(conn, tid)]
+
+
+def test_run_slash_unarchive_refuses_non_archived_task(kanban_home):
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="live card", assignee="alice")
+
+    out = kc.run_slash(f"unarchive {tid}")
+    assert "cannot unarchive" in out.lower()
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "ready"
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

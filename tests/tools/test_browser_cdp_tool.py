@@ -463,6 +463,35 @@ def test_nested_unflagged_binary_path_passes_through(cdp_server):
 # ---------------------------------------------------------------------------
 
 
+def test_registered_in_browser_toolset():
+    from tools.registry import registry
+
+    entry = registry.get_entry("browser_cdp")
+    assert entry is not None
+    # browser_cdp lives in its own toolset so its stricter check_fn
+    # (requires reachable CDP endpoint) doesn't gate the whole browser
+    # toolset — see commit 96b0f3700.
+    assert entry.toolset == "browser-cdp"
+    assert entry.schema["name"] == "browser_cdp"
+    assert entry.schema["parameters"]["required"] == ["method"]
+    assert "Chrome DevTools Protocol" in entry.schema["description"]
+    assert browser_cdp_tool.CDP_DOCS_URL in entry.schema["description"]
+    assert "web_extract" not in entry.schema["description"]
+    assert "available documentation lookup or extraction tool" in entry.schema["description"]
+
+
+def test_dispatch_through_registry(cdp_server):
+    from tools.registry import registry
+
+    cdp_server.on("Target.getTargets", lambda p, s: {"targetInfos": []})
+    raw = registry.dispatch(
+        "browser_cdp", {"method": "Target.getTargets"}, task_id="t1"
+    )
+    result = json.loads(raw)
+    assert result["success"] is True
+    assert result["method"] == "Target.getTargets"
+
+
 # ---------------------------------------------------------------------------
 # Private-network guard
 # ---------------------------------------------------------------------------

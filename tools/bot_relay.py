@@ -33,6 +33,8 @@ the sender fails fast instead of queueing a DM nobody will drain (#93091).
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -54,6 +56,7 @@ OUTBOX_DIR = "outbox"
 CLAIMED_DIR = "claimed"
 REPLIES_DIR = "replies"
 LOCKS_DIR = "locks"
+DELIVERED_DIR = "delivered"
 
 # Fallback wait budget for a queued delivery turn when config is unreadable.
 # The real knob is ``bot_mode.turn_wait_seconds`` in config.yaml.
@@ -72,6 +75,7 @@ STALE_AFTER_SECONDS = 6 * 3600
 # Envelopes older than the TTL are refused at drain time with a
 # 'queued_expired' error reply instead of being delivered late.
 DEFAULT_ENVELOPE_TTL_SECONDS = 900
+DELIVERY_RECEIPT_RETENTION_SECONDS = 7 * 24 * 3600
 
 # A roster older than this proves nothing about who is offline: the Desktop
 # pushes roster.sync on connection-state changes, so only a recently-written
@@ -100,7 +104,7 @@ def relay_root(root: Path | str) -> Path:
 
 def _ensure_dirs(root: Path | str) -> Path:
     base = relay_root(root)
-    for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR):
+    for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR, DELIVERED_DIR):
         (base / sub).mkdir(parents=True, exist_ok=True)
     return base
 
@@ -312,6 +316,7 @@ def enqueue_envelope(
     message: str,
     sender_profile: str,
     sender_handle: str,
+    metadata: Optional[dict] = None,
 ) -> dict:
     """Queue a cross-connection DM for the Desktop relay. Returns envelope.
 
@@ -331,14 +336,46 @@ def enqueue_envelope(
             "Try again once that machine reconnects to the Desktop.",
         )
     base = _ensure_dirs(root)
+    now = int(time.time())
+    envelope_id = uuid.uuid4().hex
+    meta = metadata if isinstance(metadata, dict) else {}
+    message_type = str(meta.get("type") or "REQUEST").upper()
+    if message_type not in {"REQUEST", "RESPONSE", "HANDOFF", "BLOCKER", "REVIEW", "DECISION", "FYI"}:
+        raise ValueError(f"invalid message type: {message_type}")
+    mutation_scope = str(meta.get("mutation_scope") or "none").strip()[:120]
+    production_scope = str(meta.get("production_scope") or "none").strip()[:120]
+    mission_id = str(meta.get("mission_id") or "").strip()[:160]
+    work_item_id = str(meta.get("work_item_id") or "").strip()[:160]
+    if (mutation_scope != "none" or production_scope != "none") and not (mission_id and work_item_id):
+        raise ValueError("mutation/production messages require mission_id and work_item_id")
+    ttl = max(1, min(int(meta.get("ttl_seconds") or _envelope_ttl_seconds()), 86400))
+    evidence_refs = meta.get("evidence_refs") if isinstance(meta.get("evidence_refs"), list) else []
     envelope = {
-        "id": uuid.uuid4().hex,
-        "created_at": int(time.time()),
+        "schema": "asm-hermes-a2a-envelope/v2",
+        "id": envelope_id,
+        "message_id": envelope_id,
+        "idempotency_key": str(meta.get("idempotency_key") or f"dm:{envelope_id}")[:240],
+        "type": message_type,
+        "created_at": now,
+        "expires_at": now + ttl,
+        "response_due": now + ttl,
         "from_profile": sender_profile,
         "from_handle": sender_handle,
+        "from_agent": sender_handle,
         "target_connection": target["connection_id"],
         "target_profile": target["profile"],
         "target_handle": target["handle"],
+        "to_agent": target["handle"],
+        "mission_id": mission_id,
+        "work_item_id": work_item_id,
+        "subject": str(meta.get("subject") or str(message).splitlines()[0])[:160],
+        "request": {
+            "question": str(message),
+            "required_output": [str(v)[:80] for v in (meta.get("required_output") or ["response", "evidence", "unknowns"])][:12],
+        },
+        "scope": {"mutation": mutation_scope, "production": production_scope},
+        "evidence_refs": [str(v)[:500] for v in evidence_refs][:20],
+        "authority_effect": "none",
         "message": message,
     }
     path = base / OUTBOX_DIR / f"{envelope['id']}.json"
@@ -347,6 +384,94 @@ def enqueue_envelope(
         json.dump(envelope, f, ensure_ascii=False)
     os.replace(tmp, path)
     return envelope
+
+
+def delivery_receipt_path(root: Path | str, idempotency_key: str) -> Path:
+    """Stable, non-secret filename for one target-side delivery decision."""
+    digest = hashlib.sha256(str(idempotency_key).encode("utf-8")).hexdigest()
+    return _ensure_dirs(root) / DELIVERED_DIR / f"{digest}.json"
+
+
+def begin_idempotent_delivery(
+    root: Path | str, idempotency_key: str, message_id: str, delivery_fingerprint: str = ""
+) -> dict:
+    """Atomically admit one delivery or return its prior durable disposition.
+
+    A pre-existing ``started`` receipt is deliberately held as ambiguous after
+    a crash; replaying it could cause a second agent turn and duplicate tools.
+    """
+    key = str(idempotency_key or "").strip()
+    if not key:
+        return {"disposition": "untracked"}
+    path = delivery_receipt_path(root, key)
+    payload = {
+        "schema": "asm-hermes-a2a-delivery/v1",
+        "idempotency_sha256": path.stem,
+        "message_id": str(message_id or "")[:160],
+        "delivery_sha256": hashlib.sha256(str(delivery_fingerprint).encode("utf-8")).hexdigest(),
+        "status": "started",
+        "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        try:
+            prior = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {"disposition": "ambiguous", "status": "unreadable"}
+        if prior.get("delivery_sha256") != payload["delivery_sha256"]:
+            return {"disposition": "conflict"}
+        if prior.get("status") == "completed":
+            return {"disposition": "replay", "reply": "Duplicate suppressed: this message was already delivered."}
+        return {"disposition": "ambiguous", "status": str(prior.get("status") or "unknown")}
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return {"disposition": "admitted", "path": str(path)}
+
+
+def complete_idempotent_delivery(root: Path | str, idempotency_key: str, reply: str) -> None:
+    """Atomically mark an admitted delivery complete for safe replay."""
+    key = str(idempotency_key or "").strip()
+    if not key:
+        return
+    path = delivery_receipt_path(root, key)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {"schema": "asm-hermes-a2a-delivery/v1", "idempotency_sha256": path.stem}
+    payload.update({
+        "status": "completed",
+        "completed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "reply_sha256": hashlib.sha256(str(reply or "").encode("utf-8")).hexdigest(),
+    })
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".delivery-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def cancel_idempotent_delivery(root: Path | str, idempotency_key: str) -> None:
+    """Remove a receipt only when admission definitively caused no agent turn."""
+    key = str(idempotency_key or "").strip()
+    if not key:
+        return
+    path = delivery_receipt_path(root, key)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("status") == "started":
+            path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def claim_pending_envelopes(root: Path | str) -> list[dict]:
@@ -364,37 +489,33 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     out: list[dict] = []
     outbox = base / OUTBOX_DIR
     for path in sorted(outbox.glob("*.json")):
-        if ttl > 0:
-            expired = False
+        expired = False
+        try:
+            env = json.loads(path.read_text(encoding="utf-8"))
+            created = float(env.get("created_at") or path.stat().st_mtime)
+            explicit_expiry = float(env.get("expires_at") or 0)
+            if (explicit_expiry > 0 and now >= explicit_expiry) or (ttl > 0 and now - created > ttl):
+                expired = True
+                handle = str(env.get("target_handle") or "?")
+                conn = str(env.get("target_connection") or "?")
+                write_reply(
+                    root,
+                    str(env.get("id") or ""),
+                    error=(
+                        f"queued message to @{handle} on {conn} expired after "
+                        "its bounded TTL waiting for the Desktop to drain it — it was "
+                        "NOT delivered. Resend once the Desktop reconnects."
+                    ),
+                    reason="queued_expired",
+                )
+        except (OSError, ValueError):
+            pass
+        if expired:
             try:
-                env = json.loads(path.read_text(encoding="utf-8"))
-                created = float(env.get("created_at") or path.stat().st_mtime)
-                if now - created > ttl:
-                    expired = True
-                    handle = str(env.get("target_handle") or "?")
-                    conn = str(env.get("target_connection") or "?")
-                    # 'queued_expired' matches the #93091 item-1 reason enum.
-                    write_reply(
-                        root,
-                        str(env.get("id") or ""),
-                        error=(
-                            f"queued message to @{handle} on {conn} expired after "
-                            f"{ttl}s waiting for the Desktop to drain it — it was "
-                            "NOT delivered. Resend once the Desktop reconnects."
-                        ),
-                        reason="queued_expired",
-                    )
-            except (OSError, ValueError):
-                # Unreadable envelope or invalid id: if it already counted as
-                # expired, still remove it below; otherwise let the normal
-                # claim attempt below deal with it.
+                path.unlink()
+            except OSError:
                 pass
-            if expired:
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-                continue
+            continue
         claimed = base / CLAIMED_DIR / path.name
         try:
             os.replace(path, claimed)  # atomic claim
@@ -440,7 +561,8 @@ def write_reply(
 
 
 def _sweep_stale(base: Path, *, now: float | None = None) -> int:
-    cutoff = (time.time() if now is None else now) - STALE_AFTER_SECONDS
+    current = time.time() if now is None else now
+    cutoff = current - STALE_AFTER_SECONDS
     removed = 0
     for sub in (CLAIMED_DIR, REPLIES_DIR, OUTBOX_DIR):
         try:
@@ -453,6 +575,17 @@ def _sweep_stale(base: Path, *, now: float | None = None) -> int:
                     continue
         except OSError:
             continue
+    delivered_cutoff = current - DELIVERY_RECEIPT_RETENTION_SECONDS
+    try:
+        for path in (base / DELIVERED_DIR).glob("*.json"):
+            try:
+                if path.stat().st_mtime < delivered_cutoff:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
     return removed
 
 

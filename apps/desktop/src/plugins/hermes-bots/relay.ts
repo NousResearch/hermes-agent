@@ -131,7 +131,10 @@ interface RelayAgentRow {
 /** A queued cross-connection message drained from a gateway's outbox. */
 interface RelayEnvelope {
   id?: string
+  idempotency_key?: string
   message?: string
+  message_id?: string
+  schema?: string
   target_connection?: string
   target_profile?: string
 }
@@ -558,7 +561,11 @@ async function drainRelayOutboxes() {
             'bot_relay.deliver',
             {
               profile: String(envelope?.target_profile || ''),
-              message: String(envelope?.message || '')
+              message: String(envelope?.message || ''),
+              message_id: String(envelope?.message_id || envelopeId),
+              idempotency_key: String(envelope?.idempotency_key || envelopeId),
+              envelope_schema: String(envelope?.schema || ''),
+              envelope
             },
             RELAY_DELIVER_TIMEOUT_MS
           )

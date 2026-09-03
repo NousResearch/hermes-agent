@@ -119,6 +119,16 @@ def message_agent_tool_schema() -> dict:
                             "'Message from …' prefix — it is added automatically."
                         ),
                     },
+                    "message_type": {"type": "string", "enum": ["REQUEST", "RESPONSE", "HANDOFF", "BLOCKER", "REVIEW", "DECISION", "FYI"]},
+                    "subject": {"type": "string", "description": "Short bounded subject."},
+                    "mission_id": {"type": "string", "description": "Canonical mission or Kanban identity for durable work."},
+                    "work_item_id": {"type": "string", "description": "Canonical Fleet work-item identity for durable work."},
+                    "idempotency_key": {"type": "string", "description": "Stable key for a retry of the same logical message."},
+                    "mutation_scope": {"type": "string", "description": "Allowed mutation scope; defaults to none."},
+                    "production_scope": {"type": "string", "description": "Allowed production scope; defaults to none."},
+                    "required_output": {"type": "array", "items": {"type": "string"}},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
                 },
                 "required": ["target", "message"],
             },
@@ -243,6 +253,16 @@ def message_agent_tool(
     message: str = "",
     task_id: Optional[str] = None,
     agent: Any = None,
+    message_type: str = "REQUEST",
+    subject: str = "",
+    mission_id: str = "",
+    work_item_id: str = "",
+    idempotency_key: str = "",
+    mutation_scope: str = "none",
+    production_scope: str = "none",
+    required_output: Optional[list] = None,
+    evidence_refs: Optional[list] = None,
+    ttl_seconds: int = 900,
 ) -> str:
     """Deliver ``message`` to ``target``'s Bot Chat. Returns a JSON ack/error.
 
@@ -337,7 +357,12 @@ def message_agent_tool(
         # relay roster lists agents on the other connections; delivery rides
         # the Desktop's own persistent socket to that gateway.
         relayed = _try_relay_delivery(
-            root, raw_target, body, me, sender_handle, task_id=task_id, agent=agent
+            root, raw_target, body, me, sender_handle, task_id=task_id, agent=agent,
+            metadata={"type": message_type, "subject": subject, "mission_id": mission_id,
+                      "work_item_id": work_item_id or str(task_id or ""), "idempotency_key": idempotency_key,
+                      "mutation_scope": mutation_scope, "production_scope": production_scope,
+                      "required_output": required_output or [], "evidence_refs": evidence_refs or [],
+                      "ttl_seconds": ttl_seconds},
         )
         if relayed is not None:
             return relayed
@@ -353,7 +378,12 @@ def message_agent_tool(
         # 'default' messaging the cloud 'default') — try the relay before
         # calling it a self-message.
         relayed = _try_relay_delivery(
-            root, raw_target, body, me, sender_handle, task_id=task_id, agent=agent
+            root, raw_target, body, me, sender_handle, task_id=task_id, agent=agent,
+            metadata={"type": message_type, "subject": subject, "mission_id": mission_id,
+                      "work_item_id": work_item_id or str(task_id or ""), "idempotency_key": idempotency_key,
+                      "mutation_scope": mutation_scope, "production_scope": production_scope,
+                      "required_output": required_output or [], "evidence_refs": evidence_refs or [],
+                      "ttl_seconds": ttl_seconds},
         )
         if relayed is not None:
             return relayed
@@ -389,6 +419,7 @@ def _try_relay_delivery(
     *,
     task_id: Optional[str],
     agent: Any,
+    metadata: Optional[dict] = None,
 ) -> Optional[str]:
     """Cross-connection delivery via the Desktop relay, or None if the
     target doesn't resolve against the relay roster.
@@ -430,6 +461,7 @@ def _try_relay_delivery(
                 message=f"Message from 🤖 {sender_handle} (@{sender_handle}): {body}",
                 sender_profile=me,
                 sender_handle=sender_handle,
+                metadata=metadata,
             )
         except EnvelopeRefusedError as exc:
             # Fail fast: target definitively offline — nothing was queued.

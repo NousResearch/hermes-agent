@@ -118,7 +118,60 @@ def test_enqueue_claim_is_atomic_and_single_shot(root):
     assert [e["id"] for e in claimed] == [env["id"]]
     assert claimed[0]["target_connection"] == "ssh-vps"
     assert claimed[0]["message"] == "hi"
+    assert claimed[0]["schema"] == "asm-hermes-a2a-envelope/v2"
+    assert claimed[0]["message_id"] == env["id"]
+    assert claimed[0]["scope"] == {"mutation": "none", "production": "none"}
     # second drain: nothing (no double delivery)
+    assert bot_relay.claim_pending_envelopes(root) == []
+
+
+def test_consequential_envelope_requires_work_binding(root):
+    target = _rows()[0]
+    with pytest.raises(ValueError, match="mission_id and work_item_id"):
+        bot_relay.enqueue_envelope(
+            root, target=target, message="deploy", sender_profile="default",
+            sender_handle="hermes", metadata={"production_scope": "release"},
+        )
+
+
+def test_idempotent_delivery_replays_completed_result_and_holds_ambiguous(root):
+    first = bot_relay.begin_idempotent_delivery(root, "work:1", "a" * 32, "ops\0same")
+    assert first["disposition"] == "admitted"
+    duplicate = bot_relay.begin_idempotent_delivery(root, "work:1", "a" * 32, "ops\0same")
+    assert duplicate["disposition"] == "ambiguous"
+    bot_relay.complete_idempotent_delivery(root, "work:1", "done")
+    replay = bot_relay.begin_idempotent_delivery(root, "work:1", "a" * 32, "ops\0same")
+    assert replay["disposition"] == "replay"
+    assert "already delivered" in replay["reply"]
+    conflict = bot_relay.begin_idempotent_delivery(root, "work:1", "b" * 32, "other\0different")
+    assert conflict["disposition"] == "conflict"
+
+
+def test_per_envelope_expiry_overrides_global_ttl(root, monkeypatch):
+    target = _rows()[0]
+    monkeypatch.setattr(bot_relay, "_envelope_ttl_seconds", lambda: 900)
+    env = bot_relay.enqueue_envelope(
+        root, target=target, message="stale", sender_profile="default",
+        sender_handle="hermes", metadata={"ttl_seconds": 1},
+    )
+    path = bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR / f"{env['id']}.json"
+    payload = json.loads(path.read_text())
+    payload["expires_at"] = payload["created_at"] - 1
+    path.write_text(json.dumps(payload))
+    assert bot_relay.claim_pending_envelopes(root) == []
+
+
+def test_per_envelope_expiry_applies_when_global_ttl_disabled(root, monkeypatch):
+    monkeypatch.setattr(bot_relay, "_envelope_ttl_seconds", lambda: 0)
+    target = _rows()[0]
+    env = bot_relay.enqueue_envelope(
+        root, target=target, message="stale", sender_profile="default",
+        sender_handle="hermes", metadata={"ttl_seconds": 1},
+    )
+    path = bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR / f"{env['id']}.json"
+    payload = json.loads(path.read_text())
+    payload["expires_at"] = payload["created_at"] - 1
+    path.write_text(json.dumps(payload))
     assert bot_relay.claim_pending_envelopes(root) == []
 
 

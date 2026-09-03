@@ -12,6 +12,7 @@ The Desktop's relay door on each connected gateway. Contracts:
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -104,6 +105,81 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
 def test_deliver_requires_params(home):
     err = srv._methods["bot_relay.deliver"](1, {"profile": "", "message": ""})
     assert "error" in err
+
+
+def test_deliver_idempotency_replays_without_second_agent_turn(home, monkeypatch):
+    calls = []
+
+    class _Proc:
+        returncode, stdout, stderr = 0, "one result", ""
+
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: calls.append(a) or _Proc())
+    params = {
+        "profile": "ops",
+        "message": "ping",
+        "message_id": "a" * 32,
+        "idempotency_key": "mission:42:message:1",
+        "envelope_schema": "asm-hermes-a2a-envelope/v2",
+    }
+    params["envelope"] = {
+        "schema": params["envelope_schema"],
+        "message_id": params["message_id"],
+        "idempotency_key": params["idempotency_key"],
+        "type": "REQUEST",
+        "from_agent": "hermes",
+        "to_agent": "ops",
+        "target_profile": "ops",
+        "message": "ping",
+        "scope": {"mutation": "none", "production": "none"},
+        "expires_at": time.time() + 60,
+        "authority_effect": "none",
+    }
+    first = _result(srv._methods["bot_relay.deliver"](1, params))
+    second = _result(srv._methods["bot_relay.deliver"](2, params))
+    assert first["reply"] == "one result"
+    assert "already delivered" in second["reply"]
+    assert second["replayed"] is True
+    assert len(calls) == 1
+
+    changed = dict(params)
+    changed["envelope"] = {**params["envelope"], "mission_id": "different-mission"}
+    err = srv._methods["bot_relay.deliver"](3, changed)
+    assert err["error"]["data"]["reason"] == "idempotency_conflict"
+    assert len(calls) == 1
+
+
+def test_deliver_holds_ambiguous_prior_attempt(home):
+    fingerprint = json.dumps(
+        {
+            "target_profile": "ops", "message": "ping", "type": "legacy",
+            "from_agent": "", "to_agent": "ops", "mission_id": "",
+            "work_item_id": "", "request": {}, "scope": {},
+            "authority_effect": "none",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    bot_relay.begin_idempotent_delivery(home, "mission:42:ambiguous", "b" * 32, fingerprint)
+    err = srv._methods["bot_relay.deliver"](
+        1,
+        {
+            "profile": "ops",
+            "message": "ping",
+            "message_id": "b" * 32,
+            "idempotency_key": "mission:42:ambiguous",
+        },
+    )
+    assert err["error"]["data"]["reason"] == "duplicate_ambiguous"
+
+
+def test_deliver_rejects_unknown_structured_schema(home, monkeypatch):
+    calls = []
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: calls.append(a))
+    err = srv._methods["bot_relay.deliver"](
+        1, {"profile": "ops", "message": "ping", "envelope_schema": "asm-hermes-a2a-envelope/v999"}
+    )
+    assert "unsupported" in err["error"]["message"]
+    assert not calls
 
 
 def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch):

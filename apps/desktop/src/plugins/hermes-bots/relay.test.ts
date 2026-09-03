@@ -588,7 +588,10 @@ describe('the drain loop wires drain → deliver → reply', () => {
 
     expect(hostMock.warmAgent).toHaveBeenCalledWith('b', 'ops')
     expect(calls.filter(call => call.method === 'bot_relay.deliver')).toEqual([
-      expect.objectContaining({ connectionId: 'b', params: { message: 'status?', profile: 'ops' } })
+      expect.objectContaining({
+        connectionId: 'b',
+        params: expect.objectContaining({ message: 'status?', profile: 'ops' })
+      })
     ])
     expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
       id: 'env-1',

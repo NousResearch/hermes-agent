@@ -2121,6 +2121,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     message=next_args.get("message", ""),
                     task_id=effective_task_id,
                     agent=agent,
+                    message_type=next_args.get("message_type", "REQUEST"),
+                    subject=next_args.get("subject", ""),
+                    mission_id=next_args.get("mission_id", ""),
+                    work_item_id=next_args.get("work_item_id", ""),
+                    idempotency_key=next_args.get("idempotency_key", ""),
+                    mutation_scope=next_args.get("mutation_scope", "none"),
+                    production_scope=next_args.get("production_scope", "none"),
+                    required_output=next_args.get("required_output", []),
+                    evidence_refs=next_args.get("evidence_refs", []),
+                    ttl_seconds=next_args.get("ttl_seconds", 900),
                 )
             function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                 agent,

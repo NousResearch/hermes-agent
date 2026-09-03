@@ -83,6 +83,7 @@ def _(rid, params: dict) -> dict:
     design (the Desktop calls it from its relay worker, off any UI path;
     the RPC pool keeps it off the WS reader thread).
     """
+    import json
     import os
     import subprocess
     import tempfile
@@ -90,11 +91,21 @@ def _(rid, params: dict) -> dict:
 
     profile = str(params.get("profile") or "").strip()
     message = str(params.get("message") or "").strip()
+    message_id = str(params.get("message_id") or "").strip()
+    idempotency_key = str(params.get("idempotency_key") or "").strip()
+    envelope_schema = str(params.get("envelope_schema") or "").strip()
+    envelope = params.get("envelope") if isinstance(params.get("envelope"), dict) else {}
     if not profile or not message:
         return _err(rid, 4090, "profile and message required")
     try:
         from tools.bot_mode_dm import MESSAGE_MAX_CHARS
-        from tools.bot_relay import acquire_turn_lock, local_delivery_command
+        from tools.bot_relay import (
+            acquire_turn_lock,
+            begin_idempotent_delivery,
+            cancel_idempotent_delivery,
+            complete_idempotent_delivery,
+            local_delivery_command,
+        )
 
         if len(message) > MESSAGE_MAX_CHARS + 200:  # + attribution headroom
             return _err(rid, 4091, "message too long")
@@ -108,6 +119,57 @@ def _(rid, params: dict) -> dict:
         resolved = "default" if profile.lower() == "hermes" else profile
         if resolved not in known:
             return _err(rid, 4092, f"no profile '{profile}' on this gateway")
+
+        if envelope_schema and envelope_schema != "asm-hermes-a2a-envelope/v2":
+            return _err(rid, 4097, f"unsupported structured envelope schema: {envelope_schema}")
+        if envelope_schema == "asm-hermes-a2a-envelope/v2":
+            import re
+            import time
+
+            required = ("message_id", "idempotency_key", "type", "from_agent", "to_agent", "scope", "expires_at")
+            missing = [key for key in required if not envelope.get(key)]
+            if missing:
+                return _err(rid, 4097, f"structured envelope missing: {', '.join(missing)}")
+            if not re.fullmatch(r"[0-9a-f]{32}", str(envelope.get("message_id") or "")):
+                return _err(rid, 4097, "structured envelope has invalid message_id")
+            if str(envelope.get("message_id")) != message_id or str(envelope.get("idempotency_key")) != idempotency_key:
+                return _err(rid, 4097, "structured envelope identity mismatch")
+            if str(envelope.get("message") or "") != message or str(envelope.get("target_profile") or "") != profile:
+                return _err(rid, 4097, "structured envelope target or message mismatch")
+            if str(envelope.get("type")) not in {"REQUEST", "RESPONSE", "HANDOFF", "BLOCKER", "REVIEW", "DECISION", "FYI"}:
+                return _err(rid, 4097, "structured envelope has invalid type")
+            if float(envelope.get("expires_at") or 0) <= time.time():
+                return _err(rid, 4098, "structured envelope expired", data={"reason": "queued_expired"})
+            scope = envelope.get("scope") if isinstance(envelope.get("scope"), dict) else {}
+            consequential = str(scope.get("mutation") or "none") != "none" or str(scope.get("production") or "none") != "none"
+            if consequential and not (envelope.get("mission_id") and envelope.get("work_item_id")):
+                return _err(rid, 4099, "consequential message lacks mission/work binding", data={"reason": "authority_missing"})
+            if envelope.get("authority_effect") != "none":
+                return _err(rid, 4099, "bot messages cannot grant authority", data={"reason": "authority_escalation"})
+
+        semantic_envelope = {
+            "target_profile": resolved,
+            "message": message,
+            "type": envelope.get("type") if envelope_schema else "legacy",
+            "from_agent": envelope.get("from_agent") if envelope_schema else "",
+            "to_agent": envelope.get("to_agent") if envelope_schema else resolved,
+            "mission_id": envelope.get("mission_id") if envelope_schema else "",
+            "work_item_id": envelope.get("work_item_id") if envelope_schema else "",
+            "request": envelope.get("request") if envelope_schema else {},
+            "scope": envelope.get("scope") if envelope_schema else {},
+            "authority_effect": envelope.get("authority_effect") if envelope_schema else "none",
+        }
+        delivery_fingerprint = json.dumps(semantic_envelope, sort_keys=True, separators=(",", ":"))
+
+        def _admit_once():
+            admission = begin_idempotent_delivery(root, idempotency_key, message_id, delivery_fingerprint)
+            if admission.get("disposition") == "replay":
+                return _ok(rid, {"reply": admission.get("reply", ""), "replayed": True})
+            if admission.get("disposition") == "ambiguous":
+                return _err(rid, 4095, "duplicate delivery has an ambiguous prior outcome", data={"reason": "duplicate_ambiguous"})
+            if admission.get("disposition") == "conflict":
+                return _err(rid, 4096, "idempotency key was already used for a different delivery", data={"reason": "idempotency_conflict"})
+            return None
 
         # #100523: when THIS gateway already hosts the target's Bot Chat live
         # (the Desktop has it open), the subprocess transport is fenced out by
@@ -133,15 +195,21 @@ def _(rid, params: dict) -> dict:
 
         live_sid = _live_bot_chat_sid(resolved)
         if live_sid:
+            prior = _admit_once()
+            if prior is not None:
+                return prior
             # queued=True: a teammate's DM runs as the NEXT turn. It must never
             # interrupt or steer a turn already in flight (the default busy
             # mode does); hundreds of arrivals simply queue in arrival order.
             submitted = _methods["prompt.submit"](rid, {"session_id": live_sid, "text": message, "queued": True})
             if "error" in submitted:
+                cancel_idempotent_delivery(root, idempotency_key)
                 return submitted
+            reply = f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."
+            complete_idempotent_delivery(root, idempotency_key, reply)
             return _ok(
                 rid,
-                {"reply": f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."},
+                {"reply": reply},
             )
 
         fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
@@ -156,6 +224,9 @@ def _(rid, params: dict) -> dict:
             # policy grants one bounded re-run — so clients calling
             # bot_relay.deliver must tolerate ~1320s before assuming failure.
             with acquire_turn_lock(root, resolved):
+                prior = _admit_once()
+                if prior is not None:
+                    return prior
                 proc = subprocess.run(
                     local_delivery_command(resolved, tmp),
                     capture_output=True,
@@ -203,7 +274,9 @@ def _(rid, params: dict) -> dict:
                 f"delivery turn failed: {detail or proc.returncode}",
                 data={"reason": classify_agent_error(detail)},
             )
-        return _ok(rid, {"reply": (proc.stdout or "").strip()})
+        reply = (proc.stdout or "").strip()
+        complete_idempotent_delivery(root, idempotency_key, reply)
+        return _ok(rid, {"reply": reply})
     except subprocess.TimeoutExpired:
         return _err(rid, 5093, "delivery turn timed out")
     except Exception as e:

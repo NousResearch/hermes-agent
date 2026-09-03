@@ -31,6 +31,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| [**agent-merge-conflict-arbiter**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-agent-merge-conflict-arbiter) | Neutral arbiter for merge conflicts between two agents. |
 | [**antigravity-cli**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-antigravity-cli) | Operate the Antigravity CLI (agy): plugins, auth, sandbox. |
 | [**blackbox**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox) | Delegate coding tasks to the Blackbox AI multi-model CLI. |
 | [**grok**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok) | Delegate coding to xAI Grok Build CLI (features, PRs). |
@@ -190,6 +191,12 @@ hermes skills uninstall <skill-name>
 | [**unsloth**](/docs/user-guide/skills/optional/mlops/mlops-training-unsloth) | Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM. |
 | [**weights-and-biases**](/docs/user-guide/skills/optional/mlops/mlops-evaluation-weights-and-biases) | W&B: log ML experiments, sweeps, model registry, dashboards. |
 | [**whisper**](/docs/user-guide/skills/optional/mlops/mlops-whisper) | Transcribe and translate speech in 99 languages. |
+
+## note-taking
+
+| Skill | Description |
+|-------|-------------|
+| [**agent-tool-docs**](/docs/user-guide/skills/optional/note-taking/note-taking-agent-tool-docs) | Read a local LLM-wiki before using a complex tool or skill. |
 
 ## payments
 

@@ -79,16 +79,24 @@ def _is_glm_5_3(model: str | None) -> bool:
 
 
 def _glm_5_2_reasoning_effort(
-    reasoning_config: dict | None, *, model: str | None = None
+    reasoning_config: dict | None,
+    *,
+    model: str | None = None,
+    base_url: str | None = None,
 ) -> str | None:
     """Map Hermes reasoning effort onto GLM's native vocabulary.
 
     GLM-5.2 supports two enabled effort levels (``high``/``max``);
-    GLM-5.3 supports the graded ``low``/``medium``/``high``/``max`` scale.
-    ``xhigh``/``max``/``ultra`` request the top tier; anything below the
-    model's floor clamps to that floor. When reasoning is explicitly
-    disabled, or no effort preference is supplied, the server default is
-    left untouched.
+    GLM-5.3 supports the graded ``low``/``medium``/``high``/``max`` scale on
+    the international endpoint (api.z.ai, issue #91789). The China endpoint
+    (open.bigmodel.cn) rejects ``medium`` for GLM-5.3 with the same
+    "always-thinking" 400 the OX Alpha models return there — its accepted
+    set is ``low``/``high``/``max`` (#96222). ``xhigh``/``max``/``ultra``
+    request the top tier; anything below the model's floor clamps to that
+    floor; on the China endpoint ``medium`` clamps to ``low``
+    (nearest-weaker, the clamp_effort default — no silent escalation).
+    When reasoning is explicitly disabled, or no effort preference is
+    supplied, the server default is left untouched.
     """
     if not isinstance(reasoning_config, dict):
         return None
@@ -110,8 +118,18 @@ def _glm_5_2_reasoning_effort(
         clamp_effort,
     )
 
+    # The China endpoint (open.bigmodel.cn) serves GLM-5.3 with the same
+    # always-thinking rule as the OX Alpha models there: medium is a 400,
+    # only low/high/max are accepted (#96222). An unknown/absent base_url
+    # keeps the internationally verified graded scale — fail-open to the
+    # documented vocabulary rather than second-guessing relays.
+    _china_endpoint = "open.bigmodel.cn" in (base_url or "")
+
     if _is_glm_5_3(model):
-        efforts, overrides, floor = GLM53_EFFORTS, GLM53_OVERRIDES, "low"
+        if _china_endpoint:
+            efforts, overrides, floor = ("low", "high", "max"), {"xhigh": "max"}, "low"
+        else:
+            efforts, overrides, floor = GLM53_EFFORTS, GLM53_OVERRIDES, "low"
     else:
         efforts, overrides, floor = GLM52_EFFORTS, GLM52_OVERRIDES, "high"
 
@@ -123,7 +141,12 @@ class ZaiProfile(ProviderProfile):
     """Z.AI / GLM — extra_body.thinking on/off + GLM-5.2 reasoning_effort."""
 
     def build_api_kwargs_extras(
-        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+        self,
+        *,
+        reasoning_config: dict | None = None,
+        model: str | None = None,
+        base_url: str | None = None,
+        **context,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
@@ -138,7 +161,9 @@ class ZaiProfile(ProviderProfile):
             extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
 
         if _is_glm_5_2(model):
-            effort = _glm_5_2_reasoning_effort(reasoning_config, model=model)
+            effort = _glm_5_2_reasoning_effort(
+                reasoning_config, model=model, base_url=base_url
+            )
             if effort is not None:
                 top_level["reasoning_effort"] = effort
 

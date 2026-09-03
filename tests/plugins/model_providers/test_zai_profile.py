@@ -173,6 +173,48 @@ class TestZaiGLM53ReasoningEffort:
         )
         assert top_level == {"reasoning_effort": "low"}
 
+    @pytest.mark.parametrize(
+        ("effort", "expected"),
+        [
+            ("low", "low"),
+            # medium is a 400 on the China endpoint (same always-thinking
+            # rule as the OX Alpha models there) — nearest-weaker is low.
+            ("medium", "low"),
+            ("high", "high"),
+            ("max", "max"),
+            ("xhigh", "max"),
+        ],
+    )
+    def test_china_endpoint_glm53_drops_medium(
+        self, zai_profile, effort, expected
+    ):
+        """#96222: open.bigmodel.cn serves GLM-5.3 with low/high/max only."""
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="glm-5.3",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+        )
+        assert top_level == {"reasoning_effort": expected}
+
+    def test_unknown_base_url_keeps_graded_scale(self, zai_profile):
+        """An absent/relay base_url stays on the internationally verified
+        vocabulary — fail-open rather than second-guessing relays."""
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="glm-5.3",
+            base_url=None,
+        )
+        assert top_level == {"reasoning_effort": "medium"}
+
+    def test_china_endpoint_glm52_unchanged(self, zai_profile):
+        """GLM-5.2's high/max vocabulary is endpoint-independent."""
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="glm-5.2",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+        )
+        assert top_level == {"reasoning_effort": "high"}
+
     def test_glm_5_2_still_clamps_low_to_high(self, zai_profile):
         """The 5.3 widening must not leak into 5.2's two-level wire."""
         _, top_level = zai_profile.build_api_kwargs_extras(

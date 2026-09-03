@@ -1020,6 +1020,14 @@ class GatewayConfig:
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
+    # Reset notices (manual /new-//reset replies and auto-reset
+    # notifications) append a session-info block: model, provider, context
+    # window. Set False to omit that block — e.g. multi-user group chats
+    # where the operator prefers not to advertise the runtime identity.
+    # The block is emitted by the gateway itself, so no system-prompt
+    # instruction can suppress it; only this switch can.
+    reset_notice_session_info: bool = True
+
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
@@ -1161,6 +1169,7 @@ class GatewayConfig:
             "loop_watchdog_probe_timeout_s": self.loop_watchdog_probe_timeout_s,
             "loop_watchdog_max_strikes": self.loop_watchdog_max_strikes,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
+            "reset_notice_session_info": self.reset_notice_session_info,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
             "profile_routes": [
@@ -1346,6 +1355,9 @@ class GatewayConfig:
             loop_watchdog_max_strikes=loop_watchdog_max_strikes,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
+            reset_notice_session_info=_coerce_bool(
+                data.get("reset_notice_session_info"), True
+            ),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=profile_routes,

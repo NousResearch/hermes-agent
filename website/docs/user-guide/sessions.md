@@ -797,6 +797,19 @@ Before a session is auto-reset, the agent is given a turn to save any important 
 
 Sessions with **active background processes** are never auto-reset, regardless of policy.
 
+Reset notices — the `/new`-`/reset` confirmation and the auto-reset
+notification — append a session-info block showing the model, provider, and
+context window. In multi-user group chats you may prefer not to advertise the
+runtime identity; disable the block with:
+
+```yaml
+gateway:
+  reset_notice_session_info: false
+```
+
+The block is emitted by the gateway itself (not the model), so a system-prompt
+instruction cannot suppress it — only this setting can.
+
 ### Continuity After Crashes and Restarts
 
 A gateway chat is designed to be **one continuous session** — compacted

@@ -11051,18 +11051,20 @@ def _call_llm_impl(
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
+            or _is_transient_transport_error(first_err)
         )
         # Respect explicit provider choice for transient errors (auth, request
         # validation, etc.) but allow fallback when the provider clearly cannot
-        # serve the request due to capacity: payment/quota exhaustion and
-        # connection failures are capacity problems, not request constraints.
+        # serve the request due to capacity: payment/quota exhaustion,
+        # connection failures, and exhausted 5xx/408 transient errors are
+        # capacity problems, not request constraints.
         # See #26803: daily token quota (429 + "too many tokens per day") must
         # fall back just like a 402 credit error.
         is_auto = resolved_provider in {"auto", "", None}
         # Capacity errors bypass the explicit-provider gate: the provider
         # literally cannot serve this request regardless of user intent.
-        # Rate limits are included: after retries are exhausted, a 429 means
-        # the provider cannot serve this request — fall back. See #52228.
+        # Rate limits and 5xx outages are included: after retries are exhausted,
+        # a 429 or 503 means the provider cannot serve this request — fall back. See #52228, #96073.
         # Model-incompatibility 400s are also a hard capability mismatch (the
         # route cannot run this model at all — e.g. a codex/ChatGPT-account
         # fallback asked to compress a glm-5.2 conversation), so they bypass
@@ -11074,6 +11076,7 @@ def _call_llm_impl(
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
+            or _is_transient_transport_error(first_err)
         )
         if should_fallback and (is_auto or is_capacity_error):
             if _is_auth_error(first_err):
@@ -11093,6 +11096,8 @@ def _call_llm_impl(
                 reason = "model incompatible with route"
             elif _is_invalid_aux_response_error(first_err):
                 reason = "invalid provider response"
+            elif _is_transient_transport_error(first_err):
+                reason = "transient transport error (5xx/408)"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -11817,11 +11822,12 @@ async def _async_call_llm_impl(
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
+            or _is_transient_transport_error(first_err)
         )
-        # Capacity errors (payment/quota/connection/rate-limit) bypass the
+        # Capacity errors (payment/quota/connection/rate-limit/5xx) bypass the
         # explicit-provider gate — the provider cannot serve the request
-        # regardless of user intent. Rate limits are included: after retries
-        # are exhausted, a 429 means the provider is at capacity. See #52228.
+        # regardless of user intent. Rate limits and 5xx outages are included:
+        # after retries are exhausted, a 429 or 503 means the provider is at capacity. See #52228, #96073.
         # See #26803: daily token quota must fall back like a 402 credit error.
         # Model-incompatibility 400s (route cannot run this model at all)
         # bypass the gate too — see the sync call_llm() path for rationale.
@@ -11832,6 +11838,7 @@ async def _async_call_llm_impl(
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
+            or _is_transient_transport_error(first_err)
         )
         if should_fallback and (is_auto or is_capacity_error):
             if _is_auth_error(first_err):
@@ -11847,6 +11854,8 @@ async def _async_call_llm_impl(
                 reason = "model incompatible with route"
             elif _is_invalid_aux_response_error(first_err):
                 reason = "invalid provider response"
+            elif _is_transient_transport_error(first_err):
+                reason = "transient transport error (5xx/408)"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",

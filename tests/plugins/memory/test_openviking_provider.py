@@ -1925,3 +1925,49 @@ class TestOpenVikingEnvWriter:
         assert env.read_text(encoding="utf-8").splitlines() == [
             "A=1", "OPENAI_API_KEY=new", "B=2",
         ]
+
+
+def test_needs_trusted_identity_retry_matches_legacy_and_root_error_shapes():
+    """Trusted-mode missing-identity denials must stay retriable across both
+    OpenViking error shapes; the short-circuit needs to recognize ``ROOT
+    requests`` in addition to the legacy ``Trusted mode requests`` prefix."""
+    from plugins.memory.openviking import _VikingClient
+
+    legacy = "Trusted mode requests must include X-OpenViking-Account (400)"
+    legacy_user = "Trusted mode requests must include X-OpenViking-User (400)"
+    modern = "ROOT requests to tenant-scoped APIs must include X-OpenViking-Account (400)"
+    modern_user = "ROOT requests to tenant-scoped APIs must include X-OpenViking-User (400)"
+
+    assert _VikingClient._needs_trusted_identity_retry(Exception(legacy)) is True
+    assert _VikingClient._needs_trusted_identity_retry(Exception(legacy_user)) is True
+    assert _VikingClient._needs_trusted_identity_retry(Exception(modern)) is True
+    assert _VikingClient._needs_trusted_identity_retry(Exception(modern_user)) is True
+
+
+def test_needs_trusted_identity_retry_rejects_unrelated_errors():
+    """A generic API error is not a missing-identity denial and must not be
+    marked retriable via the trusted-identity path."""
+    from plugins.memory.openviking import _VikingClient
+
+    assert _VikingClient._needs_trusted_identity_retry(Exception("401 Unauthorized")) is False
+    assert _VikingClient._needs_trusted_identity_retry(Exception("connection reset")) is False
+
+
+def test_needs_trusted_identity_retry_requires_identity_header_in_message():
+    """The trusted-mode wording alone is insufficient — the error must name a
+    missing identity header, otherwise the denial is not retriable."""
+    from plugins.memory.openviking import _VikingClient
+
+    assert _VikingClient._needs_trusted_identity_retry(Exception("Trusted mode requests must not apply here")) is False
+    assert _VikingClient._needs_trusted_identity_retry(Exception("ROOT requests are not allowed (400)")) is False
+
+
+def test_needs_trusted_identity_retry_rejects_non_400_status():
+    """Only HTTP 400 maps to a missing-identity denial; a 401 for the same
+    wording is an auth error and stays non-retriable."""
+    from plugins.memory.openviking import _VikingClient
+
+    class _Exc(Exception):
+        status_code = 401
+
+    assert _VikingClient._needs_trusted_identity_retry(_Exc("Trusted mode requests must include X-OpenViking-Account")) is False

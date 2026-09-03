@@ -18,7 +18,7 @@ import sqlite3
 import time
 from contextvars import Context
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 from agent.i18n import t
 
@@ -301,14 +301,16 @@ class GatewayKanbanWatchersMixin:
         # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
 
-        # Stale done-sub GC cadence. Subscriptions survive ``done`` (it is
+        # Notification-state GC cadence. Subscriptions survive ``done`` (it is
         # reversible), so boards that never archive would otherwise
         # accumulate rows scanned on every 5s tick forever. The sweep is a
-        # single DELETE per board, gated to once per watcher startup and at
-        # most once per hour thereafter — cheap relative to the tick's own
+        # small fixed set of DELETEs per board, gated to once per watcher
+        # startup and at most once per hour thereafter — cheap relative to the
         # per-sub claims. Retention is kanban.done_sub_retention_days in
         # config.yaml (default 30; 0 disables), re-read at each sweep so a
-        # config change applies without a restart.
+        # config change applies without a restart. Durable delivery receipts
+        # use kanban.notify_delivery_retention_days (default 90) once their task
+        # is terminal or gone; active-task receipts are never age-pruned.
         _GC_INTERVAL_SECONDS = 3600.0
         _gc_next_at = 0.0  # 0 → sweep on the first tick after startup
 
@@ -316,6 +318,7 @@ class GatewayKanbanWatchersMixin:
             try:
                 _gc_due = time.monotonic() >= _gc_next_at
                 _gc_retention_days = 30
+                _delivery_gc_retention_days = 90
                 if _gc_due:
                     _gc_next_at = time.monotonic() + _GC_INTERVAL_SECONDS
                     try:
@@ -325,10 +328,14 @@ class GatewayKanbanWatchersMixin:
                         _gc_retention_days = int(
                             _kanban_cfg.get("done_sub_retention_days", 30)
                         )
+                        _delivery_gc_retention_days = int(
+                            _kanban_cfg.get("notify_delivery_retention_days", 90)
+                        )
                     except Exception:
                         # Fail safe on the shipped default; the sweep itself
                         # treats <= 0 as disabled.
                         _gc_retention_days = 30
+                        _delivery_gc_retention_days = 90
 
                 def _collect():
                     deliveries: list[dict] = []
@@ -401,7 +408,7 @@ class GatewayKanbanWatchersMixin:
                                 board=slug,
                                 notifier_profiles=notifier_profiles,
                                 include_unowned=include_unowned,
-                            ) == 0:
+                            ) == 0 and not _gc_due:
                                 logger.debug(
                                     "kanban notifier: board %s has no subscriptions owned by %s; skipping open",
                                     slug, sorted(notifier_profiles),
@@ -439,6 +446,21 @@ class GatewayKanbanWatchersMixin:
                                 except Exception as _gc_exc:
                                     logger.debug(
                                         "kanban notifier: stale-sub GC failed for board %s: %s",
+                                        slug, _gc_exc,
+                                    )
+                                try:
+                                    _purged_receipts = _kb.purge_stale_notify_deliveries(
+                                        conn,
+                                        max_age_days=_delivery_gc_retention_days,
+                                    )
+                                    if _purged_receipts:
+                                        logger.info(
+                                            "kanban notifier: purged %d stale delivery receipt(s) on board %s (retention %dd)",
+                                            _purged_receipts, slug, _delivery_gc_retention_days,
+                                        )
+                                except Exception as _gc_exc:
+                                    logger.debug(
+                                        "kanban notifier: delivery-receipt GC failed for board %s: %s",
                                         slug, _gc_exc,
                                     )
                             # `connect()` runs the schema + idempotent migration
@@ -705,6 +727,8 @@ class GatewayKanbanWatchersMixin:
 
                         if sub.get("thread_id") and not metadata.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
+                        if sub.get("chat_type") and not metadata.get("chat_type"):
+                            metadata["chat_type"] = sub["chat_type"]
                         # Adapters with no push channel (the API server —
                         # ``supports_async_delivery = False``) can NEVER
                         # satisfy a text-send: ``send()`` always reports
@@ -740,48 +764,60 @@ class GatewayKanbanWatchersMixin:
                             # outcome there, not by skipping the send here.
                             continue
                         try:
-                            _send_res = await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
+                            text_delivered = await asyncio.to_thread(
+                                self._kanban_delivery_recorded,
+                                sub,
+                                event_id=int(ev.id),
+                                delivery_key="text",
+                                board=board_slug,
                             )
-                            # A SendResult(success=False) without an exception
-                            # (returned by push-capable adapters on a genuine
-                            # transient failure) must count as a FAILED
-                            # delivery — otherwise the cursor advances and the
-                            # event is permanently lost. Adapters returning
-                            # None (or anything non-SendResult shaped) keep
-                            # the legacy "no exception == delivered" contract.
-                            if getattr(_send_res, "success", True) is False:
-                                raise RuntimeError(
-                                    "adapter send() reported failure: "
-                                    f"{getattr(_send_res, 'error', None) or 'unknown error'}"
+                            if not text_delivered:
+                                _send_res = await adapter.send(
+                                    sub["chat_id"], msg, metadata=metadata,
                                 )
+                                if getattr(_send_res, "success", True) is False:
+                                    raise RuntimeError(
+                                        "adapter send() reported failure: "
+                                        f"{getattr(_send_res, 'error', None) or 'unknown error'}"
+                                    )
+                                try:
+                                    await asyncio.to_thread(
+                                        self._kanban_record_delivery,
+                                        sub,
+                                        event_id=int(ev.id),
+                                        event_kind=kind,
+                                        message_id=getattr(_send_res, "message_id", None),
+                                        delivery_key="text",
+                                        board=board_slug,
+                                    )
+                                except Exception as receipt_exc:
+                                    # The platform send already succeeded. Never
+                                    # rewind and duplicate it merely because audit
+                                    # persistence failed; surface the gap loudly.
+                                    logger.error(
+                                        "kanban notifier: delivered %s for %s but could not "
+                                        "persist its receipt: %s",
+                                        kind, sub["task_id"], receipt_exc,
+                                    )
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
                             )
-                            # After delivering the text notification, surface
-                            # any artifact paths the worker referenced in
-                            # ``kanban_complete(summary=..., artifacts=[...])``
-                            # (or the legacy ``result`` field) as native
-                            # uploads. ``extract_local_files`` finds bare
-                            # absolute paths in the summary;
-                            # ``send_document`` / ``send_image_file`` uploads
-                            # them. Only fires on the ``completed`` event so
-                            # we never spam attachments on retries.
+                            # A durable text receipt lets a partial retry skip
+                            # the already-confirmed ping while retrying only
+                            # missing artifacts.
                             if kind == "completed":
-                                try:
-                                    await self._deliver_kanban_artifacts(
-                                        adapter=adapter,
-                                        chat_id=sub["chat_id"],
-                                        metadata=metadata,
-                                        event_payload=getattr(ev, "payload", None),
-                                        task=task,
-                                    )
-                                except Exception as art_exc:
-                                    logger.debug(
-                                        "kanban notifier: artifact delivery for %s failed: %s",
-                                        sub["task_id"], art_exc,
-                                    )
+                                await self._deliver_kanban_artifacts(
+                                    adapter=adapter,
+                                    chat_id=sub["chat_id"],
+                                    metadata=metadata,
+                                    event_payload=getattr(ev, "payload", None),
+                                    task=task,
+                                    sub=sub,
+                                    event_id=int(ev.id),
+                                    event_kind=kind,
+                                    board=board_slug,
+                                )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
                         except Exception as exc:
@@ -1103,6 +1139,60 @@ class GatewayKanbanWatchersMixin:
                     return
                 await asyncio.sleep(1)
 
+    def _kanban_record_delivery(
+        self,
+        sub: dict,
+        *,
+        event_id: int,
+        event_kind: str,
+        message_id: Optional[str],
+        delivery_key: str = "text",
+        board: Optional[str] = None,
+    ) -> None:
+        """Persist a successful platform send receipt. Runs in ``to_thread``."""
+        from hermes_cli import kanban_db as _kb
+
+        conn = _kb.connect(board=board)
+        try:
+            _kb.record_notify_delivery(
+                conn,
+                task_id=sub["task_id"],
+                platform=sub["platform"],
+                chat_id=sub["chat_id"],
+                thread_id=sub.get("thread_id") or "",
+                event_id=event_id,
+                event_kind=event_kind,
+                message_id=message_id,
+                delivery_key=delivery_key,
+            )
+        finally:
+            conn.close()
+
+    def _kanban_delivery_recorded(
+        self,
+        sub: dict,
+        *,
+        event_id: int,
+        delivery_key: str,
+        board: Optional[str] = None,
+    ) -> bool:
+        """Check the durable ledger before retrying an already-sent part."""
+        from hermes_cli import kanban_db as _kb
+
+        conn = _kb.connect(board=board)
+        try:
+            return _kb.has_notify_delivery(
+                conn,
+                task_id=sub["task_id"],
+                platform=sub["platform"],
+                chat_id=sub["chat_id"],
+                thread_id=sub.get("thread_id") or "",
+                event_id=event_id,
+                delivery_key=delivery_key,
+            )
+        finally:
+            conn.close()
+
     def _kanban_advance(
         self, sub: dict, cursor: int, board: Optional[str] = None,
     ) -> None:
@@ -1170,6 +1260,10 @@ class GatewayKanbanWatchersMixin:
         metadata: dict,
         event_payload: Optional[dict],
         task,
+        sub: dict,
+        event_id: int,
+        event_kind: str,
+        board: Optional[str] = None,
     ) -> None:
         """Upload artifact files referenced by a completed kanban task.
 
@@ -1183,11 +1277,42 @@ class GatewayKanbanWatchersMixin:
           2. ``event_payload['summary']`` (truncated first line)
           3. ``task.result`` (legacy fallback)
 
-        Files are deduplicated, missing files are silently skipped (the
-        path may have been mentioned for reference only), and delivery
-        errors are logged but do not break the notifier loop.
+        Files are deduplicated and missing files are silently skipped (the path
+        may have been mentioned for reference only). Each confirmed upload is
+        receipted separately; an exception or ``SendResult(success=False)`` is
+        propagated so the notifier rewinds and retries only missing parts.
         """
         from pathlib import Path as _Path
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+        import hashlib
+
+        # Test doubles and older third-party adapters may not expose the
+        # convenience parser even though the gateway can still deliver their
+        # files. Use the base implementation rather than turning an ordinary
+        # completion summary into a notifier failure.
+        extract_local_files = getattr(
+            adapter, "extract_local_files", BasePlatformAdapter.extract_local_files,
+        )
+
+        def _delivery_key(paths: list[str]) -> str:
+            digest = hashlib.sha256("\0".join(paths).encode()).hexdigest()
+            return f"artifact:{digest}"
+
+        async def _record_artifact(key: str, result) -> None:
+            if not isinstance(result, SendResult) or result.success is not True:
+                raise RuntimeError(
+                    "adapter media send did not return a confirmed success: "
+                    f"{getattr(result, 'error', None) or 'unknown error'}"
+                )
+            await asyncio.to_thread(
+                self._kanban_record_delivery,
+                sub,
+                event_id=event_id,
+                event_kind=event_kind,
+                message_id=result.message_id,
+                delivery_key=key,
+                board=board,
+            )
 
         candidates: list[str] = []
         seen: set[str] = set()
@@ -1214,21 +1339,20 @@ class GatewayKanbanWatchersMixin:
             # 2. Paths embedded in the payload summary.
             summary = event_payload.get("summary")
             if isinstance(summary, str) and summary:
-                paths, _ = adapter.extract_local_files(summary)
+                paths, _ = extract_local_files(summary)
                 for p in paths:
                     _add(p)
 
         # 3. Legacy: paths embedded in task.result.
         if task is not None and getattr(task, "result", None):
             result_text = str(task.result)
-            paths, _ = adapter.extract_local_files(result_text)
+            paths, _ = extract_local_files(result_text)
             for p in paths:
                 _add(p)
 
         if not candidates:
             return
 
-        from gateway.platforms.base import BasePlatformAdapter
         candidates = BasePlatformAdapter.filter_local_delivery_paths(candidates)
         if not candidates:
             return
@@ -1236,40 +1360,70 @@ class GatewayKanbanWatchersMixin:
         _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
         _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 
-        from urllib.parse import quote as _quote
-
-        # Partition images so they ride a single send_multiple_images call
-        # on platforms that support batch image uploads (Signal/Slack RPCs).
-        image_paths = [p for p in candidates if _Path(p).suffix.lower() in _IMAGE_EXTS]
-        other_paths = [p for p in candidates if _Path(p).suffix.lower() not in _IMAGE_EXTS]
-
-        if image_paths:
-            try:
-                batch = [(f"file://{_quote(p)}", "") for p in image_paths]
-                await adapter.send_multiple_images(
-                    chat_id=chat_id, images=batch, metadata=metadata,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "kanban notifier: image batch upload failed: %s", exc,
+        async def _send_image_artifact(path: str):
+            per_file_send = getattr(adapter, "send_image_file", None)
+            if callable(per_file_send):
+                return await cast(Any, per_file_send)(
+                    chat_id=chat_id, image_path=path, metadata=metadata,
                 )
 
-        for path in other_paths:
+            # Compatibility for older third-party adapters that predate
+            # send_image_file but implement the legacy batch API. Send a
+            # one-image batch so the durable key still maps to one path. The
+            # old API's successful return contract is ``None``; exceptions
+            # remain failures. Standard/current adapters stay on the concrete
+            # SendResult path above.
+            batch_send = getattr(adapter, "send_multiple_images", None)
+            if not callable(batch_send):
+                return SendResult(
+                    success=False,
+                    error="adapter supports neither send_image_file nor send_multiple_images",
+                )
+            logger.warning(
+                "kanban notifier: adapter %s lacks send_image_file; using legacy one-image batch fallback",
+                type(adapter).__name__,
+            )
+            legacy_result = await cast(Any, batch_send)(
+                chat_id=chat_id,
+                images=[(_Path(path).as_uri(), "")],
+                metadata=metadata,
+            )
+            if isinstance(legacy_result, SendResult):
+                return legacy_result
+            if legacy_result is None:
+                return SendResult(success=True)
+            return SendResult(
+                success=False,
+                error="legacy send_multiple_images returned an unsupported result",
+            )
+
+        # Deliver each artifact through an operation that returns a concrete
+        # SendResult. ``send_multiple_images`` has a legacy void contract, may
+        # swallow per-item failures, and may split a batch into several sends.
+        # One receipt per path makes partial retries safe and auditable.
+        for path in candidates:
+            key = _delivery_key([path])
+            delivered = await asyncio.to_thread(
+                self._kanban_delivery_recorded,
+                sub,
+                event_id=event_id,
+                delivery_key=key,
+                board=board,
+            )
+            if delivered:
+                continue
             ext = _Path(path).suffix.lower()
-            try:
-                if ext in _VIDEO_EXTS:
-                    await adapter.send_video(
-                        chat_id=chat_id, video_path=path, metadata=metadata,
-                    )
-                else:
-                    await adapter.send_document(
-                        chat_id=chat_id, file_path=path, metadata=metadata,
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "kanban notifier: artifact upload (%s) failed: %s",
-                    path, exc,
+            if ext in _IMAGE_EXTS:
+                result = await _send_image_artifact(path)
+            elif ext in _VIDEO_EXTS:
+                result = await adapter.send_video(
+                    chat_id=chat_id, video_path=path, metadata=metadata,
                 )
+            else:
+                result = await adapter.send_document(
+                    chat_id=chat_id, file_path=path, metadata=metadata,
+                )
+            await _record_artifact(key, result)
 
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.

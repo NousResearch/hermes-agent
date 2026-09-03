@@ -424,6 +424,7 @@ async def test_native_media_dm_topic_reply_not_found_retry_drops_thread_id(
         chat_id="123",
         **{path_kw: str(media_path)},
         metadata={
+            "chat_type": "dm",
             "thread_id": "20197",
             "telegram_dm_topic_reply_fallback": True,
             "telegram_reply_to_message_id": "462",
@@ -436,6 +437,111 @@ async def test_native_media_dm_topic_reply_not_found_retry_drops_thread_id(
     assert call_log[1]["reply_to_message_id"] is None
     assert "message_thread_id" not in call_log[1]
     assert "direct_messages_topic_id" not in call_log[1]
+
+
+@pytest.mark.asyncio
+async def test_document_stale_plain_thread_retries_without_thread(tmp_path):
+    adapter = _make_adapter()
+    path = tmp_path / "request.txt"
+    path.write_text("support request", encoding="utf-8")
+    calls = []
+
+    async def mock_send_document(**kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=991)
+
+    adapter._bot = SimpleNamespace(send_document=mock_send_document)
+    result = await adapter.send_document(
+        chat_id="123", file_path=str(path),
+        metadata={"thread_id": "9799", "chat_type": "dm"},
+    )
+
+    assert result.success is True
+    assert result.message_id == "991"
+    assert calls[0]["message_thread_id"] == 9799
+    assert "message_thread_id" not in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_document_created_private_topic_never_falls_back_to_root(tmp_path):
+    adapter = _make_adapter()
+    path = tmp_path / "request.txt"
+    path.write_text("support request", encoding="utf-8")
+    calls = []
+
+    async def mock_send_document(**kwargs):
+        calls.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_document=mock_send_document)
+    await adapter.send_document(
+        chat_id="123",
+        file_path=str(path),
+        metadata={"thread_id": "9799", "telegram_dm_topic_created_for_send": True},
+    )
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "media_label",
+    ["document", "photo", "video", "voice", "audio", "media group", "animation"],
+)
+async def test_group_and_forum_media_never_fall_back_to_root(media_label):
+    """The shared native-media retry helper must fail closed outside a DM."""
+    adapter = _make_adapter()
+    calls = []
+
+    async def failing_send(**kwargs):
+        calls.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    with pytest.raises(FakeBadRequest):
+        await adapter._send_with_dm_topic_reply_anchor_retry(
+            failing_send,
+            {"chat_id": -100123, "message_thread_id": 9799},
+            {"thread_id": "9799", "chat_type": "forum"},
+            None,
+            media_label,
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["message_thread_id"] == 9799
+
+
+@pytest.mark.asyncio
+async def test_forum_media_stale_dm_flag_never_falls_back_to_root():
+    """A stale DM fallback flag cannot override a positively non-DM chat type."""
+    adapter = _make_adapter()
+    calls = []
+
+    async def failing_send(**kwargs):
+        calls.append(dict(kwargs))
+        raise FakeBadRequest("Message to be replied not found")
+
+    with pytest.raises(FakeBadRequest):
+        await adapter._send_with_dm_topic_reply_anchor_retry(
+            failing_send,
+            {
+                "chat_id": -100123,
+                "message_thread_id": 9799,
+                "reply_to_message_id": 42,
+            },
+            {
+                "thread_id": "9799",
+                "chat_type": "forum",
+                "telegram_dm_topic_reply_fallback": True,
+                "telegram_reply_to_message_id": "42",
+            },
+            42,
+            "document",
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["message_thread_id"] == 9799
 
 
 @pytest.mark.asyncio
@@ -455,6 +561,7 @@ async def test_animation_dm_topic_reply_not_found_retry_drops_thread_id():
         chat_id="123",
         animation_url="https://example.com/anim.gif",
         metadata={
+            "chat_type": "dm",
             "thread_id": "20197",
             "telegram_dm_topic_reply_fallback": True,
             "telegram_reply_to_message_id": "462",
@@ -488,6 +595,7 @@ async def test_media_group_dm_topic_reply_not_found_retry_drops_thread_id(tmp_pa
         chat_id="123",
         images=[(f"file://{image_path}", "caption")],
         metadata={
+            "chat_type": "dm",
             "thread_id": "20197",
             "telegram_dm_topic_reply_fallback": True,
             "telegram_reply_to_message_id": "462",
@@ -547,6 +655,7 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_drops_thread_id(
         chat_id="123",
         image_url="https://example.com/photo.png",
         metadata={
+            "chat_type": "dm",
             "thread_id": "20197",
             "telegram_dm_topic_reply_fallback": True,
             "telegram_reply_to_message_id": "462",

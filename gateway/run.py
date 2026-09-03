@@ -547,6 +547,23 @@ _COMPRESSION_PROGRESS_STATUS_RE = re.compile(
 )
 
 
+# #94658 session turn-lease contention lifecycle statuses, emitted by
+# run_agent._emit_status during cross-process turn-lease wait / reclaim
+# (run_agent.py ~line 8646 / 8735). These are interim assistant chatter and
+# must be muted when a platform turns interim assistant messages off —
+# but ONLY these, so durable must-see lifecycle statuses (fallback-switch
+# notices, terminal provider-failure notices) keep flowing regardless. The
+# three literal strings are escaped verbatim; the ``(<N>s)`` seconds counter
+# is matched numerically so it stays robust to the elapsed time.
+_SESSION_TURN_LEASE_LIFECYCLE_RE = re.compile(
+    r"⏳\s+Another\s+Hermes\s+process\s+is\s+using\s+this\s+session"
+    r"|⏳\s+Still\s+waiting\s+for\s+the\s+other\s+Hermes\s+process\s+on\s+this\s+"
+    r"session\s+\(\d+s\)"
+    r"|Session\s+is\s+free;\s+loading\s+the\s+latest\s+transcript",
+    re.IGNORECASE,
+)
+
+
 def _gateway_compression_progress_notices_enabled() -> bool:
     """True when the user opted into routine compression progress notices.
 
@@ -1037,7 +1054,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+def _prepare_gateway_status_message(platform: Any, event_type: str, message: str, interim_enabled: bool = True) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
     Local/CLI sessions keep the raw diagnostic stream. Messaging gateway
@@ -1048,6 +1065,17 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return None
     if _gateway_surface_passes_raw_text(platform):
         return text
+
+    if event_type == "lifecycle" and not interim_enabled and _SESSION_TURN_LEASE_LIFECYCLE_RE.search(text):
+        # #94658: session turn-lease contention statuses ("⏳ Another Hermes
+        # process is using this session...", "⏳ Still waiting ... (Ns)...",
+        # "Session is free; loading the latest transcript...") are interim
+        # assistant chatter. When the platform mutes interim assistant
+        # messages (interim_assistant_messages: off), suppress them here —
+        # but ONLY these lease strings, so durable lifecycle statuses
+        # (fallback-switch notices, terminal provider-failure notices) keep
+        # reaching the gateway regardless of the interim mute.
+        return None
 
     text = _redact_gateway_user_facing_secrets(text)
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
@@ -5900,6 +5928,7 @@ class TurnRunner:
             ctx.source.platform,
             event_type,
             message,
+            interim_enabled=ctx.interim_assistant_messages_enabled,
         )
         if prepared_message is None:
             logger.debug(

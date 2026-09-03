@@ -16374,8 +16374,62 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
     build_payload.assert_called_once_with(
         picker_ctx,
         picker_hints=True,
-        max_models=50,
     )
+
+
+def test_model_save_key_returns_full_provider_catalog(monkeypatch):
+    """Newly-authenticated providers must not be capped at 50 models."""
+    env_var = "TEST_LARGE_PROVIDER_API_KEY"
+    full_models = [f"model-{index:03}" for index in range(1, 121)]
+    picker_ctx = object()
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.PROVIDER_REGISTRY",
+        {
+            "large-provider": types.SimpleNamespace(
+                name="Large Provider",
+                auth_type="api_key",
+                api_key_env_vars=(env_var,),
+            )
+        },
+    )
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.credential_lifecycle.save_provider_env_credential",
+        Mock(),
+    )
+    monkeypatch.setattr(server, "_model_picker_context", lambda _agent: picker_ctx)
+
+    def build_payload(_ctx, *, picker_hints, max_models=None):
+        models = full_models[:max_models] if max_models is not None else full_models
+        return {
+            "providers": [
+                {"slug": "other-provider", "models": ["other-model"]},
+                {
+                    "slug": "large-provider",
+                    "name": "Large Provider",
+                    "models": models,
+                    "total_models": len(full_models),
+                },
+            ]
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.inventory.build_models_payload",
+        build_payload,
+    )
+
+    resp = server._methods["model.save_key"](
+        104,
+        {"slug": "large-provider", "api_key": "test-key"},
+    )
+
+    provider = resp["result"]["provider"]
+    assert provider["slug"] == "large-provider"
+    assert len(provider["models"]) == 120
+    assert "model-051" in provider["models"]
+    assert provider["models"][-1] == "model-120"
+    assert len(provider["models"]) == len(set(provider["models"]))
 
 
 # ---------------------------------------------------------------------------

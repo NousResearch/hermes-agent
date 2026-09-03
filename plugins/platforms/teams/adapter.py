@@ -136,6 +136,24 @@ def _get_scoped_secret(name, default=None):
     return val if val is not None else default
 
 
+def _profile_scoped() -> bool:
+    """True when running inside a multiplexed secondary profile's scope.
+
+    Secondary-profile adapters are constructed inside ``_profile_runtime_scope``
+    (secret scope installed + multiplex active) — the same discriminator the
+    Buzz/Discord/Telegram/WhatsApp/LINE/DingTalk adapters use for this bug
+    class (#98738/#72348/#80099). The DEFAULT profile under multiplexing
+    runs unscoped: ``os.environ`` holds its own bridge output there and
+    keeps its legacy precedence.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        return False
+
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 3978
@@ -448,11 +466,16 @@ def check_requirements() -> bool:
 
 
 def validate_config(config) -> bool:
-    """Return True when the config has the minimum required credentials."""
+    """Return True when the config has the minimum required credentials.
+
+    Scope-aware (matches __init__'s extra.get(...) or _get_scoped_secret(...)
+    precedence): a secondary multiplex profile must not borrow the default
+    profile's bridged TEAMS_CLIENT_ID/TEAMS_TENANT_ID env values.
+    """
     extra = getattr(config, "extra", {}) or {}
-    client_id = os.getenv("TEAMS_CLIENT_ID") or extra.get("client_id", "")
-    client_secret = _get_scoped_secret("TEAMS_CLIENT_SECRET") or extra.get("client_secret", "")
-    tenant_id = os.getenv("TEAMS_TENANT_ID") or extra.get("tenant_id", "")
+    client_id = extra.get("client_id") or _get_scoped_secret("TEAMS_CLIENT_ID")
+    client_secret = extra.get("client_secret") or _get_scoped_secret("TEAMS_CLIENT_SECRET")
+    tenant_id = extra.get("tenant_id") or _get_scoped_secret("TEAMS_TENANT_ID")
     return bool(client_id and client_secret and tenant_id)
 
 
@@ -471,7 +494,18 @@ def _env_enablement() -> dict | None:
 
     The special ``home_channel`` key in the returned dict becomes a proper
     ``HomeChannel`` dataclass on the ``PlatformConfig`` via the core hook.
+
+    Scope-aware (mirrors the Buzz fix for #98738): inside a secondary
+    multiplex profile's scope, os.environ holds the DEFAULT profile's
+    bridged TEAMS_* values (client_id/tenant_id/port/service_url/
+    home_channel — a cron-delivery target) — env enablement must not
+    fabricate a Teams platform, or seed a home_channel, from another
+    profile's env. A profile without its own config.yaml block relies on
+    _get_scoped_secret's TEAMS_CLIENT_SECRET (or explicit config.yaml) as
+    before.
     """
+    if _profile_scoped():
+        return None
     client_id = os.getenv("TEAMS_CLIENT_ID", "").strip()
     client_secret = _get_scoped_secret("TEAMS_CLIENT_SECRET", "").strip()
     tenant_id = os.getenv("TEAMS_TENANT_ID", "").strip()
@@ -601,15 +635,18 @@ async def _standalone_send(
     attachments via the SDK.
     """
     extra = getattr(pconfig, "extra", {}) or {}
-    client_id = os.getenv("TEAMS_CLIENT_ID") or extra.get("client_id", "")
-    client_secret = _get_scoped_secret("TEAMS_CLIENT_SECRET") or extra.get("client_secret", "")
-    tenant_id = os.getenv("TEAMS_TENANT_ID") or extra.get("tenant_id", "")
+    # Scope-aware (matches __init__'s precedence): a secondary multiplex
+    # profile must not borrow the default profile's bridged TEAMS_CLIENT_ID/
+    # TEAMS_TENANT_ID/TEAMS_SERVICE_URL for out-of-process cron delivery.
+    client_id = extra.get("client_id") or _get_scoped_secret("TEAMS_CLIENT_ID")
+    client_secret = extra.get("client_secret") or _get_scoped_secret("TEAMS_CLIENT_SECRET")
+    tenant_id = extra.get("tenant_id") or _get_scoped_secret("TEAMS_TENANT_ID")
     if not (client_id and client_secret and tenant_id):
         return {"error": "Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required"}
 
     raw_service_url = (
-        os.getenv("TEAMS_SERVICE_URL")
-        or extra.get("service_url", "")
+        extra.get("service_url")
+        or _get_scoped_secret("TEAMS_SERVICE_URL")
         or _DEFAULT_TEAMS_SERVICE_URL
     )
     service_url = _validate_teams_service_url(raw_service_url)

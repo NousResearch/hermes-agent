@@ -196,6 +196,8 @@ check_requirements = _teams_mod.check_requirements
 check_teams_requirements = _teams_mod.check_teams_requirements
 validate_config = _teams_mod.validate_config
 register = _teams_mod.register
+_env_enablement = _teams_mod._env_enablement
+_standalone_send = _teams_mod._standalone_send
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +267,152 @@ class TestTeamsRequirements:
         monkeypatch.delenv("TEAMS_TENANT_ID", raising=False)
         cfg = _make_config(client_id="id", client_secret="secret", tenant_id="tenant")
         assert validate_config(cfg) is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: Multiplex secondary-profile scope
+# ---------------------------------------------------------------------------
+#
+# validate_config/_env_enablement/_standalone_send read TEAMS_CLIENT_ID/
+# TEAMS_TENANT_ID/TEAMS_SERVICE_URL/TEAMS_PORT/TEAMS_HOME_CHANNEL via raw
+# os.getenv, checked BEFORE config.extra — unlike __init__, which already
+# does extra.get(...) or _get_scoped_secret(...). Under multiplex, a
+# secondary profile with its own (different or absent) Teams config would
+# silently inherit the default profile's client_id/tenant_id (breaking
+# OAuth) or home_channel (a cron-delivery target — real message
+# misdelivery). Mirrors the Buzz/Discord/Telegram/WhatsApp/LINE/DingTalk fix
+# for #98738/#72348/#80099.
+
+_TEAMS_ENV_VARS = (
+    "TEAMS_CLIENT_ID",
+    "TEAMS_CLIENT_SECRET",
+    "TEAMS_TENANT_ID",
+    "TEAMS_PORT",
+    "TEAMS_SERVICE_URL",
+    "TEAMS_HOME_CHANNEL",
+    "TEAMS_HOME_CHANNEL_NAME",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_teams_env(monkeypatch):
+    for var in _TEAMS_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    yield
+
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("TEAMS_CLIENT_ID", "default-client-id")
+    monkeypatch.setenv("TEAMS_CLIENT_SECRET", "default-secret")
+    monkeypatch.setenv("TEAMS_TENANT_ID", "default-tenant-id")
+    monkeypatch.setenv("TEAMS_HOME_CHANNEL", "default-home-channel")
+
+
+class TestMultiplexProfileScope:
+    """Each test below installs a scope that supplies ONLY
+    TEAMS_CLIENT_SECRET (already scope-aware before this fix) and asserts on
+    client_id/tenant_id/home_channel — the fields this fix scopes. Asserting
+    only a boolean outcome (e.g. ``validate_config(...) is False``) with an
+    EMPTY scope would pass even pre-fix, because the pre-existing
+    client_secret scoping alone already fails the overall check — that
+    would not actually exercise this fix. Giving the scope its own
+    client_secret isolates client_id/tenant_id/home_channel as the only
+    remaining variables, so a leak from the default profile's env is the
+    only way these assertions could pass before the fix."""
+
+    def test_validate_config_scoped_missing_keys_fail_closed(
+        self, multiplex_scope, default_profile_env
+    ):
+        """A secondary profile with its own secret but no client_id/tenant_id
+        of its own must not pass validate_config just because the default
+        profile's client_id/tenant_id are sitting in shared env."""
+        multiplex_scope({"TEAMS_CLIENT_SECRET": "profile-secret"})
+        assert validate_config(_make_config()) is False
+
+    def test_validate_config_unscoped_keeps_env_precedence(
+        self, monkeypatch, default_profile_env
+    ):
+        from agent.secret_scope import set_multiplex_active
+
+        set_multiplex_active(True)
+        try:
+            assert validate_config(_make_config()) is True
+        finally:
+            set_multiplex_active(False)
+
+    def test_env_enablement_returns_none_when_scoped(self, multiplex_scope, default_profile_env):
+        """Env enablement must not fabricate a Teams platform (or seed the
+        default profile's leaked client_id/tenant_id/home_channel) for a
+        secondary profile that only has its own client_secret."""
+        multiplex_scope({"TEAMS_CLIENT_SECRET": "profile-secret"})
+        assert _env_enablement() is None
+
+    def test_env_enablement_unscoped_still_seeds(self, monkeypatch, default_profile_env):
+        from agent.secret_scope import set_multiplex_active
+
+        set_multiplex_active(True)
+        try:
+            seed = _env_enablement()
+        finally:
+            set_multiplex_active(False)
+        assert seed["client_id"] == "default-client-id"
+        assert seed["home_channel"]["chat_id"] == "default-home-channel"
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_scoped_missing_own_creds_fails_closed(
+        self, default_profile_env
+    ):
+        """Cron/out-of-process delivery for a secondary profile with its own
+        client_secret but no client_id/tenant_id of its own must fail
+        closed on the credentials-required error, not silently proceed
+        using the default profile's leaked client_id/tenant_id.
+
+        Scope is installed/reset inline (not via the ``multiplex_scope``
+        fixture) so the ``ContextVar`` set/reset pair stays inside the same
+        asyncio task context as this coroutine — resetting a token from the
+        surrounding sync fixture-teardown context raises ``ValueError:
+        token was created in a different Context``.
+        """
+        from agent.secret_scope import (
+            reset_secret_scope,
+            set_multiplex_active,
+            set_secret_scope,
+        )
+
+        set_multiplex_active(True)
+        token = set_secret_scope({"TEAMS_CLIENT_SECRET": "profile-secret"})
+        try:
+            result = await _standalone_send(_make_config(), "conv-id", "hi")
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+        assert result.get("error") == (
+            "Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, "
+            "and TEAMS_TENANT_ID are all required"
+        )
 
 
 # ---------------------------------------------------------------------------

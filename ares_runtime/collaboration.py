@@ -608,6 +608,10 @@ class PermitReceiptAdapter(Protocol):
     def record_receipt(self, receipt: Mapping[str, Any]) -> None: ...
 
 
+class PermitOutcomeRecorder(Protocol):
+    def record_receipt(self, receipt: Mapping[str, Any]) -> None: ...
+
+
 class PermitBridgeState(str, Enum):
     CONSUMED = "consumed"
     UNAVAILABLE = "unavailable"
@@ -621,6 +625,42 @@ class PermitBridgeOutcome:
     state: PermitBridgeState
     code: str
     facts: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ProductionPermitCanaryContext:
+    """Immutable per-call snapshot of validated production-canary transport."""
+
+    session_id: str
+    socket_path: str
+    worktree_root: str
+    timeout_seconds: float
+
+    def bridge_config(self) -> dict[str, Any]:
+        return {
+            "mode": DaemonPermitReceiptAdapter._PRODUCTION_MODE,
+            "enabled": True,
+            "canary_session_id": self.session_id,
+            "socket_path": self.socket_path,
+            "worktree_root": self.worktree_root,
+            "timeout_seconds": self.timeout_seconds,
+        }
+
+
+@dataclass(frozen=True)
+class ConsumedPermitSettlement:
+    """In-process outcome sink bound to the adapter that consumed one permit.
+
+    The adapter is deliberately not serialized into permit facts or recovered
+    from mutable global configuration after the effect.  Only the exact
+    consume-time transport may settle the paired outcome.
+    """
+
+    facts: Mapping[str, Any]
+    _adapter: PermitOutcomeRecorder
+
+    def record_receipt(self, receipt: Mapping[str, Any]) -> None:
+        self._adapter.record_receipt(dict(receipt))
 
 
 class OperatorApprovalWitnessProvider(Protocol):
@@ -1231,9 +1271,24 @@ def _production_permit_canary_config(*, session_id: str | None) -> dict[str, Any
     return dict(bridge)
 
 
+def production_permit_canary_context(
+    *, session_id: str | None
+) -> ProductionPermitCanaryContext | None:
+    """Freeze the exact validated canary configuration for one tool call."""
+    bridge = _production_permit_canary_config(session_id=session_id)
+    if bridge is None or session_id is None:
+        return None
+    return ProductionPermitCanaryContext(
+        session_id=session_id,
+        socket_path=bridge["socket_path"],
+        worktree_root=bridge["worktree_root"],
+        timeout_seconds=float(bridge["timeout_seconds"]),
+    )
+
+
 def production_permit_canary_enabled(*, session_id: str | None) -> bool:
     """Whether this exact live session is the explicit production V1 canary."""
-    return _production_permit_canary_config(session_id=session_id) is not None
+    return production_permit_canary_context(session_id=session_id) is not None
 
 
 _ADAPTER: contextvars.ContextVar[PermitReceiptAdapter | None] = contextvars.ContextVar("ares_permit_adapter", default=None)
@@ -1297,8 +1352,15 @@ def dispatcher_boundary(
     target_ref: str | None = None,
     authorize_permit: bool = True,
     consume_permit: bool = True,
-) -> tuple[bool, str | None, Mapping[str, Any] | None]:
-    bridge = _production_permit_canary_config(session_id=session_id)
+    production_context: ProductionPermitCanaryContext | None = None,
+) -> tuple[bool, str | None, ConsumedPermitSettlement | None]:
+    if production_context is not None and production_context.session_id != session_id:
+        return False, "PRODUCTION_CANARY_SESSION_MISMATCH", None
+    bridge = (
+        production_context.bridge_config()
+        if production_context is not None
+        else _production_permit_canary_config(session_id=session_id)
+    )
     permits = bridge is not None
     # The pre-existing strict-argument flag stays independently available. An
     # enabled production canary always adds strict validation before coercion.
@@ -1313,7 +1375,7 @@ def dispatcher_boundary(
             return False, exc.code, None
     if not permits or tool_name not in _EFFECTFUL_TOOLS or not authorize_permit:
         return True, None, None
-    adapter = _ADAPTER.get() or DaemonPermitReceiptAdapter.from_ares_config(
+    adapter = DaemonPermitReceiptAdapter.from_ares_config(
         {"ares": {"permit_daemon": bridge}}
     )
     if adapter is None:
@@ -1342,7 +1404,7 @@ def dispatcher_boundary(
         return False, exc.code, None
     except Exception:
         return False, "PERMIT_DENIED", None
-    return True, None, permit
+    return True, None, ConsumedPermitSettlement(dict(permit), adapter)
 
 
 def record_receipt(receipt: Mapping[str, Any]) -> None:

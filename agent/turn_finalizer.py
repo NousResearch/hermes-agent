@@ -113,6 +113,61 @@ def _record_kanban_budget_exhausted(
         )
 
 
+def _record_kanban_guardrail_halt(kanban_task: str, decision, logger: logging.Logger) -> None:
+    """End the current Kanban run as a durable blocked handoff after a hard tool guardrail halt.
+
+    A guardrail halt intentionally stops unsafe repetition, but a worker that
+    exits without a board transition is indistinguishable from a crash to the
+    dispatcher.  Pin the update to this worker run so a stale subprocess can
+    never block a later retry.
+    """
+    raw_run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    try:
+        expected_run_id = int(raw_run_id)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Kanban guardrail halt for task %s has no valid run id; leaving task state unchanged",
+            kanban_task,
+        )
+        return
+
+    tool_name = str(getattr(decision, "tool_name", "") or "a tool")
+    code = str(getattr(decision, "code", "") or "guardrail_halt")
+    count = getattr(decision, "count", 0)
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        count = 0
+    reason = (
+        f"Tool guardrail halted {tool_name} ({code}) after {count} "
+        "repeated non-progressing calls."
+    )
+
+    try:
+        from hermes_cli import kanban_db as _kb
+
+        _conn = _kb.connect()
+        try:
+            _kb.block_task(
+                _conn,
+                kanban_task,
+                reason=reason,
+                kind="transient",
+                expected_run_id=expected_run_id,
+            )
+        finally:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+    except Exception:
+        logger.warning(
+            "Failed to record guardrail halt for Kanban task %s",
+            kanban_task,
+            exc_info=True,
+        )
+
+
 def _drop_verification_continuation_scaffolding(messages) -> None:
     """Remove verification-continuation nudge messages from *messages* in place.
 
@@ -240,11 +295,18 @@ def finalize_turn(
                 _kanban_task, api_call_count, agent.max_iterations, logger,
             )
 
+    if str(_turn_exit_reason) == "guardrail_halt":
+        _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
+        _guardrail = getattr(agent, "_tool_guardrail_halt_decision", None)
+        if _kanban_task and _guardrail is not None:
+            _record_kanban_guardrail_halt(_kanban_task, _guardrail, logger)
+
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")
     completed = (
         final_response is not None
         and not failed
+        and str(_turn_exit_reason) != "guardrail_halt"
         and (
             api_call_count < agent.max_iterations
             or normal_text_response

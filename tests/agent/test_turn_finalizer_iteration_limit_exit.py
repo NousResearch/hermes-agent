@@ -1,11 +1,13 @@
 """Regression tests for iteration-limit exit normalization (#61631)."""
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from agent.turn_finalizer import finalize_turn
+from hermes_cli import kanban_db as kb
 
 
 class _LimitAgent:
@@ -163,6 +165,79 @@ def test_pending_response_does_not_mask_later_terminal_exit(
     assert result["turn_exit_reason"] == exit_reason
     assert result["completed"] is False
     assert agent._handle_max_iterations_called is False
+
+
+
+def test_guardrail_halt_blocks_active_kanban_worker(monkeypatch, tmp_path):
+    """A guardrail halt writes a real blocked terminal transition, not a crash."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="guardrail", assignee="builder")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None and claimed.current_run_id is not None
+        run_id = claimed.current_run_id
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    agent = _LimitAgent(max_iterations=60, budget_remaining=56)
+    agent._tool_guardrail_halt_decision = MagicMock(
+        tool_name="terminal", code="repeated_exact_failure_block", count=5
+    )
+    agent._tool_guardrail_halt_decision.to_metadata.return_value = {}
+
+    result = _finalize(
+        agent,
+        final_response="guardrail halted",
+        exit_reason="guardrail_halt",
+        api_call_count=4,
+    )
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+    finally:
+        conn.close()
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.block_kind == "transient"
+    assert events[-1].kind == "blocked"
+    assert events[-1].payload["reason"] == (
+        "Tool guardrail halted terminal "
+        "(repeated_exact_failure_block) after 5 repeated non-progressing calls."
+    )
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["completed"] is False
+
+
+def test_guardrail_halt_without_run_id_cannot_block_a_later_worker(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-guardrail")
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    block = MagicMock(name="block_task")
+    monkeypatch.setattr("hermes_cli.kanban_db.block_task", block)
+    agent = _LimitAgent(max_iterations=60, budget_remaining=56)
+    agent._tool_guardrail_halt_decision = MagicMock(
+        tool_name="terminal", code="repeated_exact_failure_block", count=5
+    )
+    agent._tool_guardrail_halt_decision.to_metadata.return_value = {}
+
+    _finalize(
+        agent,
+        final_response="guardrail halted",
+        exit_reason="guardrail_halt",
+        api_call_count=4,
+    )
+
+    block.assert_not_called()
 
 
 def test_pending_response_records_kanban_timeout(monkeypatch):

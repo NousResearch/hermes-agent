@@ -1853,12 +1853,17 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
 
         db = SessionDB()
 
-        # Try as exact session ID first
-        session = db.get_session(name_or_id)
+        # Try as a session ID first: exact, or an unambiguous prefix.
+        # `hermes sessions list` prints IDs truncated to its column width,
+        # so the exact-or-prefix resolver is what makes the printed ID
+        # pasteable. The gateway, console engine, and `hermes sessions
+        # export/delete` already resolve this way.
         resolved_id: Optional[str] = None
-        if session:
-            resolved_id = session["id"]
-        else:
+        try:
+            resolved_id = db.resolve_session_id(name_or_id)
+        except Exception:
+            resolved_id = None
+        if not resolved_id:
             # Try as title (with auto-latest for lineage)
             resolved_id = db.resolve_session_by_title(name_or_id)
 

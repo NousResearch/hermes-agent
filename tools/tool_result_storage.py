@@ -123,17 +123,40 @@ def _prune_spillover_once() -> None:
         logger.debug("Spillover prune failed: %s", exc)
 
 
+def _configured_backend_is_local() -> bool:
+    """True when the CONFIGURED terminal backend is local.
+
+    Used when no environment is active yet: the configured backend, not the
+    absence of an env, decides where the agent will later read files from.
+    Bridges terminal.* config into TERMINAL_* env vars first, the same way
+    terminal_tool does, so in-process launches (serve/desktop/cron/ACP) see
+    their config.yaml selection rather than defaulting to local.
+    """
+    try:
+        from tools.terminal_tool import _ensure_terminal_env_bridged
+
+        _ensure_terminal_env_bridged()
+    except Exception as exc:
+        logger.debug("Terminal config bridge failed: %s", exc)
+    backend = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
+    return backend == "local"
+
+
 def _is_host_side_env(env) -> bool:
     """True when the spill file should be written by this process directly.
 
-    Covers ``env=None`` (no sandbox environment active — e.g. a session
-    that has not run a terminal command yet) and the local backend
-    (where env.execute() runs on this same host anyway). Remote backends
-    (docker/ssh/modal/daytona) return False: their read_file resolves
-    inside the sandbox, so the spill must be written there.
+    Covers the local backend (where env.execute() runs on this same host
+    anyway), and ``env=None`` (no sandbox environment active — e.g. a
+    session that has not run a terminal command yet) ONLY when the
+    configured backend is local too. Remote backends (docker/ssh/modal/
+    daytona) return False: their read_file resolves inside the sandbox, so
+    the reference handed to the model must be sandbox-visible. Before this
+    check, a remote-backend session that spilled a large MCP result BEFORE
+    its first terminal command was handed the host path — which its
+    read_file could never resolve.
     """
     if env is None:
-        return True
+        return _configured_backend_is_local()
     try:
         from tools.environments.local import LocalEnvironment
 
@@ -359,12 +382,25 @@ def maybe_persist_tool_result(
                 tool_name, tool_use_id, len(content), host_path,
             )
             return _build_persisted_message(preview, has_more, len(content), host_path)
-    elif env is not None:
+    else:
         # Remote backend: the spillover dir is auto-mounted (docker) or
         # file-synced (modal/ssh/daytona) into the sandbox, so reference the
-        # translated path when the sandbox can actually read it.
+        # translated path when the sandbox can actually read it. With no env
+        # yet (a spill before the session's first terminal command), trust
+        # the translation without probing: cache/spillover is in the
+        # auto-mount/sync list, so the file is visible at that path as soon
+        # as the environment is created.
         if host_path is not None:
-            visible = _sandbox_visible_spillover_path(host_path, env)
+            if env is not None:
+                visible = _sandbox_visible_spillover_path(host_path, env)
+            else:
+                try:
+                    from tools.credential_files import to_agent_visible_cache_path
+
+                    visible = to_agent_visible_cache_path(host_path)
+                except Exception as exc:
+                    logger.debug("Spillover path translation failed: %s", exc)
+                    visible = None
             if visible is not None:
                 logger.info(
                     "Persisted large tool result: %s (%s, %d chars -> %s [host: %s])",
@@ -372,11 +408,13 @@ def maybe_persist_tool_result(
                 )
                 return _build_persisted_message(preview, has_more, len(content), visible)
         # Fallback: write into the sandbox temp dir (pre-existing containers
-        # without the spillover mount, translation/probe failures).
+        # without the spillover mount, translation/probe failures). Needs a
+        # live environment to execute in; with none, fall through to the
+        # inline truncation below.
         storage_dir = _resolve_storage_dir(env)
         remote_path = f"{storage_dir}/{filename}"
         try:
-            if _write_to_sandbox(content, remote_path, env):
+            if env is not None and _write_to_sandbox(content, remote_path, env):
                 logger.info(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,

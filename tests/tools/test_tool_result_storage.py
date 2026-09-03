@@ -361,6 +361,48 @@ class TestSpillover:
         assert spill_file.read_text(encoding="utf-8") == content
         assert str(spill_file) in result
 
+    def test_env_none_on_a_remote_backend_hands_out_the_sandbox_path(
+            self, monkeypatch):
+        """A spill BEFORE the session's first terminal command must not hand
+        a remote-backend session the host path: its read_file resolves in
+        the sandbox, and cache/spillover is auto-synced there as soon as the
+        environment is created. Previously env=None always took the
+        host-side branch, so an ssh-backend session that spilled a large
+        MCP result early was pointed at a file it could never read."""
+        import tools.terminal_tool as tt
+
+        monkeypatch.setattr(tt, "_terminal_config_bridge_attempted", True)
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        content = "x" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="tool_call",
+            tool_use_id="tc_mcp_ssh_1",
+            env=None,
+            threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
+        spill_file = get_spillover_dir() / "tc_mcp_ssh_1.txt"
+        assert spill_file.exists()
+        assert str(spill_file) not in result
+        assert "~/.hermes/cache/spillover/tc_mcp_ssh_1.txt" in result
+
+    def test_env_none_on_the_local_backend_keeps_the_host_path(
+            self, monkeypatch):
+        import tools.terminal_tool as tt
+
+        monkeypatch.setattr(tt, "_terminal_config_bridge_attempted", True)
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        content = "x" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="tool_call",
+            tool_use_id="tc_mcp_loc_1",
+            env=None,
+            threshold=30_000,
+        )
+        assert str(get_spillover_dir() / "tc_mcp_loc_1.txt") in result
+
     def test_local_env_persists_to_spillover_not_sandbox(self):
         """LocalEnvironment routes host-side: no env.execute() shell-out."""
         from tools.environments.local import LocalEnvironment

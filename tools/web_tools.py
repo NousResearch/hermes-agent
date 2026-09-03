@@ -579,8 +579,6 @@ def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
 
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
-
-# ─── Firecrawl Client ────────────────────────────────────────────────────────
 # After PR #25182, the firecrawl client, lazy SDK proxy, dual-auth config
 # resolution, response normalizers, and check_firecrawl_api_key() all live
 # in plugins.web.firecrawl.provider and are re-exported at the top of this

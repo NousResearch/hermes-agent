@@ -194,7 +194,9 @@ def _coerce_turn_input_text(user_input: Any) -> str:
             elif item_type in {"image", "image_url", "input_image"}:
                 parts.append("[image attached]")
         text = "\n\n".join(p for p in parts if p).strip()
-        return text or "What do you see in this image?"
+        # Return the user's actual caption, or empty string for captionless
+        # images — do not fabricate "What do you see in this image?" (#82847).
+        return text or ""
     return "" if user_input is None else str(user_input)
 
 

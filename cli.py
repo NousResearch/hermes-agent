@@ -9693,7 +9693,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
             return f"{prefix}\n\n{user_text}" if user_text else prefix
-        return user_text or "What do you see in this image?"
+        # Return the user's actual text, or empty string — do not fabricate
+        # an instruction for captionless image uploads (#82847).
+        return user_text or ""
 
     def _show_tool_availability_warnings(self):
         """Show warnings about disabled tools due to missing API keys."""

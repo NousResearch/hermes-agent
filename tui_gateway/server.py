@@ -9570,7 +9570,9 @@ def _build_image_ref_message(user_text: str, image_paths: list[str]) -> str:
     prefix = "\n\n".join(parts)
     if prefix:
         return f"{prefix}\n\n{text}" if text else prefix
-    return text or "What do you see in this image?"
+    # Return user's caption or empty string — do not fabricate an instruction
+    # for captionless images (#82847).
+    return text or ""
 
 
 def _build_persist_message_with_image_refs(user_text: str, image_paths: list[str]) -> str:

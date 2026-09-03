@@ -945,13 +945,22 @@ def build_native_content_parts(
     text = (user_text or "").strip()
 
     # If at least one image attached, build a single text part that combines
-    # the user's caption (or a neutral default) with one hint per image.
+    # the user's caption (if any) with one hint per image.
+    # Do NOT substitute a fabricated instruction when the caption is absent —
+    # a captionless upload semantically means "the user sent an image without
+    # a caption", not "the user asked for a visual description". The fabricated
+    # "What do you see in this image?" prompt changes the user's intent at the
+    # transport boundary and causes the agent to describe the image even when
+    # that was never the request (#82847).
     if attached_paths or attached_urls:
-        base_text = text or "What do you see in this image?"
+        base_text = text or ""
         hint_lines: List[str] = []
         hint_lines.extend(f"[Image attached at: {p}]" for p in attached_paths)
         hint_lines.extend(f"[Image attached: {u}]" for u in attached_urls)
-        combined_text = f"{base_text}\n\n" + "\n".join(hint_lines)
+        if base_text:
+            combined_text = f"{base_text}\n\n" + "\n".join(hint_lines)
+        else:
+            combined_text = "\n".join(hint_lines)
         parts: List[Dict[str, Any]] = [{"type": "text", "text": combined_text}]
         parts.extend(image_parts)
         return parts, skipped

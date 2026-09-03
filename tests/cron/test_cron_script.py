@@ -107,6 +107,46 @@ class TestRunJobScript:
         assert success is True
         assert output == "relative works"
 
+    def test_script_undecodable_byte_does_not_fail_job(self, cron_env):
+        """One undecodable byte must not fail an otherwise successful job.
+
+        The output pipes are read in text mode; with the strict default error
+        handler, communicate() raises UnicodeDecodeError and the job is
+        reported as failed even though the script exited 0.
+        """
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "invalid_utf8.py"
+        script.write_text(
+            "import sys\n"
+            "sys.stdout.buffer.write(b'before-\\xff-after\\n')\n"
+            "sys.stdout.buffer.flush()\n"
+        )
+
+        success, output = _run_job_script(str(script))
+        assert success is True
+        # Only the offending byte degrades; the surrounding output survives.
+        # Asserted by prefix/suffix so the test does not depend on which
+        # replacement character the active locale codec produces.
+        assert output.startswith("before-")
+        assert output.endswith("-after")
+
+    def test_script_undecodable_byte_on_stderr_does_not_fail_job(self, cron_env):
+        """stderr is decoded with the same kwargs — cover it too."""
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "invalid_utf8_stderr.py"
+        script.write_text(
+            "import sys\n"
+            "sys.stderr.buffer.write(b'warn-\\xff\\n')\n"
+            "sys.stderr.buffer.flush()\n"
+            "print('done')\n"
+        )
+
+        success, output = _run_job_script(str(script))
+        assert success is True
+        assert output == "done"
+
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
         """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""
@@ -318,8 +358,11 @@ class TestRunJobScript:
         assert captured["argv"] == [sys.executable, str(script.resolve())]
         assert captured["kwargs"]["text"] is True
         assert "creationflags" not in captured["kwargs"]
+        # The POSIX encoding default stays untouched (locale-derived).  Only the
+        # error handler is pinned, so an undecodable byte degrades that one
+        # character instead of failing the job.
         assert "encoding" not in captured["kwargs"]
-        assert "errors" not in captured["kwargs"]
+        assert captured["kwargs"]["errors"] == "replace"
 
     def test_non_overlay_branch_keeps_plain_argv(self, cron_env, monkeypatch):
         """When the Windows uv-venv overlay is NOT active, the invocation must

@@ -5775,7 +5775,10 @@ def ollama_model_supports_thinking(
 
     try:
         with httpx.Client(timeout=timeout, headers=headers) as client:
-            resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
+            resp = client.post(
+                f"{server_url}/api/show",
+                json={"model": bare_model, "name": bare_model},
+            )
             if resp.status_code != 200:
                 return None
             caps = resp.json().get("capabilities")

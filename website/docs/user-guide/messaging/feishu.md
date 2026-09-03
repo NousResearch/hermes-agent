@@ -289,6 +289,10 @@ Card action events are dispatched with `MessageType.COMMAND`, so they flow throu
 
 This is also how **command approval** works — when the agent needs to run a dangerous command, it sends an interactive card with Allow Once / Session / Always / Deny buttons. The user clicks a button, and the card action callback delivers the approval decision back to the agent.
 
+**Clarify questions** render the same way: when the agent asks a multiple-choice question via the `clarify` tool, Feishu users get an interactive card with one numbered button per option plus an "✏️ Other (type answer)" button. Tapping a number resolves the question instantly (the card updates in place with the chosen answer); tapping "Other" switches to text capture so the next message in the chat becomes the answer. Open-ended questions arrive as plain text and the next message answers them.
+
+**Finite-choice slash commands** (`/reasoning`, `/fast`) also send a native card picker — one tap applies the setting, the card settles with the selection, and the command's confirmation message follows in the chat.
+
 ### Required Feishu App Configuration
 
 Interactive cards require **three** configuration steps in the Feishu Developer Console. Missing any of them causes error **200340** when users click card buttons.

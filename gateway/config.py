@@ -1721,6 +1721,23 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "send_read_receipts" in platform_cfg:
                     bridged["send_read_receipts"] = platform_cfg["send_read_receipts"]
+                if plat == Platform.BLUEBUBBLES:
+                    for key in (
+                        "auto_react",
+                        "auto_react_type",
+                        "split_paragraph_replies",
+                        "typing_indicators",
+                        "typing_refresh_interval",
+                        "webhook_host",
+                        "webhook_path",
+                        "webhook_port",
+                    ):
+                        if key in platform_cfg:
+                            bridged[key] = platform_cfg[key]
+                    if "typing_indicators" in platform_cfg:
+                        bridged["typing_indicator"] = platform_cfg[
+                            "typing_indicators"
+                        ]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:
                     bridged["allowed_chats"] = platform_cfg["allowed_chats"]
                 if plat == Platform.TELEGRAM and "group_allowed_chats" in platform_cfg:
@@ -2622,19 +2639,43 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if bluebubbles_server_url and bluebubbles_password:
         # Honors an explicit ``platforms.bluebubbles.enabled: false`` (#48820).
         _enable_from_env(Platform.BLUEBUBBLES)
-        config.platforms[Platform.BLUEBUBBLES].extra.update({
-            "server_url": bluebubbles_server_url.rstrip("/"),
-            "password": bluebubbles_password,
-            "webhook_host": getenv("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1"),
-            "webhook_port": getenv_int("BLUEBUBBLES_WEBHOOK_PORT", 8645),
-            "webhook_path": getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
-            "send_read_receipts": is_truthy_value(getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true")),
-        })
+
+    if Platform.BLUEBUBBLES in config.platforms:
+        extra = config.platforms[Platform.BLUEBUBBLES].extra
+        if bluebubbles_server_url:
+            extra["server_url"] = bluebubbles_server_url.rstrip("/")
+        if bluebubbles_password:
+            extra["password"] = bluebubbles_password
+
+        webhook_host_override = os.getenv("BLUEBUBBLES_WEBHOOK_HOST")
+        if webhook_host_override is not None:
+            extra["webhook_host"] = webhook_host_override
+        else:
+            extra.setdefault("webhook_host", "127.0.0.1")
+        webhook_port_override = os.getenv("BLUEBUBBLES_WEBHOOK_PORT")
+        if webhook_port_override is not None:
+            extra["webhook_port"] = getenv_int("BLUEBUBBLES_WEBHOOK_PORT", 8645)
+        else:
+            extra.setdefault("webhook_port", 8645)
+        webhook_path_override = os.getenv("BLUEBUBBLES_WEBHOOK_PATH")
+        if webhook_path_override is not None:
+            extra["webhook_path"] = webhook_path_override
+        else:
+            extra.setdefault("webhook_path", "/bluebubbles-webhook")
+        receipt_override = os.getenv("BLUEBUBBLES_SEND_READ_RECEIPTS")
+        if receipt_override is not None:
+            extra["send_read_receipts"] = is_truthy_value(receipt_override)
+        else:
+            extra.setdefault("send_read_receipts", True)
+
         bluebubbles_require_mention = getenv("BLUEBUBBLES_REQUIRE_MENTION")
         if bluebubbles_require_mention is not None:
-            config.platforms[Platform.BLUEBUBBLES].extra["require_mention"] = (
-                bluebubbles_require_mention.lower() in {"true", "1", "yes", "on"}
-            )
+            extra["require_mention"] = bluebubbles_require_mention.lower() in {
+                "true",
+                "1",
+                "yes",
+                "on",
+            }
         bluebubbles_mention_patterns = getenv("BLUEBUBBLES_MENTION_PATTERNS")
         if bluebubbles_mention_patterns:
             try:
@@ -2645,7 +2686,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     for part in bluebubbles_mention_patterns.replace("\n", ",").split(",")
                     if part.strip()
                 ]
-            config.platforms[Platform.BLUEBUBBLES].extra["mention_patterns"] = parsed_patterns
+            extra["mention_patterns"] = parsed_patterns
     bluebubbles_home = getenv("BLUEBUBBLES_HOME_CHANNEL")
     if bluebubbles_home and Platform.BLUEBUBBLES in config.platforms:
         config.platforms[Platform.BLUEBUBBLES].home_channel = HomeChannel(

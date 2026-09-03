@@ -587,16 +587,35 @@ def _make_hermes_provider_class() -> Optional[type]:
                 self._persist_oauth_metadata_if_changed()
                 return
             finally:
+                import anyio
+
                 if resource_lock_released:
                     # Balance the SDK's surrounding ``async with`` even when
                     # HTTPX cancels or closes the flow while the resource
-                    # request is still in flight.  Shield only this local
-                    # bookkeeping; general inner-generator teardown remains
-                    # the separate concern tracked by the cleanup PR.
-                    import anyio
-
+                    # request is still in flight.
                     with anyio.CancelScope(shield=True):
                         await self.context.lock.acquire()
+                # Close the inner generator HERE, in the task that acquired
+                # the lock. HTTPX closes this OUTER generator deterministically,
+                # but ``inner`` was only held in a local -- dropped, it is
+                # finalized later by asyncio's async-generator hook, which runs
+                # ``athrow(GeneratorExit)`` in a DIFFERENT task. Its suspended
+                # ``async with self.context.lock`` then calls
+                # ``anyio.Lock.release()``, which is task-affine: it raises
+                # *before* clearing ``_owner_task``, leaving the lock owned by a
+                # task that no longer exists. Because MCPOAuthManager caches one
+                # provider per server, every later request for that server then
+                # deadlocks inside ``async with self.context.lock`` before
+                # issuing any HTTP -- the server retries, times out, parks, and
+                # never recovers for the life of the process (#101756).
+                #
+                # Closing it here throws GeneratorExit into ``inner`` from the
+                # owning task, so the release succeeds. Shielded so a cancelled
+                # flow still tears down cleanly. Idempotent: aclose() on an
+                # already-closed generator (the retry_after_concurrent_auth
+                # branch) is a no-op.
+                with anyio.CancelScope(shield=True):
+                    await inner.aclose()
 
             if retry_after_concurrent_auth:
                 yield request

@@ -18,7 +18,8 @@ it. New commands land often; `/help` in-session is always authoritative.
 /rollback [N]            List/restore filesystem checkpoints
 /diff [mode] [--stat]    Git changes in cwd (staged|all|session modes)
 /snapshot [sub]          Create/restore Hermes config+state snapshots (CLI)
-/background (/bg) <p>    Run prompt in background
+/bg <prompt>              Run a prompt in a separate background session
+/btw <question>           Ask a side question about the current conversation without interrupting it
 /queue (/q) <prompt>     Queue prompt for next turn
 /steer <prompt>          Inject a message after the next tool call
 /agents (/tasks)         Show active agents and running tasks
@@ -42,7 +43,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 /verbose                 Cycle tool progress: off → new → all → verbose → log (CLI)
 /voice [on|off|tts]      Voice mode
 /yolo                    Toggle approval bypass
-/busy [queue|steer|interrupt] What Enter does while working (CLI)
+/busy [queue|steer|interrupt] How messages behave while working (CLI + gateway)
 /indicator [style]       TUI busy indicator: kaomoji|emoji|unicode|ascii (CLI)
 /footer [on|off]         Gateway runtime-metadata footer on replies
 /skin [name]             Change theme (CLI)

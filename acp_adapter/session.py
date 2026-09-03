@@ -56,7 +56,18 @@ def _normalize_cwd_for_compare(cwd: str | None) -> str:
     elif re.match(r"^/mnt/[A-Za-z]/", expanded):
         expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
 
-    return os.path.normpath(expanded)
+    # Resolve symlink aliases so equivalent spellings of the same directory
+    # compare equal — macOS reports editor workspaces as ``/var/...`` while
+    # sessions get stored under ``/private/var/...`` (and ``/tmp`` vs
+    # ``/private/tmp``), which made ACP history filters silently drop a
+    # workspace's own sessions. ``os.path.realpath`` is lexical for missing
+    # paths (strict=False), so cwds that don't exist on this host — e.g.
+    # WSL-translated Windows drives — keep the previous normpath behavior.
+    # Ported from PrimeIntellect-ai/prime-agent#628.
+    try:
+        return os.path.realpath(expanded)
+    except OSError:
+        return os.path.normpath(expanded)
 
 
 def _build_session_title(title: Any, preview: Any, cwd: str | None) -> str:
@@ -480,16 +491,17 @@ class SessionManager:
                 # fresh agent with _session_db_created=False (so the check above
                 # is False) yet leave the durable archived transcript in place.
                 # A full-history replace would DELETE those archived rows just
-                # like the owned-agent case. Guard against it: when archived
-                # rows exist, replace ONLY the live (active=1) set and leave the
-                # archived turns untouched; otherwise the destructive replace is
-                # safe (fresh create/fork with no archived history to lose).
-                try:
-                    has_archived = db.has_archived_messages(state.session_id)
-                except Exception:
-                    has_archived = False
+                # like the owned-agent case. Guard against it by replacing ONLY
+                # the live (active=1) set unconditionally: on a fresh
+                # create/fork every row is active=1, so active-only replace is
+                # behaviorally identical to the full replace — and when archived
+                # rows DO exist they survive. An existence probe here
+                # (has_archived_messages) would fail OPEN into the destructive
+                # replace on any DB error and can race a concurrent
+                # archive_and_compact — the same probe failure mode #80216's
+                # /retry fix (gateway/slash_commands.py) deliberately avoids.
                 db.replace_messages(
-                    state.session_id, state.history, active_only=has_archived
+                    state.session_id, state.history, active_only=True
                 )
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)

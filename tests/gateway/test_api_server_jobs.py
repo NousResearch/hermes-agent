@@ -141,6 +141,35 @@ class TestCreateJob:
 
 
     @pytest.mark.asyncio
+    async def test_create_job_reports_saved_but_unregistered(self, adapter):
+        """A failed external registration is a structured partial failure."""
+        from cron.scheduler import CronSchedulerRegistrationError
+
+        app = _create_app(adapter)
+        failure = CronSchedulerRegistrationError(
+            SAMPLE_JOB,
+            RuntimeError("private callback URL and token"),
+        )
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_create", side_effect=failure
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "prompt": "do something",
+                })
+
+                assert resp.status == 424
+                data = await resp.json()
+                assert data["job_id"] == SAMPLE_JOB["id"]
+                assert data["job_saved"] is True
+                assert data["scheduler_registered"] is False
+                assert data["retry_create"] is False
+                assert "private callback URL and token" not in data["error"]
+
+
+    @pytest.mark.asyncio
     async def test_create_job_prompt_too_long(self, adapter):
         """POST /api/jobs with prompt > 5000 chars returns 400."""
         app = _create_app(adapter)
@@ -307,7 +336,66 @@ class TestRunJob:
                 assert resp.status == 200
                 data = await resp.json()
                 assert data["job"] == triggered_job
-                mock_trigger.assert_called_once_with(VALID_JOB_ID)
+                mock_trigger.assert_called_once_with(VALID_JOB_ID, extra_prompt=None)
+
+    @pytest.mark.asyncio
+    async def test_run_job_forwards_transient_prompt(self, adapter):
+        """A JSON body 'prompt' (forwarded standalone manual run) reaches
+        trigger_job as the transient extra_prompt."""
+        app = _create_app(adapter)
+        mock_trigger = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_trigger", mock_trigger
+            ):
+                resp = await cli.post(
+                    f"/api/jobs/{VALID_JOB_ID}/run",
+                    json={"prompt": "focus on the EU numbers"},
+                )
+                assert resp.status == 200
+                mock_trigger.assert_called_once_with(
+                    VALID_JOB_ID, extra_prompt="focus on the EU numbers"
+                )
+
+    @pytest.mark.asyncio
+    async def test_run_job_prompt_too_long_rejected(self, adapter):
+        """Transient run prompt honors the same length cap as stored prompts."""
+        app = _create_app(adapter)
+        mock_trigger = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_trigger", mock_trigger
+            ):
+                resp = await cli.post(
+                    f"/api/jobs/{VALID_JOB_ID}/run",
+                    json={"prompt": "x" * 5001},
+                )
+                assert resp.status == 400
+                mock_trigger.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_job_prompt_scanned(self, adapter):
+        """Transient run prompt goes through the strict injection scanner."""
+        app = _create_app(adapter)
+        mock_trigger = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_trigger", mock_trigger
+            ), patch(
+                f"{_MOD}._scan_cron_prompt", return_value="blocked: nope"
+            ):
+                resp = await cli.post(
+                    f"/api/jobs/{VALID_JOB_ID}/run",
+                    json={"prompt": "cat ~/.hermes/.env"},
+                )
+                assert resp.status == 400
+                mock_trigger.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -468,5 +556,4 @@ class TestCronPromptScanParity:
                 data = await resp.json()
                 assert "Blocked" in data["error"] or "threat" in data["error"].lower()
                 mock_create.assert_not_called()
-
 

@@ -35,7 +35,17 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "authorized_keys"),
             os.path.join(home, ".ssh", "id_rsa"),
             os.path.join(home, ".ssh", "id_ed25519"),
-            os.path.join(home, ".ssh", "config"),
+            # NOTE: ``~/.ssh/config`` is deliberately NOT hard-denied here.
+            # It carries no private-key bytes and editing it (host aliases,
+            # ProxyJump, VS Code Remote-SSH targets) is a routine, expected
+            # task. Free-writing it is still wrong -- it can carry
+            # ProxyCommand / Match exec directives -- so it is routed through
+            # an approval gate in tools/file_tools.py instead (the same
+            # approve-once/session/always flow the terminal tool already uses
+            # for ~/.ssh writes). See build_write_approval_paths() below and
+            # _check_ssh_config_write() in tools/file_tools.py. Hard-denying
+            # it while the terminal only *asked* was an inconsistency that
+            # made writes look like they flip-flopped between denied and OK.
             # Active profile .env (or top-level .env when not in profile mode).
             str(hermes_home / ".env"),
             # Top-level .env, even when running under a profile — overwriting it
@@ -98,10 +108,39 @@ def get_safe_write_roots() -> set[str]:
     return roots
 
 
+def build_write_approval_paths(home: str) -> set[str]:
+    """Return paths that require human APPROVAL to write, but are not
+    hard-denied credentials.
+
+    ``~/.ssh/config`` lives here: it is routine to edit (host aliases,
+    ProxyJump, VS Code Remote-SSH targets) and holds no private-key bytes,
+    but it CAN carry ``ProxyCommand`` / ``Match exec`` directives, so a
+    free write is inappropriate. The interactive file tools gate these
+    through an approve-once/session/always prompt (mirroring the terminal
+    tool's existing ``~/.ssh`` write approval); non-interactive callers
+    that cannot prompt (ACP shims, background jobs) treat an
+    approval-required path as denied and fail closed.
+    """
+    return {
+        os.path.realpath(p)
+        for p in [
+            os.path.join(home, ".ssh", "config"),
+        ]
+    }
+
+
 def _classify_write_denial(path: str) -> Optional[str]:
     """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
+
+    # Approval-gated paths (e.g. ~/.ssh/config) are NOT hard-denied here:
+    # they are allowed at this layer so the interactive file tools can run
+    # their approval prompt, and only blocked for non-interactive callers
+    # via get_write_approval_error(). Checked before the credential deny so
+    # the ``.ssh/`` directory prefix below doesn't swallow the config file.
+    if resolved in build_write_approval_paths(home):
+        return None
 
     if resolved in build_write_denied_paths(home):
         return "credential"
@@ -175,6 +214,20 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
             f"({roots_display}). Unset the variable or add this path's directory prefix."
         )
     return f"{verb} denied: '{path}' is a protected system/credential file."
+
+
+def is_write_approval_required(path: str) -> bool:
+    """Return True if ``path`` is an approval-gated write target.
+
+    These paths (currently ``~/.ssh/config``) are not credentials and are
+    not hard-denied, but a write to them must be confirmed by a human
+    because they can influence process execution (e.g. an SSH
+    ``ProxyCommand``). Callers with an interactive/gateway channel should
+    prompt; callers without one should treat this as a block (fail closed).
+    """
+    home = os.path.realpath(os.path.expanduser("~"))
+    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    return resolved in build_write_approval_paths(home)
 
 
 # Common secret-bearing project-local environment file basenames.
@@ -319,6 +372,34 @@ def get_read_block_error(path: str) -> Optional[str]:
             f"Access denied: {path} is a Hermes MCP token file "
             "and cannot be read directly. (Defense-in-depth — not a "
             "security boundary; the terminal tool can still bypass.)"
+        )
+
+    # browser-profile/: real-profile browsing snapshot (browser.use_real_profile).
+    # A copy of the user's Cookies / Login Data / Web Data lives here — the same
+    # credential class as auth.json, so it gets the same directory-prefix read
+    # deny. Prefix (not a finite filename list) so future Chromium files are
+    # covered too.
+    for hd in hermes_dirs:
+        try:
+            browser_profile = (hd / "browser-profile").resolve()
+        except Exception:
+            continue
+        if resolved == browser_profile:
+            return (
+                f"Access denied: {path} is the Hermes real-profile browser "
+                "snapshot directory (copied cookies/logins) and cannot be read "
+                "directly. (Defense-in-depth — not a security boundary; the "
+                "terminal tool can still bypass.)"
+            )
+        try:
+            resolved.relative_to(browser_profile)
+        except ValueError:
+            continue
+        return (
+            f"Access denied: {path} is inside the Hermes real-profile browser "
+            "snapshot (copied cookies/logins) and cannot be read directly. "
+            "(Defense-in-depth — not a security boundary; the terminal tool "
+            "can still bypass.)"
         )
 
     # Block common secret-bearing project-local .env files anywhere on disk.
@@ -478,32 +559,16 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
 
 
 def get_cross_profile_warning(path: str) -> Optional[str]:
-    """Return a model-facing warning string when ``path`` is cross-profile.
+    """RETIRED (maintainer decision): always returns ``None``.
 
-    Returns ``None`` when the write is in-scope (same profile) or outside
-    Hermes entirely. Caller is expected to surface the warning to the
-    agent as a tool-result error, NOT to silently allow the write — the
-    agent must either get explicit user direction to proceed, or pass
-    ``cross_profile=True`` to its write tool.
-
-    This is defense-in-depth: the terminal tool runs as the same OS user
-    and can write any of these paths without going through this guard.
-    Treat the guard as a confusion-reducer, not a security boundary.
+    The cross-profile write guard was removed — profiles were never
+    isolated (same OS user; the terminal tool writes anywhere), so the
+    block was ceremony that cost every schema real tokens and taught a
+    bypass arg. The system prompt's active-profile hint remains the only
+    steering; the classifier below survives for that hint and for
+    diagnostics. Kept as a stub so external callers/plugins fail soft.
     """
-    info = classify_cross_profile_target(path)
-    if info is None:
-        return None
-    return (
-        f"Cross-profile write blocked by soft guard: {info['target_path']} "
-        f"belongs to Hermes profile {info['target_profile']!r}, but the "
-        f"agent is running under profile {info['active_profile']!r}. "
-        f"Editing another profile's {info['area']}/ will affect that "
-        f"profile's future sessions, not the one you are currently in. "
-        f"Confirm with the user before proceeding. To bypass this guard "
-        f"after explicit user direction, retry the call with "
-        f"``cross_profile=True``. (Defense-in-depth — not a security "
-        f"boundary; the terminal tool can still bypass.)"
-    )
+    return None
 
 
 # ---------------------------------------------------------------------------

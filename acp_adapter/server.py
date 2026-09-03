@@ -114,7 +114,14 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
             is_provider_enabled,
             load_config,
         )
-        from hermes_cli.models import fetch_api_models
+        from hermes_cli.model_switch import (
+            _NativePickerModelList,
+            _declared_model_ids,
+            _entry_models_discovered,
+            _fetch_picker_live_models,
+            _models_config_is_allowlist,
+        )
+        from hermes_cli.models import should_use_ollama_native_catalog
         from hermes_cli.providers import custom_provider_slug
     except ImportError:
         return []
@@ -151,7 +158,9 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
 
         api_key = str(entry.get("api_key", "") or "").strip()
         if not api_key:
-            key_env = str(entry.get("key_env", "") or "").strip()
+            key_env = str(
+                entry.get("key_env") or entry.get("api_key_env") or ""
+            ).strip()
             api_key = os.environ.get(key_env, "").strip() if key_env else ""
 
         declared: list[str] = []
@@ -159,13 +168,23 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
         if default_model:
             declared.append(default_model)
         models_cfg = entry.get("models")
-        if isinstance(models_cfg, dict):
-            for mid in models_cfg:
-                mid = str(mid or "").strip()
-                if mid and mid not in declared:
-                    declared.append(mid)
+        for mid in _declared_model_ids(models_cfg):
+            if mid not in declared:
+                declared.append(mid)
 
-        if not api_key and not declared:
+        native_headers = entry.get("extra_headers") or None
+        native_catalog_provider = (
+            provider_key
+            if provider_key.lower() in {"ollama", "custom:ollama"}
+            else "custom"
+        )
+        is_native_ollama = should_use_ollama_native_catalog(
+            native_catalog_provider, base_url, headers=native_headers
+        )
+        explicit_catalog = _models_config_is_allowlist(
+            models_cfg, _entry_models_discovered(entry)
+        )
+        if not api_key and not declared and not is_native_ollama:
             # No credential to discover with and nothing declared:
             # not addressable from the selector.
             continue
@@ -174,17 +193,30 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
         discover = entry.get("discover_models", True)
         if isinstance(discover, str):
             discover = discover.lower() not in {"false", "no", "0"}
-        if discover and api_key:
+        native_catalog_provider = native_catalog_provider if is_native_ollama else "custom"
+        live = None
+        if discover and (api_key or is_native_ollama):
             try:
-                live = fetch_api_models(
-                    api_key, base_url, api_mode=entry.get("api_mode")
+                live = _fetch_picker_live_models(
+                    api_key,
+                    base_url,
+                    native_catalog_provider,
+                    explicit_catalog,
+                    headers=native_headers,
+                    timeout=1.5,
+                    api_mode=entry.get("api_mode"),
                 )
             except Exception:
                 live = None
-            if live:
-                model_ids = declared + [m for m in live if m not in declared]
+            if live is not None:
+                if isinstance(live, _NativePickerModelList):
+                    model_ids = list(live)
+                else:
+                    model_ids = declared + [m for m in live if m not in declared]
 
         if not model_ids:
+            if isinstance(live if "live" in locals() else None, _NativePickerModelList):
+                catalogs.append((slug, name, []))
             continue
         catalogs.append((slug, name, [(mid, "") for mid in model_ids]))
 
@@ -732,14 +764,47 @@ class HermesACPAgent(acp.Agent):
 
             available_models: list[ModelInfo] = []
             seen_ids: set[str] = set()
+            current_choice_provider = str(provider or "").strip().lower()
+            if current_choice_provider == "ollama":
+                current_choice_provider = "custom:ollama"
+            current_base_url = str(
+                getattr(state.agent, "base_url", "") or ""
+            ).strip().rstrip("/").lower()
+
+            def semantic_provider(provider_id: str) -> str:
+                raw = str(provider_id or "").strip().lower()
+                if raw in {"ollama", "custom:ollama"}:
+                    return "ollama"
+                if raw.startswith("custom:"):
+                    return raw
+                return normalize_provider(raw)
+
+            seen_semantic_ids: set[str] = set()
+            native_empty_rows: set[str] = set()
+            current_identity_resolved = current_choice_provider not in {"", "custom"}
             for row in payload.get("providers") or []:
-                row_provider = normalize_provider(str(row.get("slug") or "").strip())
+                raw_row_provider = str(row.get("slug") or "").strip().lower()
+                row_provider = normalize_provider(raw_row_provider)
+                row_base_url = str(row.get("api_url") or "").strip().rstrip("/").lower()
+                if row.get("native_catalog_empty"):
+                    native_empty_rows.add(raw_row_provider)
+                if (
+                    not current_identity_resolved
+                    and raw_row_provider in {"ollama", "custom:ollama"}
+                    and current_base_url
+                    and row_base_url == current_base_url
+                ):
+                    current_choice_provider = "custom:ollama"
+                    current_identity_resolved = True
                 if not row_provider:
                     continue
                 provider_name = str(row.get("name") or "").strip() or provider_label(
                     row_provider
                 )
-                for model_entry in row.get("models") or []:
+                row_models = row.get("models")
+                if not isinstance(row_models, (list, tuple)):
+                    continue
+                for model_entry in row_models:
                     if isinstance(model_entry, dict):
                         rendered_model = str(
                             model_entry.get("id")
@@ -751,11 +816,25 @@ class HermesACPAgent(acp.Agent):
                         rendered_model = str(model_entry or "").strip()
                     if not rendered_model:
                         continue
-                    choice_id = self._encode_model_choice(row_provider, rendered_model)
-                    if choice_id in seen_ids:
+                    encoded_provider = (
+                        "custom:ollama"
+                        if raw_row_provider == "ollama"
+                        else raw_row_provider
+                        if raw_row_provider == "custom:ollama"
+                        else raw_row_provider
+                        if raw_row_provider.startswith("custom:")
+                        else row_provider
+                    )
+                    choice_id = self._encode_model_choice(
+                        encoded_provider, rendered_model
+                    )
+                    semantic_id = f"{semantic_provider(encoded_provider)}:{rendered_model}"
+                    if choice_id in seen_ids or semantic_id in seen_semantic_ids:
                         continue
                     is_current = (
-                        row_provider == normalized_provider and rendered_model == model
+                        semantic_provider(encoded_provider)
+                        == semantic_provider(current_choice_provider)
+                        and rendered_model == model
                     )
                     description = f"Provider: {provider_name}"
                     if is_current:
@@ -768,14 +847,26 @@ class HermesACPAgent(acp.Agent):
                         )
                     )
                     seen_ids.add(choice_id)
+                    seen_semantic_ids.add(semantic_id)
 
             # Named user-defined endpoints (providers: / custom_providers:)
             # are invisible to canonical provider enumeration — append them
             # so editor clients can select them like the TUI /model picker.
+            named_empty_authoritative: set[str] = set(native_empty_rows)
             for named_slug, named_label, named_catalog in _named_custom_provider_catalogs():
+                if not named_catalog:
+                    named_empty_authoritative.add(str(named_slug).strip().lower())
+                    continue
                 for named_model, named_desc in named_catalog:
                     named_choice = self._encode_model_choice(named_slug, named_model)
-                    if not named_choice or named_choice in seen_ids:
+                    named_semantic_id = (
+                        f"{semantic_provider(named_slug)}:{named_model}"
+                    )
+                    if (
+                        not named_choice
+                        or named_choice in seen_ids
+                        or named_semantic_id in seen_semantic_ids
+                    ):
                         continue
                     named_parts = [f"Provider: {named_label}"]
                     if named_desc:
@@ -790,9 +881,70 @@ class HermesACPAgent(acp.Agent):
                         )
                     )
                     seen_ids.add(named_choice)
+                    seen_semantic_ids.add(named_semantic_id)
 
-            current_model_id = self._encode_model_choice(normalized_provider, model)
-            if current_model_id and current_model_id not in seen_ids:
+            def empty_catalog_applies(provider_id: str) -> bool:
+                raw = str(provider_id or "").strip().lower()
+                normalized = normalize_provider(raw)
+                if normalized == "custom":
+                    return any(
+                        candidate == raw
+                        or f"custom:{candidate}" == raw
+                        or (raw == "custom" and candidate == "custom")
+                        for candidate in named_empty_authoritative
+                    )
+                return any(
+                    candidate == raw
+                    or candidate == f"custom:{normalized}"
+                    or candidate == f"custom:{raw}"
+                    or normalize_provider(candidate) == normalized
+                    for candidate in named_empty_authoritative
+                )
+
+            def choice_provider(model_id: str) -> str:
+                parts = model_id.split(":")
+                if parts[:1] == ["custom"] and len(parts) > 1:
+                    from hermes_cli.models import _configured_custom_provider_ids
+
+                    lowered = model_id.lower()
+                    for candidate in sorted(
+                        (
+                            provider_id
+                            for provider_id in _configured_custom_provider_ids()
+                            if provider_id.startswith("custom:")
+                        ),
+                        key=len,
+                        reverse=True,
+                    ):
+                        if lowered.startswith(candidate + ":"):
+                            return candidate
+                    return "custom"
+                return parts[0]
+
+            if named_empty_authoritative:
+                available_models = [
+                    item
+                    for item in available_models
+                    if not empty_catalog_applies(choice_provider(item.model_id))
+                ]
+                seen_ids = {item.model_id for item in available_models}
+
+            current_is_empty = empty_catalog_applies(current_choice_provider)
+            if current_is_empty:
+                available_models = [
+                    item
+                    for item in available_models
+                    if " • current" not in str(item.description or "")
+                ]
+                seen_ids = {item.model_id for item in available_models}
+            current_model_id = (
+                "" if current_is_empty else self._encode_model_choice(current_choice_provider, model)
+            )
+            if (
+                current_model_id
+                and current_model_id not in seen_ids
+                and not current_is_empty
+            ):
                 provider_name = provider_label(normalized_provider)
                 available_models.insert(
                     0,
@@ -803,10 +955,14 @@ class HermesACPAgent(acp.Agent):
                     ),
                 )
 
+            if not available_models and current_is_empty:
+                return SessionModelState(available_models=[], current_model_id="")
             if available_models:
                 return SessionModelState(
                     available_models=available_models,
-                    current_model_id=current_model_id or available_models[0].model_id,
+                    current_model_id=current_model_id
+                    if current_model_id or current_is_empty
+                    else available_models[0].model_id,
                 )
         except Exception:
             logger.debug("Could not build ACP model state", exc_info=True)
@@ -1904,6 +2060,17 @@ class HermesACPAgent(acp.Agent):
             # never leaks one session's id into the next session's tools.
             previous_session_id = os.environ.get("HERMES_SESSION_ID")
             os.environ["HERMES_SESSION_ID"] = session_id
+            # Auto-titling fires inside the turn prologue now; give the agent
+            # this session's notifier so a new title reaches the client as a
+            # session-info update instead of waiting for the next one.
+            def _notify_title_update(_title: str, _source: str) -> None:
+                if conn:
+                    loop.call_soon_threadsafe(
+                        asyncio.create_task,
+                        self._send_session_info_update(session_id),
+                    )
+
+            agent._on_session_title = _notify_title_update
             try:
                 result = agent.run_conversation(
                     user_message=user_content,
@@ -2001,43 +2168,6 @@ class HermesACPAgent(acp.Agent):
         suppress_interrupt_response = interrupted and final_response.startswith(
             INTERRUPT_WAITING_FOR_MODEL_PREFIX
         )
-        if final_response and not suppress_interrupt_response:
-            try:
-                from agent.title_generator import maybe_auto_title
-
-                def _notify_title_update(_title: str) -> None:
-                    if conn:
-                        loop.call_soon_threadsafe(
-                            asyncio.create_task,
-                            self._send_session_info_update(session_id),
-                        )
-
-                # Snapshot the runtime identity; the validator lets the
-                # background titler skip its LLM call if the session's model
-                # changed before it fires (#19027).
-                _title_model = getattr(state.agent, "model", None)
-                _title_provider = getattr(state.agent, "provider", None)
-                maybe_auto_title(
-                    self.session_manager._get_db(),
-                    session_id,
-                    user_text,
-                    final_response,
-                    state.history,
-                    main_runtime={
-                        "model": getattr(state.agent, "model", None),
-                        "provider": getattr(state.agent, "provider", None),
-                        "base_url": getattr(state.agent, "base_url", None),
-                        "api_key": getattr(state.agent, "api_key", None),
-                        "api_mode": getattr(state.agent, "api_mode", None),
-                    },
-                    runtime_validator=lambda: (
-                        getattr(state.agent, "model", None) == _title_model
-                        and getattr(state.agent, "provider", None) == _title_provider
-                    ),
-                    title_callback=_notify_title_update,
-                )
-            except Exception:
-                logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
         if (
             final_response
             and conn

@@ -2,11 +2,6 @@ name: Tests
 
 on:
   workflow_call:
-    inputs:
-      slice_count:
-        description: Number of parallel test slices
-        type: number
-        default: 8
 
 permissions:
   contents: read
@@ -17,42 +12,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  generate:
-    name: "Generate slices"
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Restore duration cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: test_durations.json
-          key: test-durations
-          # Saves use test-durations-${run_id}, so the exact key above never
-          # matches — without this prefix fallback the cache ALWAYS missed,
-          # LPT slicing ran on no data, and unbalanced slices pushed heavy
-          # files toward the per-file timeout under load.
-          restore-keys: |
-            test-durations-
-
-      - name: Generate test slices
-        id: matrix
-        run: |
-          MATRIX=$(python3 scripts/run_tests_parallel.py --generate-slices ${{ inputs.slice_count }})
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-
   test:
-    name: Run tests slice ${{ matrix.slice.index }}/${{ inputs.slice_count }}
-    needs: generate
-    runs-on: ubuntu-latest
+    name: Run tests
+    # One 96-core runner for the whole suite. There is no slicing. Slicing
+    # existed to spread the suite over 4-core runners. It cost a matrix job, a
+    # duration cache, a per-slice artifact and a merge job to do it.
+    #
+    # 96 cores clear the floor that the slowest single test file sets (about
+    # 82s). A second slice divides work that is already at that floor, and
+    # adds a second setup.
+    runs-on: ubuntu-latest-96-core
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.generate.outputs.matrix) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -117,68 +87,43 @@ jobs:
         # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
 
-      - name: Run tests (slice ${{ matrix.slice.index }}/${{ inputs.slice_count }})
+      - name: Run tests
         # Per-file isolation via scripts/run_tests.sh: each test file runs
         # in its own freshly-spawned `python -m pytest <file>` subprocess
         # with bounded parallelism. No xdist, no shared workers, no
         # module-level state leakage between files.
         #
-        # File list is pre-computed by the generate job (--generate-slices)
-        # which runs LPT distribution once and passes the file list to each
-        # matrix job via --files. Previously each job re-discovered files and
-        # re-ran LPT independently — redundant N times.
+        # No --files: the runner discovers the suite itself. The discovered
+        # set is identical to the list the removed matrix job used to pass in.
         run: |
           source .venv/bin/activate
-          scripts/run_tests.sh --files '${{ matrix.slice.files }}'
+          scripts/run_tests.sh
         env:
+          # This is the maximum number of test FILES that run together.
+          # run_tests_parallel.py starts one pytest subprocess for each file
+          # from a single ThreadPoolExecutor, so this value IS the limit. The
+          # default is cpu_count*2, which is 192 here.
+          #
+          # Measured on this runner (96-core EPYC 7763, 377GB). Whole suite,
+          # two repetitions for each value. See run 32549672063:
+          #
+          #     workers   x cores   mean
+          #        48       0.5x    138s
+          #        96       1.0x    126s   <- fastest
+          #       144       1.5x    132s
+          #       192       2.0x    132s
+          #       240       2.5x    140s
+          #       288       3.0x    142s
+          #
+          # One worker for each core wins. The curve is shallow: 126s to 142s
+          # across a 6x range. The suite has sufficient concurrency at this
+          # size. The remaining time is the slowest files plus the setup.
+          # Workers above the core count only add contention.
+          HERMES_TEST_WORKERS: 96
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
-
-      - name: Upload per-slice durations
-        # Advisory artifact (feeds slice balancing) — a transient artifact-
-        # service blip must not fail an otherwise-green test slice.
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: test-durations-slice-${{ matrix.slice.index }}
-          path: test_durations.json
-          retention-days: 1
-
-  # Merge per-slice duration data into a single cache, so future runs
-  # (including PRs) get balanced slicing.
-  save-durations:
-    needs: test
-    if: needs.test.result == 'success' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Download all slice durations
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: test-durations-slice-*
-          path: durations
-          merge-multiple: true
-
-      - name: Merge into single durations file
-        run: |
-          python3 -c "
-          import json, glob, os
-          merged = {}
-          for f in glob.glob('durations/*test_durations.json'):
-            with open(f) as fh:
-              merged.update(json.load(fh))
-          with open('test_durations.json', 'w') as fh:
-            json.dump(merged, fh, indent=2, sort_keys=True)
-          print(f'Merged {len(merged)} file durations')
-          "
-
-      - name: Save merged duration cache
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: test_durations.json
-          key: test-durations-${{ github.run_id }}
 
   e2e:
     runs-on: ubuntu-latest

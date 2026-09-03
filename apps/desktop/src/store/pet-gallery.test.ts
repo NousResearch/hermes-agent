@@ -56,6 +56,7 @@ describe('pet gallery pet.info sync', () => {
 
       throw new Error(`unexpected method: ${method}`)
     })
+
     const request = requestMock as unknown as GatewayRequest
 
     await loadPetGallery(request)
@@ -113,6 +114,7 @@ describe('pet gallery pet.info sync', () => {
 
       throw new Error(`unexpected method: ${method}`)
     })
+
     const request = requestMock as unknown as GatewayRequest
 
     await loadPetGallery(request)
@@ -147,6 +149,7 @@ describe('pet gallery pet.info sync', () => {
 
       throw new Error(`unexpected method: ${method}`)
     })
+
     const request = requestMock as unknown as GatewayRequest
 
     await loadPetGallery(request)
@@ -195,6 +198,7 @@ describe('pet gallery pet.info sync', () => {
 
       throw new Error(`unexpected method: ${method}`)
     })
+
     const request = requestMock as unknown as GatewayRequest
 
     await expect(adoptPet(request, 'boba', 'Could not adopt pet.')).resolves.toBe(true)

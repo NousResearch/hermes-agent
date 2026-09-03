@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -71,11 +71,25 @@ describe('ProjectOverviewRow', () => {
     expect(screen.queryByRole('button', { name: 'Show Test D sessions' })).toBeNull()
   })
 
-  it('drops the "new session" add button on Home, which has no folder to start in', () => {
-    const home = { id: '__no_project__', isNoProject: true, label: 'Home' } as unknown as SidebarProjectTree
+  it('offers the "new session" add button on Home, which starts one with no folder', () => {
+    const home = {
+      id: '__no_project__',
+      isNoProject: true,
+      label: 'Home',
+      path: null
+    } as unknown as SidebarProjectTree
 
-    render(<ProjectOverviewRow onNewSession={vi.fn()} project={home} />)
+    const onNewSession = vi.fn()
 
-    expect(screen.queryByRole('button', { name: 'New session in Home' })).toBeNull()
+    render(<ProjectOverviewRow onNewSession={onNewSession} project={home} />)
+    fireEvent.click(screen.getByRole('button', { name: 'New session in Home' }))
+
+    expect(onNewSession).toHaveBeenCalledWith(null)
+  })
+
+  it('tags the row with data-sessions-project so a skin can target one project', () => {
+    const { container } = render(<ProjectOverviewRow project={project} />)
+
+    expect(container.querySelector('[data-sessions-project="p1"]')).toBeTruthy()
   })
 })

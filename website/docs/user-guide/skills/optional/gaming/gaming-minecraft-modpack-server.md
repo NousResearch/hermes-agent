@@ -15,7 +15,10 @@ Host modded Minecraft servers (CurseForge, Modrinth).
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/gaming/minecraft-modpack-server` |
-| Path | `optional-skills/gaming/minecraft-modpack-server` |
+| Path | `optional-skills/gaming\minecraft-modpack-server` |
+| Version | `1.0.0` |
+| Author | Teknium (teknium1), Hermes Agent |
+| License | MIT |
 | Platforms | linux, macos |
 
 ## Reference: full SKILL.md

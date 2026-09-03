@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
 import { StableText } from '@/components/chat/stable-text'
+import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { compactNumber } from '@/lib/format'
 import type { UsageStats } from '@/types/hermes'
 
@@ -58,20 +59,26 @@ export function contextBarLabel(usage: UsageStats): string {
   return `[${contextBar(usage.context_percent)}] ${pct}%`
 }
 
+/** `87%` for a reported hit rate; '' when the backend omitted it (no cache
+ *  reads yet, or a provider that doesn't report them). The backend already
+ *  clamps and rounds, so this only guards a malformed/absent field. */
+export function cacheHitLabel(usage: UsageStats): string {
+  const pct = usage.cache_hit_pct
+
+  return typeof pct === 'number' && Number.isFinite(pct) ? `${Math.round(pct)}%` : ''
+}
+
+/** `42 t/s` for the rolling throughput; '' before the first completed call. */
+export function tokensPerSecondLabel(usage: UsageStats): string {
+  const tps = usage.avg_tps
+
+  return typeof tps === 'number' && Number.isFinite(tps) && tps > 0 ? `${Math.round(tps)} t/s` : ''
+}
+
 export function LiveDuration({ since }: { since: number | null | undefined }) {
   const [now, setNow] = useState(() => Date.now())
 
-  useEffect(() => {
-    if (!since) {
-      return
-    }
-
-    const tick = () => setNow(Date.now())
-    tick()
-    const timer = window.setInterval(tick, 1000)
-
-    return () => window.clearInterval(timer)
-  }, [since])
+  useViewedInterval(() => setNow(Date.now()), 1000, Boolean(since))
 
   if (!since) {
     return null

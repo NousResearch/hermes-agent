@@ -22,9 +22,12 @@ import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
+import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+
+export { refreshSessionView, scheduleResumeScrollToBottom } from './sessionResumeView.js'
 
 const usageFrom = (info: null | SessionInfo): Usage => (info?.usage ? { ...ZERO, ...info.usage } : ZERO)
 
@@ -80,35 +83,6 @@ export const signalFreshSessionBoundary = (
   onFreshSessionStarted(nextSid)
 
   return true
-}
-
-export const scheduleResumeScrollToBottom = (
-  scrollRef: RefObject<null | ScrollBoxHandle>,
-  delays: readonly number[] = [0, 80, 240]
-) => {
-  const startedAt = Date.now()
-
-  const timers = delays.map((delay, index) =>
-    setTimeout(() => {
-      const scroll = scrollRef.current
-
-      if (!scroll) {
-        return
-      }
-
-      const manuallyScrolledAfterResume = scroll.getLastManualScrollAt() > startedAt
-
-      if (!manuallyScrolledAfterResume && (index === 0 || scroll.isSticky())) {
-        scroll.scrollToBottom()
-      }
-    }, delay)
-  )
-
-  return () => {
-    for (const timer of timers) {
-      clearTimeout(timer)
-    }
-  }
 }
 
 const trimTail = (items: Msg[]) => {
@@ -276,6 +250,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
             const nextTitle = (result.title ?? requestedTitle).trim()
             const suffix = result.pending ? ' (queued while session initializes)' : ''
+            patchUiState({ sessionTitle: nextTitle })
             sys(`session title set: ${nextTitle}${suffix}`)
           })
           .catch((err: unknown) => {

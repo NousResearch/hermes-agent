@@ -83,6 +83,20 @@ class TestAllowlist:
 
     def test_feature_install_command_unknown(self):
         assert ld.feature_install_command("not.real") is None
+        assert ld.feature_install_command("not.real", venv_pip=True) is None
+
+    def test_feature_install_command_venv_pip_targets_interpreter(self):
+        # venv_pip=True must target the running interpreter's pip (correct in
+        # every install layout, immune to PEP 668) and carry the same specs
+        # as the default uv form.
+        import sys as _sys
+        default = ld.feature_install_command("platform.teams")
+        venv = ld.feature_install_command("platform.teams", venv_pip=True)
+        assert default is not None and venv is not None
+        assert venv.startswith(f"{_sys.executable} -m pip install ")
+        assert default.startswith("uv pip install ")
+        # Same spec tail on both forms.
+        assert venv.split(" -m pip install ", 1)[1] == default.split("uv pip install ", 1)[1]
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +323,19 @@ class TestRefreshActiveFeatures:
     def test_windows_matrix_refresh_is_skipped_before_pip(self, monkeypatch):
         # Matrix E2EE pulls python-olm, which has no native Windows wheel/build
         # path. `hermes update` must not retry that doomed install every run.
-        monkeypatch.setattr(ld.sys, "platform", "win32")
+        #
+        # The subject here is the *consumer* — refresh_active_features honouring
+        # the gate before pip — so we monkeypatch lazy_deps' own platform probe
+        # instead of faking the host, which keeps this covered on Linux too.
+        monkeypatch.setattr(
+            ld,
+            "_unsupported_feature_reason",
+            lambda feature: (
+                "unsupported on Windows: Matrix E2EE depends on python-olm"
+                if feature == "platform.matrix"
+                else None
+            ),
+        )
         monkeypatch.setattr(ld, "active_features", lambda: ["platform.matrix"])
         monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
         monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
@@ -324,6 +350,49 @@ class TestRefreshActiveFeatures:
         assert result["platform.matrix"].startswith("skipped:")
         assert "unsupported on Windows" in result["platform.matrix"]
 
+    @pytest.mark.windows_only
+    def test_matrix_probe_reports_unsupported_on_real_windows(self):
+        # The probe itself keys off the real host: patching sys.platform only
+        # proved the string, never that Windows actually hits this gate.
+        assert "unsupported on Windows" in (
+            ld._unsupported_feature_reason("platform.matrix") or ""
+        )
+
+    def test_restore_snapshot_skips_telegram_with_lazy_installs_disabled(
+        self, monkeypatch
+    ):
+        """The security opt-out also blocks updater-driven restoration."""
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: False)
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(
+            ld,
+            "_venv_pip_install",
+            lambda *args, **kwargs: pytest.fail(
+                "pip must not run when lazy installs are disabled"
+            ),
+        )
+
+        result = ld.restore_features(["platform.telegram"])
+
+        assert result == {
+            "platform.telegram": (
+                "skipped: lazy installs disabled "
+                "(security.allow_lazy_installs=false)"
+            )
+        }
+
+    def test_restore_snapshot_does_not_install_never_activated_features(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            ld,
+            "_venv_pip_install",
+            lambda *args, **kwargs: pytest.fail(
+                "cold features must stay uninstalled"
+            ),
+        )
+
+        assert ld.restore_features([]) == {}
 
     def test_mixed_results_returns_per_feature_status(self, monkeypatch):
         monkeypatch.setattr(ld, "active_features", lambda: ["a.ok", "b.fail"])
@@ -414,3 +483,120 @@ class TestInstallSpecs:
         result = ld.install_specs(["honcho-ai==2.2.0"])
         assert result.ok is False
         assert "disk on fire" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Post-install bytecode warm (#100461)
+# ---------------------------------------------------------------------------
+
+
+class TestWarmInstalledBytecode:
+    """A pip/uv install leaves ``.py`` sources with no ``__pycache__``.
+
+    Whoever imports next pays the whole compile, and for a lazily installed
+    backend that is the foreground of a user request. These tests pin that
+    the installer pays it instead.
+    """
+
+    @staticmethod
+    def _package(tmp_path):
+        pkg = tmp_path / "zzzfakepkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (pkg / "mod.py").write_text("def f():\n    return 2\n", encoding="utf-8")
+        return pkg
+
+    def test_compiles_the_installed_package(self, tmp_path, monkeypatch):
+        pkg = self._package(tmp_path)
+        monkeypatch.setattr(ld, "_installed_dist_roots", lambda spec, target: {pkg})
+
+        assert not list(pkg.rglob("*.pyc"))
+        ld._warm_installed_bytecode(("zzzfake==1.0",), None)
+        assert len(list(pkg.rglob("*.pyc"))) == 2
+
+    def test_honors_dont_write_bytecode(self, tmp_path, monkeypatch):
+        pkg = self._package(tmp_path)
+        monkeypatch.setattr(ld, "_installed_dist_roots", lambda spec, target: {pkg})
+        monkeypatch.setattr(ld.sys, "dont_write_bytecode", True)
+
+        ld._warm_installed_bytecode(("zzzfake==1.0",), None)
+        assert not list(pkg.rglob("*.pyc"))
+
+    def test_compile_failure_never_propagates(self, tmp_path, monkeypatch):
+        # An unwritable tree (read-only mount, --target on a sealed image)
+        # must not turn a successful install into a failed one.
+        def boom(spec, target):
+            raise OSError("read-only file system")
+        monkeypatch.setattr(ld, "_installed_dist_roots", boom)
+
+        ld._warm_installed_bytecode(("zzzfake==1.0",), None)  # no exception
+
+    def test_dist_roots_resolve_from_metadata_not_the_spec_name(self):
+        # The import name is read off the distribution's own file list, so
+        # specs whose package name differs from their module name still warm.
+        roots = ld._installed_dist_roots("pytest>=8", None)
+        assert roots, "pytest is a test dependency and must resolve"
+        assert all(r.is_dir() for r in roots)
+        assert any(list(r.glob("*.py")) for r in roots)
+
+    def test_unknown_distribution_resolves_to_nothing(self):
+        assert ld._installed_dist_roots("zzz-not-installed==9.9", None) == set()
+
+    def test_dist_roots_exclude_metadata_dirs(self):
+        # ``*.dist-info`` owns RECORD/METADATA/licenses, never importable
+        # code — compiling it is wasted work on every install.
+        roots = ld._installed_dist_roots("pytest>=8", None)
+        assert roots
+        assert not any(r.name.endswith((".dist-info", ".egg-info")) for r in roots)
+
+
+class TestInstallWarmsBytecode:
+    """The warm runs on install success, and only on success."""
+
+    @staticmethod
+    def _install(monkeypatch, returncode):
+        calls = []
+        cmds = []
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        monkeypatch.setattr(ld.shutil, "which", lambda name: "uv" if name == "uv" else None)
+        monkeypatch.setattr(
+            "hermes_cli.managed_uv.resolve_uv", lambda *a, **kw: "uv", raising=False
+        )
+
+        class _Completed:
+            def __init__(self):
+                self.returncode = returncode
+                self.stdout = "out"
+                self.stderr = "err"
+
+        def fake_run(cmd, *a, **kw):
+            cmds.append(list(cmd))
+            return _Completed()
+
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            ld, "_warm_installed_bytecode",
+            lambda specs, target: calls.append((specs, target)),
+        )
+        result = ld._venv_pip_install(("zzzfake==1.0",))
+        return result, calls, cmds
+
+    def test_success_warms_once_with_the_installed_specs(self, monkeypatch):
+        result, calls, _ = self._install(monkeypatch, 0)
+        assert result.success is True
+        assert calls == [(("zzzfake==1.0",), None)]
+
+    def test_failed_install_does_not_warm(self, monkeypatch):
+        result, calls, _ = self._install(monkeypatch, 1)
+        assert result.success is False
+        assert calls == []
+
+    def test_uv_tier_compiles_bytecode_for_the_whole_install(self, monkeypatch):
+        # uv does not write __pycache__ unless asked (pip does). The flag
+        # covers transitive deps too, which the per-spec warm never sees.
+        _, _, cmds = self._install(monkeypatch, 0)
+        uv_cmds = [c for c in cmds if c[:3] == ["uv", "pip", "install"]]
+        assert len(uv_cmds) == 1
+        cmd = uv_cmds[0]
+        assert "--compile-bytecode" in cmd
+        assert cmd.index("--compile-bytecode") < cmd.index("zzzfake==1.0")

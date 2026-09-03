@@ -50,6 +50,32 @@ def gated_app():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "next_value",
+    [
+        "<script>alert(1)</script>",
+        "javascript:alert(1)",
+        "../../etc/passwd",
+        "canary\r\nSet-Cookie: injected=1",
+    ],
+)
+def test_empty_provider_login_page_is_safe_through_real_route(
+    gated_app, next_value
+):
+    clear_providers()
+
+    response = gated_app.get("/login", params={"next": next_value})
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "no-store" in response.headers["cache-control"]
+    assert "Sign-in unavailable" in response.text
+    assert "username/password provider" in response.text
+    assert "OAuth provider" in response.text
+    assert "--insecure" not in response.text
+    assert next_value not in response.text
+
+
 def test_gated_status_is_public(gated_app):
     """``/api/status`` MUST be public under the OAuth gate.
 

@@ -39,10 +39,24 @@ import path from 'node:path'
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
+// No-mux tunnels are one `ssh -N -L` child each; a transient child death
+// (network blip, sshd restart, laptop resume) used to instantly poison
+// isAlive() and cascade upstream into a full teardown that SIGTERM'd a
+// healthy backend (#96266). Instead, restart the child a bounded number of
+// times; consecutive pre-readiness failures exhaust the budget and only then
+// is the connection reported dead.
+const DEFAULT_TUNNEL_RESTART_LIMIT = 5
+const DEFAULT_TUNNEL_RESTART_DELAY_MS = 1_000
 const CONTROL_PERSIST_SECONDS = 300
 
 // eslint-disable-next-line no-control-regex -- deliberately reject control chars in ssh targets
 const _CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/
+
+// Hostname / IPv4 shape: letters, digits, dots, hyphens, underscores.
+const _HOSTNAME_RE = /^[A-Za-z0-9._-]+$/
+// IPv6 shape (optionally with a %zone). Loose on purpose — ssh does the real
+// parse; this only has to separate "plausible address" from pasted garbage.
+const _IPV6_RE = /^[0-9A-Fa-f:.]+(?:%[A-Za-z0-9._-]+)?$/
 
 function validateSshTarget(host, user, port) {
   if (!host || typeof host !== 'string') {
@@ -57,12 +71,47 @@ function validateSshTarget(host, user, port) {
     throw new Error('Unsafe SSH target: host contains control characters.')
   }
 
+  if (/\s/.test(host)) {
+    throw new Error(
+      'Invalid SSH host: contains whitespace. Enter only the destination (user@host or host) — no "ssh " prefix or extra options.'
+    )
+  }
+
+  if (host.includes(',')) {
+    throw new Error(
+      `Invalid SSH host "${host}": commas are not valid in a hostname or IP (use dots, e.g. 192.168.1.10).`
+    )
+  }
+
+  if (host.includes(':')) {
+    // Only a bare IPv6 address may contain colons here — ports are parsed off
+    // upstream. A single-colon host is almost always "host:port" that failed
+    // to parse, or worse, a pasted credential.
+    const colons = (host.match(/:/g) || []).length
+
+    if (colons < 2 || !_IPV6_RE.test(host)) {
+      // Never echo the suspect segment — it may be a pasted credential.
+      throw new Error(
+        `Invalid SSH host "${host.split(':')[0]}:<hidden>": unexpected ":" segment. ` +
+          'Use host or host:port — and never put a password in the host field; Desktop SSH authenticates with keys.'
+      )
+    }
+  } else if (!_HOSTNAME_RE.test(host)) {
+    throw new Error(`Invalid SSH host "${redactSecrets(host)}": not a valid hostname or IP address.`)
+  }
+
   if (user && _CONTROL_CHAR_RE.test(user)) {
     throw new Error('Unsafe SSH target: user contains control characters.')
   }
 
   if (user && user.startsWith('-')) {
     throw new Error(`Unsafe SSH target: user must not start with a dash ("${user}").`)
+  }
+
+  if (user && /[\s@]/.test(user)) {
+    throw new Error(
+      `Invalid SSH user "${user}": contains whitespace or "@". Enter only the destination (user@host) — no "ssh " prefix.`
+    )
   }
 
   const p = Number(port)
@@ -92,7 +141,11 @@ const _REDACTIONS: Array<[RegExp, string]> = [
   [/(HERMES_DASHBOARD_SESSION_TOKEN=)(\S+)/g, '$1<redacted>'],
   [/(X-Hermes-Session-Token["']?\s*[:=]\s*["']?)([^\s"'&]+)/gi, '$1<redacted>'],
   [/(Authorization["']?\s*:\s*Bearer\s+)(\S+)/gi, '$1<redacted>'],
-  [/([?&](?:token|ticket)=)([^\s&"']+)/gi, '$1<redacted>']
+  [/([?&](?:token|ticket)=)([^\s&"']+)/gi, '$1<redacted>'],
+  // SSH target with a non-numeric segment where a port belongs
+  // (user@host:SECRET or user@host:SECRET:22). A mistyped password in the
+  // host field must never reach logs / debug shares verbatim.
+  [/(\S+@[^\s:]+):(?!\d+\b)[^\s:]+/g, '$1:<redacted>']
 ]
 
 function redactSecrets(text) {
@@ -351,8 +404,16 @@ function sshErrorMessage(kind, conn, stderr?) {
 
 // Resolves { code, stdout, stderr }. On timeout the child is SIGKILLed and the
 // promise rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests.
-function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData }: any = {}) {
+function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData, signal }: any = {}) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      const error: any = new Error('SSH operation was cancelled.')
+      error.kind = 'superseded'
+      reject(error)
+
+      return
+    }
+
     const useStdinPipe = stdinData != null || stdin !== 'ignore'
     let child
 
@@ -372,7 +433,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData 
     let stderr = ''
     let settled = false
 
-    const timer = setTimeout(() => {
+    const timer: any = setTimeout(() => {
       if (settled) {
         return
       }
@@ -387,8 +448,34 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData 
 
       const err: any = new Error(`ssh timed out after ${timeoutMs}ms`)
       err.kind = SSH_ERROR.TIMEOUT
+      signal?.removeEventListener('abort', onAbort)
       reject(err)
     }, timeoutMs)
+
+    const onAbort = () => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      clearTimeout(timer)
+
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        // already gone
+      }
+
+      const error: any = new Error('SSH operation was cancelled.')
+      error.kind = 'superseded'
+      reject(error)
+    }
+
+    signal?.addEventListener('abort', onAbort, { once: true })
+
+    if (signal?.aborted) {
+      onAbort()
+    }
 
     child.stdout?.on('data', d => {
       stdout += d.toString()
@@ -403,6 +490,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData 
 
       settled = true
       clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
       reject(error)
     })
     child.on('close', code => {
@@ -412,6 +500,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData 
 
       settled = true
       clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
       resolve({ code, stdout, stderr })
     })
   })
@@ -466,6 +555,8 @@ class SshConnection {
   _connectTimeoutMs: number
   _execTimeoutMs: number
   _forwardTimeoutMs: number
+  _tunnelRestartLimit: number
+  _tunnelRestartDelayMs: number
   _opened: boolean
   _mux: boolean
   _tunnels: Map<string, any>
@@ -507,6 +598,8 @@ class SshConnection {
     this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
     this._execTimeoutMs = opts.execTimeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS
     this._forwardTimeoutMs = opts.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS
+    this._tunnelRestartLimit = opts.tunnelRestartLimit ?? DEFAULT_TUNNEL_RESTART_LIMIT
+    this._tunnelRestartDelayMs = opts.tunnelRestartDelayMs ?? DEFAULT_TUNNEL_RESTART_DELAY_MS
     this._opened = false
   }
 
@@ -516,6 +609,10 @@ class SshConnection {
   }
 
   _fail(stderrOrErr, fallbackKind = SSH_ERROR.UNKNOWN) {
+    if (stderrOrErr?.kind === 'superseded') {
+      return stderrOrErr
+    }
+
     if (stderrOrErr && stderrOrErr.kind === SSH_ERROR.TIMEOUT) {
       const err: any = new Error(sshErrorMessage(SSH_ERROR.TIMEOUT, this))
       err.kind = SSH_ERROR.TIMEOUT
@@ -534,13 +631,13 @@ class SshConnection {
   // Open the connection. Mux: start the persistent ControlMaster (idempotent —
   // a live master is a no-op). No-mux: there is no master; validate auth +
   // reachability with a one-shot `ssh true` so failures classify identically.
-  async open() {
-    if (await this.isAlive()) {
+  async open({ signal }: any = {}) {
+    if (await this.isAlive({ signal })) {
       // -O check passing is not proof the master works: a ControlPersist master
       // can survive a failed teardown with wedged channels (observed on macOS
       // after a mode switch — check succeeds, every exec times out). Verify with
       // a real exec before trusting it; on failure, evict and dial fresh.
-      if (!this._mux || (await this._verifyMuxChannel())) {
+      if (!this._mux || (await this._verifyMuxChannel({ signal }))) {
         this._opened = true
 
         return
@@ -557,7 +654,8 @@ class SshConnection {
       try {
         result = await runSsh(buildExecArgs(this, 'exit 0', this._connectTimeoutMs), {
           timeoutMs: this._connectTimeoutMs,
-          spawnFn: this._spawnFn
+          spawnFn: this._spawnFn,
+          signal
         })
       } catch (error) {
         throw this._fail(error, SSH_ERROR.UNREACHABLE)
@@ -606,7 +704,7 @@ class SshConnection {
     let result
 
     try {
-      result = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
+      result = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
     } catch (error) {
       throw this._fail(error, SSH_ERROR.UNREACHABLE)
     }
@@ -621,7 +719,7 @@ class SshConnection {
 
   // Liveness. Mux: `-O check` against the master socket. No-mux: a cheap
   // one-shot exec — "alive" means "we can still authenticate and run".
-  async isAlive() {
+  async isAlive({ signal }: any = {}) {
     if ([...this._tunnels.values()].some(tunnel => tunnel.alive === false)) {
       return false
     }
@@ -631,25 +729,34 @@ class SshConnection {
       : buildExecArgs(this, 'exit 0', this._connectTimeoutMs)
 
     try {
-      const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
+      const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
 
       return result.code === 0
-    } catch {
+    } catch (error: any) {
+      if (error?.kind === 'superseded') {
+        throw error
+      }
+
       return false
     }
   }
 
   // A real exec through the master (`exit 0` works under POSIX shells and
   // cmd.exe); a wedged mux hangs to the timeout.
-  async _verifyMuxChannel() {
+  async _verifyMuxChannel({ signal }: any = {}) {
     try {
       const result: any = await runSsh(buildExecArgs(this, 'exit 0', this._connectTimeoutMs), {
         timeoutMs: this._connectTimeoutMs,
-        spawnFn: this._spawnFn
+        spawnFn: this._spawnFn,
+        signal
       })
 
       return result.code === 0
-    } catch {
+    } catch (error: any) {
+      if (error?.kind === 'superseded') {
+        throw error
+      }
+
       return false
     }
   }
@@ -700,10 +807,149 @@ class SshConnection {
     return result.stdout
   }
 
+  // Spawn one persistent `ssh -N -L` child for a no-mux tunnel and wait for it
+  // to confirm local forwarding on stderr. Resolves once ready. Rejects on a
+  // pre-readiness death or confirmation timeout, with the captured stderr on
+  // `error.tunnelStderr` so the caller can classify auth/bind failures. After
+  // readiness, a child death is a tunnel FLAP: it is routed into
+  // _handleNoMuxTunnelFlap (bounded restart) instead of poisoning isAlive()
+  // outright — the old instant-poison path is how a ~10s local tunnel blip
+  // cascaded into SIGTERM of a healthy backend (#96266).
+  _startNoMuxTunnelChild(tunnel: any, spec: string, args: string[], localPort: number | string) {
+    return new Promise<void>((resolve, reject) => {
+      const child = this._spawnFn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
+      tunnel.child = child
+      let stderr = ''
+      let readyConfirmed = false
+      let settled = false
+      let downHandled = false
+
+      const readyTimeout: any = setTimeout(() => {
+        finishFail(new Error('tunnel did not confirm local forwarding'))
+      }, this._forwardTimeoutMs)
+
+      readyTimeout.unref?.()
+
+      const finishOk = () => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        clearTimeout(readyTimeout)
+        resolve()
+      }
+
+      const finishFail = (error: any) => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        clearTimeout(readyTimeout)
+        error.tunnelStderr = stderr
+        reject(error)
+      }
+
+      const onDown = (cause: string, error: any) => {
+        if (!readyConfirmed) {
+          tunnel.alive = tunnel.child === child ? false : tunnel.alive
+          finishFail(error)
+
+          return
+        }
+
+        if (downHandled || tunnel.child !== child) {
+          return
+        }
+
+        downHandled = true
+        this._handleNoMuxTunnelFlap(tunnel, spec, args, localPort, cause)
+      }
+
+      const readyPattern = new RegExp(`Local forwarding listening on .* port ${localPort}\\b`)
+      child.stderr?.on('data', (d: any) => {
+        if (readyConfirmed) {
+          return
+        }
+
+        stderr = `${stderr}${String(d)}`.slice(-16_384)
+
+        if (readyPattern.test(stderr)) {
+          readyConfirmed = true
+          finishOk()
+        }
+      })
+      child.on('error', (error: any) => onDown(`tunnel process failed (${error?.message || error})`, error))
+      child.on('exit', (code: any) =>
+        onDown(`tunnel process exited with code ${code}`, new Error(`tunnel process exited with code ${code}`))
+      )
+      child.on('close', (code: any) =>
+        onDown(`tunnel process closed with code ${code}`, new Error(`tunnel process closed with code ${code}`))
+      )
+    })
+  }
+
+  // A ready no-mux tunnel child died. Deliberate teardown (cancelForward /
+  // close) and superseded tunnels stay dead; otherwise restart the child up to
+  // the bounded budget, and only mark the tunnel (and thus the connection)
+  // unhealthy once the budget is exhausted. The budget is cumulative per
+  // forward — a tunnel that keeps dying immediately after confirming readiness
+  // must not restart forever.
+  _handleNoMuxTunnelFlap(tunnel: any, spec: string, args: string[], localPort: number | string, cause: string) {
+    if (tunnel.stopping || this._tunnels.get(spec) !== tunnel) {
+      tunnel.alive = false
+
+      return
+    }
+
+    if (tunnel.restarts >= this._tunnelRestartLimit) {
+      tunnel.alive = false
+      this._logLine(
+        `tunnel 127.0.0.1:${localPort} down (${cause}); restart budget exhausted (${this._tunnelRestartLimit})`
+      )
+
+      return
+    }
+
+    tunnel.restarts += 1
+    this._logLine(
+      `tunnel 127.0.0.1:${localPort} flapped (${cause}); restarting ` +
+        `(${tunnel.restarts}/${this._tunnelRestartLimit}) in ${this._tunnelRestartDelayMs}ms`
+    )
+
+    const timer: any = setTimeout(() => {
+      tunnel.restartTimer = null
+
+      if (tunnel.stopping || this._tunnels.get(spec) !== tunnel) {
+        tunnel.alive = false
+
+        return
+      }
+
+      this._startNoMuxTunnelChild(tunnel, spec, args, localPort).then(
+        () => {
+          tunnel.alive = true
+          this._logLine(`tunnel 127.0.0.1:${localPort} restarted`)
+        },
+        (error: any) => {
+          // A restart that never confirmed readiness may leave its child
+          // running; stop it before deciding whether to retry.
+          void Promise.resolve(stopTunnelChild(tunnel.child)).catch(() => undefined)
+          this._handleNoMuxTunnelFlap(tunnel, spec, args, localPort, `restart failed: ${error?.message || error}`)
+        }
+      )
+    }, this._tunnelRestartDelayMs)
+
+    timer.unref?.()
+    tunnel.restartTimer = timer
+  }
+
   // Establish a local→remote forward. Mux: `-O forward` against the master.
   // No-mux: spawn a persistent `ssh -N -L` child that IS the tunnel; ready when
-  // the local port accepts. The child dying = tunnel down (isAlive of the
-  // backend catches it upstream).
+  // the local port accepts. A child dying AFTER readiness is a tunnel flap and
+  // is restarted with a bounded budget (#96266); only an exhausted budget (or
+  // a deliberate cancel/close) marks the connection unhealthy for isAlive().
   async forward(localPort, remotePort, remoteHost = '127.0.0.1') {
     const spec = forwardSpec(localPort, remotePort, remoteHost)
     this._logLine(`forwarding 127.0.0.1:${localPort} -> ${remoteHost}:${remotePort}`)
@@ -720,67 +966,20 @@ class SshConnection {
         target(this.user, this.host)
       ]
 
-      const child = this._spawnFn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
-      const tunnel = { child, alive: true }
+      const tunnel: any = { alive: true, child: null, restarts: 0, restartTimer: null, stopping: false }
       this._tunnels.set(spec, tunnel)
-      let stderr = ''
-      let readyConfirmed = false
-      let readyResolve
-      let readyReject
-
-      const ready = new Promise<void>((resolve, reject) => {
-        readyResolve = resolve
-        readyReject = reject
-      })
-
-      const readyPattern = new RegExp(`Local forwarding listening on .* port ${localPort}\\b`)
-      child.stderr?.on('data', d => {
-        if (readyConfirmed) {
-          return
-        }
-
-        stderr = `${stderr}${String(d)}`.slice(-16_384)
-
-        if (readyPattern.test(stderr)) {
-          readyConfirmed = true
-          readyResolve()
-        }
-      })
-      child.on('error', error => {
-        tunnel.alive = false
-        readyReject(error)
-      })
-      child.on('exit', code => {
-        tunnel.alive = false
-        readyReject(new Error(`tunnel process exited with code ${code}`))
-      })
-      child.on('close', code => {
-        tunnel.alive = false
-        readyReject(new Error(`tunnel process closed with code ${code}`))
-      })
-      let readyTimeout
 
       try {
-        await Promise.race([
-          ready,
-          new Promise((_, reject) => {
-            readyTimeout = setTimeout(
-              () => reject(new Error('tunnel did not confirm local forwarding')),
-              this._forwardTimeoutMs
-            )
-          })
-        ])
+        await this._startNoMuxTunnelChild(tunnel, spec, args, localPort)
       } catch (error: any) {
         try {
-          await stopTunnelChild(child)
+          await stopTunnelChild(tunnel.child)
           this._tunnels.delete(spec)
         } catch (stopError) {
           throw this._fail(stopError, SSH_ERROR.UNKNOWN)
         }
 
-        throw this._fail(stderr || error, SSH_ERROR.UNKNOWN)
-      } finally {
-        clearTimeout(readyTimeout)
+        throw this._fail(error?.tunnelStderr || error, SSH_ERROR.UNKNOWN)
       }
 
       return
@@ -809,6 +1008,14 @@ class SshConnection {
       const tunnel = this._tunnels.get(spec)
 
       if (tunnel) {
+        tunnel.stopping = true
+        tunnel.alive = false
+
+        if (tunnel.restartTimer) {
+          clearTimeout(tunnel.restartTimer)
+          tunnel.restartTimer = null
+        }
+
         await stopTunnelChild(tunnel.child)
         this._tunnels.delete(spec)
         this._logLine(`cancelled forward 127.0.0.1:${localPort}`)
@@ -836,6 +1043,14 @@ class SshConnection {
 
     if (!this._mux) {
       for (const [spec, tunnel] of this._tunnels) {
+        tunnel.stopping = true
+        tunnel.alive = false
+
+        if (tunnel.restartTimer) {
+          clearTimeout(tunnel.restartTimer)
+          tunnel.restartTimer = null
+        }
+
         await stopTunnelChild(tunnel.child)
         this._tunnels.delete(spec)
       }
@@ -893,7 +1108,19 @@ function createSshProbeConnection(config, options: any = {}) {
   return new SshConnection(config, { ...options, mux: false })
 }
 
+// Bootstrap loops poll a remote for readiness; a newer attempt aborts the
+// signal so the stale one stops polling and unwinds. `superseded` tells the
+// caller this was replaced, not that it failed.
+function assertBootstrapNotSuperseded(signal) {
+  if (signal?.aborted) {
+    const error: any = new Error('SSH bootstrap was cancelled.')
+    error.kind = 'superseded'
+    throw error
+  }
+}
+
 export {
+  assertBootstrapNotSuperseded,
   baseSshOptions,
   buildControlArgs,
   buildExecArgs,

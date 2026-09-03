@@ -19,6 +19,10 @@ Two files make up the agent's memory:
 
 Both are stored in `~/.hermes/memories/` and are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool — it can add, replace, or remove entries.
 
+:::caution One agent per Hermes home
+Don't point two agent processes at the same Hermes home directory. Memory writes are automatic and load back into the system prompt at session start, so two writers sharing one home will compound each other's entries into state neither of them (nor you) authored. Memory is scoped per [profile](/user-guide/profiles) by design — give a second agent its own profile, and if they need shared memory, use an [external memory provider](/user-guide/features/memory-providers) instead.
+:::
+
 :::info
 Character limits keep memory focused. Memory does **not** auto-compact: when a
 write would exceed the limit, the `memory` tool returns an error instead of
@@ -236,6 +240,21 @@ memory:
   write_approval: false     # false = write freely (default) | true = require approval
 ```
 
+Setting **both** `memory_enabled` and `user_profile_enabled` to `false` turns the
+built-in stores off completely: the `memory` tool is dropped from the schema and
+its guidance block is dropped from the system prompt, so the model is never told
+about a tool it cannot use. An external provider set via `memory.provider`
+(Hindsight, Mem0, Honcho, …) is unaffected and keeps its own tools — use this
+when you want a third-party memory backend *instead of* the built-in files.
+Listing `memory` under `agent.disabled_toolsets` is the heavier switch: it hides
+external provider tools too.
+
+With only `memory_enabled: false` (user profile still on), the tool stays —
+it backs the profile store — but the system prompt swaps the full memory
+guidance for a narrower profile-only block. The tool schema advertises only the
+`user` target, and direct or staged writes to disabled `MEMORY.md` are rejected.
+The inverse configuration advertises only `memory` and rejects `USER.md` writes.
+
 ## Controlling memory writes (`write_approval`)
 
 By default the agent saves memory freely — including from the background
@@ -248,7 +267,7 @@ first, set `memory.write_approval: true`. It's a simple on/off gate applied to
 | `false` (default) | Write freely — the gate is off (the pre-gate behaviour). |
 | `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
 
-> To turn memory off entirely (not just gate it), set `memory_enabled: false`.
+> To turn memory off entirely (not just gate it), set both `memory_enabled: false` and `user_profile_enabled: false`. When both built-in stores are disabled, the built-in `memory` tool is automatically hidden.
 
 Review staged writes from the CLI or any messaging platform:
 
@@ -312,6 +331,75 @@ identical and skill capture near-identical to the main-model review.
 
 Leave it at `auto` (or set it to your main model) and nothing changes — the
 review keeps running on the main model with the full warm-cache replay.
+
+### Disabling automatic reviews (`enabled`)
+
+The review fork can burn a meaningful share of total tokens on busy hosts.
+Operators can disable it without zeroing nudge intervals:
+
+```yaml
+auxiliary:
+  background_review:
+    enabled: true              # false = skip automatic post-turn forks
+```
+
+With `enabled: false`, automatic post-turn forks do not spawn; manual
+`/refine` still works.
+
+Fork usage is persisted in `session_model_usage` with `task='background_review'`
+and a completion line is written to `agent.log`
+(`Background review complete: thread=bg-review calls=… in=… out=… result=…`).
+
+### Allowing a narrowly scoped extra review tool (`extra_tools`)
+
+Background review can use memory, skill-management, and read-only file tools
+by default. If a profile provides another tool that is safe for unattended
+review, opt it in by name:
+
+```yaml
+auxiliary:
+  background_review:
+    extra_tools:
+      - propose_shared_memory
+```
+
+The tool must already be available to the parent agent; this setting only adds
+it to the review fork's runtime whitelist. It does not enable arbitrary tools,
+and tools not listed here remain denied. Keep the list narrow and prefer tools
+that stage a proposal for human review rather than applying external or
+destructive changes directly. The default is an empty list.
+
+### Local models: reviews wait for an idle GPU (`defer`)
+
+On a cloud provider the review finishes in seconds and runs alongside
+whatever you do next. When the review's runtime is the **managed local
+llama-server** (Settings → Local models), the same fork occupies the GPU your
+next prompt needs — for minutes on a large model — and sending a new prompt
+cancels it, discarding the learning. So on the managed local runtime, reviews
+are **deferred by default**: queued at turn end and executed once the machine
+has been quiet for a short settle window. Nothing about the review itself
+changes — same model, same full-transcript replay, same writes — only the
+execution moment moves.
+
+```yaml
+auxiliary:
+  background_review:
+    defer: auto            # auto (default) | never
+    defer_max_age_s: 1800  # run a queued review anyway after this long
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `auto` (default) | Reviews whose runtime resolves to the managed local server are queued and run at idle; every other runtime (cloud, external servers) spawns immediately as before. |
+| `never` | Old behavior everywhere: spawn immediately at turn end, even on the managed local GPU. |
+
+Queued reviews coalesce per session (a newer turn's snapshot replaces the
+older one — the review replays the whole conversation, so nothing is lost),
+a review preempted by a new prompt is re-queued instead of discarded, and a
+review that has waited longer than `defer_max_age_s` runs even if the machine
+never goes idle. Explicit `/refine` always runs immediately. The queue is
+in-memory: reviews still pending when the app exits are dropped, same as an
+in-flight fork would have been.
 
 ## Controlling skill writes (`skills.write_approval`)
 

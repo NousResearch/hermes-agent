@@ -35,6 +35,7 @@ import sys
 import time
 from pathlib import Path
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.local_runtime.estimator import HardwareBudget
 
 logger = logging.getLogger(__name__)
@@ -189,10 +190,14 @@ def _nvidia_vram() -> tuple[int, int] | None:
     if exe is None:
         return None
     try:
+        # nvidia-smi.exe is a console-subsystem binary; from the desktop's
+        # windowless pythonw backend (statusbar polls every ~5s) a bare
+        # spawn allocates a visible console per call (#101895).
         out = subprocess.run(
             [exe, "--query-gpu=memory.total,memory.free",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, timeout=10,
+            creationflags=windows_hide_flags())
         if out.returncode != 0 or not out.stdout.strip():
             return None
         total_mib, free_mib = (int(x) for x in out.stdout.strip().splitlines()[0].split(","))

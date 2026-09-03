@@ -79,9 +79,10 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (rf'(respond|answer|reply)\s+without\s+{_FILLER}(restrictions|limitations|filters|safety)', "remove_filters", "context"),
     (rf'you\s+have\s+been\s+{_FILLER}(updated|upgraded|patched)\s+to', "fake_update", "context"),
     # "name yourself X" is a Brainworm-specific tell — identity override
-    # via spec instead of jailbreak.  Anchored on the verb pair so it
-    # doesn't match "name your variables" etc.
-    (r'\bname\s+yourself\s+\w+', "identity_override", "context"),
+    # via spec instead of jailbreak. Coordinated naming rules such as "name
+    # yourself and your recipient" describe message metadata, not a new
+    # identity, so require the following word to be the proposed name.
+    (r'\bname\s+yourself\s+(?!and\b)\w+', "identity_override", "context"),
 
     # ── C2 / Brainworm-style promptware (context scope) ──────────────
     # These anchor on C2-specific vocabulary.  "register as a node" appears

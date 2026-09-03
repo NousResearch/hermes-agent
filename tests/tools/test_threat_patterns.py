@@ -140,6 +140,13 @@ class TestFalsePositives:
         findings = scan_for_threats(text, scope="context")
         assert findings == []
 
+    def test_identity_naming_rule_does_not_trip(self):
+        text = (
+            "Signing rule stands: name yourself and your recipient "
+            "in every message."
+        )
+        assert scan_for_threats(text, scope="context") == []
+
     def test_security_research_text_passes_at_all_scope(self):
         # A security-research paragraph mentioning C2 vocabulary should
         # NOT trigger the narrow "all" scope.  The context/strict

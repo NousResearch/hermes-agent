@@ -37,13 +37,23 @@ from rich.table import Table
 # bump both together when pinning a new bws release.
 _BWS_VERSION = "2.0.0"
 
+from agent.secret_sources.base import (
+    build_minimal_provider_env,
+    is_valid_env_name,
+    redact_provider_output,
+    sanitize_provider_version,
+)
 from hermes_cli.config import (
     get_env_path,
     load_config,
     save_config,
     save_env_value,
 )
-from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli.secret_prompt import (
+    cli_secret_arg_warning,
+    get_pre_dotenv_rotation_input,
+    masked_secret_prompt,
+)
 
 
 def _load_bw():
@@ -91,7 +101,10 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     )
     setup.add_argument(
         "--access-token",
-        help="Provide the access token non-interactively (will be stored in .env)",
+        help=(
+            "Provide the access token non-interactively (will be stored in .env; "
+            "warning: the value is visible in process listings and shell history)"
+        ),
     )
     setup.add_argument(
         "--server-url",
@@ -116,7 +129,10 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     )
     token.add_argument(
         "--access-token",
-        help="Provide the new token non-interactively (default: masked prompt)",
+        help=(
+            "Provide the new token non-interactively (default: masked prompt; "
+            "warning: the value is visible in process listings and shell history)"
+        ),
     )
     token.add_argument(
         "--no-verify",
@@ -167,6 +183,28 @@ def cmd_setup(args: argparse.Namespace) -> int:
         )
     )
 
+    cfg = load_config()
+    secrets_root = cfg.get("secrets")
+    if not isinstance(secrets_root, dict):
+        secrets_root = {}
+        cfg["secrets"] = secrets_root
+    secrets_cfg = secrets_root.get("bitwarden")
+    if not isinstance(secrets_cfg, dict):
+        secrets_cfg = {}
+        secrets_root["bitwarden"] = secrets_cfg
+    configured_token_env = secrets_cfg.get("access_token_env")
+    token_env = (
+        configured_token_env.strip()
+        if isinstance(configured_token_env, str) and configured_token_env.strip()
+        else "BWS_ACCESS_TOKEN"
+    )
+    if not is_valid_env_name(token_env):
+        token_env = "BWS_ACCESS_TOKEN"
+    if args.access_token:
+        console.print(
+            f"[yellow]⚠ {cli_secret_arg_warning('--access-token', token_env)}[/yellow]"
+        )
+
     # ------------------------------------------------------------------ binary
     console.print()
     console.print("[bold]Step 1[/bold]  Install the bws CLI")
@@ -185,11 +223,17 @@ def cmd_setup(args: argparse.Namespace) -> int:
         )
         return 1
 
+    env_token = ""
+    if not sys.stdin.isatty():
+        env_token = get_pre_dotenv_rotation_input(token_env).strip()
+    if not env_token:
+        env_token = os.environ.get(token_env, "").strip()
+
     # -- non-interactive guard --
     if not sys.stdin.isatty():
         missing = []
-        if not (args.access_token and args.access_token.strip()):
-            missing.append("--access-token")
+        if not (args.access_token and args.access_token.strip()) and not env_token:
+            missing.append(f"--access-token (or {token_env})")
         if not (args.server_url and args.server_url.strip()):
             # Also accept BWS_SERVER_URL env var as non-interactive substitute
             if not os.environ.get("BWS_SERVER_URL", "").strip():
@@ -198,25 +242,24 @@ def cmd_setup(args: argparse.Namespace) -> int:
             missing.append("--project-id")
         if missing:
             console.print(
-                f"  [red]Non-interactive mode (no TTY) requires all setup flags.[/red]\n"
+                f"  [red]Non-interactive mode (no TTY) requires all setup inputs.[/red]\n"
                 f"  Missing: {', '.join(missing)}\n\n"
                 "  Usage:\n"
+                f"    export {token_env}=...  # inject from your secret provider\n"
                 "    hermes secrets bitwarden setup \\\n"
-                "      --access-token '0.xxx' \\\n"
                 "      --server-url 'https://vault.bitwarden.com' \\\n"
-                "      --project-id 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'"
+                "      --project-id 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'\n"
+                "  Avoid passing the token in argv; use the configured token env var."
             )
             return 1
 
     # ------------------------------------------------------------------- token
     console.print()
     console.print("[bold]Step 2[/bold]  Provide your access token")
-    cfg = load_config()
-    secrets_cfg = (cfg.setdefault("secrets", {})
-                     .setdefault("bitwarden", {}))
-    token_env = secrets_cfg.get("access_token_env", "BWS_ACCESS_TOKEN")
 
     token = (args.access_token or "").strip()
+    if not token and not sys.stdin.isatty():
+        token = env_token
     if not token:
         token = masked_secret_prompt(f"  Paste access token ({token_env}): ").strip()
     if not token:
@@ -269,7 +312,11 @@ def cmd_setup(args: argparse.Namespace) -> int:
         table.add_column("Name")
         table.add_column("ID", style="dim")
         for i, p in enumerate(projects, 1):
-            table.add_row(str(i), p.get("name", "?"), p.get("id", "?"))
+            table.add_row(
+                str(i),
+                redact_provider_output(str(p.get("name", "?")), (token,)),
+                redact_provider_output(str(p.get("id", "?")), (token,)),
+            )
         console.print(table)
 
         while True:
@@ -318,7 +365,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
             table.add_row(key, status)
         console.print(table)
     for w in warnings:
-        console.print(f"  [yellow]warning:[/yellow] {w}")
+        console.print(
+            f"  [yellow]warning:[/yellow] "
+            f"{redact_provider_output(str(w), (token,))}"
+        )
 
     # ------------------------------------------------------------------- save
     secrets_cfg["enabled"] = True
@@ -413,23 +463,48 @@ def cmd_token(args: argparse.Namespace) -> int:
     bw = _load_bw()
     console = Console()
     cfg = load_config()
-    bw_cfg = (cfg.get("secrets") or {}).get("bitwarden") or {}
-    token_env = bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN")
+    secrets_root = cfg.get("secrets")
+    bw_cfg = (
+        secrets_root.get("bitwarden")
+        if isinstance(secrets_root, dict)
+        else None
+    )
+    if not isinstance(bw_cfg, dict):
+        bw_cfg = {}
+    configured_token_env = bw_cfg.get("access_token_env")
+    token_env = (
+        configured_token_env.strip()
+        if isinstance(configured_token_env, str) and configured_token_env.strip()
+        else "BWS_ACCESS_TOKEN"
+    )
+    if not is_valid_env_name(token_env):
+        token_env = "BWS_ACCESS_TOKEN"
     server_url = str(bw_cfg.get("server_url", "") or "").strip()
 
     token = (args.access_token or "").strip()
+    if token:
+        console.print(
+            f"[yellow]⚠ {cli_secret_arg_warning('--access-token', token_env)}[/yellow]"
+        )
     if not token:
         if not sys.stdin.isatty():
+            token = (
+                get_pre_dotenv_rotation_input(token_env)
+                or os.environ.get(token_env, "")
+            ).strip()
+        if not token and not sys.stdin.isatty():
             console.print(
-                "[red]No TTY — pass the token with --access-token.[/red]"
+                f"[red]No TTY — set {token_env} through your secret provider "
+                "or pass the token with --access-token (argv exposure warning).[/red]"
             )
             return 1
-        console.print(
-            "Create a new token in the Bitwarden web app:\n"
-            "  Secrets Manager → Machine accounts → [your account] → "
-            "Access tokens → Create access token\n"
-        )
-        token = masked_secret_prompt(f"Paste new access token ({token_env}): ").strip()
+        if not token:
+            console.print(
+                "Create a new token in the Bitwarden web app:\n"
+                "  Secrets Manager → Machine accounts → [your account] → "
+                "Access tokens → Create access token\n"
+            )
+            token = masked_secret_prompt(f"Paste new access token ({token_env}): ").strip()
     if not token:
         console.print("[red]Empty token, aborting.[/red]")
         return 1
@@ -547,7 +622,10 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
     console.print(table)
     for w in warnings:
-        console.print(f"[yellow]warning:[/yellow] {w}")
+        console.print(
+            f"[yellow]warning:[/yellow] "
+            f"{redact_provider_output(str(w), (token,))}"
+        )
 
     if not args.apply:
         console.print(
@@ -601,12 +679,13 @@ def _bws_version(binary: Path) -> str:
     try:
         res = subprocess.run(
             [str(binary), "--version"],
+            env=build_minimal_provider_env(),
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
             timeout=5,
         )
         if res.returncode == 0:
-            return (res.stdout or res.stderr).strip().splitlines()[0]
+            return sanitize_provider_version(res.stdout or res.stderr)
     except (OSError, subprocess.TimeoutExpired):
         pass
     return "version unknown"
@@ -648,14 +727,16 @@ def _list_projects(
     binary: Path, token: str, console: Console, *, server_url: str = ""
 ) -> Optional[List[dict]]:
     """Call ``bws project list`` and return the parsed list, or None on failure."""
-    # Secret-manager CLI child: intentionally receives tokens — no scrub,
-    # no HOME rewrite (bws stores state under the real user home).
-    from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-    env["BWS_ACCESS_TOKEN"] = token
-    env.setdefault("NO_COLOR", "1")
+    # Secret-manager CLI child receives only its bootstrap token, region
+    # override, and process-location basics.  Unrelated credentials loaded by
+    # Hermes must not cross this provider boundary.
+    extra_env = {"BWS_ACCESS_TOKEN": token}
     if server_url:
-        env["BWS_SERVER_URL"] = server_url
+        extra_env["BWS_SERVER_URL"] = server_url
+    env = build_minimal_provider_env(
+        allow_env=("BWS_SERVER_URL",),
+        extra_env=extra_env,
+    )
     try:
         res = subprocess.run(
             [str(binary), "project", "list", "--output", "json"],
@@ -669,7 +750,9 @@ def _list_projects(
         return None
 
     if res.returncode != 0:
-        err = (res.stderr or res.stdout).strip()[:300]
+        err = redact_provider_output(
+            res.stderr or res.stdout or "", (token,)
+        ).strip()[:300]
         console.print(f"  [red]bws project list failed: {err}[/red]")
         lowered = err.lower()
         if "invalid_client" in lowered or "400 bad request" in lowered:

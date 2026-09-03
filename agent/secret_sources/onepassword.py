@@ -46,7 +46,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from agent.secret_sources._cache import (
     CachedFetch,
@@ -55,7 +55,12 @@ from agent.secret_sources._cache import (
     is_valid_env_name,
 )
 from agent.secret_sources.base import ErrorKind, SecretSource
-from agent.secret_sources.base import get_source_environment
+from agent.secret_sources.base import (
+    build_minimal_provider_env,
+    get_source_environment,
+    normalize_provider_output,
+    redact_provider_output,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -232,30 +237,36 @@ def find_op(binary_path: str = "") -> Optional[Path]:
 
 def _scrub(text: str) -> str:
     """Remove ANSI control sequences and trim, for safe message surfacing."""
-    from tools.ansi_strip import strip_ansi
-
-    # strip_ansi removes well-formed sequences; drop any stray lone ESC too.
-    return strip_ansi(text).replace("\x1b", "").strip()
+    return normalize_provider_output(text).strip()
 
 
 def _op_child_env(token_value: str) -> Dict[str, str]:
     """Build a minimal allowlisted environment for the ``op`` child process."""
     source_env = get_source_environment()
-    env: Dict[str, str] = {}
-    for key in _OP_ENV_ALLOWLIST:
-        val = source_env.get(key)
-        if val is not None:
-            env[key] = val
+    env = build_minimal_provider_env(source_env, allow_env=_OP_ENV_ALLOWLIST)
     # Desktop / interactive session credentials.
     for key, val in source_env.items():
         if key.startswith("OP_SESSION_"):
             env[key] = val
     # `op` reads OP_SERVICE_ACCOUNT_TOKEN regardless of which env var the user
-    # configured Hermes to source it from, so normalize to that name here.
+    # configured Hermes to source it from, so normalize an explicitly selected
+    # token to that name here.  When no token was selected, preserve the
+    # session-only path even if a stale default token remains in the parent.
     if token_value:
         env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
-    env["NO_COLOR"] = "1"
     return env
+
+
+def _op_auth_values(env: Mapping[str, str]) -> Tuple[str, ...]:
+    """Return only authentication values present in an ``op`` child env."""
+    values = []
+    for key, value in env.items():
+        if (
+            key in {"OP_SERVICE_ACCOUNT_TOKEN", "OP_CONNECT_TOKEN"}
+            or key.startswith("OP_SESSION_")
+        ) and value:
+            values.append(value)
+    return tuple(values)
 
 
 def _run_op_read(
@@ -278,10 +289,11 @@ def _run_op_read(
     # an `op` flag even if validation is ever loosened.
     cmd += ["--", reference]
 
+    child_env = _op_child_env(token_value)
     try:
         proc = subprocess.run(  # noqa: S603 — op path is user-trusted, argv list
             cmd,
-            env=_op_child_env(token_value),
+            env=child_env,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -296,7 +308,9 @@ def _run_op_read(
         raise RuntimeError(f"failed to invoke op: {exc}") from exc
 
     if proc.returncode != 0:
-        err = _scrub(proc.stderr or "")[:200]
+        err = redact_provider_output(
+            proc.stderr or proc.stdout or "", _op_auth_values(child_env)
+        )[:200]
         if err:
             raise RuntimeError(f"op read failed for {reference!r}: {err}")
         raise RuntimeError(

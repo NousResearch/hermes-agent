@@ -780,8 +780,54 @@ if sys.platform == "win32":
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from hermes_cli.config import get_hermes_home
+from hermes_cli.config import get_hermes_home, read_raw_config
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.secret_prompt import (
+    capture_pre_dotenv_rotation_inputs,
+    reset_pre_dotenv_rotation_inputs,
+)
+
+# Capture only the provider-injected token for the documented non-TTY setup or
+# rotation path before ~/.hermes/.env is loaded.  The normal dotenv precedence
+# remains unchanged for every other environment variable and command.
+try:
+    _pre_dotenv_rotation_config = read_raw_config()
+except Exception:  # noqa: BLE001 — rotation capture must never block startup
+    _pre_dotenv_rotation_config = {}
+try:
+    _rotation_user_env = get_hermes_home() / ".env"
+    _rotation_dotenv_sources = [
+        (_rotation_user_env, True),
+    ]
+    # Match load_hermes_dotenv(): .op.env is consulted after the user file,
+    # only when the default service-account token is not already present, and
+    # never overrides an earlier shell/user value.  It supplies token-name
+    # bindings as well as the default token in environments that use it.
+    _rotation_op_env = get_hermes_home() / ".op.env"
+    if _rotation_op_env.exists() and not os.environ.get(
+        "OP_SERVICE_ACCOUNT_TOKEN"
+    ):
+        _rotation_dotenv_sources.append((_rotation_op_env, False))
+    _rotation_dotenv_sources.append(
+        (PROJECT_ROOT / ".env", not _rotation_user_env.exists())
+    )
+    from hermes_cli import managed_scope
+
+    _rotation_managed_dir = managed_scope.get_managed_dir()
+    if _rotation_managed_dir is not None:
+        _rotation_dotenv_sources.append((_rotation_managed_dir / ".env", True))
+except Exception:  # noqa: BLE001 — rotation capture must never block startup
+    _rotation_dotenv_sources = []
+try:
+    capture_pre_dotenv_rotation_inputs(
+        sys.argv,
+        config=_pre_dotenv_rotation_config,
+        dotenv_sources=_rotation_dotenv_sources,
+    )
+except Exception:  # noqa: BLE001 — rotation capture must never block startup
+    # A partially completed snapshot is no safer than a broad one: clear it
+    # before continuing with ordinary dotenv loading.
+    reset_pre_dotenv_rotation_inputs()
 
 # Updating dependencies must not import optional secret-manager libraries into
 # the updater process before ``uv`` replaces the environment.  On Windows,

@@ -69,7 +69,16 @@ import {
   openReview,
   REVIEW_PANE_ID
 } from '@/store/review'
-import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
+import {
+  $cronSessions,
+  $currentCwd,
+  $messagingSessions,
+  $selectedStoredSessionId,
+  $sessions,
+  $yoloActive,
+  ownerLookupSessionRows,
+  sessionMatchesStoredId
+} from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
@@ -135,7 +144,7 @@ const workspaceDragPayload = (): SessionDragPayload | null => {
     return null
   }
 
-  const stored = $sessions.get().find(s => sessionMatchesStoredId(s, selected))
+  const stored = ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, selected))
 
   return { id: selected, profile: stored?.profile ?? '', title: stored ? storedSessionTitle(stored) : '' }
 }
@@ -487,7 +496,12 @@ watchUnreadWriteGuard()
 // above, so the pane content never remounts.
 const syncWorkspaceTitle = () => {
   const selected = $selectedStoredSessionId.get()
-  const stored = selected ? $sessions.get().find(s => sessionMatchesStoredId(s, selected)) : null
+  // Every loaded slice, not just recents: a telegram/discord/cron conversation
+  // is listed ONLY in $messagingSessions / $cronSessions (recents excludes
+  // those sources), so a recents-only scan missed the row and fell through to
+  // the NEW_SESSION_TITLE placeholder — a loaded gateway chat titled
+  // "New session" in the tab while its sidebar row read correctly.
+  const stored = selected ? ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, selected)) : null
 
   registry.register({
     id: 'workspace',
@@ -524,6 +538,11 @@ const syncWorkspaceTitle = () => {
 
 $selectedStoredSessionId.listen(syncWorkspaceTitle)
 $sessions.listen(syncWorkspaceTitle)
+// The cron and messaging slices arrive on their OWN fetch, after a restored
+// tab has already registered. Without these listens the workspace tab keeps
+// whatever it resolved at register time — "New session" for a gateway chat.
+$cronSessions.listen(syncWorkspaceTitle)
+$messagingSessions.listen(syncWorkspaceTitle)
 $botChatScopes.listen(syncWorkspaceTitle)
 $workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)

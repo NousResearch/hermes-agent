@@ -111,7 +111,81 @@ describe('ModelPill per-surface model label', () => {
       </SessionViewProvider>
     )
 
-    expect(screen.getByText('Sonnet · High')).toBeTruthy()
+    expect(screen.getByText('Sonnet')).toBeTruthy()
     expect(screen.queryByText(/primary/i)).toBeNull()
+  })
+})
+
+describe('ModelPill provider beside model', () => {
+  it('shows the provider dimmed beside the model name', () => {
+    render(<ModelPill disabled={false} model={modelState({ model: 'qwen3-max', provider: 'custom:my_pool' })} />)
+
+    expect(screen.getByText('Qwen3 Max')).toBeTruthy()
+    expect(screen.getByText('custom:my_pool')).toBeTruthy()
+  })
+
+  it('hides the provider when the model id already carries it', () => {
+    render(<ModelPill disabled={false} model={modelState({ model: 'openai/gpt-6', provider: 'openai' })} />)
+
+    expect(screen.getByText('GPT-6')).toBeTruthy()
+    expect(screen.queryByText('openai')).toBeNull()
+  })
+
+  it('hides the provider when none is known', () => {
+    render(<ModelPill disabled={false} model={modelState({ model: 'gpt-6', provider: '' })} />)
+
+    expect(screen.getByText('GPT-6')).toBeTruthy()
+    expect(screen.queryByText(/provider/i)).toBeNull()
+  })
+
+  it('updates provider when switching between providers serving the same model id', () => {
+    const { rerender } = render(
+      <ModelPill disabled={false} model={modelState({ model: 'gpt-5.5', provider: 'openai' })} />
+    )
+    expect(screen.getByText('GPT-5.5')).toBeTruthy()
+    expect(screen.getByText('openai')).toBeTruthy()
+
+    // Switch route to a different provider serving the same model
+    rerender(<ModelPill disabled={false} model={modelState({ model: 'gpt-5.5', provider: 'nous' })} />)
+    expect(screen.getByText('GPT-5.5')).toBeTruthy()
+    expect(screen.getByText('nous')).toBeTruthy()
+    expect(screen.queryByText('openai')).toBeNull()
+
+    // Switch back
+    rerender(<ModelPill disabled={false} model={modelState({ model: 'gpt-5.5', provider: 'openai' })} />)
+    expect(screen.getByText('openai')).toBeTruthy()
+    expect(screen.queryByText('nous')).toBeNull()
+  })
+
+  it('renders provider safely without raw html injection', () => {
+    const malicious = '<script>alert("xss")</script>'
+    render(<ModelPill disabled={false} model={modelState({ model: 'gpt-6', provider: malicious })} />)
+
+    // React escapes text content; verify literal text is in the DOM and not an executable script element
+    expect(screen.getByText(malicious)).toBeTruthy()
+    expect(document.querySelector('script')).toBeNull()
+  })
+
+  it('preserves provider in the DOM even when visually truncated with a long label', () => {
+    const longProvider = 'extremely-long-custom-enterprise-gateway-cluster-us-east-1'
+    render(<ModelPill disabled={false} model={modelState({ model: 'gpt-6', provider: longProvider })} />)
+
+    // CSS truncate class is applied to prevent layout overflow while preserving DOM text
+    const providerSpan = screen.getByText(longProvider)
+    expect(providerSpan).toBeTruthy()
+    expect(providerSpan.className).toContain('truncate')
+  })
+
+  it('renders loading spinner and hides provider when model is loading or empty', () => {
+    const { rerender } = render(
+      <ModelPill disabled={false} model={modelState({ model: '', provider: 'openai' })} />
+    )
+
+    // Model name is empty -> spinner is shown, provider text is omitted
+    expect(screen.queryByText('openai')).toBeNull()
+
+    // Once model lands, spinner is replaced with model name and provider
+    rerender(<ModelPill disabled={false} model={modelState({ model: 'gpt-6', provider: 'openai' })} />)
+    expect(screen.getByText('GPT-6')).toBeTruthy()
   })
 })

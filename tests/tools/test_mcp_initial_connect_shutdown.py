@@ -35,7 +35,7 @@ def _cleanup_mcp_state(mcp_tool, extra_servers=()) -> None:
 
 def test_initial_connect_failure_is_registry_owned_and_reaped(monkeypatch, tmp_path):
     """Normal discovery must retain the parked task for clean shutdown."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
 
     from tools import mcp_tool
 
@@ -106,7 +106,7 @@ def test_initial_connect_failure_is_registry_owned_and_reaped(monkeypatch, tmp_p
 
 def test_initial_connect_failure_revives_same_registered_server(monkeypatch, tmp_path):
     """A cached parked failure must revive through register_mcp_servers()."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
 
     from tools import mcp_tool
     from tools.registry import ToolRegistry
@@ -207,7 +207,7 @@ def test_initial_auth_failure_is_retained_and_reaped(monkeypatch, tmp_path):
     user re-authenticated. It is now retained like any other parked server,
     and must still tear down cleanly.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
 
     from tools import mcp_tool
 
@@ -249,7 +249,7 @@ def test_initial_auth_failure_is_retained_and_reaped(monkeypatch, tmp_path):
 
 
 def test_oauth_http_parking_reconnect_and_shutdown_preserve_tokens(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     from tools import mcp_tool
 
     _reset_mcp_state(mcp_tool)
@@ -296,7 +296,7 @@ def test_oauth_http_parking_reconnect_and_shutdown_preserve_tokens(monkeypatch, 
 
 def test_standalone_failed_connect_is_reaped_without_global_owner(monkeypatch, tmp_path):
     """Probe-only _connect_server failures must not publish parked servers."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
 
     from tools import mcp_tool
 

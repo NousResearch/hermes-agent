@@ -16,7 +16,7 @@ from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
 
 def test_seed_and_capture_old_oauth_state_round_trip(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     seeded = seed_old_oauth_state(tmp_path, "reports")
     assert capture_oauth_state(tmp_path, "reports") == seeded
     assert seeded.labels() == ("OLD", "OLD", "OLD")
@@ -49,7 +49,7 @@ def test_repr_never_contains_fake_secret_payloads():
 
 
 def test_repr_excludes_every_seeded_legacy_payload_value(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     state = seed_old_oauth_state(tmp_path, "reports")
     rendered = repr(state)
 
@@ -97,7 +97,7 @@ def test_raise_known_mutation_types_the_exact_known_bug():
 
 @pytest.mark.parametrize("failure_point", list(OAuthFailurePoint))
 def test_fake_peer_fails_after_exact_requested_event(tmp_path, monkeypatch, failure_point):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     peer = FakeOAuthMCPPeer(failure_point)
     with pytest.raises(InjectedOAuthFailure) as caught:
         peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"}, connect_timeout=315)
@@ -120,7 +120,7 @@ def test_fake_peer_fails_after_exact_requested_event(tmp_path, monkeypatch, fail
     ],
 )
 def test_fake_peer_persists_only_completed_stage_effects(tmp_path, monkeypatch, failure_point, expected_labels):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     peer = FakeOAuthMCPPeer(failure_point)
     with pytest.raises(InjectedOAuthFailure):
         peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"})
@@ -184,7 +184,7 @@ def test_dashboard_failed_reauth_preserves_active_state(
     from hermes_cli import mcp_config, web_server
     from tools.mcp_oauth_manager import reset_manager_for_tests
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     reset_manager_for_tests()
     before = seed_old_oauth_state(tmp_path, "reports")
     peer = FakeOAuthMCPPeer(failure_point)

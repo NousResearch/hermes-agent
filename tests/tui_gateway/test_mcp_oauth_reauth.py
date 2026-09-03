@@ -52,7 +52,7 @@ def test_tui_failed_reauth_preserves_active_state(
     from hermes_cli import mcp_config
     from tools.mcp_oauth_manager import reset_manager_for_tests
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     reset_manager_for_tests()
     before = seed_old_oauth_state(tmp_path, "reports")
     peer = FakeOAuthMCPPeer(failure_point)

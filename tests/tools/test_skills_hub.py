@@ -1,6 +1,7 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
+import os
 import time
 from typing import List, Optional
 from unittest.mock import patch, MagicMock
@@ -112,6 +113,164 @@ class TestSkillsShGroupings:
 
         assert len(skills) == 1
         assert skills[0].extra["category"] == "Decision Optimization"
+
+
+# ---------------------------------------------------------------------------
+# GitHubSource SkillMeta index cache
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubSourceIndexCache:
+    REPO = "owner/repo"
+    PATH = "skills/"
+
+    @classmethod
+    def _cache_file(cls, hermes_home):
+        cache_key = f"{cls.REPO}_{cls.PATH}".replace("/", "_").replace(" ", "_")
+        return hermes_home / "skills" / ".hub" / "index-cache" / f"{cache_key}.json"
+
+    @staticmethod
+    def _valid_item():
+        return {
+            "name": "cached-skill",
+            "description": "Cached description.",
+            "source": "github",
+            "identifier": "owner/repo/skills/cached-skill",
+            "trust_level": "community",
+            "repo": "owner/repo",
+            "path": "skills/cached-skill",
+            "tags": ["cached"],
+            "extra": {"provider": "Test"},
+        }
+
+    @pytest.fixture
+    def cache_file(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "profile-a"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        cache_file = self._cache_file(hermes_home)
+        cache_file.parent.mkdir(parents=True)
+        return cache_file
+
+    @staticmethod
+    def _write_json(cache_file, payload):
+        cache_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    def _assert_refetched_and_rewritten(self, source, cache_file):
+        response = MagicMock(status_code=200)
+        response.json.return_value = []
+        url = f"https://api.github.com/repos/{self.REPO}/contents/{self.PATH.rstrip('/')}"
+
+        with patch.object(source, "_github_get", return_value=response) as github_get, \
+             patch.object(source, "_get_skillsh_groupings", return_value=None):
+            assert source._list_skills_in_repo(self.REPO, self.PATH) == []
+
+        github_get.assert_called_once_with(url)
+        assert json.loads(cache_file.read_text(encoding="utf-8")) == []
+
+    def test_valid_cache_hit_does_not_call_github(self, cache_file):
+        self._write_json(cache_file, [self._valid_item()])
+        source = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+
+        with patch.object(source, "_github_get") as github_get:
+            skills = source._list_skills_in_repo(self.REPO, self.PATH)
+
+        github_get.assert_not_called()
+        assert skills == [SkillMeta(**self._valid_item())]
+
+    def test_expired_cache_is_refetched(self, cache_file):
+        self._write_json(cache_file, [self._valid_item()])
+        expired = time.time() - 7200
+        os.utime(cache_file, (expired, expired))
+
+        self._assert_refetched_and_rewritten(
+            GitHubSource(auth=MagicMock(spec=GitHubAuth)), cache_file,
+        )
+
+    def test_syntactically_invalid_json_is_refetched(self, cache_file):
+        cache_file.write_text("[{", encoding="utf-8")
+
+        self._assert_refetched_and_rewritten(
+            GitHubSource(auth=MagicMock(spec=GitHubAuth)), cache_file,
+        )
+
+    def test_invalid_utf8_is_refetched(self, cache_file):
+        cache_file.write_bytes(b"\xff\xfe")
+
+        self._assert_refetched_and_rewritten(
+            GitHubSource(auth=MagicMock(spec=GitHubAuth)), cache_file,
+        )
+
+    @pytest.mark.parametrize(
+        "make_payload",
+        [
+            pytest.param(lambda item: {"skills": []}, id="wrong-top-level-shape"),
+            pytest.param(lambda item: [{"name": "missing-fields"}], id="missing-required-fields"),
+            pytest.param(lambda item: ["not-a-mapping"], id="non-mapping-item"),
+            pytest.param(lambda item: [{**item, "unexpected": True}], id="unknown-field"),
+        ],
+    )
+    def test_schema_incompatible_cache_is_refetched(self, cache_file, make_payload):
+        self._write_json(cache_file, make_payload(self._valid_item()))
+
+        self._assert_refetched_and_rewritten(
+            GitHubSource(auth=MagicMock(spec=GitHubAuth)), cache_file,
+        )
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            pytest.param("name", 1, id="name"),
+            pytest.param("description", None, id="description"),
+            pytest.param("source", ["github"], id="source"),
+            pytest.param("identifier", 1, id="identifier"),
+            pytest.param("trust_level", {}, id="trust-level"),
+            pytest.param("repo", 1, id="repo"),
+            pytest.param("path", 1, id="path"),
+            pytest.param("tags", "cached", id="tags-container"),
+            pytest.param("tags", [1], id="tags-item"),
+            pytest.param("extra", [], id="extra"),
+        ],
+    )
+    def test_wrong_field_types_are_refetched(self, cache_file, field, value):
+        item = self._valid_item()
+        item[field] = value
+        self._write_json(cache_file, [item])
+
+        self._assert_refetched_and_rewritten(
+            GitHubSource(auth=MagicMock(spec=GitHubAuth)), cache_file,
+        )
+
+    def test_cache_is_isolated_by_active_profile(self, tmp_path, monkeypatch):
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+        cache_a = self._cache_file(profile_a)
+        cache_a.parent.mkdir(parents=True)
+        self._write_json(cache_a, [self._valid_item()])
+        monkeypatch.setenv("HERMES_HOME", str(profile_b))
+        cache_b = self._cache_file(profile_b)
+
+        self._assert_refetched_and_rewritten(
+            GitHubSource(auth=MagicMock(spec=GitHubAuth)), cache_b,
+        )
+
+        assert json.loads(cache_a.read_text(encoding="utf-8")) == [self._valid_item()]
+
+    def test_unexpected_constructor_error_is_not_treated_as_cache_miss(self, cache_file):
+        self._write_json(cache_file, [self._valid_item()])
+        source = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+
+        def broken_constructor(
+            name, description, source, identifier, trust_level,
+            repo=None, path=None, tags=None, extra=None,
+        ):
+            raise TypeError("constructor bug")
+
+        with patch("tools.skills_hub.SkillMeta", broken_constructor), \
+             patch.object(source, "_github_get") as github_get, \
+             pytest.raises(TypeError, match="constructor bug"):
+            source._list_skills_in_repo(self.REPO, self.PATH)
+
+        github_get.assert_not_called()
 
 # ---------------------------------------------------------------------------
 # GitHubSource.trust_level_for

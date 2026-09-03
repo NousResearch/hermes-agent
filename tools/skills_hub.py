@@ -14,6 +14,7 @@ Used by hermes_cli/skills_hub.py for CLI commands and the /skills slash command.
 """
 
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -22,6 +23,7 @@ import shutil
 import subprocess
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -921,7 +923,7 @@ class GitHubSource(SkillSource):
         cache_key = f"{repo}_{path}".replace("/", "_").replace(" ", "_")
         cached = self._read_cache(cache_key)
         if cached is not None:
-            return [SkillMeta(**s) for s in cached]
+            return cached
 
         url = f"https://api.github.com/repos/{repo}/contents/{path.rstrip('/')}"
         resp = self._github_get(url)
@@ -1315,7 +1317,42 @@ class GitHubSource(SkillSource):
                     mapping.setdefault(member, title)
         return mapping
 
-    def _read_cache(self, key: str) -> Optional[list]:
+    @staticmethod
+    def _decode_cached_skill_meta(data: Any) -> Optional[List[SkillMeta]]:
+        """Construct SkillMeta entries from a schema-compatible cache value."""
+        if not isinstance(data, list):
+            return None
+
+        skill_meta_signature = inspect.signature(SkillMeta)
+        skills: List[SkillMeta] = []
+        for item in data:
+            if not isinstance(item, Mapping):
+                return None
+
+            try:
+                skill_meta_signature.bind(**item)
+            except TypeError:
+                return None
+
+            meta = SkillMeta(**item)
+            if (
+                not isinstance(meta.name, str)
+                or not isinstance(meta.description, str)
+                or not isinstance(meta.source, str)
+                or not isinstance(meta.identifier, str)
+                or not isinstance(meta.trust_level, str)
+                or (meta.repo is not None and not isinstance(meta.repo, str))
+                or (meta.path is not None and not isinstance(meta.path, str))
+                or not isinstance(meta.tags, list)
+                or not all(isinstance(tag, str) for tag in meta.tags)
+                or not isinstance(meta.extra, dict)
+            ):
+                return None
+            skills.append(meta)
+
+        return skills
+
+    def _read_cache(self, key: str) -> Optional[List[SkillMeta]]:
         """Read cached index if not expired."""
         cache_file = _index_cache_dir() / f"{key}.json"
         if not cache_file.exists():
@@ -1324,9 +1361,10 @@ class GitHubSource(SkillSource):
             stat = cache_file.stat()
             if time.time() - stat.st_mtime > INDEX_CACHE_TTL:
                 return None
-            return json.loads(cache_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            data = json.loads(cache_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return None
+        return self._decode_cached_skill_meta(data)
 
     def _write_cache(self, key: str, data: list) -> None:
         """Write index data to cache."""

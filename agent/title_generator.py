@@ -400,17 +400,47 @@ def generate_title(
     ]
 
     try:
-        response = call_llm(
-            task="title_generation",
-            messages=messages,
-            # A title is a handful of tokens. The old 500-token ceiling let a
-            # chatty model burn seconds generating prose we then threw away.
-            max_tokens=64,
-            temperature=0.3,
-            timeout=timeout,
-            main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-        )
+        try:
+            response = call_llm(
+                task="title_generation",
+                messages=messages,
+                # A title is a handful of tokens. The old 500-token ceiling let a
+                # chatty model burn seconds generating prose we then threw away.
+                max_tokens=64,
+                temperature=0.3,
+                timeout=timeout,
+                main_runtime=main_runtime,
+                extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            )
+        except Exception as e:
+            # Some OpenAI-compatible providers (notably DeepSeek) do not
+            # implement the ``json_schema`` response_format type and reject the
+            # request with HTTP 400 ("This response_format type is unavailable
+            # now"). Retry once without the schema so titling still works
+            # there; the prompt still demands JSON-only output and
+            # _extract_title_text falls back through a loose JSON scan to
+            # first-line prose for anything non-compliant.
+            err_text = str(e)
+            if (
+                "response_format" in err_text.lower()
+                or "unavailable" in err_text.lower()
+            ):
+                logger.debug(
+                    "Title json_schema response_format rejected (%s); "
+                    "retrying without it",
+                    e,
+                )
+                response = call_llm(
+                    task="title_generation",
+                    messages=messages,
+                    max_tokens=64,
+                    temperature=0.3,
+                    timeout=timeout,
+                    main_runtime=main_runtime,
+                    extra_body={},
+                )
+            else:
+                raise
         content = response.choices[0].message.content or ""
         title = _clean_title(_extract_title_text(content))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title

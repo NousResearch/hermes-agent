@@ -544,8 +544,16 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # Query-aware base retrieval starts with the first substantive message.
         # Generic dialectic prewarm is incompatible with latest-message rewriting.
+        # Only a context load that positively identified an empty session may
+        # prewarm. Resumes, summary-only context, cache hits, and context-load
+        # failures all skip paid startup work until the first real user turn.
         if self._recall_mode in {"context", "hybrid"}:
-            if self._query_rewriter is None or not self._query_rewrite_enabled:
+            if not getattr(session, "metadata", {}).get("confirmed_new", False):
+                logger.debug(
+                    "Honcho dialectic prewarm skipped for session not confirmed new: %s",
+                    self._session_key,
+                )
+            elif self._query_rewriter is None or not self._query_rewrite_enabled:
                 _prewarm_query = (
                     "Summarize what you know about this user. "
                     "Focus on preferences, current projects, and working style."

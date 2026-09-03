@@ -370,17 +370,18 @@ class HonchoSessionManager:
 
     def _get_or_create_honcho_session(
         self, session_id: str, user_peer: Any, assistant_peer: Any
-    ) -> tuple[Any, list]:
+    ) -> tuple[Any, list | None]:
         """
         Get or create a Honcho session with peers configured.
 
         Returns:
-            Tuple of (honcho_session, existing_messages).
+            Tuple of (honcho_session, existing_messages). ``None`` means the
+            session was not positively identified as empty.
         """
         with self._cache_lock:
             if session_id in self._sessions_cache:
                 logger.debug("Honcho session '%s' retrieved from cache", session_id)
-                return self._sessions_cache[session_id], []
+                return self._sessions_cache[session_id], None
 
         self._authed_call("session setup", lambda: self._sdk_session(session_id))
 
@@ -446,7 +447,7 @@ class HonchoSessionManager:
             )
 
         # Load existing messages via context() - single call for messages + metadata
-        existing_messages = []
+        existing_messages = None
         if not auth_dead:
             try:
                 ctx = self._authed_call(
@@ -455,7 +456,9 @@ class HonchoSessionManager:
                         summary=True, tokens=self._context_tokens
                     ),
                 )
-                existing_messages = ctx.messages or []
+                context_messages = ctx.messages or []
+                if context_messages or not getattr(ctx, "summary", None):
+                    existing_messages = context_messages
 
                 # Verify chronological ordering
                 if existing_messages and len(existing_messages) > 1:
@@ -475,8 +478,10 @@ class HonchoSessionManager:
                         "Honcho session '%s' retrieved (%d existing messages)",
                         session_id, len(existing_messages),
                     )
-                else:
+                elif existing_messages == []:
                     logger.info("Honcho session '%s' created (new)", session_id)
+                else:
+                    logger.info("Honcho session '%s' retrieved (summary only)", session_id)
             except HonchoAuthError:
                 logger.warning(
                     "Honcho session '%s' loaded without server context: auth failed",
@@ -635,7 +640,7 @@ class HonchoSessionManager:
         )
 
         local_messages = []
-        for msg in existing_messages:
+        for msg in existing_messages or []:
             role = "assistant" if msg.peer_id == assistant_peer_id else "user"
             local_messages.append({
                 "role": role,
@@ -650,6 +655,7 @@ class HonchoSessionManager:
             assistant_peer_id=assistant_peer_id,
             honcho_session_id=honcho_session_id,
             messages=local_messages,
+            metadata={"confirmed_new": existing_messages == []},
         )
 
         # Write to cache under lock — only one writer wins

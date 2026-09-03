@@ -1,6 +1,7 @@
 """Tests for plugins/memory/honcho/session.py — HonchoSession and helpers."""
 
 import time
+import pytest
 
 from datetime import datetime
 from types import SimpleNamespace
@@ -107,6 +108,76 @@ class TestFormatMigrationTranscript:
 
 
 class TestManagerCacheOps:
+    @staticmethod
+    def _load_session_with_context(*, messages=None, summary="", context_error=None):
+        sdk_session = MagicMock()
+        sdk_session.get_peer_configuration.return_value = SimpleNamespace(
+            observe_me=None,
+            observe_others=None,
+        )
+        if context_error is not None:
+            sdk_session.context.side_effect = context_error
+        else:
+            sdk_session.context.return_value = SimpleNamespace(
+                messages=messages or [],
+                summary=summary,
+            )
+        manager = HonchoSessionManager()
+        manager._sdk_session = MagicMock(return_value=sdk_session)
+        manager._authed_call = MagicMock(side_effect=lambda _label, operation: operation())
+        return manager._get_or_create_honcho_session(
+            "stored-session",
+            MagicMock(),
+            MagicMock(),
+        )
+
+    @pytest.mark.parametrize(
+        ("messages", "summary", "context_error", "confirmed_new"),
+        [
+            ([], "", None, True),
+            ([], "Existing summary", None, False),
+            ([MagicMock()], "", None, False),
+            ([], "", RuntimeError("temporary failure"), False),
+        ],
+        ids=["empty", "summary-only", "messages", "context-failure"],
+    )
+    def test_only_successful_empty_context_is_confirmed_new(
+        self, messages, summary, context_error, confirmed_new
+    ):
+        _, loaded = self._load_session_with_context(
+            messages=messages,
+            summary=summary,
+            context_error=context_error,
+        )
+
+        assert (loaded == []) == confirmed_new
+
+    def test_get_or_create_exposes_confirmed_new_metadata(self):
+        manager = HonchoSessionManager()
+        manager._resolve_user_peer_id = MagicMock(return_value="user")
+        manager._get_or_create_peer = MagicMock()
+        manager._get_or_create_honcho_session = MagicMock(
+            return_value=(MagicMock(), [])
+        )
+
+        session = manager.get_or_create("test-session")
+
+        assert session.metadata["confirmed_new"] is True
+
+    def test_cached_sdk_session_is_not_confirmed_new(self):
+        manager = HonchoSessionManager()
+        cached = MagicMock()
+        manager._sessions_cache["stored-session"] = cached
+
+        session, messages = manager._get_or_create_honcho_session(
+            "stored-session",
+            MagicMock(),
+            MagicMock(),
+        )
+
+        assert session is cached
+        assert messages is None
+
     def test_delete_cached_session(self):
         mgr = HonchoSessionManager()
         session = HonchoSession(
@@ -921,7 +992,11 @@ class TestSessionStartDialecticPrewarm:
     consumed by turn 1 — no duplicate .chat() and no dead-cache orphaning."""
 
     @staticmethod
-    def _make_provider(cfg_extra=None, dialectic_result="prewarm synthesis"):
+    def _make_provider(
+        cfg_extra=None,
+        dialectic_result="prewarm synthesis",
+        confirmed_new=True,
+    ):
         from unittest.mock import patch, MagicMock
         from plugins.memory.honcho.client import HonchoClientConfig
 
@@ -931,7 +1006,9 @@ class TestSessionStartDialecticPrewarm:
         cfg = HonchoClientConfig(**defaults)
         provider = HonchoMemoryProvider()
         mock_manager = MagicMock()
-        mock_manager.get_or_create.return_value = MagicMock(messages=[])
+        mock_manager.get_or_create.return_value = MagicMock(
+            metadata={"confirmed_new": confirmed_new},
+        )
         mock_manager.get_prefetch_context.return_value = None
         mock_manager.pop_context_result.return_value = None
         mock_manager.dialectic_query.return_value = dialectic_result
@@ -951,6 +1028,27 @@ class TestSessionStartDialecticPrewarm:
         with p._prefetch_lock:
             assert p._prefetch_result == "prewarm synthesis"
         assert p._last_dialectic_turn == 0
+
+    def test_unconfirmed_session_does_not_prewarm(self):
+        p = self._make_provider(confirmed_new=False)
+
+        assert getattr(p._manager, "dialectic_query").call_count == 0
+        assert p._prefetch_thread is None
+
+    def test_resumed_session_runs_dialectic_on_first_new_user_turn(self):
+        """Skipping resume-time prewarm must defer—not disable—normal dialectic work."""
+        p = self._make_provider(confirmed_new=False)
+        p._session_key = "test-resumed"
+        p._base_context_cache = ""
+        p._turn_count = 1
+
+        result = p.prefetch("what should we work on next?")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=3.0)
+            result = result or p._consume_pending_dialectic()
+
+        assert getattr(p._manager, "dialectic_query").call_count == 1
+        assert "prewarm synthesis" in result
 
 
     def test_turn1_consumes_prewarm_without_duplicate_dialectic(self):

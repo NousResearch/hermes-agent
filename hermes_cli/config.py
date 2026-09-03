@@ -3069,6 +3069,53 @@ def _env_ref_var_name(ref: str) -> Optional[str]:
     return ref
 
 
+def _runtime_env_ref_value(name: str) -> Optional[str]:
+    """Resolve one env-ref name through the runtime secret authorities.
+
+    ``os.environ`` first (same as ``_env_expand_match``), then the scope-aware
+    ``agent.secret_scope.get_secret`` and ``~/.hermes/.env``. Those two can
+    supply a live credential that never passes through ``os.environ`` — e.g.
+    a value resolved under an installed profile scope during a multiplexed
+    gateway turn, or one that only lives in the dotenv file. Used solely by
+    the save-side template-preservation proof; load-side expansion stays
+    environment-only (#98717).
+    """
+    val = os.environ.get(name)
+    if val is not None:
+        return val
+    try:
+        from agent.secret_scope import get_secret
+
+        val = get_secret(name)
+    except Exception:
+        val = None
+    if val is not None:
+        return val
+    try:
+        return load_env().get(name)
+    except Exception:
+        return None
+
+
+def _expand_env_refs_via_runtime(raw: str) -> str:
+    """Expand ``${VAR}`` / ``${env:VAR}`` in one string via runtime authorities.
+
+    Mirrors ``_env_expand_match``'s ref grammar but resolves each name with
+    ``_runtime_env_ref_value``; unresolved refs stay verbatim. Non-env
+    SecretRef sources (``file:``, ``vault:``, ...) stay verbatim exactly as
+    the load-side expander leaves them.
+    """
+
+    def _match(m: "re.Match[str]") -> str:
+        name = _env_ref_var_name(m.group(1))
+        if name is None:
+            return m.group(0)
+        val = _runtime_env_ref_value(name)
+        return val if val is not None else m.group(0)
+
+    return re.sub(r"\${([^}]+)}", _match, raw)
+
+
 def _expand_env_vars(obj):
     """Recursively expand ``${VAR}`` / ``${env:VAR}`` references in config
     values.
@@ -3145,6 +3192,14 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
     the current environment expansion of ``raw``. This handles env-var
     rotation between load and save while still treating mixed literal/template
     string edits as caller-owned once their rendered value diverges.
+
+    The provenance proof also consults the runtime secret authorities
+    (profile scope via ``get_secret``, then ``~/.hermes/.env``): a live
+    credential can reach the config object through those without ever
+    appearing in ``os.environ``, and value equality against the bare
+    environment alone cannot prove the template is its origin (#98717).
+    A caller-typed literal that no authority can recompute stays
+    caller-owned, so intentional replacement semantics are unchanged.
     """
     if isinstance(current, str) and isinstance(raw, str) and re.search(r"\${[^}]+}", raw):
         if current == raw:
@@ -3152,6 +3207,8 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
         if isinstance(loaded_expanded, str) and current == loaded_expanded:
             return raw
         if _expand_env_vars(raw) == current:
+            return raw
+        if _expand_env_refs_via_runtime(raw) == current:
             return raw
         return current
 

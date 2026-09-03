@@ -6395,6 +6395,35 @@ def github_model_reasoning_efforts(
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
 
 
+# Negative cache: monotonic timestamp of the last fully-failed probe, keyed
+# by ``host:port`` so both URL candidates (``/v1`` + root) share one entry.
+# Without this, an unreachable endpoint (TCP blackhole — SYN draws no reply,
+# so every attempt burns its full connect timeout) makes every picker open /
+# chat turn re-pay the timeout per candidate, and the sequential stalls stack
+# past 10s while the Desktop sits on a spinner with no error (#81123). Short
+# TTL collapses the burst but still picks up recovery without a restart.
+# Mirrors _deepinfra_catalog_neg_cache.
+_probe_neg_cache: dict[str, float] = {}
+_PROBE_NEG_TTL = 60.0  # seconds
+
+
+def _probe_neg_key(base_url: str) -> Optional[str]:
+    """Return a ``host:port`` key for *base_url*, or None if it has no host."""
+    normalized = (base_url or "").strip().lower()
+    if not normalized:
+        return None
+    url = normalized if "://" in normalized else f"http://{normalized}"
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.hostname or ""
+        if not host:
+            return None
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except Exception:
+        return None
+    return f"{host}:{port}"
+
+
 def probe_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
@@ -6439,6 +6468,18 @@ def probe_api_models(
         candidates.append((alternate_base, True))
 
     tried: list[str] = []
+    # ponytail: short-TTL negative cache; full re-probe once it expires.
+    _neg_key = _probe_neg_key(normalized)
+    if _neg_key is not None:
+        _neg_seen = _probe_neg_cache.get(_neg_key)
+        if _neg_seen is not None and (time.monotonic() - _neg_seen) < _PROBE_NEG_TTL:
+            return {
+                "models": None,
+                "probed_url": normalized.rstrip("/") + "/models",
+                "resolved_base_url": normalized,
+                "suggested_base_url": alternate_base if alternate_base != normalized else None,
+                "used_fallback": False,
+            }
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
     if urllib.parse.urlparse(normalized).hostname == "generativelanguage.googleapis.com":
         headers["X-Goog-Api-Client"] = f"hermes-agent/{_HERMES_VERSION}"
@@ -6480,6 +6521,8 @@ def probe_api_models(
         except Exception:
             continue
 
+    if _neg_key is not None:
+        _probe_neg_cache[_neg_key] = time.monotonic()
     return {
         "models": None,
         "probed_url": tried[0] if tried else normalized.rstrip("/") + "/models",

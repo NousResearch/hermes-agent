@@ -363,8 +363,16 @@ def _install_fake_sherpa(monkeypatch, tmp_path):
         def reset_stream(self, stream):
             pass
 
-    def _fake_text2token(phrases, tokens, tokens_type, bpe_model):
-        calls["text2token"].append(list(phrases))
+    def _fake_text2token(phrases, tokens, tokens_type, bpe_model=None, lexicon=None):
+        calls["text2token"].append(
+            {
+                "phrases": list(phrases),
+                "tokens": str(tokens),
+                "tokens_type": tokens_type,
+                "bpe_model": str(bpe_model) if bpe_model else None,
+                "lexicon": str(lexicon) if lexicon else None,
+            }
+        )
         return [p.split() for p in phrases]
 
     sherpa = types.ModuleType("sherpa_onnx")
@@ -386,6 +394,50 @@ def _install_fake_sherpa(monkeypatch, tmp_path):
         np_stub.asarray = lambda x, dtype=None: _FakeArr(x)
         monkeypatch.setitem(sys.modules, "numpy", np_stub)
     return calls, model_dir
+
+
+def _sherpa_engine_config(model_dir, phrase="你好小雨") -> dict:
+    return {
+        "provider": "sherpa",
+        "phrase": phrase,
+        "sherpa": {"model_dir": str(model_dir)},
+    }
+
+
+def test_sherpa_engine_bpe_model_keeps_bpe_tokenization(monkeypatch, tmp_path):
+    """A BPE model (bpe.model present) must keep the original bpe path."""
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    eng = ww._SherpaKwsEngine(_sherpa_engine_config(model_dir, phrase="hello world"))
+    assert calls["text2token"][0]["tokens_type"] == "bpe"
+    assert calls["text2token"][0]["bpe_model"].endswith("bpe.model")
+    assert calls["text2token"][0]["lexicon"] is None
+    with open(eng._keywords_file, encoding="utf-8") as f:
+        assert "HELLO WORLD @HELLO_WORLD" in f.read()
+
+
+def test_sherpa_engine_zh_en_model_uses_phone_ppinyin(monkeypatch, tmp_path):
+    """A zh-en model (en.phone, no bpe.model) must tokenize via
+    phone+ppinyin with the lexicon instead of crashing on the missing
+    bpe.model — this is what enables Chinese wake phrases like 你好小雨."""
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    (model_dir / "bpe.model").unlink()
+    (model_dir / "en.phone").write_bytes(b"x")
+
+    eng = ww._SherpaKwsEngine(_sherpa_engine_config(model_dir))
+    assert calls["text2token"][0]["tokens_type"] == "phone+ppinyin"
+    assert calls["text2token"][0]["lexicon"].endswith("en.phone")
+    assert calls["text2token"][0]["bpe_model"] is None
+    with open(eng._keywords_file, encoding="utf-8") as f:
+        assert "你好小雨 @你好小雨" in f.read()
+
+
+def test_sherpa_engine_rejects_unsupported_model_dir(monkeypatch, tmp_path):
+    """A model dir with neither bpe.model nor en.phone is rejected with a
+    message naming the missing files (no silent fallback to a broken path)."""
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    (model_dir / "bpe.model").unlink()
+    with pytest.raises(RuntimeError, match="not supported"):
+        ww._SherpaKwsEngine(_sherpa_engine_config(model_dir))
 
 
 # ── Multi-profile phrase routing ─────────────────────────────────────────

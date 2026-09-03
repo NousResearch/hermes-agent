@@ -38,6 +38,7 @@ seam remembers and surfaces as 503 only if NO provider accepts the token.
 """
 from __future__ import annotations
 
+import hmac
 import logging
 import threading
 from typing import Awaitable, Callable, Optional, Tuple
@@ -50,28 +51,46 @@ from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import ProviderError, TokenPrincipal
 
 _log = logging.getLogger(__name__)
+_INTERNAL_PROVIDER = "dashboard-internal"
 
 # Exact paths that accept non-interactive bearer-token auth. A route registers
 # itself here at import/startup; the seam only acts on registered paths.
-_token_routes: set[str] = set()
+_token_routes: dict[str, Optional[tuple[str, ...]]] = {}
 _lock = threading.Lock()
 
 
-def register_token_route(path: str) -> None:
+def register_token_route(
+    path: str,
+    *,
+    allow_internal: bool = False,
+    internal_scopes: tuple[str, ...] = (),
+) -> None:
     """Mark ``path`` (exact match) as token-authable.
 
     Idempotent. Call at module import / app setup so the seam knows which
     routes to guard. Registering a route does NOT make it public — it makes
-    it authenticate by token instead of by session cookie.
+    it authenticate by token instead of by session cookie. The process-internal
+    bearer remains forbidden unless ``allow_internal`` is explicit; when
+    enabled, only ``internal_scopes`` are attached to that principal.
     """
+    policy = tuple(internal_scopes) if allow_internal else None
     with _lock:
-        _token_routes.add(path)
+        existing = _token_routes.get(path)
+        if path in _token_routes and existing != policy:
+            raise ValueError(f"conflicting token-route policy for {path!r}")
+        _token_routes[path] = policy
 
 
 def is_token_route(path: str) -> bool:
     """True if ``path`` was registered as token-authable (exact match)."""
     with _lock:
         return path in _token_routes
+
+
+def internal_scopes_for_route(path: str) -> Optional[tuple[str, ...]]:
+    """Return scopes for the process-internal bearer, or ``None`` if forbidden."""
+    with _lock:
+        return _token_routes.get(path)
 
 
 def clear_token_routes() -> None:
@@ -120,6 +139,13 @@ def authenticate_token(
         return None, None
     unreachable: Optional[str] = None
     for provider in list_token_providers():
+        if provider.name == _INTERNAL_PROVIDER:
+            _log.warning(
+                "dashboard-auth: token provider attempted to use reserved name %r; "
+                "rejecting",
+                provider.name,
+            )
+            continue
         try:
             principal = provider.verify_token(token=token)
         except ProviderError as e:
@@ -137,6 +163,14 @@ def authenticate_token(
             )
             continue
         if principal is not None:
+            if principal.provider != provider.name:
+                _log.warning(
+                    "dashboard-auth: token provider %r returned mismatched "
+                    "principal provenance %r; rejecting",
+                    provider.name,
+                    principal.provider,
+                )
+                continue
             return principal, None
     return None, unreachable
 
@@ -151,7 +185,8 @@ async def token_auth_middleware(
     :func:`register_token_route`. For a registered path, token auth is the
     only accepted scheme:
 
-      * valid token  → attach principal + ``token_authenticated`` flag, pass through.
+      * opted-in exact process-internal bearer → attach the scoped server principal;
+      * valid provider token → attach principal + ``token_authenticated`` flag, pass through.
       * unreachable  → 503 (provider backing store down; not "bad credentials").
       * otherwise    → 401 unauthenticated.
 
@@ -163,7 +198,24 @@ async def token_auth_middleware(
     if not is_token_route(path):
         return await call_next(request)
 
-    principal, unreachable = authenticate_token(request)
+    token = extract_bearer_token(request)
+    internal_scopes = internal_scopes_for_route(path)
+    internal_token = getattr(request.app.state, "internal_api_token", None)
+    if (
+        internal_scopes is not None
+        and token
+        and isinstance(internal_token, str)
+        and internal_token
+        and hmac.compare_digest(token.encode(), internal_token.encode())
+    ):
+        principal = TokenPrincipal(
+            principal=_INTERNAL_PROVIDER,
+            provider=_INTERNAL_PROVIDER,
+            scopes=internal_scopes,
+        )
+        unreachable = None
+    else:
+        principal, unreachable = authenticate_token(request)
     if principal is not None:
         request.state.token_principal = principal
         request.state.token_authenticated = True

@@ -213,6 +213,17 @@ class TestSessionTokenInjection:
             assert ws._resolve_session_token() == "generated-token"
         token_urlsafe.assert_called_once_with(32)
 
+    def test_ssh_session_token_rotation_updates_internal_bearer(self):
+        import hermes_cli.web_server as ws
+
+        original = ws._SESSION_TOKEN
+        try:
+            ws._apply_ssh_session_token("ssh-rotated-token")
+            assert ws._SESSION_TOKEN == "ssh-rotated-token"
+            assert ws.app.state.internal_api_token == "ssh-rotated-token"
+        finally:
+            ws._apply_ssh_session_token(original)
+
     def test_session_token_resolution_preserves_loaded_app_auth(self, monkeypatch):
         import hermes_cli.web_server as ws
         from starlette.testclient import TestClient
@@ -4302,7 +4313,6 @@ class TestPluginAPIAuth:
         # With auth: handler runs.
         resp = self.auth_client.get("/api/plugins/example/hello")
         assert resp.status_code == 200
-
 
     def test_plugin_patch_requires_auth(self):
         """Plugin PATCH routes should return 401 without a valid session token.

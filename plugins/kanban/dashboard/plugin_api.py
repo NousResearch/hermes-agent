@@ -45,16 +45,43 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_diagnostics as kd
+from hermes_cli.dashboard_auth.token_auth import register_token_route
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def register_owner_token_routes() -> None:
+    register_token_route(
+        "/api/plugins/kanban/owner-snapshot",
+        allow_internal=True,
+        internal_scopes=("kanban:owner:read",),
+    )
+    register_token_route(
+        "/api/plugins/kanban/owner-events",
+        allow_internal=True,
+        internal_scopes=("kanban:owner:read",),
+    )
+
+
+register_owner_token_routes()
+router.add_event_handler("startup", register_owner_token_routes)
+
+
+def _require_owner_read(request: Request) -> None:
+    principal = getattr(request.state, "token_principal", None)
+    if principal is not None and _OWNER_READ_SCOPE in set(
+        getattr(principal, "scopes", ())
+    ):
+        return
+    raise HTTPException(status_code=403, detail="owner-read scope required")
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +181,12 @@ BOARD_COLUMNS: list[str] = [
 
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
+_OWNER_CONTRACT_VERSION = 1
+_OWNER_SNAPSHOT_DEFAULT_LIMIT = 1_000
+_OWNER_SNAPSHOT_MAX_LIMIT = 10_000
+_OWNER_EVENTS_DEFAULT_LIMIT = 200
+_OWNER_EVENTS_MAX_LIMIT = 1_000
+_OWNER_READ_SCOPE = "kanban:owner:read"
 
 
 def _task_dict(
@@ -185,6 +218,62 @@ def _event_dict(event: kanban_db.Event) -> dict[str, Any]:
         "payload": event.payload,
         "created_at": event.created_at,
         "run_id": event.run_id,
+    }
+
+
+def _owner_identity(board: Optional[str]) -> tuple[str, str]:
+    from hermes_cli.profiles import get_active_profile_name
+
+    board_id = board or kanban_db.get_current_board()
+    return get_active_profile_name(), board_id
+
+
+def _owner_event_cursor(conn: sqlite3.Connection) -> int:
+    """Return the monotonic durable owner-event sequence."""
+    sequence = conn.execute(
+        "SELECT seq FROM sqlite_sequence WHERE name = 'owner_events'"
+    ).fetchone()
+    maximum = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) FROM owner_events"
+    ).fetchone()
+    return max(int(sequence[0]) if sequence is not None else 0, int(maximum[0]))
+
+
+def _owner_task(row: sqlite3.Row) -> dict[str, Any]:
+    task_id = row["id"]
+    title = row["title"]
+    created_by = row["created_by"]
+    created_at = row["created_at"]
+    if (
+        not isinstance(task_id, str) or not task_id
+        or not isinstance(title, str) or not title.strip()
+        or type(created_at) is not int or created_at < 0
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Kanban task has malformed immutable creation identity",
+        )
+    return {
+        "id": task_id,
+        "title": title,
+        "created_by": (
+            created_by.strip()
+            if isinstance(created_by, str) and created_by.strip()
+            else None
+        ),
+        "created_at": created_at,
+    }
+
+
+def _owner_event(row: sqlite3.Row) -> dict[str, Any]:
+    payload = kanban_db._owner_contract_payload_from_json(
+        row["kind"], row["payload"],
+    )
+    return {
+        "id": int(row["event_id"]),
+        "kind": row["kind"],
+        "payload": payload,
+        "created_at": int(row["event_created_at"]),
     }
 
 
@@ -372,6 +461,154 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
         )
     ]
     return {"parents": parents, "children": children}
+
+
+# ---------------------------------------------------------------------------
+# Stable owner receipts for authenticated subsystem materializers
+# ---------------------------------------------------------------------------
+
+@router.get("/owner-snapshot")
+def owner_snapshot(
+    request: Request,
+    board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
+    limit: int = Query(_OWNER_SNAPSHOT_DEFAULT_LIMIT),
+):
+    """Return one bounded board snapshot of immutable task-creation receipts.
+
+    This contract is for authenticated server-side plugin integrations that
+    materialize their own read models. It intentionally excludes dependency
+    edges and mutable task status. The returned event cursor is captured in the
+    same SQLite read transaction as the receipts, so callers can continue with
+    ``/owner-events`` without a snapshot/event gap.
+    """
+    _require_owner_read(request)
+    if not 1 <= limit <= _OWNER_SNAPSHOT_MAX_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"limit must be 1..{_OWNER_SNAPSHOT_MAX_LIMIT}",
+        )
+    profile_id, board_id = _owner_identity(_resolve_board(board))
+    conn = _conn(board=board_id)
+    try:
+        conn.execute("BEGIN")
+        task_rows = conn.execute(
+            "SELECT id, title, status, created_by, created_at FROM tasks "
+            "ORDER BY id ASC LIMIT ?",
+            (limit + 1,),
+        ).fetchall()
+        if len(task_rows) > limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Kanban board exceeds the requested {limit}-task snapshot bound",
+            )
+        task_ids = [row["id"] for row in task_rows]
+        created_by_task: dict[str, list[sqlite3.Row]] = {task_id: [] for task_id in task_ids}
+        if task_ids:
+            placeholders = ",".join("?" for _ in task_ids)
+            event_rows = conn.execute(
+                "SELECT id AS event_id, task_id, kind, payload, "
+                "created_at AS event_created_at FROM owner_events "
+                f"WHERE kind = 'created' AND task_id IN ({placeholders}) "
+                "ORDER BY id ASC",
+                tuple(task_ids),
+            ).fetchall()
+            for row in event_rows:
+                created_by_task[row["task_id"]].append(row)
+        cursor = _owner_event_cursor(conn)
+        receipts = []
+        for task_row in task_rows:
+            task_id = task_row["id"]
+            creation_rows = created_by_task[task_id]
+            if len(creation_rows) != 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Kanban task {task_id} does not have exactly one creation receipt",
+                )
+            task = _owner_task(task_row)
+            created_event = _owner_event(creation_rows[0])
+            receipts.append({
+                "task": task,
+                "created_event": created_event,
+                "provenance_complete": task["created_by"] is not None,
+                "archived": task_row["status"] == "archived",
+            })
+        return {
+            "contract_version": _OWNER_CONTRACT_VERSION,
+            "profile_id": profile_id,
+            "board_id": board_id,
+            "complete": True,
+            "task_count": len(receipts),
+            "event_cursor": cursor,
+            "receipts": receipts,
+        }
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+        conn.close()
+
+
+@router.get("/owner-events")
+def owner_events(
+    request: Request,
+    board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
+    after: int = Query(0),
+    limit: int = Query(_OWNER_EVENTS_DEFAULT_LIMIT),
+):
+    """Return a cursor-safe bounded slice of topology-materialization receipts."""
+    _require_owner_read(request)
+    if after < 0:
+        raise HTTPException(status_code=400, detail="after must be non-negative")
+    if not 1 <= limit <= _OWNER_EVENTS_MAX_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"limit must be 1..{_OWNER_EVENTS_MAX_LIMIT}",
+        )
+    profile_id, board_id = _owner_identity(_resolve_board(board))
+    conn = _conn(board=board_id)
+    try:
+        conn.execute("BEGIN")
+        latest_cursor = _owner_event_cursor(conn)
+        if after > latest_cursor:
+            raise HTTPException(
+                status_code=409,
+                detail="owner event cursor is ahead of the authoritative stream",
+            )
+        rows = conn.execute(
+            "SELECT id AS event_id, task_id AS id, kind, payload, "
+            "created_at AS event_created_at, title, created_by, "
+            "task_created_at AS created_at, archived "
+            "FROM owner_events WHERE owner_events.id > ? "
+            "ORDER BY owner_events.id ASC LIMIT ?",
+            (after, limit + 1),
+        ).fetchall()
+        has_more = len(rows) > limit
+        scanned = rows[:limit]
+        events = [
+            {
+                **_owner_event(row),
+                "task": _owner_task(row),
+                "archived": bool(row["archived"]),
+            }
+            for row in scanned
+        ]
+        next_cursor = (
+            int(scanned[-1]["event_id"])
+            if has_more
+            else latest_cursor
+        )
+        return {
+            "contract_version": _OWNER_CONTRACT_VERSION,
+            "profile_id": profile_id,
+            "board_id": board_id,
+            "after": after,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+            "events": events,
+        }
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1023,6 +1260,10 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
 
         # --- title / body -------------------------------------------------
         if payload.title is not None or payload.body is not None:
+            title_changed = (
+                payload.title is not None
+                and payload.title.strip() != task.title
+            )
             with kanban_db.write_txn(conn):
                 sets, vals = [], []
                 if payload.title is not None:
@@ -1037,11 +1278,9 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 conn.execute(
                     f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals,
                 )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'edited', NULL, ?)",
-                    (task_id, int(time.time())),
-                )
+                kanban_db._append_event(conn, task_id, "edited")
+                if title_changed:
+                    kanban_db._append_owner_event(conn, task_id, "updated")
             # Mutation-boundary observer (RFC #58548), post-commit. Field
             # names only — values never leave the DB via this payload.
             kanban_db.notify_task_updated(
@@ -1214,6 +1453,8 @@ def _set_status_direct(
                 int(time.time()),
             ),
         )
+        if prev["status"] == "archived" and effective_status != "archived":
+            kanban_db._append_owner_event(conn, task_id, "updated")
         if reopening_satisfied_parent:
             _invalidate_descendants_for_parent_reopen(
                 conn,

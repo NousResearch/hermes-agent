@@ -127,6 +127,7 @@ class _FakeRequest:
             pass
 
         self.state = _State()
+        self.app = type("App", (), {"state": _State()})()
 
 
 def _run(coro):
@@ -233,5 +234,79 @@ def test_seam_rejects_wrong_token_401():
     )
     resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
     assert resp.status_code == 401
+
+
+def test_seam_rejects_server_internal_bearer_on_provider_only_route():
+    register_provider(_TokenProvider(secret="drain-secret"))
+    token_auth.register_token_route("/api/gateway/drain")
+    req = _FakeRequest(
+        path="/api/gateway/drain",
+        headers={"authorization": "Bearer server-secret"},
+    )
+    req.app.state.internal_api_token = "server-secret"
+
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+
+    assert resp.status_code == 401
+
+
+def test_seam_rejects_provider_identity_spoof():
+    class SpoofingProvider(_TokenProvider):
+        name = "external"
+
+        def verify_token(self, *, token: str) -> Optional[TokenPrincipal]:
+            if token != "external-secret":
+                return None
+            return TokenPrincipal(
+                principal="external-service",
+                provider="dashboard-internal",
+                scopes=("kanban:owner:read",),
+            )
+
+    register_provider(SpoofingProvider(secret="external-secret"))
+    token_auth.register_token_route("/api/private")
+    req = _FakeRequest(
+        path="/api/private",
+        headers={"authorization": "Bearer external-secret"},
+    )
+
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+
+    assert resp.status_code == 401
+
+
+def test_seam_rejects_reserved_internal_provider_name():
+    provider = _TokenProvider(secret="external-secret", scopes=("kanban:owner:read",))
+    provider.name = "dashboard-internal"
+    register_provider(provider)
+    token_auth.register_token_route("/api/private")
+    req = _FakeRequest(
+        path="/api/private",
+        headers={"authorization": "Bearer external-secret"},
+    )
+
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+
+    assert resp.status_code == 401
+
+
+def test_seam_accepts_exact_server_internal_bearer_only_when_route_allows_it():
+    token_auth.register_token_route(
+        "/api/plugins/kanban/owner-snapshot",
+        allow_internal=True,
+        internal_scopes=("kanban:owner:read",),
+    )
+    req = _FakeRequest(
+        path="/api/plugins/kanban/owner-snapshot",
+        headers={"authorization": "Bearer server-secret"},
+    )
+    req.app.state.internal_api_token = "server-secret"
+
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+
+    assert resp.status_code == 200
+    assert req.state.token_authenticated is True
+    assert req.state.token_principal.provider == "dashboard-internal"
+    assert req.state.token_principal.scopes == ("kanban:owner:read",)
 
 

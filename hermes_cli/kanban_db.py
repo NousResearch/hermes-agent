@@ -1448,6 +1448,20 @@ CREATE TABLE IF NOT EXISTS task_events (
     created_at INTEGER NOT NULL
 );
 
+-- Durable owner/materialization stream. Unlike task_events, these receipts
+-- survive hard deletion so incremental readers can remove stale projections.
+CREATE TABLE IF NOT EXISTS owner_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id         TEXT NOT NULL,
+    kind            TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    created_by      TEXT,
+    task_created_at INTEGER NOT NULL,
+    payload         TEXT,
+    archived        INTEGER NOT NULL DEFAULT 0,
+    created_at      INTEGER NOT NULL
+);
+
 -- Historical attempt record. Each time the dispatcher claims a task, a
 -- new row is created here; claim state, PID, heartbeat, runtime cap,
 -- and structured summary all live on the run, not the task. Multiple
@@ -1520,6 +1534,9 @@ CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_owner_events_task     ON owner_events(task_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_owner_events_created
+    ON owner_events(task_id) WHERE kind = 'created';
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
@@ -2846,6 +2863,108 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         )
 
     _rebuild_drifted_tables(conn)
+    _backfill_owner_events(conn)
+
+
+def _owner_contract_payload(kind: str, payload: object) -> Optional[dict[str, str]]:
+    """Return the allowlisted payload for the narrow owner-read contract."""
+    if kind != "created" or not isinstance(payload, dict):
+        return None
+    safe: dict[str, str] = {}
+    for key in ("by", "from_decompose_of"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            safe[key] = value.strip()
+    return safe or None
+
+
+def _owner_contract_payload_from_json(
+    kind: str, raw_payload: object,
+) -> Optional[dict[str, str]]:
+    """Decode and allowlist one stored owner payload, failing closed."""
+    try:
+        decoded = json.loads(raw_payload) if raw_payload else None
+    except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        decoded = None
+    return _owner_contract_payload(kind, decoded)
+
+
+def _scrub_owner_event_payloads(conn: sqlite3.Connection) -> None:
+    """Remove payload fields outside the owner contract from durable rows."""
+    rows = conn.execute(
+        "SELECT id, kind, payload FROM owner_events WHERE payload IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        safe = _owner_contract_payload_from_json(row["kind"], row["payload"])
+        serialized = json.dumps(safe, ensure_ascii=False) if safe is not None else None
+        if serialized != row["payload"]:
+            conn.execute(
+                "UPDATE owner_events SET payload = ? WHERE id = ?",
+                (serialized, row["id"]),
+            )
+
+
+def _backfill_owner_events(conn: sqlite3.Connection) -> None:
+    """Seed one durable baseline receipt for every pre-contract task.
+
+    Historical boards may have nullable ``created_by`` values or missing task
+    event history. Preserve that uncertainty explicitly instead of rejecting
+    the whole board snapshot. Standalone additive-migration tests may provide a
+    deliberately partial schema; those have nothing to backfill.
+    """
+    tables = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    if not {"tasks", "task_events", "owner_events"}.issubset(tables):
+        return
+    task_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+    }
+    if not {"id", "title", "created_by", "created_at", "status"}.issubset(
+        task_columns
+    ):
+        return
+    rows = conn.execute(
+        """
+        SELECT
+            t.id, t.title, t.created_by, t.created_at, t.status,
+            (
+                SELECT e.payload
+                  FROM task_events e
+                 WHERE e.task_id = t.id AND e.kind = 'created'
+                 ORDER BY e.id ASC
+                 LIMIT 1
+            ) AS source_payload
+          FROM tasks t
+         WHERE NOT EXISTS (
+            SELECT 1 FROM owner_events o
+             WHERE o.task_id = t.id AND o.kind = 'created'
+         )
+        """
+    ).fetchall()
+    for row in rows:
+        safe = _owner_contract_payload_from_json("created", row["source_payload"])
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO owner_events (
+                task_id, kind, title, created_by, task_created_at,
+                payload, archived, created_at
+            ) VALUES (?, 'created', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["id"],
+                row["title"],
+                row["created_by"],
+                row["created_at"],
+                json.dumps(safe, ensure_ascii=False) if safe is not None else None,
+                1 if row["status"] == "archived" else 0,
+                row["created_at"],
+            ),
+        )
+    _scrub_owner_event_payloads(conn)
 
 
 # Legacy DBs defined these tables with a ``TEXT PRIMARY KEY`` id (or, for
@@ -4308,6 +4427,43 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return out
 
 
+def _append_owner_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    kind: str,
+    payload: Optional[dict] = None,
+    *,
+    created_at: Optional[int] = None,
+) -> None:
+    """Append a durable materialization receipt from the current task row."""
+    row = conn.execute(
+        "SELECT id, title, created_by, created_at, status FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return
+    event_time = int(time.time()) if created_at is None else int(created_at)
+    safe_payload = _owner_contract_payload(kind, payload)
+    conn.execute(
+        """
+        INSERT INTO owner_events (
+            task_id, kind, title, created_by, task_created_at,
+            payload, archived, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            row["id"],
+            kind,
+            row["title"],
+            row["created_by"],
+            row["created_at"],
+            json.dumps(safe_payload, ensure_ascii=False) if safe_payload is not None else None,
+            1 if row["status"] == "archived" else 0,
+            event_time,
+        ),
+    )
+
+
 def _append_event(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4330,6 +4486,16 @@ def _append_event(
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+    if kind == "created":
+        _append_owner_event(conn, task_id, "created", payload, created_at=now)
+    elif (
+        kind == "specified"
+        and isinstance(payload, dict)
+        and "title" in payload.get("changed_fields", ())
+    ):
+        _append_owner_event(conn, task_id, "updated", created_at=now)
+    elif kind == "archived":
+        _append_owner_event(conn, task_id, "archived", created_at=now)
 
 
 def _end_run(
@@ -7564,6 +7730,7 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         ).fetchone()
         if not row or row["status"] != "archived":
             return False
+        _append_owner_event(conn, task_id, "deleted")
         conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? OR child_id = ?",
             (task_id, task_id),
@@ -7587,9 +7754,13 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     if the task was not found.
     """
     with write_txn(conn):
-        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        if cur.rowcount != 1:
+        if conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone() is None:
             return False
+        _append_owner_event(conn, task_id, "deleted")
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        assert cur.rowcount == 1
         conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))

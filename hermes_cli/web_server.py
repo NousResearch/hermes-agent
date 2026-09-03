@@ -637,6 +637,7 @@ def _resolve_session_token() -> str:
 
 _SESSION_TOKEN = _resolve_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+app.state.internal_api_token = _SESSION_TOKEN
 _SSH_OWNER_NONCE: Optional[str] = None
 _SSH_RUNTIME_PURELIB: Optional[Tuple[str, int, int]] = None
 _SSH_RUNTIME_MARKER: Optional[str] = None
@@ -646,6 +647,7 @@ def _apply_ssh_session_token(token: str) -> None:
     global _SESSION_TOKEN
     if token:
         _SESSION_TOKEN = token
+        app.state.internal_api_token = token
 
 
 def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:

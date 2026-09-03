@@ -56,6 +56,14 @@ _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 _SCOPED_SKIP_LOGGED: set[str] = set()
 
 
+
+# Paths of .env files actually loaded by load_hermes_dotenv() in the current
+# process (user env, project env, from every load_hermes_dotenv() call). Status/
+# doctor/config-show report from this record, so they cannot diverge from what
+# the loader actually applied (#102023, #14517, #31144).
+_LOADED_ENV_FILES: list[Path] = []
+
+
 def _known_hermes_env_keys() -> set[str]:
     """Return the combined set of known Hermes env-var keys.
 
@@ -471,6 +479,18 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         pass  # best-effort — don't block gateway startup
 
 
+def get_loaded_env_files() -> list[Path]:
+    """Return .env file paths actually loaded by load_hermes_dotenv().
+
+    Reports what the loader applied in this process (user env, project env,
+    across all load_hermes_dotenv() calls). status/doctor/config-show must
+    report from this list rather than re-deriving the path independently, or
+    they will disagree with the loader and with each other when the dev
+    fallback is in play or when a custom HERMES_HOME is set (#102023).
+    """
+    return list(_LOADED_ENV_FILES)
+
+
 def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
@@ -535,6 +555,7 @@ def load_hermes_dotenv(
     if user_env.exists():
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
+        _LOADED_ENV_FILES.append(user_env)
         # Mirror reload_env() known-key cleanup so inherited Hermes keys
         # absent from this profile's .env do not leak into the runtime.
         _clear_known_keys_missing_from_dotenv(user_env)
@@ -556,6 +577,7 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
+        _LOADED_ENV_FILES.append(project_env_path)
 
     # External secret sources are skipped in two updater situations:
     # 1. ``load_external_secrets=False`` — the caller is an ``update``

@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_cli.config import get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
 from hermes_cli.nous_account import (
     format_nous_portal_entitlement_message,
@@ -151,7 +151,13 @@ def show_status(args):
     print(f"  Project:      {PROJECT_ROOT}")
     print(f"  Python:       {sys.version.split()[0]}")
 
-    env_path = get_env_path()
+    from hermes_cli.env_loader import get_loaded_env_files
+
+    loaded_envs = get_loaded_env_files()
+    # status shows the most recent one (project fallback wins in output if
+    # present), matching the precedence that would be visible to a user
+    # inspecting which keys are actually defined.
+    env_path = loaded_envs[-1] if loaded_envs else (get_hermes_home() / ".env")
     print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
 
     try:

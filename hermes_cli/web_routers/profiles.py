@@ -17,6 +17,7 @@ import functools
 import inspect
 import json
 import logging
+import os
 import re
 import subprocess  # noqa: F401
 import sys  # noqa: F401
@@ -113,6 +114,60 @@ def _sidebar_db_fingerprint(db_path: Path):
     """Track SQLite content changes through the main DB and its WAL."""
     wal_path = Path(f"{db_path}-wal")
     return (_stat_fingerprint(db_path), _stat_fingerprint(wal_path))
+
+
+# Windows reports ``st_ino == 0`` (and an unstable ``st_dev``) on many
+# filesystems, so the POSIX inode identity used to collapse symlinked state.db
+# aliases is meaningless there. ``os.name == "nt"`` mirrors the guard idiom
+# already used across hermes_cli (active_sessions.py, backup.py, agent_plugins).
+_IS_WINDOWS = os.name == "nt"
+
+
+def _db_identity_key(db_path: Path):
+    """Return a stable identity for the *physical* state.db behind ``db_path``.
+
+    Cross-profile session aggregation must scan each underlying database once,
+    even when several profiles reach the same file through different links:
+
+    * A **symlinked** state.db (the gsd-* worker fleet links its DB back to the
+      canonical workspace DB).
+    * A **profile-template** clone that shares its base's DB. ``create_profile``
+      copies the source tree with ``symlinks=True``, so a template whose
+      ``state.db`` is itself a symlink is preserved as a symlink in every
+      derived profile; all of them, and the template, resolve to one real path.
+      A template that instead ships its own real ``state.db`` resolves to a
+      *distinct* path and is (correctly) scanned separately.
+
+    Resolving the real path first is what makes template + derived collapse
+    (or stay separate) correctly regardless of how the share was set up.
+
+    Identity strategy:
+
+    * POSIX: ``(st_dev, st_ino)`` of the resolved target. Inodes also fold
+      hardlinked copies of the same DB, which realpath alone would miss.
+    * Windows / inode-less hosts: ``st_ino`` is unreliable (often ``0``), so
+      fall back to the case-normalized real path. ``os.path.normcase`` matches
+      the repo's existing path-identity idiom (``_startup_fast``,
+      ``gateway_windows``) and makes the key case-insensitive, as NTFS is.
+
+    Never raises: a resolution/stat failure degrades to the normalized path
+    string so a single unreadable profile can't abort the whole scan.
+    """
+    try:
+        real = os.path.realpath(str(db_path))
+    except Exception:
+        real = str(db_path)
+    normalized = os.path.normcase(real)
+    if not _IS_WINDOWS:
+        try:
+            stat = os.stat(real)
+            if stat.st_ino:
+                return (stat.st_dev, stat.st_ino)
+        except OSError:
+            pass
+    # Windows, or a host where inodes are unavailable/zero: the normalized
+    # real path is the most reliable identity we can form without crashing.
+    return normalized
 
 
 def _sidebar_profile_cache_get(key):
@@ -298,10 +353,43 @@ def get_profiles_sessions(
     profile_totals: Dict[str, int] = {}
     errors: List[Dict[str, str]] = []
     now = time.time()
-    for name, home in targets:
+    # Dedupe targets that point at the SAME physical state.db. Main-linked
+    # profiles (e.g. the gsd-* worker fleet) symlink their state.db back to the
+    # canonical workspace DB, and profile-template clones share their base's DB
+    # the same way (create_profile copies with symlinks=True), so a naive loop
+    # opens and scans that one large file once per profile -- on a host with N
+    # such links the cost is O(N) full scans of the same rows for zero new data,
+    # which pushes the sidebar's session-list request past the desktop's connect
+    # timeout. Resolving each db_path to a physical-DB identity and scanning each
+    # distinct DB exactly once makes profile=all O(distinct DBs) instead of
+    # O(profiles), and prevents the same rows being counted N times into
+    # ``total``/``profile_totals``. See ``_db_identity_key`` for how a template
+    # and its derivatives collapse to one key while a template shipping its own
+    # real DB stays separate, and for the Windows/inode-less fallback.
+    #
+    # Order so a profile owning a REAL state.db file is scanned before any
+    # profile that merely symlinks to it -- that way the shared canonical DB is
+    # claimed (and its rows tagged) under its real owner (e.g. "default") rather
+    # than an arbitrary symlink alias. This also tags a template's shared rows
+    # to the template/base rather than to a derived profile.
+    def _is_symlink_db(home: Path) -> bool:
+        try:
+            return (Path(home) / "state.db").is_symlink()
+        except Exception:
+            return False
+
+    ordered_targets = sorted(targets, key=lambda t: _is_symlink_db(t[1]))
+    seen_db_keys: set = set()
+    for name, home in ordered_targets:
         db_path = Path(home) / "state.db"
         if not db_path.exists():
             continue
+        db_key = _db_identity_key(db_path)
+        if db_key in seen_db_keys:
+            # Already scanned this physical DB under another profile name
+            # (symlink alias, hardlink, or template/derived share).
+            continue
+        seen_db_keys.add(db_key)
         try:
             # Read-only on the healthy path: this loop runs on every sidebar
             # refresh, so it must not routinely DDL/write-lock another

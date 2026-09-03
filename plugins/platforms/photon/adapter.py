@@ -2591,6 +2591,45 @@ class PhotonAdapter(BasePlatformAdapter):
         self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
 
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Edit a previously sent iMessage via the sidecar /edit route.
+
+        Apple allows edits within a 15-minute window (max 5 edits per
+        message). ``finalize`` is a no-op for iMessage (an edit is an edit).
+        """
+        if not chat_id.strip() or not message_id.strip() or not content.strip():
+            return SendResult(
+                success=False, error="chat_id, message_id, and content are required"
+            )
+        return await self._sidecar_edit_message(chat_id, message_id, content)
+
+    async def _sidecar_edit_message(
+        self, space_id: str, message_id: str, content: str
+    ) -> SendResult:
+        """POST to the sidecar's ``/edit`` endpoint.
+
+        Calls spectrum-ts ``space.send(spectrumEdit(...))`` on the target
+        message. iMessage only permits editing a message we sent within
+        the 15-minute window; other cases return a 4xx from the sidecar.
+        """
+        body: Dict[str, Any] = {
+            "spaceId": space_id,
+            "messageId": message_id,
+            "text": content,
+        }
+        try:
+            data = await self._sidecar_call("/edit", body)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True, message_id=data.get("messageId") or message_id)
+
     async def _sidecar_send_attachment(
         self,
         space_id: str,

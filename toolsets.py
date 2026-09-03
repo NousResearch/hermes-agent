@@ -272,6 +272,18 @@ TOOLSETS = {
         "tools": ["clarify"],
         "includes": []
     },
+
+    # Native iMessage interactions over Photon — each tool is only offered
+    # when a live Photon adapter is running in this process (the tools'
+    # check_fn enforces it at schema-assembly time; listing them here just
+    # names the bucket). photon_edit replaces the text of one of OUR OWN
+    # bubbles in place (Apple shows a subtle "Edited" label; 15-min window,
+    # max 5 edits per message). See tools/photon_edit_tool.py.
+    "photon_tools": {
+        "description": "Native iMessage edits over Photon (live gateway only)",
+        "tools": ["photon_edit"],
+        "includes": []
+    },
     
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",

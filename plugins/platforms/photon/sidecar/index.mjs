@@ -306,6 +306,7 @@ let Spectrum,
   spectrumRichlink,
   spectrumTyping,
   spectrumPoll,
+  spectrumEdit,
   imessageEffect;
 try {
   ({
@@ -317,6 +318,7 @@ try {
     markdown: spectrumMarkdown,
     richlink: spectrumRichlink,
     typing: spectrumTyping,
+    edit: spectrumEdit,
   } = await import("spectrum-ts"));
   ({ imessage, effect: imessageEffect } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
@@ -1171,6 +1173,38 @@ const server = http.createServer(async (req, res) => {
         return badRequest(res, "reaction not removable");
       }
       return badRequest(res, "no tracked reaction for message");
+    }
+    if (req.url === "/edit") {
+      // Edit a previously sent iMessage via spectrum-ts `edit(content, target)`.
+      // Apple allows edits within a 15-minute window (max 5 edits per message);
+      // `target` must be an outbound message record ({id, direction: "outbound"})
+      // so we try the live cache first, then rehydrate via space.getMessage(), and
+      // fall back to a minimal record for ids the sidecar never cached.
+      const { spaceId, messageId, text } = body || {};
+      if (!spaceId || !messageId || typeof text !== "string" || !text) {
+        return badRequest(res, "spaceId, messageId, and text are required");
+      }
+      const space = await resolveSpace(spaceId);
+      let target = null;
+      try {
+        target = knownMessages.get(messageId) ?? (await space.getMessage(messageId));
+      } catch (e) {
+        target = null;
+      }
+      if (!target) {
+        // Fall back to a minimal outbound message record so edits still work
+        // for ids the sidecar never cached (e.g. pre-cache sends).
+        target = { id: messageId, direction: "outbound" };
+      }
+      try {
+        await space.send(spectrumEdit(spectrumText(text), target));
+        return ok(res, { messageId });
+      } catch (e) {
+        console.error(
+          "photon-sidecar: edit failed: " + (e && e.stack ? e.stack : String(e))
+        );
+        return badRequest(res, "edit failed: " + (e && e.message ? e.message : String(e)));
+      }
     }
     if (req.url === "/send-poll") {
       const { spaceId, title, options } = body || {};

@@ -2035,7 +2035,6 @@ _XAI_WRAPPING_SPEECH_TAGS = (
     "fast",
     "sing-song",
     "singing",
-    "laugh-speak",
     "emphasis",
 )
 _XAI_SPEECH_TAG_RE = re.compile(
@@ -2047,6 +2046,38 @@ _XAI_FIRST_SENTENCE_RE = re.compile(r"^(.{12,120}?[.!?…])\s+(?=\S)", flags=re.
 
 def _xai_bool_config(value: Any, default: bool = False) -> bool:
     return _config_bool(value, default=default)
+
+
+def _is_valid_xai_speech_tag_rewrite(tagged: str, transcript: str) -> bool:
+    """Return whether tags are balanced and the spoken text is unchanged."""
+    wrapping_tags: list[str] = []
+
+    for match in _XAI_SPEECH_TAG_RE.finditer(tagged):
+        token = match.group(0)
+        if token.startswith("["):
+            continue
+
+        closing = token.startswith("</")
+        name = token[2:-1] if closing else token[1:-1]
+        name = name.casefold()
+
+        if not closing:
+            wrapping_tags.append(name)
+            continue
+
+        if not wrapping_tags or wrapping_tags[-1] != name:
+            return False
+
+        wrapping_tags.pop()
+
+    if wrapping_tags:
+        return False
+
+    def spoken_text(value: str) -> str:
+        without_tags = _XAI_SPEECH_TAG_RE.sub(" ", value)
+        return re.sub(r"\s+", " ", without_tags).strip()
+
+    return spoken_text(tagged) == spoken_text(transcript)
 
 
 def _apply_xai_auto_speech_tags(text: str) -> str:
@@ -2084,13 +2115,13 @@ def _apply_xai_auto_speech_tags(text: str) -> str:
         "You rewrite transcripts for the xAI /v1/tts endpoint by inserting "
         "expressive speech tags.\n\n"
         "Valid inline tags (use as `[tag]`): " + inline + ".\n"
-        "Valid wrapping tags (use as `[tag]...[/tag]`): " + wrapping + ".\n\n"
+        "Valid wrapping tags (use as `<tag>...</tag>`): " + wrapping + ".\n\n"
         "Rules:\n"
         "- Preserve the spoken words, order, and meaning.\n"
         "- Do not add new spoken sentences or remove existing spoken words.\n"
         "- Use inline `[tag]` for short modifiers (laughs, sighs, pause, etc.).\n"
-        "- Use wrapping `[tag]...[/tag]` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
-        "- Do not use angle-bracket tags like `<tag>...</tag>` — xAI uses BBCode-style closing tags with `[/tag]`.\n"
+        "- Use wrapping `<tag>...</tag>` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
+        "- Square brackets are only for inline tags.\n"
         "- Do not use SSML.\n"
         "- Do not explain or comment.\n"
         "- Return only the tagged TTS script."
@@ -2111,7 +2142,12 @@ def _apply_xai_auto_speech_tags(text: str) -> str:
         fence = re.fullmatch(r"```(?:[A-Za-z0-9_-]+)?\s*(.*?)\s*```", tagged, flags=re.DOTALL)
         if fence:
             tagged = fence.group(1).strip()
-        return tagged or local
+        if not tagged:
+            return local
+        if not _is_valid_xai_speech_tag_rewrite(tagged, local):
+            logger.debug("xAI TTS audio tag rewrite was invalid; using locally-tagged text")
+            return local
+        return tagged
     except Exception as exc:
         logger.debug("xAI TTS audio tag rewrite failed; using locally-tagged text: %s", exc)
         return local

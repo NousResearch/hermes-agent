@@ -950,6 +950,27 @@ def get_toolset_names() -> List[str]:
 
 
 
+def _is_plugin_platform_bundle(name: str) -> bool:
+    """Return whether ``name`` is a ``hermes-<platform>`` bundle that
+    :func:`resolve_toolset` synthesizes for a registered plugin platform.
+
+    ``resolve_toolset`` builds these on demand (core tools plus whatever the
+    plugin registered into a toolset matching the platform name), so they
+    resolve to a real tool list even though they are absent from ``TOOLSETS``
+    and from the registry's toolset names. Without this branch
+    ``validate_toolset`` and ``resolve_toolset`` disagree for every platform
+    that ships as a plugin rather than a built-in.
+    """
+    if not name.startswith("hermes-"):
+        return False
+    try:
+        from gateway.platform_registry import platform_registry
+
+        return platform_registry.is_registered(name[len("hermes-"):])
+    except Exception:
+        return False
+
+
 def validate_toolset(name: str) -> bool:
     """
     Check if a toolset name is valid.
@@ -967,7 +988,9 @@ def validate_toolset(name: str) -> bool:
         return True
     if name in _get_plugin_toolset_names():
         return True
-    return name in _get_registry_toolset_aliases()
+    if name in _get_registry_toolset_aliases():
+        return True
+    return _is_plugin_platform_bundle(name)
 
 
 def create_custom_toolset(

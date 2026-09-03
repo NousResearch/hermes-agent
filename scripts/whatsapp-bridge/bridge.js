@@ -44,6 +44,7 @@ import {
   inboundReadReceiptKeys,
   inferMediaType,
   mediaPayloadForFile,
+  outboundUnreadTarget,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
@@ -83,6 +84,17 @@ const SEND_READ_RECEIPTS =
   process.env &&
   typeof process.env.WHATSAPP_SEND_READ_RECEIPTS === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_SEND_READ_RECEIPTS.toLowerCase());
+
+// Opt-in: in self-chat mode, mark the self-chat unread again after Hermes
+// successfully sends a reply. Self-chat replies come from the user's own
+// linked account, so WhatsApp leaves the conversation read and async
+// deliveries (cron reminders, briefings) are easy to miss. Default off,
+// preserving current behavior.
+const MARK_SENT_UNREAD =
+  typeof process !== 'undefined' &&
+  process.env &&
+  typeof process.env.WHATSAPP_MARK_SENT_UNREAD === 'string' &&
+  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_MARK_SENT_UNREAD.toLowerCase());
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
@@ -833,6 +845,7 @@ app.post('/send', async (req, res) => {
   try {
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
+    let lastSent;
     for (let i = 0; i < chunks.length; i += 1) {
       const { content: payload, options } = buildTextSendPayload(chunks[i], {
         chatId,
@@ -843,8 +856,25 @@ app.post('/send', async (req, res) => {
       trackSentMessageId(sent);
       messageStore.remember(sent);
       if (sent?.key?.id) messageIds.push(sent.key.id);
+      lastSent = sent;
       if (chunks.length > 1 && i < chunks.length - 1) {
         await sleep(CHUNK_DELAY_MS);
+      }
+    }
+
+    const unreadTarget = outboundUnreadTarget({
+      mode: WHATSAPP_MODE,
+      enabled: MARK_SENT_UNREAD,
+      sentMessage: lastSent,
+    });
+    if (unreadTarget) {
+      try {
+        await sock.chatModify({ markRead: false, lastMessages: [unreadTarget] }, chatId);
+        console.log(`[bridge] sent_chat_marked_unread id=${unreadTarget.key.id}`);
+      } catch (err) {
+        // Send already succeeded; don't turn an unread-marking failure into
+        // a delivery failure.
+        console.warn('[bridge] failed to mark chat unread after send:', err.message);
       }
     }
 

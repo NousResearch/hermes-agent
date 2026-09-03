@@ -6,6 +6,8 @@ Covers:
 - Bridge subprocess receiving WHATSAPP_REPLY_PREFIX env var
 - config.yaml whatsapp.send_read_receipts bridging into PlatformConfig.extra
 - WhatsAppAdapter parsing send_read_receipts as a boolean
+- config.yaml whatsapp.mark_sent_unread bridging into PlatformConfig.extra
+- WhatsAppAdapter parsing mark_sent_unread as a boolean
 - Config version covers all ENV_VARS_BY_VERSION keys (regression guard)
 """
 
@@ -67,6 +69,20 @@ class TestConfigYamlBridging:
         assert wa_config is not None
         assert wa_config.extra.get("reply_prefix") == ""
 
+    def test_mark_sent_unread_bridged_from_yaml(self, tmp_path):
+        """whatsapp.mark_sent_unread in config.yaml sets PlatformConfig.extra."""
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text("whatsapp:\n  mark_sent_unread: true\n")
+
+        with patch("gateway.config.get_hermes_home", return_value=tmp_path):
+            from gateway.config import load_gateway_config
+            with patch.dict("os.environ", {"WHATSAPP_ENABLED": "true"}, clear=False):
+                config = load_gateway_config()
+
+        wa_config = config.platforms.get(Platform.WHATSAPP)
+        assert wa_config is not None
+        assert wa_config.extra.get("mark_sent_unread") is True
+
 
 # ---------------------------------------------------------------------------
 # WhatsAppAdapter __init__
@@ -81,6 +97,25 @@ class TestAdapterInit:
         config = PlatformConfig(enabled=True, extra={"reply_prefix": "Bot\\n"})
         adapter = WhatsAppAdapter(config)
         assert adapter._reply_prefix == "Bot\\n"
+
+    def test_mark_sent_unread_defaults_off(self):
+        """Default off, preserving current behavior (per issue #83467)."""
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+        adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={}))
+        assert adapter._mark_sent_unread is False
+
+    def test_mark_sent_unread_from_extra(self):
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+        config = PlatformConfig(enabled=True, extra={"mark_sent_unread": True})
+        adapter = WhatsAppAdapter(config)
+        assert adapter._mark_sent_unread is True
+
+    def test_mark_sent_unread_from_string_extra(self):
+        """Truthy-string extras (as YAML strings) coerce to bool, like send_read_receipts."""
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+        config = PlatformConfig(enabled=True, extra={"mark_sent_unread": "true"})
+        adapter = WhatsAppAdapter(config)
+        assert adapter._mark_sent_unread is True
 
 
 class TestReadReceiptPolicyOrdering:

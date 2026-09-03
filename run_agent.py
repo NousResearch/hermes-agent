@@ -7337,7 +7337,10 @@ class AIAgent:
             logger.debug("interim_assistant_callback error", exc_info=True)
 
     def _emit_interim_assistant_message(
-        self, assistant_msg: Dict[str, Any]
+        self,
+        assistant_msg: Dict[str, Any],
+        *,
+        already_streamed: Optional[bool] = None,
     ) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer.
 
@@ -7375,7 +7378,8 @@ class AIAgent:
             or self._interim_text_was_delivered(visible)
         ):
             return
-        already_streamed = self._interim_content_was_streamed(visible)
+        if already_streamed is None:
+            already_streamed = self._interim_content_was_streamed(visible)
         try:
             from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
 

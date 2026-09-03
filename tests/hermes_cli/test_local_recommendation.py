@@ -168,3 +168,37 @@ def test_quality_decides_where_speed_permits():
         if (c := select_variant(e, budget)) is not None and c.zero_spill
     ]
     assert pick == max(resident, key=lambda e: e.quality).id
+
+
+def test_display_decode_tok_s_rounds_to_nearest_5():
+    """display_decode_tok_s rounds to the nearest 5 above the 10-tok/s floor,
+    keeping displayed figures honest about the precision the class-bandwidth
+    model actually has."""
+    from hermes_cli.local_runtime.catalog import display_decode_tok_s
+
+    # At floor: values below 10 return 10.
+    assert display_decode_tok_s(1) == 10
+    assert display_decode_tok_s(9) == 10
+    # On the 5-step: round to nearest 5.
+    assert display_decode_tok_s(10) == 10
+    assert display_decode_tok_s(12) == 10
+    assert display_decode_tok_s(13) == 15
+    assert display_decode_tok_s(17) == 15
+    assert display_decode_tok_s(18) == 20
+    assert display_decode_tok_s(60) == 60
+    assert display_decode_tok_s(61) == 60
+    assert display_decode_tok_s(63) == 65
+
+
+def test_speed_grade_thresholds():
+    """speed_grade returns stable tier names matching the pleasant floor."""
+    from hermes_cli.local_runtime.catalog import PLEASANT_FLOOR_TOK_S, speed_grade
+
+    assert speed_grade(80) == "fast"
+    assert speed_grade(60) == "fast"
+    assert speed_grade(59) == "pleasant"
+    assert speed_grade(PLEASANT_FLOOR_TOK_S) == "pleasant"
+    assert speed_grade(21) == "pleasant"
+    assert speed_grade(15) == "slow"
+    assert speed_grade(10) == "slow"
+    assert speed_grade(5) == "unusable"

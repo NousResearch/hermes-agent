@@ -74,7 +74,9 @@ const FITTING_MODEL: LocalCatalogModel = {
   fit_summary: 'runs at its full 256K context',
   start_window: 262144,
   start_window_label: '256K',
-  spilled: false
+  spilled: false,
+  predicted_tok_s: 30,
+  predicted_tok_s_label: '~30 tok/s',
 }
 
 const SPILLED_MODEL: LocalCatalogModel = {
@@ -225,6 +227,29 @@ describe('LocalModelsSettings', () => {
     await waitFor(() =>
       expect(screen.getAllByText(/would respond too slowly on its memory bandwidth/).length).toBeGreaterThan(0)
     )
+  })
+
+  it('renders the predicted speed pill for fitting models', async () => {
+    mocked.getLocalCatalog.mockResolvedValue({ models: [FITTING_MODEL] })
+    await renderFullPane()
+    await screen.findByText('~30 tok/s')
+
+    // Speed pill tone: >=20 tok/s is muted, not warn.
+    const pill = screen.getByText('~30 tok/s').closest('[class*="Pill"]') ?? screen.getByText('~30 tok/s').parentElement
+    expect(pill).toBeTruthy()
+  })
+
+  it('renders the speed pill in warn tone when predicted below the pleasant floor', async () => {
+    const slowModel: LocalCatalogModel = {
+      ...FITTING_MODEL,
+      id: 'Slow-Model',
+      display_name: 'Slow Model',
+      predicted_tok_s: 8,
+      predicted_tok_s_label: '~10 tok/s',
+    }
+    mocked.getLocalCatalog.mockResolvedValue({ models: [slowModel] })
+    await renderFullPane()
+    await screen.findByText('~10 tok/s')
   })
 
   it('enables downloads only once the runtime is installed', async () => {

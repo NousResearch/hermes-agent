@@ -491,6 +491,8 @@ def local_models_catalog():
     probe_budget + catalog I/O block — threadpool, not loop."""
     from hermes_cli.local_runtime.catalog import (
         CATALOG,
+        display_decode_tok_s,
+        predicted_decode_tok_s,
         recommended_entry,
         refresh_catalog_soon,
         select_variant,
@@ -586,6 +588,11 @@ def local_models_catalog():
             "size_bytes": download_total,
             "size_label": _human_gb(download_total),
             "variant_count": len(entry.variants),
+            # Predicted decode speed: raw float for the recommendation gate;
+            # display rounded value for the pill label; grade string for i18n.
+            "predicted_tok_s": round(predicted_decode_tok_s(
+                entry, variant, budget, spilled=bool(decision.spilled))),
+            "predicted_tok_s_label": f"~{display_decode_tok_s(predicted_decode_tok_s(entry, variant, budget, spilled=bool(decision.spilled)))} tok/s",
         })
         if choice.reason_key == "best-large-window":
             row["quant_reason"] = (

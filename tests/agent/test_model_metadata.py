@@ -371,6 +371,34 @@ class TestDefaultContextLengths:
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
 
+    def test_upstage_solar_pro4_and_syn_pro_context(self):
+        """Upstage Solar Pro 4 (512K) and Syn Pro (64K) resolve from
+        DEFAULT_CONTEXT_LENGTHS instead of the 256K fallback.
+
+        The alias and the dated id share one window (a chat request for the
+        bare alias echoes the dated id), so longest-first prefix matching
+        must resolve ``solar-pro4`` and ``solar-pro4-260806`` to 524288,
+        and ``syn-pro`` / ``syn-pro-251021`` to 65536 when the Upstage
+        provider is configured (issue #84482).
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            upstage = dict(provider="upstage", base_url="https://api.upstage.ai/v1")
+            cases = [
+                ("solar-pro4", 524288),
+                ("solar-pro4-260806", 524288),
+                ("syn-pro", 65536),
+                ("syn-pro-251021", 65536),
+            ]
+            for model_id, expected_ctx in cases:
+                actual = get_model_context_length(model_id, **upstage)
+                assert actual == expected_ctx, (
+                    f"{model_id}: expected {expected_ctx}, got {actual}"
+                )
 
 
 

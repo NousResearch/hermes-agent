@@ -168,6 +168,45 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
 
+def _security_scan_skill_strict(skill_dir: Path) -> Optional[str]:
+    """Fail-closed security scan for background-origin skill writes.
+
+    Unlike ``_security_scan_skill``, this always scans (ignores
+    ``guard_agent_created``), fails closed when the scanner is unavailable,
+    and fails closed on scanner exception — none of which the default
+    foreground path does.
+
+    Returns an error string when the skill must not be published, else None.
+    """
+    if not _GUARD_AVAILABLE:
+        return (
+            "Security scan is required for background-origin skill creation, "
+            "but the skills guard scanner is not available. Install the "
+            "scanner or create the skill from a foreground session."
+        )
+    try:
+        result = scan_skill(skill_dir, source="agent-created")
+        allowed, reason = should_allow_install(result)
+        if allowed is False:
+            report = format_scan_report(result)
+            return f"Security scan blocked this skill ({reason}):\n{report}"
+        if allowed is None:
+            report = format_scan_report(result)
+            logger.warning(
+                "Background-origin skill blocked (dangerous findings): %s",
+                reason,
+            )
+            return f"Security scan blocked this skill ({reason}):\n{report}"
+    except Exception as e:
+        logger.warning(
+            "Security scan failed for %s: %s", skill_dir, e, exc_info=True,
+        )
+        return (
+            f"Security scan raised an exception and the skill cannot be "
+            f"published from background origin without verification: {e}"
+        )
+    return None
+
 import yaml
 
 
@@ -1030,20 +1069,51 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
 
-    # Create the skill directory
+    # Determine whether this is a background-review-origin write.
+    # Background-origin skill creation must fail closed: stage the bytes,
+    # scan with strict semantics, and only publish to the active root on
+    # success. No active SKILL.md may remain on reject, scanner absence,
+    # or scanner exception (SECURITY-CLASS-6024d99228f118e5).
+    is_bg_review = False
+    try:
+        from tools.skill_provenance import is_background_review
+        is_bg_review = is_background_review()
+    except Exception:
+        # Provenance probe failed: fail closed and treat as background-origin.
+        is_bg_review = True
+
     skill_dir = _resolve_skill_dir(name, category)
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write instructional documents with a readable mode while preserving
-    # the mode of an existing file across the atomic replacement.
     skill_md = skill_dir / "SKILL.md"
-    atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
 
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
-    if scan_error:
-        shutil.rmtree(skill_dir, ignore_errors=True)
-        return {"success": False, "error": scan_error}
+    if is_bg_review:
+        import tempfile
+        staging = Path(tempfile.mkdtemp(prefix="skill-stage-"))
+        try:
+            staging_md = staging / "SKILL.md"
+            atomic_write_text(staging_md, content)
+            scan_error = _security_scan_skill_strict(staging)
+            if scan_error:
+                shutil.rmtree(staging, ignore_errors=True)
+                return {"success": False, "error": scan_error}
+            # Scan passed — publish to the active root.
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(
+                skill_md, content, preserve_mode=True, create_mode=0o644
+            )
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    else:
+        # Foreground: existing behavior (write then optional scan with rollback).
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        # Write instructional documents with a readable mode while preserving
+        # the mode of an existing file across the atomic replacement.
+        atomic_write_text(
+            skill_md, content, preserve_mode=True, create_mode=0o644
+        )
+        scan_error = _security_scan_skill(skill_dir)
+        if scan_error:
+            shutil.rmtree(skill_dir, ignore_errors=True)
+            return {"success": False, "error": scan_error}
 
     # Extract description from frontmatter for verbose notifications
     _desc = ""

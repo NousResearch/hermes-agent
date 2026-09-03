@@ -116,15 +116,30 @@ RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
 
 
+# ``errmsg`` values that disambiguate a stale session from a genuine frequency
+# limit when iLink answers ret=-2. Both share the same ret, so the message is
+# the only signal.
+#
+# ``unknown error``  — expired session (#17228).
+# ``prepare failed`` — the stored ``context_token`` for the peer has gone
+#   stale. Hit by cron / proactive pushes specifically: the token is only
+#   refreshed by an *inbound* message, so an interactive reply always carries
+#   a fresh one while an unprompted push after a quiet period does not.
+#   Misfiling this as a rate limit skips the tokenless retry below — which
+#   exists precisely to keep cron pushes working — and instead burns the
+#   send on a 30s backoff loop until the chunk retries are exhausted.
+_STALE_SESSION_ERRMSGS = frozenset({"unknown error", "prepare failed"})
+
+
 def _is_stale_session_ret(
     ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]",
 ) -> bool:
-    """True when iLink returns ret=-2 / errcode=-2 with 'unknown error',
-    which is a stale-session signal (same as errcode=-14) rather than
-    a genuine rate limit."""
+    """True when iLink returns ret=-2 / errcode=-2 with a stale-session
+    ``errmsg``, which is a stale-session signal (same as errcode=-14) rather
+    than a genuine rate limit."""
     if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
         return False
-    return (errmsg or "").lower() == "unknown error"
+    return (errmsg or "").lower() in _STALE_SESSION_ERRMSGS
 
 
 MEDIA_IMAGE = 1

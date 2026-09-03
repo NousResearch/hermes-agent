@@ -562,6 +562,29 @@ class TestIsStaleSessionRet:
         assert weixin._is_stale_session_ret(-14, None, "session expired") is False
 
 
+    def test_ret_minus_2_with_unknown_error_is_stale(self):
+        # Expired session (#17228) - the original stale-session errmsg.
+        assert weixin._is_stale_session_ret(-2, None, "unknown error") is True
+
+
+    def test_ret_minus_2_with_prepare_failed_is_stale(self):
+        # A stale context_token reports "prepare failed", not "unknown error".
+        # Cron / proactive pushes hit this whenever no recent inbound message
+        # has refreshed the stored token for that peer. Treating it as a rate
+        # limit skips the tokenless retry that keeps those pushes working.
+        assert weixin._is_stale_session_ret(-2, None, "prepare failed") is True
+
+
+    def test_errcode_minus_2_with_prepare_failed_is_stale(self):
+        # iLink reports the code in errcode on some responses and ret on
+        # others; both spellings must reach the tokenless retry.
+        assert weixin._is_stale_session_ret(None, -2, "prepare failed") is True
+
+
+    def test_stale_session_errmsg_match_is_case_insensitive(self):
+        assert weixin._is_stale_session_ret(-2, None, "Prepare Failed") is True
+
+
 class TestWeixinContentDedup:
     """Regression tests for Issue #16182 — upstream API sends duplicate content
     with different message_ids, bypassing message_id deduplication.

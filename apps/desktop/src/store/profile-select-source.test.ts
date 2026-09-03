@@ -14,6 +14,7 @@ const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const ensureGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => true)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const activeGatewayConnectionId = vi.fn<() => null | string>(() => null)
+const isActivePrimary = vi.fn<() => boolean>(() => false)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
 
@@ -22,6 +23,7 @@ vi.mock('@/store/gateway', () => ({
   activeGatewayConnectionId,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  isActivePrimary,
   openGatewayForProfile
 }))
 vi.mock('@/hermes', () => ({
@@ -38,6 +40,8 @@ beforeEach(() => {
   ensureGatewayForAgent.mockClear()
   activeGatewayConnectionId.mockReset()
   activeGatewayConnectionId.mockReturnValue(null)
+  isActivePrimary.mockReset()
+  isActivePrimary.mockReturnValue(true)
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
   // resolveConnectionForAgent is best-effort; without a bridge it resolves
@@ -162,6 +166,7 @@ describe('selectProfile startup preference (#79886)', () => {
 
   it('does not replace the startup preference for a registry-source pick', async () => {
     activeGatewayConnectionId.mockReturnValue('mini')
+    isActivePrimary.mockReturnValue(false)
 
     selectProfile('researcher')
 
@@ -223,5 +228,19 @@ describe('selectProfile startup preference (#79886)', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(rememberProfile).not.toHaveBeenCalled()
+  })
+
+  // Regression: the prior onPrimary gate (`activeGatewayConnectionId() == null`)
+  // silently skipped persistence when the desktop's primary backend had a
+  // registered registry connection id (e.g. "local"). The structural
+  // activeKey === primaryProfile check is what actually identifies the
+  // window primary, regardless of the primary's connectionId.
+  it('remembers the selection when the primary has a registered connection id', async () => {
+    activeGatewayConnectionId.mockReturnValue('local')
+
+    selectProfile('tilly')
+
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('tilly'))
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('tilly')
   })
 })

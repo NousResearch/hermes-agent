@@ -18,6 +18,7 @@ import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-s
 import {
   $gateway,
   activeGatewayConnectionId,
+  isActivePrimary,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForAgent,
@@ -815,8 +816,11 @@ export function selectProfile(name: string): void {
   // the selection for the next Desktop launch through the persistence-only
   // IPC instead (#79886). Registry-source picks name ANOTHER source's
   // profiles, so only a primary-backend activation updates the startup
-  // preference.
-  const onPrimary = activeGatewayConnectionId() == null
+  // preference. The active-key/primary-profile comparison is what actually
+  // identifies the window primary — activeGatewayConnectionId's null return
+  // is incidental and breaks when the primary has registered a registry
+  // connection id (e.g. "local").
+  const onPrimary = isActivePrimary()
 
   const shouldRememberStartupProfile = onPrimary ? isLocalDesktopProfile(target) : Promise.resolve(false)
 

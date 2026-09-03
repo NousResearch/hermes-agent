@@ -6066,6 +6066,12 @@ def _maybe_redirect_run_to_s6_supervision(args) -> bool:
         return False
     if not _dispatch_via_service_manager_if_s6("start"):
         return False
+    # This process never reaches a GatewayRunner, so the watchdog armed by hermes_cli.main's argv
+    # fast-path has no other disarm site: the in-process heartbeat below parks with zero CPU and no
+    # progress lease, which the watchdog reads as a startup deadlock and os._exit(75)s the CMD process.
+    from hermes_startup_watchdog import disarm_startup_watchdog
+
+    disarm_startup_watchdog()
     # Breadcrumb on stderr (keep stdout clean for scripts); gateway logs follow via s6-log.
     print(
         "→ gateway is now running under s6 supervision (auto-restart on crash,\n"

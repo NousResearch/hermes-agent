@@ -35,6 +35,8 @@ import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } f
 import {
   $activeSessionId,
   $connection,
+  $cronSessions,
+  $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
@@ -44,6 +46,7 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
+import { loadedRowFor } from '@/store/session-pin-sync'
 import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
@@ -126,10 +129,23 @@ interface SessionActions {
 // component so only an OPEN submenu subscribes to the stores (not every row's
 // menu). Reads/writes the override keyed by the DURABLE id so a color survives
 // compression; clearing falls back to the inherited project color.
-function SessionColorSwatches({ sessionId }: { sessionId: string }) {
+//
+// This menu renders for pinned rows from ANY of the three pinnable slices
+// (recents, cron runs, messaging), not just $sessions — a cron/messaging row
+// looked up only in $sessions would never be found, silently falling back to
+// the raw (possibly stale, pre-lineage-rotation) sessionId prop and writing
+// the override under a key session-color.ts's reader never looks up. Reuse
+// session-pin-sync's cross-slice `loadedRowFor`, the same resolver the pin
+// mirror itself uses, instead of re-deriving a $sessions-only lookup here.
+export function SessionColorSwatches({ sessionId }: { sessionId: string }) {
   const { t } = useI18n()
   const overrides = useStore($sessionColorOverrides)
-  const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
+  // Subscribed only so this component re-renders when any slice changes —
+  // loadedRowFor re-reads the stores' current values itself.
+  useStore($sessions)
+  useStore($cronSessions)
+  useStore($messagingSessions)
+  const session = loadedRowFor(sessionId)
   const durableId = session ? sessionPinId(session) : sessionId
 
   return (
@@ -149,6 +165,13 @@ function SessionColorSwatches({ sessionId }: { sessionId: string }) {
 // project's root — the fix for a chat created in the wrong folder. The current
 // owner and folderless projects (the Home bucket) are excluded: there is
 // nothing to move into.
+//
+// Scope note: this lookup is $sessions-only too, but unlike SessionColorSwatches
+// that's not treated as a cross-slice gap here — the project tree ($projectTree)
+// is built from $sessions/$projects alone, cron and messaging rows are never
+// grouped into it (grep confirms neither slice feeds projects/model.ts), so
+// "move to project" has no user-visible effect for those row types either way.
+// Left unchanged; flagging it instead of guessing.
 function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; sessionId: string; profile?: string }) {
   const { t } = useI18n()
   const p = t.sidebar.projects

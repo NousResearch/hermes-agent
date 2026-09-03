@@ -387,6 +387,29 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 RECLAIM_DEFER_GRACE_SECONDS = 120
 
 
+def _resolve_int_env(name: str, default: int, *, min_value: int = 1) -> int:
+    """Read an integer env var, falling back to *default* when absent/invalid.
+
+    A parsed value below *min_value* also falls back so existing installs keep
+    working. ``min_value=0`` permits an explicit ``0`` (used to disable a
+    grace/cooldown in tests).
+
+    ponytail: deduped from four near-identical _resolve_* helpers
+    (_resolve_claim_ttl_seconds, _resolve_crash_grace_seconds,
+    _resolve_rate_limit_cooldown_seconds, _resolve_busy_timeout_ms) that all
+    read-env -> int -> fallback. One helper, one behavior.
+    """
+    raw = os.environ.get(name, "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = 0
+        if parsed >= min_value:
+            return parsed
+    return default
+
+
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
 
@@ -397,17 +420,7 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """
     if ttl_seconds is not None:
         return max(1, int(ttl_seconds))
-
-    raw = os.environ.get("HERMES_KANBAN_CLAIM_TTL_SECONDS", "").strip()
-    if raw:
-        try:
-            parsed = int(raw)
-        except ValueError:
-            parsed = 0
-        if parsed > 0:
-            return parsed
-
-    return DEFAULT_CLAIM_TTL_SECONDS
+    return _resolve_int_env("HERMES_KANBAN_CLAIM_TTL_SECONDS", DEFAULT_CLAIM_TTL_SECONDS)
 
 
 # Grace period after a task transitions to ``running`` during which
@@ -438,15 +451,9 @@ def _resolve_crash_grace_seconds() -> int:
     non-integer, or negative. A value of 0 restores immediate-reclaim
     behaviour (useful for tests).
     """
-    raw = os.environ.get("HERMES_KANBAN_CRASH_GRACE_SECONDS", "").strip()
-    if raw:
-        try:
-            parsed = int(raw)
-        except ValueError:
-            parsed = -1
-        if parsed >= 0:
-            return parsed
-    return DEFAULT_CRASH_GRACE_SECONDS
+    return _resolve_int_env(
+        "HERMES_KANBAN_CRASH_GRACE_SECONDS", DEFAULT_CRASH_GRACE_SECONDS, min_value=0
+    )
 
 
 def _resolve_rate_limit_cooldown_seconds() -> int:
@@ -458,17 +465,11 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     the next tick) — useful for tests that want to assert the task becomes
     spawnable again immediately.
     """
-    raw = os.environ.get(
-        "HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", ""
-    ).strip()
-    if raw:
-        try:
-            parsed = int(raw)
-        except ValueError:
-            parsed = -1
-        if parsed >= 0:
-            return parsed
-    return DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
+    return _resolve_int_env(
+        "HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS",
+        DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
+        min_value=0,
+    )
 
 
 # Worker-context caps so build_worker_context() stays bounded on
@@ -1238,6 +1239,65 @@ class Task:
         )
 
 
+def task_to_dict(
+    task: "Task",
+    *,
+    summary: bool = False,
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict[str, Any]:
+    """Serialize a Task to a dict. ``summary=True`` omits heavy fields and
+    adds parent/child ids (requires ``conn``).
+
+    ponytail: single serializer replacing two hand-rolled copies
+    (hermes_cli.kanban._task_to_dict and tools.kanban_tools._task_summary_dict)
+    that had ~15 overlapping fields. One source of truth for the Task->dict
+    shape; callers pass summary=True where they previously used the tools copy.
+    """
+    base = {
+        "id": task.id,
+        "title": task.title,
+        "assignee": task.assignee,
+        "status": task.status,
+        "priority": task.priority,
+        "tenant": task.tenant,
+        "workspace_kind": task.workspace_kind,
+        "workspace_path": task.workspace_path,
+        "project_id": task.project_id,
+        "created_by": task.created_by,
+        "created_at": task.created_at,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        "model_override": task.model_override,
+        "provider_override": task.provider_override,
+    }
+    if summary:
+        parents = parent_ids(conn, task.id) if conn else []
+        children = child_ids(conn, task.id) if conn else []
+        base.update(
+            {
+                "current_run_id": task.current_run_id,
+                "parents": parents,
+                "children": children,
+                "parent_count": len(parents),
+                "child_count": len(children),
+            }
+        )
+    else:
+        base.update(
+            {
+                "body": task.body,
+                "branch_name": task.branch_name,
+                "result": task.result,
+                "skills": list(task.skills) if task.skills else [],
+                "max_retries": task.max_retries,
+                "session_id": task.session_id,
+                "workflow_template_id": task.workflow_template_id,
+                "current_step_key": task.current_step_key,
+            }
+        )
+    return base
+
+
 @dataclass
 class Run:
     """In-memory view of a ``task_runs`` row.
@@ -1560,15 +1620,7 @@ def _resolve_busy_timeout_ms() -> int:
     expected.  A long busy timeout lets SQLite serialize writers via WAL rather
     than surfacing transient ``database is locked`` failures during bursts.
     """
-    raw = os.environ.get("HERMES_KANBAN_BUSY_TIMEOUT_MS", "").strip()
-    if raw:
-        try:
-            parsed = int(raw)
-        except ValueError:
-            parsed = 0
-        if parsed > 0:
-            return parsed
-    return DEFAULT_BUSY_TIMEOUT_MS
+    return _resolve_int_env("HERMES_KANBAN_BUSY_TIMEOUT_MS", DEFAULT_BUSY_TIMEOUT_MS)
 
 
 def _sqlite_connect(path: Path) -> sqlite3.Connection:

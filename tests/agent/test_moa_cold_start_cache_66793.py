@@ -154,6 +154,55 @@ def test_slot_runtime_is_cached_across_create_calls(monkeypatch, tmp_path):
     assert calls["n"] == 3, f"expected 3 slot resolutions, got {calls['n']}"
 
 
+def test_cached_slot_runtime_keeps_extra_body_across_aggregator_calls(
+    monkeypatch, tmp_path
+):
+    """A cache hit must retain custom-provider request overrides."""
+    import agent.moa_loop as moa
+
+    moa._runtime_cache.clear()
+    moa._preset_cache.clear()
+
+    def resolve_with_extra_body(*_args, **_kwargs):
+        return {
+            "base_url": "https://custom.example/v1",
+            "api_key": "test-key",
+            "api_mode": "chat_completions",
+            "request_overrides": {
+                "extra_body": {"provider_required": True},
+            },
+        }
+
+    import hermes_cli.runtime_provider as rt_mod
+    monkeypatch.setattr(rt_mod, "resolve_runtime_provider", resolve_with_extra_body)
+    import hermes_cli.config as cfg_mod
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("moa: {}\n", encoding="utf-8")
+    monkeypatch.setattr(cfg_mod, "get_config_path", lambda: cfg_file)
+    monkeypatch.setattr(cfg_mod, "load_config", lambda: _make_preset_config())
+
+    captured_calls = []
+
+    def capture_call(**kwargs):
+        captured_calls.append(kwargs)
+        return _fake_response()
+
+    monkeypatch.setattr(moa, "call_llm", capture_call)
+
+    cc = moa.MoAChatCompletions("demo")
+    for _ in range(2):
+        cc.create(messages=[{"role": "user", "content": "hi"}])
+
+    aggregator_calls = [
+        call for call in captured_calls if call.get("task") == "moa_aggregator"
+    ]
+    assert len(aggregator_calls) == 2
+    assert [call["extra_body"] for call in aggregator_calls] == [
+        {"provider_required": True},
+        {"provider_required": True},
+    ]
+
+
 def test_slot_runtime_cache_expires_after_ttl(monkeypatch):
     """A stale runtime entry (key rotation window) must re-resolve after
     the TTL — the original PR cached for the process lifetime, pinning

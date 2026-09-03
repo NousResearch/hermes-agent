@@ -34,6 +34,18 @@ _ZAI_CODING_OVERLOAD_LONG_BACKOFF = (30.0, 60.0, 90.0, 120.0)
 # the two from silently desyncing if the short-retry count is ever tuned.
 _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS = 3
 
+# Anthropic surfaces capacity dips as an `overloaded_error` delivered *inside*
+# a streaming HTTP 200 body — no 429/529 status, no Retry-After header. Field
+# logs show whole 2-5 minute windows in which every request fails regardless of
+# context size (a fresh 9K-token session fails alongside a 168K one), then the
+# window clears on its own. The default 3-retry budget (~25s of 2s-base
+# exponential backoff) always expires inside such a window, so the turn dies
+# with "API call failed after 3 retries: HTTP 200: Overloaded" even though a
+# slightly wider wait would have succeeded. Same remedy as the Z.AI overload
+# above: a few short retries, then a widening long tier.
+_ANTHROPIC_OVERLOAD_LONG_BACKOFF = (15.0, 30.0, 60.0, 120.0)
+_ANTHROPIC_OVERLOAD_SHORT_ATTEMPTS = 3
+
 
 def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     """Parse a ``Retry-After`` value into non-negative seconds.
@@ -159,6 +171,51 @@ def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, err
     )
 
 
+def is_anthropic_overload_error(*, base_url: str | None, model: str | None, error: Any) -> bool:
+    """Return True for Anthropic-wire transient capacity overloads.
+
+    Anthropic reports these as ``{"type": "overloaded_error"}``. On the
+    streaming path the envelope is an HTTP 200 whose body carries the error, so
+    matching on status alone misses them entirely — which is precisely why the
+    generic 503/529 handling never fires for them.
+
+    Deliberately *not* scoped to ``api.anthropic.com``. Anthropic-compatible
+    endpoints reached through ``ANTHROPIC_BASE_URL`` — proxies, gateways, and
+    third-party models served over the Anthropic wire format — emit the same
+    error type and dead-end for the same reason; the endpoint in #55540 is
+    exactly such a proxy. Scoping by host would reintroduce the same class of
+    blind spot this function exists to close. ``overloaded_error`` is a
+    distinctive Anthropic-wire token, so matching the body rather than the host
+    does not sweep in other providers' free-text wording, and Z.AI's own
+    429/1305 overload is matched earlier in ``adaptive_rate_limit_backoff`` and
+    keeps its dedicated schedule.
+
+    ``base_url`` and ``model`` are accepted for call-site symmetry with
+    ``is_zai_coding_overload_error`` and are intentionally unused.
+    """
+    return "overloaded_error" in _error_text(error)
+
+
+def _overload_long_backoff(
+    attempt: int,
+    *,
+    short_attempts: int,
+    table: tuple[float, ...],
+    label: str,
+    default_wait: float,
+) -> tuple[float, str]:
+    """Short retries first, then walk ``table`` one entry per later attempt."""
+    if attempt <= short_attempts:
+        return default_wait, f"{label}_short"
+
+    idx = min(attempt - short_attempts - 1, len(table) - 1)
+    base_delay = table[idx]
+    # A smaller jitter ratio keeps long waits readable while still avoiding
+    # synchronized retry storms across concurrent Hermes sessions.
+    wait = jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2)
+    return wait, f"{label}_long"
+
+
 def adaptive_rate_limit_backoff(
     attempt: int,
     *,
@@ -173,22 +230,31 @@ def adaptive_rate_limit_backoff(
     For most providers this returns ``default_wait`` unchanged. For Z.AI
     Coding Plan GLM-5.2 overloads, keep the first ``short_attempts`` retries on
     the normal short exponential schedule, then switch to progressively longer
-    waits (30s → 60s → 90s → 120s, capped) plus light jitter.
+    waits (30s → 60s → 90s → 120s, capped) plus light jitter. Anthropic
+    ``overloaded_error`` responses get the same treatment on a 15/30/60/120s
+    table.
 
     ``attempt`` is 1-based, matching the retry loop's logged attempt number.
     Returns ``(wait_seconds, reason_label)`` where ``reason_label`` is suitable
     for status/log decoration when a provider-specific policy fired.
     """
-    if not is_zai_coding_overload_error(base_url=base_url, model=model, error=error):
-        return default_wait, None
-    if attempt <= short_attempts:
-        return default_wait, "zai_coding_overload_short"
-
-    idx = min(attempt - short_attempts - 1, len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) - 1)
-    base_delay = _ZAI_CODING_OVERLOAD_LONG_BACKOFF[idx]
-    # A smaller jitter ratio keeps long waits readable while still avoiding
-    # synchronized retry storms across concurrent Hermes sessions.
-    return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2), "zai_coding_overload_long"
+    if is_zai_coding_overload_error(base_url=base_url, model=model, error=error):
+        return _overload_long_backoff(
+            attempt,
+            short_attempts=short_attempts,
+            table=_ZAI_CODING_OVERLOAD_LONG_BACKOFF,
+            label="zai_coding_overload",
+            default_wait=default_wait,
+        )
+    if is_anthropic_overload_error(base_url=base_url, model=model, error=error):
+        return _overload_long_backoff(
+            attempt,
+            short_attempts=_ANTHROPIC_OVERLOAD_SHORT_ATTEMPTS,
+            table=_ANTHROPIC_OVERLOAD_LONG_BACKOFF,
+            label="anthropic_overload",
+            default_wait=default_wait,
+        )
+    return default_wait, None
 
 
 def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS) -> int:
@@ -206,3 +272,15 @@ def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD
     value for Z.AI Coding overload 429s so the 30/60/90/120s waits run.
     """
     return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
+
+
+def anthropic_overload_retry_ceiling(short_attempts: int = _ANTHROPIC_OVERLOAD_SHORT_ATTEMPTS) -> int:
+    """Retry-loop ceiling needed for the full Anthropic overload schedule.
+
+    Same rationale as ``zai_coding_overload_retry_ceiling``: the loop gives up
+    once ``retry_count >= ceiling``, and that check runs before the attempt's
+    backoff is computed, so the ceiling must sit one past the final long-backoff
+    entry. With the default ``api_max_retries`` (3) the long tier is otherwise
+    unreachable and a capacity window that lasts minutes kills the turn.
+    """
+    return short_attempts + len(_ANTHROPIC_OVERLOAD_LONG_BACKOFF) + 1

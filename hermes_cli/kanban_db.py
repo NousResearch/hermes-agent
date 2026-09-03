@@ -3565,6 +3565,22 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                # ``recompute_ready`` distinguishes a dependency/circuit-breaker
+                # block from an operator-owned sticky block via the latest
+                # blocked/unblocked event.  Creating directly in ``blocked``
+                # must therefore establish that same durable event contract;
+                # status alone is deliberately recoverable and would otherwise
+                # be promoted on the next dispatcher tick.
+                if initial_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "created with initial_status=blocked",
+                            "initial": True,
+                        },
+                    )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:

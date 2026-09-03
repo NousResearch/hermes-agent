@@ -1218,6 +1218,89 @@ class TestPruneSessions:
         assert db.get_session("active") is not None
         assert db.count_open_prune_matches(older_than_days=90) == 1
 
+    def test_prune_large_batch_stays_below_sqlite_variable_limit(self, db, tmp_path):
+        # Modern SQLite builds often allow tens of thousands of bind variables,
+        # so pin the historical/default ceiling this regression protects.
+        db._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        old_ts = time.time() - 200 * 86400
+        rows = [
+            (f"old_cron_{i}", "cron", old_ts, old_ts + 1)
+            for i in range(1200)
+        ]
+        db._conn.executemany(
+            "INSERT INTO sessions (id, source, started_at, ended_at) "
+            "VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        db.create_session(
+            session_id="recent_child",
+            source="cli",
+            parent_session_id="old_cron_0",
+        )
+        db._conn.commit()
+        removed_dump = tmp_path / "request_dump_old_cron_1199_20260710_120000_123456.json"
+        removed_dump.write_text("{}", encoding="utf-8")
+        survivor_dump = tmp_path / "request_dump_recent_child_20260710_120000_123456.json"
+        survivor_dump.write_text("{}", encoding="utf-8")
+
+        pruned = db.prune_sessions(
+            older_than_days=90,
+            source="cron",
+            sessions_dir=tmp_path,
+        )
+
+        assert pruned == 1200
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE source = 'cron'"
+        ).fetchone()[0] == 0
+        child = db.get_session("recent_child")
+        assert child is not None
+        assert child["parent_session_id"] is None
+        assert not removed_dump.exists()
+        assert survivor_dump.exists()
+
+    def test_delete_empty_large_batch_stays_below_sqlite_variable_limit(self, db):
+        db._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        old_ts = time.time() - 200 * 86400
+        rows = [
+            (f"empty_{i}", "cli", old_ts, old_ts + 1)
+            for i in range(1200)
+        ]
+        db._conn.executemany(
+            "INSERT INTO sessions (id, source, started_at, ended_at) "
+            "VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        db._conn.commit()
+
+        deleted = db.delete_empty_sessions()
+
+        assert deleted == 1200
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE id LIKE 'empty_%'"
+        ).fetchone()[0] == 0
+
+    def test_prune_empty_ghost_large_batch_stays_below_sqlite_variable_limit(self, db):
+        db._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        old_ts = time.time() - 2 * 86400
+        rows = [
+            (f"ghost_{i}", "tui", old_ts, old_ts + 1)
+            for i in range(1200)
+        ]
+        db._conn.executemany(
+            "INSERT INTO sessions (id, source, started_at, ended_at) "
+            "VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        db._conn.commit()
+
+        deleted = db.prune_empty_ghost_sessions()
+
+        assert deleted == 1200
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE id LIKE 'ghost_%'"
+        ).fetchone()[0] == 0
+
     def test_open_prune_match_count_applies_other_filters(self, db):
         db.create_session(session_id="matching-open", source="cron")
         db.create_session(session_id="other-source", source="cli")

@@ -58,7 +58,7 @@ from hermes_startup_watchdog import report_startup_progress
 from hermes_cli.sqlite_runtime import (
     is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable,
 )
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, TypeVar, cast
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple, TypeVar, cast
 
 import hermes_state_holders as _state_holders
 from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
@@ -10608,19 +10608,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                   )
             """, (cutoff,)).fetchall()
             ids = [r[0] if isinstance(r, (tuple, list)) else r["id"] for r in rows]
-            if ids:
-                placeholders = ",".join("?" * len(ids))
+            for batch in self._session_id_batches(ids):
+                placeholders = ",".join("?" * len(batch))
                 conn.execute(
-                    f"DELETE FROM sessions WHERE id IN ({placeholders})", ids
+                    f"DELETE FROM sessions WHERE id IN ({placeholders})", batch
                 )
+            if ids:
                 self._delete_unreferenced_system_prompts(conn)
             return ids
 
         removed_ids = self._execute_write(_do) or []
         # Clean up any on-disk session files (belt-and-suspenders)
-        if sessions_dir and removed_ids:
-            for sid in removed_ids:
-                self._remove_session_files(sessions_dir, sid)
+        self._remove_session_files_bulk(sessions_dir, removed_ids)
         return len(removed_ids)
 
     def finalize_orphaned_compression_sessions(self) -> int:
@@ -15352,6 +15351,53 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         except OSError:
             pass
 
+    @staticmethod
+    def _remove_session_files_bulk(
+        sessions_dir: Optional[Path], session_ids: Iterable[str]
+    ) -> None:
+        """Remove transcript files for many sessions in one directory pass."""
+        if sessions_dir is None:
+            return
+        ids = set(session_ids)
+        if not ids:
+            return
+
+        prefix = "request_dump_"
+        try:
+            for p in sessions_dir.iterdir():
+                name = p.name
+                remove = False
+                if name.endswith(".jsonl"):
+                    remove = name[:-len(".jsonl")] in ids
+                elif name.endswith(".json"):
+                    stem = name[:-len(".json")]
+                    if stem in ids:
+                        remove = True
+                    elif stem.startswith(prefix):
+                        payload = stem[len(prefix):]
+                        candidates = set()
+                        timestamp_parts = payload.rsplit("_", 3)
+                        if len(timestamp_parts) == 4:
+                            candidates.add(timestamp_parts[0])
+                        legacy_parts = payload.rsplit("_", 1)
+                        if len(legacy_parts) == 2:
+                            candidates.add(legacy_parts[0])
+                        remove = bool(ids.intersection(candidates))
+                if remove:
+                    try:
+                        p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
+    @staticmethod
+    def _session_id_batches(session_ids: Iterable[str]) -> Iterator[List[str]]:
+        """Yield ID batches below SQLite's legacy 999-variable ceiling."""
+        ids = list(session_ids)
+        for start in range(0, len(ids), 900):
+            yield ids[start : start + 900]
+
     def get_session_delete_targets(self, session_id: str) -> List[str]:
         """Return every session row that :meth:`delete_session` would remove.
 
@@ -15639,35 +15685,37 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             cursor = conn.execute(
                 f"SELECT id FROM sessions WHERE {self._EMPTY_SESSION_WHERE}"
             )
-            session_ids = {row["id"] for row in cursor.fetchall()}
+            session_ids = [row["id"] for row in cursor.fetchall()]
 
             if not session_ids:
                 return 0
 
-            placeholders = ",".join("?" * len(session_ids))
-            conn.execute(
-                f"UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({placeholders})",
-                list(session_ids),
-            )
-
-            for sid in session_ids:
+            for batch in self._session_id_batches(session_ids):
+                placeholders = ",".join("?" * len(batch))
+                conn.execute(
+                    f"UPDATE sessions SET parent_session_id = NULL "
+                    f"WHERE parent_session_id IN ({placeholders})",
+                    batch,
+                )
                 # DELETE FROM messages is paranoia — the selector's
                 # ``NOT EXISTS`` probe already proved these sessions own no
                 # message rows — but a row inserted between the SELECT and
                 # this statement would otherwise be left dangling, so we
                 # still leave a clean FK state.
                 conn.execute(
-                    "DELETE FROM messages WHERE session_id = ?", (sid,)
+                    f"DELETE FROM messages WHERE session_id IN ({placeholders})",
+                    batch,
                 )
-                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-                removed_ids.append(sid)
+                conn.execute(
+                    f"DELETE FROM sessions WHERE id IN ({placeholders})",
+                    batch,
+                )
+                removed_ids.extend(batch)
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
 
         count = self._execute_write(_do)
-        for sid in removed_ids:
-            self._remove_session_files(sessions_dir, sid)
+        self._remove_session_files_bulk(sessions_dir, removed_ids)
         return count
 
     @staticmethod
@@ -16048,7 +16096,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             cursor = conn.execute(
                 f"SELECT s.id FROM sessions s WHERE {where}", where_params
             )
-            session_ids = {row["id"] for row in cursor.fetchall()}
+            session_ids = [row["id"] for row in cursor.fetchall()]
 
             if exclude_active_write_guards:
                 protected = set()
@@ -16073,25 +16121,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if not session_ids:
                 return 0
 
-            # Orphan any sessions whose parent is about to be deleted
-            placeholders = ",".join("?" * len(session_ids))
-            conn.execute(
-                f"UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({placeholders})",
-                list(session_ids),
-            )
-
-            for sid in session_ids:
-                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
-                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-                removed_ids.append(sid)
+            # Stay below SQLite's host-parameter limit when large cron/session
+            # histories are pruned in one operation.
+            for batch in self._session_id_batches(session_ids):
+                placeholders = ",".join("?" * len(batch))
+                conn.execute(
+                    f"UPDATE sessions SET parent_session_id = NULL "
+                    f"WHERE parent_session_id IN ({placeholders})",
+                    batch,
+                )
+                conn.execute(
+                    f"DELETE FROM messages WHERE session_id IN ({placeholders})",
+                    batch,
+                )
+                conn.execute(
+                    f"DELETE FROM sessions WHERE id IN ({placeholders})",
+                    batch,
+                )
+                removed_ids.extend(batch)
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
 
         count = self._execute_write(_do)
-        # Clean up on-disk files outside the DB transaction
-        for sid in removed_ids:
-            self._remove_session_files(sessions_dir, sid)
+        # Clean up on-disk files outside the DB transaction in one pass.
+        self._remove_session_files_bulk(sessions_dir, removed_ids)
         return count
 
     def purge_stale_tool_call_markers(

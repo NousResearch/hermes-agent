@@ -9,6 +9,7 @@ from agent.title_generator import (
     auto_title_session,
     maybe_auto_title,
     _title_language,
+    _strip_image_envelope,
 )
 from hermes_state import SessionDB
 
@@ -409,6 +410,225 @@ class TestMaybeAutoTitle:
 
 
 
+
+
+class TestImageEnvelopeStripping:
+    """#82339: titling must never be poisoned by the vision description that
+    gateway/CLI image enrichment prepends to the user's message."""
+
+    def test_strips_tui_gateway_envelope(self):
+        msg = (
+            "[The user attached an image:\n"
+            "A close-up view of a browser's search or address bar with a list "
+            "of autocomplete suggestions.\n"
+            "]\n"
+            "[You can examine it with vision_analyze using image_url: /tmp/x.png]\n"
+            "小狼毫输入法候选词排序问题"
+        )
+        assert _strip_image_envelope(msg) == "小狼毫输入法候选词排序问题"
+
+    def test_strips_cli_envelope(self):
+        msg = (
+            "[The user attached an image. Here's what it contains:\n"
+            "The desktop app interface showing a sidebar with a session titled "
+            "'修复搜索自动补全下拉'.\n"
+            "]\n"
+            "[If you need a closer look, use vision_analyze with image_url: /tmp/x.png]\n"
+            "Rime 候选词排序问题"
+        )
+        assert _strip_image_envelope(msg) == "Rime 候选词排序问题"
+
+    def test_strips_analysis_failed_variants(self):
+        tui_fail = (
+            "[The user attached an image but analysis failed.]\n"
+            "[You can examine it with vision_analyze using image_url: /tmp/x.png]\n"
+            "What is this?"
+        )
+        assert _strip_image_envelope(tui_fail) == "What is this?"
+        cli_fail = (
+            "[The user attached an image but it couldn't be analyzed. You can "
+            "try examining it with vision_analyze using image_url: /tmp/x.png]\n"
+            "What is this?"
+        )
+        assert _strip_image_envelope(cli_fail) == "What is this?"
+
+    def test_strips_multiple_images(self):
+        msg = (
+            "[The user attached an image:\nfirst screenshot\n]\n"
+            "[You can examine it with vision_analyze using image_url: /tmp/a.png]\n\n"
+            "[The user attached an image:\nsecond screenshot\n]\n"
+            "[You can examine it with vision_analyze using image_url: /tmp/b.png]\n\n"
+            "Fix the login flow"
+        )
+        assert _strip_image_envelope(msg) == "Fix the login flow"
+
+    def test_strips_envelope_when_description_contains_brackets(self):
+        # The vision model echoes code/text that may contain ']' (e.g.
+        # ``array[0] = 1``). The envelope must strip to its real closing
+        # bracket, not stop at the first ']' inside the description
+        # (#82339 follow-up from triage review).
+        msg = (
+            "[The user attached an image:\n"
+            "A screenshot of code: array[0] = 1\n"
+            "]\n"
+            "[You can examine it with vision_analyze using image_url: /tmp/x.png]\n"
+            "Fix the bug"
+        )
+        assert _strip_image_envelope(msg) == "Fix the bug"
+
+    def test_strips_envelope_with_multiple_bracketed_tokens(self):
+        msg = (
+            "[The user attached an image:\n"
+            "code: a[1], b[2], c[3]\n"
+            "]\n"
+            "[You can examine it with vision_analyze using image_url: /tmp/x.png]\n"
+            "Fix it"
+        )
+        assert _strip_image_envelope(msg) == "Fix it"
+
+    def test_strips_cli_envelope_when_description_contains_brackets(self):
+        msg = (
+            "[The user attached an image. Here's what it contains:\n"
+            "a struct with fields f[0], f[1]\n"
+            "]\n"
+            "[If you need a closer look, use vision_analyze with image_url: /tmp/x.png]\n"
+            "Rime 候选词排序问题"
+        )
+        assert _strip_image_envelope(msg) == "Rime 候选词排序问题"
+
+    def test_derive_title_not_poisoned_by_envelope_with_brackets(self):
+        from agent.title_generator import derive_title
+
+        enriched = (
+            "[The user attached an image:\n"
+            "array[0] = 1\n"
+            "]\n"
+            "[You can examine it with vision_analyze using image_url: /tmp/x.png]\n"
+            "Fix the indexing bug"
+        )
+        assert derive_title(enriched) == "Fix the indexing bug"
+
+    def test_keeps_user_text_that_mentions_images_mid_sentence(self):
+        # A user who literally types about an image (not an enrichment envelope
+        # at the start of the message) must keep their text.
+        msg = "I took a screenshot of [The user attached an image bug] earlier"
+        assert _strip_image_envelope(msg) == msg
+
+    def test_keeps_image_ref_directive(self):
+        # The persisted @image:<path> form is not descriptive and must survive.
+        msg = "@image:/tmp/x.png 修复输入法候选词排序"
+        assert _strip_image_envelope(msg) == msg
+
+    def test_derive_title_not_poisoned_by_envelope(self):
+        from agent.title_generator import derive_title
+
+        enriched = (
+            "[The user attached an image:\n"
+            "A close-up view of a browser's search bar.\n"
+            "]\n"
+            "[You can examine it with vision_analyze using image_url: /tmp/x.png]\n"
+            "小狼毫输入法候选词排序问题"
+        )
+        assert derive_title(enriched) == "小狼毫输入法候选词排序问题"
+        assert derive_title("小狼毫输入法候选词排序问题") == "小狼毫输入法候选词排序问题"
+
+    def test_is_titleable_user_message_true_with_envelope(self):
+        # The enriched message still carries user intent underneath the
+        # envelope: it must remain titleable (the envelope alone is not the
+        # reason to skip titling).
+        from agent.title_generator import is_titleable_user_message
+
+        enriched = (
+            "[The user attached an image:\nsome description\n]\n"
+            "[You can examine it with vision_analyze using image_url: /tmp/x.png]\n"
+            "小狼毫输入法候选词排序问题"
+        )
+        assert is_titleable_user_message(enriched) is True
+
+    def test_preserves_bare_envelope_quoted_as_entire_message(self):
+        # If the user's *entire* message is an envelope-shaped string
+        # (e.g. quoting one in a bug report), stripping eats everything
+        # and leaves titling with nothing. The guard returns the original
+        # unmodified. Real enrichment messages always have user content
+        # below the envelope, so this never fires in practice.
+        msg = (
+            "[The user attached an image:\n"
+            "A screenshot.\n"
+            "]\n"
+        )
+        assert _strip_image_envelope(msg) == msg
+
+    def test_bare_envelope_produces_no_title(self):
+        # A message that is *only* an envelope-shaped quote (pasted export,
+        # bug report) must not be titled after the machine's own wording —
+        # deriving a title from it would name the session "[The user
+        # attached an image:" instead of leaving it untitled. Stripping
+        # leaves nothing, and the fallback (returning the original) would
+        # still title off the envelope's first line, so _summarize_user_message
+        # must collapse it to "" and derive_title to None (#82356, Enough1122
+        # point 1).
+        from agent.title_generator import derive_title, _summarize_user_message
+
+        msg = (
+            "[The user attached an image:\n"
+            "A screenshot of the login form.\n"
+            "]\n"
+            "[You can examine it with vision_analyze using image_url: /tmp/x.png]"
+        )
+        assert _strip_image_envelope(msg) == msg
+        assert _summarize_user_message(msg) == ""
+        assert derive_title(msg) is None
+
+    def test_keeps_first_person_attached_image_quote(self):
+        # A user who opens their message with a first-person "I attached an
+        # image ..." quote (not a machine envelope — the envelope always says
+        # "the user attached an image") must keep the full message. The looser
+        # "attached an image" match would swallow this and drop the subject
+        # (#82356 symmetric edge: fixing "leading envelope eaten" must not
+        # also eat a genuine first-person statement).
+        msg = "[I attached an image to the report] please review the numbers"
+        assert _strip_image_envelope(msg) == msg  # not swallowed
+        from agent.title_generator import derive_title
+
+        assert derive_title(msg).startswith("[I attached an image")
+
+    def test_strips_envelope_even_with_short_user_request(self):
+        # A short user request like "Fix it" after an envelope is a real
+        # enrichment scenario — we strip normally. The guard only fires
+        # when *nothing* remains, not when the remainder is short.
+        msg = (
+            "[The user attached an image:\n"
+            "A screenshot.\n"
+            "]\n"
+            "[You can examine it with vision_analyze using image_url: /tmp/x.png]\n"
+            "Fix it"
+        )
+        assert _strip_image_envelope(msg) == "Fix it"
+
+    def test_matches_looser_wording_variants(self):
+        # The regex keys on "attached an image" as the semantic signal,
+        # not on one exact phrase — so a third call-site wording (or even
+        # a capitalisation change) doesn't silently reintroduce the bug.
+        # Variant: "User attached an image — see below:"
+        msg = (
+            "[User attached an image — see below:\n"
+            "A screenshot of code: array[0] = 1\n"
+            "]\n"
+            "[Examine with vision_analyze: /tmp/x.png]\n"
+            "Fix the indexing bug"
+        )
+        assert _strip_image_envelope(msg) == "Fix the indexing bug"
+
+    def test_matches_case_insensitively(self):
+        # Case variations shouldn't defeat the strip.
+        msg = (
+            "[the user attached an image:\n"
+            "screenshot\n"
+            "]\n"
+            "[you can examine it with vision_analyze]\n"
+            "修复输入法候选词排序"
+        )
+        assert _strip_image_envelope(msg) == "修复输入法候选词排序"
 
 
 class TestAutoTitleDuplicateHandling:

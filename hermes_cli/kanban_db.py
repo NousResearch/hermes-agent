@@ -1069,6 +1069,8 @@ class Task:
     claim_expires: Optional[int]
     tenant: Optional[str]
     branch_name: Optional[str] = None
+    base_ref: Optional[str] = None
+    required_paths: Optional[list[str]] = None
     project_id: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
@@ -1154,6 +1156,14 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        required_paths_value: Optional[list[str]] = None
+        if "required_paths" in keys and row["required_paths"]:
+            try:
+                parsed = json.loads(row["required_paths"])
+                if isinstance(parsed, list):
+                    required_paths_value = [str(path) for path in parsed if path]
+            except Exception:
+                required_paths_value = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -1168,6 +1178,8 @@ class Task:
             workspace_kind=row["workspace_kind"],
             workspace_path=row["workspace_path"],
             branch_name=row["branch_name"] if "branch_name" in keys else None,
+            base_ref=row["base_ref"] if "base_ref" in keys else None,
+            required_paths=required_paths_value,
             project_id=row["project_id"] if "project_id" in keys else None,
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
@@ -1344,6 +1356,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
     workspace_path       TEXT,
     branch_name          TEXT,
+    -- Revision from which a newly materialized task branch must start.
+    base_ref             TEXT,
+    -- JSON list of repository-relative paths required before dispatch.
+    required_paths       TEXT,
     -- Optional link to a first-class Project (hermes_cli/projects_db). When set,
     -- the task's worktree is anchored under the project's primary repo with a
     -- deterministic branch name instead of a random wt/<task-id> fallback.
@@ -2551,6 +2567,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "result", "result TEXT")
     if "branch_name" not in cols:
         _add_column_if_missing(conn, "tasks", "branch_name", "branch_name TEXT")
+    if "base_ref" not in cols:
+        _add_column_if_missing(conn, "tasks", "base_ref", "base_ref TEXT")
+    if "required_paths" not in cols:
+        _add_column_if_missing(conn, "tasks", "required_paths", "required_paths TEXT")
     if "project_id" not in cols:
         _add_column_if_missing(conn, "tasks", "project_id", "project_id TEXT")
     if "idempotency_key" not in cols:
@@ -3176,6 +3196,8 @@ def create_task(
     workspace_kind: str = "scratch",
     workspace_path: Optional[str] = None,
     branch_name: Optional[str] = None,
+    base_ref: Optional[str] = None,
+    required_paths: Optional[Iterable[str]] = None,
     tenant: Optional[str] = None,
     priority: int = 0,
     parents: Iterable[str] = (),
@@ -3255,6 +3277,22 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    if base_ref is not None:
+        base_ref = str(base_ref).strip() or None
+    if base_ref and workspace_kind != "worktree":
+        raise ValueError("base_ref is only valid for worktree workspaces")
+    required_paths_list: list[str] = []
+    for raw_path in required_paths or ():
+        path = str(raw_path).strip()
+        if not path:
+            continue
+        candidate = Path(path)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise ValueError(f"required path must be repository-relative: {path!r}")
+        if path not in required_paths_list:
+            required_paths_list.append(path)
+    if required_paths_list and workspace_kind != "worktree":
+        raise ValueError("required_paths are only valid for worktree workspaces")
 
     # Inherit the board's scoped project when the caller didn't name one, so a
     # project-scoped board anchors every new task to that project's repo
@@ -3504,12 +3542,13 @@ def create_task(
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        branch_name, project_id, tenant, idempotency_key,
+                        branch_name, base_ref, required_paths,
+                        project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
                         goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3523,6 +3562,8 @@ def create_task(
                         workspace_kind,
                         workspace_path,
                         branch_name,
+                        base_ref,
+                        json.dumps(required_paths_list) if required_paths_list else None,
                         project_id,
                         tenant,
                         idempotency_key,
@@ -3558,6 +3599,8 @@ def create_task(
                         "workspace_kind": workspace_kind,
                         "workspace_path": workspace_path,
                         "branch_name": branch_name,
+                        "base_ref": base_ref,
+                        "required_paths": required_paths_list or None,
                         "project_id": project_id,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
@@ -6262,7 +6305,7 @@ def block_task(
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
+    """Transition ``running``/``ready``/``review`` → a blocked route.
 
     ``kind`` (one of :data:`VALID_BLOCK_KINDS`, or ``None`` for a legacy
     un-typed block) drives routing instead of every block landing in one
@@ -6304,7 +6347,7 @@ def block_task(
         source_status = (
             _retry_status_for_run(conn, task_id)
             if cur_row["status"] == "running"
-            else "ready"
+            else str(cur_row["status"])
         )
         prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
         prev_recurrences = (
@@ -6328,7 +6371,7 @@ def block_task(
                        worker_pid    = NULL,
                        block_kind    = ?
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'review')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
                 (kind, task_id) if expected_run_id is None
                 else (kind, task_id, int(expected_run_id)),
@@ -6366,9 +6409,10 @@ def block_task(
 
         # Truly-blocked kinds. Increment the unblock-loop counter when this is a
         # re-block for the SAME reason after a prior unblock. block_task only
-        # fires from running/ready (i.e. AFTER an unblock returned the task to
-        # the work pool), so a stored block_kind that matches the incoming kind
-        # means: blocked → unblocked → about-to-re-block for the same cause.
+        # usually fires after an unblock returned the task to the work pool, so
+        # a stored block_kind that matches the incoming kind means: blocked →
+        # unblocked → about-to-re-block for the same cause. Review dispatch can
+        # also block before claim when its implementation prerequisites changed.
         # An un-typed (None) block compares as "same" to a prior un-typed block.
         same_cause = prev_kind == kind
         recurrences = prev_recurrences + 1 if same_cause else 1
@@ -6386,7 +6430,7 @@ def block_task(
                        block_kind    = ?,
                        block_recurrences = ?
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'review')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
                 (kind, recurrences, task_id) if expected_run_id is None
                 else (kind, recurrences, task_id, int(expected_run_id)),
@@ -6425,7 +6469,7 @@ def block_task(
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
-                       AND status IN ('running', 'ready')
+                       AND status IN ('running', 'ready', 'review')
                     """,
                     (kind, recurrences, task_id),
                 )
@@ -6440,7 +6484,7 @@ def block_task(
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
-                       AND status IN ('running', 'ready')
+                       AND status IN ('running', 'ready', 'review')
                        AND current_run_id = ?
                     """,
                     (kind, recurrences, task_id, int(expected_run_id)),
@@ -7721,7 +7765,12 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
-def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
+def _ensure_git_worktree(
+    repo_root: Path,
+    target: Path,
+    branch_name: str,
+    base_ref: Optional[str] = None,
+) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
@@ -7735,7 +7784,7 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     else:
         cmd = [
             "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
-            str(target), "HEAD",
+            str(target), base_ref or "HEAD",
         ]
     result = subprocess.run(
         cmd,
@@ -7791,7 +7840,7 @@ def _resolve_worktree_workspace(
                 f"{board_slug!r} default_workdir {board_default!r} is not inside a git repo"
             )
         target = repo_root / ".worktrees" / task.id
-        _ensure_git_worktree(repo_root, target, branch_name)
+        _ensure_git_worktree(repo_root, target, branch_name, task.base_ref)
         return target, branch_name
 
     requested = Path(task.workspace_path).expanduser()
@@ -7817,7 +7866,7 @@ def _resolve_worktree_workspace(
         if fallback_root is not None:
             fallback = fallback_root / ".worktrees" / task.id
             if fallback.resolve(strict=False) != requested_resolved:
-                _ensure_git_worktree(fallback_root, fallback, branch_name)
+                _ensure_git_worktree(fallback_root, fallback, branch_name, task.base_ref)
                 return fallback.resolve(strict=False), branch_name
         # No repo to anchor a fallback on (or the occupied path IS this
         # task's own canonical worktree): keep the legacy reuse rather
@@ -7827,7 +7876,7 @@ def _resolve_worktree_workspace(
     repo_root = _git_toplevel(requested)
     if repo_root is not None and requested_resolved == repo_root:
         target = repo_root / ".worktrees" / task.id
-        _ensure_git_worktree(repo_root, target, branch_name)
+        _ensure_git_worktree(repo_root, target, branch_name, task.base_ref)
         return target, branch_name
 
     repo_root = _repo_root_for_worktree_target(requested.parent)
@@ -7836,7 +7885,7 @@ def _resolve_worktree_workspace(
             f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo "
             "and does not point at a git repo root"
         )
-    _ensure_git_worktree(repo_root, requested, branch_name)
+    _ensure_git_worktree(repo_root, requested, branch_name, task.base_ref)
     return requested, branch_name
 
 
@@ -7900,6 +7949,43 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p, _branch_name = _resolve_worktree_workspace(task, board=board)
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
+
+
+def _check_implementation_prerequisites(
+    task: Task, workspace: Path
+) -> Optional[str]:
+    """Return why a worktree task cannot dispatch at its resolved revision."""
+    if task.base_ref:
+        result = subprocess.run(
+            [
+                "git", "-C", str(workspace), "merge-base", "--is-ancestor",
+                task.base_ref, "HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            return f"task branch does not contain required base revision {task.base_ref!r}"
+    missing = []
+    for path in task.required_paths or []:
+        result = subprocess.run(
+            ["git", "-C", str(workspace), "cat-file", "-e", f"HEAD:{path}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            missing.append(path)
+    if missing:
+        return "required implementation path(s) absent: " + ", ".join(missing)
+    return None
 
 
 def set_workspace_path(
@@ -10122,6 +10208,37 @@ def _dispatch_once_locked(
             # bucket it as nonspawnable if the profile genuinely isn't
             # there, with the existing diagnostic.
             _default_assignee_resolved = True
+
+    def _preflight_implementation_prerequisites(
+        task_id: str,
+    ) -> tuple[Optional[Path], Optional[str], bool]:
+        candidate = get_task(conn, task_id)
+        if candidate is None or not (candidate.base_ref or candidate.required_paths):
+            return None, None, False
+        try:
+            workspace, branch = _resolve_worktree_workspace(candidate, board=board)
+            prerequisite_error = _check_implementation_prerequisites(
+                candidate, workspace
+            )
+        except Exception as exc:
+            prerequisite_error = str(exc)
+            workspace = None
+            branch = None
+        if not prerequisite_error:
+            return workspace, branch, False
+
+        reason = f"Dispatch prerequisite failed: {prerequisite_error}"
+        if dry_run:
+            result.auto_blocked.append(candidate.id)
+        elif block_task(conn, candidate.id, reason=reason, kind="capability"):
+            with write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                    (reason[:2000], candidate.id),
+                )
+            result.auto_blocked.append(candidate.id)
+        return None, None, True
+
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
@@ -10226,6 +10343,11 @@ def _dispatch_once_locked(
                         {"reason": guard_reason},
                     )
             continue
+        prerequisite_workspace, prerequisite_branch, prerequisite_failed = (
+            _preflight_implementation_prerequisites(row["id"])
+        )
+        if prerequisite_failed:
+            continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
             spawned += 1
@@ -10243,7 +10365,10 @@ def _dispatch_once_locked(
             continue
         try:
             resolved_branch_name = None
-            if claimed.workspace_kind == "worktree":
+            if prerequisite_workspace is not None:
+                workspace = prerequisite_workspace
+                resolved_branch_name = prerequisite_branch
+            elif claimed.workspace_kind == "worktree":
                 workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
             else:
                 workspace = resolve_workspace(claimed, board=board)
@@ -10357,6 +10482,11 @@ def _dispatch_once_locked(
                         {"reason": guard_reason},
                     )
             continue
+        prerequisite_workspace, prerequisite_branch, prerequisite_failed = (
+            _preflight_implementation_prerequisites(row["id"])
+        )
+        if prerequisite_failed:
+            continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             spawned += 1
@@ -10370,7 +10500,10 @@ def _dispatch_once_locked(
             continue
         try:
             resolved_branch_name = None
-            if claimed.workspace_kind == "worktree":
+            if prerequisite_workspace is not None:
+                workspace = prerequisite_workspace
+                resolved_branch_name = prerequisite_branch
+            elif claimed.workspace_kind == "worktree":
                 workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
             else:
                 workspace = resolve_workspace(claimed, board=board)

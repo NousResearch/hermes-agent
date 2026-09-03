@@ -948,6 +948,25 @@ class EmailAdapter(BasePlatformAdapter):
                         # _seen_uids so the next poll retries it.
                         continue
 
+                    raw_email = None
+                    try:
+                        raw_email = msg_data[0][1]
+                    except (IndexError, TypeError):
+                        pass
+
+                    # iCloud (imap.mail.me.com) returns OK for RFC822 with no
+                    # message literal.  Retry with BODY[] which returns the
+                    # full message as an untagged literal body.  Both items
+                    # are RFC 3501 valid; only the latter returns a payload
+                    # on iCloud (#98597).
+                    if not isinstance(raw_email, (bytes, bytearray)):
+                        status, msg_data = imap.uid("fetch", uid, "(BODY[])")
+                        if status == "OK":
+                            try:
+                                raw_email = msg_data[0][1]
+                            except (IndexError, TypeError):
+                                raw_email = None
+
                     # IMAP fetch can return unexpected structures (e.g. a
                     # single bytes item instead of a list of tuples). Mark the
                     # UID seen once a response arrived (even a malformed one)
@@ -961,17 +980,10 @@ class EmailAdapter(BasePlatformAdapter):
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
 
-                    try:
-                        raw_email = msg_data[0][1]
-                    except (IndexError, TypeError):
-                        logger.warning(
-                            "[Email] Unexpected IMAP response structure for UID %s, skipping",
-                            uid,
-                        )
-                        continue
+
                     if not isinstance(raw_email, (bytes, bytearray)):
                         logger.warning(
-                            "[Email] Non-bytes IMAP payload for UID %s, skipping", uid
+                            "[Email] No literal from RFC822 or BODY[] for UID %s, skipping", uid
                         )
                         continue
                     # Per-message processing guard: one poison message

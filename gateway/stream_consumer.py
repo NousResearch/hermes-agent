@@ -492,6 +492,7 @@ class GatewayStreamConsumer:
         self,
         *,
         final: bool = False,
+        is_turn_final: bool = True,
         expect_edits: bool = False,
     ) -> dict | None:
         """Return per-send metadata for stream-created messages.
@@ -512,6 +513,12 @@ class GatewayStreamConsumer:
             meta["expect_edits"] = True
         if final:
             meta["notify"] = True
+            if not is_turn_final:
+                # A segment boundary closes only the current preview. Some
+                # adapters (including voice-session) interpret notify=True
+                # as the protocol's terminal text frame, so preserve the
+                # distinction explicitly until the actual turn completion.
+                meta["_interim_send"] = True
         return meta or None
 
     @property
@@ -2943,7 +2950,10 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                metadata=self._metadata_for_send(final=True),
+                metadata=self._metadata_for_send(
+                    final=True,
+                    is_turn_final=is_turn_final,
+                ),
             )
         except Exception as e:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
@@ -3577,6 +3587,7 @@ class GatewayStreamConsumer:
                     reply_to=self._initial_reply_to_id,
                     metadata=self._metadata_for_send(
                         final=finalize,
+                        is_turn_final=is_turn_final,
                         expect_edits=not finalize,
                     ),
                 )

@@ -107,6 +107,27 @@ class TestConsumerDeclaredFinal:
 
 class TestInterimSendContract:
     @pytest.mark.asyncio
+    async def test_nonfinal_segment_finalize_is_marked_interim(self):
+        """A tool boundary must not close a voice-session turn."""
+        adapter = _make_draft_adapter()
+        adapter.draft_stream_is_message = False
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=1, cursor="",
+        )
+        sc = GatewayStreamConsumer(adapter, "D1", cfg)
+        sc._use_draft_streaming = True
+
+        assert await sc._send_or_edit(
+            "preamble", finalize=True, is_turn_final=False
+        ) is True
+
+        assert adapter.send_calls[-1]["metadata"] == {
+            "notify": True,
+            "_interim_send": True,
+        }
+
+    @pytest.mark.asyncio
     async def test_commentary_is_marked_interim(self):
         adapter = _make_draft_adapter()
         cfg = StreamConsumerConfig(

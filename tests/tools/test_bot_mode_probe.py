@@ -94,6 +94,52 @@ def test_roster_lines_carry_roles(tmp_path):
     assert "Deep research and literature review" in section
 
 
+def test_config_enabled_emits_without_desktop_ui_meta(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=False)
+    (home / "config.yaml").write_text(
+        textwrap.dedent(
+            """\
+            agent:
+              bot_mode:
+                enabled: true
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    assert bot_mode_probe.is_bot_mode_managed(home) is True
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert section.startswith("## Messaging other agents")
+    assert "`@researcher`" in section
+
+
+def test_config_roster_limits_local_teammates(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=False)
+    _make_bot_profile(home, "coder", managed=False)
+    (home / "config.yaml").write_text(
+        textwrap.dedent(
+            """\
+            agent:
+              bot_mode:
+                enabled: true
+                roster:
+                  - from: default
+                    to: [coder]
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@coder`" in section
+    assert "`@researcher`" not in section
+    assert bot_mode_probe.allowed_local_profile_names(home) == ["coder"]
+
+
 def test_silent_when_soul_already_carries_protocol(tmp_path):
     """Legacy plugin-side append — never double the section."""
     home = tmp_path / ".hermes"
@@ -125,7 +171,9 @@ def test_never_raises_on_garbage(tmp_path, monkeypatch):
     (profiles / "profile.yaml").write_text("ui_meta: [unclosed", encoding="utf-8")
     assert isinstance(bot_mode_probe.get_bot_mode_protocol_section(home), str)
 
-    monkeypatch.setattr(bot_mode_probe, "_roster", lambda root: (_ for _ in ()).throw(OSError("boom")))
+    monkeypatch.setattr(
+        bot_mode_probe, "_roster", lambda root: (_ for _ in ()).throw(OSError("boom"))
+    )
     bot_mode_probe._reset_cache_for_tests()
     assert bot_mode_probe.get_bot_mode_protocol_section(home) == ""
 
@@ -137,7 +185,9 @@ def test_fingerprint_stable_when_nothing_changes(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
     _make_bot_profile(home, "researcher", managed=True)
-    assert bot_mode_probe.capability_fingerprint(home) == bot_mode_probe.capability_fingerprint(home)
+    assert bot_mode_probe.capability_fingerprint(
+        home
+    ) == bot_mode_probe.capability_fingerprint(home)
 
 
 def test_fingerprint_changes_on_each_capability_axis(tmp_path):
@@ -154,7 +204,9 @@ def test_fingerprint_changes_on_each_capability_axis(tmp_path):
     assert after_skill != base
 
     # toolset pin changed
-    (home / "config.yaml").write_text("tools:\n  enabled_toolsets: [web]\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "tools:\n  enabled_toolsets: [web]\n", encoding="utf-8"
+    )
     after_tools = bot_mode_probe.capability_fingerprint(home)
     assert after_tools != after_skill
 
@@ -208,13 +260,21 @@ def test_legacy_bot_chat_upgrade(tmp_path):
     assert bot_mode_probe.stored_bot_chat_prompt_needs_upgrade(legacy, home)
 
     # a rebuilt prompt (stamped) never re-fires
-    upgraded = legacy + "\n\n" + bot_mode_probe.get_bot_mode_protocol_section(home) + "\n\n" + bot_mode_probe.epoch_line(home)
+    upgraded = (
+        legacy
+        + "\n\n"
+        + bot_mode_probe.get_bot_mode_protocol_section(home)
+        + "\n\n"
+        + bot_mode_probe.epoch_line(home)
+    )
     assert not bot_mode_probe.stored_bot_chat_prompt_needs_upgrade(upgraded, home)
 
     # SOUL already carries the legacy plugin-side append → probe silent →
     # no upgrade (rebuilding would loop: the new prompt would be unstamped too)
     bot_mode_probe._reset_cache_for_tests()
-    (home / "SOUL.md").write_text("# Me\n\n## Messaging other agents\nlegacy\n", encoding="utf-8")
+    (home / "SOUL.md").write_text(
+        "# Me\n\n## Messaging other agents\nlegacy\n", encoding="utf-8"
+    )
     assert not bot_mode_probe.stored_bot_chat_prompt_needs_upgrade(legacy, home)
 
     # prompt whose SOUL section rode into it → protocol heading present → no upgrade

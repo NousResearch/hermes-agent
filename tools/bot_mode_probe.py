@@ -32,6 +32,7 @@ from __future__ import annotations
 import os
 import threading
 from pathlib import Path
+from typing import Any
 
 _PROTOCOL_HEADING = "## Messaging other agents"
 
@@ -57,6 +58,78 @@ def _profile_name(home: Path) -> str:
     return "default"
 
 
+def _bot_mode_config(root: Path) -> dict[str, Any]:
+    """CLI-native Bot Mode config from machine-root config.yaml. Never raises."""
+    try:
+        cfg_path = root / "config.yaml"
+        if not cfg_path.is_file():
+            return {}
+        raw = cfg_path.read_text(encoding="utf-8", errors="replace")
+        if "bot_mode" not in raw:
+            return {}
+        import yaml
+
+        data = yaml.safe_load(raw)
+        if not isinstance(data, dict):
+            return {}
+        agent_cfg = data.get("agent")
+        if not isinstance(agent_cfg, dict):
+            return {}
+        bot_cfg = agent_cfg.get("bot_mode")
+        return bot_cfg if isinstance(bot_cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def _declarative_bot_mode_enabled(root: Path) -> bool:
+    return _bot_mode_config(root).get("enabled") is True
+
+
+def _configured_targets(root: Path, me: str) -> set[str] | None:
+    """Allowed local profile names from agent.bot_mode.roster, or None for all."""
+    cfg = _bot_mode_config(root)
+    roster = cfg.get("roster")
+    if not isinstance(roster, list):
+        return None
+    targets: set[str] = set()
+    for row in roster:
+        if not isinstance(row, dict):
+            continue
+        source = str(row.get("from") or "").strip()
+        if source != me:
+            continue
+        raw_targets = row.get("to")
+        if isinstance(raw_targets, str):
+            raw_targets = [raw_targets]
+        if not isinstance(raw_targets, list):
+            continue
+        for target in raw_targets:
+            name = str(target or "").strip()
+            if name:
+                targets.add("default" if name == "hermes" else name)
+    return targets
+
+
+def allowed_local_profile_names(home: str | os.PathLike | None = None) -> list[str]:
+    """Local profile names this Bot Mode profile may message. Never raises."""
+    try:
+        if home:
+            resolved = Path(str(home))
+        else:
+            from hermes_constants import get_hermes_home
+
+            resolved = get_hermes_home()
+        root = _hermes_root(resolved)
+        me = _profile_name(resolved)
+        names = [name for name, _profile_dir in _roster(root) if name != me]
+        targets = _configured_targets(root, me)
+        if targets is not None:
+            names = [name for name in names if name in targets]
+        return names
+    except Exception:
+        return []
+
+
 def _is_bot_managed(profile_dir: Path) -> bool:
     """True when profile.yaml carries a ui_meta['hermes-bots'] block.
 
@@ -73,7 +146,9 @@ def _is_bot_managed(profile_dir: Path) -> bool:
 
         data = yaml.safe_load(raw)
         ui_meta = data.get("ui_meta") if isinstance(data, dict) else None
-        return isinstance(ui_meta, dict) and isinstance(ui_meta.get("hermes-bots"), dict)
+        return isinstance(ui_meta, dict) and isinstance(
+            ui_meta.get("hermes-bots"), dict
+        )
     except Exception:
         return False
 
@@ -102,10 +177,14 @@ def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
     """
     try:
         resolved = Path(
-            str(home) if home else (os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+            str(home)
+            if home
+            else (os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
         )
         root = _hermes_root(resolved)
-        return any(_is_bot_managed(d) for _n, d in _roster(root))
+        return _declarative_bot_mode_enabled(root) or any(
+            _is_bot_managed(d) for _n, d in _roster(root)
+        )
     except Exception:
         return False
 
@@ -113,7 +192,9 @@ def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
 def _soul_has_protocol(profile_dir: Path) -> bool:
     try:
         soul = profile_dir / "SOUL.md"
-        return soul.is_file() and _PROTOCOL_HEADING in soul.read_text(encoding="utf-8", errors="replace")
+        return soul.is_file() and _PROTOCOL_HEADING in soul.read_text(
+            encoding="utf-8", errors="replace"
+        )
     except Exception:
         return False
 
@@ -213,9 +294,7 @@ def _remote_paragraph(root: Path) -> str:
     for row, form in zip(roster, remote_target_forms(roster)):
         where = row["connection_label"] or row["connection_id"]
         role = " — ".join(p for p in (row["title"], row["description"]) if p)
-        lines.append(
-            f"- `@{form}` — on {where}" + (f" — {role}" if role else "")
-        )
+        lines.append(f"- `@{form}` — on {where}" + (f" — {role}" if role else ""))
     return (
         "\n\nTeammates on OTHER connected machines (reachable through the "
         "Desktop relay — message them with message_agent exactly like local "
@@ -244,7 +323,10 @@ def _build_section(home: Path) -> str:
     me = _profile_name(home)
 
     roster = _roster(root)
-    if not any(_is_bot_managed(d) for _n, d in roster):
+    if not (
+        _declarative_bot_mode_enabled(root)
+        or any(_is_bot_managed(d) for _n, d in roster)
+    ):
         return ""
 
     # An older plugin build may have appended the protocol to SOUL.md
@@ -254,7 +336,17 @@ def _build_section(home: Path) -> str:
         return ""
 
     handle = _handle(me)
-    roster_block = "\n".join(_roster_lines(root, me)) or "- (no teammates yet)"
+    allowed = _configured_targets(root, me)
+    roster_block = (
+        "\n".join(
+            line
+            for line, (name, _profile_dir) in zip(
+                _roster_lines(root, me), [(n, d) for n, d in _roster(root) if n != me]
+            )
+            if allowed is None or name in allowed
+        )
+        or "- (no teammates yet)"
+    )
 
     return (
         f"{_PROTOCOL_HEADING}\n"
@@ -267,7 +359,7 @@ def _build_section(home: Path) -> str:
         "that wakes you; relay it to the user then, attributed to that agent. "
         "COMPOSE every message yourself — say what YOU need from that agent; never "
         "forward the user's words verbatim, and never reveal private 1:1 chat "
-        "content. When the user says \"ask <name>\" or \"tell <name> ...\", that is "
+        'content. When the user says "ask <name>" or "tell <name> ...", that is '
         "a handoff: pick the right teammate from the roster below, message them "
         "with message_agent, and report back naming which agent replied. Message "
         "ONE clearly relevant teammate; don't fan out to several unless the user "
@@ -279,20 +371,24 @@ def _build_section(home: Path) -> str:
         "acknowledgements.\n"
         f"You are `@{handle}`. Your teammates (live roster; roles from their "
         "profiles):\n"
-        f"{roster_block}"
-        + _remote_paragraph(root)
-        + _peer_paragraph(root)
+        f"{roster_block}" + _remote_paragraph(root) + _peer_paragraph(root)
     )
 
 
-def get_bot_mode_protocol_section(home: str | os.PathLike | None = None, *, force_refresh: bool = False) -> str:
+def get_bot_mode_protocol_section(
+    home: str | os.PathLike | None = None, *, force_refresh: bool = False
+) -> str:
     """Cached probe entry point — one filesystem pass per (process, home).
 
     ``home`` should be the AGENT'S OWN resolved home (session-db derived),
     not the ambient HERMES_HOME — build threads can lose the ContextVar
     override and the env var would then name the wrong profile.
     """
-    resolved = str(home) if home else (os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+    resolved = (
+        str(home)
+        if home
+        else (os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+    )
     with _lock:
         if force_refresh or resolved not in _cached:
             try:
@@ -332,13 +428,20 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     import hashlib
     import json
 
-    resolved = Path(str(home) if home else (os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")))
+    resolved = Path(
+        str(home)
+        if home
+        else (os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+    )
     surface: dict = {}
     try:
         # Canonical loader (managed overlay + env expansion + normalization),
         # scoped to the bot's home via the override the loaders already honor.
         from hermes_cli.config import load_config_readonly
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
 
         token = set_hermes_home_override(str(resolved))
         try:
@@ -349,15 +452,25 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
         skills_cfg = skills_cfg or {}
         tools_cfg = tools_cfg or {}
-        surface["disabled_skills"] = sorted(str(s).lower() for s in (skills_cfg.get("disabled") or []))
-        surface["enabled_toolsets"] = sorted(str(t) for t in (tools_cfg.get("enabled_toolsets") or []))
+        surface["disabled_skills"] = sorted(
+            str(s).lower() for s in (skills_cfg.get("disabled") or [])
+        )
+        surface["enabled_toolsets"] = sorted(
+            str(t) for t in (tools_cfg.get("enabled_toolsets") or [])
+        )
         mcp = cfg.get("mcp_servers")
-        surface["mcp"] = json.dumps(mcp, sort_keys=True, default=str) if isinstance(mcp, dict) else ""
+        surface["mcp"] = (
+            json.dumps(mcp, sort_keys=True, default=str)
+            if isinstance(mcp, dict)
+            else ""
+        )
     except Exception:
         pass
     try:
         soul = resolved / "SOUL.md"
-        surface["soul"] = hashlib.sha256(soul.read_bytes()).hexdigest() if soul.is_file() else ""
+        surface["soul"] = (
+            hashlib.sha256(soul.read_bytes()).hexdigest() if soul.is_file() else ""
+        )
     except Exception:
         surface["soul"] = ""
     try:
@@ -371,7 +484,12 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         surface["skills"] = []
     try:
         root = _hermes_root(resolved)
-        surface["roster"] = sorted(n for n, d in _roster(root) if _is_bot_managed(d))
+        surface["bot_mode_config"] = _bot_mode_config(root)
+        surface["roster"] = sorted(
+            n
+            for n, d in _roster(root)
+            if _declarative_bot_mode_enabled(root) or _is_bot_managed(d)
+        )
         # Roles are part of the messaging surface: renaming a bot or editing
         # a profile description must refresh eternal Bot Chat prompts so the
         # roster block teammates pick recipients from stays current.
@@ -415,7 +533,9 @@ def epoch_line(home: str | os.PathLike | None = None) -> str:
     return f"{_EPOCH_PREFIX}{capability_fingerprint(home)}"
 
 
-def stored_prompt_capability_stale(stored_prompt: str, home: str | os.PathLike | None = None) -> bool:
+def stored_prompt_capability_stale(
+    stored_prompt: str, home: str | os.PathLike | None = None
+) -> bool:
     """True when ``stored_prompt`` is a Bot Chat prompt whose embedded
     capability epoch no longer matches the current disk state.
 
@@ -437,7 +557,9 @@ def stored_prompt_capability_stale(stored_prompt: str, home: str | os.PathLike |
         return False
 
 
-def stored_bot_chat_prompt_needs_upgrade(stored_prompt: str, home: str | os.PathLike | None = None) -> bool:
+def stored_bot_chat_prompt_needs_upgrade(
+    stored_prompt: str, home: str | os.PathLike | None = None
+) -> bool:
     """True when a Bot Chat session's stored prompt PREDATES this feature.
 
     Legacy Bot Chats (created before bundling / this epoch mechanism)

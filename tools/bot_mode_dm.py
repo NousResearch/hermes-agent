@@ -68,7 +68,9 @@ MESSAGE_MAX_CHARS = 16000
 _DM_DIR_NAME = "hermes-dm"
 _DM_STALE_SECONDS = 24 * 60 * 60
 
-_PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
+_PEER_TARGET_RE = re.compile(
+    r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$"
+)
 _LOCAL_TARGET_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
 
@@ -227,10 +229,15 @@ def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
 # ── the tool ─────────────────────────────────────────────────────────────────
 
 
-def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
+def _err(
+    message: str, *, roster: list[str] | None = None, peers: list[str] | None = None
+) -> str:
     from tools.bot_failure_reasons import classify_agent_error
 
-    payload: dict[str, Any] = {"error": message, "reason": classify_agent_error(message)}
+    payload: dict[str, Any] = {
+        "error": message,
+        "reason": classify_agent_error(message),
+    }
     if roster is not None:
         payload["teammates"] = roster
     if peers is not None:
@@ -273,7 +280,13 @@ def message_agent_tool(
     me = _self_profile_name(Path(home))
     roster = _local_roster(root)
     peers = _peers(root)
-    teammates = [_handle(n) for n in roster if n != me]
+    try:
+        from tools.bot_mode_probe import allowed_local_profile_names
+
+        allowed_local = allowed_local_profile_names(home)
+    except Exception:
+        allowed_local = [n for n in roster if n != me]
+    teammates = [_handle(n) for n in allowed_local]
 
     body = str(message or "").strip()
     if not body:
@@ -299,7 +312,9 @@ def message_agent_tool(
         peer_profile = peer_match.group(2) if peer_match else None
         if peer_name not in peers:
             return _err(
-                f"No registered peer named '{peer_name}'.", roster=teammates, peers=peers
+                f"No registered peer named '{peer_name}'.",
+                roster=teammates,
+                peers=peers,
             )
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
         label = f"@{peer_profile or peer_name} on peer '{peer_name}'"
@@ -330,7 +345,11 @@ def message_agent_tool(
     # ── local teammate ──
     if not _LOCAL_TARGET_RE.match(raw_target) and "@" not in raw_target:
         return _err(f"Invalid target: {raw_target!r}.", roster=teammates, peers=peers)
-    resolved = _resolve_local_name(raw_target, roster) if _LOCAL_TARGET_RE.match(raw_target) else None
+    resolved = (
+        _resolve_local_name(raw_target, roster)
+        if _LOCAL_TARGET_RE.match(raw_target)
+        else None
+    )
     if resolved is None:
         # ── cross-connection teammate (Desktop relay) ──
         # Every gateway connected to the user's Desktop is reachable: the
@@ -345,6 +364,13 @@ def message_agent_tool(
             f"No teammate named '{raw_target}' on this install, on a connected "
             "machine, or on a registered peer. Pick a name from the roster "
             "(roles are listed in your system prompt).",
+            roster=teammates,
+            peers=peers,
+        )
+    if resolved is not None and resolved != me and resolved not in allowed_local:
+        return _err(
+            f"You are not allowed to message '{raw_target}' from this Bot Mode profile. "
+            "Pick a teammate from the configured roster.",
             roster=teammates,
             peers=peers,
         )
@@ -609,16 +635,22 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
                     )
             # Re-emit the transport's streams: stdout is the reply text the
             # completion notification carries back to the sending agent.
-            if proc.returncode != 0 and "already has a live owner" in (proc.stderr or ""):
+            if proc.returncode != 0 and "already has a live owner" in (
+                proc.stderr or ""
+            ):
                 # #100523: the target's Bot Chat is held live by another
                 # surface (Desktop). The turn never ran, so tell the sender
                 # plainly instead of leaking a raw lease error + exit code.
-                who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
-                print(json.dumps({
-                    "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
-                             "surface right now, so your message was NOT delivered. Try again later.",
-                    "reason": "target_busy",
-                }))
+                who = (
+                    argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
+                )
+                print(
+                    json.dumps({
+                        "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
+                        "surface right now, so your message was NOT delivered. Try again later.",
+                        "reason": "target_busy",
+                    })
+                )
                 return 1
             if proc.stdout:
                 sys.stdout.write(proc.stdout)
@@ -713,20 +745,18 @@ def _spawn_delivery(
         # From this point the background runner owns the file and removes it
         # only after the local query-file or peer stdin consumer has finished.
         transferred = True
-        return json.dumps(
-            {
-                "status": "sent",
-                "to": label,
-                "detail": (
-                    f"Message dispatched to {label}. This is asynchronous — do NOT wait "
-                    "or poll. Finish your turn now; when the delivery completes, its "
-                    "notification carries the reply — relay it then, attributed to "
-                    "that agent."
-                ),
-                **({"process_id": proc_id} if proc_id else {}),
-                "sent_at": int(time.time()),
-            }
-        )
+        return json.dumps({
+            "status": "sent",
+            "to": label,
+            "detail": (
+                f"Message dispatched to {label}. This is asynchronous — do NOT wait "
+                "or poll. Finish your turn now; when the delivery completes, its "
+                "notification carries the reply — relay it then, attributed to "
+                "that agent."
+            ),
+            **({"process_id": proc_id} if proc_id else {}),
+            "sent_at": int(time.time()),
+        })
     except Exception as exc:
         logger.error("message_agent delivery spawn failed: %s", exc, exc_info=True)
         return _err(f"Delivery to {label} could not be started: {exc}")

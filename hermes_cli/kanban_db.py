@@ -1430,6 +1430,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
     last_heartbeat_at    INTEGER,
+    -- Epoch time the generic stale-claim reclaim RESERVED this row for
+    -- termination (pass 12, AP). Set in the same transaction that holds
+    -- the claim for one defer grace; a heartbeat arriving while it is
+    -- set (and claim_expires is still inside that grace window) is
+    -- refused as claim-lost, so a live worker can never resurrect a row
+    -- the sweep has already decided to terminate. Cleared when the
+    -- reservation concludes (reclaim, defer, or stand-down re-check).
+    reclaim_reserved_at  INTEGER,
     -- Pointer into task_runs for the currently-active run (NULL if no
     -- run is in-flight). Denormalised for cheap reads.
     current_run_id       INTEGER,
@@ -2727,6 +2735,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     if "last_heartbeat_at" not in cols:
         _add_column_if_missing(
             conn, "tasks", "last_heartbeat_at", "last_heartbeat_at INTEGER"
+        )
+    if "reclaim_reserved_at" not in cols:
+        # Generic stale-claim reclaim reservation marker (pass 12, AP):
+        # set while the sweep holds a stale row for termination so a
+        # racing heartbeat is refused instead of resurrecting the claim.
+        _add_column_if_missing(
+            conn, "tasks", "reclaim_reserved_at", "reclaim_reserved_at INTEGER"
         )
     if "current_run_id" not in cols:
         _add_column_if_missing(
@@ -5157,14 +5172,28 @@ def heartbeat_claim(
 
     Workers that know they'll exceed 15 minutes should call this every
     few minutes to keep ownership.
+
+    Pass 12 (AP): a row the stale-claim sweep has reserved for reclaim
+    (``reclaim_reserved_at`` set with ``claim_expires`` still inside the
+    reservation's defer grace) is never extended — the heartbeat returns
+    False (claim lost), so the worker's heartbeat bridge stops keeping
+    the doomed run alive and the sweep terminates a row that provably
+    stopped heartbeating instead of killing a live one.
     """
     expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
     lock = claimer or _claimer_id()
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' AND claim_lock = ?",
-            (expires, task_id, lock),
+            "WHERE id = ? AND status = 'running' AND claim_lock = ? "
+            # Never resurrect a claim the stale sweep has reserved for
+            # termination (pass 12, AP). The marker only means anything
+            # while claim_expires still sits inside the reservation's
+            # grace window; any later writer (adoption, a fresh claim)
+            # pushes claim_expires beyond it and the guard self-releases.
+            "AND (reclaim_reserved_at IS NULL OR claim_expires IS NULL "
+            "     OR claim_expires > reclaim_reserved_at + ?)",
+            (expires, task_id, lock, RECLAIM_DEFER_GRACE_SECONDS),
         )
         if cur.rowcount == 1:
             run_id = _current_run_id(conn, task_id)
@@ -5174,6 +5203,25 @@ def heartbeat_claim(
                     (expires, run_id),
                 )
             return True
+        # Cold path: distinguish a reservation refusal from the ordinary
+        # not-running / wrong-lock misses so the log names the cause.
+        row = conn.execute(
+            "SELECT reclaim_reserved_at, claim_expires FROM tasks "
+            "WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            row is not None
+            and row["reclaim_reserved_at"] is not None
+            and row["claim_expires"] is not None
+            and int(row["claim_expires"])
+            <= int(row["reclaim_reserved_at"]) + RECLAIM_DEFER_GRACE_SECONDS
+        ):
+            _log.info(
+                "kanban: heartbeat for %s refused — the claim is "
+                "reserved for reclaim; treating it as claim lost",
+                task_id,
+            )
         return False
 
 
@@ -5195,11 +5243,77 @@ def _reread_stale_claim_for_reclaim(
     """
     return conn.execute(
         "SELECT claim_lock, claim_expires, worker_pid, "
-        "worker_pid_started_at, worker_scope, current_run_id "
+        "worker_pid_started_at, worker_scope, current_run_id, "
+        "last_heartbeat_at "
         "FROM tasks "
         "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
         (task_id, claim_lock),
     ).fetchone()
+
+
+def _recheck_reclaim_reservation(
+    conn: sqlite3.Connection,
+    task_id: str,
+    claim_lock: Optional[str],
+    grace: int,
+    fresh: Any,
+) -> bool:
+    """Verify, in one short write transaction, that a reclaim reservation
+    still holds immediately before its worker is signalled (pass 12, AP).
+
+    The reservation must commit before the signal (the termination runs
+    strictly post-commit), so a heartbeat that was already in flight can
+    still land in that window — ``heartbeat_claim`` now refuses reserved
+    rows, closing the window from the worker's side; this seam closes it
+    from the sweep's side for any writer that rewrote the row anyway (an
+    older worker binary, a direct write). The row is re-read under the
+    write lock and the reservation confirmed intact: the grace sentinel
+    still on ``claim_expires``, the marker still set, and the worker
+    fingerprint and heartbeat timestamp unchanged since the reservation
+    read. When anything moved, the reservation is released to the live
+    values (marker dropped; whatever claim state the racing writer left
+    stands) and the caller must NOT signal. A dedicated seam for the
+    same reason as :func:`_reread_stale_claim_for_reclaim` — the
+    reservation→re-check interleaving is injectable in tests.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, claim_lock, claim_expires, "
+            "worker_pid_started_at, worker_scope, reclaim_reserved_at, "
+            "last_heartbeat_at FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            row is not None
+            and row["status"] == "running"
+            and row["claim_lock"] == claim_lock
+            and row["reclaim_reserved_at"] is not None
+            and row["claim_expires"] is not None
+            and int(row["claim_expires"]) == int(grace)
+            and row["worker_pid_started_at"] == fresh["worker_pid_started_at"]
+            and row["worker_scope"] == fresh["worker_scope"]
+            and row["last_heartbeat_at"] == fresh["last_heartbeat_at"]
+        ):
+            return True
+        # Something moved between the reservation commit and this
+        # re-check: a heartbeat raced in (the row is alive) or the row
+        # moved on entirely. Never signal on stale evidence — release
+        # the reservation and let the live claim state stand.
+        cur = conn.execute(
+            "UPDATE tasks SET reclaim_reserved_at = NULL "
+            "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+            "AND reclaim_reserved_at IS NOT NULL",
+            (task_id, claim_lock),
+        )
+        if cur.rowcount == 1:
+            _log.info(
+                "kanban: stale reclaim reservation for %s released "
+                "without signalling — the row moved (a heartbeat or a "
+                "takeover landed) between the reservation and the "
+                "re-check",
+                task_id,
+            )
+    return False
 
 
 def release_stale_claims(
@@ -5322,7 +5436,11 @@ def release_stale_claims(
         # hit holds the claim for one defer grace (a worker that then
         # survives the signal cannot be duplicated beside it), and only
         # then is the termination tuple signalled, strictly post-commit
-        # and keyed to the fresh values, never the scan snapshot.
+        # and keyed to the fresh values, never the scan snapshot. The
+        # reservation also stamps ``reclaim_reserved_at`` so heartbeats
+        # are refused while it holds, and is re-verified under the write
+        # lock right before the signal (pass 12, AP) — a heartbeat that
+        # raced in anyway releases it and stands the row down.
         with write_txn(conn):
             fresh = _reread_stale_claim_for_reclaim(
                 conn, row["id"], row["claim_lock"],
@@ -5337,11 +5455,11 @@ def release_stale_claims(
                 continue
             grace = now + RECLAIM_DEFER_GRACE_SECONDS
             cur = conn.execute(
-                "UPDATE tasks SET claim_expires = ? "
+                "UPDATE tasks SET claim_expires = ?, reclaim_reserved_at = ? "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS ? AND worker_pid_started_at IS ? "
                 "AND worker_scope IS ?",
-                (grace, row["id"], row["claim_lock"],
+                (grace, now, row["id"], row["claim_lock"],
                  fresh["claim_expires"], fresh["worker_pid_started_at"],
                  fresh["worker_scope"]),
             )
@@ -5360,6 +5478,19 @@ def release_stale_claims(
                     (grace, current_run),
                 )
 
+        # Pass 12 (AP): the reservation has committed but the signal has
+        # not fired — a heartbeat already in flight can still land in
+        # that window. ``heartbeat_claim`` refuses reserved rows (the
+        # worker side of the guard); this re-check is the sweep side:
+        # verify under the write lock that the reservation still holds
+        # (same grace sentinel, same fingerprint, no heartbeat since the
+        # reservation) and stand down — releasing the reservation — when
+        # anything moved, so the signal only ever targets a row that
+        # provably stopped heartbeating.
+        if not _recheck_reclaim_reservation(
+            conn, row["id"], row["claim_lock"], grace, fresh,
+        ):
+            continue
         termination = _terminate_reclaimed_worker(
             fresh["worker_pid"], fresh["claim_lock"], signal_fn=signal_fn,
             scope_unit=fresh["worker_scope"] or None,
@@ -5380,7 +5511,8 @@ def release_stale_claims(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
                 "worker_pid_started_at = NULL, "
-                "worker_registered_at = NULL, worker_scope = NULL "
+                "worker_registered_at = NULL, worker_scope = NULL, "
+                "reclaim_reserved_at = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS ? AND worker_pid_started_at IS ? "
                 "AND worker_scope IS ?",
@@ -11039,7 +11171,10 @@ def _defer_reclaim_for_live_worker(
     stays ``running`` (no duplicate spawn) and records a ``reclaim_deferred``
     event so the hold is visible in ``hermes kanban tail``. The next dispatch
     tick retries the kill; this is self-correcting because not spawning a
-    duplicate is what lets the throttled worker finally die.
+    duplicate is what lets the throttled worker finally die. Any reclaim
+    reservation marker is dropped too (pass 12, AP): the reservation has
+    concluded — the signal fired — so a heartbeat landing during the defer
+    grace extends the claim exactly as it did before reservations existed.
     """
     grace = now + RECLAIM_DEFER_GRACE_SECONDS
     # Nested-safe: composed under the dashboard's outer commit by the
@@ -11047,7 +11182,7 @@ def _defer_reclaim_for_live_worker(
     # everywhere else).
     with write_txn(conn, allow_nested=True):
         cur = conn.execute(
-            "UPDATE tasks SET claim_expires = ? "
+            "UPDATE tasks SET claim_expires = ?, reclaim_reserved_at = NULL "
             "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
             (grace, task_id, claim_lock),
         )

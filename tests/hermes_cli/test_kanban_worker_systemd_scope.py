@@ -2734,6 +2734,139 @@ def test_release_stale_claims_reservation_cas_blocks_inflight_heartbeat(
     ).fetchone()["n"] == 0
 
 
+def test_release_stale_claims_reservation_refuses_late_heartbeat_and_signals(
+    shims, conn, monkeypatch,
+):
+    """Pass 12 (AP), worker side: a heartbeat committing AFTER the
+    reclaim reservation commits (but before the signal) is refused as
+    claim-lost — ``heartbeat_claim`` never extends a reserved row — so
+    the re-check still sees the untouched reservation and the sweep
+    signals a row that provably stopped heartbeating."""
+    worker = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_aphb", 1)
+    shims.write_unit(unit, [worker])
+    tid = kb.create_task(conn, title="reserved heartbeat", assignee="w")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, "
+        "worker_pid_started_at=?, worker_registered_at=?, worker_scope=?, "
+        "claim_expires=?, last_heartbeat_at=? WHERE id=?",
+        (worker, kb._worker_pid_start_time(worker), now, unit,
+         now - 60, now - 7200, tid),  # heartbeat past the 1h backstop
+    )
+    conn.commit()
+
+    refused: list[bool] = []
+    real_recheck = kb._recheck_reclaim_reservation
+
+    def recheck_after_reservation(conn_arg, task_id, claim_lock, grace, fresh):
+        # The interleaving under test: the worker's heartbeat lands
+        # AFTER the reservation transaction committed (the marker is
+        # already on the row) but BEFORE the re-check / signal.
+        refused.append(kb.heartbeat_claim(conn_arg, task_id, claimer=claim_lock))
+        return real_recheck(conn_arg, task_id, claim_lock, grace, fresh)
+
+    monkeypatch.setattr(
+        kb, "_recheck_reclaim_reservation", recheck_after_reservation,
+    )
+
+    assert kb.release_stale_claims(conn) == 1
+
+    # The heartbeat was refused — claim lost, never an extension.
+    assert refused == [False]
+    row = conn.execute(
+        "SELECT status, claim_lock, claim_expires, reclaim_reserved_at, "
+        "worker_scope FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    # ... and because it was refused, the signal proceeded and the row
+    # was reclaimed cleanly (marker cleared with the bookkeeping).
+    assert row["status"] == "ready"
+    assert row["claim_lock"] is None
+    assert row["claim_expires"] is None
+    assert row["reclaim_reserved_at"] is None
+    assert row["worker_scope"] is None
+    assert conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind='reclaimed'", (tid,),
+    ).fetchone()["n"] == 1
+    # The provably-not-heartbeating worker was stopped by the sweep.
+    assert shims.wait_for(lambda: not kb._pid_alive(worker))
+    assert [s for s in shims.stops() if s["unit"] == unit]
+
+
+def test_release_stale_claims_reservation_recheck_stands_down_on_raced_heartbeat(
+    shims, conn, monkeypatch,
+):
+    """Pass 12 (AP), sweep side: a heartbeat that raced in before the
+    re-check (an in-flight writer committing after the reservation —
+    simulated by a direct DB write, as from an older worker binary) is
+    never signalled: the re-check sees the row moved, releases the
+    reservation to the live values, and the heartbeat's TTL owns the
+    row."""
+    worker = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_apraced", 1)
+    shims.write_unit(unit, [worker])
+    tid = kb.create_task(conn, title="raced heartbeat", assignee="w")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, "
+        "worker_pid_started_at=?, worker_registered_at=?, worker_scope=?, "
+        "claim_expires=?, last_heartbeat_at=? WHERE id=?",
+        (worker, kb._worker_pid_start_time(worker), now, unit,
+         now - 60, now - 7200, tid),  # heartbeat past the 1h backstop
+    )
+    conn.commit()
+
+    real_recheck = kb._recheck_reclaim_reservation
+
+    def recheck_after_raced_heartbeat(conn_arg, task_id, claim_lock,
+                                      grace, fresh):
+        # The interleaving under test: a heartbeat that was already in
+        # flight when the reservation committed lands now — between the
+        # reservation transaction and the re-check — rewriting the claim
+        # TTL and the heartbeat timestamp on the reserved row.
+        landed = int(time.time())
+        conn_arg.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ? AND status = 'running'",
+            (landed + kb.DEFAULT_CLAIM_TTL_SECONDS, landed, task_id),
+        )
+        conn_arg.commit()
+        return real_recheck(conn_arg, task_id, claim_lock, grace, fresh)
+
+    monkeypatch.setattr(
+        kb, "_recheck_reclaim_reservation", recheck_after_raced_heartbeat,
+    )
+    signalled: list[tuple] = []
+
+    def record_signal(pid, sig):
+        signalled.append((pid, sig))
+
+    assert kb.release_stale_claims(conn, signal_fn=record_signal) == 0
+
+    row = conn.execute(
+        "SELECT status, claim_lock, claim_expires, reclaim_reserved_at "
+        "FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["claim_lock"] == kb._claimer_id()
+    # The heartbeat's TTL owns the row — the reservation was released to
+    # the live values (marker dropped), not held over them.
+    assert row["claim_expires"] > int(time.time()) + 600
+    assert row["reclaim_reserved_at"] is None
+    assert signalled == [], "a heartbeat that beat the re-check is never signalled"
+    assert kb._pid_alive(worker), "the live worker was never signalled"
+    assert [s["action"] for s in shims.stops() if s["unit"] == unit] == []
+    assert conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind='reclaimed'", (tid,),
+    ).fetchone()["n"] == 0
+
+
 def test_crash_cleanup_defers_until_scope_stop_verified(shims, conn):
     """Crash reclamation of a scoped run waits for the VERIFIED scope
     stop (Gate B review, crash-cleanup ordering): a deactivating unit

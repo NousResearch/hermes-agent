@@ -151,6 +151,75 @@ class TestWslCwdTranslation:
 # ---------------------------------------------------------------------------
 
 
+class TestForkSession:
+    def test_fork_nonexistent_returns_none(self, manager):
+        assert manager.fork_session("bogus-id") is None
+
+    def test_fork_session_keep_history_slices_prefix(self, manager):
+        original = manager.create_session()
+        original.history.extend(
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "reply"},
+                {"role": "user", "content": "second"},
+                {"role": "assistant", "content": "reply 2"},
+            ]
+        )
+
+        forked = manager.fork_session(
+            original.session_id, cwd="/new", keep_history=2
+        )
+        assert forked is not None
+        assert [message["content"] for message in forked.history] == ["first", "reply"]
+        assert len(original.history) == 4
+
+        forked.history[0]["content"] = "mutated"
+        assert original.history[0]["content"] == "first"
+
+    def test_fork_session_keep_history_zero_gives_empty_fork(self, manager):
+        original = manager.create_session()
+        original.history.append({"role": "user", "content": "hello"})
+
+        forked = manager.fork_session(
+            original.session_id, cwd="/new", keep_history=0
+        )
+        assert forked is not None
+        assert forked.history == []
+        assert len(original.history) == 1
+
+    def test_fork_session_keep_history_beyond_length_copies_all(self, manager):
+        original = manager.create_session()
+        original.history.append({"role": "user", "content": "hello"})
+
+        forked = manager.fork_session(
+            original.session_id, cwd="/new", keep_history=99
+        )
+        assert forked is not None
+        assert len(forked.history) == 1
+
+    def test_fork_session_keep_history_none_copies_all(self, manager):
+        original = manager.create_session()
+        original.history.extend(
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+            ]
+        )
+
+        forked = manager.fork_session(
+            original.session_id, cwd="/new", keep_history=None
+        )
+        assert forked is not None
+        assert len(forked.history) == 2
+
+    def test_fork_session_keep_history_negative_raises(self, manager):
+        original = manager.create_session()
+        original.history.append({"role": "user", "content": "hello"})
+
+        with pytest.raises(ValueError, match="non-negative"):
+            manager.fork_session(
+                original.session_id, cwd="/new", keep_history=-1
+            )
 
 
 # ---------------------------------------------------------------------------

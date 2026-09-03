@@ -250,15 +250,33 @@ class SessionManager:
             _clear_task_cwd(session_id)
         return existed or db_existed
 
-    def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
-        """Deep-copy a session's history into a new session."""
+    def fork_session(
+        self,
+        session_id: str,
+        cwd: str = ".",
+        keep_history: Optional[int] = None,
+    ) -> Optional[SessionState]:
+        """Deep-copy a session's history into a new session.
+
+        ``keep_history`` limits the copy to the first N history entries
+        (``history[:keep_history]``), enabling "fork from here" rewind
+        semantics. ``None`` copies the full history. Negative values are
+        rejected: ``history[:-N]`` would silently mean "drop the last N
+        messages" — a destructive footgun, not a fork prefix.
+        """
         import threading
+
+        if keep_history is not None and keep_history < 0:
+            raise ValueError("keep_history must be non-negative")
 
         cwd = _translate_acp_cwd(cwd)
         original = self.get_session(session_id)  # checks DB too
         if original is None:
             return None
 
+        forked_history = (
+            original.history if keep_history is None else original.history[:keep_history]
+        )
         new_id = str(uuid.uuid4())
         agent = self._make_agent(
             session_id=new_id,
@@ -270,7 +288,7 @@ class SessionManager:
             agent=agent,
             cwd=cwd,
             model=getattr(agent, "model", original.model) or original.model,
-            history=copy.deepcopy(original.history),
+            history=copy.deepcopy(forked_history),
             cancel_event=threading.Event(),
         )
         with self._lock:

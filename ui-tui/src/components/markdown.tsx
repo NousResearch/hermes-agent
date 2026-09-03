@@ -778,15 +778,18 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       const fence = line.match(FENCE_RE)
 
       if (fence) {
+        const fenceStart = i
         const char = fence[1]![0] as '`' | '~'
         const len = fence[1]!.length
         const lang = fence[2]!.trim().toLowerCase()
         const block: string[] = []
+        let closed = false
 
         for (i++; i < lines.length; i++) {
           const close = lines[i]!.match(FENCE_CLOSE_RE)?.[1]
 
           if (close && close[0] === char && close.length >= len) {
+            closed = true
             break
           }
 
@@ -795,6 +798,23 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
 
         if (i < lines.length) {
           i++
+        }
+
+        // Unclosed fence at end of input (model drifted into prose without
+        // closing, or mid-stream snapshot): show the opener as a literal
+        // muted label and re-parse the body through the main loop so the
+        // prose structure after the drift point survives. MdInline would
+        // half-eat the backticks, so this is a plain Text.
+        if (!closed) {
+          start('code')
+          nodes.push(
+            <Box key={key} paddingLeft={2}>
+              <Text color={t.color.muted}>{`─ ${lang || 'code'} (unclosed)`}</Text>
+            </Box>
+          )
+          i = fenceStart + 1
+
+          continue
         }
 
         if (['md', 'markdown'].includes(lang)) {
@@ -1028,10 +1048,14 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
         const task = bullet[2]!.match(TASK_RE)
         const marker = task ? (task[1]!.toLowerCase() === 'x' ? '☑' : '☐') : '•'
 
+        // Marker in a fixed-width gutter so wrapped lines hang-indent under
+        // the item text instead of resetting to column 0 (Pi-style lists).
         nodes.push(
-          <Box key={key} paddingLeft={indentDepth(bullet[1]!) * 2}>
-            <Text wrap="wrap-trim">
+          <Box key={key} flexDirection="row" paddingLeft={indentDepth(bullet[1]!) * 2}>
+            <Box flexShrink={0}>
               <Text color={t.color.muted}>{marker} </Text>
+            </Box>
+            <Text wrap="wrap-trim">
               <MdInline color={t.color.text} t={t} text={task ? task[2]! : bullet[2]!} />
             </Text>
           </Box>
@@ -1045,10 +1069,13 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
 
       if (numbered) {
         start('list')
+
         nodes.push(
-          <Box key={key} paddingLeft={indentDepth(numbered[1]!) * 2}>
-            <Text wrap="wrap-trim">
+          <Box key={key} flexDirection="row" paddingLeft={indentDepth(numbered[1]!) * 2}>
+            <Box flexShrink={0}>
               <Text color={t.color.muted}>{numbered[2]}. </Text>
+            </Box>
+            <Text wrap="wrap-trim">
               <MdInline color={t.color.text} t={t} text={numbered[3]!} />
             </Text>
           </Box>

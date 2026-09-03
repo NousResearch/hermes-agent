@@ -112,8 +112,13 @@ const THINKING_STATUS_CHUNK_RE = new RegExp(`[^A-Za-z\n]+\\s*(?:${VERBS.join('|'
 export const cleanThinkingText = (reasoning: string) =>
   reasoning
     .split('\n')
-    .map(line => line.replace(THINKING_STATUS_CHUNK_RE, '').trim())
-    .filter(line => line && !THINKING_STATUS_RE.test(line.replace(/\.\.\.$/, '').trim()))
+    .map(raw => ({ wasBlank: raw.trim() === '', cleaned: raw.replace(THINKING_STATUS_CHUNK_RE, '').trim() }))
+    // Keep blank lines the model wrote (paragraph breaks); drop only lines
+    // that BECAME blank by stripping a status-ticker fragment, and pure
+    // status-verb lines. Squashing all blanks turned thinking into a wall.
+    .filter(({ wasBlank, cleaned }) => wasBlank || cleaned)
+    .filter(({ cleaned }) => !cleaned || !THINKING_STATUS_RE.test(cleaned.replace(/\.\.\.$/, '').trim()))
+    .map(({ cleaned }) => cleaned)
     .join('\n')
     .replace(/([^\n])(?=\*\*[^*\n][^\n]*?\*\*)/g, '$1\n\n')
     .replace(/\n{3,}/g, '\n\n')

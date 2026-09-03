@@ -665,6 +665,18 @@ DEFAULT_CONFIG = {
         "real_profile_pin": "",
         "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
         "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)
+        # Named browser profiles for account / cookie-jar isolation.  Maps a
+        # profile name to a CDP endpoint, each typically a separate persistent
+        # Chrome.  Selecting a profile pins that session to its own endpoint, which
+        # lets the agent operate distinct identities — e.g. its own browser vs.
+        # a user's — and run different-profile sessions fully in parallel.  Calls
+        # with no profile use ``profiles["default"]``, which falls back to
+        # ``cdp_url`` above when unset (so existing single-endpoint configs keep
+        # working).  Example:
+        #   profiles:
+        #     default: http://localhost:9224
+        #     work:    http://localhost:9225
+        "profiles": {},
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
         # Active only when a CDP-capable backend is attached (Browserbase or
         # local Chrome via /browser connect). See

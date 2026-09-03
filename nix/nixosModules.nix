@@ -200,6 +200,20 @@
         hermes_bin=${containerDataDir}/current-package/bin/hermes
       '';
 
+      # The host CLI strips -p/--profile before it performs container routing.
+      # Give each profile a tiny in-container launcher that restores the fixed
+      # profile selector, rather than relying on sticky active-profile state.
+      profileContainerLauncher = name: pkgs.writeShellScript "hermes-profile-${name}-container-launcher" ''
+        exec ${containerDataDir}/current-package/bin/hermes -p ${lib.escapeShellArg name} "$@"
+      '';
+      profileContainerModeFile = name: pkgs.writeText "hermes-profile-${name}-container-mode" ''
+        # Written by the NixOS activation script. Do not edit manually.
+        backend=${cfg.container.backend}
+        container_name=${containerName}
+        exec_user=${cfg.user}
+        hermes_bin=${containerDataDir}/.hermes/profiles/${name}/.container-launcher
+      '';
+
       # Default: /var/lib/hermes/workspace → /data/workspace.
       # Custom paths outside stateDir pass through unchanged (user must add extraVolumes).
       containerWorkDir =
@@ -240,6 +254,163 @@
 
       unitPath = common.processPath { inherit pkgs cfg; };
 
+      profileHome = name: "${hermesHome}/profiles/${name}";
+      runAsProfileUser =
+        "${pkgs.util-linux}/bin/runuser -u ${lib.escapeShellArg cfg.user} -g ${lib.escapeShellArg cfg.group} -- ";
+      # `install /dev/stdin` reopens /proc/self/fd/0 after runuser drops
+      # privileges, which fails when root opened a root-only source. Read the
+      # inherited descriptor directly and atomically replace the destination.
+      profileInstallFromStdin = pkgs.writeShellScript "hermes-profile-install-from-stdin" ''
+        set -eu
+
+        mode="$1"
+        destination="$2"
+        destination_dir="$(${pkgs.coreutils}/bin/dirname -- "$destination")"
+        temporary="$(${pkgs.coreutils}/bin/mktemp --tmpdir="$destination_dir" .hermes-install.XXXXXX)"
+
+        cleanup() {
+          ${pkgs.coreutils}/bin/rm -f -- "$temporary"
+        }
+        trap cleanup EXIT
+        trap 'exit 1' HUP INT TERM
+
+        ${pkgs.coreutils}/bin/cat > "$temporary"
+        ${pkgs.coreutils}/bin/chmod "$mode" "$temporary"
+        ${pkgs.coreutils}/bin/mv -fT -- "$temporary" "$destination"
+        trap - EXIT
+      '';
+      # Declare the shared parent explicitly. Otherwise tmpfiles creates it as
+      # root while its parent is service-owned, then refuses that unsafe owner
+      # transition when canonicalizing any profile path on later activations.
+      profileTmpfilesRules =
+        lib.optional (cfg.profiles != { }) "d ${hermesHome}/profiles 2770 ${cfg.user} ${cfg.group} - -"
+        ++ lib.concatLists (
+          lib.mapAttrsToList (
+            name: profile:
+            [
+              "d ${profileHome name} 2770 ${cfg.user} ${cfg.group} - -"
+              "d ${profile.workingDirectory} 2770 ${cfg.user} ${cfg.group} - -"
+            ]
+            ++ map (d: "d ${profileHome name}/${d} 2770 ${cfg.user} ${cfg.group} - -") common.stateSubdirs
+          ) cfg.profiles
+        );
+      profileTmpfilesConfig = pkgs.writeText "hermes-profile-tmpfiles.conf" (
+        lib.concatStringsSep "\n" profileTmpfilesRules + "\n"
+      );
+      profileWorkDir =
+        profile:
+        if cfg.container.enable && lib.hasPrefix "${cfg.stateDir}/" profile.workingDirectory then
+          "${containerDataDir}/${lib.removePrefix "${cfg.stateDir}/" profile.workingDirectory}"
+        else
+          profile.workingDirectory;
+      profileCfg =
+        profile:
+        profile
+        // {
+          inherit (cfg)
+            package
+            extraDependencyGroups
+            extraPackages
+            extraPythonPackages
+            ;
+          settings = lib.recursiveUpdate profile.settings (
+            lib.optionalAttrs (profile.mcpServers != { }) {
+              mcp_servers = common.mcpServersToConfig profile.mcpServers;
+            }
+          );
+        };
+      profileType = lib.types.submodule (
+        { name, ... }:
+        {
+          options = common.profileOptions {
+            defaultPackage = hermes-agent;
+            defaultPackageText = lib.literalExpression "config.services.hermes-agent.package";
+            defaultWorkingDirectory = "${profileHome name}/workspace";
+            defaultWorkingDirectoryText = lib.literalExpression ''"config.services.hermes-agent.stateDir/.hermes/profiles/${name}/workspace"'';
+          };
+        }
+      );
+
+      profileStateScripts = lib.mapAttrsToList (
+        name: profile:
+        # Profile homes are runtime-writable. Mutate them as the service user
+        # so a stale or compromised profile cannot redirect privileged
+        # activation writes through a symlink.
+        common.mkStateScript {
+          inherit pkgs;
+          cfg = (profileCfg profile) // {
+            # Secret sources may intentionally be root-only. They are staged
+            # separately below, then copied into the profile by the service
+            # user through stdin.
+            environment = { };
+            environmentFiles = [ ];
+            authFile = null;
+          };
+          hermesHome = profileHome name;
+          inherit (profile) workingDirectory;
+          configWorkingDirectory = profileWorkDir profile;
+          run = runAsProfileUser;
+          manageConfig = profile.configFile == null;
+          stateDirs = common.stateSubdirs;
+          modes = {
+            config = configYamlMode;
+            env = "0640";
+            managed = "0644";
+            auth = "0600";
+            document = "0640";
+          };
+        }
+      ) cfg.profiles;
+
+      profileSecretScripts = lib.mapAttrsToList (
+        name: profile:
+        let
+          home = profileHome name;
+          runAsUser = runAsProfileUser;
+          envScript = common.mkEnvScript {
+            inherit pkgs;
+            inherit (profile) environment;
+          };
+          installFromStdin = mode: destination: source: ''
+            ${runAsUser}${profileInstallFromStdin} ${mode} ${lib.escapeShellArg destination} < ${source}
+          '';
+          configSetup = lib.optionalString (profile.configFile != null) (
+            installFromStdin configYamlMode "${home}/config.yaml" (lib.escapeShellArg (toString profile.configFile))
+          );
+          envSetup = lib.optionalString (profile.environment != { } || profile.environmentFiles != [ ]) ''
+            (
+              set -eu
+              _hermes_profile_env="$(${pkgs.coreutils}/bin/mktemp /run/hermes-agent-profile-env.XXXXXX)"
+              trap '${pkgs.coreutils}/bin/rm -f "$_hermes_profile_env"' EXIT
+              ${envScript} "$_hermes_profile_env" 0600 ${lib.escapeShellArgs profile.environmentFiles}
+              ${installFromStdin "0640" "${home}/.env" ''"$_hermes_profile_env"''}
+            )
+          '';
+          authInstall = installFromStdin "0600" "${home}/auth.json" (lib.escapeShellArg (toString profile.authFile));
+          authSetup = lib.optionalString (profile.authFile != null) (
+            if profile.authFileForceOverwrite then
+              authInstall
+            else
+              ''
+                if [ ! -e ${lib.escapeShellArg "${home}/auth.json"} ]; then
+                  ${authInstall}
+                fi
+              ''
+          );
+        in
+        configSetup + "\n" + envSetup + "\n" + authSetup
+      ) cfg.profiles;
+
+      profilePluginAssertions = lib.concatLists (
+        lib.mapAttrsToList (
+          name: profile:
+          common.pluginNameAssertions {
+            cfg = profile;
+            optionPath = "services.hermes-agent.profiles.${name}";
+          }
+        ) cfg.profiles
+      );
+
     in
     {
       options.services.hermes-agent =
@@ -276,6 +447,17 @@
               type = types.str;
               default = "/var/lib/hermes";
               description = "State directory. Contains .hermes/ subdir (HERMES_HOME).";
+            };
+
+            profiles = mkOption {
+              type = types.attrsOf profileType;
+              default = { };
+              description = ''
+                Declaratively managed named Hermes profiles. Each attribute
+                creates an independent HERMES_HOME under
+                stateDir/.hermes/profiles/<name>. Use `hermes -p <name>` to
+                select it.
+              '';
             };
 
             addToSystemPackages = mkOption {
@@ -376,6 +558,11 @@
                 inherit cfg;
                 optionPath = "services.hermes-agent";
               }
+              ++ profilePluginAssertions
+              ++ common.profileNameAssertions {
+                profiles = cfg.profiles;
+                optionPath = "services.hermes-agent.profiles";
+              }
               ++ common.workspaceFilesAssertions {
                 inherit cfg;
                 opt = options.services.hermes-agent.workingDirectory;
@@ -392,6 +579,11 @@
                   # module does not do that.
                   assertion = !(cfg.container.enable && cfg.backend.mode != "none");
                   message = "services.hermes-agent: backend.mode is not supported together with container.enable — the container runs the gateway only.";
+                }
+                {
+                  assertion =
+                    !(cfg.container.enable && lib.any (profile: profile.gateway.enable) (lib.attrValues cfg.profiles));
+                  message = "services.hermes-agent: named profile gateways are not supported together with container.enable — the container runs only the default profile gateway.";
                 }
               ];
           }
@@ -430,7 +622,8 @@
               "d ${cfg.stateDir}/home           0750 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.workingDirectory}        2770 ${cfg.user} ${cfg.group} - -"
             ]
-            ++ map (d: "d ${hermesHome}/${d} 2770 ${cfg.user} ${cfg.group} - -") common.stateSubdirs;
+            ++ map (d: "d ${hermesHome}/${d} 2770 ${cfg.user} ${cfg.group} - -") common.stateSubdirs
+            ++ profileTmpfilesRules;
           }
 
           # ── Activation: link config + auth + documents ────────────────────
@@ -467,6 +660,7 @@
                     inherit pkgs cfg hermesHome;
                     workingDirectory = cfg.workingDirectory;
                     configWorkingDirectory = effectiveWorkDir;
+                    configRun = runAsProfileUser;
                     owner = "${cfg.user}:${cfg.group}";
                     stateDirs = common.stateSubdirs;
                     modes = {
@@ -478,6 +672,15 @@
                     };
                   }}
 
+                  ${lib.optionalString (cfg.profiles != { }) ''
+                    # Provision configured profile homes and external workspaces
+                    # with systemd-tmpfiles' symlink-safe path handling before
+                    # unprivileged profile setup runs.
+                    ${config.systemd.package}/bin/systemd-tmpfiles --create ${profileTmpfilesConfig}
+                  ''}
+                  ${lib.concatStringsSep "\n" profileStateScripts}
+                  ${lib.concatStringsSep "\n" profileSecretScripts}
+
                   chown -h ${cfg.user}:${cfg.group} ${hermesHome}/plugins/nix-managed-* 2>/dev/null || true
 
                   # Container mode metadata — tells the host CLI to exec into the
@@ -487,10 +690,25 @@
                     if cfg.container.enable then
                       ''
                         install -o ${cfg.user} -g ${cfg.group} -m 0644 ${containerModeFile} ${hermesHome}/.container-mode
+                        ${lib.concatStringsSep "\n" (
+                          lib.mapAttrsToList (
+                            name: _profile:
+                            ''
+                              ${runAsProfileUser}install -m 0755 ${profileContainerLauncher name} ${profileHome name}/.container-launcher
+                              ${runAsProfileUser}install -m 0644 ${profileContainerModeFile name} ${profileHome name}/.container-mode
+                            ''
+                          ) cfg.profiles
+                        )}
                       ''
                     else
                       ''
                         rm -f ${hermesHome}/.container-mode
+                        ${lib.concatStringsSep "\n" (
+                          lib.mapAttrsToList (
+                            name: _profile:
+                            "${runAsProfileUser}rm -f ${profileHome name}/.container-mode ${profileHome name}/.container-launcher"
+                          ) cfg.profiles
+                        )}
 
                         # Remove symlink bridge for hostUsers
                         ${lib.concatStringsSep "\n" (
@@ -563,6 +781,42 @@
 
               path = unitPath;
             };
+          })
+
+          (lib.mkIf (!cfg.container.enable) {
+            systemd.services = lib.mapAttrs' (
+              name: profile:
+              let
+                agentCfg = profileCfg profile;
+              in
+              lib.nameValuePair "hermes-agent-${name}" {
+                description = "Hermes Agent Gateway (${name} profile)";
+                wantedBy = [ "multi-user.target" ];
+                after = [ "network-online.target" ];
+                wants = [ "network-online.target" ];
+
+                environment = {
+                  HOME = cfg.stateDir;
+                }
+                // common.processEnvironment { hermesHome = profileHome name; };
+
+                serviceConfig = commonServiceConfig // {
+                  WorkingDirectory = profile.workingDirectory;
+                  ReadWritePaths = [
+                    cfg.stateDir
+                    profile.workingDirectory
+                  ];
+                  ExecStart = lib.escapeShellArgs (common.gatewayArgv agentCfg);
+                  Restart = profile.restart;
+                  RestartSec = profile.restartSec;
+                };
+
+                path = common.processPath {
+                  inherit pkgs;
+                  cfg = agentCfg;
+                };
+              }
+            ) (lib.filterAttrs (_name: profile: profile.gateway.enable) cfg.profiles);
           })
 
           # ── The backend: hermes serve or hermes dashboard ─────────────────

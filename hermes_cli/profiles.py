@@ -366,6 +366,20 @@ def validate_profile_name(name: str) -> None:
         )
 
 
+def validate_named_profile_name(name: str) -> None:
+    """Validate a canonical id for a profile under ``profiles/``.
+
+    ``default`` is valid for commands that address the built-in root profile,
+    but it can never name a child directory.  Keeping that distinction here
+    gives declarative integrations one validator for the on-disk namespace.
+    """
+    validate_profile_name(name)
+    if name == "default":
+        raise ValueError(
+            "Profile name 'default' is reserved for the built-in root profile (~/.hermes)."
+        )
+
+
 def validate_alias_name(name: str) -> None:
     """Raise ``ValueError`` if *name* is not a safe wrapper-alias identifier.
 
@@ -1235,12 +1249,7 @@ def create_profile(
             "(cloning explicitly copies skills from the source profile)."
         )
     canon = normalize_profile_name(name)
-    validate_profile_name(canon)
-
-    if canon == "default":
-        raise ValueError(
-            "Cannot create a profile named 'default' — it is the built-in profile (~/.hermes)."
-        )
+    validate_named_profile_name(canon)
 
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists() and named_profile_is_deleted(profile_dir):
@@ -2563,10 +2572,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         return _get_default_hermes_home()
 
     new_canon = normalize_profile_name(new_name)
-    validate_profile_name(new_canon)
-
-    if new_canon == "default":
-        raise ValueError("Cannot rename to 'default' — it is reserved.")
+    validate_named_profile_name(new_canon)
 
     old_dir = get_profile_dir(old_canon)
     new_dir = get_profile_dir(new_canon)

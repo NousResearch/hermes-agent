@@ -22,6 +22,7 @@ from hermes_cli import profiles
 from hermes_cli.profiles import (
     normalize_profile_name,
     validate_profile_name,
+    validate_named_profile_name,
     get_profile_dir,
     create_profile,
     delete_profile,
@@ -92,6 +93,16 @@ class TestValidateProfileName:
     def test_invalid_names_rejected(self, name):
         with pytest.raises(ValueError):
             validate_profile_name(name)
+
+    @pytest.mark.parametrize(
+        "name", ["default", "hermes", "root", "sudo", "test", "tmp"]
+    )
+    def test_reserved_names_rejected_for_named_profiles(self, name):
+        with pytest.raises(ValueError):
+            validate_named_profile_name(name)
+
+    def test_default_remains_valid_as_the_root_profile_alias(self):
+        validate_profile_name("default")
 
 
 # ===================================================================

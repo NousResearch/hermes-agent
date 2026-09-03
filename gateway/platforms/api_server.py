@@ -58,6 +58,7 @@ import sys
 import threading
 import time
 import uuid
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -266,6 +267,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+MAX_OBSERVATION_BYTES = 64 * 1024
+OBSERVATION_ACTION_ID = "observe.ai_country.health"
+OBSERVATION_IDENTITY = "hermes-observer"
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
@@ -1138,6 +1142,8 @@ if AIOHTTP_AVAILABLE:
             cors_headers = adapter._cors_headers_for_origin(origin)
 
         if request.method == "OPTIONS":
+            if request.path == "/v1/observation":
+                return web.Response(status=405)
             if cors_headers is None:
                 return web.Response(status=403)
             return web.Response(status=200, headers=cors_headers)
@@ -1518,6 +1524,12 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
+        # Deliberately environment-only: this secret authenticates one fixed
+        # observation route and is never accepted as generic API authority.
+        self._observation_key: str = os.getenv("HERMES_OBSERVATION_KEY", "")
+        self._observation_target_url: Optional[str] = extra.get(
+            "observation_target_url"
+        )
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -1929,6 +1941,15 @@ class APIServerAdapter(BasePlatformAdapter):
             # for the default listener. Named profiles must fail closed rather
             # than inherit the listener owner's key.
             if not is_named_profile:
+                auth_header = request.headers.get("Authorization", "")
+                token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
+                if self._observation_key and token and hmac.compare_digest(
+                    token.encode(), self._observation_key.encode()
+                ):
+                    return web.json_response(
+                        {"error": {"message": "Observation credential is not valid for generic API routes", "type": "gateway_auth_error", "code": "gateway_auth_failed"}},
+                        status=401,
+                    )
                 return None
             logger.warning(
                 "API server rejected request for profile %r: no profile-scoped "
@@ -1950,6 +1971,13 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
+            if self._observation_key and hmac.compare_digest(
+                token.encode(), self._observation_key.encode()
+            ):
+                return web.json_response(
+                    {"error": {"message": "Observation credential is not valid for generic API routes", "type": "gateway_auth_error", "code": "gateway_auth_failed"}},
+                    status=401,
+                )
             # Compare as bytes: ``hmac.compare_digest`` raises TypeError on a
             # str containing non-ASCII characters, and ``token`` is the raw
             # client-supplied header. A stray non-ASCII byte in the key would
@@ -1966,6 +1994,117 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(
             {"error": {"message": "Invalid gateway API key (API_SERVER_KEY)", "type": "gateway_auth_error", "code": "gateway_auth_failed"}},
             status=401,
+        )
+
+    def _check_observation_auth(self, request: "web.Request") -> Optional["web.Response"]:
+        """Authenticate only the dedicated observation principal."""
+        if (
+            not self._observation_key
+            or not self._api_key
+            or hmac.compare_digest(self._observation_key.encode(), self._api_key.encode())
+        ):
+            return web.json_response(
+                {"error": {"message": "Observation authentication is unavailable", "type": "observation_auth_error", "code": "observation_auth_failed"}},
+                status=401,
+            )
+        auth_header = request.headers.get("Authorization", "")
+        token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
+        if not token or not hmac.compare_digest(token.encode(), self._observation_key.encode()):
+            return web.json_response(
+                {"error": {"message": "Invalid observation credential", "type": "observation_auth_error", "code": "observation_auth_failed"}},
+                status=401,
+            )
+        return None
+
+    @staticmethod
+    def _valid_observation_target(value: Any) -> Optional[str]:
+        """Accept only a configured loopback AI Country health URL."""
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            parsed = urlsplit(value)
+            if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"127.0.0.1", "::1"}:
+                return None
+            if parsed.username or parsed.password or parsed.query or parsed.fragment:
+                return None
+            if parsed.path != "/api/health":
+                return None
+            if parsed.port is not None and not (1 <= parsed.port <= 65535):
+                return None
+        except (TypeError, ValueError):
+            return None
+        return value
+
+    @staticmethod
+    def _sanitize_observation(value: Any) -> Dict[str, Any]:
+        """Return only the bounded health fields used by the canary."""
+        if not isinstance(value, dict):
+            return {}
+        allowed = {"status", "revision", "version", "identity_mode", "adapter_mode", "permission_ceiling"}
+        return {
+            key: item
+            for key, item in value.items()
+            if key in allowed and isinstance(item, (str, int, float, bool))
+        }
+
+    def _observation_audit(self, *, action_id: str, target: str, result: str) -> None:
+        logger.info(
+            "Hermes observation audit identity=%s endpoint=/v1/observation action_id=%s target=%s result=%s",
+            OBSERVATION_IDENTITY,
+            self._clean_log_value(action_id, max_len=80),
+            self._clean_log_value(target, max_len=200),
+            self._clean_log_value(result, max_len=40),
+        )
+
+    async def _handle_observation(self, request: "web.Request") -> "web.Response":
+        """Serve exactly one fixed, side-effect-free AI Country observation."""
+        if request.method != "POST":
+            return web.json_response({"error": "Method not allowed"}, status=405)
+        auth_err = self._check_observation_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        if not isinstance(body, dict) or set(body) != {"action_id"} or body.get("action_id") != OBSERVATION_ACTION_ID:
+            return web.json_response({"error": "Unsupported observation action"}, status=400)
+
+        target = self._valid_observation_target(self._observation_target_url)
+        if target is None:
+            self._observation_audit(action_id=OBSERVATION_ACTION_ID, target="configured-invalid", result="target_rejected")
+            return web.json_response({"error": "Observation target is not configured"}, status=503)
+
+        try:
+            from aiohttp import ClientSession, ClientTimeout
+
+            async with ClientSession(timeout=ClientTimeout(total=5), trust_env=False) as session:
+                async with session.get(target, allow_redirects=False, headers={"Accept": "application/json"}) as response:
+                    if 300 <= response.status < 400:
+                        self._observation_audit(action_id=OBSERVATION_ACTION_ID, target=target, result="redirect_rejected")
+                        return web.json_response({"error": "Observation target redirect rejected"}, status=502)
+                    if response.status != 200:
+                        self._observation_audit(action_id=OBSERVATION_ACTION_ID, target=target, result="target_error")
+                        return web.json_response({"error": "Observation target unavailable"}, status=502)
+                    raw = await response.content.read(MAX_OBSERVATION_BYTES + 1)
+                    if len(raw) > MAX_OBSERVATION_BYTES:
+                        self._observation_audit(action_id=OBSERVATION_ACTION_ID, target=target, result="target_oversize")
+                        return web.json_response({"error": "Observation target response too large"}, status=502)
+                    observed = self._sanitize_observation(json.loads(raw.decode("utf-8")))
+        except Exception:
+            self._observation_audit(action_id=OBSERVATION_ACTION_ID, target=target, result="target_failure")
+            return web.json_response({"error": "Observation target failed"}, status=502)
+
+        self._observation_audit(action_id=OBSERVATION_ACTION_ID, target=target, result="success")
+        return web.json_response(
+            {
+                "action_id": OBSERVATION_ACTION_ID,
+                "target": "/api/health",
+                "observation_identity": OBSERVATION_IDENTITY,
+                "mutation_capability": "none",
+                "provenance": "real_observation",
+                "observed": observed,
+            }
         )
 
     @staticmethod
@@ -7925,6 +8064,10 @@ class APIServerAdapter(BasePlatformAdapter):
             for method, path, handler in self._http_route_table():
                 self._app.router.add_route(method, path, handler)
                 self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
+            # Keep this route outside the shared table: that table is mirrored
+            # under /p/{profile}, which would let a caller select a different
+            # profile target or secret scope.
+            self._app.router.add_post("/v1/observation", self._handle_observation)
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the

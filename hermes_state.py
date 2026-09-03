@@ -414,7 +414,23 @@ _READ_ONLY_IOERR_RETRY_BACKOFF_S = 0.05
 # close. Once permits are gone the read path degrades to the locked writer
 # connection instead of opening more descriptors — slower under load, which is
 # the correct trade against a process-wide wedge the supervisor cannot see.
-_READ_POOL_MAX = 8
+# Read-connection pool ceiling per SessionDB instance.
+#
+# Each open connection holds two file descriptors (state.db + state.db-wal).
+# A gateway process runs at least two SessionDB instances (tui_gateway +
+# gateway/run.py shared db), so the peak fd budget is:
+#
+#   instances × pool_max × 2 fds/conn + 2 writer fds/instance
+#
+# With pool_max=8: 2 × 8 × 2 + 2 × 2 = 36 fds from state.db alone.
+# On macOS the default soft RLIMIT_NOFILE is 256; combined with httpx
+# sockets and subprocess pipes a long-lived gateway with many worker threads
+# exhausted the limit (#98573).
+#
+# Reduce to 4: 2 × 4 × 2 + 2 × 2 = 20 fds — a 45 % reduction in the
+# worst case, with minimal read latency regression (WAL readers share pages
+# in the page cache; the 4th+ concurrent reader is uncommon in practice).
+_READ_POOL_MAX = 4
 
 # Hard ceiling on read-only connections ALIVE at once in this PROCESS, across
 # every state.db it has open.

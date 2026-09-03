@@ -8721,10 +8721,14 @@ def _resolve_task_provider_model(
 
     if task:
         task_config = _get_auxiliary_task_config(task)
-        cfg_provider = str(task_config.get("provider", "")).strip() or None
-        cfg_model = str(task_config.get("model", "")).strip() or None
-        cfg_base_url = str(task_config.get("base_url", "")).strip() or None
-        cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        _raw = task_config.get("provider")
+        cfg_provider = str(_raw).strip() if _raw is not None else None
+        _raw = task_config.get("model")
+        cfg_model = str(_raw).strip() if _raw is not None else None
+        _raw = task_config.get("base_url")
+        cfg_base_url = str(_raw).strip() if _raw is not None else None
+        _raw = task_config.get("api_key")
+        cfg_api_key = str(_raw).strip() if _raw is not None else None
         # Resolve key_env → env var when api_key is not set directly
         if not cfg_api_key:
             cfg_key_env = str(

@@ -689,6 +689,54 @@ class ResponsesApiTransport(ProviderTransport):
                     response_tools = _rename_client_web_search_for_xai(response_tools)
                     wire_aliases[_XAI_CLIENT_WEB_SEARCH_ALIAS] = "web_search"
 
+        # GPT-5+ / Grok native web search (Responses API).
+        #
+        # GPT-5 and above support server-side agentic web search on verified
+        # Responses API endpoints (GitHub Copilot, chatgpt.com/backend-api).
+        # Grok models on GitHub Copilot also support the native built-in.
+        #
+        # Endpoint-gated: only fires on endpoints verified to support the
+        # native ``{type: "web_search"}`` built-in.  Unknown proxies serving
+        # a gpt-5+ or grok name retain the client-side function.
+        #
+        #   GPT-5+:  is_github_responses OR is_codex_backend
+        #   Grok:    is_github_responses only
+        #
+        # When the agent has a client-side ``web_search`` function (i.e. the
+        # web toolset is enabled), swap it for the native built-in so the
+        # model can run multi-search within a single inference pass - refining
+        # queries, cross-referencing, and discarding dead ends without
+        # consuming agent-loop round trips or stacking raw search results
+        # into the context window.
+        #
+        # Same 1:1 swap pattern as the xAI block above: replaces an
+        # already-requested capability, not an additive grant.
+        if not is_xai_responses and response_tools:
+            model_stem = (model or "").lower().rsplit("/", 1)[-1]
+            is_grok = model_stem.startswith("grok-")
+            swap_native = False
+            if is_grok and is_github_responses:
+                swap_native = True
+            elif model_stem.startswith("gpt-"):
+                try:
+                    major = int(model_stem.split("-")[1].split(".")[0])
+                except (IndexError, ValueError):
+                    major = 0
+                if major >= 5 and (is_github_responses or is_codex_backend):
+                    swap_native = True
+            if swap_native:
+                has_client_web_search = any(
+                    isinstance(t, dict) and t.get("name") == "web_search"
+                    for t in response_tools
+                )
+                if has_client_web_search:
+                    filtered = [
+                        t for t in response_tools
+                        if not (isinstance(t, dict) and t.get("name") == "web_search")
+                    ]
+                    filtered.append({"type": "web_search"})
+                    response_tools = filtered
+
         # OpenCode Responses backends reserve web_search / search_files as
         # function names (HTTP 400 "custom function name 'X' is reserved",
         # #85589). Alias them on the wire; normalize_response maps them back.

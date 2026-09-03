@@ -39,6 +39,10 @@ describe('voiceProviderKeys', () => {
 })
 
 describe('voice field option coverage', () => {
+  it('offers turbo for local faster-whisper transcription', () => {
+    expect(ENUM_OPTIONS['stt.local.model']).toContain('turbo')
+  })
+
   it('offers the current gpt-4o-mini-tts voice set, not just the tts-1 six', () => {
     const voices = ENUM_OPTIONS['tts.openai.voice']
 

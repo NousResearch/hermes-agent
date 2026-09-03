@@ -2204,7 +2204,7 @@ def _run_post_setup(post_setup_key: str):
             result = _pip_install(["-U", "faster-whisper", "--quiet"], timeout=300)
             if result.returncode == 0:
                 _print_success("    faster-whisper installed")
-                _print_info("    Model sizes: tiny, base (default), small, medium, large-v3")
+                _print_info("    Model sizes: tiny, base (default), small, medium, large-v3, turbo")
                 _print_info("    Change via stt.local.model in ~/.hermes/config.yaml")
             else:
                 _print_warning("    faster-whisper install failed:")
@@ -4609,10 +4609,10 @@ def _configure_videogen_model_for_plugin(plugin_name: str, config: dict) -> None
 # Per-provider STT model catalogs for the interactive picker. Keys are
 # ``stt.<provider>`` config sections; the first entry is the default.
 # Kept in sync with the dashboard selects (hermes_cli/web_server.py
-# _CONFIG_FIELD_META) and the desktop settings enums
+# _SCHEMA_OVERRIDES) and the desktop settings enums
 # (apps/desktop/src/app/settings/constants.ts).
 STT_MODEL_CATALOG = {
-    "local": ["base", "tiny", "small", "medium", "large-v3"],
+    "local": ["base", "tiny", "small", "medium", "large-v3", "turbo"],
     "groq": ["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"],
     "openai": ["whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"],
     "elevenlabs": ["scribe_v2", "scribe_v1"],

@@ -1386,7 +1386,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "stt.local.model": {
         "type": "select",
         "description": "Local faster-whisper model size",
-        "options": ["tiny", "base", "small", "medium", "large-v3"],
+        "options": ["tiny", "base", "small", "medium", "large-v3", "turbo"],
     },
     "stt.groq.model": {
         "type": "select",

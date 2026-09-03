@@ -815,7 +815,8 @@ async def create_profile_endpoint(body: ProfileCreate):
         clone = body.clone_from_default
         clone_from = "default" if clone else None
         clone_config = clone
-    try:
+
+    def _run():
         path = profiles_mod.create_profile(
             name=body.name,
             clone_from=clone_from,
@@ -837,75 +838,85 @@ async def create_profile_endpoint(body: ProfileCreate):
         collision = profiles_mod.check_alias_collision(body.name)
         if not collision:
             profiles_mod.create_wrapper_script(body.name)
+
+        # Optional explicit model assignment for the new profile. Best-effort:
+        # the profile already exists, so a model-write hiccup must not 500 the
+        # whole create — the user can set the model later from the Models page
+        # or `<profile> setup`.
+        provider = (body.provider or "").strip()
+        model = (body.model or "").strip()
+        model_set = False
+        if provider and model:
+            try:
+                _write_profile_model(path, provider, model)
+                model_set = True
+            except Exception:
+                _log.exception("Setting model for new profile %s failed", body.name)
+
+        # Optional MCP servers. Best-effort, same rationale as model assignment.
+        mcp_written = 0
+        if body.mcp_servers:
+            try:
+                mcp_written = _write_profile_mcp_servers(path, body.mcp_servers)
+            except Exception:
+                _log.exception("Writing MCP servers for new profile %s failed", body.name)
+
+        # Optional "keep" skill selection — replace semantics. When the builder
+        # sends an explicit keep list, disable every seeded skill not in it.
+        # Best-effort. Skipped when keep_skills is empty (legacy: keep the bundle).
+        skills_disabled = 0
+        if body.keep_skills:
+            try:
+                skills_disabled = _disable_unselected_skills(path, body.keep_skills)
+            except Exception:
+                _log.exception("Applying skill selection for new profile %s failed", body.name)
+
+        # Optional skills-hub installs. Spawned async, scoped to the new profile
+        # via `-p <name>` (a fresh subprocess re-binds skills_hub.SKILLS_DIR to the
+        # profile's HERMES_HOME at import). Returns PIDs for the UI to poll.
+        hub_installs: List[Dict[str, Any]] = []
+        for identifier in body.hub_skills:
+            ident = (identifier or "").strip()
+            if not ident:
+                continue
+            try:
+                proc = _spawn_hermes_action(
+                    ["-p", body.name, "skills", "install", ident, "--yes"],
+                    _hub_action_name("install", ident),
+                )
+                hub_installs.append({"identifier": ident, "pid": proc.pid})
+            except Exception:
+                _log.exception(
+                    "Spawning hub-skill install %s for new profile %s failed",
+                    ident,
+                    body.name,
+                )
+                hub_installs.append({"identifier": ident, "pid": None})
+
+        return {
+            "ok": True,
+            "name": body.name,
+            "path": str(path),
+            "model_set": model_set,
+            "mcp_written": mcp_written,
+            "skills_disabled": skills_disabled,
+            "hub_installs": hub_installs,
+        }
+
+    # The blocking work above (copytree-based create_profile, skill seeding,
+    # wrapper-script + model/MCP/skills-config writes, hub-install subprocess
+    # spawns) previously ran directly on the event loop — unlike every sibling
+    # profile-mutation endpoint in this router, all of which route their
+    # blocking work through run_in_threadpool. A profile create stalls every
+    # other concurrent request in the gateway process for as long as the
+    # copytree + writes take.
+    try:
+        return await run_in_threadpool(_run)
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         _log.exception("POST /api/profiles failed")
         raise HTTPException(status_code=500, detail=str(e))
-
-    # Optional explicit model assignment for the new profile. Best-effort:
-    # the profile already exists, so a model-write hiccup must not 500 the
-    # whole create — the user can set the model later from the Models page
-    # or `<profile> setup`.
-    provider = (body.provider or "").strip()
-    model = (body.model or "").strip()
-    model_set = False
-    if provider and model:
-        try:
-            _write_profile_model(path, provider, model)
-            model_set = True
-        except Exception:
-            _log.exception("Setting model for new profile %s failed", body.name)
-
-    # Optional MCP servers. Best-effort, same rationale as model assignment.
-    mcp_written = 0
-    if body.mcp_servers:
-        try:
-            mcp_written = _write_profile_mcp_servers(path, body.mcp_servers)
-        except Exception:
-            _log.exception("Writing MCP servers for new profile %s failed", body.name)
-
-    # Optional "keep" skill selection — replace semantics. When the builder
-    # sends an explicit keep list, disable every seeded skill not in it.
-    # Best-effort. Skipped when keep_skills is empty (legacy: keep the bundle).
-    skills_disabled = 0
-    if body.keep_skills:
-        try:
-            skills_disabled = _disable_unselected_skills(path, body.keep_skills)
-        except Exception:
-            _log.exception("Applying skill selection for new profile %s failed", body.name)
-
-    # Optional skills-hub installs. Spawned async, scoped to the new profile
-    # via `-p <name>` (a fresh subprocess re-binds skills_hub.SKILLS_DIR to the
-    # profile's HERMES_HOME at import). Returns PIDs for the UI to poll.
-    hub_installs: List[Dict[str, Any]] = []
-    for identifier in body.hub_skills:
-        ident = (identifier or "").strip()
-        if not ident:
-            continue
-        try:
-            proc = _spawn_hermes_action(
-                ["-p", body.name, "skills", "install", ident, "--yes"],
-                _hub_action_name("install", ident),
-            )
-            hub_installs.append({"identifier": ident, "pid": proc.pid})
-        except Exception:
-            _log.exception(
-                "Spawning hub-skill install %s for new profile %s failed",
-                ident,
-                body.name,
-            )
-            hub_installs.append({"identifier": ident, "pid": None})
-
-    return {
-        "ok": True,
-        "name": body.name,
-        "path": str(path),
-        "model_set": model_set,
-        "mcp_written": mcp_written,
-        "skills_disabled": skills_disabled,
-        "hub_installs": hub_installs,
-    }
 
 
 @router.get("/api/profiles/active")

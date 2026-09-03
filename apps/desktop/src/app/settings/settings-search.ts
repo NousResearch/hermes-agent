@@ -16,6 +16,7 @@ export const APPEARANCE_SETTING_IDS = {
   introSplash: 'appearance.intro-splash',
   language: 'appearance.language',
   theme: 'appearance.theme',
+  themeScope: 'appearance.theme-scope',
   toolView: 'appearance.tool-view',
   translucency: 'appearance.translucency',
   uiScale: 'appearance.ui-scale'

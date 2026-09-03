@@ -8,6 +8,7 @@ import { getEnvVars, getHermesConfigSchema } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Package, Palette, Settings2, Wrench } from '@/lib/icons'
 import { $agentPlugins, isDesktopRelevantPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import { $profiles } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
 
@@ -62,6 +63,7 @@ export function useSettingsSearchCatalog(enabled: boolean) {
   // the store's own inflight guard.
   const { requestGateway } = useGatewayRequest()
   const gatewayState = useStore($gatewayState)
+  const profiles = useStore($profiles)
   const desktopPluginRecords = useStore($pluginRecords)
   const agentPlugins = useStore($agentPlugins)
 
@@ -128,6 +130,21 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       label: appearance.themeTitle,
       target: { setting: APPEARANCE_SETTING_IDS.theme, view: 'config:appearance' }
     },
+    // The scope row only mounts with more than one profile; a hit that scrolls
+    // to nothing is worse than no hit.
+    ...(profiles.length > 1
+      ? [
+          {
+            context: appearanceContext,
+            description: appearance.themeScopePerProfileDesc,
+            icon: Palette,
+            id: `setting:${APPEARANCE_SETTING_IDS.themeScope}`,
+            keywords: ['theme', 'scope', 'profile', 'shared', 'sync', 'gateway'],
+            label: appearance.themeScopeTitle,
+            target: { setting: APPEARANCE_SETTING_IDS.themeScope, view: 'config:appearance' as const }
+          }
+        ]
+      : []),
     {
       context: appearanceContext,
       icon: Palette,

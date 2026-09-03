@@ -10,6 +10,7 @@
  */
 
 import { useStore } from '@nanostores/react'
+import { atom } from 'nanostores'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
 import { $registryVersion } from '@/contrib/registry'
@@ -38,6 +39,11 @@ const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
 // Last active profile, recorded so the boot-time paint can pick that profile's
 // theme before the gateway reports which profile actually launched.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
+// Whether skin + mode follow the active profile (each profile and gateway keeps
+// its own look) or one shared appearance paints every profile. Shared routes
+// both prefs at the global slot — the one `default` already uses — so flipping
+// back to per-profile finds every profile's earlier assignment intact.
+const THEME_SCOPE_KEY = 'hermes-desktop-theme-scope-v1'
 // Skins that no longer exist. A profile still pointing at one falls back to
 // DEFAULT_SKIN_NAME rather than painting a name nothing resolves.
 const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
@@ -63,18 +69,38 @@ const normalizeSkin = (name: string | null): string =>
 const normalizeMode = (value: string | null): ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
 
+// ─── Theme scope ─────────────────────────────────────────────────────────────
+export type ThemeScope = 'per-profile' | 'shared'
+
+const normalizeScope = (value: string | null): ThemeScope => (value === 'shared' ? 'shared' : 'per-profile')
+
+const readScope = () => (typeof window === 'undefined' ? 'per-profile' : normalizeScope(storedString(THEME_SCOPE_KEY)))
+
+/** Per-profile (default) or one shared look. Settings → Appearance owns the lever. */
+export const $themeScope = atom<ThemeScope>(readScope())
+
+/** Test-only: drop the in-memory scope so a cleared localStorage reads as fresh. */
+export function __resetThemeScope(): void {
+  $themeScope.set(readScope())
+}
+
+// Under `shared`, every profile reads and writes the global slot.
+const slotFor = (profile: string): string => ($themeScope.get() === 'shared' ? 'default' : profile)
+
 // ─── Per-profile appearance persistence ─────────────────────────────────────
 // Skin and mode are each stored per profile. "default" isn't a real profile —
 // it *is* the legacy global slot, so it reads/writes the global directly. Named
 // profiles get their own entry and fall back to that global until assigned, so
 // unassigned profiles and pre-per-profile installs stay on the global value.
 const profilePref = <T extends string>(record: string, legacy: string, normalize: (v: string | null) => T) => ({
-  resolve: (profile: string): T => normalize(storedStringRecord(record)[profile] ?? storedString(legacy)),
+  resolve: (profile: string): T => normalize(storedStringRecord(record)[slotFor(profile)] ?? storedString(legacy)),
   assign: (profile: string, value: T): void => {
-    if (profile === 'default') {
+    const slot = slotFor(profile)
+
+    if (slot === 'default') {
       persistString(legacy, value)
     } else {
-      persistStringRecord(record, { ...storedStringRecord(record), [profile]: value })
+      persistStringRecord(record, { ...storedStringRecord(record), [slot]: value })
     }
   }
 })
@@ -82,8 +108,33 @@ const profilePref = <T extends string>(record: string, legacy: string, normalize
 export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeSkin)
 export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
 
+/**
+ * Switch between per-profile and shared appearance. Going shared promotes the
+ * look you are on right now to the shared one (read through the live profile
+ * BEFORE the flip, written to the global slot after), so the window never
+ * changes under you. Going back to per-profile restores each profile's own
+ * assignment — nothing was overwritten.
+ */
+export function setThemeScope(scope: ThemeScope): void {
+  if (scope === $themeScope.get()) {
+    return
+  }
+
+  const live = normalizeProfileKey($activeGatewayProfile.get())
+  const skin = skinPref.resolve(live)
+  const mode = modePref.resolve(live)
+
+  $themeScope.set(scope)
+  persistString(THEME_SCOPE_KEY, scope)
+
+  if (scope === 'shared') {
+    skinPref.assign(live, skin)
+    modePref.assign(live, mode)
+  }
+}
+
 /** Everything a peer window could change that this one has to repaint for. */
-const APPEARANCE_KEYS = new Set([SKIN_KEY, PROFILE_SKINS_KEY, MODE_KEY, PROFILE_MODES_KEY])
+const APPEARANCE_KEYS = new Set([SKIN_KEY, PROFILE_SKINS_KEY, MODE_KEY, PROFILE_MODES_KEY, THEME_SCOPE_KEY])
 
 // Last active profile — lets the boot paint pick its appearance before the
 // gateway reports which profile actually launched.
@@ -366,6 +417,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // appearance shows. Single-profile users only ever see "default", so their
   // behavior is unchanged.
   const profileKey = normalizeProfileKey(useStore($activeGatewayProfile))
+  const themeScope = useStore($themeScope)
 
   // Built-ins + user-installed + registry-contributed themes. Reactive so an
   // import or a plugin registration shows up live in the palette, settings
@@ -394,13 +446,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     typeof window === 'undefined' ? 'system' : modePref.resolve(readBootProfileKey())
   )
 
-  // Follow profile switches: paint the profile's assigned skin + mode and
-  // remember it for the next boot's first paint.
+  // Follow profile switches (and scope flips): paint the profile's assigned
+  // skin + mode and remember it for the next boot's first paint.
   useEffect(() => {
     rememberActiveProfileKey(profileKey)
     setThemeNameState(skinPref.resolve(profileKey))
     setModeState(modePref.resolve(profileKey))
-  }, [profileKey])
+  }, [profileKey, themeScope])
 
   // Appearance is per-profile localStorage, and every desktop window is another
   // renderer on the same origin — so a switch made in the HUD (or any peer
@@ -410,6 +462,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const onStorage = (event: StorageEvent) => {
       if (event.key && !APPEARANCE_KEYS.has(event.key)) {
         return
+      }
+
+      // A null key is a wholesale clear, which takes the scope with it.
+      if (!event.key || event.key === THEME_SCOPE_KEY) {
+        $themeScope.set(readScope())
       }
 
       const live = normalizeProfileKey($activeGatewayProfile.get())

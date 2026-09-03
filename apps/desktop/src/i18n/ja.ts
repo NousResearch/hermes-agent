@@ -443,6 +443,14 @@ export const ja = defineLocale({
       themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。',
       themeProfileNote: profile =>
         `「${profile}」プロファイルに保存されます。プロファイルごとに個別のテーマを保持します。`,
+      themeSharedNote: 'すべてのプロファイルとゲートウェイで共有されます。一度選べば、どこでも同じ外観になります。',
+      themeScopeTitle: 'テーマの適用範囲',
+      themeScopePerProfile: 'プロファイルごと',
+      themeScopeShared: '共有',
+      themeScopePerProfileDesc:
+        'プロファイルとゲートウェイごとにテーマとライト/ダークモードを個別に記憶し、プロファイルを切り替えると外観も切り替わります。',
+      themeScopeSharedDesc:
+        'アプリ全体で 1 つのテーマとライト/ダークモードを使い、すべてのプロファイルとゲートウェイに適用します。その他の外観設定はすでに共有されています。',
       installTitle: 'VS Code から導入',
       installDesc:
         'Marketplace の拡張機能 ID（例: dracula-theme.theme-dracula）を貼り付けると、その配色テーマをデスクトップ用パレットに変換します。',

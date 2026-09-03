@@ -496,6 +496,14 @@ export const ar = defineLocale({
       themeTitle: 'الثيم',
       themeDesc: 'اختر ثيم سطح المكتب.',
       themeProfileNote: profile => `سيطبق هذا الثيم على الملف الشخصي ${profile}.`,
+      themeSharedNote: 'مشترك بين جميع الملفات الشخصية والبوابات — اختر مرة واحدة ويُطبق في كل مكان.',
+      themeScopeTitle: 'نطاق الثيم',
+      themeScopePerProfile: 'لكل ملف شخصي',
+      themeScopeShared: 'مشترك',
+      themeScopePerProfileDesc:
+        'يحتفظ كل ملف شخصي وبوابة بثيمه ووضعه الفاتح/الداكن الخاص، فيتغير المظهر عند تبديل الملف الشخصي.',
+      themeScopeSharedDesc:
+        'ثيم واحد ووضع فاتح/داكن واحد للتطبيق كله على جميع الملفات الشخصية والبوابات. بقية إعدادات المظهر مشتركة أصلاً.',
       installTitle: 'تثبيت ثيم',
       installDesc: 'ألصق رابط ثيم أو اسمه لتثبيته.',
       installPlaceholder: 'رابط أو اسم الثيم',

@@ -618,6 +618,14 @@ export const en: Translations = {
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
       themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
+      themeSharedNote: 'Shared across every profile and gateway — pick once, it follows you everywhere.',
+      themeScopeTitle: 'Theme Scope',
+      themeScopePerProfile: 'Per profile',
+      themeScopeShared: 'Shared',
+      themeScopePerProfileDesc:
+        'Each profile and gateway remembers its own theme and light/dark mode, so switching profiles switches the look.',
+      themeScopeSharedDesc:
+        'One theme and light/dark mode for the whole app, on every profile and gateway. The rest of Appearance is already shared.',
       installTitle: 'Install from VS Code',
       installDesc:
         'Paste a Marketplace extension id (e.g. dracula-theme.theme-dracula) to convert its color theme into a desktop palette.',

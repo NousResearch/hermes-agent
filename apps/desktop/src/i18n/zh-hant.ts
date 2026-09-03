@@ -418,6 +418,8 @@ export const zhHant = defineLocale({
       embedsAlways: '一律',
       embedsOff: '關閉',
       embedsReset: (count: number) => `重設 ${count} 個已允許的服務`,
+      resumeLastSessionTitle: '啟動時恢復上次會話',
+      resumeLastSessionDesc: '開啟後，應用冷啟動時重新打開最近的聊天。關閉則始終從空白新會話開始。',
       product: '產品',
       productDesc: '易讀的工具活動與精簡摘要。',
       technical: '技術',
@@ -705,7 +707,8 @@ export const zhHant = defineLocale({
         'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
       bundleOutOfSyncAction: '取得安裝程式',
       bundleSwapPending: '重新啟動以完成更新',
-      bundleSwapPendingDesc: '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',
+      bundleSwapPendingDesc:
+        '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',
       bundleSwapPendingAction: '重新啟動 Hermes',
       updates: '更新',
       checkNow: '立即檢查',
@@ -998,8 +1001,7 @@ export const zhHant = defineLocale({
       runtimeInstalled: '已安裝 llama.cpp 執行環境',
       runtimeInstalledDetail: (tag, backend) => `組建 ${tag}，${backend} 後端。Hermes 會為您啟動並管理伺服器。`,
       installTitle: '安裝本地執行環境',
-      installDetail:
-        '下載 llama.cpp 推理引擎（數百 MB）。下載的模型完全在本機執行——無需帳號，資料不會離開您的電腦。',
+      installDetail: '下載 llama.cpp 推理引擎（數百 MB）。下載的模型完全在本機執行——無需帳號，資料不會離開您的電腦。',
       installAction: '安裝執行環境',
       installing: '正在安裝執行環境…',
       installFailed: '執行環境安裝失敗',
@@ -1012,7 +1014,8 @@ export const zhHant = defineLocale({
       recommended: '推薦',
       recommendedReason: {
         'best-quality-resident': '在完全駐留 GPU 且保持全速的模型中品質最高。推薦會在品質與該硬體的預計速度之間權衡。',
-        'speed-gated-quality': '有更高品質的模型可以裝入這台機器，但受記憶體頻寬限制回應會太慢——這是保持流暢的最佳模型。',
+        'speed-gated-quality':
+          '有更高品質的模型可以裝入這台機器，但受記憶體頻寬限制回應會太慢——這是保持流暢的最佳模型。',
         'fastest-resident': '沒有模型能在該硬體上達到全速；這是完全駐留 GPU 記憶體中最快的一個。',
         'least-painful-spilled': '沒有模型能完全裝入 GPU 記憶體——這是從系統記憶體執行表現最好的一個。'
       } as Record<string, string>,
@@ -1024,7 +1027,8 @@ export const zhHant = defineLocale({
       useAction: '使用',
       activePill: '預設',
       updateTitle: '引擎有可用更新',
-      updateDetail: (next, current) => `新的 llama.cpp 組建（${next}）可以安裝——目前為 ${current}。下載期間模型仍可正常使用。`,
+      updateDetail: (next, current) =>
+        `新的 llama.cpp 組建（${next}）可以安裝——目前為 ${current}。下載期間模型仍可正常使用。`,
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
@@ -1036,7 +1040,8 @@ export const zhHant = defineLocale({
       placementResident: '全部在 GPU',
       placementSpilled: '部分在記憶體',
       placementResidentTip: '完全在 GPU 記憶體中以此上下文視窗執行——全速。',
-      placementSpilledTip: '模型的一部分從系統記憶體執行——可用但較慢。更緊湊的版本或更小的上下文可以完全放入顯示記憶體。',
+      placementSpilledTip:
+        '模型的一部分從系統記憶體執行——可用但較慢。更緊湊的版本或更小的上下文可以完全放入顯示記憶體。',
       loadingPill: '載入中…',
       ejectTip: '釋放顯示記憶體（需要時重新載入）',
       ejected: '模型已卸載——顯示記憶體已釋放。',
@@ -3145,10 +3150,6 @@ export const zhHant = defineLocale({
       'composer-mentions': {
         title: '附件與指令',
         text: '輸入 @ 把檔案帶入對話，輸入 / 執行指令。'
-      },
-      'model-switch': {
-        title: '對話中隨時換模型',
-        text: '模型名稱就是按鈕。工作性質變了就換一個。'
       },
       'local-setup': {
         title: '這台電腦可以本地執行模型',

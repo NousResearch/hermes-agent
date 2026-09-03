@@ -53,7 +53,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
-        "cronjob",  # no scheduling more work in the parent's name
+        "cronjob_manage",  # no scheduling more work in the parent's name
     ]
 )
 
@@ -1402,6 +1402,41 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
     )
 
 
+_BATCH_ORDINALS: Dict[str, int] = {}
+_BATCH_ORDINALS_LOCK = threading.Lock()
+
+
+def format_batch_tag(delegation_id: Optional[str]) -> str:
+    """Short human tag identifying which delegation batch a line belongs to.
+
+    ``deleg_6a664903`` → ``set 1`` (first batch seen in this process),
+    the next distinct id → ``set 2``, and so on. Several batches (a parent's
+    fan-out plus a child's nested fan-out, or two concurrent tools) print
+    interleaved ``[n/N]`` progress lines to the same console; without a batch
+    tag a ``✓ [3/3]`` and a ``✓ [3/9]`` are indistinguishable, and a raw hex
+    slice (``[b2ac 3/9]``) is attributable but unreadable. Empty string when
+    no id is known so callers can concatenate unconditionally.
+    """
+    if not isinstance(delegation_id, str) or not delegation_id:
+        return ""
+    with _BATCH_ORDINALS_LOCK:
+        n = _BATCH_ORDINALS.get(delegation_id)
+        if n is None:
+            n = len(_BATCH_ORDINALS) + 1
+            _BATCH_ORDINALS[delegation_id] = n
+    return f"set {n}"
+
+
+def _batch_prefix(delegation_id: Optional[str], task_index: int, task_count: int) -> str:
+    """``[set 2 · 3/9] `` for batch children, ``[set 2] `` for a lone child,
+    ``[3/9] `` / ``""`` when the batch id is unknown."""
+    tag = format_batch_tag(delegation_id)
+    if task_count > 1:
+        inner = f"{tag} · {task_index + 1}/{task_count}" if tag else f"{task_index + 1}/{task_count}"
+        return f"[{inner}] "
+    return f"[{tag}] " if tag else ""
+
+
 def _emit_parent_console(parent_agent, line: str) -> None:
     """Emit a human-readable progress line to the parent's console.
 
@@ -1454,8 +1489,14 @@ def _build_child_progress_callback(
     if not spinner and not parent_cb:
         return None  # No display → no callback → zero behavior change
 
-    # Show 1-indexed prefix only in batch mode (multiple tasks)
-    prefix = f"[{task_index + 1}] " if task_count > 1 else ""
+    # Show 1-indexed prefix only in batch mode (multiple tasks). The batch tag
+    # (short delegation id) is resolved lazily from session_ref because the
+    # callback is built before delegate_task stamps ``_delegation_id`` on the
+    # child; delegate_task drops the id into the same shared ref.
+    def _prefix() -> str:
+        deleg = session_ref.get("delegation_id") if session_ref else None
+        return _batch_prefix(deleg, task_index, task_count)
+
     goal_label = (goal or "").strip()
 
     # Gateway: batch tool names, flush periodically
@@ -1484,6 +1525,8 @@ def _build_child_progress_callback(
         # event lets UIs open/inspect the subagent's session directly.
         if session_ref and session_ref.get("session_id"):
             kw["child_session_id"] = str(session_ref["session_id"])
+        if session_ref and session_ref.get("delegation_id"):
+            kw["delegation_id"] = str(session_ref["delegation_id"])
         kw["tool_count"] = _tool_count[0]
         return kw
 
@@ -1510,7 +1553,7 @@ def _build_child_progress_callback(
                     (goal_label[:55] + "...") if len(goal_label) > 55 else goal_label
                 )
                 try:
-                    spinner.print_above(f" {prefix}├─ 🔀 {short}")
+                    spinner.print_above(f" {_prefix()}├─ 🔀 {short}")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.start", preview=preview or goal_label or "", **kwargs)
@@ -1529,7 +1572,7 @@ def _build_child_progress_callback(
                     duration_seconds=kwargs.get("duration_seconds"),
                 )
                 try:
-                    spinner.print_above(f" {prefix}├─ {_fail_line}")
+                    spinner.print_above(f" {_prefix()}├─ {_fail_line}")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.complete", preview=preview, **kwargs)
@@ -1563,7 +1606,7 @@ def _build_child_progress_callback(
             if spinner:
                 short = (text[:55] + "...") if len(text) > 55 else text
                 try:
-                    spinner.print_above(f' {prefix}├─ 💭 "{short}"')
+                    spinner.print_above(f' {_prefix()}├─ 💭 "{short}"')
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.thinking", preview=text)
@@ -1583,12 +1626,12 @@ def _build_child_progress_callback(
             summary_text = tool_name or preview or ""
             if spinner and summary_text:
                 try:
-                    spinner.print_above(f" {prefix}├─ 🔀 {summary_text}")
+                    spinner.print_above(f" {_prefix()}├─ 🔀 {summary_text}")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             if parent_cb:
                 try:
-                    parent_cb("subagent_progress", f"{prefix}{summary_text}")
+                    parent_cb("subagent_progress", f"{_prefix()}{summary_text}")
                 except Exception as e:
                     logger.debug("Parent callback relay failed: %s", e)
             return
@@ -1610,7 +1653,7 @@ def _build_child_progress_callback(
             from agent.display import get_tool_emoji
 
             emoji = get_tool_emoji(tool_name or "")
-            line = f" {prefix}├─ {emoji} {tool_name}"
+            line = f" {_prefix()}├─ {emoji} {tool_name}"
             if short:
                 line += f'  "{short}"'
             try:
@@ -1623,14 +1666,14 @@ def _build_child_progress_callback(
             _batch.append(tool_name or "")
             if len(_batch) >= _BATCH_SIZE:
                 summary = ", ".join(_batch)
-                _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
+                _relay("subagent.progress", preview=f"🔀 {_prefix()}{summary}")
                 _batch.clear()
 
     def _flush():
         """Flush remaining batched tool names to gateway on completion."""
         if parent_cb and _batch:
             summary = ", ".join(_batch)
-            _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
+            _relay("subagent.progress", preview=f"🔀 {_prefix()}{summary}")
             _batch.clear()
 
     _callback._flush = _flush
@@ -2138,6 +2181,9 @@ def _build_child_agent(
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
+    # Same shared ref receives the batch id once delegate_task stamps it, so
+    # the display prefix and relayed events can tag which batch this is.
+    child._progress_identity_ref = child_session_ref
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
     # Stash the post-degrade role for introspection (leaf if the
@@ -4091,6 +4137,18 @@ def delegate_task(
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
         task_list, context, model=creds.get("model"), provider=creds.get("provider")
     )
+    # Announce the batch tag once so the later ``[tag n/N]`` completion lines
+    # (and any nested batch's lines interleaving with them) are attributable.
+    if n_tasks > 1 and live_deleg_id:
+        _hdr = f"🔀 [{format_batch_tag(live_deleg_id)}] delegating {n_tasks} tasks"
+        _hdr_spinner = getattr(parent_agent, "_delegate_spinner", None)
+        if _hdr_spinner:
+            try:
+                _hdr_spinner.print_above(f"  {_hdr}")
+            except Exception:
+                _emit_parent_console(parent_agent, f"  {_hdr}")
+        else:
+            _emit_parent_console(parent_agent, f"  {_hdr}")
 
     # Capture the ORIGINATING session's wake target BEFORE any child agent is
     # constructed: _build_child_agent() -> AIAgent() -> agent_init calls
@@ -4179,6 +4237,9 @@ def delegate_task(
         # attribution (child-started background processes report under it).
         if live_deleg_id:
             setattr(child, "_delegation_id", live_deleg_id)
+            _ident_ref = getattr(child, "_progress_identity_ref", None)
+            if isinstance(_ident_ref, dict):
+                _ident_ref["delegation_id"] = live_deleg_id
         children.append((i, t, child))
 
     def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:
@@ -4314,7 +4375,9 @@ def delegate_task(
                         status = entry.get("status", "?")
                         icon = "✓" if status == "completed" else "✗"
                         remaining = n_tasks - completed_count
-                        completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                        _tag = format_batch_tag(live_deleg_id)
+                        _slot = f"{_tag} · {idx+1}/{n_tasks}" if _tag else f"{idx+1}/{n_tasks}"
+                        completion_line = f"{icon} [{_slot}] {label}  ({dur}s)"
                         # Failed/errored/timed-out children: say WHY on the
                         # same line, cleaned to one short human-readable
                         # fragment — a bare ✗ reads as "silently dropped".
@@ -4336,7 +4399,7 @@ def delegate_task(
                         if spinner_ref and remaining > 0:
                             try:
                                 spinner_ref.update_text(
-                                    f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining"
+                                    f"🔀 {'[' + _tag + '] ' if _tag else ''}{remaining} task{'s' if remaining != 1 else ''} remaining"
                                 )
                             except Exception as e:
                                 logger.debug("Spinner update_text failed: %s", e)

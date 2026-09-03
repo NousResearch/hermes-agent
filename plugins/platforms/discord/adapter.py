@@ -203,10 +203,10 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     cache_image_from_url,
-    cache_image_from_bytes,
+    cache_image_from_bytes_async,
     cache_audio_from_url,
-    cache_audio_from_bytes,
-    cache_document_from_bytes,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
     SUPPORTED_DOCUMENT_TYPES,
     _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit,
@@ -382,6 +382,10 @@ class _DiscordNonConversationalMessageTracker:
     def __init__(self, max_tracked: int = _MAX_TRACKED):
         self._max_tracked = max_tracked
         self._ids: dict[str, None] = dict.fromkeys(self._load())
+        # Serializes the offloaded flushes so two concurrent mark_many() calls
+        # cannot land their writes out of order (last-writer-wins would drop
+        # the newer ids from disk).
+        self._persist_lock = asyncio.Lock()
 
     def _state_path(self) -> _Path:
         from hermes_constants import get_hermes_home
@@ -404,17 +408,21 @@ class _DiscordNonConversationalMessageTracker:
             logger.debug("[%s] Failed to load non-conversational Discord IDs", "Discord")
         return []
 
-    def _save(self) -> None:
+    def _snapshot(self) -> list[str]:
+        """Trim in-memory state and return the ids to persist (loop-side)."""
         ids = list(self._ids)
         if len(ids) > self._max_tracked:
             ids = ids[-self._max_tracked:]
             self._ids = dict.fromkeys(ids)
+        return ids
+
+    def _save(self, ids: list[str]) -> None:
         try:
             atomic_json_write(self._state_path(), ids, indent=None)
         except Exception:
             logger.debug("[%s] Failed to save non-conversational Discord IDs", "Discord", exc_info=True)
 
-    def mark_many(self, message_ids: List[str]) -> None:
+    async def mark_many(self, message_ids: List[str]) -> None:
         changed = False
         for message_id in message_ids:
             key = str(message_id or "").strip()
@@ -422,7 +430,16 @@ class _DiscordNonConversationalMessageTracker:
                 self._ids[key] = None
                 changed = True
         if changed:
-            self._save()
+            # atomic_json_write() calls os.fsync(), which blocks until the
+            # write reaches stable storage. Both callers of mark_many() run
+            # on the event loop, so offload the flush the same way #83906
+            # did for the other gateway persist paths. The snapshot (and the
+            # trim that reassigns ``_ids``) stays on the loop so the worker
+            # never touches the dict while another task mutates it; the lock
+            # keeps flushes in mutation order.
+            async with self._persist_lock:
+                ids = self._snapshot()
+                await asyncio.to_thread(self._save, ids)
 
     def __contains__(self, message_id: str) -> bool:
         return str(message_id or "") in self._ids
@@ -3611,7 +3628,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if message_ids:
                 _target_id = thread_id or chat_id
                 if nonconversational:
-                    self._nonconversational_messages.mark_many(message_ids)
+                    await self._nonconversational_messages.mark_many(message_ids)
                 elif not _looks_like_nonconversational_history_message(content):
                     self._last_self_message_id[_target_id] = message_ids[-1]
 
@@ -6456,6 +6473,14 @@ class DiscordAdapter(BasePlatformAdapter):
         )
         return (len(self._skill_entries), self._skill_group_hidden_count)
 
+    def _interaction_guild_id(self, interaction: discord.Interaction) -> Optional[str]:
+        """Resolve the guild id of a slash interaction (mirrors the message path)."""
+        guild_id = getattr(interaction, "guild_id", None)
+        if guild_id is None:
+            guild = getattr(getattr(interaction, "channel", None), "guild", None)
+            guild_id = getattr(guild, "id", None)
+        return str(guild_id) if guild_id else None
+
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
         is_dm = isinstance(interaction.channel, discord.DMChannel)
@@ -6480,6 +6505,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # For forum threads, inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
 
+        # guild_id/parent_chat_id feed profile_routes matching in build_source,
+        # exactly as on_message passes them — without them a guild- or
+        # channel-routed profile never matches a native slash command (#69178).
+        parent_id = (
+            self._get_parent_channel_id(interaction.channel) if is_thread else None
+        ) or ""
         source = self.build_source(
             chat_id=str(interaction.channel_id),
             chat_name=chat_name,
@@ -6488,11 +6519,12 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=self._interaction_guild_id(interaction),
+            parent_chat_id=parent_id or None,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
-        parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
         return MessageEvent(
             text=text,
             message_type=msg_type,
@@ -6574,6 +6606,8 @@ class DiscordAdapter(BasePlatformAdapter):
         _chan = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
 
+        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
+        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         source = self.build_source(
             chat_id=thread_id,
             chat_name=chat_name,
@@ -6582,10 +6616,10 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=self._interaction_guild_id(interaction),
+            parent_chat_id=_parent_id or None,
         )
 
-        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
-        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(
@@ -7855,7 +7889,7 @@ class DiscordAdapter(BasePlatformAdapter):
             msg = await channel.send(content=content, embed=embed, view=view)
             view._message = msg  # store for on_timeout expiration editing
             if _metadata_marks_nonconversational(metadata):
-                self._nonconversational_messages.mark_many([str(msg.id)])
+                await self._nonconversational_messages.mark_many([str(msg.id)])
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -8091,7 +8125,7 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_bytes = await self._read_attachment_bytes(att, media_type="image")
         if raw_bytes is not None:
             try:
-                return cache_image_from_bytes(raw_bytes, ext=ext)
+                return await cache_image_from_bytes_async(raw_bytes, ext=ext)
             except Exception as e:
                 logger.debug(
                     "[Discord] cache_image_from_bytes rejected att.read() data; falling back to URL: %s",
@@ -8110,7 +8144,7 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_bytes = await self._read_attachment_bytes(att, media_type="audio")
         if raw_bytes is not None:
             try:
-                return cache_audio_from_bytes(raw_bytes, ext=ext)
+                return await cache_audio_from_bytes_async(raw_bytes, ext=ext)
             except Exception as e:
                 logger.debug(
                     "[Discord] cache_audio_from_bytes failed; falling back to URL: %s",
@@ -8437,7 +8471,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:
                     try:
                         raw_bytes = await self._cache_discord_document(att, ext)
-                        cached_path = cache_document_from_bytes(
+                        cached_path = await cache_document_from_bytes_async(
                             raw_bytes, att.filename or f"document{ext or '.bin'}"
                         )
                         if in_allowlist:

@@ -301,6 +301,23 @@ class TestPayload:
         assert payload["delivery_id"] == "did_1234"
         assert payload["timestamp"].endswith("Z")
 
+    def test_profile_field_reflects_bound_profile_home(self, tmp_path, monkeypatch):
+        """Receivers behind a multiplexed gateway need to know which profile
+        fired (#92674): ``profile`` follows the bound home at fire time."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        profile_home = tmp_path / "profiles" / "b"
+        profile_home.mkdir(parents=True)
+        token = set_hermes_home_override(profile_home)
+        try:
+            body = outbound_webhooks._serialize_payload("on_session_end", {}, "did_1")
+        finally:
+            reset_hermes_home_override(token)
+        assert json.loads(body)["profile"] == "b"
+        body = outbound_webhooks._serialize_payload("on_session_end", {}, "did_2")
+        assert json.loads(body)["profile"] == "default"
+
     def test_unserialisable_values_stringified(self):
         body = outbound_webhooks._serialize_payload(
             "on_session_end", {"weird": object()}, "did_1"
@@ -342,6 +359,46 @@ class TestRegistration:
         assert outbound_webhooks.flush()
         # No block/context directives from the webhook callback.
         assert results == []
+        assert len(http_server.captured) == 1
+
+
+class TestForceReloadHomeScoping:
+    """Force-reloading one profile's plugin manager must restore that
+    profile's own outbound webhook and leave it firing exactly once —
+    the mirror of the shell-hook force-reload symmetry fix (#92682
+    review: outbound webhooks were the "same symptom class... after a
+    supported lifecycle transition instead of initial startup").
+    """
+
+    def test_force_reload_restores_webhook_and_fires_once(
+        self, monkeypatch, http_server,
+    ):
+        from hermes_cli import plugins
+
+        cfg = _cfg({"url": _url(http_server), "events": ["on_session_end"]})
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+
+        monkeypatch.setenv("HERMES_HOME", "/tmp/profile-b-webhook")
+        mgr_b = plugins.PluginManager()
+        plugins._plugin_manager = mgr_b
+        outbound_webhooks.register_from_config(cfg)
+        assert len(mgr_b._hooks.get("on_session_end", [])) == 1
+
+        # Force-reload: unload() wipes _hooks (config-owned webhook
+        # callbacks included, same as the ledger-driven plugin sweep), so
+        # without the fix the idempotence key alone would survive and a
+        # later register_from_config() call would see it and skip
+        # re-wiring — leaving the webhook silently inert.
+        mgr_b.unload()
+        assert mgr_b._hooks.get("on_session_end", []) == []
+
+        outbound_webhooks.re_register_config_hooks()
+        assert len(mgr_b._hooks.get("on_session_end", [])) == 1
+
+        plugins.get_plugin_manager().invoke_hook(
+            "on_session_end", session_id="s1",
+        )
+        assert outbound_webhooks.flush()
         assert len(http_server.captured) == 1
 
 

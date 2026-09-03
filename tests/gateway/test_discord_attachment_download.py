@@ -132,8 +132,8 @@ class TestCacheDiscordImage:
         att = _make_attachment_with_read(b"<html>forbidden</html>")
 
         with patch(
-            "plugins.platforms.discord.adapter.cache_image_from_bytes",
-            side_effect=ValueError("not a valid image"),
+            "plugins.platforms.discord.adapter.cache_image_from_bytes_async",
+            new=AsyncMock(side_effect=ValueError("not a valid image")),
         ), patch(
             "plugins.platforms.discord.adapter.cache_image_from_url",
             new_callable=AsyncMock,
@@ -156,8 +156,8 @@ class TestCacheDiscordAudio:
         att = _make_attachment_with_read(_OGG_BYTES)
 
         with patch(
-            "plugins.platforms.discord.adapter.cache_audio_from_bytes",
-            return_value="/tmp/voice.ogg",
+            "plugins.platforms.discord.adapter.cache_audio_from_bytes_async",
+            new=AsyncMock(return_value="/tmp/voice.ogg"),
         ) as mock_bytes, patch(
             "plugins.platforms.discord.adapter.cache_audio_from_url",
             new_callable=AsyncMock,
@@ -165,7 +165,7 @@ class TestCacheDiscordAudio:
             result = await adapter._cache_discord_audio(att, ".ogg")
 
         assert result == "/tmp/voice.ogg"
-        mock_bytes.assert_called_once_with(_OGG_BYTES, ext=".ogg")
+        mock_bytes.assert_awaited_once_with(_OGG_BYTES, ext=".ogg")
         mock_url.assert_not_called()
 
 
@@ -215,8 +215,8 @@ class TestHandleMessageUsesAuthenticatedRead:
         adapter.handle_message = AsyncMock()
 
         with patch(
-            "plugins.platforms.discord.adapter.cache_image_from_bytes",
-            return_value="/tmp/img_from_read.png",
+            "plugins.platforms.discord.adapter.cache_image_from_bytes_async",
+            new=AsyncMock(return_value="/tmp/img_from_read.png"),
         ), patch(
             "plugins.platforms.discord.adapter.cache_image_from_url",
             new_callable=AsyncMock,

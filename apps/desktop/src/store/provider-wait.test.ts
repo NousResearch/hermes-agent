@@ -22,7 +22,9 @@ describe('providerWaitText', () => {
 describe('parseModelLoadWait', () => {
   it('extracts model and percent from a load frame', () => {
     expect(
-      parseModelLoadWait('⏳ loading Qwen3.6-35B-A3B-UD-Q4_K_M into memory — 42% (responses start once the model is loaded)')
+      parseModelLoadWait(
+        '⏳ loading Qwen3.6-35B-A3B-UD-Q4_K_M into memory — 42% (responses start once the model is loaded)'
+      )
     ).toEqual({ kind: 'load', model: 'Qwen3.6-35B-A3B-UD-Q4_K_M', percent: 42 })
   })
 

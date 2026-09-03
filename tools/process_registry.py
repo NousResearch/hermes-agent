@@ -1522,6 +1522,51 @@ class ProcessRegistry:
                 session.completion_reason = "exited"
             self._move_to_finished(session)
 
+    @staticmethod
+    def _log_delta_command(quoted_log_path: str, offset: int) -> str:
+        """Build the shell command that reads only new bytes from a log file.
+
+        The old version ran ``cat`` on the whole file every poll, so a job
+        that keeps writing pays for its entire output again and again. Over a
+        long run that turns into a lot of wasted traffic on the docker/SSH
+        channel, since only the new part is ever used.
+
+        The command prints one header line, ``"<size> <offset>"``, then the
+        bytes between ``offset`` and ``size``. Reading the size first and
+        cutting the tail at that same size keeps the two numbers in step, so
+        a file that grows while the command runs never sends a byte twice.
+        A file that shrank was rotated or truncated, so the offset drops back
+        to 0 and the reader starts over.
+
+        The end of the window is pulled back to a UTF-8 character boundary:
+        the backend decodes each ``execute()`` result on its own, so a
+        multibyte character straddling two polls would otherwise come back
+        as replacement characters (and break watch patterns near the seam).
+        Up to 3 trailing continuation bytes are held for the next poll; the
+        header reports the trimmed size so the offset stays consistent.
+        """
+        return (
+            f"O={offset}; "
+            f"S=$({{ wc -c < {quoted_log_path}; }} 2>/dev/null | tr -dc '0-9'); "
+            f"S=${{S:-0}}; "
+            f'if [ "$S" -lt "$O" ]; then O=0; fi; '
+            # Hold back an INCOMPLETE trailing UTF-8 sequence for the next
+            # poll. Scan back up to 3 continuation bytes (octal 200-277) to
+            # the lead byte; if the lead byte's declared length (3xx=2, 34x-35x
+            # =3, 36x-37x=4) exceeds the bytes present, trim to before it.
+            # Complete sequences and ASCII tails are left untouched.
+            f'N=0; P=$S; while [ "$P" -gt "$O" ] && [ "$N" -lt 3 ]; do '
+            f"B=$(tail -c +$P {quoted_log_path} 2>/dev/null | head -c 1 | od -An -to1 | tr -dc '0-9'); "
+            f'case "$B" in 2[0-7][0-7]) P=$((P-1)); N=$((N+1));; *) break;; esac; done; '
+            f'if [ "$N" -gt 0 ] || [ "$P" -eq "$S" ]; then '
+            f"B=$(tail -c +$P {quoted_log_path} 2>/dev/null | head -c 1 | od -An -to1 | tr -dc '0-9'); "
+            f'case "$B" in 3[0-3][0-7]) L=2;; 3[4-5][0-7]) L=3;; 3[6-7][0-7]) L=4;; *) L=1;; esac; '
+            f'if [ "$L" -gt $((N+1)) ]; then S=$((P-1)); fi; fi; '
+            f'echo "$S $O"; '
+            f'if [ "$S" -gt "$O" ]; then '
+            f"tail -c +$((O+1)) {quoted_log_path} 2>/dev/null | head -c $((S-O)); fi"
+        )
+
     def _env_poller_loop(
         self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
     ):
@@ -1529,24 +1574,44 @@ class ProcessRegistry:
         quoted_log_path = shlex.quote(log_path)
         quoted_pid_path = shlex.quote(pid_path)
         quoted_exit_path = shlex.quote(exit_path)
-        prev_output_len = 0  # track delta for watch pattern scanning
+        # Byte offset already read from the log. Bytes, not characters: the
+        # shell counts bytes, and a log with non-ASCII text has more bytes
+        # than characters.
+        prev_output_bytes = 0
         while not session.exited:
             time.sleep(2)  # Poll every 2 seconds
             try:
-                # Read new output from the log file
-                result = env.execute(f"cat {quoted_log_path} 2>/dev/null", timeout=10)
-                new_output = result.get("output", "")
-                if new_output:
-                    # Compute delta for watch pattern scanning
-                    delta = new_output[prev_output_len:] if len(new_output) > prev_output_len else ""
-                    prev_output_len = len(new_output)
+                # Read only the bytes written since the last poll.
+                result = env.execute(
+                    self._log_delta_command(quoted_log_path, prev_output_bytes),
+                    timeout=10,
+                )
+                raw = result.get("output", "")
+                header, _, delta = raw.partition("\n")
+                try:
+                    size_str, offset_str = header.split()
+                    new_size = int(size_str)
+                    used_offset = int(offset_str)
+                except ValueError:
+                    # No usable header (command failed, shell missing a tool).
+                    # Skip this poll rather than act on a half-read value.
+                    new_size = None
+                    used_offset = None
+                    delta = ""
+                if new_size is not None:
+                    if used_offset < prev_output_bytes:
+                        # The log was rotated or truncated, so what we hold no
+                        # longer lines up with the file. Drop it and restart.
+                        with session._lock:
+                            session.output_buffer = ""
+                    prev_output_bytes = new_size
+                if delta:
                     with session._lock:
-                        session.output_buffer = new_output
+                        session.output_buffer += delta
                         if len(session.output_buffer) > session.max_output_chars:
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                    if delta:
-                        self._check_watch_patterns(session, delta)
-                        self._emit_output(session, delta)
+                    self._check_watch_patterns(session, delta)
+                    self._emit_output(session, delta)
 
                 # Check if process is still running
                 check = env.execute(
@@ -3366,13 +3431,14 @@ def format_process_notification(evt: dict) -> "str | None":
 from tools.registry import registry, tool_error
 
 PROCESS_SCHEMA = {
-    "name": "process",
+    "name": "process_manage",
     # Dieted (#95681): the action enum names the verbs; the description
     # keeps only non-obvious semantics. write-vs-submit is the tool's one
     # real trap (a lone \n on a Windows PTY is not a line terminator) —
     # that teaching gains emphasis rather than losing it.
     "description": (
-        "Manage background processes started with terminal(background=true). "
+        "Poll, wait on, or kill background terminal processes (from "
+        "terminal(background=true)). "
         "poll: status + new output. log: full output, paged. wait: block "
         "until exit or timeout (partial output on timeout). write vs "
         "submit: submit appends Enter — use it to answer prompts; write "
@@ -3487,7 +3553,7 @@ def _handle_process(args, **kw):
 
 
 registry.register(
-    name="process",
+    name="process_manage",
     toolset="terminal",
     schema=PROCESS_SCHEMA,
     handler=_handle_process,

@@ -502,10 +502,12 @@ export function ModelCatalogMenu({
                     const isCurrent = activeId !== null
                     const name = modelDisplayParts(family.id).name
                     const caps = group.provider.capabilities?.[family.id]
+
                     // Managed local model loading into memory right now:
                     // real load percent, keyed by exact model id (remote
                     // providers never collide with GGUF stems).
-                    const loadProgress = loadingModels[family.id] ?? (family.fastId ? loadingModels[family.fastId] : undefined)
+                    const loadProgress =
+                      loadingModels[family.id] ?? (family.fastId ? loadingModels[family.fastId] : undefined)
 
                     // Effective settings for this row: the live choice when it's
                     // the active model, otherwise its remembered preset. Row
@@ -602,7 +604,9 @@ export function ModelCatalogMenu({
                   })}
                 {!collapsed &&
                   slug === LOCAL_PROVIDER_SLUG &&
-                  shownDownloads.map(job => <DownloadingModelRow jobId={job.jobId} key={job.jobId} target={job.target} />)}
+                  shownDownloads.map(job => (
+                    <DownloadingModelRow jobId={job.jobId} key={job.jobId} target={job.target} />
+                  ))}
               </DropdownMenuGroup>
             )
           })}
@@ -680,10 +684,7 @@ function DownloadingModelRow({ jobId, target }: { jobId: string; target: string 
   const { t } = useI18n()
   const copy = t.modelPicker
 
-  const percent = useStoreSelector(
-    $localRuntimeJobs,
-    jobs => jobs.find(job => job.job_id === jobId)?.percent ?? null
-  )
+  const percent = useStoreSelector($localRuntimeJobs, jobs => jobs.find(job => job.job_id === jobId)?.percent ?? null)
 
   return (
     <DropdownMenuItem

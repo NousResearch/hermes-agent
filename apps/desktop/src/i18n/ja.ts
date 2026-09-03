@@ -432,6 +432,9 @@ export const ja = defineLocale({
       embedsAlways: '常に',
       embedsOff: 'オフ',
       embedsReset: (count: number) => `許可した${count}件のサービスをリセット`,
+      resumeLastSessionTitle: '起動時に前回のチャットを再開',
+      resumeLastSessionDesc:
+        'オンの場合、コールドスタート時に直近のチャットを再び開きます。オフにすると常に新しいチャットから始まります。',
       product: 'プロダクト',
       productDesc: '読みやすいツール活動と簡潔な要約を表示します。',
       technical: 'テクニカル',
@@ -1067,26 +1070,30 @@ export const ja = defineLocale({
       useAction: '使用する',
       activePill: 'デフォルト',
       updateTitle: 'エンジンの更新があります',
-      updateDetail: (next, current) => `新しい llama.cpp ビルド（${next}）をインストールできます——現在は ${current} です。ダウンロード中もモデルは引き続き使えます。`,
+      updateDetail: (next, current) =>
+        `新しい llama.cpp ビルド（${next}）をインストールできます——現在は ${current} です。ダウンロード中もモデルは引き続き使えます。`,
       updateAction: 'エンジンを更新',
       updating: 'エンジンを更新中…',
       upToDateTitle: 'エンジンは最新です',
       upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——Hermes が提供する最新ビルドです。`,
-      updateToast: next => `ローカルエンジンの新しいビルド（${next}）があります。設定 → ローカルモデル から更新できます。`,
+      updateToast: next =>
+        `ローカルエンジンの新しいビルド（${next}）があります。設定 → ローカルモデル から更新できます。`,
       activeDetail: '新しいチャットはこのモデルを使用——最初のメッセージ送信時に読み込みます',
       activeNotLoaded: '最初のメッセージで読み込みます',
       loadedPill: '読み込み済み',
       placementResident: 'すべて GPU 上',
       placementSpilled: '一部 RAM 上',
       placementResidentTip: 'このコンテキストウィンドウで GPU メモリ内で完全に動作しています — フルスピード。',
-      placementSpilledTip: 'モデルの一部がシステム RAM から動作しています — 動作しますが遅くなります。よりコンパクトなビルドか小さいコンテキストなら完全に収まります。',
+      placementSpilledTip:
+        'モデルの一部がシステム RAM から動作しています — 動作しますが遅くなります。よりコンパクトなビルドか小さいコンテキストなら完全に収まります。',
       loadingPill: '読み込み中…',
       ejectTip: 'GPU メモリを解放（必要時に再読み込み）',
       ejected: 'モデルをアンロードしました——GPU メモリを解放しました。',
       ejectFailed: 'モデルをアンロードできませんでした',
       stopServer: 'オフにする',
       startServer: 'オンにする',
-      runtimeRunningDetail: 'ローカルサーバーが実行中です。オフにすると GPU メモリを全て解放し、再度オンにするまで新しいチャットはローカルモデルを使用しません。',
+      runtimeRunningDetail:
+        'ローカルサーバーが実行中です。オフにすると GPU メモリを全て解放し、再度オンにするまで新しいチャットはローカルモデルを使用しません。',
       serverStopped: 'ローカルサーバーを停止しました——GPU メモリを解放しました。',
       serverStarted: 'ローカルサーバー実行中。',
       serverStopFailed: 'ローカルサーバーを停止できませんでした',
@@ -1099,7 +1106,8 @@ export const ja = defineLocale({
       pillUsesRam: 'システム RAM を使用',
       pillTooBig: 'このマシンには大きすぎます',
       browseTitle: 'さらにモデルを探す',
-      browseHint: 'Hugging Face 全体を検索できます。ここでダウンロードしたモデルは自動でマシンに合わせて動作しますが、当方でのテストは行われていません。',
+      browseHint:
+        'Hugging Face 全体を検索できます。ここでダウンロードしたモデルは自動でマシンに合わせて動作しますが、当方でのテストは行われていません。',
       browsePlaceholder: 'モデル名または作者で検索…',
       browseSearching: 'Hugging Face を検索中',
       browseListing: 'モデルファイルを読み込み中',
@@ -3273,10 +3281,6 @@ export const ja = defineLocale({
       'composer-mentions': {
         title: 'ファイルとコマンド',
         text: '@ でファイルを会話に取り込み、/ でコマンドを実行できます。'
-      },
-      'model-switch': {
-        title: '会話の途中でモデルを変更',
-        text: 'モデル名はボタンです。作業の性質が変わったら切り替えてください。'
       },
       'local-setup': {
         title: 'このマシンはローカルでモデルを実行できます',

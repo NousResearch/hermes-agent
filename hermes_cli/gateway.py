@@ -2709,6 +2709,32 @@ def supports_systemd_services() -> bool:
     return True
 
 
+def _systemd_unit_is_active(unit_name: str) -> bool:
+    """Return True when *unit_name*.service is active in systemd.
+
+    Used as a fallback when the .service file is not at the expected path —
+    e.g. when `hermes gateway status` is run from a profile TUI session
+    different from the one that installed the service (#16264).  Best-effort:
+    a subprocess failure or missing systemctl returns False.
+    """
+    try:
+        import subprocess as _sp
+        r = _sp.run(
+            ["systemctl", "--user", "is-active", f"{unit_name}.service"],
+            capture_output=True, text=True, timeout=3
+        )
+        if r.returncode == 0:
+            return True
+        # Also try system-wide
+        r2 = _sp.run(
+            ["systemctl", "is-active", f"{unit_name}.service"],
+            capture_output=True, text=True, timeout=3
+        )
+        return r2.returncode == 0
+    except Exception:
+        return False
+
+
 def is_macos() -> bool:
     return sys.platform == "darwin"
 
@@ -9084,6 +9110,11 @@ def _gateway_command_inner(args):
         elif supports_systemd_services() and (
             get_systemd_unit_path(system=False).exists()
             or get_systemd_unit_path(system=True).exists()
+            # Also detect when the unit IS active but the .service file is not
+            # at the expected path — happens when `hermes gateway status` is
+            # run from a different profile's TUI session than the one that
+            # owns the active service (#16264).
+            or _systemd_unit_is_active(get_service_name())
         ):
             systemd_status(deep, system=system, full=full)
             _print_gateway_process_mismatch(snapshot)

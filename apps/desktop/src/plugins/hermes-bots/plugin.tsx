@@ -742,9 +742,15 @@ export default {
             const target =
               bot.remoteSource && bot.connectionId ? `${bot.name}@${bot.connectionId}` : botHandle(bot.name)
 
+            // Local rows get the same annotation whenever their UI alias
+            // ('default-this-device') differs from the resolvable handle —
+            // otherwise the agent has only the alias to go on and the local
+            // path rejects it the same way (#97678).
             const where = bot.remoteSource
               ? ` — on ${bot.connectionLabel || bot.connectionId} (message_agent target: "${target}")`
-              : ''
+              : handle !== target
+                ? ` (message_agent target: "${target}")`
+                : ''
 
             return `@${handle} = agent profile "${bot.name}"${title ? ` ("${title}")` : ''}${where}`
           })

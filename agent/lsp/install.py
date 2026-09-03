@@ -1,9 +1,10 @@
 """Auto-installation of LSP server binaries.
 
 Tries to install missing servers using whatever package manager is
-appropriate.  All installs go to a Hermes-owned bin staging dir,
-``<HERMES_HOME>/lsp/bin/``, so we don't pollute the user's global
-toolchain.
+appropriate.  All installs go under the Hermes-owned
+``<HERMES_HOME>/lsp/`` tree, so we don't pollute the user's global
+toolchain. Windows npm launchers remain at their original managed
+``node_modules/.bin`` location because those wrappers can be location-sensitive.
 
 Strategies:
 
@@ -41,8 +42,8 @@ logger = logging.getLogger("agent.lsp.install")
 
 # Package-name → install-strategy hint registry.  Each entry is a
 # tuple of strategy name + package name + executable name.  When the
-# install completes, we look for the executable in
-# ``<HERMES_HOME>/lsp/bin/`` first, then on PATH.
+# install completes, we look for the executable in the Hermes-managed npm
+# location, then ``<HERMES_HOME>/lsp/bin/``, then on PATH.
 #
 # Optional fields:
 #   - ``extra_pkgs``: list of sibling packages to install alongside
@@ -115,7 +116,7 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
 _install_locks: Dict[str, threading.Lock] = {}
 _install_results: Dict[str, Optional[str]] = {}
 _install_lock_meta = threading.Lock()
-_WINDOWS_WRAPPER_SUFFIXES = (".cmd", ".exe", ".bat")
+_WINDOWS_WRAPPER_SUFFIXES = (".exe", ".cmd", ".bat")
 
 
 def _is_windows() -> bool:
@@ -133,25 +134,52 @@ def hermes_lsp_bin_dir() -> Path:
 
 def _native_binary_candidates(base: Path) -> list[Path]:
     """Return platform-native executable candidates for a staged binary."""
-    candidates = [base]
-    if _is_windows():
-        existing = {str(base).lower()}
-        for suffix in _WINDOWS_WRAPPER_SUFFIXES:
-            candidate = Path(str(base) + suffix)
-            key = str(candidate).lower()
-            if key not in existing:
-                candidates.append(candidate)
-                existing.add(key)
+    if not _is_windows():
+        return [base]
+    candidates: list[Path] = []
+    existing: set[str] = set()
+    for suffix in _WINDOWS_WRAPPER_SUFFIXES:
+        candidate = Path(str(base) + suffix)
+        key = str(candidate).lower()
+        if key not in existing:
+            candidates.append(candidate)
+            existing.add(key)
+    candidates.append(base)
     return candidates
 
 
+def _is_windows_posix_shim(path: str | Path) -> bool:
+    """Return true for an extensionless shebang shim Windows cannot spawn."""
+    candidate = Path(path)
+    if not _is_windows() or candidate.suffix:
+        return False
+    try:
+        with candidate.open("rb") as stream:
+            return stream.read(2) == b"#!"
+    except OSError:
+        return False
+
+
 def _existing_binary(name: str) -> Optional[str]:
-    """Probe the staging dir + PATH for a binary named ``name``."""
+    """Probe authoritative managed/PATH locations without parsing wrappers."""
+    if _is_windows():
+        managed_npm = hermes_lsp_bin_dir().parent / "node_modules" / ".bin" / name
+        for candidate in _native_binary_candidates(managed_npm):
+            if candidate.exists() and not _is_windows_posix_shim(candidate):
+                return str(candidate)
     for staged in _native_binary_candidates(hermes_lsp_bin_dir() / name):
         if staged.exists() and os.access(staged, os.X_OK):
+            # Older Hermes releases copied location-sensitive npm wrappers here.
+            # This Hermes-owned relocation is stale provenance, so ignore only
+            # staged .cmd files; wrappers at their managed origin or on PATH are
+            # authoritative and remain opaque.
+            if _is_windows() and staged.suffix.lower() == ".cmd":
+                continue
+            if _is_windows_posix_shim(staged):
+                continue
             return str(staged)
     on_path = shutil.which(name)
-    if on_path:
+    if on_path and not _is_windows_posix_shim(on_path):
         return on_path
     if _is_windows():
         for suffix in _WINDOWS_WRAPPER_SUFFIXES:
@@ -242,8 +270,9 @@ def _install_npm(
     """Install an npm package into our staging dir.
 
     Uses ``npm install --prefix`` so the binaries land in
-    ``<staging>/node_modules/.bin/<bin_name>`` and we symlink them up
-    one level for direct PATH-style access.
+    ``<staging>/node_modules/.bin/<bin_name>``. On Windows the native launcher
+    is returned from that original location; other platforms symlink it into
+    the bin staging directory for direct PATH-style access.
 
     ``extra_pkgs`` is a list of sibling packages to install in the
     same ``node_modules`` tree.  Used for LSP servers with runtime
@@ -283,8 +312,14 @@ def _install_npm(
         logger.warning("[install] npm install errored for %s: %s", pkg, e)
         return None
 
-    # Find the bin
+    # Find the bin. Windows npm launchers remain in the original managed
+    # node_modules/.bin directory. Their contents are intentionally opaque:
+    # provenance, rather than wrapper syntax, establishes authority here.
     nm_bin = staging / "node_modules" / ".bin" / bin_name
+    if _is_windows():
+        for candidate in _native_binary_candidates(nm_bin):
+            if candidate.exists() and not _is_windows_posix_shim(candidate):
+                return str(candidate)
     for c in _native_binary_candidates(nm_bin):
         if c.exists():
             # Symlink into our `lsp/bin/` for stable PATH access.

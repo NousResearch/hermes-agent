@@ -5078,6 +5078,12 @@ class TestNativeTaskCardProgress:
             "recipient_team_id": "T1",
             "recipient_user_id": "U1",
         }
+        # Slack rejects an appendStream payload that mixes its structured
+        # task-card chunks with markdown_text. Keep the card protocol pure.
+        for call in calls[1:]:
+            payload = call.kwargs["json"]
+            assert payload["chunks"]
+            assert "markdown_text" not in payload
         adapter._app.client.api_call.assert_not_awaited()
 
         await adapter.stop_native_task_card_progress("C1", metadata=metadata)

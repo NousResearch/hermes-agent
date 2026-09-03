@@ -2859,13 +2859,15 @@ class SlackAdapter(BasePlatformAdapter):
                         }
                     )
 
+                # Slack rejects an appendStream request containing both
+                # structured task-card chunks and markdown_text.  The chunks
+                # are the native card payload; text belongs solely to the
+                # editable fallback path in the caller.
                 append_payload: Dict[str, Any] = {
                     "channel": chat_id,
                     "ts": stream.stream_ts,
                     "chunks": chunks,
                 }
-                if fallback_text:
-                    append_payload["markdown_text"] = fallback_text
                 await client.api_call("chat.appendStream", json=append_payload)
                 return SendResult(success=True, message_id=stream.stream_ts)
             except Exception as exc:  # pragma: no cover - defensive logging

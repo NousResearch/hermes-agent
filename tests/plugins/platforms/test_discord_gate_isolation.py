@@ -319,6 +319,17 @@ class TestYamlBridgeSeeding:
         # Legacy env bridge preserved for single-profile deployments.
         assert os.environ["DISCORD_ALLOWED_CHANNELS"] == "111,112"
 
+    def test_decision_reaction_channels_are_seeded_into_adapter_extra(self, monkeypatch):
+        from agent import secret_scope
+        from plugins.platforms.discord.adapter import _apply_yaml_config
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+        seeded = _apply_yaml_config(
+            {}, {"decision_reaction_channels": ["555", "556"]},
+        )
+
+        assert seeded["decision_reaction_channels"] == ["555", "556"]
+
     def test_profile_scoped_load_skips_env_bridge(self, monkeypatch):
         from agent import secret_scope
         from plugins.platforms.discord.adapter import _apply_yaml_config

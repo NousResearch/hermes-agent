@@ -86,6 +86,34 @@ def _adapter() -> DiscordAdapter:
     return a
 
 
+def _decision_reaction_adapter() -> DiscordAdapter:
+    a = _adapter()
+    a.config = SimpleNamespace(extra={
+        "decision_reaction_channels": ["555"],
+    })
+    a._client = SimpleNamespace(
+        user=SimpleNamespace(id=999, bot=True),
+        get_channel=MagicMock(return_value=None),
+        fetch_channel=AsyncMock(),
+    )
+    a._is_allowed_user = MagicMock(return_value=True)
+    a._get_ignored_channels = MagicMock(return_value=set())
+    a._decision_reactions_seen = set()
+    a.handle_message = AsyncMock()
+    return a
+
+
+def _reaction_payload(*, emoji="👍", channel_id=555, message_id=456, user_id=777):
+    return SimpleNamespace(
+        emoji=emoji,
+        channel_id=channel_id,
+        message_id=message_id,
+        user_id=user_id,
+        guild_id=999,
+        member=SimpleNamespace(id=user_id, display_name="user", bot=False),
+    )
+
+
 def _channel(chan_id=555, thread=False):
     if thread:
         chan = _DiscordThread()
@@ -217,6 +245,118 @@ class TestMessageEdited:
     def test_no_gateway_callback_fails_closed(self):
         a = _adapter()  # set_platform_event_handler never called
         asyncio.run(a._on_platform_message_edit(None, _message()))  # no raise
+
+
+class TestDecisionReactions:
+    def test_thumbsup_routes_approve_in_message_scoped_session(self):
+        a = _decision_reaction_adapter()
+        target = _message(content="### DEC-P1-04 — Reporting reconciliation", bot=True)
+        target.author.id = 999
+        channel = SimpleNamespace(fetch_message=AsyncMock(return_value=target))
+        a._client.get_channel = MagicMock(return_value=channel)
+
+        asyncio.run(a._on_raw_reaction_add(_reaction_payload()))
+
+        a.handle_message.assert_awaited_once()
+        event = a.handle_message.await_args.args[0]
+        assert event.text == "approve"
+        assert event.reply_to_message_id == "456"
+        assert event.reply_to_text == "### DEC-P1-04 — Reporting reconciliation"
+        assert event.source.user_id == "777"
+        assert event.source.user_id_alt == "decision-reaction:777:456"
+        assert event.source.prospective_thread_id == "decision-reaction:456"
+        assert event.source.chat_id == "555"
+
+        from gateway.session import build_session_key
+        first_key = build_session_key(event.source, group_sessions_per_user=False)
+        event.source.prospective_thread_id = "decision-reaction:457"
+        second_key = build_session_key(event.source, group_sessions_per_user=False)
+        assert first_key != second_key
+
+    def test_thumbsdown_routes_reject(self):
+        a = _decision_reaction_adapter()
+        target = _message(content="DEC-P1-05", bot=True)
+        target.author.id = 999
+        a._client.get_channel = MagicMock(return_value=SimpleNamespace(
+            fetch_message=AsyncMock(return_value=target),
+        ))
+
+        asyncio.run(a._on_raw_reaction_add(_reaction_payload(emoji="👎")))
+
+        event = a.handle_message.await_args.args[0]
+        assert event.text == "reject"
+
+    def test_first_decision_reaction_wins_for_message_and_user(self):
+        a = _decision_reaction_adapter()
+        target = _message(content="DEC-P1-05", bot=True)
+        target.author.id = 999
+        a._client.get_channel = MagicMock(return_value=SimpleNamespace(
+            fetch_message=AsyncMock(return_value=target),
+        ))
+
+        asyncio.run(a._on_raw_reaction_add(_reaction_payload(emoji="👍")))
+        asyncio.run(a._on_raw_reaction_add(_reaction_payload(emoji="👎")))
+
+        a.handle_message.assert_awaited_once()
+        assert a.handle_message.await_args.args[0].text == "approve"
+
+    def test_failed_handoff_keeps_reaction_retryable(self):
+        a = _decision_reaction_adapter()
+        a.handle_message.side_effect = [RuntimeError("handoff failed"), None]
+        target = _message(content="DEC-P1-05", bot=True)
+        target.author.id = 999
+        a._client.get_channel = MagicMock(return_value=SimpleNamespace(
+            fetch_message=AsyncMock(return_value=target),
+        ))
+
+        with pytest.raises(RuntimeError, match="handoff failed"):
+            asyncio.run(a._on_raw_reaction_add(_reaction_payload()))
+        asyncio.run(a._on_raw_reaction_add(_reaction_payload()))
+
+        assert a.handle_message.await_count == 2
+
+    @pytest.mark.parametrize("bad_id", ["not-a-number", ""])
+    def test_malformed_ids_fail_closed(self, bad_id):
+        a = _decision_reaction_adapter()
+        asyncio.run(a._on_raw_reaction_add(_reaction_payload(channel_id=bad_id)))
+        a.handle_message.assert_not_awaited()
+
+    def test_bot_reactor_is_ignored(self):
+        a = _decision_reaction_adapter()
+        payload = _reaction_payload()
+        payload.member.bot = True
+        asyncio.run(a._on_raw_reaction_add(payload))
+        a.handle_message.assert_not_awaited()
+
+    def test_ignored_channel_takes_precedence(self):
+        a = _decision_reaction_adapter()
+        a._get_ignored_channels = MagicMock(return_value={"555"})
+        asyncio.run(a._on_raw_reaction_add(_reaction_payload()))
+        a.handle_message.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "payload,target_author_id,allowed",
+        [
+            (_reaction_payload(emoji="🔥"), 999, True),
+            (_reaction_payload(channel_id=556), 999, True),
+            (_reaction_payload(), 123, True),
+            (_reaction_payload(), 999, False),
+        ],
+    )
+    def test_untrusted_or_out_of_scope_reactions_are_ignored(
+        self, payload, target_author_id, allowed,
+    ):
+        a = _decision_reaction_adapter()
+        a._is_allowed_user.return_value = allowed
+        target = _message(content="DEC-P1-04", bot=True)
+        target.author.id = target_author_id
+        a._client.get_channel = MagicMock(return_value=SimpleNamespace(
+            fetch_message=AsyncMock(return_value=target),
+        ))
+
+        asyncio.run(a._on_raw_reaction_add(payload))
+
+        a.handle_message.assert_not_awaited()
 
     def test_missing_ids_drop(self):
         a = _adapter()

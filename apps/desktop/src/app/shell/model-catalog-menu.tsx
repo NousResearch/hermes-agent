@@ -272,8 +272,8 @@ export function ModelCatalogMenu({
   // provider list would otherwise resolve to an empty key set that reads as
   // "user hid everything" and blanks the menu on first open.
   const shownKeys = useMemo(
-    () => effectiveVisibleKeys(visibleModels, pickerProviders),
-    [visibleModels, pickerProviders]
+    () => effectiveVisibleKeys(visibleModels, providers ?? []),
+    [visibleModels, providers]
   )
 
   const groups = useMemo(
@@ -285,8 +285,13 @@ export function ModelCatalogMenu({
   // sitting under zero model matches would otherwise become the "first match"
   // Enter commits.
   const shownMoaPresets = useMemo(
-    () => (q ? moaPresets.filter(preset => `moa ${preset}`.toLowerCase().includes(q)) : moaPresets),
-    [moaPresets, q]
+    () =>
+      moaPresets.filter(
+        preset =>
+          (q || shownKeys.has(modelVisibilityKey('moa', preset))) &&
+          (!q || `moa ${preset}`.toLowerCase().includes(q))
+      ),
+    [moaPresets, q, shownKeys]
   )
 
   const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {

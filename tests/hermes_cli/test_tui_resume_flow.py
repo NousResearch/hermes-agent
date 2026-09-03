@@ -286,3 +286,33 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
 
 
 
+
+def test_oneshot_sanitizes_lone_surrogates_before_stdout():
+    program = textwrap.dedent(
+        """
+        import sys
+        import hermes_cli.oneshot as oneshot
+
+        def _fake_agent(*args, **kwargs):
+            return ("answer " + chr(0xD800) + " boom", {})
+
+        oneshot._run_agent = _fake_agent
+        sys.exit(oneshot.run_oneshot("hello"))
+        """
+    )
+
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        timeout=10,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ("answer " + chr(0xFFFD) + " boom" + os.linesep).encode("utf-8")
+    assert b"Traceback" not in result.stderr

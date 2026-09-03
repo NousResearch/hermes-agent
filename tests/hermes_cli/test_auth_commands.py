@@ -650,6 +650,152 @@ def test_auth_add_xai_oauth_sets_active_provider(tmp_path, monkeypatch):
     assert entry["base_url"] == "https://api.x.ai/v1"
 
 
+def test_auth_add_anthropic_oauth_sets_active_provider(tmp_path, monkeypatch):
+    """hermes auth add anthropic must set active_provider and write a pool entry.
+
+    Same regression class as ``test_auth_add_xai_oauth_sets_active_provider``
+    above, on the branch that fix never reached. ``run_hermes_oauth_login_pure``
+    is pure — it returns tokens and persists nothing — so the pool insert used
+    to be the only write, leaving ``active_provider`` unset and the setup
+    wizard reporting "No inference provider configured" for a credential
+    ``hermes auth list`` had just shown. OAuth is the default auth type for
+    anthropic, so this is what a bare ``hermes auth add anthropic`` does.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    access_token = _jwt_with_email("anthropic@example.com")
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.run_hermes_oauth_login_pure",
+        lambda **kwargs: {
+            "access_token": access_token,
+            "refresh_token": "anthropic-refresh-token",
+            "expires_at_ms": 1_800_000_000_000,
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "anthropic"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    # active_provider must be set — the core of the regression
+    assert payload["active_provider"] == "anthropic"
+    entries = payload["credential_pool"]["anthropic"]
+    entry = next(item for item in entries if item["source"] == "manual:hermes_pkce")
+    assert entry["access_token"] == access_token
+    assert entry["refresh_token"] == "anthropic-refresh-token"
+
+
+def test_auth_add_api_key_sets_active_provider(tmp_path, monkeypatch):
+    """hermes auth add <registry provider> --type api-key must set active_provider.
+
+    A manually added API key writes no environment variable, so
+    ``_model_section_has_credentials()`` can only see it through
+    ``get_active_provider()``. Without the marking the wizard reported "No
+    inference provider configured" for a key ``hermes auth list`` had just
+    shown.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "deepseek"
+        auth_type = "api-key"
+        api_key = "sk-deepseek-manual"
+        label = "work"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["active_provider"] == "deepseek"
+    entries = payload["credential_pool"]["deepseek"]
+    entry = next(item for item in entries if item["source"] == "manual")
+    assert entry["label"] == "work"
+    assert entry["access_token"] == "sk-deepseek-manual"
+
+
+def test_auth_add_does_not_steal_an_existing_active_provider(tmp_path, monkeypatch):
+    """Neither add path may override an active provider the user already chose.
+
+    ``mark_provider_active_if_unset`` is only reached on the first credential
+    for the pool, and only writes when ``active_provider`` is empty. This pins
+    both halves for the two branches above, so the marking cannot regress into
+    "last add wins".
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {"version": 1, "providers": {}, "active_provider": "openai-codex"},
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.run_hermes_oauth_login_pure",
+        lambda **kwargs: {
+            "access_token": _jwt_with_email("anthropic@example.com"),
+            "refresh_token": "anthropic-refresh-token",
+            "expires_at_ms": 1_800_000_000_000,
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _OAuthArgs:
+        provider = "anthropic"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    class _ApiKeyArgs:
+        provider = "deepseek"
+        auth_type = "api-key"
+        api_key = "sk-deepseek-manual"
+        label = "work"
+
+    auth_add_command(_OAuthArgs())
+    auth_add_command(_ApiKeyArgs())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["active_provider"] == "openai-codex"
+    # Both credentials still landed in their pools — only the marking is skipped.
+    assert payload["credential_pool"]["anthropic"]
+    assert payload["credential_pool"]["deepseek"]
+
+
+def test_auth_add_custom_pool_api_key_leaves_active_provider_unset(tmp_path, monkeypatch):
+    """A ``custom:*`` pool key must never become active_provider.
+
+    ``resolve_provider`` only honours an ``active_provider`` it can find in
+    ``PROVIDER_REGISTRY``, so marking a custom pool alias active would silence
+    the setup wizard while provider resolution still failed — strictly worse
+    than leaving it unset. This pins the ``provider in PROVIDER_REGISTRY``
+    guard on the API-key branch.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "custom:mylocal"
+        auth_type = "api-key"
+        api_key = "sk-custom-manual"
+        label = "local"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert not (payload.get("active_provider") or "").strip()
+    assert payload["credential_pool"]["custom:mylocal"]
+
+
 def test_auth_add_xai_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch):
     """Two ``hermes auth add xai-oauth`` runs must produce independent pool entries.
 

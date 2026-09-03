@@ -304,7 +304,21 @@ def auth_add_command(args) -> None:
             access_token=token,
             base_url=_provider_base_url(provider),
         )
+        first_credential = not pool.entries()
         pool.add_entry(entry)
+        # Adding the very first credential should make it the active provider,
+        # matching the openai-codex / xai-oauth / qwen-oauth / minimax-oauth
+        # paths below. Without this, `hermes setup` reports "No inference
+        # provider configured" for a credential `hermes auth list` just showed,
+        # because _model_section_has_credentials() consults
+        # get_active_provider() and an API key added here sets no env var.
+        # Guarded on PROVIDER_REGISTRY because resolve_provider() only honours
+        # an active_provider it can find there — writing a `custom:*` pool key
+        # would satisfy the wizard while resolution still failed. `openrouter`
+        # is deliberately outside the registry and already resolves from its
+        # own pool tier, so it needs no marking either.
+        if first_credential and provider in PROVIDER_REGISTRY:
+            auth_mod.mark_provider_active_if_unset(provider)
         print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')
         return
 
@@ -330,7 +344,16 @@ def auth_add_command(args) -> None:
             expires_at_ms=creds.get("expires_at_ms"),
             base_url=_provider_base_url(provider),
         )
+        first_credential = not pool.entries()
         pool.add_entry(entry)
+        # run_hermes_oauth_login_pure() is pure — it returns tokens and persists
+        # nothing — so this pool insert is the only write on this branch. Mirror
+        # the openai-codex / xai-oauth first-credential marking below.
+        # `anthropic` is a static PROVIDER_REGISTRY member, so no registry guard
+        # is needed here (unlike the API-key branch above, which accepts
+        # `custom:*` pool keys).
+        if first_credential:
+            auth_mod.mark_provider_active_if_unset(provider)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 

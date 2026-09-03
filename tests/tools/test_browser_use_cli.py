@@ -13,6 +13,7 @@ Covers the three seams the integration relies on:
 """
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -32,14 +33,30 @@ def _clean_env(monkeypatch):
     yield
 
 
+def _bash_exe() -> str:
+    """Resolve the git-bash to embed in a ``.cmd`` shim, or fall back to bare
+    ``bash``.
+
+    A bare ``bash`` only resolves when the CHILD process inherits it on PATH,
+    which the tests-os Windows lane may not provide.  Resolving at shim-write
+    time (via ``shutil.which`` on the agent process) makes the shim launch
+    independent of the child PATH.  Fall back to bare ``bash`` so a genuinely
+    shell-less host still surfaces a clear launch failure (the lane guard's
+    canary) rather than a silent skip.
+    """
+    found = shutil.which("bash")
+    return found if found else "bash"
+
+
 def _fake_cli(tmp_path, body):
     """Write an executable fake browser-use CLI and return its path.
 
     On POSIX a shebang script is directly launchable.  Windows can't
     CreateProcess a shebang script, so write the Bash body to a ``.sh`` and
-    a ``.cmd`` shim that routes stdin/stdout through Git Bash (available on
-    PATH via the Hermes toolchain) — the body is Bash either way, and
-    ``subprocess.run`` launches a ``.cmd`` without ``shell=True``.
+    a ``.cmd`` shim that routes stdin/stdout through Git Bash — the body is
+    Bash either way, and ``subprocess.run`` launches a ``.cmd`` without
+    ``shell=True``.  The shim embeds the resolved bash path (see
+    ``_bash_exe``) so it is not dependent on the child PATH.
     """
     if os.name == "nt":
         script = tmp_path / "browser-use.sh"
@@ -47,7 +64,7 @@ def _fake_cli(tmp_path, body):
         cmd = tmp_path / "browser-use.cmd"
         cmd.write_text(
             "@echo off\r\n"
-            f'bash "{script.as_posix()}" %*\r\n',
+            f'"{_bash_exe()}" "{script.as_posix()}" %*\r\n',
         )
         return str(cmd)
     script = tmp_path / "browser-use"
@@ -71,7 +88,10 @@ def _fake_binary(directory: Path, name: str, body: str = "") -> Path:
         sh = directory / f"{name}.sh"
         sh.write_text("#!/bin/sh\n" + body, encoding="utf-8")
         cmd = directory / f"{name}.cmd"
-        cmd.write_text('@echo off\r\nbash "%s" %%*\r\n' % sh.as_posix(), encoding="utf-8")
+        cmd.write_text(
+            '@echo off\r\n"%s" "%s" %%*\r\n' % (_bash_exe(), sh.as_posix()),
+            encoding="utf-8",
+        )
         return cmd
     exe = directory / name
     exe.write_text("#!/bin/sh\n" + body, encoding="utf-8")

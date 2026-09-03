@@ -1496,12 +1496,23 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 def _render_candidate_list() -> str:
-    """Human/agent-readable list of curator-managed skills with usage stats."""
-    rows = skill_usage.curated_report()
+    """Human/agent-readable list of LLM consolidation candidates.
+
+    Bundled built-ins are excluded even when ``curator.prune_builtins`` is
+    on. That flag makes them eligible for *deterministic archival*
+    (``apply_automatic_transitions`` → ``archive_skill``), not for the
+    rewrite/umbrella pass. Listing them here invites ``skill_manage``
+    writes that ``_background_review_write_guard`` unconditionally
+    refuses, burning tool calls until the loop guard aborts the run.
+    """
+    rows = [
+        r for r in skill_usage.curated_report()
+        if not skill_usage.is_bundled(r["name"])
+    ]
     if not rows:
-        return "No curator-managed skills to review."
+        return "No agent-created skills to review."
     cron_referenced = _cron_referenced_skills()
-    lines = [f"Curator-managed skills ({len(rows)}):\n"]
+    lines = [f"Agent-created skills ({len(rows)}):\n"]
     for r in rows:
         lines.append(
             f"- {r['name']}  "
@@ -1679,30 +1690,18 @@ def run_curator_review(
                     "error": None,
                 }
             else:
-                # When pruning built-ins is enabled, the candidate list now
-                # includes bundled skills. Override the default "don't touch
-                # bundled" rule for them — but only archiving is permitted, and
-                # hub-installed skills remain strictly off-limits.
-                builtins_note = ""
-                if get_prune_builtins():
-                    builtins_note = (
-                        "\n\nPRUNE-BUILTINS MODE IS ON: bundled built-in skills "
-                        "ARE included in the candidate list below and MAY be "
-                        "archived for staleness/irrelevance, overriding hard "
-                        "rule #1 for bundled skills ONLY. Hub-installed skills "
-                        "remain strictly off-limits. Treat a stale built-in the "
-                        "same as a stale agent-created skill: archive it (never "
-                        "delete). It will be restored on `hermes update` only if "
-                        "the user explicitly restores it."
-                    )
+                # Bundled built-ins are not in the candidate list, even
+                # under prune_builtins: archival is the deterministic
+                # pass's job, and the bundled policy is archive-only.
+                # Hard rule #1 therefore stands unqualified.
                 if dry_run:
                     prompt = (
                         f"{CURATOR_DRY_RUN_BANNER}\n\n"
-                        f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n"
+                        f"{CURATOR_REVIEW_PROMPT}\n\n"
                         f"{candidate_list}"
                     )
                 else:
-                    prompt = f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n{candidate_list}"
+                    prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
                 llm_meta = _run_llm_review(prompt)
                 final_summary = (
                     f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"

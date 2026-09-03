@@ -320,6 +320,97 @@ def _disable_prune_builtins(curator_env, monkeypatch):
     monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: False)
 
 
+def _write_bundled_and_agent(curator_env, u):
+    """One bundled built-in + one agent-created skill under the test home."""
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled-fixture")
+    _write_skill(skills_dir, "agent-fixture")
+    (skills_dir / ".bundled_manifest").write_text(
+        "bundled-fixture:deadbeef\n", encoding="utf-8",
+    )
+    u.mark_agent_created("agent-fixture")
+    return skills_dir
+
+
+def test_llm_candidate_list_omits_bundled_when_prune_builtins_on(
+    curator_env, monkeypatch,
+):
+    """prune_builtins makes built-ins archive-eligible, not LLM rewrite targets.
+
+    ``curated_report()`` includes bundled skills when the flag is on so the
+    deterministic walk can archive them. The consolidation prompt must not
+    list those same names: every background ``skill_manage`` write to a
+    bundled skill is refused, and enough refusals abort the rest of the pass.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    _write_bundled_and_agent(curator_env, u)
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    listing = c._render_candidate_list()
+    assert "agent-fixture" in listing
+    assert "bundled-fixture" not in listing
+
+
+def test_llm_prompt_does_not_invite_bundled_writes_when_prune_builtins_on(
+    curator_env, monkeypatch,
+):
+    """The delivered review prompt must not override hard rule #1.
+
+    ``PRUNE-BUILTINS MODE IS ON`` used to tell the model bundled skills were
+    in the candidate list and may be archived by the LLM. Archival is the
+    deterministic pass's job; the LLM pass must not be asked to mutate them.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    _write_bundled_and_agent(curator_env, u)
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    captured = {}
+
+    def _stub(prompt):
+        captured["prompt"] = prompt
+        return {"final": "", "summary": "s", "model": "", "provider": "",
+                "tool_calls": [], "error": None}
+
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
+    c.run_curator_review(synchronous=True, consolidate=True, dry_run=True)
+
+    prompt = captured["prompt"]
+    assert "agent-fixture" in prompt
+    assert "bundled-fixture" not in prompt
+    assert "PRUNE-BUILTINS MODE IS ON" not in prompt
+
+
+def test_prune_builtins_still_archives_bundled_via_deterministic_pass(
+    curator_env, monkeypatch,
+):
+    """Flag on: a long-idle bundled skill is archived without the LLM list."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = _write_bundled_and_agent(curator_env, u)
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+    data = u.load_usage()
+    data["bundled-fixture"] = u._empty_record()
+    data["bundled-fixture"]["last_used_at"] = super_old
+    data["bundled-fixture"]["created_at"] = super_old
+    data["bundled-fixture"]["use_count"] = 1
+    u.save_usage(data)
+
+    # Eligible for the deterministic walk...
+    names = set(u.list_agent_created_skill_names())
+    assert "bundled-fixture" in names
+    # ...but not for the LLM rewrite pass.
+    assert "bundled-fixture" not in c._render_candidate_list()
+
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] >= 1
+    assert not (skills_dir / "bundled-fixture").exists()
+    assert "bundled-fixture" in u.read_suppressed_names()
+
+
 
 
 

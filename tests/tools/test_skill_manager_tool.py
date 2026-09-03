@@ -541,6 +541,59 @@ class TestSkillManageDispatcher:
         assert (tmp_path / "bundled" / "SKILL.md").exists()
 
 
+    def test_background_review_still_refuses_bundled_when_prune_builtins_on(self, tmp_path):
+        """curator.prune_builtins is archive-only — it does not unlock writes.
+
+        The flag lets ``apply_automatic_transitions`` archive unused built-ins
+        via ``archive_skill()``. The shared write preflight covers patch/edit/
+        delete/write_file/remove_file; honouring the flag there would let the
+        consolidation pass rewrite upstream-owned skills.
+
+        The read-before-write contract is fully satisfied first (the skill is
+        marked as read, exactly as ``skill_view`` would during a normal
+        consolidation pass), so any refusal below must come from the bundled
+        branch of the write guard itself — not from the weaker "content not
+        loaded" layer. A guard that returns early for bundled skills under the
+        flag would let this write through, which is exactly what this test
+        pins against.
+        """
+        from tools.skill_manager_tool import mark_background_review_skill_read
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _skill_dir(tmp_path), \
+                 patch("tools.skill_usage.is_protected_builtin", return_value=False), \
+                 patch("tools.skill_usage.is_hub_installed", return_value=False), \
+                 patch("tools.skill_usage.is_bundled",
+                       side_effect=lambda skill_name: skill_name == "bundled"), \
+                 patch("tools.skill_usage._prune_builtins_enabled", return_value=True):
+                skill_manage(action="create", name="bundled", content=VALID_SKILL_CONTENT)
+                # Normal consolidation flow: the fork reads the skill first.
+                mark_background_review_skill_read(tmp_path / "bundled" / "SKILL.md")
+                raw = skill_manage(
+                    action="patch",
+                    name="bundled",
+                    old_string="Step 1: Do the thing.",
+                    new_string="Step 1: Do the new thing.",
+                )
+        finally:
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        # Must be the bundled-guard refusal ("...for bundled skill '<name>'"),
+        # not the read-before-write refusal ("...has not been loaded...").
+        assert "for bundled" in result["error"].lower()
+        assert "not been loaded" not in result["error"].lower()
+        assert "Step 1: Do the thing." in (tmp_path / "bundled" / "SKILL.md").read_text(
+            encoding="utf-8",
+        )
+
 class TestPatchRecoveryLoop:
     """#33064 — the recovery guidance must be FOLLOWABLE, not just well-worded.
 

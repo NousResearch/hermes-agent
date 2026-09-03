@@ -359,6 +359,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-creative-ideation',
                     'user-guide/skills/optional/creative/creative-draw-your-font',
                     'user-guide/skills/optional/creative/creative-excalidraw',
+                    'user-guide/skills/optional/creative/creative-h3-storyboard',
                     'user-guide/skills/optional/creative/creative-heartmula',
                     'user-guide/skills/optional/creative/creative-hyperframes',
                     'user-guide/skills/optional/creative/creative-impeccable',

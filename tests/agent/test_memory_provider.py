@@ -3,9 +3,10 @@
 import json
 import threading
 import time
-import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager, inject_memory_provider_tools
@@ -145,6 +146,23 @@ class TestMemoryProviderABC:
 
 
 class TestMemoryManager:
+    @staticmethod
+    def _set_spill_config(monkeypatch, tmp_path, *, max_chars):
+        load_config = MagicMock(
+            return_value={
+                "enabled": True,
+                "max_chars": max_chars,
+                "preview_head": 12,
+                "preview_tail": 12,
+                "directory": str(tmp_path),
+            }
+        )
+        monkeypatch.setattr(
+            "agent.memory_manager.get_spill_config",
+            load_config,
+        )
+        return load_config
+
     def test_empty_manager(self):
         mgr = MemoryManager()
         assert mgr.providers == []
@@ -177,7 +195,7 @@ class TestMemoryManager:
         p1._prefetch_result = "Memory from builtin"
         p2 = FakeMemoryProvider("external")
         p2._prefetch_result = "Memory from external"
-        mgr.add_provider(p1)
+        mgr.add_provider(p1, is_builtin=True)
         mgr.add_provider(p2)
 
         result = mgr.prefetch_all("what do you know?")
@@ -186,12 +204,86 @@ class TestMemoryManager:
         assert p1.prefetch_queries == ["what do you know?"]
         assert p2.prefetch_queries == ["what do you know?"]
 
+    def test_oversized_external_prefetch_is_spilled(self, tmp_path, monkeypatch):
+        self._set_spill_config(monkeypatch, tmp_path, max_chars=40)
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        provider._prefetch_result = "recalled " * 20
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("what do you remember?", session_id="session-1")
+
+        assert "external memory prefetch output truncated" in result
+        spill_files = list((tmp_path / "session-1").glob("*.txt"))
+        assert len(spill_files) == 1
+        assert spill_files[0].read_text() == provider._prefetch_result + "\n"
+
+    def test_external_prefetch_under_limit_is_unchanged(self, tmp_path, monkeypatch):
+        load_config = self._set_spill_config(monkeypatch, tmp_path, max_chars=100)
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        provider._prefetch_result = "remember this exactly"
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("what do you remember?", session_id="session-2")
+        repeated = mgr.prefetch_all("what else?", session_id="session-2")
+
+        assert result == repeated == provider._prefetch_result
+        load_config.assert_called_once_with()
+        assert not list(tmp_path.rglob("*.txt"))
+
+    def test_builtin_prefetch_keeps_its_existing_budget(self, tmp_path, monkeypatch):
+        self._set_spill_config(monkeypatch, tmp_path, max_chars=10)
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("builtin")
+        provider._prefetch_result = "built-in memory has its own configured limit"
+        mgr.add_provider(provider, is_builtin=True)
+
+        result = mgr.prefetch_all("what do you remember?", session_id="session-3")
+
+        assert result == provider._prefetch_result
+        assert not list(tmp_path.rglob("*.txt"))
+
+    def test_external_provider_cannot_claim_builtin_spill_exemption(
+        self, tmp_path, monkeypatch
+    ):
+        self._set_spill_config(monkeypatch, tmp_path, max_chars=40)
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("builtin")
+        provider._prefetch_result = "external recall " * 20
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("what do you remember?", session_id="session-4")
+
+        assert "builtin memory prefetch output truncated" in result
+        spill_files = list((tmp_path / "session-4").glob("*.txt"))
+        assert len(spill_files) == 1
+        assert spill_files[0].read_text() == provider._prefetch_result + "\n"
+
+    def test_duplicate_registration_cannot_promote_external_provider(
+        self, tmp_path, monkeypatch
+    ):
+        self._set_spill_config(monkeypatch, tmp_path, max_chars=40)
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        provider._prefetch_result = "external recall " * 20
+        mgr.add_provider(provider)
+        mgr.add_provider(provider, is_builtin=True)
+
+        result = mgr.prefetch_all("what do you remember?", session_id="session-5")
+
+        assert mgr.providers == [provider]
+        assert "external memory prefetch output truncated" in result
+        spill_files = list((tmp_path / "session-5").glob("*.txt"))
+        assert len(spill_files) == 1
+        assert spill_files[0].read_text() == provider._prefetch_result + "\n"
+
 
     def test_queue_prefetch_all(self):
         mgr = MemoryManager()
         p1 = FakeMemoryProvider("builtin")
         p2 = FakeMemoryProvider("external")
-        mgr.add_provider(p1)
+        mgr.add_provider(p1, is_builtin=True)
         mgr.add_provider(p2)
 
         mgr.queue_prefetch_all("next turn")
@@ -208,7 +300,7 @@ class TestMemoryManager:
         p1 = FakeMemoryProvider("builtin")
         p1.sync_turn = MagicMock(side_effect=RuntimeError("boom"))
         p2 = FakeMemoryProvider("external")
-        mgr.add_provider(p1)
+        mgr.add_provider(p1, is_builtin=True)
         mgr.add_provider(p2)
 
         mgr.sync_all("user", "assistant")
@@ -250,7 +342,7 @@ class TestMemoryManager:
         p2 = FakeMemoryProvider("external", tools=[
             {"name": "ext_tool", "description": "External", "parameters": {}}
         ])
-        mgr.add_provider(p1)
+        mgr.add_provider(p1, is_builtin=True)
         mgr.add_provider(p2)
 
         r1 = json.loads(mgr.handle_tool_call("builtin_tool", {"a": 1}))
@@ -274,7 +366,7 @@ class TestMemoryManager:
         builtin._prefetch_result = "builtin memory"
         external = BlockingPrefetchProvider("hy-memory")
         external._prefetch_result = "late external memory"
-        mgr.add_provider(builtin)
+        mgr.add_provider(builtin, is_builtin=True)
         mgr.add_provider(external)
 
         started = time.monotonic()
@@ -736,7 +828,7 @@ class TestSequentialDispatchRouting:
             {"name": "ext_recall", "description": "E1", "parameters": {}},
             {"name": "ext_retain", "description": "E2", "parameters": {}},
         ])
-        mgr.add_provider(builtin)
+        mgr.add_provider(builtin, is_builtin=True)
         mgr.add_provider(external)
 
         names = mgr.get_all_tool_names()
@@ -921,7 +1013,7 @@ class TestCommitMemorySessionRouting:
         mgr = MemoryManager()
         builtin = _CommitRecorder("builtin")
         external = _CommitRecorder("openviking")
-        mgr.add_provider(builtin)
+        mgr.add_provider(builtin, is_builtin=True)
         mgr.add_provider(external)
 
         msgs = [{"role": "user", "content": "hi"}]
@@ -935,7 +1027,7 @@ class TestCommitMemorySessionRouting:
         builtin = FakeMemoryProvider("builtin")
         bad = _CommitRecorder("bad-provider")
         bad.on_session_end = lambda m: (_ for _ in ()).throw(RuntimeError("boom"))
-        mgr.add_provider(builtin)
+        mgr.add_provider(builtin, is_builtin=True)
         mgr.add_provider(bad)
 
         mgr.on_session_end([])  # must not raise
@@ -1008,7 +1100,7 @@ class TestOnMemoryWriteBridge:
         bad = FakeMemoryProvider("builtin")
         bad.on_memory_write = MagicMock(side_effect=RuntimeError("boom"))
         good = FakeMemoryProvider("good")
-        mgr.add_provider(bad)
+        mgr.add_provider(bad, is_builtin=True)
         mgr.add_provider(good)
 
         mgr.on_memory_write("add", "user", "test")

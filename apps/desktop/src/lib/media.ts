@@ -1,8 +1,44 @@
 import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import type { MediaDeliverableMeta } from '@/lib/media-store'
 import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
+
+export type MediaFailureReason =
+  /** Fetch cancelled before completion. */
+  | 'cancelled'
+  /** Gateway policy (media.roots) or filesystem permissions denied the read. */
+  | 'denied'
+  /** Path missing, or no longer a regular file on the gateway. */
+  | 'enotdir'
+  /** Reader/renderer could not decode or fetch the file. */
+  | 'error'
+  /** Gateway answered with a non-mapped HTTP error. */
+  | 'http'
+  /** File exceeds the inline preview size cap. */
+  | 'too-large'
+  /** No inline rendering exists for this file class (the `file` kind). */
+  | 'unsupported'
+
+/**
+ * Why a media ref could not be rendered. Thrown (not returned) by the media
+ * resolvers so the renderer's single catch path maps it onto the fallback
+ * card; `statusCode` rides along when the gateway answered with an HTTP error.
+ */
+export type MediaFailure = {
+  reason: MediaFailureReason
+  statusCode?: number
+}
+
+/**
+ * Shape of the Electron bridge's fetch errors: the main process attaches the
+ * HTTP status when a gateway media endpoint answers 4xx/5xx (see
+ * finalizeGatewayDownload). Renderer failure mapping keys on it.
+ */
+interface MediaBridgeError extends Error {
+  statusCode?: number
+}
 
 interface MediaInfo {
   kind: MediaKind
@@ -38,6 +74,20 @@ function mediaInfo(path: string): MediaInfo | undefined {
 
 export function mediaKind(path: string): MediaKind {
   return mediaInfo(path)?.kind ?? 'file'
+}
+
+/**
+ * Kind resolution with event metadata: the structured payload is authoritative
+ * (it knows the true class — e.g. `.oga` audio) where the extension table can
+ * only guess. Falls back to the extension table for refs without an event.
+ */
+export function mediaKindWithMeta(path: string, meta?: MediaDeliverableMeta | null): MediaKind {
+  return meta?.kind ?? mediaKind(path)
+}
+
+/** Mime resolution with event metadata — same precedence as the kind. */
+export function mediaMimeWithMeta(path: string, meta?: MediaDeliverableMeta | null): string {
+  return meta?.mime ?? mediaMime(path)
 }
 
 // Markdown is renderable content, not an opaque download: the preview rail
@@ -83,20 +133,23 @@ export async function resolveMediaDisplaySrc(path: string): Promise<string> {
   }
 
   if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
+    return readDesktopFileDataUrlChecked(filePathFromMediaPath(path))
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {
     return mediaExternalUrl(path)
   }
 
-  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+  return readDesktopFileDataUrlChecked(filePathFromMediaPath(path))
 }
 
 // Audio/video need a seekable source instead of a whole-file data URL. Keep
 // remote URLs untouched and route filesystem paths through the Electron media
 // protocol. Its main-process handler reads local files directly or proxies a
 // remote gateway with the connection's bearer/cookie/token authentication.
+// MediaFailure-tagged like the display path; the stream URL itself is built
+// optimistically (the <audio>/<video> element reports load failures via
+// onError, which the card maps onto the same fallback card).
 export async function resolveMediaPlaybackSrc(path: string): Promise<string> {
   if (isInlineMediaSrc(path)) {
     return path
@@ -109,9 +162,102 @@ export async function resolveMediaPlaybackSrc(path: string): Promise<string> {
   return resolveMediaDisplaySrc(path)
 }
 
+// ── Never-silent helpers ────────────────────────────────────────────────────
+//
+// A deliverable's metadata rides with the ref, so a card can render (or fall
+// back) even when the file itself is unreachable. Zero-silent means: the label
+// carries the size when the gateway reported one, and every resolve failure
+// rejects with a *tagged* MediaFailure the renderer maps onto the fallback
+// card — never a bare string, never an empty catch.
+
+const SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const
+
+/** Human byte size, one decimal below 10 (media-card convention). */
+export function formatMediaSize(size: number | undefined): null | string {
+  if (size === undefined || !Number.isFinite(size) || size < 0) {
+    return null
+  }
+
+  let value = size
+  let unit = 0
+
+  while (value >= 1000 && unit < SIZE_UNITS.length - 1) {
+    value /= 1000
+    unit += 1
+  }
+
+  const rounded = unit === 0 ? Math.round(value).toString() : value >= 10 ? value.toFixed(0) : value.toFixed(1)
+
+  return `${rounded} ${SIZE_UNITS[unit]}`
+}
+
+/** Display label with event metadata: `Image · 1.2 MB: name.png`. */
+export function mediaDisplayLabel(path: string, meta?: MediaDeliverableMeta | null): string {
+  const escaped = mediaName(path).replace(/[[\]\\]/g, '\\$&')
+  const kind = mediaKindWithMeta(path, meta)
+  const size = formatMediaSize(meta?.size)
+  const kindLabel = capitalize(kind)
+
+  return size ? `${kindLabel} · ${size}: ${escaped}` : `${kindLabel}: ${escaped}`
+}
+
+/** HTTP status → MediaFailure for the /api/fs/* remote fetch paths. */
+function remoteDataUrlFailure(status: number): MediaFailure {
+  if (status === 403 || status === 401) {
+    return { reason: 'denied', statusCode: status }
+  }
+
+  if (status === 404) {
+    return { reason: 'enotdir', statusCode: status }
+  }
+
+  if (status === 413) {
+    return { reason: 'too-large', statusCode: status }
+  }
+
+  return { reason: 'http', statusCode: status }
+}
+
+function bridgeFailure(error: unknown): MediaFailure {
+  const message = error instanceof Error ? error.message : String(error)
+
+  if (/cancel/i.test(message)) {
+    return { reason: 'cancelled' }
+  }
+
+  if (/\b(413|too large)\b/i.test(message)) {
+    return { reason: 'too-large' }
+  }
+
+  if (/\b(403|401|permission|denied)\b/i.test(message)) {
+    return { reason: 'denied' }
+  }
+
+  if (/\b(404|ENOENT|no such file|not a directory)\b/i.test(message)) {
+    return { reason: 'enotdir' }
+  }
+
+  return { reason: 'error' }
+}
+
+async function readDesktopFileDataUrlChecked(path: string): Promise<string> {
+  try {
+    return await readDesktopFileDataUrl(path)
+  } catch (error) {
+    const statusCode = error instanceof Error ? (error as MediaBridgeError).statusCode : undefined
+
+    if (typeof statusCode === 'number') {
+      throw remoteDataUrlFailure(statusCode)
+    }
+
+    throw bridgeFailure(error)
+  }
+}
+
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
 // gateway-local paths to an authenticated /api/files/download URL (the file
 // lives on the gateway, not this disk); local mode keeps the file:// form.
+// MediaFailure-tagged: the renderer renders a fallback card from the reason.
 export function mediaExternalUrl(path: string): string {
   if (/^https?:/i.test(path)) {
     return path
@@ -221,9 +367,35 @@ export async function downloadGatewayMediaFile(
   })
 }
 
-export function mediaDisplayLabel(path: string): string {
-  const escaped = mediaName(path).replace(/[[\]\\]/g, '\\$&')
-  const kind = mediaKind(path)
+// ── Media href size query (M4) ──────────────────────────────────────────────
+//
+// The capture-time media link carries the gateway-reported byte size in the
+// href query (`#media:<enc>?~=<n>`), so a fallback card shows name + size even
+// in a reopened transcript with no event row in memory. `~=` is chosen to be
+// invisible in rendered URLs and collision-free with real query params on
+// remote refs. Encoded without encodeURIComponent (markdown parentheses only
+// need `(` `)` escaped; digits and `~` are already safe).
 
-  return `${capitalize(kind)}: ${escaped}`
+export function mediaHrefWithSize(path: string, size: number | undefined): string {
+  const href = mediaMarkdownHref(path)
+
+  if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) {
+    return href
+  }
+
+  return `${href}?~=${Math.round(size)}`
+}
+
+/** Read the `?~=` size query off a media href. Returns undefined when absent. */
+export function mediaPathAndSizeFromMarkdownHref(href?: string): { path: string; size?: number } | null {
+  const mediaPath = mediaPathFromMarkdownHref(href)
+
+  if (mediaPath === null) {
+    return null
+  }
+
+  const match = /\?~=(\d{1,15})$/.exec(mediaPath)
+  const size = match ? Number(match[1]) : undefined
+
+  return { path: match ? mediaPath.slice(0, match.index) : mediaPath, size }
 }

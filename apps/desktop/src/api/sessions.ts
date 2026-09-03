@@ -396,7 +396,13 @@ export function getSession(id: string, profile?: ProfileScope): Promise<SessionI
 export function getSessionMessages(
   id: string,
   profile?: ProfileScope,
-  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {}
+  page: {
+    limit?: number
+    offset?: number
+    order?: 'latest' | 'oldest'
+    includeCompacted?: boolean
+    includeMedia?: boolean
+  } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
@@ -422,6 +428,10 @@ export function getSessionMessages(
     query.set('include_compacted', String(page.includeCompacted))
   }
 
+  if (page.includeMedia) {
+    query.set('include_media', 'true')
+  }
+
   const suffix = query.size ? `?${query.toString()}` : ''
 
   return hermesApi<SessionMessagesResponse>({
@@ -443,10 +453,14 @@ export function getLatestSessionMessages(id: string, profile?: ProfileScope): Pr
   // includeCompacted: durable display history must include rows preserved by
   // in-place compaction (active=0, compacted=1); without them the transcript
   // silently ends at the compaction boundary and earlier turns are unreachable.
+  // includeMedia: history media projection (D5) — server-derived refs per row,
+  // seeded into the renderer's metadata registry by toChatMessages so a
+  // reopened session renders cards from stored data, not just live events.
   return getSessionMessages(id, profile, {
     limit: LATEST_SESSION_MESSAGES_LIMIT,
     order: 'latest',
-    includeCompacted: true
+    includeCompacted: true,
+    includeMedia: true
   }).then(page => {
     // Record whether the tail was truncated (page came back full) and where
     // the next older page starts, so "Show earlier" can backfill over REST
@@ -518,7 +532,7 @@ export function getOlderSessionMessages(
   offset: number,
   limit: number = LATEST_SESSION_MESSAGES_LIMIT
 ): Promise<SessionMessagesResponse> {
-  return getSessionMessages(id, profile, { includeCompacted: true, limit, offset, order: 'latest' })
+  return getSessionMessages(id, profile, { includeCompacted: true, includeMedia: true, limit, offset, order: 'latest' })
 }
 
 export async function getAllSessionMessages(

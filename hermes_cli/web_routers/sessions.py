@@ -663,12 +663,18 @@ async def get_session_messages(
     offset: int = Query(0, ge=0),
     order: Optional[str] = Query(None),
     include_compacted: bool = Query(False),
+    include_media: bool = Query(False),
 ):
     if order not in (None, "oldest", "latest"):
         raise HTTPException(
             status_code=400,
             detail="order must be one of: oldest, latest",
         )
+    # Direct (non-FastAPI) callers omitting ``include_media`` would otherwise
+    # see the Query() descriptor object, which is truthy — normalize it so the
+    # opt-in default holds regardless of the calling convention.
+    if not isinstance(include_media, bool):
+        include_media = False
 
     def _read():
         db = _open_session_db_for_profile(profile, read_only=True)
@@ -719,6 +725,17 @@ async def get_session_messages(
             projected["display_content"] = display_view.get("content")
             projected.pop("display_kind", None)
         projected_messages.append(projected)
+    if include_media:
+        # History media projection (D5): per-message refs derived server-side
+        # from stored data, bounded to the page just read. Stamped onto the
+        # same row objects the response returns; every message gets the key
+        # under the opt-in (empty list when it tags nothing) so the consumer
+        # shape is uniform. Default calls are untouched.
+        from hermes_cli.session_media_projection import build_media_refs_for_messages
+
+        projection = build_media_refs_for_messages(projected_messages)
+        for index, message in enumerate(projected_messages):
+            message["media"] = projection.get(index, [])
     return {
         "session_id": sid,
         "messages": projected_messages,

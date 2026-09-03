@@ -1873,7 +1873,7 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
     return None
 
 
-def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
+def validate_media_delivery_path(path: str, session_key: str = "", require_exists: bool = True) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
     Default mode (single-user / private gateway): accept any existing regular
@@ -1890,6 +1890,14 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     configured recency window. Suitable for public-facing bots where
     prompt injection from one user shouldn't be able to exfiltrate the
     host's secrets to that same user.
+
+    ``require_exists=False`` relaxes ONLY the existence requirement: the
+    path still resolves (non-strict), and every policy check — allowlist
+    containment, denylist, strict mode — runs unchanged. It exists for the
+    history media projection (D5), which must also describe refs whose
+    files have since vanished (as fallback metadata — no file content is
+    ever served off a missing row); live delivery keeps the default and
+    continues to require a real file.
 
     Symlinks are resolved before any containment / denylist check.
     """
@@ -1919,11 +1927,11 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
         resolved = translated
     else:
         try:
-            resolved = expanded.resolve(strict=True)
+            resolved = expanded.resolve(strict=require_exists)
         except (OSError, RuntimeError, ValueError):
             return None
 
-    if not resolved.is_file():
+    if require_exists and not resolved.is_file():
         return None
 
     # Cache / operator allowlist is always honored — these are unconditionally

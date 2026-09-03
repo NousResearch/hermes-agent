@@ -15,6 +15,7 @@ import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { useI18n } from '@/i18n/context'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
@@ -22,17 +23,21 @@ import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
+  formatMediaSize,
   isFileMediaPath,
   isInlineMediaSrc,
   isMarkdownDocumentPath,
   isRemoteGateway,
   mediaExternalUrl,
-  mediaKind,
+  type MediaFailure,
+  mediaKindWithMeta,
   mediaName,
-  mediaPathFromMarkdownHref,
+  mediaPathAndSizeFromMarkdownHref,
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from '@/lib/media'
+import type { MediaDeliverableMeta } from '@/lib/media-store'
+import { aliasMediaCardMeta, mediaCardMeta } from '@/lib/media-store'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
@@ -118,6 +123,134 @@ function useOpenMediaFile(path: string) {
   return { open, openFailed }
 }
 
+// A deliverable row for this path, tolerating file:// spellings: the registry
+// is keyed by the gateway's raw ref, so a file:/// transcription of the same
+// file aliases to the original row instead of missing.
+function mediaCardMetaForPath(path: string): MediaDeliverableMeta | null {
+  if (mediaCardMeta(path)) {
+    return mediaCardMeta(path)
+  }
+
+  if (path.startsWith('file:')) {
+    let decoded: string
+
+    try {
+      decoded = decodeURIComponent(new URL(path).pathname)
+    } catch {
+      decoded = path.replace(/^file:\/\//, '')
+    }
+
+    if (decoded !== path) {
+      aliasMediaCardMeta(path, decoded)
+
+      return mediaCardMeta(decoded)
+    }
+  }
+
+  return null
+}
+
+const FAILURE_REASON_TEXT: Record<MediaFailure['reason'], string> = {
+  cancelled: 'the fetch was cancelled',
+  denied: 'gateway policy denies reads for this path (media.roots)',
+  enotdir: 'the file no longer exists at this path on the gateway',
+  error: 'it could not be read from the gateway',
+  http: 'the gateway returned an error',
+  'too-large': 'it is above the inline preview size cap',
+  unsupported: 'there is no inline preview for this file type'
+}
+
+function failureReasonText(failure: MediaFailure | null): string {
+  if (!failure) {
+    return FAILURE_REASON_TEXT.enotdir
+  }
+
+  const base = FAILURE_REASON_TEXT[failure.reason]
+
+  return failure.statusCode ? `${base} (HTTP ${failure.statusCode})` : base
+}
+
+/**
+ * The never-silent fallback card (D4). Rendered whenever a media ref cannot be
+ * resolved — file missing (the dominant real failure, per the M0.b evidence
+ * sweep), denied by the media-roots policy, over the data-URL cap, media load
+ * error, or metadata never arriving at all. Shows name, kind, size, the actual
+ * failure reason, and a Save-as action through the existing authenticated
+ * gateway download bridge; in bare browser mode (no Electron shell) Save-as
+ * degrades to opening the download URL. No silent state: something is always
+ * on screen, and it always says why.
+ */
+function MediaFallbackCard({
+  failure,
+  meta,
+  refPath
+}: {
+  failure: MediaFailure | null
+  meta: MediaDeliverableMeta | null
+  /** The media ref this card stands in for, when no registry row exists. */
+  refPath?: string
+}) {
+  const { t } = useI18n()
+  const [saveFailed, setSaveFailed] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  const path = meta?.path ?? refPath ?? ''
+  const name = path ? mediaName(path) : 'media file'
+  const kind = mediaKindWithMeta(path, meta)
+  const size = formatMediaSize(meta?.size)
+  const reason = failureReasonText(failure)
+
+  const save = () => {
+    if (!path) {
+      return
+    }
+
+    setSaveFailed(false)
+
+    if (window.hermesDesktop) {
+      void downloadGatewayMediaFile(path)
+        .then(result => {
+          if (result.canceled) {
+            return
+          }
+
+          setSaved(true)
+        })
+        .catch(() => setSaveFailed(true))
+    } else {
+      openExternalLink(mediaExternalUrl(path))
+    }
+  }
+
+  return (
+    <span
+      className="my-3 block max-w-xl rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3 text-sm"
+      data-media-fallback=""
+    >
+      <span className="mb-0.5 flex items-baseline gap-2">
+        <span className="wrap-anywhere truncate font-medium text-foreground">{name}</span>
+        {kind !== 'image' && <span className="shrink-0 text-xs capitalize text-muted-foreground">{kind}</span>}
+        {size && <span className="shrink-0 text-xs text-muted-foreground">{size}</span>}
+      </span>
+      <span className="block text-xs text-muted-foreground">
+        Couldn&apos;t display this {kind === 'file' ? 'file' : kind} — {reason}.
+      </span>
+      <span className="mt-2 block">
+        {path && (
+          <>
+            <button className="ref text-xs font-medium text-muted-foreground hover:text-foreground" onClick={save} type="button">
+              {t.assistant.thread.mediaSaveAs}
+            </button>
+            {saved && <span className="ml-2 text-xs text-muted-foreground">{t.assistant.thread.mediaSaved}</span>}
+            {saveFailed && <OpenMediaFailedNote name={name} />}
+          </>
+        )}
+        {!path && <OpenMediaFailedNote name={name} />}
+      </span>
+    </span>
+  )
+}
+
 function OpenMediaFailedNote({ name }: { name: string }) {
   return (
     <span className="mt-1 block text-xs text-muted-foreground">
@@ -143,11 +276,19 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
   )
 }
 
-function MediaAttachment({ path }: { path: string }) {
+function MediaAttachment({ fallbackSize, path }: { fallbackSize?: number; path: string }) {
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
+  const [failure, setFailure] = useState<MediaFailure | null>(null)
   const { open, openFailed } = useOpenMediaFile(path)
-  const kind = mediaKind(path)
+  // Registry row first; when the gateway's event is long gone (reopened
+  // transcript), the capture-time href size still gives the card its data.
+  const stored = mediaCardMetaForPath(path)
+
+  const meta =
+    stored ?? (typeof fallbackSize === 'number' && fallbackSize >= 0 ? { path, receivedAt: 0, size: fallbackSize } : null)
+
+  const kind = mediaKindWithMeta(path, meta)
   const name = mediaName(path)
 
   useEffect(() => {
@@ -155,15 +296,23 @@ function MediaAttachment({ path }: { path: string }) {
     let objectUrl = ''
 
     setFailed(false)
+    setFailure(null)
     setSrc('')
 
     if (kind === 'file') {
+      // Zero-silent: a `file`-kind ref never fades into a bare link. The
+      // fallback card names it, sizes it (when known), explains that there is
+      // no inline preview for this class, and keeps Save-as reachable.
+      setFailure({ reason: 'unsupported' })
       setFailed(true)
 
       return () => {
         cancelled = true
       }
     }
+
+    const toFailure = (error: unknown): MediaFailure =>
+      error && typeof error === 'object' && 'reason' in error ? (error as MediaFailure) : { reason: 'error' }
 
     void resolveMediaPlaybackSrc(path)
       .then(value => {
@@ -177,8 +326,9 @@ function MediaAttachment({ path }: { path: string }) {
           URL.revokeObjectURL(objectUrl)
         }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!cancelled) {
+          setFailure(toFailure(error))
           setFailed(true)
         }
       })
@@ -192,6 +342,10 @@ function MediaAttachment({ path }: { path: string }) {
     }
   }, [kind, path])
 
+  if (failed) {
+    return <MediaFallbackCard failure={failure} meta={meta} refPath={path} />
+  }
+
   if (kind === 'image' && src) {
     return (
       <span className="block">
@@ -204,8 +358,16 @@ function MediaAttachment({ path }: { path: string }) {
     return (
       <span className="my-3 block max-w-md rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
         <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
-        <audio className="block w-full" controls onError={() => setFailed(true)} preload="metadata" src={src} />
-        {failed && <OpenMediaButton kind="audio" path={path} />}
+        <audio
+          className="block w-full"
+          controls
+          onError={() => {
+            setFailure({ reason: 'error' })
+            setFailed(true)
+          }}
+          preload="metadata"
+          src={src}
+        />
       </span>
     )
   }
@@ -217,10 +379,12 @@ function MediaAttachment({ path }: { path: string }) {
         <video
           className="block max-h-112 w-full rounded-lg bg-black"
           controls
-          onError={() => setFailed(true)}
+          onError={() => {
+            setFailure({ reason: 'error' })
+            setFailed(true)
+          }}
           src={src}
         />
-        {failed && <OpenMediaButton kind="video" path={path} />}
       </span>
     )
   }
@@ -235,7 +399,7 @@ function MediaAttachment({ path }: { path: string }) {
           open()
         }}
       >
-        {failed ? `Open ${name}` : `Loading ${name}...`}
+        {`Loading ${name}...`}
       </a>
       {openFailed && <OpenMediaFailedNote name={name} />}
     </span>
@@ -255,9 +419,11 @@ function childrenToText(children: unknown): string {
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
-  const mediaPath = mediaPathFromMarkdownHref(href)
+  const mediaRef = mediaPathAndSizeFromMarkdownHref(href)
 
-  if (mediaPath) {
+  if (mediaRef) {
+    const mediaPath = mediaRef.path
+
     // A delivered markdown document is renderable content, not an opaque
     // download: route it to the preview rail (which renders .md with a
     // rendered/source toggle) instead of the download-link fallback that
@@ -271,12 +437,12 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     // "Open <name>" anchor). Route through the preview pipeline instead —
     // the same file card + "Open preview" the bare-path markdown-link
     // branch below produces — so MEDIA: uniformly delivers the richest
-    // rendering for every file type.
-    if (mediaKind(mediaPath) === 'file') {
+    // rendering for every file type. (#97812)
+    if (mediaKindWithMeta(mediaPath, mediaCardMetaForPath(mediaPath)) === 'file') {
       return <PreviewAttachment source="tool-result" target={mediaPath} />
     }
 
-    return <MediaAttachment path={mediaPath} />
+    return <MediaAttachment fallbackSize={mediaRef.size} path={mediaPath} />
   }
 
   const previewTarget = previewTargetFromMarkdownHref(href)
@@ -306,11 +472,12 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     const fileHref = href && !href.startsWith('#') && isFileMediaPath(href) ? href : null
 
     if (fileHref) {
-      return mediaKind(fileHref) === 'file' ? (
-        <PreviewAttachment source="explicit-link" target={fileHref} />
-      ) : (
-        <MediaAttachment path={fileHref} />
-      )
+      // Kind from the extension table, upgraded by deliverable metadata when
+      // the gateway announced this exact path — an extension-less video with
+      // an event row routes to the player, not the generic file preview.
+      const fileKind = mediaKindWithMeta(fileHref, mediaCardMetaForPath(fileHref))
+
+      return fileKind === 'file' ? <PreviewAttachment source="explicit-link" target={fileHref} /> : <MediaAttachment path={fileHref} />
     }
 
     return (
@@ -358,7 +525,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 // would still fire an image resolve for media we never render as an image.
 export function MarkdownImage(props: ComponentProps<'img'>) {
   const rawSrc = typeof props.src === 'string' ? props.src : ''
-  const kind = rawSrc ? mediaKind(rawSrc) : 'file'
+  const kind = rawSrc ? mediaKindWithMeta(rawSrc, mediaCardMetaForPath(rawSrc)) : 'file'
 
   if (kind === 'video' || kind === 'audio') {
     return <MediaAttachment path={rawSrc} />
@@ -369,31 +536,43 @@ export function MarkdownImage(props: ComponentProps<'img'>) {
 
 function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<'img'>) {
   const rawSrc = typeof src === 'string' ? src : ''
+  // Image markdown may carry a `#media:` href (markdown-preprocess rewrites
+  // bare filesystem paths), optionally with the size query. Resolve it to the
+  // real path so kind detection, metadata lookup, and the resolvers all see
+  // what the gateway actually announced.
+  const mediaRef = mediaPathAndSizeFromMarkdownHref(rawSrc)
+  const path = mediaRef ? mediaRef.path : rawSrc
   const [resolvedSrc, setResolvedSrc] = useState(() => (rawSrc && isInlineMediaSrc(rawSrc) ? rawSrc : ''))
   const [failed, setFailed] = useState(false)
-  const { open, openFailed } = useOpenMediaFile(rawSrc)
-  const name = mediaName(rawSrc || String(alt || 'image'))
+  const [failure, setFailure] = useState<MediaFailure | null>(null)
+  const { open, openFailed } = useOpenMediaFile(path)
+  const meta = mediaCardMetaForPath(path)
+  const name = mediaName(path || String(alt || 'image'))
 
   useEffect(() => {
     let cancelled = false
 
     setFailed(false)
+    setFailure(null)
     setResolvedSrc(rawSrc && isInlineMediaSrc(rawSrc) ? rawSrc : '')
 
-    if (!rawSrc || isInlineMediaSrc(rawSrc)) {
+    if (!path || isInlineMediaSrc(rawSrc)) {
       return () => {
         cancelled = true
       }
     }
 
-    void resolveMediaDisplaySrc(rawSrc)
+    void resolveMediaDisplaySrc(path)
       .then(value => {
         if (!cancelled) {
           setResolvedSrc(value)
         }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!cancelled) {
+          setFailure(
+            error && typeof error === 'object' && 'reason' in error ? (error as MediaFailure) : { reason: 'error' }
+          )
           setFailed(true)
         }
       })
@@ -401,22 +580,14 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
     return () => {
       cancelled = true
     }
-  }, [rawSrc])
+  }, [path, rawSrc])
 
   if (!rawSrc) {
     return null
   }
 
   if (failed) {
-    return (
-      <span className="my-2 block text-sm text-muted-foreground">
-        Couldn&apos;t load {name}.{' '}
-        <button className="ref font-medium text-foreground" onClick={open} type="button">
-          Open image
-        </button>
-        {openFailed && <OpenMediaFailedNote name={name} />}
-      </span>
-    )
+    return <MediaFallbackCard failure={failure} meta={meta} refPath={path} />
   }
 
   if (!resolvedSrc) {

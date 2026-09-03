@@ -583,7 +583,30 @@ export interface MessageReaction {
   at: number
 }
 
+export interface SessionMediaRef {
+  /**
+   * One server-projected media ref (D5): derived from stored history by
+   * `GET /api/sessions/{id}/messages?include_media=true`.
+   *
+   * Existing file: the D1 payload shape `{path, kind, mime, size}` plus
+   * `available: true`. Missing file: `{path, available: false, name, kind,
+   * mime}` — no `size` (unknown). Absent on a backend older than this app or
+   * when the call did not opt in.
+   */
+  path: string
+  available?: boolean
+  kind?: 'audio' | 'document' | 'file' | 'image' | 'video' | string
+  mime?: string
+  name?: string
+  size?: number
+}
+
 export interface SessionMessage {
+  /**
+   * Server-projected media refs for this row (D5). Present only when the
+   * transcript read opted in via `include_media=true`; older backends omit it.
+   */
+  media?: SessionMediaRef[]
   /**
    * Full tool arguments for a gateway-projected tool row (`role: 'tool'`).
    * `context` is an 80-char display preview. The expanded tool row rebuilds

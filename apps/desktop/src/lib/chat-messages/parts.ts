@@ -1,4 +1,5 @@
-import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import { mediaDisplayLabel, mediaHrefWithSize } from '@/lib/media'
+import { mediaCardMeta } from '@/lib/media-store'
 
 import type { ChatMessage, ChatMessagePart } from './types'
 
@@ -21,10 +22,20 @@ function unquoteMediaPath(value: string): string {
   return quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
 }
 
+/**
+ * Build the markdown link for one MEDIA ref, enriching it with whatever
+ * deliverable metadata the gateway has already announced for the path (via the
+ * `media.deliverable` event, which for the gateway path lands seconds BEFORE
+ * the final text). Label carries kind + human size; the href carries the raw
+ * byte size so a fallback card can render it in a reopened transcript — long
+ * after the in-memory event row is gone. Without metadata this is the legacy
+ * link, byte-for-byte.
+ */
 function mediaLink(value: string): string {
   const path = unquoteMediaPath(value)
+  const meta = mediaCardMeta(path)
 
-  return `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})`
+  return `[${mediaDisplayLabel(path, meta)}](${mediaHrefWithSize(path, meta?.size)})`
 }
 
 export function renderMediaTags(text: string): string {

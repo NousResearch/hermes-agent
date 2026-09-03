@@ -19,6 +19,7 @@ import type { RpcEvent } from '@/types/hermes'
 import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleInputRequestEvent } from './input-requests'
 import { handleLifecycleEvent } from './lifecycle'
+import { handleMediaEvent } from './media'
 import { handleMessageStreamEvent } from './message-stream'
 import { handleSessionInfoEvent } from './session-info'
 import { handleStatusEvent } from './status'
@@ -85,6 +86,7 @@ const HANDLERS: GatewayEventHandler[] = [
   handleLifecycleEvent,
   handleSessionInfoEvent,
   handleMessageStreamEvent,
+  handleMediaEvent,
   handleToolEvent,
   handleInputRequestEvent,
   handleDesktopBridgeEvent,

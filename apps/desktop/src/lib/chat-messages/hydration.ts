@@ -2,6 +2,7 @@ import { skillInvocationText } from '@hermes/shared'
 
 import { extractImageRefs } from '@/lib/embedded-images'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
+import { seedMediaDeliverablesFromHistory } from '@/lib/media-store'
 import type { MessageReaction, SessionMessage } from '@/types/hermes'
 
 import { assistantTextPart, chatMessageText, dedupeRepeatedTextInParts, reasoningPart, textPart } from './parts'
@@ -116,6 +117,16 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
 }
 
 export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
+  // History media projection (D5): seed the renderer's metadata registry from
+  // server-projected refs BEFORE parts render — renderMediaTags reads
+  // mediaCardMeta at render time, so this is what makes a reopened session
+  // render cards from stored data (kind/mime/size) instead of bare links.
+  for (const message of messages) {
+    if (message.media?.length) {
+      seedMediaDeliverablesFromHistory(message.media)
+    }
+  }
+
   const result: ChatMessage[] = []
   let pendingToolParts: ChatMessagePart[] = []
   let pendingToolTimestamp: number | undefined

@@ -2944,6 +2944,9 @@ export interface Translations {
       preparingAudio: string
       stopReading: string
       readAloud: string
+      mediaSaveAs: string
+      mediaSaved: string
+      mediaUnavailable: string
       editMessage: string
       expandMessage: string
       scrollToBottom: string

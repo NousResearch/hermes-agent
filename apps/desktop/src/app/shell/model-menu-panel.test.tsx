@@ -157,7 +157,7 @@ describe('ModelMenuPanel current selection', () => {
     const { content } = renderPanel()
 
     const currentRow = (await content.findByText(/Gemini 3\.1 Pro/i)).closest('[role="menuitem"]')
-    const staleRow = content.getByText('Deepseek Chat').closest('[role="menuitem"]')
+    const staleRow = content.getByText('DeepSeek Chat').closest('[role="menuitem"]')
 
     expect(currentRow?.querySelector('.codicon-check')).not.toBeNull()
     expect(staleRow?.querySelector('.codicon-check')).toBeNull()
@@ -179,7 +179,7 @@ describe('ModelMenuPanel search', () => {
     $currentModel.set('deepseek-v4-pro')
     const { content } = renderPanel()
 
-    await content.findByText(/Deepseek V4 Pro/i)
+    await content.findByText(/DeepSeek V4 Pro/i)
 
     const input = screen.getByRole('textbox', { name: 'Search models' })
     fireEvent.change(input, { target: { value: 'gemini' } })
@@ -187,7 +187,7 @@ describe('ModelMenuPanel search', () => {
     await vi.waitFor(() => {
       expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
     })
-    expect(rowWithText(content, /Deepseek V4 Pro/i)).toBeNull()
+    expect(rowWithText(content, /DeepSeek V4 Pro/i)).toBeNull()
   })
 
   it('Enter in the search field commits the first match', async () => {
@@ -291,8 +291,8 @@ describe('ModelMenuPanel provider collapse', () => {
     const { content } = renderPanel()
 
     await content.findByText('DeepSeek')
-    expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
-    expect(content.queryByText('Deepseek Chat')).not.toBeNull()
+    expect(content.queryByText('DeepSeek V4 Pro')).not.toBeNull()
+    expect(content.queryByText('DeepSeek Chat')).not.toBeNull()
   })
 
   it('collapses provider models when header is clicked', async () => {
@@ -302,7 +302,7 @@ describe('ModelMenuPanel provider collapse', () => {
     fireEvent.click(header)
 
     // Models should disappear but header stays
-    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
     expect(content.queryByText('DeepSeek')).not.toBeNull()
   })
 
@@ -312,11 +312,11 @@ describe('ModelMenuPanel provider collapse', () => {
     const header = await content.findByText('DeepSeek')
     // Collapse
     fireEvent.click(header)
-    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
     // Expand
     fireEvent.click(header)
     await vi.waitFor(() => {
-      expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
+      expect(content.queryByText('DeepSeek V4 Pro')).not.toBeNull()
     })
   })
 
@@ -331,7 +331,7 @@ describe('ModelMenuPanel provider collapse', () => {
     // The current provider is collapsible like any other — clicking its header
     // hides its models rather than forcing them to stay open.
     await vi.waitFor(() => {
-      expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+      expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
     })
   })
 
@@ -340,7 +340,7 @@ describe('ModelMenuPanel provider collapse', () => {
 
     const header = await content.findByText('DeepSeek')
     fireEvent.click(header)
-    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
 
     // Type in the search bar (auto-focused by DropdownMenuSearch)
     const input = screen.getByRole('textbox', { name: 'Search models' })
@@ -353,7 +353,7 @@ describe('ModelMenuPanel provider collapse', () => {
     await vi.waitFor(() => {
       expect(
         content.queryByText(
-          (_, element) => element?.tagName === 'SPAN' && (element.textContent ?? '').startsWith('Deepseek V4 Pro')
+          (_, element) => element?.tagName === 'SPAN' && (element.textContent ?? '').startsWith('DeepSeek V4 Pro')
         )
       ).not.toBeNull()
     })
@@ -366,7 +366,7 @@ describe('ModelMenuPanel provider collapse', () => {
     // Radix DropdownMenuItem fires onSelect on Enter from the onKeyDown handler
     fireEvent.keyDown(header.closest('[role="menuitem"]') ?? header, { key: 'Enter' })
 
-    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
   })
 
   // The collapsed-providers set is a global presentation preference

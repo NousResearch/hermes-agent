@@ -4525,6 +4525,10 @@ class TelegramAdapter(BasePlatformAdapter):
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message
         ))
+        app.add_handler(TelegramMessageHandler(
+            filters.CONTACT,
+            self._handle_contact_message
+        ))
         # Handle inline keyboard button callbacks (update prompts)
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # Inline command picker (@botname <query>) — searchable, uncapped
@@ -10104,6 +10108,47 @@ class TelegramAdapter(BasePlatformAdapter):
     # Text message aggregation (handles Telegram client-side splits)
     # ------------------------------------------------------------------
 
+
+    async def _handle_contact_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming contact card messages."""
+        msg = self._effective_update_message(update)
+        if not msg:
+            return
+        if not self._is_user_authorized_from_message(msg):
+            logger.warning(
+                "[Telegram] Blocked unauthorized user %s in chat %s",
+                getattr(getattr(msg, "from_user", None), "id", None),
+                getattr(getattr(msg, "chat", None), "id", None),
+            )
+            return
+        if not self._should_process_message(msg):
+            if self._should_observe_unmentioned_group_message(msg):
+                self._observe_unmentioned_group_message(msg, MessageType.CONTACT, update_id=update.update_id)
+            return
+
+        contact = getattr(msg, "contact", None)
+        if not contact:
+            return
+
+        parts = ["[The user shared a contact.]"]
+        first_name = getattr(contact, "first_name", None)
+        last_name = getattr(contact, "last_name", None)
+        phone = getattr(contact, "phone_number", None)
+        vcard = getattr(contact, "vcard", None)
+        if first_name:
+            parts.append(f"First name: {first_name}")
+        if last_name:
+            parts.append(f"Last name: {last_name}")
+        if phone:
+            parts.append(f"Phone: {phone}")
+        if vcard:
+            parts.append("VCard:")
+            parts.append(vcard)
+
+        event = self._build_message_event(msg, MessageType.CONTACT, update_id=update.update_id)
+        event.text = "\n".join(parts)
+        event = self._apply_telegram_group_observe_attribution(event)
+        await self.handle_message(event)
     def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped key for text message batching.
 

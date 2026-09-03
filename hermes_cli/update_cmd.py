@@ -3779,6 +3779,20 @@ def _apply_pending_fleet_restart_catchup() -> None:
     """
     if not _pending_fleet_restart_needed():
         return
+
+    from hermes_cli.update_receipt import collect_fleet_versions
+
+    fleet = collect_fleet_versions()
+    # If every live gateway already matches the current checkout, the marker
+    # is stale (e.g. launchd respawned after a rotation exit). Clear it and
+    # skip the unnecessary restart/drain timeout.
+    if fleet and all(
+        entry.get("state") == "current"
+        for entry in fleet
+        if entry.get("state") != "down"
+    ):
+        _clear_fleet_restart_pending_marker()
+        return
     print()
     _warn_pending_fleet_restart()
     print("→ Running the pending fleet restart...")

@@ -260,6 +260,37 @@ class TestQwenProfile:
         assert "metadata" not in eb
 
 
+class TestLocalRunnerAliases:
+    """Local OpenAI-compatible runners resolve through the `custom` profile
+    rather than each carrying its own profile. An unrecognised name is not
+    inert: per #27132 a `provider:` the registry doesn't know falls through to
+    another provider's credentials, so the alias is what keeps the request on
+    the user's own endpoint."""
+
+    def test_llmman_resolves_to_custom(self):
+        p = get_provider_profile("llmman")
+        assert p is not None and p.name == "custom"
+
+    def test_llmman_alias_matches_sibling_runners(self):
+        """Same resolution as the runners already aliased here."""
+        assert get_provider_profile("llmman") is get_provider_profile("vllm")
+        assert get_provider_profile("llmman") is get_provider_profile("llamacpp")
+
+    def test_llmman_does_not_get_ollama_think_quirk(self):
+        """`think` is Ollama-native and strict hosts reject it with 422. The
+        detector keys off port 11434 / an `ollama` hostname label, so llmman's
+        port must not opt into it."""
+        # ``plugins.model_providers.custom`` is a synthetic module name the
+        # registry installs during discovery, so resolve a profile first.
+        assert get_provider_profile("llmman") is not None
+        from plugins.model_providers.custom import _looks_like_ollama_endpoint
+
+        assert _looks_like_ollama_endpoint("http://localhost:17434/v1") is False
+        assert _looks_like_ollama_endpoint("http://127.0.0.1:17434/v1") is False
+        # Control: the real Ollama port still opts in.
+        assert _looks_like_ollama_endpoint("http://localhost:11434/v1") is True
+
+
 class TestAlibabaRegionalAndTokenPlanProfiles:
     """#73265: the models.dev catalog advertises alibaba-cn /
     alibaba-token-plan(-cn) / alibaba-coding-plan-cn, but none were registered

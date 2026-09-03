@@ -2,7 +2,7 @@
 
 Covers any endpoint registered as provider="custom", including local
 Ollama instances and OpenAI-compatible reasoning endpoints (GLM-5.2 on
-Volcengine ARK, vLLM, llama.cpp). Key quirks:
+Volcengine ARK, vLLM, llama.cpp, llmman). Key quirks:
   - ollama_num_ctx → extra_body.options.num_ctx (local context window)
   - reasoning_config disabled → top-level reasoning_effort="none"
     (Ollama /v1/chat/completions ignores think=False — ollama#14820)
@@ -136,6 +136,7 @@ custom = CustomProfile(
         "llamacpp",
         "llama.cpp",
         "llama-cpp",
+        "llmman",
     ),
     env_vars=(),  # No fixed key — custom endpoint
     base_url="",  # User-configured

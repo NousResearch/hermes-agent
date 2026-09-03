@@ -3664,6 +3664,52 @@ class GatewaySlashCommandsMixin:
         source = event.source
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
 
+        parent_entry = await self.async_session_store.get_or_create_session(source)
+        parent_session_id = str(getattr(parent_entry, "session_id", "") or "")
+        parent_session_key = self._session_key_for_source(source)
+        recorded_parent_key = str(getattr(parent_entry, "session_key", "") or "")
+        if not parent_session_id or recorded_parent_key != parent_session_key:
+            logger.error(
+                "Refusing /bg parent snapshot for routing key %r: resolved session %r "
+                "belongs to %r",
+                parent_session_key,
+                parent_session_id,
+                recorded_parent_key,
+            )
+            return "❌ Background task not started: parent conversation snapshot unavailable."
+        try:
+            raw_parent_history = await self.async_session_store.load_transcript(
+                parent_session_id
+            )
+            from gateway.run import (
+                _bounded_background_parent_history,
+                _build_gateway_agent_history,
+            )
+
+            parent_conversation_history, _ = _build_gateway_agent_history(
+                raw_parent_history,
+                channel_prompt=getattr(event, "channel_prompt", None),
+            )
+            parent_conversation_history = _bounded_background_parent_history(
+                parent_conversation_history
+            )
+        except Exception:
+            logger.error(
+                "Failed to snapshot /bg parent conversation %s",
+                parent_session_id,
+                exc_info=True,
+            )
+            return "❌ Background task not started: parent conversation snapshot could not be read."
+        reply_to_text = str(getattr(event, "reply_to_text", "") or "")
+        origin = source.to_dict()
+        origin.update(
+            {
+                "execution_kind": "user_explicit_background",
+                "user_initiated": True,
+                "command": "/bg",
+            }
+        )
+
         event_message_id = self._reply_anchor_for_event(event)
 
         # Forward image/audio attachments so the background agent can see them.
@@ -3679,6 +3725,22 @@ class GatewaySlashCommandsMixin:
                 event_message_id=event_message_id,
                 media_urls=media_urls,
                 media_types=media_types,
+                message_type=event.message_type,
+                parent_session_id=parent_session_id,
+                parent_session_key=parent_session_key,
+                parent_conversation_history=parent_conversation_history,
+                reply_to_text=reply_to_text,
+                reply_to_is_own_message=bool(
+                    getattr(event, "reply_to_is_own_message", False)
+                ),
+                auto_skill=getattr(event, "auto_skill", None),
+                channel_prompt=getattr(event, "channel_prompt", None),
+                internal_context=(
+                    {"channel_context": event.channel_context}
+                    if getattr(event, "channel_context", None)
+                    else {}
+                ),
+                origin=origin,
             )
         )
         self._background_tasks.add(_task)

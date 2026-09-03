@@ -76,6 +76,12 @@ class TurnContext:
 
     # --- the ex-``nonlocal`` turn message (rebindable) --------------------
     message: Optional[str] = None
+    # Structured inbound turn data for hooks. ``message`` remains the complete
+    # model-visible composition; these fields preserve the instruction and
+    # contextual sources without requiring plugins to parse that composition.
+    current_user_text: Optional[str] = None
+    reply_to_text: Optional[str] = None
+    internal_context: dict = field(default_factory=dict)
 
     # --- turn parameters / config snapshots (read-only in run_sync) -------
     history: Any = None

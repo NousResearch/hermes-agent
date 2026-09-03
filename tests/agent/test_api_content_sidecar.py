@@ -49,6 +49,34 @@ class TestComposeUserApiContent:
         assert out == "hello" + "\n\n" + fenced + "\n\n" + "PLUGIN-CTX"
 
 
+def test_pre_llm_hook_receives_structured_turn_texts():
+    """Hooks can classify the instruction without parsing merged context."""
+    agent = _FakeAgent()
+    captured = {}
+
+    def invoke_hook(name, **kwargs):
+        assert name == "pre_llm_call"
+        captured.update(kwargs)
+        return []
+
+    with patch("hermes_cli.lifecycle.invoke_hook", side_effect=invoke_hook):
+        _build(
+            agent,
+            user_message=(
+                '[Replying to: "recommandation/client"]\n\n'
+                "Ok, je valide pour Amandine"
+            ),
+            current_user_text="Ok, je valide pour Amandine",
+            reply_to_text="recommandation/client",
+            internal_context={"auto_skill": ["support-skill"]},
+        )
+
+    assert captured["user_message"].endswith("Ok, je valide pour Amandine")
+    assert captured["current_user_text"] == "Ok, je valide pour Amandine"
+    assert captured["reply_to_text"] == "recommandation/client"
+    assert captured["internal_context"] == {"auto_skill": ["support-skill"]}
+
+
 
 
 # ---------------------------------------------------------------------------

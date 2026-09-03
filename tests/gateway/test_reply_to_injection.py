@@ -99,3 +99,28 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
+@pytest.mark.asyncio
+async def test_reply_prefix_preserves_nonce_after_character_500():
+    """The complete explicitly replied-to message is model-visible."""
+    runner = _make_runner()
+    source = _source()
+    nonce = "FOREGROUND_NONCE_AFTER_CHARACTER_500"
+    quoted = "q" * 700 + nonce
+    event = MessageEvent(
+        text="Use the instruction I replied to.",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=quoted,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith(f'[Replying to: "{quoted}"]')
+    assert nonce in result
+
+

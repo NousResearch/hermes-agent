@@ -6,6 +6,7 @@ Jaccard similarity reranking and trust-weighted scoring.
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -17,6 +18,8 @@ try:
     from . import holographic as hrr
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
+
+logger = logging.getLogger(__name__)
 
 
 class FactRetriever:
@@ -37,6 +40,11 @@ class FactRetriever:
 
         # Auto-redistribute weights if numpy unavailable
         if hrr_weight > 0 and not hrr._HAS_NUMPY:
+            logger.warning(
+                "numpy not installed — holographic memory (HRR) disabled. "
+                "probe/related/reason/contradict will fall back to keyword search. "
+                "Install numpy for full algebraic retrieval: pip install numpy"
+            )
             fts_weight = 0.6
             jaccard_weight = 0.4
             hrr_weight = 0.0

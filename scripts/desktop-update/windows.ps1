@@ -760,9 +760,28 @@ if ($env:HERMES_UPDATE_STEP_IDLE_SECONDS) {
 # growth of this file (size or mtime) as progress before declaring a stall.
 # Overridable so the pipe-drain self-test can point it at its own file; not
 # documented as a user knob.
+#
+# Pipe bytes are NOT progress (#102283). A resident gateway spawned by
+# `hermes update --gateway` inherits the step's redirected stdout and keeps
+# writing heartbeats after the update's visible work is done. Treating those
+# bytes as activity used to reset the idle clock forever -- hand-off log
+# stuck at "running: python ...", no result file, no relaunch, and a zombie
+# python.exe holding the venv shim for days. Observable progress is
+# update.log growth only.
 $script:StepProgressLogPath = Join-Path $LogDir "update.log"
 if ($env:HERMES_UPDATE_PROGRESS_LOG) {
     $script:StepProgressLogPath = $env:HERMES_UPDATE_PROGRESS_LOG
+}
+
+# Hard wall-clock backstop so a step that keeps touching update.log (or a
+# mis-aimed progress-log override) cannot live for days the way #102283 did.
+# Overridable for the self-test; not documented as a user knob.
+$script:StepMaxSeconds = 10800
+if ($env:HERMES_UPDATE_STEP_MAX_SECONDS) {
+    $parsedMax = 0
+    if ([int]::TryParse($env:HERMES_UPDATE_STEP_MAX_SECONDS, [ref]$parsedMax) -and $parsedMax -gt 0) {
+        $script:StepMaxSeconds = $parsedMax
+    }
 }
 
 function Get-StepProgressLogStamp {
@@ -1055,14 +1074,16 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $errTask = $stderrReader.ReadAsync($errBuffer, 0, $errBuffer.Length)
     $abandonAt = $null
     $abandoned = $false
-    $lastProgressAt = Get-Date
+    $stepStartedAt = Get-Date
+    $lastProgressAt = $stepStartedAt
     $progressLogStamp = Get-StepProgressLogStamp
     $stalled = $false
     while ($true) {
         $moved = $false
         $outDone = Step-PipeDrain $stdoutReader ([ref]$outTask) $outBuffer $outSink ([ref]$moved)
         $errDone = Step-PipeDrain $stderrReader ([ref]$errTask) $errBuffer $errSink ([ref]$moved)
-        if ($moved) { $lastProgressAt = Get-Date }
+        # Do not reset $lastProgressAt on $moved -- pipe chatter is not progress
+        # (#102283). A leaked gateway heartbeat would keep this clock fresh forever.
         if ($proc.HasExited) {
             if ($outDone -and $errDone) { break }
             # Clock starts at the step's exit, not at its start: a slow step is
@@ -1073,31 +1094,39 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
                 $abandoned = $true
                 break
             }
-        } elseif (-not $stalled -and $job -ne [IntPtr]::Zero -and ((Get-Date) - $lastProgressAt).TotalSeconds -ge $script:StepIdleTimeoutSeconds) {
-            # Quiet pipes are how a healthy `hermes update` looks for 40+
-            # minutes: its build output streams to logs/update.log, not the
-            # child's stdout. Growth of that file is progress -- reset the
-            # clock instead of cancelling. Stat'd only once the ceiling is
-            # otherwise reached (at most once per 150ms pass after that), so
-            # the hot drain path never touches the filesystem.
-            $currentLogStamp = Get-StepProgressLogStamp
-            if ($currentLogStamp -ne $progressLogStamp) {
-                $progressLogStamp = $currentLogStamp
-                $lastProgressAt = Get-Date
-            } else {
-                # The child is alive but has produced no observable progress
-                # -- neither on its pipes nor in the update log -- for the
-                # whole bound. Terminate the job, not just its direct process:
-                # retrying while a descendant still mutates the checkout,
-                # venv, or release tree can overlap two installers and
-                # corrupt the install.
-                Write-HandoffLog ("{0}!| step stalled: no stdout/stderr for {1}s and no update.log growth while pid {2} remained alive; cancelling its process tree." -f $Tag, $script:StepIdleTimeoutSeconds, $proc.Id)
-                $stalled = [HermesUpdateJob]::TerminateAndWait($job, 124, 10000)
-                if (-not $stalled) {
-                    Write-HandoffLog ("{0}!| process-tree cancellation could not prove quiescence; refusing the timeout retry." -f $Tag)
-                    $script:TreeSafeToFinalize = $false
-                    [HermesUpdateJob]::Close($job)
-                    throw "Unable to quiesce stalled update process tree"
+        } elseif (-not $stalled -and $job -ne [IntPtr]::Zero) {
+            $now = Get-Date
+            $ranFor = ($now - $stepStartedAt).TotalSeconds
+            $idleFor = ($now - $lastProgressAt).TotalSeconds
+            $hitWall = ($script:StepMaxSeconds -gt 0) -and ($ranFor -ge $script:StepMaxSeconds)
+            $hitIdle = ($script:StepIdleTimeoutSeconds -gt 0) -and ($idleFor -ge $script:StepIdleTimeoutSeconds)
+            if ($hitWall -or $hitIdle) {
+                # update.log growth is the only idle-progress signal. Stat'd
+                # only once a ceiling is otherwise reached so the hot drain
+                # path never touches the filesystem.
+                $currentLogStamp = Get-StepProgressLogStamp
+                if (-not $hitWall -and $currentLogStamp -ne $progressLogStamp) {
+                    $progressLogStamp = $currentLogStamp
+                    $lastProgressAt = $now
+                } else {
+                    # The child is alive but the update is not progressing:
+                    # no update.log growth for the idle bound, or the wall
+                    # clock expired. Terminate the job, not just its direct
+                    # process: retrying while a descendant still mutates the
+                    # checkout, venv, or release tree can overlap two
+                    # installers and corrupt the install.
+                    if ($hitWall) {
+                        Write-HandoffLog ("{0}!| step exceeded wall-clock limit of {1}s while pid {2} remained alive; cancelling its process tree (#102283)." -f $Tag, $script:StepMaxSeconds, $proc.Id)
+                    } else {
+                        Write-HandoffLog ("{0}!| step stalled: no update.log growth for {1}s while pid {2} remained alive (pipe chatter ignored); cancelling its process tree (#102283)." -f $Tag, $script:StepIdleTimeoutSeconds, $proc.Id)
+                    }
+                    $stalled = [HermesUpdateJob]::TerminateAndWait($job, 124, 10000)
+                    if (-not $stalled) {
+                        Write-HandoffLog ("{0}!| process-tree cancellation could not prove quiescence; refusing the timeout retry." -f $Tag)
+                        $script:TreeSafeToFinalize = $false
+                        [HermesUpdateJob]::Close($job)
+                        throw "Unable to quiesce stalled update process tree"
+                    }
                 }
             }
         }
@@ -1208,6 +1237,10 @@ if ($SelfTestUi) {
 #            goes to logs/update.log, not stdout, for 40+ minutes). Guards the
 #            watchdog's other cliff: the idle ceiling must count update.log
 #            growth as progress and must NOT kill the healthy step.
+#   chatter -- a step that stays alive and keeps writing to stdout (the
+#            resident-gateway heartbeat that defeated the idle clock in
+#            #102283). Pipe chatter must NOT count as progress: the idle
+#            ceiling must still terminate the tree.
 if ($SelfTestPipeDrain) {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     $hold = 60
@@ -1225,6 +1258,8 @@ if ($SelfTestPipeDrain) {
     $stallGrandchildPidFile = Join-Path $TempDir "hermes-step-stall-grandchild-$stamp.pid"
     $logStallPs1 = Join-Path $TempDir "hermes-step-logstall-$stamp.ps1"
     $logStallProgress = Join-Path $TempDir "hermes-step-logstall-$stamp.update.log"
+    $chatterPs1 = Join-Path $TempDir "hermes-step-chatter-$stamp.ps1"
+    $chatterProgress = Join-Path $TempDir "hermes-step-chatter-$stamp.missing.log"
     # UseShellExecute=$false with no redirection is what makes the grandchild
     # inherit our stdout/stderr -- the whole point of the fixture. Anything
     # that redirects (Start-Process, subprocess with stdout=DEVNULL) would
@@ -1280,10 +1315,19 @@ Write-Output "silent but logging"
 for ($i = 0; $i -lt $Hold; $i++) { Add-Content -LiteralPath $ProgressLog -Value ("build tick {0}" -f $i); Start-Sleep -Seconds 1 }
 exit 3
 '@
+    # Alive + chatty on stdout, no update.log growth: the #102283 zombie.
+    $chatterSource = @'
+param([int]$Hold)
+Write-Output "gateway-like chatter start"
+[Console]::Out.Flush()
+for ($i = 0; $i -lt $Hold; $i++) { Write-Output ("heartbeat {0}" -f $i); [Console]::Out.Flush(); Start-Sleep -Seconds 1 }
+exit 0
+'@
     [System.IO.File]::WriteAllText($childPs1, $childSource)
     [System.IO.File]::WriteAllText($floodPs1, $floodSource)
     [System.IO.File]::WriteAllText($stallPs1, $stallSource)
     [System.IO.File]::WriteAllText($logStallPs1, $logStallSource)
+    [System.IO.File]::WriteAllText($chatterPs1, $chatterSource)
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $res = Invoke-HermesStep $powershell @(
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $childPs1,
@@ -1349,7 +1393,24 @@ exit 3
     $logStallSw.Stop()
     $logStallElapsed = [Math]::Round($logStallSw.Elapsed.TotalSeconds, 2)
 
-    Remove-Item -LiteralPath $childPs1, $floodPs1, $stallPs1, $logStallPs1, $pidFile, $stallPidFile, $stallGrandchildPidFile, $logStallProgress -Force -ErrorAction SilentlyContinue
+    # chatter arm: pipes stay busy, progress log is absent -- idle must still
+    # cancel. Point the watchdog at a missing file so leftover update.log
+    # from a previous arm cannot count as growth.
+    $savedProgressLogPath = $script:StepProgressLogPath
+    $script:StepProgressLogPath = $chatterProgress
+    $chatterSw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $chatter = Invoke-HermesStep $powershell @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $chatterPs1,
+            "-Hold", [string]$hold
+        ) "chatter"
+    } finally {
+        $script:StepProgressLogPath = $savedProgressLogPath
+    }
+    $chatterSw.Stop()
+    $chatterElapsed = [Math]::Round($chatterSw.Elapsed.TotalSeconds, 2)
+
+    Remove-Item -LiteralPath $childPs1, $floodPs1, $stallPs1, $logStallPs1, $chatterPs1, $pidFile, $stallPidFile, $stallGrandchildPidFile, $logStallProgress -Force -ErrorAction SilentlyContinue
 
     # The grandchild still being alive at return is what makes this a proof
     # rather than a timing coincidence: the pipe was demonstrably still open.
@@ -1377,8 +1438,12 @@ exit 3
     if ($logstall.Code -ne 3) { $problems += "logstall arm exit code $($logstall.Code), expected 3 -- the idle watchdog killed a pipe-silent step whose progress was visible as update.log growth (the shape of every real 40+ min build)" }
     if ($logstall.Output -notmatch "silent but logging") { $problems += "logstall arm step output was lost" }
     if ($logStallElapsed -ge $logStallBudget) { $problems += "logstall arm returned in ${logStallElapsed}s, over the ${logStallBudget}s budget" }
+    $chatterBudget = $script:StepIdleTimeoutSeconds + 30
+    if ($chatterElapsed -ge $chatterBudget) { $problems += "chatter arm returned in ${chatterElapsed}s, over the ${chatterBudget}s budget -- pipe heartbeats reset the idle clock (#102283)" }
+    if ($chatter.Code -ne 124) { $problems += "chatter arm exit code $($chatter.Code), expected 124 -- stdout heartbeats must not count as progress" }
+    if ($chatter.Output -notmatch "gateway-like chatter start") { $problems += "chatter arm step output was lost" }
 
-    $detail = "leak: elapsed=${elapsed}s budget=${budget}s code=$($res.Code) grandchildAlive=$leakAlive | flood: ${floodKb}KB in ${floodElapsed}s budget=${floodBudget}s bytes=$floodBytes code=$($flood.Code) | stall: elapsed=${stallElapsed}s budget=${stallBudget}s code=$($stall.Code) childAlive=$stallAlive descendantAlive=$stallGrandchildAlive quiesced=$($stall.TreeQuiesced) | logstall: elapsed=${logStallElapsed}s budget=${logStallBudget}s code=$($logstall.Code)"
+    $detail = "leak: elapsed=${elapsed}s budget=${budget}s code=$($res.Code) grandchildAlive=$leakAlive | flood: ${floodKb}KB in ${floodElapsed}s budget=${floodBudget}s bytes=$floodBytes code=$($flood.Code) | stall: elapsed=${stallElapsed}s budget=${stallBudget}s code=$($stall.Code) childAlive=$stallAlive descendantAlive=$stallGrandchildAlive quiesced=$($stall.TreeQuiesced) | logstall: elapsed=${logStallElapsed}s budget=${logStallBudget}s code=$($logstall.Code) | chatter: elapsed=${chatterElapsed}s budget=${chatterBudget}s code=$($chatter.Code)"
     if ($problems.Count -gt 0) {
         Write-Host "PIPE-DRAIN SELF-TEST: FAIL $detail -- $($problems -join '; ')"
         exit 1

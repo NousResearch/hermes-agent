@@ -19,6 +19,7 @@ import agent.redact as redact_module
 from hermes_cli._scan_venv_blockers import (
     _classify_local_preview_args,
     _is_pausable_gateway,
+    _is_stale_update_holder,
     _probe_fail_json,
     _redact_sensitive_cmdline,
     _terminate_safe_preview,
@@ -490,3 +491,62 @@ def test_main_gateway_with_long_managed_runtime_path_is_exempt(monkeypatch, caps
     assert data["blocked"] is True
     assert [p["pid"] for p in data["processes"]] == [92]
     assert len(data["processes"][0]["cmdline"]) <= 120
+
+
+@pytest.mark.parametrize(
+    "cmdline",
+    [
+        r"C:\x\venv\Scripts\python.exe -m hermes_cli.main update --yes --gateway --force --branch main",
+        r'"C:\u\uv\python\python.exe" -m hermes_cli.main update --yes --gateway --force',
+        "hermes.exe update --yes --gateway --force --branch main",
+    ],
+)
+def test_is_stale_update_holder_accepts_update_argv(cmdline: str) -> None:
+    assert _is_stale_update_holder(cmdline) is True
+
+
+@pytest.mark.parametrize(
+    "cmdline",
+    [
+        r"C:\x\venv\Scripts\python.exe -m hermes_cli.main gateway run --replace",
+        r"C:\x\venv\Scripts\python.exe -m hermes_cli.main serve --host 127.0.0.1",
+        r"C:\x\venv\Scripts\python.exe",
+        r"C:\x\venv\Scripts\python.exe myscript.py update --yes",
+        "",
+    ],
+)
+def test_is_stale_update_holder_rejects_non_update(cmdline: str) -> None:
+    assert _is_stale_update_holder(cmdline) is False
+
+
+def test_main_reaps_stale_update_holder_instead_of_blocking(monkeypatch, capsys):
+    """A leftover ``hermes update`` zombie must be reaped, not venv-blocked."""
+    zombie = (
+        25876,
+        "python.exe",
+        r"C:\x\venv\Scripts\python.exe -m hermes_cli.main update --yes --gateway --force --branch main",
+    )
+    import hermes_cli._scan_venv_blockers as scan
+
+    monkeypatch.setattr(scan, "_reap_stale_update_holder", lambda pid: pid == 25876)
+    code, data = _run_main_with_detector(monkeypatch, capsys, [zombie])
+    assert code == 0
+    assert data["blocked"] is False
+    assert data["processes"] == []
+    assert data["reaped_stale_updates"] == 1
+
+
+def test_main_failed_stale_update_reap_still_blocks(monkeypatch, capsys):
+    zombie = (
+        25876,
+        "python.exe",
+        r"C:\x\venv\Scripts\python.exe -m hermes_cli.main update --yes --gateway --force --branch main",
+    )
+    import hermes_cli._scan_venv_blockers as scan
+
+    monkeypatch.setattr(scan, "_reap_stale_update_holder", lambda pid: False)
+    code, data = _run_main_with_detector(monkeypatch, capsys, [zombie])
+    assert code == 0
+    assert data["blocked"] is True
+    assert [p["pid"] for p in data["processes"]] == [25876]
+    assert data["reaped_stale_updates"] == 0

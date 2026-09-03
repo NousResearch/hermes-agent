@@ -103,16 +103,25 @@ class TestIdleWatchdogCountsUpdateLogGrowth:
             "output goes to update.log would be killed at the idle ceiling"
         )
         assert "$currentLogStamp = Get-StepProgressLogStamp" in src, msg
-        assert "if ($currentLogStamp -ne $progressLogStamp)" in src, msg
+        assert "if (-not $hitWall -and $currentLogStamp -ne $progressLogStamp)" in src, msg
         # The growth check must gate the termination: compare-and-reset
         # appears before the 124 tree-termination inside the drain loop.
-        consult = src.index("if ($currentLogStamp -ne $progressLogStamp)")
+        consult = src.index("if (-not $hitWall -and $currentLogStamp -ne $progressLogStamp)")
         terminate = src.index("TerminateAndWait($job, 124")
         assert consult < terminate, msg
         # And the clock actually resets on growth.
         growth_block = src[consult:terminate]
         assert "$progressLogStamp = $currentLogStamp" in growth_block, msg
-        assert "$lastProgressAt = Get-Date" in growth_block, msg
+        assert "$lastProgressAt = Get-Date" in growth_block or "$lastProgressAt = $now" in growth_block, msg
+
+    def test_pipe_chatter_does_not_reset_idle_clock(self):
+        src = self._src()
+        assert "if ($moved) { $lastProgressAt = Get-Date }" not in src, (
+            "pipe bytes reset the idle clock again -- a resident gateway "
+            "heartbeat would strand the Desktop update hand-off (#102283)"
+        )
+        assert "pipe chatter is not progress" in src
+        assert "chatter" in src
 
     def test_self_test_has_silent_but_logging_arm(self):
         src = self._src()
@@ -157,6 +166,12 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
     ``logs/update.log``, not stdout, for 40+ minutes. The idle watchdog must
     count that growth as progress and let the step run to its natural exit
     instead of killing it at the ceiling with 124.
+
+    *chatter* -- a step that stays alive and writes a stdout heartbeat every
+    second with no update.log growth. This is the #102283 zombie: a resident
+    ``--gateway`` descendant keeps the pipes busy after visible work is done.
+    The idle watchdog must still terminate the tree (124) and must not wait
+    out the hold.
 
     The existing leak/flood arms retain their measured Windows 11 / PowerShell
     5.1 budgets; the stall arm uses the same real runner and process table.

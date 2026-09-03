@@ -486,3 +486,117 @@ class XAIStreamer(StreamingTTSProvider):
                     return
                 logger.warning("xAI WS receive failed: %s", exc)
                 return
+
+
+@register("minimax")
+class MiniMaxStreamer(StreamingTTSProvider):
+    """MiniMax T2A v2 SSE → raw PCM (24 kHz mono int16).
+
+    MiniMax's ``/v1/t2a_v2`` accepts ``stream: true`` and, with
+    ``audio_setting.format = "pcm"``, emits SSE ``data:`` lines whose
+    ``data.audio`` field is HEX-encoded PCM at the requested sample rate —
+    exactly the contract this interface wants, no transcoding needed.
+
+    Without this, ``tts.provider: minimax`` had no chunked API, so the desktop
+    fell back to synthesizing a whole reply and shipping one base64 data URL.
+    On a remote gateway that meant multi-megabyte payloads and a playback
+    watchdog with nothing to re-arm it. Region, endpoint, credential and voice
+    all resolve through the SAME helpers as the sync path, so the streamed
+    voice matches the one already configured.
+    """
+
+    sample_rate = 24000
+
+    @staticmethod
+    def available() -> bool:
+        try:
+            from tools.tts_tool import _load_tts_config, _resolve_minimax_tts_runtime
+
+            return bool(_resolve_minimax_tts_runtime(_load_tts_config()).api_key)
+        except Exception:
+            return False
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        import json
+
+        import requests
+
+        from tools.tts_tool import (
+            DEFAULT_MINIMAX_MODEL,
+            DEFAULT_MINIMAX_VOICE_ID,
+            _resolve_minimax_tts_runtime,
+        )
+
+        runtime = _resolve_minimax_tts_runtime(self.tts_config)
+        section = self.section if isinstance(self.section, dict) else {}
+
+        payload = {
+            "model": section.get("model", DEFAULT_MINIMAX_MODEL),
+            "text": text,
+            "stream": True,
+            "voice_setting": {
+                "voice_id": section.get("voice_id", DEFAULT_MINIMAX_VOICE_ID),
+                "speed": section.get("speed", 1.0),
+                "vol": section.get("vol", 1.0),
+                "pitch": section.get("pitch", 0),
+            },
+            # PCM out means the frames go straight to the client's Web Audio
+            # scheduler with no decode step.
+            "audio_setting": {
+                "sample_rate": self.sample_rate,
+                "format": "pcm",
+                "channel": 1,
+            },
+        }
+        emotion = section.get("emotion")
+        if emotion:
+            payload["voice_setting"]["emotion"] = emotion
+
+        def _chunks() -> Iterator[bytes]:
+            with requests.post(
+                runtime.endpoint,
+                headers={
+                    "Authorization": f"Bearer {runtime.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                stream=True,
+                timeout=(10, 120),
+            ) as response:
+                response.raise_for_status()
+                for raw in response.iter_lines():
+                    if not raw:
+                        continue
+                    line = raw.decode("utf-8", "ignore").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        event = json.loads(line[5:].strip())
+                    except ValueError:
+                        continue
+                    # A non-zero status_code carries the API's own error text;
+                    # surfacing it beats yielding silence the caller can't explain.
+                    status = (event.get("base_resp") or {}).get("status_code")
+                    if status:
+                        raise RuntimeError(
+                            "MiniMax streaming TTS error %s: %s"
+                            % (status, (event.get("base_resp") or {}).get("status_msg", ""))
+                        )
+                    data = event.get("data") or {}
+                    # MiniMax terminates the stream with a SUMMARY event
+                    # (status=2, carries extra_info) whose data.audio is the
+                    # ENTIRE utterance repeated, not a final increment. Yielding
+                    # it after the status=1 chunks makes every sentence play
+                    # twice — audibly, and at exactly 2x the bytes.
+                    if data.get("status") == 2 or event.get("extra_info"):
+                        continue
+                    audio_hex = data.get("audio") or ""
+                    if not audio_hex:
+                        continue
+                    try:
+                        yield bytes.fromhex(audio_hex)
+                    except ValueError:
+                        logger.warning("MiniMax streaming TTS: undecodable audio chunk")
+                        continue
+
+        yield from _capped(_chunks(), "MiniMax streaming TTS")

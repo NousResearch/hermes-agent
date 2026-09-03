@@ -94,6 +94,23 @@ class SubagentWorktreeTests(unittest.TestCase):
         (Path(info["path"]) / "child.txt").write_text("x", encoding="utf-8")
         self.assertFalse((repo / "child.txt").exists())
 
+    def test_create_links_repo_python_environment(self):
+        repo = _make_repo(self.tmp)
+        source_python = repo / ".venv" / "bin" / "python"
+        source_python.parent.mkdir(parents=True)
+        source_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        source_python.chmod(0o755)
+
+        info = sw.create_subagent_worktree(str(repo), "venv1")
+
+        self.assertIsNotNone(info)
+        assert info is not None
+        worktree = Path(info["path"])
+        self.assertTrue((worktree / ".venv").is_symlink())
+        self.assertEqual((worktree / ".venv").resolve(), (repo / ".venv").resolve())
+        self.assertTrue((worktree / ".venv" / "bin" / "python").is_file())
+        self.assertTrue(os.access(worktree / ".venv" / "bin" / "python", os.X_OK))
+
     def test_create_unborn_head_returns_none(self):
         repo = self.tmp / "empty"
         repo.mkdir()

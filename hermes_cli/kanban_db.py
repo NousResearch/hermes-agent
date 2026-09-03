@@ -429,6 +429,18 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 # 0/1/2 codes the worker uses for success / generic failure / usage error.
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
 
+# _signal_handler_q (cli.py) intentionally calls os._exit() rather than
+# letting SIGINT/SIGTERM/SIGHUP kill the process via the default disposition
+# (issue #28181 — a controlled unwind can leave a worker thread parked in
+# _wait_for_process, orphaning its subprocess). os._exit(N) always reports
+# WIFEXITED, never WIFSIGNALED, so _classify_worker_exit cannot tell "worker
+# caught a termination signal and exited fast on purpose" apart from
+# "worker's own turn quietly finished" unless the two use different exit
+# codes. Historically both exited 0, so a worker that was killed via signal
+# recorded as the misleading `clean_exit` -> protocol_violation. Standard
+# 128+SIGTERM, and well clear of 0/1/2/KANBAN_RATE_LIMIT_EXIT_CODE.
+KANBAN_SIGNAL_EXIT_CODE = 143
+
 
 def _resolve_crash_grace_seconds() -> int:
     """Return the crash-detection grace period in seconds.
@@ -7721,6 +7733,27 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _bootstrap_worktree_environments(
+    repo_root: Path,
+    target: Path,
+    *,
+    require_python: bool = False,
+    allow_venv_fallback: bool = False,
+) -> None:
+    """Link usable project-local environments into a child worktree."""
+    from hermes_cli.worktree_environment import bootstrap_worktree_environments
+
+    # Preserve the existing Kanban compatibility contract for non-Python
+    # repositories and older environment directories. New Hermes agent
+    # creation paths request the stricter executable check explicitly.
+    bootstrap_worktree_environments(
+        repo_root,
+        target,
+        require_python=require_python,
+        allow_venv_fallback=allow_venv_fallback,
+    )
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
@@ -7749,6 +7782,12 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         raise RuntimeError(
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )
+    _bootstrap_worktree_environments(
+        repo_root,
+        target,
+        require_python=True,
+        allow_venv_fallback=True,
+    )
 
 
 def _resolve_worktree_workspace(
@@ -7805,6 +7844,14 @@ def _resolve_worktree_workspace(
     if requested.exists() and _is_linked_worktree_checkout(requested):
         actual_branch = _git_current_branch(requested)
         if actual_branch == branch_name:
+            repo_root = _repo_root_for_worktree_target(requested.parent)
+            if repo_root is not None:
+                _bootstrap_worktree_environments(
+                    repo_root,
+                    requested_resolved,
+                    require_python=True,
+                    allow_venv_fallback=True,
+                )
             return requested_resolved, actual_branch
         # The requested path is an existing checkout of a DIFFERENT
         # task's branch. Decompose children inherit the root's
@@ -8145,6 +8192,15 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
       provider rate-limited / exhausted quota, NOT because the task failed.
       ``detect_crashed_workers`` releases the task back to ``ready`` without
       counting a failure, so a long quota window can't trip the breaker.
+    * ``"terminated_by_signal"`` — ``WIFEXITED`` with status
+      ``KANBAN_SIGNAL_EXIT_CODE``. ``_signal_handler_q`` caught SIGINT /
+      SIGTERM / SIGHUP and called ``os._exit()`` on purpose (issue #28181),
+      which always reports ``WIFEXITED`` rather than ``WIFSIGNALED`` — so
+      without this dedicated code a genuinely signal-killed worker was
+      indistinguishable from ``clean_exit`` and got the misleading
+      "exited cleanly without calling kanban_complete" protocol-violation
+      diagnostic. Accounted as a real failure like ``nonzero_exit``, just
+      with an honest error message about *why*.
     * ``"nonzero_exit"`` — ``WIFEXITED`` with non-zero status. Real error.
     * ``"signaled"`` — ``WIFSIGNALED`` (OOM killer, SIGKILL, etc). Real crash.
     * ``"unknown"`` — pid was not in the reap registry (either reaped by
@@ -8152,8 +8208,8 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
       back to existing crashed-counter behavior.
 
     ``code`` is the exit status (for ``clean_exit`` / ``rate_limited`` /
-    ``nonzero_exit``) or the signal number (for ``signaled``), or ``None``
-    for ``unknown``.
+    ``terminated_by_signal`` / ``nonzero_exit``) or the signal number (for
+    ``signaled``), or ``None`` for ``unknown``.
     """
     entry = _recent_worker_exits.get(int(pid))
     if entry is None:
@@ -8166,6 +8222,8 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
                 return ("clean_exit", 0)
             if code == KANBAN_RATE_LIMIT_EXIT_CODE:
                 return ("rate_limited", code)
+            if code == KANBAN_SIGNAL_EXIT_CODE:
+                return ("terminated_by_signal", code)
             return ("nonzero_exit", code)
         if os.WIFSIGNALED(raw):
             return ("signaled", os.WTERMSIG(raw))
@@ -8980,6 +9038,16 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     error_text = f"pid {pid} exited with code {code}"
                 elif kind == "signaled":
                     error_text = f"pid {pid} killed by signal {code}"
+                elif kind == "terminated_by_signal":
+                    error_text = (
+                        f"pid {pid} caught a termination signal "
+                        f"(SIGINT/SIGTERM/SIGHUP) and exited fast on purpose "
+                        f"before it could call kanban_complete or "
+                        f"kanban_block (see _signal_handler_q, #28181). Not a "
+                        f"protocol violation — something outside the worker "
+                        f"(dispatcher requeue, gateway restart, OS/OOM) sent "
+                        f"it a termination signal."
+                    )
                 else:
                     error_text = f"pid {pid} not alive"
                 event_kind = "crashed"

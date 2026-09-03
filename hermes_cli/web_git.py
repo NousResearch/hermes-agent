@@ -721,8 +721,18 @@ def worktree_add(cwd: str, options: dict) -> dict:
             # the last known ref is still there to branch from.
             _git(root, ["fetch", remote, existing])
             _git_ok(root, ["worktree", "add", "--track", "-b", existing, target, requested])
+            from hermes_cli.worktree_environment import bootstrap_worktree_environments
+
+            bootstrap_worktree_environments(
+                Path(root), Path(target), environment_names=(".venv",)
+            )
             return {"path": target, "branch": existing, "repoRoot": root}
         _git_ok(root, ["worktree", "add", target, existing])
+        from hermes_cli.worktree_environment import bootstrap_worktree_environments
+
+        bootstrap_worktree_environments(
+            Path(root), Path(target), environment_names=(".venv",)
+        )
         return {"path": target, "branch": existing, "repoRoot": root}
 
     slug = _slugify(options.get("name") or f"work-{os.urandom(4).hex()}")
@@ -750,6 +760,9 @@ def worktree_add(cwd: str, options: dict) -> dict:
             _git_ok(root, ["worktree", "add", target, branch])
         else:
             raise RuntimeError(err.strip() or "git worktree add failed")
+    from hermes_cli.worktree_environment import bootstrap_worktree_environments
+
+    bootstrap_worktree_environments(Path(root), Path(target), environment_names=(".venv",))
     return {"path": target, "branch": branch, "repoRoot": root}
 
 

@@ -637,7 +637,7 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
             pass
     try:
         proc.kill()
-    except OSError:
+    except Exception:
         pass
     if IS_WINDOWS:
         # No identity guard here on purpose: *proc* is our own retained

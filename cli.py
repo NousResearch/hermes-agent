@@ -1957,6 +1957,13 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
         _cprint(f"\033[31m✗ Failed to create worktree: {e}\033[0m")
         return None
 
+    # A Git worktree does not contain ignored directories from the source
+    # checkout. Link the source repository's verified Python environment before
+    # the session starts so ``./.venv/bin/python`` is stable in this worktree.
+    from hermes_cli.worktree_environment import bootstrap_worktree_environments
+
+    bootstrap_worktree_environments(Path(repo_root), wt_path, environment_names=(".venv",))
+
     # Copy files listed in .worktreeinclude (gitignored files the agent needs)
     include_file = Path(repo_root) / ".worktreeinclude"
     if include_file.exists():
@@ -5720,6 +5727,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # don't auto-queue another continuation on top of a user-cancelled
         # turn (which would make Ctrl+C feel like it did nothing).
         self._last_turn_interrupted = False
+        # Raw run_conversation() result dict for the turn that just finished
+        # (or None before the first turn / on an early return). See the reset
+        # in chat() for the single-query kanban-worker consumer.
+        self._last_turn_result = None
         # When stdout/PTY raises EIO (broken pipe after a stream-stall
         # interrupt), freeze further UI paints so we don't spin the main
         # thread at hundreds of escape-sequence writes/sec (#81521).
@@ -16981,6 +16992,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # this to True. Early returns (credential refresh failure, etc.)
         # leave it False, which is correct — those aren't user interrupts.
         self._last_turn_interrupted = False
+        # Raw run_conversation() result for this turn, including "failed" /
+        # "failure_reason" — chat() itself only returns a response string, so
+        # single-query kanban-worker callers (main()'s `-q` branch, which
+        # _default_spawn always uses) read this afterward to detect a turn
+        # that failed outright (all providers/retries exhausted) with no
+        # further assistant turn able to call kanban_complete/kanban_block.
+        # None here means "no result yet" (early return before run_conversation).
+        self._last_turn_result = None
 
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
@@ -17538,6 +17557,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             # Get the final response
             response = result.get("final_response", "") if result else ""
+            # Stash the raw result — see the reset at the top of chat() for why.
+            self._last_turn_result = result
 
             # Session titling now runs at TURN START (agent/turn_context.py)
             # from the user's message alone, so it is already done — or in
@@ -18433,6 +18454,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # See constructor note. Mirrored here for the run() path that skips
         # the earlier __init__ branch.
         self._last_turn_interrupted = False
+        self._last_turn_result = None
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
 
@@ -22110,16 +22132,32 @@ def main(
         # the flush against any rare blocking-I/O case (the reporter measured
         # flush in <1ms; the alarm is a failsafe, not the common path).
         if os.environ.get("HERMES_KANBAN_TASK"):
+            # Exit with a code that survives os._exit()'s WIFEXITED-not-
+            # WIFSIGNALED reporting so detect_crashed_workers can tell "caught
+            # a termination signal and exited fast on purpose" apart from a
+            # worker whose own turn quietly finished with nothing left to do
+            # (both used to report exit 0 and were indistinguishable —
+            # investigation for t_80e6f80b, mechanism 2). Falls back to the
+            # literal 143 if the import ever fails so the handler still exits
+            # non-zero rather than raising.
+            try:
+                from hermes_cli.kanban_db import (
+                    KANBAN_SIGNAL_EXIT_CODE as _SIG_EXIT_CODE,
+                )
+            except Exception:
+                _SIG_EXIT_CODE = 143
             try:
                 import signal as _sig_mod
                 if hasattr(_sig_mod, "SIGALRM"):
                     # Cancel any pre-existing alarm to avoid colliding with
                     # caller-installed timers.
-                    _sig_mod.signal(_sig_mod.SIGALRM, lambda *_: os._exit(0))
+                    _sig_mod.signal(
+                        _sig_mod.SIGALRM, lambda *_: os._exit(_SIG_EXIT_CODE)
+                    )
                     _sig_mod.alarm(5)
             except Exception:
                 pass
-            # os._exit(0) skips atexit AND SessionDB's token-drain hook, so
+            # os._exit() skips atexit AND SessionDB's token-drain hook, so
             # flush + finalize the session store here or the worker's turn
             # (and its usage deltas) never become durable (#88583 / #50881
             # class). Best-effort under the SIGALRM deadman above.
@@ -22137,7 +22175,7 @@ def main(
                     _stream.flush()
                 except Exception:
                     pass
-            os._exit(0)
+            os._exit(_SIG_EXIT_CODE)
         raise KeyboardInterrupt()
     try:
         import signal as _signal
@@ -22412,6 +22450,37 @@ def main(
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
                 cli._print_exit_summary(clear_screen=False)
+
+                # Kanban worker safety net (t_80e6f80b investigation,
+                # mechanism 1): _default_spawn always launches kanban workers
+                # via this human `-q` branch, never the `-Q` quiet branch
+                # above. Unlike that branch, chat() here never used to be
+                # checked for a turn that failed outright (all providers /
+                # retries exhausted) — such a turn has no further assistant
+                # turn left to call kanban_complete/kanban_block itself, so
+                # the process fell through to a plain exit 0. That reads to
+                # detect_crashed_workers as "worker exited cleanly without
+                # calling kanban_complete or kanban_block" (a protocol
+                # violation, tripping the tighter violation-streak breaker)
+                # even though the real cause was an ordinary provider/task
+                # failure. Mirror the -Q branch's failure check so the exit
+                # code tells the truth instead.
+                if os.environ.get("HERMES_KANBAN_TASK"):
+                    _last_result = getattr(cli, "_last_turn_result", None)
+                    if isinstance(_last_result, dict) and _last_result.get("failed"):
+                        _exit_code = 1
+                        if _last_result.get("failure_reason") in (
+                            "rate_limit",
+                            "billing",
+                        ):
+                            try:
+                                from hermes_cli.kanban_db import (
+                                    KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
+                                )
+                                _exit_code = _RL_CODE
+                            except Exception:
+                                _exit_code = 1
+                        sys.exit(_exit_code)
         finally:
             _finalize_single_query(cli)
         return

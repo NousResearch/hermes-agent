@@ -627,6 +627,21 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     delivery_claimed_at REAL
 );
 
+-- Deliberately has no sessions(id) foreign key. A desktop or gateway root
+-- claims its Git identity before lazy session persistence creates the row.
+CREATE TABLE IF NOT EXISTS conversation_worktree_bindings (
+    root_session_id TEXT PRIMARY KEY,
+    worktree_path TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    base_commit TEXT NOT NULL,
+    repo_common_dir TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('creating', 'ready', 'creation_failed', 'retained', 'removed')),
+    failure_phase TEXT,
+    failure_message TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);

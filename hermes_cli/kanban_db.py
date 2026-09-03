@@ -9537,12 +9537,35 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    The guard fires only when the comment was posted by a worker run of
+    #    this task (the issue's preferred direction, #80231). A task with no
+    #    executed run cannot have "already opened a PR": its PR URL is part of
+    #    the card contract (merge-gate / review tasks legitimately reference an
+    #    existing PR) and must not block the first-ever spawn. Two traps this
+    #    avoids:
+    #      - a ``spawn_failed``/``running``-stub run row does NOT count as "a
+    #        prior worker" — the worker never executed, so it never posted a
+    #        PR comment (a failed first spawn must not start the 24h guard);
+    #      - the orchestrator's contract comment ("merge PR #N" written when
+    #        the card was created) is authored by the operator/orchestrator,
+    #        which has no executed run on this task — it cannot re-trigger the
+    #        guard either.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    executed_profiles = {
+        r["profile"] for r in conn.execute(
+            "SELECT DISTINCT profile FROM task_runs "
+            "WHERE task_id = ? AND outcome != 'spawn_failed' AND profile IS NOT NULL",
+            (task_id,),
+        ).fetchall()
+    }
+    if not executed_profiles:
+        return None
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT author, body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]) \
+                and (c["author"] or "") in executed_profiles:
             return "active_pr"
 
     return None

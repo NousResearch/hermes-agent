@@ -25,6 +25,29 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 If you want a normal bot-help channel where people can talk to Hermes without tagging it every time, add that channel to `DISCORD_FREE_RESPONSE_CHANNELS`.
 :::
 
+### Long responses
+
+By default, a reply is limited to eight messages to prevent channel flooding.
+If it exceeds the limit, the final message is a truncation notice; the full
+response remains in the session logs. For a dedicated channel where you want
+long reports inline, you can opt into a larger limit in `config.yaml`:
+
+```yaml
+discord:
+  max_split_messages: 40
+```
+
+Restart the gateway after changing this setting. It accepts integers from 1 to
+40, including any truncation notice; invalid values fall back to eight. The
+setting applies to all Discord conversations served by that profile, including
+DMs, channels, threads, forum posts, and oversized final edits.
+
+Replies longer than 20 messages use labels such as `Part 1 of 2 — 1/20`, with
+a two-second pause before the second batch. Each message still fits Discord's
+2,000-character limit. Replies up to 20 messages keep their usual formatting.
+The pause does not replace Discord's rate-limit handling. Larger limits can
+still create substantial channel traffic; the default remains eight.
+
 ### Discord Gateway Model
 
 Hermes on Discord is not a webhook that replies statelessly. It runs through the full messaging gateway, which means each incoming message goes through:

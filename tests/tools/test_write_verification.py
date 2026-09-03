@@ -27,6 +27,20 @@ class TestWriteVerification:
         r = json.loads(write_file_tool(str(f), content, task_id="t-wv"))
         assert r.get("verified") is True
 
+    @pytest.mark.skipif(
+        __import__("sys").platform == "win32",
+        reason="Newlines are not valid in Windows filenames",
+    )
+    def test_newline_in_path_reports_verified(self, workdir):
+        f = workdir / "evil\nproof.yml"
+        content = "name: inert proof\n"
+
+        r = json.loads(write_file_tool(str(f), content, task_id="t-wv-newline"))
+
+        assert "error" not in r
+        assert r.get("verified") is True
+        assert f.read_text() == content
+
     def test_crlf_preservation_still_verifies(self, workdir):
         # Existing CRLF file: write_file converts LF content to CRLF before
         # writing; verification hashes the shim-adjusted content, so it must
@@ -51,6 +65,23 @@ class TestWriteVerification:
 
         with mock_patch.object(fo.hashlib, "sha256", _WrongHash):
             r = json.loads(write_file_tool(str(f), "actual content\n", task_id="t-wv"))
+        assert "error" in r
+        assert "did not persist" in r["error"]
+
+    def test_malformed_successful_hash_output_is_hard_error(self, workdir):
+        f = workdir / "malformed.txt"
+        import tools.file_operations as fo
+
+        real_exec = fo.ShellFileOperations._exec
+
+        def malformed_hash_exec(self, cmd, **kw):
+            if "sha256sum" in cmd:
+                return fo.ExecuteResult(stdout="not-a-sha  malformed.txt\n", exit_code=0)
+            return real_exec(self, cmd, **kw)
+
+        with mock_patch.object(fo.ShellFileOperations, "_exec", malformed_hash_exec):
+            r = json.loads(write_file_tool(str(f), "actual content\n", task_id="t-wv-malformed"))
+
         assert "error" in r
         assert "did not persist" in r["error"]
 

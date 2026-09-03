@@ -2811,10 +2811,19 @@ class ShellFileOperations(FileOperations):
             hash_cmd = f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null"
             hash_result = self._exec(hash_cmd)
             if hash_result.exit_code == 0 and hash_result.stdout.strip():
-                disk_sha = hash_result.stdout.strip().split()[0]
-                expected_sha = hashlib.sha256(content_bytes).hexdigest()
-                content_verified = disk_sha == expected_sha
-                if not content_verified:
+                # GNU sha256sum prefixes the digest with ``\\`` when the
+                # filename contains a newline or backslash, then escapes the
+                # filename in its human-readable output.  Strip only that
+                # documented marker; otherwise a successful write to a legal
+                # POSIX pathname is falsely reported as corrupt.
+                hash_token = hash_result.stdout.strip().split()[0]
+                disk_sha = hash_token[1:] if hash_token.startswith("\\") else hash_token
+                if not re.fullmatch(r"[0-9a-fA-F]{64}", disk_sha):
+                    content_verified = False
+                else:
+                    expected_sha = hashlib.sha256(content_bytes).hexdigest()
+                    content_verified = disk_sha.lower() == expected_sha
+                if content_verified is False:
                     return WriteResult(
                         error=(
                             f"Post-write verification failed for {path}: on-disk "

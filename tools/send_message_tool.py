@@ -517,15 +517,39 @@ def _handle_send(args):
                 from gateway.session_context import get_session_env
                 source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
                 user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
-                if mirror_to_session(
+                mirrored = mirror_to_session(
                     platform_name,
                     chat_id,
                     mirror_text,
                     source_label=source_label,
                     thread_id=thread_id,
                     user_id=user_id,
-                ):
+                )
+                if mirrored:
                     result["mirrored"] = True
+                else:
+                    # Target session not found (expired/cleaned up).  Record
+                    # the outbound message in the AGENT'S OWN session so it
+                    # has context about what it sent when the recipient replies
+                    # asking "why did you send that?" (#33530).
+                    own_session_id = get_session_env("HERMES_SESSION_ID", "") or None
+                    if own_session_id:
+                        from gateway.mirror import _append_to_sqlite
+                        import datetime as _dt_mod
+                        _note = (
+                            f"[Outbound to {platform_name} {chat_id}"
+                            + (f" thread={thread_id}" if thread_id else "")
+                            + f"]: {mirror_text}"
+                        )
+                        _append_to_sqlite(own_session_id, {
+                            "role": "assistant",
+                            "content": _note,
+                            "timestamp": _dt_mod.datetime.now().isoformat(),
+                            "mirror": True,
+                            "mirror_source": source_label,
+                            "cross_channel_record": True,
+                        })
+                        result["mirrored_to_self"] = True
             except Exception:
                 pass
 

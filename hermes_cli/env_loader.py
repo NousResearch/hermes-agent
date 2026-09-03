@@ -61,13 +61,34 @@ def _known_hermes_env_keys() -> set[str]:
 
     Includes both ``OPTIONAL_ENV_VARS`` (setup-flow vars with metadata) and
     ``_EXTRA_ENV_KEYS`` (provider/platform keys managed outside the setup
-    wizard).  Lazy-imported to avoid circular-dependency during early-bootstrap
+    wizard).  Also includes ``key_env`` values from any custom providers the
+    user has configured under ``providers:`` in config.yaml — so that BWS /
+    Bitwarden secret injection respects user-defined provider credentials
+    without requiring a source-level edit to ``_EXTRA_ENV_KEYS`` after every
+    upgrade (#97596).
+
+    Lazy-imported to avoid circular-dependency during early-bootstrap
     ``load_hermes_dotenv()`` calls.
     """
     from hermes_cli.config import _EXTRA_ENV_KEYS
     from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
 
-    return set(OPTIONAL_ENV_VARS.keys()) | set(_EXTRA_ENV_KEYS)
+    base = set(OPTIONAL_ENV_VARS.keys()) | set(_EXTRA_ENV_KEYS)
+
+    # Augment with key_env values from user-configured custom providers.
+    # Fail open: if config loading fails, return the base set unchanged.
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        for _pname, _pcfg in (cfg.get("providers") or {}).items():
+            if isinstance(_pcfg, dict):
+                _key_env = (_pcfg.get("key_env") or "").strip()
+                if _key_env:
+                    base.add(_key_env)
+    except Exception:  # noqa: BLE001 — discovery is best-effort
+        pass
+
+    return base
 
 
 # Behavioral routing keys a parent Hermes process injects into child env and

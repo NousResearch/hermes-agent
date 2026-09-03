@@ -675,6 +675,11 @@ def is_official_openai_host(base_url: str) -> bool:
     return base_url_host_matches(base_url, "api.openai.com")
 
 
+# MiniMax API hosts (global + CN). Kept next to the mandate that uses them so
+# a new region can't be added to one place and forgotten in the other.
+_MINIMAX_HOSTS = frozenset({"api.minimax.io", "api.minimax.chat", "api.minimaxi.com"})
+
+
 def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
     """Return the wire protocol a specific endpoint *requires*, or None.
 
@@ -709,6 +714,17 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
         return "anthropic_messages"
     if hostname == "api.anthropic.com" or url_lower.endswith("/anthropic"):
         return "anthropic_messages"
+    # MiniMax serves TWO wires on one host and the path decides which:
+    #   …/anthropic  → native Messages (matched immediately above)
+    #   …/v1         → OpenAI-style chat/completions ONLY
+    # The provider overlay hardcodes transport="anthropic_messages", so without
+    # this a /v1 base_url resolves to the Messages wire and POSTs /v1/messages,
+    # which MiniMax answers with a bare "404 page not found". That hit every
+    # call path that doesn't carry an explicit api_mode (cron jobs pinned to
+    # minimax, delegation, auxiliary clients) regardless of the api_mode set on
+    # model.* in config. Mandating by host+path fixes them all at once.
+    if hostname in _MINIMAX_HOSTS:
+        return "chat_completions"
     # Official OpenAI host family: canonical + data-residency regional hosts
     # (us./eu.api.openai.com) all mandate the Responses API for reasoning
     # models with tools. Shared predicate keeps this lane in lockstep with

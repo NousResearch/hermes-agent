@@ -590,6 +590,37 @@ class TestRunJobSessionPersistence:
         mock_agent.close.assert_called_once()
 
 
+    def test_run_job_guardrail_halt_is_failed(self, tmp_path):
+        job = {
+            "id": "guardrail-job",
+            "name": "guardrail job",
+            "prompt": "use a guarded tool",
+        }
+
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            mock_agent = mock_agent_cls.return_value
+            mock_agent.run_conversation.return_value = {
+                "final_response": "The tool guardrail stopped this run.",
+                "completed": True,
+                "failed": False,
+                "turn_exit_reason": "guardrail_halt",
+                "guardrail": {
+                    "code": "tool_budget_exceeded",
+                    "tool_name": "terminal",
+                },
+            }
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert error is not None
+        assert "guardrail_halt" in error
+        assert "tool_budget_exceeded" in error
+        assert "terminal" in error
+        assert "# Cron Job: guardrail job (FAILED)" in output
+
+
     @contextlib.contextmanager
     def _run_job_patches(self, tmp_path, extra=()):
         """Apply every patch run_job tests need, as one bundle.

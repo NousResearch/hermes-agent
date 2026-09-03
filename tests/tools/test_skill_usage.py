@@ -355,6 +355,48 @@ def test_forget_removes_record(skills_home):
     assert "x" not in load_usage()
 
 
+def test_forget_can_emit_successful_removal_with_preserved_provenance(
+    skills_home,
+    monkeypatch,
+):
+    from hermes_cli import lifecycle
+    from tools.skill_usage import bump_view, forget, load_usage
+
+    events = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda name, **kwargs: events.append((name, kwargs)),
+    )
+    bump_view("x")
+
+    forget(
+        "x",
+        lifecycle_action="deleted",
+        provenance="external",
+        task_id="task-1",
+        session_id="session-1",
+    )
+
+    assert "x" not in load_usage()
+    assert events == [
+        (
+            "on_skill_lifecycle",
+            {
+                "action": "deleted",
+                "skill_name": "x",
+                "provenance": "external",
+                "task_id": "task-1",
+                "session_id": "session-1",
+                "use_count": None,
+                "reused": None,
+                "reuse_after_patch": None,
+            },
+        )
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Provenance filter — the load-bearing safety check
 # ---------------------------------------------------------------------------

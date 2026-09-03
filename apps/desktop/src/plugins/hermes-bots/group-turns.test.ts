@@ -239,6 +239,45 @@ describe('session resolution', () => {
     expect(room.gateway.rpcFor('session.create')).toHaveLength(0)
     expect(room.gateway.rpcFor('session.compress')).toHaveLength(0)
   })
+
+  it('surfaces an aborted compression as a failure', async () => {
+    const room = await loadRoom({
+      compressionResult: {
+        status: 'aborted',
+        summary: { aborted: true, note: 'No compression provider is configured.' }
+      }
+    })
+
+    const member: GroupMember = { name: 'research', title: '' }
+
+    await room.turns.ensureGroupChatSession('Core', member)
+
+    await expect(room.turns.compressGroupChatSessions('Core', [member])).resolves.toEqual([
+      { error: 'No compression provider is configured.', member: 'research', status: 'failed' }
+    ])
+  })
+
+  it('surfaces lock contention instead of reporting compression success', async () => {
+    const room = await loadRoom({
+      compressionResult: {
+        compressed: false,
+        lock_held: true,
+        message: 'Another compression may still be running; try again shortly.'
+      }
+    })
+
+    const member: GroupMember = { name: 'research', title: '' }
+
+    await room.turns.ensureGroupChatSession('Core', member)
+
+    await expect(room.turns.compressGroupChatSessions('Core', [member])).resolves.toEqual([
+      {
+        error: 'Another compression may still be running; try again shortly.',
+        member: 'research',
+        status: 'failed'
+      }
+    ])
+  })
 })
 
 describe('session-gone classification', () => {

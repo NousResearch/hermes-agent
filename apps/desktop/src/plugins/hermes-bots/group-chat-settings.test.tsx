@@ -67,4 +67,25 @@ describe('group settings maintenance', () => {
       message: 'Compressed 1 member history; 1 still running.'
     })
   })
+
+  it.each([
+    ['aborted', 'No compression provider is configured.'],
+    ['lock-held', 'Another compression may still be running; try again shortly.']
+  ])('reports %s compression as an actionable failure', async (_case, error) => {
+    compressGroupChatSessions.mockResolvedValue([{ error, member: 'builder', status: 'failed' }])
+    const { GroupChatSettingsDialog } = await import('./group-chat-view')
+
+    render(<GroupChatSettingsDialog group="Core" members={[{ name: 'builder' }]} onClose={() => undefined} open />)
+    fireEvent.click(screen.getByRole('button', { name: 'Compress member histories' }))
+
+    await waitFor(() =>
+      expect(host.notify).toHaveBeenCalledWith({
+        kind: 'error',
+        message: `Could not compress 1 of 1 member histories. builder: ${error}`
+      })
+    )
+    expect(host.notify).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'success', message: 'No existing member histories need compression.' })
+    )
+  })
 })

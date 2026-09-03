@@ -410,10 +410,15 @@ export function GroupChatSettingsDialog({ group, members, open, onClose, onRenam
       const pending = outcomes.filter(outcome => outcome.status === 'pending').length
       const failed = outcomes.filter(outcome => outcome.status === 'failed').length
 
+      const failureDetails = outcomes
+        .filter(outcome => outcome.status === 'failed' && outcome.error)
+        .map(outcome => `${outcome.member}: ${outcome.error}`)
+        .join(' ')
+
       host.notify({
         kind: failed ? 'error' : 'success',
         message: failed
-          ? b.group.compressHistoryFailed(failed, outcomes.length)
+          ? `${b.group.compressHistoryFailed(failed, outcomes.length)}${failureDetails ? ` ${failureDetails}` : ''}`
           : compressed || pending
             ? b.group.compressHistoryDone(compressed, pending)
             : b.group.compressHistoryNone

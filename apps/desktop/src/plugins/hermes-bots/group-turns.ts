@@ -123,7 +123,15 @@ export interface GroupSessionCompressionOutcome {
 }
 
 interface GroupSessionCompressionResponse {
+  compressed?: boolean
+  lock_held?: boolean
+  message?: string
   status?: string
+  summary?: {
+    aborted?: boolean
+    headline?: string
+    note?: string
+  }
 }
 
 // session.compress can legitimately use the gateway's full compute-host wait
@@ -186,10 +194,23 @@ export async function compressGroupChatSessions(
           GROUP_SESSION_COMPRESS_TIMEOUT_MS
         )
 
-        return {
-          member: member.name,
-          status: result?.status === 'pending' ? 'pending' : result?.status === 'aborted' ? 'skipped' : 'compressed'
+        if (result?.status === 'pending') {
+          return { member: member.name, status: 'pending' }
         }
+
+        if (result?.status === 'aborted' || result?.summary?.aborted || result?.compressed === false) {
+          return {
+            error:
+              result?.message ||
+              result?.summary?.note ||
+              result?.summary?.headline ||
+              (result?.lock_held ? 'Compression is already in progress.' : 'Compression was not completed.'),
+            member: member.name,
+            status: 'failed'
+          }
+        }
+
+        return { member: member.name, status: 'compressed' }
       } catch (error) {
         return {
           error: error instanceof Error ? error.message : String(error),

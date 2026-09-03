@@ -98,6 +98,8 @@ export interface GatewayOptions {
   onResumePoll?: (polls: number) => void
   /** Report the member inflight for the first N post-submit polls. */
   pollsBusy?: number
+  /** Structured result returned by session.compress. */
+  compressionResult?: Record<string, unknown>
   turn?: TurnScript
 }
 
@@ -308,7 +310,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
       const removed = Math.max(0, session.messages.length - 2)
       session.messages = session.messages.slice(-2)
 
-      return { removed, status: 'compressed' }
+      return options.compressionResult || { removed, status: 'compressed' }
     }
 
     if (method === 'prompt.submit') {

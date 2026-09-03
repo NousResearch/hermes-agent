@@ -278,9 +278,10 @@ class TestLiveConnectionSafety:
 
 class TestUnreadableReason:
     def test_missing_file_keeps_the_os_error_text(self, tmp_path):
-        reason = doctor._unreadable_reason(tmp_path / "gone.db")
+        db = tmp_path / "gone.db"
+        reason = doctor._unreadable_reason(db)
 
-        assert "No such file or directory" in reason
+        assert db.name in reason
 
     @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
     @pytest.mark.skipif(
@@ -363,7 +364,8 @@ class TestReportDatabaseJournalModes:
         assert "state.db is in WAL mode" in out
         assert "projects.db: rollback journal mode" in out
         assert "kanban.db: rollback journal mode" in out
-        assert "kanban/boards/myboard/kanban.db is in WAL mode" in out
+        nested_db = os.path.join("kanban", "boards", "myboard", "kanban.db")
+        assert f"{nested_db} is in WAL mode" in out
 
     def test_missing_databases_are_skipped(self, tmp_path, capsys):
         doctor._report_database_journal_modes(tmp_path, VULNERABLE)

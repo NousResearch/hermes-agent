@@ -811,15 +811,27 @@ def _match_user_deny_rule(command: str) -> str | None:
         return None
     if not deny_patterns:
         return None
-    globs = [p.strip() for p in deny_patterns
+    globs = [(p.strip(), p.strip().lower()) for p in deny_patterns
              if isinstance(p, str) and p.strip()]
     if not globs:
         return None
-    for command_variant in _command_detection_variants(command):
-        candidate = command_variant.lower().strip()
-        for pattern in globs:
-            if fnmatch.fnmatchcase(candidate, pattern.lower()):
-                return pattern
+    raw_candidates = [command]
+    for start, end, word in _iter_shell_command_word_spans(command):
+        segment = _shell_command_segment(command, start)
+        raw_candidates.append(segment)
+        deobfuscated = _deobfuscate_shell_word_for_detection(word)
+        if deobfuscated != word:
+            raw_candidates.append(deobfuscated + command[end:start + len(segment)])
+    seen_candidates: set[str] = set()
+    for raw_candidate in raw_candidates:
+        for command_variant in _command_detection_variants(raw_candidate):
+            candidate = command_variant.lower().strip()
+            if not candidate or candidate in seen_candidates:
+                continue
+            seen_candidates.add(candidate)
+            for pattern, normalized_pattern in globs:
+                if fnmatch.fnmatchcase(candidate, normalized_pattern):
+                    return pattern
     return None
 
 
@@ -1491,15 +1503,37 @@ _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\
 _PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
 _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
+_SHELL_REDIRECTION_RE = re.compile(
+    r"(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?"
+    r"(?:<<<|<<-|<<|>>|<>|>&|<&|>\||>|<)"
+)
 _COMMAND_WRAPPER_WORDS = {
+    "chroot",
+    "chrt",
+    "coproc",
     "sudo",
     "env",
     "exec",
+    "ionice",
+    "nice",
     "nohup",
     "setsid",
+    "stdbuf",
+    "taskset",
     "time",
+    "timeout",
     "command",
     "builtin",
+}
+_SHELL_COMMAND_TRANSITION_WORDS = {
+    "!",
+    "do",
+    "elif",
+    "else",
+    "if",
+    "then",
+    "until",
+    "while",
 }
 _SUDO_OPTIONS_WITH_ARG = {
     "-c", "--close-from",
@@ -1507,6 +1541,33 @@ _SUDO_OPTIONS_WITH_ARG = {
     "-h", "--host",
     "-p", "--prompt",
     "-u", "--user",
+}
+_COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
+    "chroot": {"--groups", "--userspec"},
+    "sudo": _SUDO_OPTIONS_WITH_ARG,
+    "env": {"-c", "--chdir", "-s", "--split-string", "-u", "--unset"},
+    "exec": {"-a"},
+    "ionice": {"-c", "--class", "-n", "--classdata"},
+    "nice": {"-n", "--adjustment"},
+    "stdbuf": {"-e", "--error", "-i", "--input", "-o", "--output"},
+    "time": {"-f", "--format", "-o", "--output"},
+    "timeout": {"-k", "--kill-after", "-s", "--signal"},
+}
+_COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
+    # ``command -v`` and ``command -V`` inspect a name; they do not execute it.
+    "command": {"-v"},
+    # These modes alter or inspect an existing process instead of launching
+    # the following token as a command.
+    "chrt": {"-p", "--pid"},
+    "ionice": {"-p", "--pid", "--pgid", "--uid"},
+    "taskset": {"-p", "--pid"},
+}
+_COMMAND_WRAPPER_POSITIONAL_ARGS = {
+    # Positional operands consumed before the command being launched.
+    "chroot": 1,   # NEWROOT
+    "chrt": 1,     # PRIORITY
+    "taskset": 1,  # CPU mask/list
+    "timeout": 1,  # DURATION
 }
 
 _INTERPRETER_EXEC_FLAGS = {
@@ -2026,7 +2087,55 @@ def _scan_dollar_paren_end(command: str, start: int) -> int | None:
             depth += 1
             i += 2
             continue
+        if command.startswith("${", i):
+            nested_end = _scan_parameter_expansion_end(command, i)
+            i = nested_end if nested_end is not None else len(command)
+            continue
         if ch == ")":
+            depth -= 1
+            i += 1
+            if depth == 0:
+                return i
+            continue
+        i += 1
+    return None
+
+
+def _scan_parameter_expansion_end(command: str, start: int) -> int | None:
+    """Return the offset after a balanced, possibly nested ``${...}``."""
+    depth = 1
+    quote: str | None = None
+    i = start + 2
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if command.startswith("$(", i):
+            nested_end = _scan_dollar_paren_end(command, i)
+            i = nested_end if nested_end is not None else len(command)
+            continue
+        if command.startswith("${", i):
+            depth += 1
+            i += 2
+            continue
+        if ch == "`":
+            nested_end = _scan_backtick_end(command, i)
+            i = nested_end if nested_end is not None else len(command)
+            continue
+        if ch == "}":
             depth -= 1
             i += 1
             if depth == 0:
@@ -2078,11 +2187,11 @@ def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
                 i = end
             continue
         if command.startswith("${", i):
-            end = command.find("}", i + 2)
-            if end == -1:
+            end = _scan_parameter_expansion_end(command, i)
+            if end is None:
                 i += 2
             else:
-                i = end + 1
+                i = end
             continue
         if ch == "`":
             end = _scan_backtick_end(command, i)
@@ -2091,7 +2200,47 @@ def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
             else:
                 i = end
             continue
-        if ch.isspace() or ch in ";&|":
+        if ch.isspace() or ch in ";&|<>":
+            break
+        i += 1
+    return (start, i, command[start:i])
+
+
+def _read_shell_syntax_word(command: str, pos: int) -> tuple[int, int, str]:
+    """Read one shell word, stopping at control-syntax punctuation."""
+    start = _skip_shell_whitespace(command, pos)
+    i = start
+    quote: str | None = None
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if command.startswith("$(", i):
+            end = _scan_dollar_paren_end(command, i)
+            i = end if end is not None else len(command)
+            continue
+        if command.startswith("${", i):
+            end = _scan_parameter_expansion_end(command, i)
+            i = end if end is not None else len(command)
+            continue
+        if ch == "`":
+            end = _scan_backtick_end(command, i)
+            i = end if end is not None else len(command)
+            continue
+        if ch.isspace() or ch in ";&|(){}":
             break
         i += 1
     return (start, i, command[start:i])
@@ -2164,8 +2313,48 @@ def _replace_simple_command_substitutions(word: str) -> str:
 
 def _replace_simple_shell_expansions(word: str) -> str:
     word = _replace_simple_command_substitutions(word)
+    word = _replace_simple_parameter_defaults(word)
     word = _PARAM_REPLACEMENT_RE.sub(lambda match: match.group("replacement"), word)
     return _PARAM_DEFAULT_RE.sub(lambda match: match.group("default"), word)
+
+
+def _replace_simple_parameter_defaults(word: str) -> str:
+    """Expose literal defaults from nested ``${name:-default}`` expansions."""
+    chars: list[str] = []
+    i = 0
+    while i < len(word):
+        if not word.startswith("${", i):
+            chars.append(word[i])
+            i += 1
+            continue
+        end = _scan_parameter_expansion_end(word, i)
+        if end is None:
+            chars.append(word[i])
+            i += 1
+            continue
+        content = word[i + 2:end - 1]
+        depth = 0
+        split_at: int | None = None
+        cursor = 0
+        while cursor + 1 < len(content):
+            if content.startswith("${", cursor):
+                depth += 1
+                cursor += 2
+                continue
+            if content[cursor] == "}" and depth:
+                depth -= 1
+                cursor += 1
+                continue
+            if depth == 0 and content.startswith(":-", cursor):
+                split_at = cursor + 2
+                break
+            cursor += 1
+        if split_at is None:
+            chars.append(word[i:end])
+        else:
+            chars.append(_replace_simple_parameter_defaults(content[split_at:]))
+        i = end
+    return "".join(chars)
 
 
 def _strip_shell_word_syntax(word: str) -> str:
@@ -2216,6 +2405,23 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
     return deobfuscated
 
 
+def _is_shell_comment_start(command: str, index: int) -> bool:
+    """Return whether ``#`` starts a shell comment at this position.
+
+    A hash embedded in a word (``value#suffix``) remains data. The command
+    scanners call this only outside quotes and after handling escapes.
+    """
+    return (
+        0 <= index < len(command)
+        and command[index] == "#"
+        and (
+            index == 0
+            or command[index - 1].isspace()
+            or command[index - 1] in ";&|(){}<>"
+        )
+    )
+
+
 def _iter_shell_command_starts(command: str):
     starts = [0]
 
@@ -2258,6 +2464,12 @@ def _iter_shell_command_starts(command: str):
             if ch == "\\" and i + 1 < end:
                 i += 2
                 continue
+            if _is_shell_comment_start(command, i):
+                newline = command.find("\n", i + 1, end)
+                if newline < 0:
+                    return
+                i = newline
+                continue
             if command.startswith("$(", i):
                 nested_end = _scan_dollar_paren_end(command, i)
                 starts.append(i + 2)
@@ -2283,12 +2495,189 @@ def _iter_shell_command_starts(command: str):
 
     scan(0, len(command))
 
+    queue: list[int] = []
     seen: set[int] = set()
-    for start in starts:
+
+    def add_start(start: int) -> None:
         start = _skip_shell_whitespace(command, start)
         if start < len(command) and start not in seen:
             seen.add(start)
-            yield start
+            queue.append(start)
+
+    for start in starts:
+        add_start(start)
+
+    cursor = 0
+    while cursor < len(queue):
+        command_start = queue[cursor]
+        cursor += 1
+        _, word_end, word = _read_shell_syntax_word(command, command_start)
+        if word.lower() in _SHELL_COMMAND_TRANSITION_WORDS:
+            add_start(word_end)
+        for case_body_start in _iter_shell_case_body_starts(command, command_start):
+            add_start(case_body_start)
+
+    yield from queue
+
+
+def _iter_shell_case_body_starts(command: str, command_start: int):
+    """Yield command starts after case-pattern closing parentheses.
+
+    The ordinary separator scan cannot treat every ``)`` as a command boundary:
+    most are subshell closers or ordinary data. Restrict that interpretation to
+    the arm list of a quote-aware ``case WORD in ... esac`` header found at an
+    existing command position.
+    """
+    _, case_end, case_word = _read_shell_syntax_word(command, command_start)
+    if case_word.lower() != "case":
+        return
+
+    _, selector_end, selector = _read_shell_syntax_word(command, case_end)
+    if not selector:
+        return
+    _, in_end, in_word = _read_shell_syntax_word(command, selector_end)
+    if in_word.lower() != "in":
+        return
+
+    quote: str | None = None
+    escaped = False
+    expecting_pattern_end = True
+    command_position = False
+    nested_case_depth = 0
+    index = in_end
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if quote:
+            if char == "\\" and quote == '"':
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if _is_shell_comment_start(command, index):
+            newline = command.find("\n", index + 1)
+            if newline < 0:
+                break
+            index = newline
+            continue
+        if command.startswith("$(", index):
+            nested_end = _scan_dollar_paren_end(command, index)
+            index = nested_end if nested_end is not None else len(command)
+            continue
+        if expecting_pattern_end and char in "?*+@!" and command.startswith(
+            "(", index + 1
+        ):
+            nested_end = _scan_case_pattern_group_end(command, index + 1)
+            index = nested_end if nested_end is not None else len(command)
+            continue
+        if char == "`":
+            nested_end = _scan_backtick_end(command, index)
+            index = nested_end if nested_end is not None else len(command)
+            continue
+
+        if expecting_pattern_end and char == ")":
+            yield index + 1
+            expecting_pattern_end = False
+            command_position = True
+            index += 1
+            continue
+        if not expecting_pattern_end and nested_case_depth == 0:
+            if command.startswith(";;&", index):
+                expecting_pattern_end = True
+                command_position = False
+                index += 3
+                continue
+            if command.startswith(";;", index) or command.startswith(";&", index):
+                expecting_pattern_end = True
+                command_position = False
+                index += 2
+                continue
+        if expecting_pattern_end and command[index:index + 4].lower() == "esac":
+            after = index + 4
+            if (
+                (index == 0 or not (command[index - 1].isalnum() or command[index - 1] == "_"))
+                and (after == len(command) or not (command[after].isalnum() or command[after] == "_"))
+            ):
+                break
+
+        if char.isspace():
+            if char == "\n" and not expecting_pattern_end:
+                command_position = True
+            index += 1
+            continue
+        if char in ";&|({":
+            command_position = True
+            index += 2 if index + 1 < len(command) and command[index + 1] == char else 1
+            continue
+        if char == ")" and nested_case_depth > 0:
+            command_position = True
+            index += 1
+            continue
+        if char.isalnum() or char in "_!":
+            _, word_end, word = _read_shell_syntax_word(command, index)
+            if command_position:
+                lower_word = word.lower()
+                if lower_word == "case":
+                    nested_case_depth += 1
+                elif lower_word == "esac" and nested_case_depth > 0:
+                    nested_case_depth -= 1
+                command_position = lower_word in _SHELL_COMMAND_TRANSITION_WORDS
+            index = max(word_end, index + 1)
+            continue
+        index += 1
+
+
+def _scan_case_pattern_group_end(command: str, open_index: int) -> int | None:
+    """Return the end of a balanced extglob group inside a case pattern."""
+    depth = 1
+    quote: str | None = None
+    bracket = False
+    index = open_index + 1
+    while index < len(command):
+        char = command[index]
+        if quote:
+            if char == "\\" and quote == '"' and index + 1 < len(command):
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if bracket:
+            if char == "\\" and index + 1 < len(command):
+                index += 2
+                continue
+            if char == "]":
+                bracket = False
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char == "[":
+            bracket = True
+        elif char == "\\" and index + 1 < len(command):
+            index += 2
+            continue
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
 
 
 def _mark_command_starts(command: str) -> str:
@@ -2372,9 +2761,15 @@ def _iter_shell_command_word_spans(command: str):
     for command_start in _iter_shell_command_starts(command):
         pos = command_start
         prefix_words = 0
-        skip_wrapper_options = False
         skip_next_wrapper_arg = False
+        active_wrapper: str | None = None
+        remaining_wrapper_positionals = 0
         while prefix_words < 12:
+            redirection_end = _skip_shell_redirection(command, pos)
+            if redirection_end is not None:
+                pos = redirection_end
+                prefix_words += 1
+                continue
             word_start, word_end, word = _read_shell_word(command, pos)
             if word_start == word_end:
                 break
@@ -2385,12 +2780,26 @@ def _iter_shell_command_word_spans(command: str):
                 pos = word_end
                 prefix_words += 1
                 continue
-            if skip_wrapper_options and lower_word.startswith("-"):
+            if active_wrapper and lower_word == "--":
+                pos = word_end
+                prefix_words += 1
+                continue
+            if active_wrapper and lower_word.startswith("-"):
                 option_name = lower_word.split("=", 1)[0]
+                if option_name in _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS.get(
+                    active_wrapper, set()
+                ):
+                    break
                 skip_next_wrapper_arg = (
                     "=" not in lower_word
-                    and option_name in _SUDO_OPTIONS_WITH_ARG
+                    and option_name
+                    in _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(active_wrapper, set())
                 )
+                pos = word_end
+                prefix_words += 1
+                continue
+            if active_wrapper and remaining_wrapper_positionals:
+                remaining_wrapper_positionals -= 1
                 pos = word_end
                 prefix_words += 1
                 continue
@@ -2399,14 +2808,66 @@ def _iter_shell_command_word_spans(command: str):
             prefix_words += 1
 
             if lower_word in _COMMAND_WRAPPER_WORDS:
-                skip_wrapper_options = lower_word in {"sudo", "env"}
+                active_wrapper = lower_word
+                remaining_wrapper_positionals = (
+                    _COMMAND_WRAPPER_POSITIONAL_ARGS.get(lower_word, 0)
+                )
                 pos = word_end
                 continue
             if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
-                skip_wrapper_options = False
                 pos = word_end
                 continue
             break
+
+
+def _skip_shell_redirection(command: str, pos: int) -> int | None:
+    """Skip one command-prefix redirection and its target word."""
+    start = _skip_shell_whitespace(command, pos)
+    match = _SHELL_REDIRECTION_RE.match(command, start)
+    if match is None:
+        return None
+    target_start = _skip_shell_whitespace(command, match.end())
+    _, target_end, target = _read_shell_word(command, target_start)
+    return target_end if target else match.end()
+
+
+def _shell_command_segment(command: str, start: int) -> str:
+    """Return one executable candidate bounded by shell control syntax."""
+    quote: str | None = None
+    escaped = False
+    index = start
+    while index < len(command):
+        char = command[index]
+        if not quote and not escaped and command.startswith("$(", index):
+            nested_end = _scan_dollar_paren_end(command, index)
+            if nested_end is not None:
+                index = nested_end
+                continue
+        if not quote and not escaped and command.startswith("${", index):
+            nested_end = _scan_parameter_expansion_end(command, index)
+            if nested_end is not None:
+                index = nested_end
+                continue
+        if not quote and not escaped and char == "`":
+            nested_end = _scan_backtick_end(command, index)
+            if nested_end is not None:
+                index = nested_end
+                continue
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in {"'", '"'}:
+            quote = char
+        elif _is_shell_comment_start(command, index):
+            break
+        elif char in ";&|\n)}":
+            break
+        index += 1
+    return command[start:index]
 
 
 def _command_detection_variants(command: str):

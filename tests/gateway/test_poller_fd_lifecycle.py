@@ -193,5 +193,98 @@ class TestWeixinPollSessionRecycle(unittest.TestCase):
         self.assertEqual(calls["recycled"], 1)
 
 
+class TestWeixinSendSessionRecycle(unittest.TestCase):
+    """The weixin send path must recycle its session once retries are
+    exhausted, mirroring the poll-session recycle above (#101039): a
+    stalled connection (e.g. a Windows ``[WinError 121]`` poll error) can
+    leave the send connector's pooled sockets unusable, so every
+    subsequent ``sendmessage`` keeps failing — misreported as a rate
+    limit — until the gateway is restarted.
+    """
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.weixin import WeixinAdapter
+
+        return WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={"account_id": "test-account"},
+            )
+        )
+
+    def test_recycle_closes_old_and_installs_fresh_session(self):
+        from gateway.platforms import weixin as weixin_mod
+
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        closed = {"v": False}
+
+        async def _aclose():
+            closed["v"] = True
+
+        old_session = MagicMock()
+        old_session.closed = False
+        old_session.close = _aclose
+        adapter._send_session = old_session
+
+        new_session = MagicMock()
+        with patch.object(
+            weixin_mod.aiohttp, "ClientSession", return_value=new_session
+        ) as mk:
+            asyncio.run(adapter._recycle_send_session())
+
+        mk.assert_called_once()
+        self.assertIs(adapter._send_session, new_session)
+        self.assertTrue(closed["v"])
+
+    def test_recycle_noop_when_not_running(self):
+        adapter = self._make_adapter()
+        adapter._running = False
+        sentinel = MagicMock()
+        adapter._send_session = sentinel
+        asyncio.run(adapter._recycle_send_session())
+        self.assertIs(adapter._send_session, sentinel)
+
+    def test_send_chunk_recycles_session_after_retries_exhausted(self):
+        from gateway.platforms import weixin as weixin_mod
+
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._send_session = MagicMock()
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._send_chunk_retries = 2
+        adapter._send_chunk_retry_delay_seconds = 0
+
+        async def _always_fails(*args, **kwargs):
+            raise ConnectionError("Cannot connect to host via proxy")
+
+        recycled = {"n": 0}
+
+        async def _fake_recycle():
+            recycled["n"] += 1
+
+        async def _no_sleep(_secs):
+            return None
+
+        with patch.object(weixin_mod, "_send_message", _always_fails), \
+                patch.object(weixin_mod.asyncio, "sleep", _no_sleep), \
+                patch.object(adapter, "_recycle_send_session", _fake_recycle):
+            with self.assertRaises(ConnectionError):
+                asyncio.run(
+                    adapter._send_text_chunk(
+                        chat_id="wxid_test123",
+                        chunk="hello",
+                        context_token="ctx",
+                        client_id="hermes-weixin-test",
+                    )
+                )
+
+        self.assertEqual(recycled["n"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

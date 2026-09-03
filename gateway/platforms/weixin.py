@@ -1475,6 +1475,28 @@ class WeixinAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.debug("[%s] old poll session close failed: %s", self.name, exc)
 
+    async def _recycle_send_session(self) -> None:
+        """Replace ``_send_session`` with a fresh one, closing the old.
+
+        A stalled poll connection (e.g. ``[WinError 121]``) can leave the
+        outbound connector's pooled sockets unusable, so every subsequent
+        ``sendmessage`` fails until the gateway is restarted (#101039).
+        Swap-then-close mirrors ``_recycle_poll_session`` so an in-flight
+        send on the old session finishes or fails independently.
+        """
+        if not self._running or aiohttp is None:
+            return
+        old = self._send_session
+        no_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
+        self._send_session = aiohttp.ClientSession(
+            trust_env=True, connector=_make_ssl_connector(), timeout=no_timeout
+        )
+        if old is not None and not old.closed:
+            try:
+                await old.close()
+            except Exception as exc:
+                logger.debug("[%s] old send session close failed: %s", self.name, exc)
+
     async def _process_message_safe(self, message: Dict[str, Any]) -> None:
         try:
             await self._process_message(message)
@@ -1909,6 +1931,11 @@ class WeixinAdapter(BasePlatformAdapter):
             except Exception as exc:
                 last_error = exc
                 if attempt >= self._send_chunk_retries:
+                    # Every retry on this session failed — it is likely the
+                    # connection, not the message, so recycle it before
+                    # surfacing the error instead of leaving future sends
+                    # doomed to repeat the same failure (#101039).
+                    await self._recycle_send_session()
                     break
                 wait = self._send_chunk_retry_delay_seconds * (attempt + 1)
                 logger.warning(

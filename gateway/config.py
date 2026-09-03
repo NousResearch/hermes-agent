@@ -956,6 +956,10 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
+    # Additional custom/MCP tools whose current-turn MEDIA:<path> results may
+    # be appended to the gateway reply when the model omits them. Built-in
+    # media producers remain enabled independently in gateway.run.
+    auto_append_media_tools: List[str] = field(default_factory=list)
     # Drop outbound "silence narration" messages (e.g. *(silent)*, 🔇, a bare
     # ".") pre-send. These are model hallucinations emitted when a persona has
     # nothing actionable to say; in bot-to-bot channels they mirror back and
@@ -1036,6 +1040,16 @@ class GatewayConfig:
     profile_routes: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.auto_append_media_tools, (list, tuple, set)):
+            self.auto_append_media_tools = []
+        else:
+            self.auto_append_media_tools = list(
+                dict.fromkeys(
+                    value.strip()
+                    for value in self.auto_append_media_tools
+                    if isinstance(value, str) and value.strip()
+                )
+            )
         self.multiplex_profile_allowlist = _normalize_multiplex_profile_allowlist(
             self.multiplex_profile_allowlist
         )
@@ -1146,6 +1160,7 @@ class GatewayConfig:
             "sessions_dir": str(self.sessions_dir),
             "write_sessions_json": self.write_sessions_json,
             "always_log_local": self.always_log_local,
+            "auto_append_media_tools": self.auto_append_media_tools,
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
             "stt_echo_transcripts": self.stt_echo_transcripts,
@@ -1329,6 +1344,7 @@ class GatewayConfig:
             sessions_dir=sessions_dir,
             write_sessions_json=_coerce_bool(data.get("write_sessions_json"), True),
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
+            auto_append_media_tools=data.get("auto_append_media_tools") or [],
             filter_silence_narration=_coerce_bool(
                 data.get("filter_silence_narration"), True
             ),
@@ -1478,6 +1494,13 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
             elif isinstance(gateway_section, dict) and "thread_sessions_per_user" in gateway_section:
                 gw_data["thread_sessions_per_user"] = gateway_section["thread_sessions_per_user"]
+
+            if "auto_append_media_tools" in yaml_cfg:
+                gw_data["auto_append_media_tools"] = yaml_cfg["auto_append_media_tools"]
+            elif isinstance(gateway_section, dict) and "auto_append_media_tools" in gateway_section:
+                gw_data["auto_append_media_tools"] = gateway_section[
+                    "auto_append_media_tools"
+                ]
 
             # Multiplexing flag: accept both the top-level key and the nested
             # gateway.multiplex_profiles form (written by

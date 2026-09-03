@@ -948,6 +948,13 @@ max_concurrent_sessions: null
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# Custom or MCP tools that intentionally return deliverable MEDIA:<path>
+# artifacts. The gateway may append these current-turn artifacts when the model
+# omits them from its final reply. Keep this list explicit: ordinary tool output
+# may contain MEDIA examples that must not be sent as local files.
+# auto_append_media_tools:
+#   - mcp__charts__render_chart
+
 # =============================================================================
 # Session Storage Retention (state.db)
 # =============================================================================

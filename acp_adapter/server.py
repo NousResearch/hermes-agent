@@ -16,6 +16,7 @@ from typing import Any, Deque, Optional
 from urllib.parse import unquote, urlparse
 
 import acp
+from acp.exceptions import RequestError
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
@@ -593,6 +594,23 @@ def _content_blocks_to_openai_user_content(
         return "\n".join(text_parts)
 
     return parts
+
+
+def _session_not_found_error(session_id: str) -> RequestError:
+    """ACP error for a session that does not exist or cannot be rebuilt.
+
+    Code -32002 is the predefined ACP ``ErrorCode.ResourceNotFound``
+    ("a given resource, such as a file, was not found"). Returning a success
+    frame for an unloadable session — as load/resume/prompt did historically —
+    is indistinguishable from a restored session for spec-conformant clients,
+    which then reuse a dead session id indefinitely (#74678).
+    """
+
+    return RequestError(
+        code=-32002,
+        message=f"Session not found: {session_id}",
+        data={"sessionId": session_id},
+    )
 
 
 class HermesACPAgent(acp.Agent):
@@ -1615,11 +1633,20 @@ class HermesACPAgent(acp.Agent):
         session_id: str,
         mcp_servers: list | None = None,
         **kwargs: Any,
-    ) -> LoadSessionResponse | None:
+    ) -> LoadSessionResponse:
+        """Load an existing session, streaming its history back to the client.
+
+        Raises ``RequestError`` (-32002 "Session not found") when the session
+        id is unknown or the persisted session cannot be rebuilt (e.g. its
+        provider is no longer configured) — it never returns None, so a client
+        can always distinguish "restored" from "gone" (#74678).
+        """
         state = self.session_manager.update_cwd(session_id, cwd)
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
-            return None
+            # Unknown/unrestorable session must surface as a JSON-RPC error,
+            # not an empty success result (#74678).
+            raise _session_not_found_error(session_id)
         await self._register_session_mcp_servers(state, mcp_servers)
         self._schedule_mcp_late_refresh(state)
         logger.info("Loaded session %s", session_id)
@@ -1666,8 +1693,13 @@ class HermesACPAgent(acp.Agent):
     ) -> ResumeSessionResponse:
         state = self.session_manager.update_cwd(session_id, cwd)
         if state is None:
-            logger.warning("resume_session: session %s not found, creating new", session_id)
-            state = self.session_manager.create_session(cwd=cwd)
+            logger.warning("resume_session: session %s not found", session_id)
+            # No implicit fresh-session fallback: ACP responses carry no
+            # sessionId field, so the replacement would be unreachable by a
+            # spec-conformant client — it would keep prompting a dead id
+            # (#74678). Error instead and let the client call session/new
+            # deliberately.
+            raise _session_not_found_error(session_id)
         await self._register_session_mcp_servers(state, mcp_servers)
         self._schedule_mcp_late_refresh(state)
         logger.info("Resumed session %s", state.session_id)
@@ -1797,7 +1829,10 @@ class HermesACPAgent(acp.Agent):
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.error("prompt: session %s not found", session_id)
-            return PromptResponse(stop_reason="refusal")
+            # stopReason="refusal" is a model-level outcome for a turn that
+            # ran; answering it for a session the adapter does not have makes
+            # a client record an empty successful turn (#74678).
+            raise _session_not_found_error(session_id)
 
         user_text = _extract_text(prompt).strip()
         user_content = _content_blocks_to_openai_user_content(prompt)

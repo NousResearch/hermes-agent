@@ -9,6 +9,7 @@ import pytest
 
 import acp
 from acp.agent.router import build_agent_router
+from acp.exceptions import RequestError
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
@@ -282,9 +283,13 @@ class TestSessionOps:
 
 
     @pytest.mark.asyncio
-    async def test_load_session_not_found_returns_none(self, agent):
-        resp = await agent.load_session(cwd="/tmp", session_id="bogus")
-        assert resp is None
+    async def test_load_session_not_found_raises_resource_not_found(self, agent):
+        # #74678: an unknown session must surface as ACP -32002 "Resource not
+        # found", not as an empty success result.
+        with pytest.raises(RequestError) as exc_info:
+            await agent.load_session(cwd="/tmp", session_id="bogus")
+
+        assert exc_info.value.code == -32002
 
 
 
@@ -403,11 +408,14 @@ class TestSessionConfiguration:
 
 class TestPrompt:
     @pytest.mark.asyncio
-    async def test_prompt_returns_refusal_for_unknown_session(self, agent):
+    async def test_prompt_unknown_session_raises_resource_not_found(self, agent):
+        # #74678: a session the adapter does not have must surface as ACP
+        # -32002, not as stopReason="refusal" (which is a model-level outcome).
         prompt = [TextContentBlock(type="text", text="hello")]
-        resp = await agent.prompt(prompt=prompt, session_id="nonexistent")
-        assert isinstance(resp, PromptResponse)
-        assert resp.stop_reason == "refusal"
+        with pytest.raises(RequestError) as exc_info:
+            await agent.prompt(prompt=prompt, session_id="nonexistent")
+
+        assert exc_info.value.code == -32002
 
     @pytest.mark.asyncio
     async def test_prompt_binds_session_id_into_subprocess_env(self, agent, mock_manager):

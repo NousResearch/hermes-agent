@@ -31,6 +31,7 @@ from __future__ import annotations
 import ast
 import os
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -372,6 +373,100 @@ class TestRunJobKanbanIsolation:
             k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
         }
         assert after == before, "worker identity must survive concurrent cron jobs"
+
+
+# ---------------------------------------------------------------------------
+# Standalone CLI surfaces (`hermes cron run` / `hermes cron tick`)
+# ---------------------------------------------------------------------------
+
+class TestCronCliNonDispatcherScope:
+    """A standalone ``hermes cron run`` / ``cron tick`` process executes
+    jobs in-process, but unlike ``run_job()`` it has no ContextVar marking:
+    when the CLI was spawned by a kanban worker it inherits the worker's
+    ``HERMES_KANBAN_*`` env, and a ContextVar cannot cross the process
+    boundary (t_f1e15318). The CLI command handlers must therefore enter
+    the non-dispatcher scope themselves.
+    """
+
+    def test_scope_sets_and_restores(self):
+        from agent.delegation_context import is_dispatcher_owned_worker_context
+        from hermes_cli.cron import _non_dispatcher_owned_cron_cli_scope
+
+        assert is_dispatcher_owned_worker_context() is True
+        with _non_dispatcher_owned_cron_cli_scope():
+            assert is_dispatcher_owned_worker_context() is False
+        assert is_dispatcher_owned_worker_context() is True
+
+    def test_cron_run_command_wraps_job_action(self, worker_env, monkeypatch):
+        import hermes_cli.cron as cron_cli
+        from agent.delegation_context import is_dispatcher_owned_worker_context
+
+        observed: dict = {}
+
+        def fake_job_action(action, job_id, verb):
+            observed["inside"] = is_dispatcher_owned_worker_context()
+            return 0
+
+        monkeypatch.setattr(cron_cli, "_job_action", fake_job_action)
+
+        args = SimpleNamespace(cron_command="run", job_id="t_iso_cli")
+        rc = cron_cli.cron_command(args)
+
+        assert rc == 0
+        assert observed["inside"] is False, (
+            "cron run inside a worker-spawned subprocess must not be "
+            "treated as the dispatcher-owned worker"
+        )
+        assert is_dispatcher_owned_worker_context() is True, (
+            "the scope must be restored after the command"
+        )
+
+    def test_cron_tick_command_wraps_tick(self, worker_env, monkeypatch):
+        import hermes_cli.cron as cron_cli
+        from agent.delegation_context import is_dispatcher_owned_worker_context
+
+        observed: dict = {}
+
+        def fake_tick():
+            observed["inside"] = is_dispatcher_owned_worker_context()
+            return 0
+
+        monkeypatch.setattr(cron_cli, "cron_tick", fake_tick)
+
+        args = SimpleNamespace(cron_command="tick")
+        rc = cron_cli.cron_command(args)
+
+        assert rc == 0
+        assert observed["inside"] is False
+        assert is_dispatcher_owned_worker_context() is True
+
+    def test_scope_degrades_without_delegation_context(self, worker_env, monkeypatch):
+        """If agent.delegation_context cannot be imported the command must
+        still work (historical behavior), not crash."""
+        import builtins
+
+        import hermes_cli.cron as cron_cli
+        from agent.delegation_context import is_dispatcher_owned_worker_context
+
+        real_import = builtins.__import__
+
+        def broken_import(name, *a, **kw):
+            if name == "agent.delegation_context":
+                raise ImportError("simulated missing module")
+            return real_import(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", broken_import)
+
+        def fake_job_action(action, job_id, verb):
+            return 0
+
+        monkeypatch.setattr(cron_cli, "_job_action", fake_job_action)
+
+        args = SimpleNamespace(cron_command="run", job_id="t_iso_degrade")
+        rc = cron_cli.cron_command(args)
+
+        assert rc == 0
+        assert is_dispatcher_owned_worker_context() is True
 
 
 # ---------------------------------------------------------------------------

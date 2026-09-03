@@ -4706,6 +4706,92 @@ class TestRunConversation:
             "_record_task_failure should not be called outside kanban mode"
         )
 
+    def test_no_kanban_budget_record_in_non_dispatcher_context(
+        self, agent, monkeypatch
+    ):
+        """Regression (t_f1e15318): a cron agent fired from a kanban worker —
+        in-process via the ``cronjob`` tool or as a ``hermes cron run``
+        subprocess that inherited the worker's env — sees
+        ``HERMES_KANBAN_TASK`` without owning that task. Its budget
+        exhaustion must NOT close the worker's run on the board."""
+        from agent.delegation_context import non_dispatcher_owned_context
+
+        self._setup_agent(agent)
+        agent.max_iterations = 2
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker_real_task")
+
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tool_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[tc],
+        )
+        summary_resp = _mock_response(
+            content="Summary.", finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            tool_resp, tool_resp, summary_resp,
+        ]
+
+        mock_record_failure = MagicMock(return_value=False)
+
+        with non_dispatcher_owned_context():
+            with (
+                patch("run_agent.handle_function_call", return_value="ok"),
+                patch("hermes_cli.kanban_db._record_task_failure",
+                      mock_record_failure),
+                patch.object(agent, "_persist_session"),
+                patch.object(agent, "_save_trajectory"),
+                patch.object(agent, "_cleanup_task_resources"),
+            ):
+                agent.run_conversation("run the scheduled job")
+
+        assert mock_record_failure.call_count == 0, (
+            "cron agent must not record a task failure for a worker task "
+            "it does not own"
+        )
+
+    def test_no_kanban_budget_record_in_delegated_child_context(
+        self, agent, monkeypatch
+    ):
+        """delegate_task children inherit the parent worker's env view; the
+        budget-exhausted bridge must not fire for them either."""
+        import agent.delegation_context as dc
+
+        self._setup_agent(agent)
+        agent.max_iterations = 2
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker_real_task")
+
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tool_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[tc],
+        )
+        summary_resp = _mock_response(
+            content="Summary.", finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            tool_resp, tool_resp, summary_resp,
+        ]
+
+        mock_record_failure = MagicMock(return_value=False)
+
+        token = dc._DELEGATED_CHILD_CONTEXT.set(True)
+        try:
+            with (
+                patch("run_agent.handle_function_call", return_value="ok"),
+                patch("hermes_cli.kanban_db._record_task_failure",
+                      mock_record_failure),
+                patch.object(agent, "_persist_session"),
+                patch.object(agent, "_save_trajectory"),
+                patch.object(agent, "_cleanup_task_resources"),
+            ):
+                agent.run_conversation("delegate child work")
+        finally:
+            dc._DELEGATED_CHILD_CONTEXT.reset(token)
+
+        assert mock_record_failure.call_count == 0, (
+            "delegate_task child must not record a task failure for the "
+            "worker's task"
+        )
+
     # ── Output-cap retry: safe_out uses provider available_out + request estimate ──
 
     def test_output_cap_retry_uses_provider_available_out(self, agent):

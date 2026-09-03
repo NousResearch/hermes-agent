@@ -74,6 +74,42 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
     assert build_kanban_stop_nudge(messages=messages) is None
 
 
+# ── Ownership gate (regression: worker's cron subprocess got nudged) ──
+
+
+def test_no_nudge_in_non_dispatcher_owned_context(clear_kanban_env):
+    """A cron agent fired from a kanban worker — in-process via
+    ``cronjob(action="run")`` or as a ``hermes cron run`` subprocess that
+    inherited the worker's env — sees ``HERMES_KANBAN_TASK`` without
+    owning it. The stop-guard must stay off, otherwise the cron agent is
+    nudged into calling ``kanban_complete`` on the worker's task
+    (t_f1e15318: nudge issued in session cron_b7412e9c6d20_20260903_094436).
+    """
+    from agent.delegation_context import non_dispatcher_owned_context
+
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_worker_real_task")
+    with non_dispatcher_owned_context():
+        assert kanban_stop_nudge_enabled() is False
+        assert build_kanban_stop_nudge(messages=[]) is None
+    # Outside the scope the worker identity is owned again.
+    assert kanban_stop_nudge_enabled() is True
+
+
+def test_no_nudge_in_delegated_child_context(clear_kanban_env):
+    """delegate_task children run in the parent's env via ContextVar; the
+    stop-guard must not treat them as the dispatcher worker either."""
+    import agent.delegation_context as dc
+
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_worker_real_task")
+    token = dc._DELEGATED_CHILD_CONTEXT.set(True)
+    try:
+        assert kanban_stop_nudge_enabled() is False
+        assert build_kanban_stop_nudge(messages=[]) is None
+    finally:
+        dc._DELEGATED_CHILD_CONTEXT.reset(token)
+    assert kanban_stop_nudge_enabled() is True
+
+
 
 
 

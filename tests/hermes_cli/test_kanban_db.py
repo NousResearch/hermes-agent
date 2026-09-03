@@ -1647,3 +1647,50 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+def test_release_stale_claims_clears_expired_orphans_on_non_running_tasks(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="orphaned ready task")
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = 'worker:123', "
+            "claim_expires = ?, worker_pid = 99999 WHERE id = ?",
+            (now - 100, t),
+        )
+        conn.commit()
+
+        reclaimed = kb.release_stale_claims(conn)
+        assert reclaimed >= 1
+
+        row = conn.execute(
+            "SELECT status, claim_lock, claim_expires, worker_pid FROM tasks WHERE id = ?",
+            (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["claim_lock"] is None
+        assert row["claim_expires"] is None
+        assert row["worker_pid"] is None
+
+
+def test_promote_and_unblock_clear_claims(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="blocked task")
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', claim_lock = 'worker:456', "
+            "claim_expires = 9999999999, worker_pid = 88888 WHERE id = ?",
+            (t,),
+        )
+        conn.commit()
+
+        assert kb.unblock_task(conn, t)
+
+        row = conn.execute(
+            "SELECT status, claim_lock, claim_expires, worker_pid FROM tasks WHERE id = ?",
+            (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["claim_lock"] is None
+        assert row["claim_expires"] is None
+        assert row["worker_pid"] is None
+

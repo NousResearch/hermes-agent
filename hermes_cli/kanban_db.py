@@ -5119,6 +5119,33 @@ def release_stale_claims(
                 heartbeat_stale=bool(heartbeat_stale),
                 retry_status=retry_status,
             )
+
+    # Clear expired orphaned claims on non-running tasks (e.g. ready/todo/blocked/scheduled cards)
+    stale_non_running = conn.execute(
+        "SELECT id, claim_lock, claim_expires, worker_pid "
+        "FROM tasks "
+        "WHERE status IN ('ready', 'todo', 'blocked', 'scheduled') "
+        "  AND claim_lock IS NOT NULL "
+        "  AND (claim_expires IS NOT NULL AND claim_expires < ?)",
+        (now,),
+    ).fetchall()
+    for row in stale_non_running:
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status IN ('ready', 'todo', 'blocked', 'scheduled') "
+                "  AND claim_lock IS ?",
+                (row["id"], row["claim_lock"]),
+            )
+            if cur.rowcount == 1:
+                reclaimed += 1
+                _append_event(
+                    conn,
+                    row["id"],
+                    "claim_cleared_orphaned",
+                    {"old_lock": row["claim_lock"], "worker_pid": row["worker_pid"]},
+                )
+
     return reclaimed
 
 
@@ -6833,7 +6860,8 @@ def promote_task(
 
     with write_txn(conn):
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
+            "UPDATE tasks SET status = 'ready', "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
             "WHERE id = ? AND status IN ('todo', 'blocked')",
             (task_id,),
         )
@@ -6942,6 +6970,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # start for the dispatcher's retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (new_status, task_id),

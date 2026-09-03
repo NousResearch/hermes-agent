@@ -383,6 +383,45 @@ def _build_systemd_scope_argv(
     return argv
 
 
+# Upper bound on how long a systemctl helper may sit between
+# cancellation checks inside ``_run_systemctl_cancellable`` (pass 10,
+# AM): a cancelled in-flight stop must return promptly, so a caller
+# passing a pathological poll interval is clamped rather than trusted.
+_HELPER_CANCEL_POLL_MAX_SECONDS = 0.5
+
+
+def _reap_killed_systemctl_helper(proc) -> None:
+    """Unconditionally reap a killed helper subprocess (pass 10, AM).
+
+    ``communicate`` after ``kill`` can itself raise — the helper exits
+    during the kill race, or inherited pipe handles keep its read loop
+    from completing — and the old swallow-everything handler left the
+    child unreaped: one zombie per cancelled or timed-out helper.
+    ``wait`` is the backstop that always reaps (a no-op when
+    ``communicate`` already did); if even the bounded wait expires, one
+    last ``kill`` + ``wait`` closes it out. The pipes are closed
+    explicitly because the reaping path that skipped a successful
+    ``communicate`` leaves them open.
+    """
+    try:
+        proc.wait(timeout=5.0)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5.0)
+        except Exception:
+            pass
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is not None:
+            try:
+                pipe.close()
+            except Exception:
+                pass
+
+
 def _run_systemctl_cancellable(
     argv: List[str],
     *,
@@ -398,13 +437,18 @@ def _run_systemctl_cancellable(
     shutdown whose budget is gone, a dispatcher lock already released —
     has moved on, so the old process kept signalling (stop, SIGKILL)
     after its output could no longer matter. This polls the helper and
-    KILLS it the moment either cancel signal fires.
+    KILLS it the moment either cancel signal fires; the poll interval is
+    clamped to ``_HELPER_CANCEL_POLL_MAX_SECONDS`` so cancellation is
+    observed promptly regardless of what the caller asked for (pass 10,
+    AM).
 
     Returns ``(returncode, stdout, stderr)`` on completion (the shape
     callers used to read off ``subprocess.run``), or ``None`` when
     cancelled — callers treat ``None`` exactly like an unconfirmed
     outcome. On the plain client timeout it mirrors ``subprocess.run``:
-    kill, reap, raise ``TimeoutExpired``.
+    kill, reap, raise ``TimeoutExpired``. Both kill paths reap the
+    helper unconditionally — a killed helper must never linger as a
+    zombie (pass 10, AM).
     """
 
     def _cancelled() -> bool:
@@ -412,6 +456,7 @@ def _run_systemctl_cancellable(
             return True
         return deadline is not None and time.monotonic() >= deadline
 
+    poll_interval = min(poll_interval, _HELPER_CANCEL_POLL_MAX_SECONDS)
     proc = subprocess.Popen(
         argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
@@ -430,18 +475,24 @@ def _run_systemctl_cancellable(
                 "the helper; the unit keeps whatever state it is in for "
                 "re-adoption", argv[-1],
             )
-            proc.kill()
             try:
-                proc.communicate(timeout=5.0)
-            except Exception:
-                pass
+                proc.kill()
+                try:
+                    proc.communicate(timeout=5.0)
+                except Exception:
+                    pass
+            finally:
+                _reap_killed_systemctl_helper(proc)
             return None
         if time.monotonic() >= wall:
-            proc.kill()
             try:
-                proc.communicate(timeout=5.0)
-            except Exception:
-                pass
+                proc.kill()
+                try:
+                    proc.communicate(timeout=5.0)
+                except Exception:
+                    pass
+            finally:
+                _reap_killed_systemctl_helper(proc)
             raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
 
 

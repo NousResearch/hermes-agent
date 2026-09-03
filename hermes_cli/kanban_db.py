@@ -9399,6 +9399,12 @@ SCOPE_STOP_SERVICE_THREAD_NAME = "kanban-scope-stop"
 # Tests flip this so the queued verified stop runs inline: same code path,
 # deterministic single-tick behaviour without thread timing.
 _scope_stop_inline = False
+# How long an expired join waits, after cancelling, for the in-flight
+# stop to stand down (pass 10, AM): the helper observes cancellation
+# within its <=0.5 s poll and is killed+reaped unconditionally, so a
+# short bounded wait sees the drain clear instead of reporting leftover
+# state that is about to change on its own.
+_SCOPE_STOP_CANCEL_DRAIN_WAIT_SECONDS = 5.0
 
 
 @dataclass
@@ -9759,6 +9765,19 @@ def join_scope_stop_service(
                 _scope_stop_service_cancel = threading.Event()
             if cancel_event is not None:
                 cancel_event.set()
+            # Pass 10 (AM): do not return while the cancelled stop is
+            # still mid-flight. The helper observes cancellation within
+            # its <=0.5 s poll and is killed+reaped unconditionally, so
+            # this bounded wait sees the drain stand down and the report
+            # below lists the queue exactly as the service requeued it.
+            inflight_deadline = time.monotonic() + (
+                _SCOPE_STOP_CANCEL_DRAIN_WAIT_SECONDS
+            )
+            while time.monotonic() < inflight_deadline:
+                with _scope_stop_lock:
+                    if _scope_stop_inflight is None:
+                        break
+                time.sleep(0.05)
             # Re-snapshot AFTER cancelling so the report lists the unit
             # the service was inside of (it may have requeued itself by
             # now — either way it appears exactly once).

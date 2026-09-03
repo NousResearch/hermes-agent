@@ -2847,3 +2847,148 @@ def test_model_not_found_notice_absent_when_fallback_chain_configured(monkeypatc
     text = _format_async(evt)
     assert text.count("SUBAGENT MODEL REJECTED") == 1
     assert "No fallback chain is configured" not in text
+
+
+# ---------------------------------------------------------------------------
+# Cancellable systemctl helper (pass 9, AH / pass 10, AM)
+# ---------------------------------------------------------------------------
+
+_TERM_IGNORING_HELPER = (
+    "import os, signal, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "with open(os.environ['HELPER_PID_FILE'], 'w') as f:\n"
+    "    f.write(str(os.getpid()))\n"
+    "time.sleep(60)\n"
+)
+
+
+def test_scope_stop_helper_cancel_reaps_term_ignoring_helper(
+    tmp_path, monkeypatch,
+):
+    """Pass 10 (AM): the cancel path must kill AND unconditionally reap
+    the helper. A helper that ignores SIGTERM proves the kill is a real
+    SIGKILL, and a pathological caller poll interval (30 s, clamped to
+    <=0.5 s) proves cancellation is observed promptly — a reaped child's
+    pid is gone entirely, while a zombie would still answer ``kill(0)``.
+    """
+    from tools import process_registry as pr
+
+    helper = tmp_path / "helper.py"
+    helper.write_text(_TERM_IGNORING_HELPER)
+    pid_file = tmp_path / "helper.pid"
+    monkeypatch.setenv("HELPER_PID_FILE", str(pid_file))
+
+    cancel = threading.Event()
+
+    def cancel_once_running():
+        for _ in range(200):  # <=10 s, no blind sleep
+            if pid_file.exists():
+                cancel.set()
+                return
+            time.sleep(0.05)
+
+    watcher = threading.Thread(target=cancel_once_running, daemon=True)
+    watcher.start()
+
+    started = time.monotonic()
+    result = pr._run_systemctl_cancellable(
+        [sys.executable, str(helper)],
+        timeout=30,
+        cancel_event=cancel,
+        poll_interval=30.0,  # clamped to <=0.5 s internally
+    )
+    elapsed = time.monotonic() - started
+
+    assert result is None, "cancelled helper reports the None verdict"
+    assert elapsed < 5.0, (
+        "cancellation must be observed within the clamped poll, not the "
+        "caller's 30 s interval"
+    )
+    pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("the killed helper was left alive or unreaped (zombie)")
+
+
+def test_scope_stop_helper_reap_survives_kill_race(monkeypatch, tmp_path):
+    """Pass 10 (AM): a helper exiting during the kill race can make the
+    post-kill ``communicate`` raise; the swallowed exception used to
+    skip reaping entirely. The unconditional ``wait`` must reap the
+    child anyway, and the pipes must be closed."""
+    from tools import process_registry as pr
+
+    real_popen = pr.subprocess.Popen
+
+    class _RaceyHelper:
+        """Real child; communicate() breaks once killed (the race)."""
+
+        def __init__(self, real):
+            self._real = real
+            self._killed = False
+            self.waited = False
+
+        def kill(self):
+            self._killed = True
+            return self._real.kill()
+
+        def communicate(self, timeout=None):
+            if self._killed:
+                raise OSError("helper exited during the kill race")
+            return self._real.communicate(timeout=timeout)
+
+        def wait(self, timeout=None):
+            self.waited = True
+            return self._real.wait(timeout=timeout)
+
+        @property
+        def pid(self):
+            return self._real.pid
+
+        @property
+        def returncode(self):
+            return self._real.returncode
+
+        @property
+        def stdout(self):
+            return self._real.stdout
+
+        @property
+        def stderr(self):
+            return self._real.stderr
+
+    wrapped: dict = {}
+
+    def popen_racey(argv, *args, **kwargs):
+        wrapped["proc"] = _RaceyHelper(real_popen(argv, *args, **kwargs))
+        return wrapped["proc"]
+
+    monkeypatch.setattr(pr.subprocess, "Popen", popen_racey)
+
+    script = tmp_path / "sleeper.py"
+    script.write_text("import time\ntime.sleep(60)\n")
+    cancel = threading.Event()
+    cancel.set()  # already expired: the first poll kills immediately
+
+    result = pr._run_systemctl_cancellable(
+        [sys.executable, str(script)], timeout=30, cancel_event=cancel,
+    )
+
+    assert result is None
+    racey = wrapped["proc"]
+    assert racey.waited, "the unconditional wait() ran despite the race"
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(racey.pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("the race-killed helper was left unreaped (zombie)")
+    assert racey.stdout.closed and racey.stderr.closed

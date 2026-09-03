@@ -386,6 +386,19 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 # signal lands, and the following tick reclaims cleanly.
 RECLAIM_DEFER_GRACE_SECONDS = 120
 
+# After a TTL reclaim the card is eligible again only after this backoff
+# (#99283). Stops same-tick re-claim of a poison card by the spawn path
+# that just failed. 0 disables backoff (tests). Override with
+# ``HERMES_KANBAN_RECLAIM_BACKOFF_SECONDS``.
+DEFAULT_RECLAIM_BACKOFF_SECONDS = 60
+
+# Auto-block after this many stale-claim reclaims on the same card
+# (#99283). Symmetric with ``DEFAULT_FAILURE_LIMIT``: ``reclaimed`` is
+# not a recorded failure, so without this counter a crash-loop that
+# only ever TTL-reclaims never trips the breaker. Override with
+# ``HERMES_KANBAN_RECLAIM_LIMIT``.
+DEFAULT_RECLAIM_LIMIT = 2
+
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
@@ -408,6 +421,40 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
             return parsed
 
     return DEFAULT_CLAIM_TTL_SECONDS
+
+
+def _resolve_reclaim_backoff_seconds() -> int:
+    """Seconds a reclaimed card must wait before it can be claimed again.
+
+    A non-negative integer from ``HERMES_KANBAN_RECLAIM_BACKOFF_SECONDS``
+    overrides the default. Invalid values fall back silently.
+    """
+    raw = os.environ.get("HERMES_KANBAN_RECLAIM_BACKOFF_SECONDS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_RECLAIM_BACKOFF_SECONDS
+
+
+def _resolve_reclaim_limit() -> int:
+    """Reclaim count at which a card is auto-blocked.
+
+    A positive integer from ``HERMES_KANBAN_RECLAIM_LIMIT`` overrides
+    the default. Invalid values fall back silently.
+    """
+    raw = os.environ.get("HERMES_KANBAN_RECLAIM_LIMIT", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = 0
+        if parsed > 0:
+            return parsed
+    return DEFAULT_RECLAIM_LIMIT
 
 
 # Grace period after a task transitions to ``running`` during which
@@ -1141,6 +1188,18 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Monotonic claim generation. Incremented on every successful claim
+    # and on every reclaim (the reclaim bump is the epoch boundary).
+    # Never cleared — a zombie writer compares its run's stored epoch
+    # against this column and is rejected when the card has moved on.
+    claim_epoch: int = 0
+    # Unix timestamp; claim_task refuses until this instant. Set on
+    # reclaim so the card cannot be re-claimed in the same tick.
+    claim_available_at: Optional[int] = None
+    # How many times this card has been stale-reclaimed (or manually
+    # reclaimed) since the last successful completion. Trips the
+    # reclaim-loop breaker at ``DEFAULT_RECLAIM_LIMIT``.
+    reclaim_count: int = 0
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1235,6 +1294,21 @@ class Task:
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
             ),
+            claim_epoch=(
+                int(row["claim_epoch"])
+                if "claim_epoch" in keys and row["claim_epoch"] is not None
+                else 0
+            ),
+            claim_available_at=(
+                int(row["claim_available_at"])
+                if "claim_available_at" in keys and row["claim_available_at"] is not None
+                else None
+            ),
+            reclaim_count=(
+                int(row["reclaim_count"])
+                if "reclaim_count" in keys and row["reclaim_count"] is not None
+                else 0
+            ),
         )
 
 
@@ -1265,6 +1339,7 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    claim_epoch: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
@@ -1289,6 +1364,11 @@ class Run:
             summary=row["summary"],
             metadata=meta,
             error=row["error"],
+            claim_epoch=(
+                int(row["claim_epoch"])
+                if "claim_epoch" in set(row.keys()) and row["claim_epoch"] is not None
+                else None
+            ),
         )
 
 
@@ -1422,7 +1502,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Monotonic claim generation. Incremented on claim, never cleared
+    -- on reclaim, so zombie writes can be fenced (#99283).
+    claim_epoch          INTEGER NOT NULL DEFAULT 0,
+    -- Earliest unix time a reclaimed card may be claimed again.
+    claim_available_at   INTEGER,
+    -- Stale-claim reclaim counter. Auto-blocks at DEFAULT_RECLAIM_LIMIT.
+    reclaim_count        INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1474,7 +1561,10 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    -- Claim generation copied from tasks.claim_epoch at insert time so
+    -- a later writer can prove it still owns that epoch (#99283).
+    claim_epoch         INTEGER
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -2690,6 +2780,29 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "claim_epoch" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "claim_epoch", "claim_epoch INTEGER NOT NULL DEFAULT 0",
+        )
+    if "claim_available_at" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "claim_available_at", "claim_available_at INTEGER",
+        )
+    if "reclaim_count" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "reclaim_count", "reclaim_count INTEGER NOT NULL DEFAULT 0",
+        )
+
+    runs_present = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
+    ).fetchone() is not None
+    if runs_present:
+        run_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
+        if "claim_epoch" not in run_cols:
+            _add_column_if_missing(
+                conn, "task_runs", "claim_epoch", "claim_epoch INTEGER",
+            )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2887,7 +3000,7 @@ _REBUILD_SPECS = {
         " worker_pid INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
-        " error TEXT)",
+        " error TEXT, claim_epoch INTEGER)",
         (
             "CREATE INDEX idx_runs_task ON task_runs(task_id, started_at)",
             "CREATE INDEX idx_runs_status ON task_runs(status)",
@@ -3991,7 +4104,12 @@ def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Op
 # ---------------------------------------------------------------------------
 
 def add_comment(
-    conn: sqlite3.Connection, task_id: str, author: str, body: str
+    conn: sqlite3.Connection,
+    task_id: str,
+    author: str,
+    body: str,
+    *,
+    expected_run_id: Optional[int] = None,
 ) -> int:
     if not body or not body.strip():
         raise ValueError("comment body is required")
@@ -4005,6 +4123,11 @@ def add_comment(
             "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
         ).fetchone():
             raise ValueError(f"unknown task {task_id}")
+        if _writer_epoch_is_stale(conn, task_id, expected_run_id):
+            raise ValueError(
+                f"stale comment from run {expected_run_id} "
+                f"on task {task_id}: claim epoch has moved on"
+            )
         cur = conn.execute(
             "INSERT INTO task_comments (task_id, author, body, created_at) "
             "VALUES (?, ?, ?, ?)",
@@ -4625,6 +4748,108 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
     ).fetchone() is None
 
 
+def _reclaim_backoff_blocks_claim(
+    conn: sqlite3.Connection, task_id: str, now: int,
+) -> bool:
+    """Return True when a TTL-reclaim backoff still forbids a new claim."""
+    row = conn.execute(
+        "SELECT claim_available_at FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    keys = set(row.keys())
+    if "claim_available_at" not in keys or row["claim_available_at"] is None:
+        return False
+    return int(row["claim_available_at"]) > now
+
+
+def _next_claim_epoch(conn: sqlite3.Connection, task_id: str) -> int:
+    """Increment and return ``tasks.claim_epoch``; clear reclaim backoff."""
+    conn.execute(
+        "UPDATE tasks SET claim_epoch = COALESCE(claim_epoch, 0) + 1, "
+        "claim_available_at = NULL WHERE id = ?",
+        (task_id,),
+    )
+    row = conn.execute(
+        "SELECT claim_epoch FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    return int(row["claim_epoch"]) if row and row["claim_epoch"] is not None else 1
+
+
+def _apply_stale_reclaim_pacing(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    now: int,
+    retry_status: str,
+) -> tuple[str, int, Optional[int]]:
+    """Bump reclaim_count and decide ready-vs-blocked plus backoff.
+
+    Returns ``(next_status, reclaim_count, claim_available_at)``.
+    Does not write the status flip — caller issues the CAS UPDATE.
+    """
+    row = conn.execute(
+        "SELECT reclaim_count FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    prev = 0
+    if row is not None and "reclaim_count" in set(row.keys()) and row["reclaim_count"] is not None:
+        prev = int(row["reclaim_count"])
+    new_count = prev + 1
+    limit = _resolve_reclaim_limit()
+    backoff = _resolve_reclaim_backoff_seconds()
+    if new_count >= limit:
+        next_status = "blocked"
+        available_at: Optional[int] = None
+        block_kind = "transient"
+    else:
+        next_status = retry_status
+        available_at = (now + backoff) if backoff > 0 else None
+        block_kind = None
+    conn.execute(
+        "UPDATE tasks SET reclaim_count = ?, claim_available_at = ?, "
+        "block_kind = COALESCE(?, block_kind) WHERE id = ?",
+        (new_count, available_at, block_kind, task_id),
+    )
+    return next_status, new_count, available_at
+
+
+def _writer_epoch_is_stale(
+    conn: sqlite3.Connection,
+    task_id: str,
+    expected_run_id: Optional[int],
+) -> bool:
+    """True when ``expected_run_id`` no longer owns this task's claim epoch."""
+    if expected_run_id is None:
+        return False
+    task = conn.execute(
+        "SELECT claim_epoch, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if task is None:
+        return True
+    if (
+        task["current_run_id"] is not None
+        and int(task["current_run_id"]) != int(expected_run_id)
+    ):
+        return True
+    run = conn.execute(
+        "SELECT claim_epoch, ended_at FROM task_runs "
+        "WHERE id = ? AND task_id = ?",
+        (int(expected_run_id), task_id),
+    ).fetchone()
+    if run is None:
+        return True
+    if run["ended_at"] is not None:
+        return True
+    keys = set(run.keys())
+    if "claim_epoch" in keys and run["claim_epoch"] is not None:
+        task_epoch = int(task["claim_epoch"] or 0)
+        if task_epoch != int(run["claim_epoch"]):
+            return True
+    return False
+
+
 def claim_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4666,6 +4891,23 @@ def claim_task(
                 {"reason": "parents_not_done"},
             )
             return None
+        if _reclaim_backoff_blocks_claim(conn, task_id, now):
+            row = conn.execute(
+                "SELECT claim_available_at FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {
+                    "reason": "reclaim_backoff",
+                    "claim_available_at": (
+                        int(row["claim_available_at"])
+                        if row and row["claim_available_at"] is not None
+                        else None
+                    ),
+                },
+            )
+            return None
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
         # it when the CAS resets the pointer below. No-op when the invariant
@@ -4701,6 +4943,7 @@ def claim_task(
         )
         if cur.rowcount != 1:
             return None
+        epoch = _next_claim_epoch(conn, task_id)
         # Look up the current task row so we can populate the run with
         # its assignee / step / runtime cap.
         trow = conn.execute(
@@ -4713,8 +4956,8 @@ def claim_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, claim_epoch
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -4724,6 +4967,7 @@ def claim_task(
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
+                epoch,
             ),
         )
         run_id = run_cur.lastrowid
@@ -4733,7 +4977,8 @@ def claim_task(
         )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            {"lock": lock, "expires": expires, "run_id": run_id,
+             "claim_epoch": epoch},
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
@@ -4786,6 +5031,24 @@ def claim_review_task(
                     },
                 )
             return None
+        if _reclaim_backoff_blocks_claim(conn, task_id, now):
+            row_av = conn.execute(
+                "SELECT claim_available_at FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {
+                    "reason": "reclaim_backoff",
+                    "available_at": (
+                        int(row_av["claim_available_at"])
+                        if row_av and row_av["claim_available_at"] is not None
+                        else None
+                    ),
+                    "source_status": "review",
+                },
+            )
+            return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -4801,6 +5064,7 @@ def claim_review_task(
         )
         if cur.rowcount != 1:
             return None
+        epoch = _next_claim_epoch(conn, task_id)
         trow = conn.execute(
             "SELECT assignee, max_runtime_seconds, current_step_key "
             "FROM tasks WHERE id = ?",
@@ -4811,8 +5075,8 @@ def claim_review_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, claim_epoch
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -4822,6 +5086,7 @@ def claim_review_task(
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
+                epoch,
             ),
         )
         run_id = run_cur.lastrowid
@@ -4930,20 +5195,28 @@ def heartbeat_claim(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Extend a running claim.  Returns True if we still own it.
 
     Workers that know they'll exceed 15 minutes should call this every
     few minutes to keep ownership.
+
+    ``expected_run_id``, when set, fences the heartbeat to that run so a
+    zombie worker cannot extend a successor's claim (#99283).
     """
     expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
     lock = claimer or _claimer_id()
     with write_txn(conn):
-        cur = conn.execute(
+        sql = (
             "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' AND claim_lock = ?",
-            (expires, task_id, lock),
+            "WHERE id = ? AND status = 'running' AND claim_lock = ?"
         )
+        params: list[Any] = [expires, task_id, lock]
+        if expected_run_id is not None:
+            sql += " AND current_run_id = ?"
+            params.append(int(expected_run_id))
+        cur = conn.execute(sql, params)
         if cur.rowcount == 1:
             run_id = _current_run_id(conn, task_id)
             if run_id is not None:
@@ -5072,6 +5345,14 @@ def release_stale_claims(
             )
             if cur.rowcount != 1:
                 continue
+            next_status, reclaim_count, available_at = _apply_stale_reclaim_pacing(
+                conn, row["id"], now=now, retry_status=retry_status,
+            )
+            if next_status != retry_status:
+                conn.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ?",
+                    (next_status, row["id"]),
+                )
             run_id = _end_run(
                 conn, row["id"],
                 outcome="reclaimed", status="reclaimed",
@@ -5092,7 +5373,9 @@ def release_stale_claims(
                 "now": now,
                 "host_local": host_local,
                 "heartbeat_stale": bool(heartbeat_stale),
-                "retry_status": retry_status,
+                "retry_status": next_status,
+                "reclaim_count": reclaim_count,
+                "claim_available_at": available_at,
             }
             payload.update(termination)
             _append_event(
@@ -5117,7 +5400,7 @@ def release_stale_claims(
                     if row["worker_pid"] is not None else None
                 ),
                 heartbeat_stale=bool(heartbeat_stale),
-                retry_status=retry_status,
+                retry_status=next_status,
             )
     return reclaimed
 
@@ -5164,6 +5447,15 @@ def reclaim_task(
         )
         if cur.rowcount != 1:
             return False
+        now = int(time.time())
+        next_status, reclaim_count, available_at = _apply_stale_reclaim_pacing(
+            conn, task_id, now=now, retry_status=retry_status,
+        )
+        if next_status != retry_status:
+            conn.execute(
+                "UPDATE tasks SET status = ? WHERE id = ?",
+                (next_status, task_id),
+            )
         run_id = _end_run(
             conn, task_id,
             outcome="reclaimed", status="reclaimed",
@@ -5177,7 +5469,9 @@ def reclaim_task(
             "manual": True,
             "reason": reason,
             "prev_lock": prev_lock,
-            "retry_status": retry_status,
+            "retry_status": next_status,
+            "reclaim_count": reclaim_count,
+            "claim_available_at": available_at,
         }
         payload.update(termination)
         _append_event(
@@ -5445,11 +5739,27 @@ def complete_task(
         # ``review`` or ``running``.
         if not _parents_satisfied(conn, task_id):
             return False
+        if _writer_epoch_is_stale(conn, task_id, expected_run_id):
+            return False
         prior = conn.execute(
             "SELECT status FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         prior_status = prior["status"] if prior else None
+        if expected_run_id is not None:
+            fence = conn.execute(
+                "SELECT t.claim_epoch AS task_epoch, r.claim_epoch AS run_epoch "
+                "FROM tasks t LEFT JOIN task_runs r ON r.id = ? AND r.task_id = t.id "
+                "WHERE t.id = ?",
+                (int(expected_run_id), task_id),
+            ).fetchone()
+            if (
+                fence is not None
+                and fence["task_epoch"] is not None
+                and fence["run_epoch"] is not None
+                and int(fence["task_epoch"]) != int(fence["run_epoch"])
+            ):
+                return False
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -5461,7 +5771,9 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
-                       block_recurrences = 0
+                       block_recurrences = 0,
+                       reclaim_count = 0,
+                       claim_available_at = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """,
@@ -5478,7 +5790,9 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
-                       block_recurrences = 0
+                       block_recurrences = 0,
+                       reclaim_count = 0,
+                       claim_available_at = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                    AND current_run_id = ?
@@ -6537,6 +6851,8 @@ def request_review(
     with write_txn(conn):
         if not _parents_satisfied(conn, task_id):
             return _ret(False, "parent dependencies are not satisfied")
+        if _writer_epoch_is_stale(conn, task_id, expected_run_id):
+            return _ret(False, "expected_run_id is stale after reclaim")
         trow = conn.execute(
             "SELECT assignee, status, claim_lock, current_run_id "
             "FROM tasks WHERE id = ?", (task_id,),
@@ -6597,6 +6913,23 @@ def request_review(
                     )
                 reviewer = prior_reviewer
         reviewer = _canonical_assignee(reviewer) if reviewer is not None else None
+        if expected_run_id is not None:
+            fence = conn.execute(
+                "SELECT t.claim_epoch AS task_epoch, r.claim_epoch AS run_epoch "
+                "FROM tasks t LEFT JOIN task_runs r ON r.id = ? AND r.task_id = t.id "
+                "WHERE t.id = ?",
+                (int(expected_run_id), task_id),
+            ).fetchone()
+            if (
+                fence is not None
+                and fence["task_epoch"] is not None
+                and fence["run_epoch"] is not None
+                and int(fence["task_epoch"]) != int(fence["run_epoch"])
+            ):
+                return _ret(
+                    False,
+                    "expected_run_id does not match the current claim epoch",
+                )
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
         params: tuple[Any, ...]
         if expected_run_id is None:
@@ -6942,7 +7275,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # start for the dispatcher's retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
+            "consecutive_failures = 0, last_failure_error = NULL, "
+            "reclaim_count = 0, claim_available_at = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (new_status, task_id),
         )
@@ -10044,10 +10378,13 @@ def _dispatch_once_locked(
             )
             spawn_budget = 1
 
+    _now = int(time.time())
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
+        "AND (claim_available_at IS NULL OR claim_available_at <= ?) "
+        "ORDER BY priority DESC, created_at ASC",
+        (_now,),
     ).fetchall()
     # Review rows are enumerated up front (not after the ready loop) so the
     # budget split below can see whether review work exists at all.
@@ -10056,7 +10393,9 @@ def _dispatch_once_locked(
         review_rows = conn.execute(
             "SELECT id, assignee FROM tasks "
             "WHERE status = 'review' AND claim_lock IS NULL "
-            "ORDER BY priority DESC, created_at ASC"
+            "AND (claim_available_at IS NULL OR claim_available_at <= ?) "
+            "ORDER BY priority DESC, created_at ASC",
+            (_now,),
         ).fetchall()
     # Review-lane reservation (OOF-30 review finding): the ready loop runs
     # first and used to consume the ENTIRE shared budget, so a sustained

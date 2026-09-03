@@ -245,9 +245,6 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
 
 
 
-
-
-
 # ---------------------------------------------------------------------------
 # Rate-limit requeue: a worker that bails on a provider quota wall must be
 # released back to ``ready`` WITHOUT counting a failure, so a long (e.g.
@@ -1647,3 +1644,108 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# --------------------------------------------------------------------------------------
+# Stale-claim fencing (#99283)
+# --------------------------------------------------------------------------------------
+
+
+def _expire_and_reclaim(conn, tid, monkeypatch, *, pid=424242):
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    host = _kb._claimer_id().split(":", 1)[0]
+    claimed = kb.claim_task(conn, tid, ttl_seconds=120, claimer=f"{host}:worker")
+    assert claimed is not None
+    run_id = claimed.current_run_id
+    kb._set_worker_pid(conn, tid, pid)
+    conn.execute(
+        "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+        (int(time.time()) - 5, tid),
+    )
+    conn.commit()
+    n = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+    assert n == 1
+    return run_id
+
+
+def test_stale_reclaim_keeps_claim_epoch_and_blocks_instant_reclaim(
+    kanban_home, monkeypatch,
+):
+    """TTL reclaim must not erase the claim epoch or allow same-tick re-claim."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="fence", assignee="scout")
+        run1 = _expire_and_reclaim(conn, tid, monkeypatch)
+        after = kb.get_task(conn, tid)
+        assert after.status == "ready"
+        assert after.claim_lock is None
+        assert after.current_run_id is None
+        assert after.claim_epoch == 1
+        assert after.reclaim_count == 1
+        assert after.claim_available_at is not None
+        assert after.claim_available_at > int(time.time())
+        assert after.consecutive_failures == 0
+
+        host = kb._claimer_id().split(":", 1)[0]
+        again = kb.claim_task(conn, tid, claimer=f"{host}:worker2")
+        assert again is None
+        events = [
+            e for e in kb.list_events(conn, tid) if e.kind == "claim_rejected"
+        ]
+        assert events and events[-1].payload.get("reason") == "reclaim_backoff"
+
+        zombie = kb.complete_task(
+            conn, tid, result="zombie", expected_run_id=run1,
+        )
+        assert zombie is False
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_stale_run_comment_and_complete_rejected_after_successor_claim(
+    kanban_home, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_KANBAN_RECLAIM_BACKOFF_SECONDS", "0")
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="zombie writes", assignee="scout")
+        run1 = _expire_and_reclaim(conn, tid, monkeypatch)
+        host = kb._claimer_id().split(":", 1)[0]
+        successor = kb.claim_task(conn, tid, claimer=f"{host}:next")
+        assert successor is not None
+        assert successor.claim_epoch == 2
+        assert successor.current_run_id != run1
+
+        with pytest.raises(ValueError, match="stale comment"):
+            kb.add_comment(
+                conn, tid, author="zombie", body="late note",
+                expected_run_id=run1,
+            )
+        assert kb.complete_task(
+            conn, tid, result="zombie done", expected_run_id=run1,
+        ) is False
+        assert kb.heartbeat_claim(
+            conn, tid, claimer=f"{host}:worker", expected_run_id=run1,
+        ) is False
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_reclaim_limit_auto_blocks_poison_card(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_RECLAIM_BACKOFF_SECONDS", "0")
+    monkeypatch.setenv("HERMES_KANBAN_RECLAIM_LIMIT", "2")
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="poison", assignee="scout")
+        _expire_and_reclaim(conn, tid, monkeypatch, pid=111)
+        first = kb.get_task(conn, tid)
+        assert first.status == "ready"
+        assert first.reclaim_count == 1
+
+        _expire_and_reclaim(conn, tid, monkeypatch, pid=222)
+        parked = kb.get_task(conn, tid)
+        assert parked.status == "blocked"
+        assert parked.reclaim_count == 2
+        payload = [
+            e.payload for e in kb.list_events(conn, tid)
+            if e.kind == "reclaimed"
+        ][-1]
+        assert payload["retry_status"] == "blocked"
+        assert payload["reclaim_count"] == 2

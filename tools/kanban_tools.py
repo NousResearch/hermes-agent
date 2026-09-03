@@ -339,7 +339,10 @@ def heartbeat_current_worker_from_env() -> bool:
         try:
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
             try:
-                kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+                kb.heartbeat_claim(
+                    conn, tid, claimer=claim_lock,
+                    expected_run_id=_worker_run_id(tid),
+                )
             except Exception:
                 logger.debug("auto-heartbeat: heartbeat_claim failed", exc_info=True)
             run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
@@ -1124,7 +1127,10 @@ def _handle_comment(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            cid = kb.add_comment(conn, tid, author=author, body=str(body))
+            cid = kb.add_comment(
+                conn, tid, author=author, body=str(body),
+                expected_run_id=_worker_run_id(tid),
+            )
             return _ok(task_id=tid, comment_id=cid)
         finally:
             conn.close()

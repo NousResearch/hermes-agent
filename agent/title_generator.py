@@ -413,6 +413,17 @@ def generate_title(
         )
         content = response.choices[0].message.content or ""
         title = _clean_title(_extract_title_text(content))
+        # Reject structurally-unusable title fragments: providers that ignore
+        # response_format can stream a truncated JSON object/array or a markdown
+        # code fence whose leading token the loose prose-scan then stores verbatim
+        # (e.g. `{"title #2`, `["a"', a bare ``` fence). A session title is never
+        # a JSON literal or a code fence, so treat any such fragment as unusable
+        # and let the caller keep the instant derived title (#92473 regression
+        # guard).
+        if title is not None and title.startswith(("`", "{", '["', "[{")):
+            logger.debug("Rejecting structurally-invalid title fragment: %r", title)
+            return None
+
         # Answer-shaped output guard: titling is a 3-7 word task, so a title
         # with many words is a model that ignored the task and answered
         # the user's message instead ("I don't have context on X — that's

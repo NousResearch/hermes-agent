@@ -21,6 +21,7 @@ import logging
 import os
 import random
 import re
+import socket
 import ssl
 import sys
 import time
@@ -1258,16 +1259,17 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
         each message and destroying the prefix cache for the whole session,
         which is far worse than the staleness this function guards against.
 
-        Anchor on the ``User home directory:`` line that immediately precedes
-        the working-directory line in that block, and take the FIRST such
-        occurrence, so only Hermes' own emitted block can satisfy the read.
+        Anchor on the ``User home directory:`` line in the middle of that
+        block, and take the FIRST such occurrence, so only Hermes' own emitted
+        block can satisfy the read. Runtime host fields precede the anchor;
+        the working-directory field follows it.
         """
         prefix = f"{label}:"
         lines = prompt.splitlines()
         for idx, line in enumerate(lines):
             if not line.startswith("User home directory:"):
                 continue
-            for candidate in lines[idx + 1: idx + 4]:
+            for candidate in lines[max(0, idx - 3): idx + 4]:
                 if candidate.startswith(prefix):
                     return candidate[len(prefix):].strip()
         return ""
@@ -1290,6 +1292,33 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     stored_cwd = host_info_value("Current working directory")
     if stored_cwd:
         if stored_cwd != str(resolve_agent_cwd()):
+            return False
+
+    # Session databases can be synchronized between machines. A stored local
+    # prompt must never carry the other machine's runtime identity into this
+    # process merely because its profile name and cwd happen to match. Legacy
+    # local prompts have no hostname at all, so reject them once to upgrade the
+    # persisted snapshot. Remote/sandbox prompts intentionally omit the whole
+    # host-info block and remain reusable.
+    #
+    # Hostname is a useful human-readable signal but not a globally unique
+    # gateway identity: two cloned VMs or machines can share a hostname, and
+    # two gateway instances can run on the same host. This is host anchoring,
+    # not an authentication boundary; track a follow-up for a stable opaque
+    # per-install/runtime identity if stronger guarantees are needed.
+    stored_host = host_info_value("Host")
+    stored_hostname = host_info_value("Machine hostname")
+    if stored_host:
+        if not stored_hostname:
+            # Legacy local prompt without hostname: reject once to upgrade.
+            return False
+        try:
+            current_hostname = socket.gethostname().strip()
+        except OSError:
+            current_hostname = ""
+        # Fail closed: a local stored prompt must not silently be treated as
+        # verified when the live hostname cannot be read.
+        if not current_hostname or stored_hostname.casefold() != current_hostname.casefold():
             return False
 
     # Detect runtime-surface drift: the stored prompt records which platform it

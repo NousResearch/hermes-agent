@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -263,6 +264,193 @@ class TestVideoAnalyzeTool:
         uploaded_bytes = base64.b64decode(video_url.split(",", 1)[1])
         assert uploaded_bytes == remote_bytes
         assert uploaded_bytes != host_video.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# Local VLM endpoint detection + frame extraction
+# ---------------------------------------------------------------------------
+
+
+class TestLocalVisionEndpoint:
+    """``_is_local_vision_endpoint`` decides when video_analyze should
+    switch from whole-video base64 to frame extraction."""
+
+    def test_recognizes_localhost_base_url(self):
+        from tools.vision_tools import _is_local_vision_endpoint
+
+        cfg = {
+            "auxiliary": {
+                "vision": {"base_url": "http://127.0.0.1:8123/v1"},
+            }
+        }
+        assert _is_local_vision_endpoint(cfg) is True
+
+    def test_recognizes_localhost_name(self):
+        from tools.vision_tools import _is_local_vision_endpoint
+
+        cfg = {
+            "auxiliary": {
+                "vision": {"base_url": "http://localhost:11434/v1"},
+            }
+        }
+        assert _is_local_vision_endpoint(cfg) is True
+
+    def test_rejects_cloud_endpoint(self):
+        from tools.vision_tools import _is_local_vision_endpoint
+
+        cfg = {
+            "auxiliary": {
+                "vision": {"base_url": "https://api.openai.com/v1"},
+            }
+        }
+        assert _is_local_vision_endpoint(cfg) is False
+
+    def test_rejects_missing_vision_block(self):
+        from tools.vision_tools import _is_local_vision_endpoint
+
+        assert _is_local_vision_endpoint({"auxiliary": {}}) is False
+        assert _is_local_vision_endpoint(None) in (True, False)  # never raises
+
+
+class TestVideoToFrameDataUrls:
+    """``_video_to_frame_data_urls`` extracts evenly-spaced JPEG frames."""
+
+    def test_returns_none_without_ffmpeg(self, tmp_path, monkeypatch):
+        from tools.vision_tools import _video_to_frame_data_urls
+
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"\x00" * 100)
+        assert _video_to_frame_data_urls(video) is None
+
+    def test_extracts_frames_when_ffmpeg_available(self, tmp_path, monkeypatch):
+        from tools.vision_tools import _video_to_frame_data_urls
+
+        fake_urls = [
+            "data:image/jpeg;base64,AAAA",
+            "data:image/jpeg;base64,BBBB",
+        ]
+
+        real_run = __import__("subprocess").run
+        frames_written = []
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd and cmd[0] == "ffprobe":
+                return __import__("subprocess").CompletedProcess(
+                    cmd, 0,
+                    stdout='{"streams": [{"nb_frames": "240", "duration": "10.0"}]}',
+                    stderr="",
+                )
+            if cmd and cmd[0] == "ffmpeg":
+                # Simulate frame extraction: write the destination file.
+                for i, arg in enumerate(cmd):
+                    if arg == "-y" and i + 1 < len(cmd):
+                        out_path = cmd[-1]
+                        Path(out_path).write_bytes(b"JPEG-FRAME")
+                        frames_written.append(out_path)
+                return __import__("subprocess").CompletedProcess(cmd, 0, stdout="", stderr="")
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else "/usr/bin/ffprobe")
+        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "tools.vision_tools._image_to_base64_data_url",
+            lambda path, mime: fake_urls.pop(0) if fake_urls else "data:image/jpeg;base64,ZZZZ",
+        )
+
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"\x00" * 100)
+        urls = _video_to_frame_data_urls(video, num_frames=2)
+        assert urls is not None
+        assert len(urls) == 2
+        assert frames_written  # ffmpeg actually produced frame files
+        assert all(u.startswith("data:image/jpeg;base64,") for u in urls)
+
+
+class TestVideoAnalyzeLocalEndpoint:
+    """video_analyze_tool uses ordered frames for local VLM endpoints."""
+
+    def _run(self, coro):
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_local_endpoint_sends_frames_not_video_base64(self, tmp_path, monkeypatch):
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"\x00" * 100)
+
+        captured_kwargs = {}
+
+        async def capture_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "two frames of a soccer match"
+            return mock_response
+
+        local_cfg = {
+            "auxiliary": {
+                "vision": {"base_url": "http://127.0.0.1:8123/v1"},
+            }
+        }
+
+        fake_urls = [
+            "data:image/jpeg;base64,FRAME1",
+            "data:image/jpeg;base64,FRAME2",
+        ]
+
+        with (
+            patch("tools.vision_tools.async_call_llm", side_effect=capture_llm),
+            patch("tools.vision_tools.extract_content_or_reasoning", return_value="two frames of a soccer match"),
+            patch("tools.vision_tools._is_local_vision_endpoint", return_value=True),
+            patch(
+                "tools.vision_tools._video_to_frame_data_urls",
+                return_value=fake_urls,
+            ),
+        ):
+            result = self._run(video_analyze_tool(str(video), "Describe this"))
+
+        data = json.loads(result)
+        assert data["success"] is True
+
+        messages = captured_kwargs["messages"]
+        assert len(messages) == 1
+        content = messages[0]["content"]
+        # 2 image frames + 1 text prompt
+        assert len(content) == 3
+        assert content[0]["type"] == "image_url"
+        assert content[1]["type"] == "image_url"
+        assert content[2]["type"] == "text"
+        assert "frames in chronological order" in content[2]["text"]
+        # No whole-video base64 was sent
+        assert not any(c.get("type") == "video_url" for c in content)
+
+    def test_frame_extraction_failure_falls_back_to_video_base64(self, tmp_path, monkeypatch):
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"\x00" * 100)
+
+        captured_kwargs = {}
+
+        async def capture_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "ok"
+            return mock_response
+
+        with (
+            patch("tools.vision_tools.async_call_llm", side_effect=capture_llm),
+            patch("tools.vision_tools.extract_content_or_reasoning", return_value="ok"),
+            patch("tools.vision_tools._is_local_vision_endpoint", return_value=True),
+            patch("tools.vision_tools._video_to_frame_data_urls", return_value=None),
+        ):
+            result = self._run(video_analyze_tool(str(video), "Describe this"))
+
+        data = json.loads(result)
+        assert data["success"] is True
+
+        messages = captured_kwargs["messages"]
+        content = messages[0]["content"]
+        assert content[1]["type"] == "video_url"
+        assert content[1]["video_url"]["url"].startswith("data:video/mp4;base64,")
 
 
 # ---------------------------------------------------------------------------

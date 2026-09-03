@@ -42,7 +42,25 @@ class TestHomeThreadFromSource:
         src = _source(thread_id="1755040000.000100", message_id=None)
         assert _home_thread_from_source(src) == "1755040000.000100"
 
-    def test_non_slack_platform_untouched(self):
-        """Telegram forum topics legitimately reuse ids; rule is Slack-scoped."""
+    def test_synthetic_matrix_thread_dropped(self):
+        """Top-level /sethome in Matrix under auto-thread: thread == message id -> None."""
+        src = _source(
+            platform=Platform.MATRIX,
+            thread_id="$event123:matrix.org",
+            message_id="$event123:matrix.org",
+        )
+        assert _home_thread_from_source(src) is None
+
+    def test_genuine_matrix_thread_kept(self):
+        """/sethome in an existing Matrix thread keeps that thread as home."""
+        src = _source(
+            platform=Platform.MATRIX,
+            thread_id="$root_event:matrix.org",
+            message_id="$reply_event:matrix.org",
+        )
+        assert _home_thread_from_source(src) == "$root_event:matrix.org"
+
+    def test_non_slack_matrix_platform_untouched(self):
+        """Telegram forum topics legitimately reuse ids; rule is Slack/Matrix-scoped."""
         src = _source(platform=Platform.TELEGRAM, thread_id="2203", message_id="2203")
         assert _home_thread_from_source(src) == "2203"

@@ -107,21 +107,21 @@ def _model_switch_skew_guard() -> Optional[str]:
 def _home_thread_from_source(source) -> Optional[str]:
     """The thread id /sethome should persist on the home target, or None.
 
-    Slack thread-per-message session keying stamps a top-level message's own
-    id as ``source.thread_id`` (a session KEY, not a durable location).
-    Persisting it would pin the HOME target itself to the ephemeral thread
-    spawned around the /sethome message — every bare-platform delivery
-    (``deliver="slack"``) would then land in that thread forever. Same
-    recognition as cron origin capture: a Slack thread id equal to the
-    message's own id is synthetic. A /sethome run inside a genuine thread
-    (thread id = the parent's id, not this message's own) keeps that thread
-    as the home target.
+    Slack and Matrix thread-per-message session keying stamps a top-level
+    message's own id as ``source.thread_id`` (a session KEY, not a durable
+    location). Persisting it would pin the HOME target itself to the ephemeral
+    thread spawned around the /sethome message — every bare-platform delivery
+    (``deliver="slack"`` or ``deliver="matrix"``) would then land in that
+    thread forever. Same recognition as cron origin capture: a Slack or
+    Matrix thread id equal to the message's own id is synthetic. A /sethome
+    run inside a genuine thread (thread id = the parent's id, not this
+    message's own) keeps that thread as the home target.
     """
     thread_id = getattr(source, "thread_id", None)
     if not thread_id:
         return None
     if (
-        getattr(source, "platform", None) == Platform.SLACK
+        getattr(source, "platform", None) in (Platform.SLACK, Platform.MATRIX)
         and getattr(source, "message_id", None)
         and str(thread_id) == str(source.message_id)
     ):

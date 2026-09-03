@@ -1111,6 +1111,65 @@ class TestLocalBaseUrlNoApiKey:
         assert not _is_local_or_private_url("")
 
 
+class TestConfiguredBaseUrlHonoredWithEnvKey:
+    """A stt.openai.base_url in config must be honored on EVERY return path,
+    including the env-credential ladder: a key from
+    VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY paired with a configured
+    OpenAI-compatible base_url (Venice, llama.cpp, etc.) must hit THAT url,
+    not api.openai.com."""
+
+    def test_selected_provider_env_key_uses_configured_base_url(self):
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={
+                "provider": "openai",
+                "openai": {"base_url": "https://api.venice.ai/api/v1"},
+            },
+        ), patch(
+            "tools.tool_backend_helpers.read_selection",
+            return_value="openai",
+        ), patch(
+            "tools.transcription_tools.resolve_openai_audio_api_key",
+            return_value="sk-env-key",
+        ):
+            api_key, base_url = _resolve_openai_audio_client_config()
+        assert api_key == "sk-env-key"
+        assert base_url == "https://api.venice.ai/api/v1"
+
+    def test_unconfigured_env_key_uses_configured_base_url(self):
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"openai": {"base_url": "https://api.venice.ai/api/v1"}},
+        ), patch(
+            "tools.tool_backend_helpers.read_selection",
+            return_value=None,
+        ), patch(
+            "tools.transcription_tools.resolve_openai_audio_api_key",
+            return_value="sk-env-key",
+        ):
+            api_key, base_url = _resolve_openai_audio_client_config()
+        assert api_key == "sk-env-key"
+        assert base_url == "https://api.venice.ai/api/v1"
+
+    def test_env_key_without_configured_base_url_defaults_to_openai(self):
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={},
+        ), patch(
+            "tools.tool_backend_helpers.read_selection",
+            return_value=None,
+        ), patch(
+            "tools.transcription_tools.resolve_openai_audio_api_key",
+            return_value="sk-env-key",
+        ):
+            api_key, base_url = _resolve_openai_audio_client_config()
+        assert api_key == "sk-env-key"
+        assert base_url == "https://api.openai.com/v1"
+
+
 # =====================================================================
 
 

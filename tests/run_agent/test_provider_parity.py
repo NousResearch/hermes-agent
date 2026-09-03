@@ -5,6 +5,7 @@ Ensures changes to one provider path don't silently break another.
 """
 
 import base64
+from copy import deepcopy
 import json
 import sys
 import types
@@ -90,6 +91,63 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
 
 
 # ── _build_api_kwargs tests ─────────────────────────────────────────────────
+
+class TestSessionIdentityForwarding:
+    @staticmethod
+    def _prepare(agent):
+        agent._share_session_identity = True
+        agent._user_id = "platform-user-42"
+        agent._gateway_session_key = "agent:main:telegram:dm:42"
+        agent.session_id = "session-123"
+        agent.request_overrides = {
+            "metadata": {"existing": {"nested": True}},
+        }
+
+    def test_chat_completions_forwards_identity_only_for_opted_in_custom_route(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "custom",
+            base_url="https://litellm.example/v1",
+        )
+        self._prepare(agent)
+        original = deepcopy(agent.request_overrides)
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert kwargs["user"] == "platform-user-42"
+        assert kwargs["metadata"]["session_id"] == "session-123"
+        assert kwargs["metadata"]["hermes_session_key"] == "agent:main:telegram:dm:42"
+        assert kwargs["metadata"]["existing"] == {"nested": True}
+        assert agent.request_overrides == original
+
+    def test_responses_forwards_identity_only_for_opted_in_custom_route(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "custom",
+            api_mode="codex_responses",
+            base_url="https://litellm.example/v1",
+        )
+        self._prepare(agent)
+        original = deepcopy(agent.request_overrides)
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert kwargs["user"] == "platform-user-42"
+        assert kwargs["metadata"]["session_id"] == "session-123"
+        assert kwargs["metadata"]["existing"] == {"nested": True}
+        assert agent.request_overrides == original
+
+    def test_builtin_provider_does_not_receive_identity_even_when_flag_is_set(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        self._prepare(agent)
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert "user" not in kwargs
+        assert kwargs["metadata"] == {"existing": {"nested": True}}
+        assert "session_id" not in kwargs["metadata"]
+        assert "hermes_session_key" not in kwargs["metadata"]
+
 
 class TestBuildApiKwargsOpenRouter:
     def test_uses_chat_completions_format(self, monkeypatch):

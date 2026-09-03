@@ -289,6 +289,17 @@ def _host_derived_api_key(base_url: str) -> str:
     return (_getenv(env_name, "") or "").strip()
 
 
+_STALE_MINIMAX_V1_TO_ANTHROPIC = {
+    "https://api.minimax.io/v1": "https://api.minimax.io/anthropic",
+    "https://api.minimaxi.com/v1": "https://api.minimaxi.com/anthropic",
+}
+
+
+def _minimax_anthropic_url_for_stale_v1(base_url: str) -> str:
+    """Return the Anthropic twin of a persisted MiniMax /v1 catalog default."""
+    return _STALE_MINIMAX_V1_TO_ANTHROPIC.get((base_url or "").strip().rstrip("/"), "")
+
+
 def _anthropic_base_url_override_ok(base_url: str) -> bool:
     """Decide whether a configured ``model.base_url`` may back native Anthropic.
 
@@ -593,6 +604,10 @@ def _resolve_runtime_from_pool_entry(
         pool_url_is_default = pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
         if configured_provider == provider and pool_url_is_default:
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            if provider in {"minimax", "minimax-cn"}:
+                remapped = _minimax_anthropic_url_for_stale_v1(cfg_base_url)
+                if remapped:
+                    cfg_base_url = remapped
             if cfg_base_url:
                 base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
@@ -2589,6 +2604,14 @@ def resolve_runtime_provider(
         cfg_base_url = ""
         if cfg_provider == provider:
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+        # hermes setup / models.dev persist the OpenAI-style /v1 default.
+        # MiniMax's transport is anthropic_messages, so that path 404s
+        # (#84838). Remap only the known stale catalog URLs; a user-set
+        # China or custom host is left alone.
+        if provider in {"minimax", "minimax-cn"}:
+            remapped = _minimax_anthropic_url_for_stale_v1(cfg_base_url)
+            if remapped:
+                cfg_base_url = remapped
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         if provider == "actual":
             base_url = normalize_actual_base_url(base_url)

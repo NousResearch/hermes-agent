@@ -83,6 +83,39 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("MINIMAX_CN_API_KEY",)
         assert pconfig.base_url_env_var == "MINIMAX_CN_BASE_URL"
 
+    def test_minimax_overlay_overrides_models_dev_openai_url(self, monkeypatch):
+        """API-key MiniMax uses anthropic_messages; models.dev still lists /v1.
+
+        Without base_url_override, get_provider() would keep the OpenAI-style
+        catalog URL and every call 404s. The OAuth sibling already overrode
+        this; the API-key overlays must match (#84838).
+        """
+        from hermes_cli.providers import HERMES_OVERLAYS, get_provider
+
+        assert HERMES_OVERLAYS["minimax"].base_url_override == (
+            "https://api.minimax.io/anthropic"
+        )
+        assert HERMES_OVERLAYS["minimax-cn"].base_url_override == (
+            "https://api.minimaxi.com/anthropic"
+        )
+        assert HERMES_OVERLAYS["minimax"].transport == "anthropic_messages"
+        assert HERMES_OVERLAYS["minimax-cn"].transport == "anthropic_messages"
+
+        class _FakeMdev:
+            name = "MiniMax"
+            env = ("MINIMAX_API_KEY",)
+            api = "https://api.minimax.io/v1"
+            doc = ""
+
+        monkeypatch.setattr(
+            "agent.models_dev.get_provider_info",
+            lambda *a, **k: _FakeMdev(),
+        )
+        resolved = get_provider("minimax", allow_network=False)
+        assert resolved is not None
+        assert resolved.base_url == "https://api.minimax.io/anthropic"
+        assert resolved.transport == "anthropic_messages"
+
     def test_ai_gateway_env_vars(self):
         pconfig = PROVIDER_REGISTRY["ai-gateway"]
         assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)
@@ -422,6 +455,62 @@ class TestRuntimeProviderResolution:
         result = resolve_runtime_provider(requested="minimax")
         assert result["provider"] == "minimax"
         assert result["api_key"] == "mm-key"
+        assert result["base_url"] == "https://api.minimax.io/anthropic"
+        assert result["api_mode"] == "anthropic_messages"
+
+    @pytest.mark.parametrize(
+        ("provider", "env_var", "persisted_v1", "expected_anthropic"),
+        [
+            (
+                "minimax",
+                "MINIMAX_API_KEY",
+                "https://api.minimax.io/v1",
+                "https://api.minimax.io/anthropic",
+            ),
+            (
+                "minimax-cn",
+                "MINIMAX_CN_API_KEY",
+                "https://api.minimaxi.com/v1",
+                "https://api.minimaxi.com/anthropic",
+            ),
+        ],
+    )
+    def test_runtime_minimax_remaps_persisted_v1_catalog_url(
+        self, monkeypatch, provider, env_var, persisted_v1, expected_anthropic
+    ):
+        """hermes setup writes model.base_url=/v1; that path 404s (#84838).
+
+        Locks the /v1 -> /anthropic remap through resolve_runtime_provider
+        for BOTH the global and the China host."""
+        monkeypatch.setenv(env_var, "mm-key")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {
+                "provider": provider,
+                "default": "MiniMax-M3",
+                "base_url": persisted_v1,
+            },
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested=provider)
+        assert result["base_url"] == expected_anthropic
+        assert result["api_mode"] == "anthropic_messages"
+
+    def test_runtime_minimax_keeps_explicit_custom_host(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {
+                "provider": "minimax",
+                "default": "MiniMax-M3",
+                "base_url": "https://api.minimaxi.com/anthropic",
+            },
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="minimax")
+        assert result["base_url"] == "https://api.minimaxi.com/anthropic"
 
     def test_runtime_ai_gateway(self, monkeypatch):
         monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-key")

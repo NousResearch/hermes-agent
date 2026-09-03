@@ -28,6 +28,8 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,46 @@ _RATE_LIMIT_MARKERS = (
     "quota exceeded",
     "slow down",
 )
+
+# Emitted by search_with_failover() once every eligible vendor answered with
+# a rate-limit-shaped error, and matched by ring_exhausted(). Single source
+# of truth so the producer and the consumer can never drift apart.
+_RING_EXHAUSTED_MARKER = "all keyless vendors throttled"
+
+# Names the one vendor whose keyless routing is suspended for the current
+# call. A ContextVar (not a module global) so concurrent web calls on other
+# threads/tasks are unaffected, and so the override cannot leak past the
+# `with` block that set it.
+_forced_keyed: "ContextVar[Optional[str]]" = ContextVar(
+    "hermes_web_forced_keyed", default=None
+)
+
+
+@contextmanager
+def force_keyed(name: str):
+    """Temporarily force provider *name* onto its keyed path.
+
+    Used by the keyed backstop so it can re-run a provider's own
+    ``search``/``extract`` without duplicating that provider's SDK logic.
+    Scoped to the calling context and always reset, including on error.
+
+    **Non-reentrancy contract.** The override is keyed on the vendor *name*,
+    so an unrelated provider running inside the block is unaffected. It is
+    inherited, however, by any nested call for the *same* vendor. No shipped
+    provider does this: every vendor's ``use_keyless`` gate returns
+    immediately on the keyless branch, and the keyed branch calls the vendor
+    SDK directly rather than re-entering the ring. A provider that ever
+    nests a same-vendor ring dispatch inside its keyed path would spend a
+    second time on one backstop, so that condition is pinned by
+    ``TestForcedKeyedReentrancy`` in
+    ``tests/tools/test_web_keyed_backstop.py`` — clear and restore the
+    ContextVar around such a boundary if one is ever introduced.
+    """
+    token = _forced_keyed.set(name)
+    try:
+        yield
+    finally:
+        _forced_keyed.reset(token)
 
 
 def _is_rate_limitish(message: str) -> bool:
@@ -108,12 +150,15 @@ def use_keyless(name: str, api_key: str) -> bool:
     Single chokepoint shared by the Exa/Parallel search + extract paths so
     tier semantics can't drift between capabilities:
 
+    - a :func:`force_keyed` override active for *name* → keyed
     - tier ``free``  → keyless, even when *api_key* is set
     - tier ``paid``  → keyed, even when *api_key* is missing (the keyed
       path then raises its usual missing-key error)
     - tier ``auto``  → keyed when *api_key* is set; otherwise keyless when
       ``web.keyless_fallback`` is enabled
     """
+    if _forced_keyed.get() == name:
+        return False
     tier = provider_tier(name)
     if tier == "free":
         return True
@@ -722,10 +767,36 @@ def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any
                 "keyless %s search throttled; failing over to %s", vendor, nxt
             )
     last["error"] = (
-        f"{last.get('error', '')} (all keyless vendors throttled: "
+        f"{last.get('error', '')} ({_RING_EXHAUSTED_MARKER}: "
         f"{', '.join(order)})"
     )
     return last
+
+
+def ring_exhausted(error: str) -> bool:
+    """True when *error* is the ring's own "every vendor throttled" verdict.
+
+    :func:`search_with_failover` appends a fixed marker once it has walked
+    every eligible vendor and each answered with a rate-limit-shaped error.
+    That exact condition — and only that one — means the free tier has no
+    capacity left to offer, so a keyed backstop is worth attempting. A
+    single vendor's 500, a malformed query, or a partial walk all stop the
+    ring early and must NOT be treated as exhaustion.
+    """
+    return _RING_EXHAUSTED_MARKER in (error or "").lower()
+
+
+def extract_ring_exhausted(results: List[Dict[str, Any]]) -> bool:
+    """True when every extract result carries a rate-limit-shaped error.
+
+    The extract ring returns per-URL dicts rather than a single error
+    string, so exhaustion is "the whole batch came back throttled" — the
+    same condition that made :func:`extract_with_failover` advance past
+    its final vendor. An empty batch is not exhaustion.
+    """
+    if not results:
+        return False
+    return all(_is_rate_limitish(r.get("error", "")) for r in results)
 
 
 def extract_with_failover(name: str, urls: List[str]) -> List[Dict[str, Any]]:

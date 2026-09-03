@@ -520,6 +520,172 @@ def _rescue_search(provider_name: str, original_error: str, query: str, limit: i
     }
 
 
+# ─── One-shot keyed backstop (keyless ring exhausted) ────────────────────────
+
+def _keyed_backstop_enabled() -> bool:
+    """Read ``web.keyed_backstop`` from config (default: DISABLED).
+
+    The mirror image of :func:`_keyless_rescue_enabled`, but opt-in rather
+    than opt-out: this is the one path in the web stack that can spend an
+    API key the user did not explicitly route through, so the default is
+    off and enabling it is the operator's decision. Off implicitly whenever
+    the keyless tier itself is disabled, since without the ring there is no
+    exhaustion to back stop.
+    """
+    cfg = _load_web_config()
+    if not cfg.get("keyed_backstop", False):
+        return False
+    try:
+        from agent.web_search_registry import _keyless_tier_enabled
+
+        return _keyless_tier_enabled()
+    except Exception as exc:  # noqa: BLE001 — backstop is best-effort
+        logger.debug("keyed backstop tier check failed: %s", exc)
+        return False
+
+
+def _backstop_key_for(provider_name: str) -> str:
+    """Return the vendor API key for *provider_name*, or ``""``.
+
+    Only ring vendors have a keyed counterpart worth falling back to; a
+    non-ring backend never rode the ring in the first place.
+    """
+    try:
+        from plugins.web.keyless_mcp import _KEYLESS_RING
+
+        if provider_name not in _KEYLESS_RING:
+            return ""
+        key_var = {
+            "exa": "EXA_API_KEY",
+            "parallel": "PARALLEL_API_KEY",
+            "tavily": "TAVILY_API_KEY",
+            "firecrawl": "FIRECRAWL_API_KEY",
+            "keenable": "KEENABLE_API_KEY",
+        }.get(provider_name, "")
+        if not key_var:
+            return ""
+        from agent.web_search_provider import get_provider_env
+
+        return get_provider_env(key_var) or ""
+    except Exception as exc:  # noqa: BLE001 — backstop is best-effort
+        logger.debug("backstop key lookup failed for %r: %s", provider_name, exc)
+        return ""
+
+
+def _backstop_eligible(provider, error: str, *, exhausted: bool | None = None) -> bool:
+    """True when an exhausted keyless call should retry on the keyed path.
+
+    All of these must hold:
+    - the backstop is enabled (and the keyless tier with it);
+    - the free tier is genuinely exhausted, not merely erroring once —
+      by default read from *error* via the search ring's marker, or passed
+      explicitly as *exhausted* by callers (extract) whose ring reports
+      throttling per-URL instead of in one string;
+    - the vendor is a ring member with a real API key to retry with.
+
+    Reachability note — why ``tier == "free"`` is the *target* case, not an
+    exclusion. The ring only runs when ``use_keyless()`` is true, and with
+    a key on file that happens exactly under a ``free`` pin (tier ``auto``
+    with a key routes keyed, so no ring, so no exhaustion). A ``free`` pin
+    therefore means "prefer the free endpoint", and the backstop is what
+    makes that preference survive a dry free tier.
+
+    That single reachable population is also why the feature ships
+    **opt-in** (``web.keyed_backstop`` defaults to false): the only users
+    who can ever trigger it are the ones who explicitly pinned a vendor
+    free, which is the strongest available signal that they want the free
+    endpoint. Enabling the backstop has to be their decision.
+
+    Complement of :func:`_rescue_eligible` by construction: that one is
+    true iff the call ran keyed, this one iff it ran keyless and the whole
+    ring was throttled. The dispatcher tries them in that order, so no
+    single failure can trigger both.
+    """
+    if provider is None or not _keyed_backstop_enabled():
+        return False
+    try:
+        from plugins.web.keyless_mcp import ring_exhausted
+
+        if exhausted is None:
+            exhausted = ring_exhausted(error)
+        if not exhausted:
+            return False
+        return bool(_backstop_key_for(getattr(provider, "name", "")))
+    except Exception as exc:  # noqa: BLE001 — backstop is best-effort
+        logger.debug("backstop eligibility check failed: %s", exc)
+        return False
+
+
+def _backstop_search(provider, original_error: str, query: str, limit: int) -> dict:
+    """One-shot keyed retry after the keyless ring came back exhausted.
+
+    Stateless, exactly like the keyless rescue: this call alone spends the
+    API key; the next call starts on the free ring again. Re-runs the
+    provider's own ``search`` under :func:`force_keyed` so the vendor SDK
+    logic is reused rather than duplicated here.
+    """
+    name = getattr(provider, "name", "")
+    logger.warning(
+        "keyless ring exhausted for '%s' (%s); one-shot keyed backstop",
+        name, (original_error or "")[:200],
+    )
+    try:
+        from plugins.web.keyless_mcp import force_keyed
+
+        with force_keyed(name):
+            keyed = provider.search(query, limit)
+    except Exception as exc:  # noqa: BLE001 — backstop must never mask the ring
+        logger.warning("keyed backstop for '%s' raised: %s", name, exc)
+        return {
+            "success": False,
+            "error": (
+                f"{original_error or 'search failed'} "
+                f"(keyed backstop also failed: {exc})"
+            ),
+        }
+
+    if keyed.get("success"):
+        data = keyed.setdefault("data", {})
+        data["backstopped_from"] = "keyless"
+        data["backend_error"] = (
+            "The keyless free tier was exhausted for this call "
+            f"({(original_error or 'all vendors throttled')[:300]}); result "
+            f"served by keyed '{name}'. The next call will try the free "
+            "ring again."
+        )
+        return keyed
+
+    return {
+        "success": False,
+        "error": (
+            f"{original_error or 'search failed'} "
+            f"(keyed backstop also failed: {keyed.get('error', 'unknown')})"
+        ),
+    }
+
+
+def _backstop_extract(provider, urls: list, results: list) -> list:
+    """One-shot keyed retry for an extract batch the ring could not serve."""
+    name = getattr(provider, "name", "")
+    logger.warning(
+        "keyless ring exhausted for '%s' extract (%d url(s)); keyed backstop",
+        name, len(urls),
+    )
+    try:
+        from plugins.web.keyless_mcp import force_keyed
+
+        with force_keyed(name):
+            keyed = provider.extract(list(urls))
+    except Exception as exc:  # noqa: BLE001 — keep the ring's results
+        logger.warning("keyed extract backstop for '%s' raised: %s", name, exc)
+        return results
+
+    # Only prefer the keyed answer when it actually improved on the ring.
+    if any(not r.get("error") for r in (keyed or [])):
+        return keyed
+    return results
+
+
 def _policy_blocked_result(result: dict) -> bool:
     """True when an extract result failed because of the user's website
     policy — an intentional refusal, never a backend outage. Policy blocks
@@ -1004,6 +1170,23 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                             query,
                             _fetch_limit,
                         )
+                # Mirror case: the call rode the keyless ring and every vendor
+                # throttled. One-shot keyed retry so a configured API key still
+                # answers when the free tier is dry.
+                #
+                # Unlike a rescue, a backstop answer comes from a CONFIGURED
+                # key on the chosen backend, so it is legitimately cacheable —
+                # clear the rescued flag when (and only when) it succeeded, so
+                # the caller stores it. A failed backstop leaves the flag alone
+                # (the memo refuses non-success anyway).
+                if not _resp.get("success"):
+                    _err = str(_resp.get("error", ""))
+                    if _backstop_eligible(provider, _err):
+                        _resp = _backstop_search(
+                            provider, _err, query, _fetch_limit
+                        )
+                        if _resp.get("success"):
+                            _rescued = False
                 return _resp, _rescued
 
             response_data = _search_memo.lookup(provider.name, query, limit)
@@ -1341,6 +1524,32 @@ async def web_extract_tool(
                         results = await asyncio.to_thread(
                             _rescue_extract, provider.name, fetch_urls, results
                         )
+
+                # Mirror case: the batch rode the keyless ring and every vendor
+                # throttled — retry once on the keyed path. Policy blocks are
+                # intentional refusals and are never backstopped.
+                #
+                # Operates on fetch_urls (the cache-miss subset), NOT safe_urls:
+                # upstream's extract cache means only these were requested, and
+                # `results` is positionally aligned with fetch_urls. A keyed
+                # backstop answer comes from the chosen backend, so on success
+                # it is cacheable — clear the rescued flag so the loop below
+                # stores it.
+                if results and all(r.get("error") for r in results):
+                    from plugins.web.keyless_mcp import extract_ring_exhausted
+
+                    if not any(
+                        _policy_blocked_result(r) for r in results
+                    ) and _backstop_eligible(
+                        provider,
+                        "",
+                        exhausted=extract_ring_exhausted(results),
+                    ):
+                        results = await asyncio.to_thread(
+                            _backstop_extract, provider, fetch_urls, results
+                        )
+                        if results and not all(r.get("error") for r in results):
+                            _extract_rescued = False
 
                 # Cache each successful fetch's full clean text for TTL reuse
                 # (best-effort; oversized pages are skipped by the cache).

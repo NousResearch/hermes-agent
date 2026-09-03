@@ -410,6 +410,10 @@ If no backend has **ever** been selected (no `web.backend` / per-capability key 
 
 **One-shot keyless rescue for keyed backends:** when your chosen/keyed backend fails a call (bad key, outage, upstream 5xx), that single call automatically retries on the keyless free-tier ring instead of erroring — the result notes which vendor served it and why (`rescued_from` / `backend_error`). The failover is never sticky: the very next `web_search`/`web_extract` call attempts your chosen backend again. Disable with `web.keyless_rescue: false` (also off whenever `keyless_fallback` is off).
 
+**One-shot keyed backstop for keyless traffic (opt-in):** the mirror image. When you pin a vendor to its free tier (`hermes tools` → Free row, or `web.provider_tier.<vendor>: free`) but still have that vendor's API key on file, a call that exhausts the *entire* ring — every vendor answering with a rate limit — can retry once on the keyed path rather than failing. The result is annotated with `backstopped_from` / `backend_error`, and like the rescue it is never sticky: the next call starts on the free ring again. Only full ring exhaustion triggers it; a single vendor's 500 or a malformed query does not.
+
+**This is off by default and spends money when enabled.** It is the only path in the web stack that can bill an API key you did not explicitly route traffic through, so it requires an opt-in: set `web.keyed_backstop: true`. Note that a vendor pinned *free* with a key on file is the only configuration that can reach it at all — under the default `auto` tier a key present routes keyed already, so the ring never runs and there is nothing to back stop. Enable it when you mean "free by default, paid only when the free tier is genuinely dry"; leave it off to keep a pinned-free vendor strictly free.
+
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
 
 ---

@@ -568,6 +568,20 @@ DEFAULT_CONFIG = {
         # free-tier ring — the next call attempts the chosen backend again
         # (no sticky failover). Off when keyless_fallback is false.
         "keyless_rescue": True,
+        # One-shot keyed backstop (mirror of keyless_rescue): when a call
+        # rode the keyless ring and EVERY vendor came back throttled, retry
+        # that one call on the vendor's keyed path if an API key is present.
+        # The next call starts on the free ring again (no sticky failover).
+        #
+        # OPT-IN (default false) because it is the only path in the web stack
+        # that can spend money the operator did not ask to spend. The single
+        # reachable population is a vendor pinned "free" WITH a key on file --
+        # tier "auto" with a key routes keyed and never touches the ring, so
+        # it can't reach the backstop at all. A free pin is the strongest
+        # available signal that the user wants the free endpoint, so turning
+        # this on has to be their decision, not ours. Off when
+        # keyless_fallback is false.
+        "keyed_backstop": False,
         # Per-provider tier selection for vendors with both a keyless
         # free endpoint and a keyed paid path (exa, parallel,
         # firecrawl, keenable on the ring; tavily is opt-in keyless via

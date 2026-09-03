@@ -2628,124 +2628,22 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     }
 
 
-def _get_bot_chat_delivery_timeout() -> int:
-    """Timeout for one bot-chat delivery turn (the target bot runs a full
-    agent turn on the injected output, so this is minutes, not seconds).
-
-    ``cron.bot_chat_delivery_timeout_seconds`` in config.yaml; default 600.
-    """
-    try:
-        cfg = load_config()
-        value = int(cfg.get("cron", {}).get("bot_chat_delivery_timeout_seconds", 600))
-        return value if value > 0 else 600
-    except Exception:
-        return 600
-
-
 def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
-    """Deliver job output into a profile's canonical Bot Chat as an inbound turn.
+    """Durably admit a cron output for delivery to a canonical Bot Chat.
 
-    Runs ``hermes [-p <profile>] chat --in ~ -c "Bot Chat" --create-if-missing
-    -Q --query-file <tmp>`` — the exact lane Bot Mode agent-to-agent messages
-    use, so the adopt-before-mint canonical-session rules apply and the target
-    bot receives the output as a real user-role message it can act on.
-    Alternation-safe by construction: this is an inbound turn on the chat
-    command lane, not a transcript splice.
-
-    ``profile`` is ``""`` for the job's own profile (subprocess inherits this
-    scheduler's HERMES_HOME) or a validated local profile name.  Returns None
-    on success or an error string for ``last_delivery_error``.
+    A live CLI/TUI/Desktop owner of that session must not fail the job
+    (#99956): the turn is queued and retried after the owner releases.
     """
-    import shutil as _shutil
-    import tempfile
+    from cron.bot_chat_delivery import deliver
 
-    job_id = job.get("id", "?")
-    job_name = job.get("name", job_id)
+    return deliver(job, content, profile, _get_hermes_home())
 
-    hermes_bin = _shutil.which("hermes")
-    if hermes_bin:
-        argv = [hermes_bin]
-    else:
-        try:
-            import importlib.util as _ilu
 
-            if _ilu.find_spec("hermes_cli") is not None:
-                argv = [sys.executable, "-m", "hermes_cli.main"]
-            else:
-                return "bot-chat delivery failed: hermes CLI not resolvable"
-        except Exception:
-            return "bot-chat delivery failed: hermes CLI not resolvable"
+def _drain_bot_chat_delivery_queue() -> tuple[int, Optional[str]]:
+    """Retry bot-chat turns retained by earlier deliveries."""
+    from cron.bot_chat_delivery import drain_queue
 
-    env = os.environ.copy()
-    if profile:
-        argv += ["-p", profile]
-        # -p owns profile resolution in the child; a leftover HERMES_HOME
-        # from THIS scheduler's profile must not shadow it.
-        env.pop("HERMES_HOME", None)
-
-    # The prefix tells the receiving bot this is scheduled output, not the
-    # human typing — mirrors the Bot Mode sender-attribution convention.
-    message = (
-        f'[Cronjob "{job_name}" output — scheduled job, not the user. '
-        f"Review it, act on anything that needs action, and summarize "
-        f"for the chat.]\n\n{content}"
-    )
-
-    query_file = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", suffix=".txt", prefix="hermes-cron-botchat-",
-            delete=False,
-        ) as fh:
-            fh.write(message)
-            query_file = fh.name
-
-        argv += [
-            "chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing",
-            "-Q", "--query-file", query_file,
-        ]
-
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=_get_bot_chat_delivery_timeout(),
-            env=env,
-            creationflags=windows_hide_flags(),
-        )
-        if result.returncode != 0:
-            tail = (result.stderr or result.stdout or "").strip()[-500:]
-            msg = (
-                f"bot-chat delivery to profile "
-                f"'{profile or '(own)'}' failed (exit {result.returncode})"
-                + (f": {tail}" if tail else "")
-            )
-            logger.warning("Job '%s': %s", job_id, msg)
-            return msg
-        logger.info(
-            "Job '%s': delivered to Bot Chat of profile '%s'",
-            job_id, profile or "(own)",
-        )
-        return None
-    except subprocess.TimeoutExpired:
-        msg = (
-            f"bot-chat delivery to profile '{profile or '(own)'}' timed out "
-            f"after {_get_bot_chat_delivery_timeout()}s (the bot's turn may "
-            "still complete; raise cron.bot_chat_delivery_timeout_seconds if "
-            "this recurs)"
-        )
-        logger.warning("Job '%s': %s", job_id, msg)
-        return msg
-    except Exception as e:
-        msg = f"bot-chat delivery failed: {str(e) or type(e).__name__}"
-        logger.warning("Job '%s': %s", job_id, msg, exc_info=True)
-        return msg
-    finally:
-        if query_file:
-            try:
-                os.unlink(query_file)
-            except OSError:
-                pass
+    return drain_queue(_get_hermes_home())
 
 
 def _normalize_deliver_value(deliver) -> str:
@@ -8677,6 +8575,18 @@ def tick(
             _maybe_run_worktree_maintenance()
         except Exception as _wt_exc:
             logger.debug("Worktree maintenance dispatch failed: %s", _wt_exc)
+
+        # Bot Chat output is admitted durably before a job is marked delivered.
+        # Retry the oldest retained turn on idle ticks too: a CLI/TUI/Desktop
+        # owner may release the canonical session when no cron job is due.
+        try:
+            _retried, _retry_error = _drain_bot_chat_delivery_queue()
+            if _retried:
+                logger.info("Delivered %d queued Bot Chat cron turn(s)", _retried)
+            if _retry_error:
+                logger.debug("Bot Chat delivery queue remains pending: %s", _retry_error)
+        except Exception:
+            logger.warning("Bot Chat delivery queue retry failed", exc_info=True)
 
         due_jobs = get_due_jobs()
 

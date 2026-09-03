@@ -231,9 +231,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     # --- global --board flag ---
     # Applies to every subcommand below. When set, scopes all reads and
-    # writes to that board's DB. When omitted, resolves via the
-    # HERMES_KANBAN_BOARD env var, then the persisted current-board
-    # file, then "default". See kanban_db.get_current_board().
+    # writes to that board's DB — explicitly, outranking any inherited
+    # worker/board env pins (including HERMES_KANBAN_DB) for this call.
+    # When omitted, resolves via the HERMES_KANBAN_BOARD env var, then
+    # the persisted current-board file, then "default". See
+    # kanban_db.get_current_board().
     kanban_parser.add_argument(
         "--board",
         default=None,
@@ -1097,10 +1099,17 @@ def kanban_command(args: argparse.Namespace) -> int:
         return _dispatch_boards(args)
 
     # `--board <slug>` applies to every subcommand below by way of an
-    # env-var pin for the duration of this call. Using HERMES_KANBAN_BOARD
-    # (rather than threading `board=` through 50+ kb.connect() sites)
-    # keeps the patch small and inherits the exact same resolution the
-    # dispatcher uses for workers — consistency is a feature here.
+    # explicit-board scope for the duration of this call (scoped via
+    # contextvars rather than threading `board=` through 50+ kb.connect()
+    # sites — keeps the patch small). The scope is *explicit*: it outranks
+    # the worker/board env pins, including HERMES_KANBAN_DB,
+    # HERMES_KANBAN_WORKSPACES_ROOT, and HERMES_KANBAN_ATTACHMENTS_ROOT,
+    # so a `--board other` call issued from inside a pinned worker session
+    # (or any inherited env) resolves to `other`'s own DB, workspaces, and
+    # attachments instead of being silently diverted back to the pinned
+    # board (#t4eff74eb class: cross-board writes landing on the wrong
+    # board). Calls with NO --board flag keep the historical resolution
+    # (env pin wins) so worker behavior is unchanged.
     board_override = getattr(args, "board", None)
     board_scope = contextlib.nullcontext()
     if board_override:
@@ -1121,7 +1130,7 @@ def kanban_command(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        board_scope = kb.scoped_current_board(normed)
+        board_scope = kb.scoped_explicit_board(normed)
 
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one

@@ -3,6 +3,7 @@
 import logging
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -287,6 +288,28 @@ class TestSelfContext:
         assert "prev output" in prompt
         assert "previous run" in prompt.lower()
 
+    def test_self_prefers_previous_response_section(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job = create_job(
+            prompt="Summarize what changed", schedule="every 1h", context_from="self"
+        )
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "2026-08-01_10-00-00.md").write_text(
+            "# Cron Job: nested\n\n"
+            "## Prompt\n\n"
+            "PROMPT-NESTING-SHOULD-NOT-REAPPEAR\n\n"
+            "## Response\n\n"
+            "carry forward only this response",
+            encoding="utf-8",
+        )
+
+        prompt = _build_job_prompt(job)
+        assert "carry forward only this response" in prompt
+        assert "PROMPT-NESTING-SHOULD-NOT-REAPPEAR" not in prompt
+
     def test_tool_create_accepts_self(self, cron_env):
         from tools.cronjob_tools import cronjob
         from cron.jobs import get_job
@@ -315,6 +338,54 @@ class TestSelfContext:
         ))
         assert result["success"] is True
         assert get_job(job["id"])["context_from"] == ["self"]
+
+
+class TestRunJobContinuityOutput:
+    def test_output_doc_keeps_declared_prompt_not_augmented_context(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import run_job
+
+        job = create_job(
+            prompt="Summarize what changed", schedule="every 1h", context_from="self"
+        )
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "2026-08-01_10-00-00.md").write_text(
+            "# Cron Job: previous\n\n"
+            "## Prompt\n\n"
+            "OLD-PROMPT-SHOULD-NOT-BE-RECORDED\n\n"
+            "## Response\n\n"
+            "previous response context",
+            encoding="utf-8",
+        )
+
+        fake_db = MagicMock()
+        fake_db.get_compression_tip.side_effect = lambda session_id: session_id
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "fresh response"}
+
+        with patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.get_shared_session_db", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent", return_value=mock_agent):
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "fresh response"
+        assert "## Prompt\n\nSummarize what changed" in output
+        assert "OLD-PROMPT-SHOULD-NOT-BE-RECORDED" not in output
 
 
 class TestContinuityFlag:
@@ -438,5 +509,4 @@ class TestContinuityFlag:
         prompt = _build_job_prompt(job)
         assert "Reported: story A" in prompt
         assert "previous run" in prompt.lower()
-
 

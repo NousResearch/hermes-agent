@@ -2311,7 +2311,12 @@ def _get_db():
         from hermes_state import get_shared_session_db
 
         try:
-            _db = get_shared_session_db()
+            # Pin to import-time launch home (#102526). A bare
+            # get_shared_session_db() follows get_hermes_home(), which the
+            # desktop multiplex cron ticker temporarily overrides per profile at
+            # startup — first touch inside a foreign window permanently binds
+            # this process-wide handle to the wrong state.db.
+            _db = get_shared_session_db(Path(_hermes_home) / "state.db")
             _db_error = None
         except Exception as exc:
             _db_error = str(exc)

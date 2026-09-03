@@ -111,6 +111,7 @@ class TestDelegateRequirements(unittest.TestCase):
             "SELF-REPORTS",        # verification contract
             "clarify",             # child blocked-tool list
             "delegation.provider", # model inheritance / pinning
+            "do NOT delegate",     # durable Kanban work stays at the root
         ):
             self.assertIn(keyword, desc, f"top-level description lost: {keyword!r}")
         # send_message must NOT be named: gateway-internal vocabulary most
@@ -146,6 +147,7 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertIn("Fix the tests", prompt)
         self.assertIn("YOUR TASK", prompt)
         self.assertNotIn("CONTEXT", prompt)
+        self.assertIn("Do not retry a refused Kanban call", prompt)
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
@@ -217,6 +219,21 @@ class TestStripBlockedTools(unittest.TestCase):
         names = {item["function"]["name"] for item in definitions}
         self.assertTrue(names & {"terminal", "read_file", "web_search"})
         self.assertTrue(DELEGATE_BLOCKED_TOOLS.isdisjoint(names))
+
+    def test_kanban_mutation_is_rejected_once_in_delegated_child(self):
+        """Child denial is explicit and bounded, rather than retry-shaped."""
+        from agent.delegation_context import delegated_child_context
+        from tools import kanban_tools
+
+        with delegated_child_context("child-session"):
+            result = kanban_tools._handle_complete(
+                {"task_id": "t_sibling", "summary": "must not land"}
+            )
+
+        self.assertIn("intentional safety boundary", result)
+        self.assertIn("not a retryable failure", result)
+        self.assertIn("root Kanban", result)
+        self.assertNotIn("could not initialize database", result.lower())
 
     def test_orchestrator_composite_regains_only_delegate_task(self):
         import model_tools

@@ -449,6 +449,13 @@ _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 # After a timeout, suppress re-firing the same callback for this long so a
 # repeatedly invoked hung hook cannot accumulate abandoned daemon threads.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
+# How many invocations of ONE callback may be in flight at once before a new
+# fire is treated like a hung hook. Concurrent tool calls (the executor runs
+# up to 8 workers) and concurrent api_server runs legitimately overlap on the
+# same pre_tool_call hook; a single-slot latch turned every such overlap into
+# a fail-closed "timed out or is still running" block on a healthy 50 ms hook.
+# The cap still bounds abandoned daemon threads from a genuinely hung hook.
+_HOOK_MAX_INFLIGHT_PER_CALLBACK = 8
 
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = (
     "pre_tool_call plugin callback timed out or is still running"
@@ -3790,7 +3797,7 @@ class PluginManager:
         # In-flight / recently-timed-out hook callbacks. Keyed by
         # (hook_name, id(cb)) so a stuck policy hook cannot spawn a new
         # abandoned daemon thread on every subsequent fire.
-        self._hook_running_callbacks: Dict[tuple, object] = {}
+        self._hook_running_callbacks: Dict[tuple, Set[object]] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
@@ -5629,10 +5636,14 @@ class PluginManager:
                         suppressed_until = self._hook_timeout_suppressed_until.get(
                             callback_key
                         )
-                        running = callback_key in self._hook_running_callbacks
+                        inflight = self._hook_running_callbacks.get(callback_key)
+                        saturated = (
+                            inflight is not None
+                            and len(inflight) >= _HOOK_MAX_INFLIGHT_PER_CALLBACK
+                        )
                         if (
                             suppressed_until is not None and suppressed_until > now
-                        ) or running:
+                        ) or saturated:
                             logger.warning(
                                 "Hook '%s' callback %s skipped after previous "
                                 "timeout or while still running",
@@ -5644,7 +5655,9 @@ class PluginManager:
                             continue
                         if suppressed_until is not None:
                             self._hook_timeout_suppressed_until.pop(callback_key, None)
-                        self._hook_running_callbacks[callback_key] = token
+                        self._hook_running_callbacks.setdefault(
+                            callback_key, set()
+                        ).add(token)
 
                     context = contextvars.copy_context()
                     done = threading.Event()
@@ -5667,8 +5680,11 @@ class PluginManager:
                             failure["exc"] = exc
                         finally:
                             with self._hook_timeout_lock:
-                                if self._hook_running_callbacks.get(_key) is _token:
-                                    self._hook_running_callbacks.pop(_key, None)
+                                slots = self._hook_running_callbacks.get(_key)
+                                if slots is not None:
+                                    slots.discard(_token)
+                                    if not slots:
+                                        self._hook_running_callbacks.pop(_key, None)
                             done.set()
 
                     thread = threading.Thread(

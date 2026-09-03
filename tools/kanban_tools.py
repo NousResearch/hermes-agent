@@ -94,9 +94,9 @@ def _reject_delegated_child_mutation(tool_name: str) -> Optional[str]:
         return None
     return tool_error(
         f"{tool_name} refused: delegate_task child agents are not Kanban "
-        "run owners. Return findings to the parent agent; the dispatcher "
-        "worker or an explicitly configured Kanban orchestrator must perform "
-        "board mutations."
+        "run owners. This is an intentional safety boundary, not a retryable "
+        "failure. Return findings to the parent agent; the root Kanban "
+        "orchestrator/dispatcher must perform durable board mutations."
     )
 
 

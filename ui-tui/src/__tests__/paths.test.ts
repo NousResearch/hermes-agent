@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { composeTabTitle, fmtCwdBranch, fmtProjectCwdBranch, shortCwd, shortProject } from '../domain/paths.js'
+import {
+  AGENT_STATE_WORDS,
+  composeTabTitle,
+  fmtCwdBranch,
+  fmtProjectCwdBranch,
+  shortCwd,
+  shortProject
+} from '../domain/paths.js'
 
 describe('shortCwd', () => {
   const origHome = process.env.HOME
@@ -104,8 +111,10 @@ describe('fmtProjectCwdBranch', () => {
 })
 
 describe('composeTabTitle', () => {
-  it('joins marker, name, model, and cwd in order', () => {
-    expect(composeTabTitle('✓', 'auth refactor', 'opus-4', '~/proj')).toBe('✓ auth refactor · opus-4 · ~/proj')
+  it('joins marker, name, model, cwd, and the agent-state tail in order', () => {
+    expect(composeTabTitle('✓', 'auth refactor', 'opus-4', '~/proj')).toBe(
+      '✓ auth refactor · opus-4 · ~/proj · Hermes ready'
+    )
   })
 
   it('glues the marker to the first segment with a space, not a separator', () => {
@@ -113,19 +122,23 @@ describe('composeTabTitle', () => {
   })
 
   it('omits the session name when empty (matches the pre-name format)', () => {
-    expect(composeTabTitle('✓', '', 'opus-4', '~/proj')).toBe('✓ opus-4 · ~/proj')
+    expect(composeTabTitle('✓', '', 'opus-4', '~/proj')).toBe('✓ opus-4 · ~/proj · Hermes ready')
   })
 
   it('treats a whitespace-only name as absent', () => {
-    expect(composeTabTitle('✓', '   ', 'opus-4', '~/proj')).toBe('✓ opus-4 · ~/proj')
+    expect(composeTabTitle('✓', '   ', 'opus-4', '~/proj')).toBe('✓ opus-4 · ~/proj · Hermes ready')
   })
 
   it('omits the cwd when empty', () => {
-    expect(composeTabTitle('✓', 'my session', 'opus-4', '')).toBe('✓ my session · opus-4')
+    expect(composeTabTitle('✓', 'my session', 'opus-4', '')).toBe('✓ my session · opus-4 · Hermes ready')
   })
 
-  it('falls back to just the marker when only the marker is present', () => {
-    expect(composeTabTitle('✓', '', '', '')).toBe('✓')
+  it('still carries the agent-state tail when every human segment is absent', () => {
+    expect(composeTabTitle('✓', '', '', '')).toBe('✓ Hermes ready')
+  })
+
+  it('falls back to just the marker for an unknown marker with no segments', () => {
+    expect(composeTabTitle('?', '', '', '')).toBe('?')
   })
 
   it('truncates an over-long session name with an ellipsis', () => {
@@ -139,6 +152,30 @@ describe('composeTabTitle', () => {
   it('keeps a name at the boundary length intact', () => {
     const name = 'b'.repeat(28)
     const out = composeTabTitle('✓', name, 'opus-4', '', 28)
-    expect(out).toBe(`✓ ${name} · opus-4`)
+    expect(out).toBe(`✓ ${name} · opus-4 · Hermes ready`)
+  })
+
+  describe('agent-aware terminal contract (Orca and friends read words, not glyphs)', () => {
+    it.each([
+      ['⏳', 'working'],
+      ['⚠', 'waiting'],
+      ['✓', 'ready']
+    ])('maps %s to a trailing "Hermes %s" segment', (marker, word) => {
+      const out = composeTabTitle(marker, 'sess', 'm', '~/x')
+      expect(out.endsWith(` · Hermes ${word}`)).toBe(true)
+      expect(AGENT_STATE_WORDS[marker]).toBe(word)
+    })
+
+    it('puts the tail LAST so narrow tab bars clip it before the session name', () => {
+      const out = composeTabTitle('⏳', 'sess', 'm', '~/x')
+      expect(out.indexOf('sess')).toBeLessThan(out.indexOf('Hermes working'))
+    })
+
+    it('emits the agent name as a standalone word (token match, never a path fragment)', () => {
+      // Orca's HERMES_AGENT_NAME_RE refuses `hermes` glued to [\w./\\-]; the
+      // ` · ` separator on the left and a space on the right keep it a clean token.
+      const out = composeTabTitle('⏳', 'sess', 'm', '~/hermes-work')
+      expect(out).toMatch(/(?<![\w./\\-])Hermes(?![\w./\\-])/)
+    })
   })
 })

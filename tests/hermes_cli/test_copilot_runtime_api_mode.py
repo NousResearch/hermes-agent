@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.credential_pool import PooledCredential
+
 
 def test_copilot_runtime_api_mode_uses_target_model_over_stale_config_default(monkeypatch):
     """MoA/fallback slots must derive Copilot api_mode from the slot model.
@@ -109,3 +111,66 @@ def test_resolver_routes_copilot_by_target_model_for_every_credential_path(
     assert runtime["provider"] == "copilot"
     assert runtime["api_mode"] == expected_mode
     assert runtime["source"] == credential_source
+
+
+def test_explicit_target_model_outranks_persisted_copilot_api_mode(monkeypatch):
+    from hermes_cli import runtime_provider as rp
+
+    monkeypatch.setattr(
+        "hermes_cli.models.copilot_model_api_mode",
+        lambda model, **kwargs: (
+            "codex_responses"
+            if str(model).startswith("gpt-5")
+            else "chat_completions"
+        ),
+    )
+    assert (
+        rp._copilot_runtime_api_mode(
+            {
+                "provider": "copilot",
+                "default": "claude-opus-5",
+                "api_mode": "chat_completions",
+            },
+            "token",
+            target_model="gpt-5.6-sol",
+        )
+        == "codex_responses"
+    )
+
+
+@pytest.mark.parametrize(
+    "configured_provider",
+    ["copilot", "github-copilot", "github", "github-models"],
+)
+def test_pool_without_explicit_target_preserves_persisted_api_mode_for_aliases(
+    monkeypatch, configured_provider
+):
+    from hermes_cli import runtime_provider as rp
+
+    monkeypatch.setattr(
+        "hermes_cli.models.copilot_model_api_mode",
+        lambda model, **kwargs: "codex_responses",
+    )
+    entry = PooledCredential(
+        provider="copilot",
+        id="test",
+        label="test",
+        auth_type="oauth",
+        priority=0,
+        source="test",
+        access_token="token",
+        base_url="https://api.githubcopilot.com",
+        extra={"runtime_api_key": "token"},
+    )
+    runtime = rp._resolve_runtime_from_pool_entry(
+        provider="copilot",
+        entry=entry,
+        requested_provider="copilot",
+        model_cfg={
+            "provider": configured_provider,
+            "default": "gpt-5.6-sol",
+            "api_mode": "chat_completions",
+        },
+        target_model=None,
+    )
+    assert runtime["api_mode"] == "chat_completions"

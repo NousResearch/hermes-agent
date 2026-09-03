@@ -254,6 +254,10 @@ class TestIsBlockedIp:
         "100.64.0.1",               # CGNAT boundary (not is_private)
         "198.18.0.23",              # benchmark range
         "fd12::1",                  # IPv6 unique local
+        "100::1",                   # discard-only
+        "2001:2::1",                # IPv6 benchmarking
+        "2001:20::1",               # ORCHIDv2
+        "fec0::1",                  # deprecated site-local
         "::ffff:169.254.169.254",   # IPv4-mapped IPv6 metadata
     ])
     def test_blocked_ips(self, ip_str):

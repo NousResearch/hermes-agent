@@ -209,6 +209,17 @@ _MAX_SSRF_CONNECT_IPS = 8
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# IPv6 special-use ranges that are not consistently classified as private or
+# reserved across supported Python versions. None are general-purpose public
+# destinations, so allowing them would create SSRF paths into special routing
+# domains.
+_BLOCKED_IPV6_SPECIAL_USE_NETWORKS = (
+    ipaddress.ip_network("100::/64"),       # Discard-only (RFC 6666)
+    ipaddress.ip_network("2001:2::/48"),    # Benchmarking (RFC 5180)
+    ipaddress.ip_network("2001:20::/28"),   # ORCHIDv2 (RFC 7343)
+    ipaddress.ip_network("fec0::/10"),      # Deprecated site-local (RFC 3879)
+)
+
 # ---------------------------------------------------------------------------
 # Global toggle: allow private/internal IP resolution
 # ---------------------------------------------------------------------------
@@ -296,6 +307,11 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
                 embedded_ip.is_link_local or embedded_ip.is_reserved or
                 embedded_ip.is_multicast or embedded_ip.is_unspecified or
                 embedded_ip in _CGNAT_NETWORK)
+
+    if isinstance(ip, ipaddress.IPv6Address) and any(
+        ip in network for network in _BLOCKED_IPV6_SPECIAL_USE_NETWORKS
+    ):
+        return True
 
     # Standard IPv4/IPv6 address checking
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:

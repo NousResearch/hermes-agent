@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from collections import OrderedDict
 from datetime import datetime
@@ -95,6 +96,11 @@ _WEBHOOK_MAX_BODY_BYTES = 1_048_576
 DEFAULT_WEBHOOK_PORT = 8645
 DEFAULT_WEBHOOK_PATH = "/bluebubbles-webhook"
 MAX_TEXT_LENGTH = 4000
+
+# Dedup — BlueBubbles webhooks can replay after reconnect, so keep
+# at least 1k ids for ~48h (matching Photon's dedup parameters).
+_DEDUP_MAX_SIZE = 4000
+_DEDUP_WINDOW_SECONDS = 48 * 3600
 
 # BlueBubbles/iMessage does not expose a stable bot mention identity like
 # Slack (<@U...>), Telegram (@botname), or Matrix (MXID). When users opt into
@@ -203,6 +209,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        # In-memory message dedup — BlueBubbles webhooks can replay after
+        # reconnect, resulting in duplicate inbound message processing.
+        self._seen_message_ids: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # API helpers
@@ -230,6 +239,30 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not text or not self._mention_patterns:
             return False
         return any(pattern.search(text) for pattern in self._mention_patterns)
+
+    # ------------------------------------------------------------------
+    # Message dedup — webhooks can replay after reconnect
+    # ------------------------------------------------------------------
+
+    def _is_duplicate(self, msg_id: str) -> bool:
+        """Check and record a message id for dedup.
+
+        Returns True if *msg_id* was seen within the dedup window,
+        otherwise records it and returns False.
+        """
+        now = time.time()
+        seen = self._seen_message_ids
+        t = seen.get(msg_id)
+        if t is not None and now - t < _DEDUP_WINDOW_SECONDS:
+            return True  # seen within window = duplicate
+        # New or expired — record and enforce size bound
+        if msg_id in seen:
+            del seen[msg_id]  # refresh insertion order
+        seen[msg_id] = now
+        if len(seen) > _DEDUP_MAX_SIZE:
+            for old in list(seen.keys())[: len(seen) - _DEDUP_MAX_SIZE]:
+                del seen[old]
+        return False
 
     def _clean_mention_text(self, text: str) -> str:
         """Strip a leading BlueBubbles wake word before dispatch.
@@ -496,6 +529,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             for chat in payload.get("data", []) or []:
                 guid = chat.get("guid") or chat.get("chatGuid")
                 identifier = chat.get("chatIdentifier") or chat.get("identifier")
+                # Skip spam-filtered chats: iMessage stores masked handles
+                # (e.g. 'any;-;+156****2244' with literal asterisks) for
+                # auto-spam-reported threads, and sends to those GUIDs fail
+                # with 500 from the BlueBubbles server. The real DM for the
+                # same number is a separate, non-filtered chat. (verified
+                # Aug 5 2026: ROWID 877 filtered/asterisks vs ROWID 850 real)
+                if chat.get("isFiltered"):
+                    continue
                 if identifier == target:
                     if guid:
                         self._guid_cache[target] = guid
@@ -1041,6 +1082,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 )
                 return web.Response(text="ok")
             text = self._clean_mention_text(text)
+
+        # --- Dedup check ---
+        msg_id = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        if msg_id and self._is_duplicate(msg_id):
+            logger.debug("[bluebubbles] dropped duplicate message %s", msg_id)
+            return web.Response(text="ok")
+
         source = self.build_source(
             chat_id=session_chat_id,
             chat_name=chat_identifier or sender,

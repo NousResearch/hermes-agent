@@ -1088,6 +1088,91 @@ def sync_credential_pool_entry_id(agent) -> None:
         agent._credential_pool_entry_id = None
 
 
+def is_xai_stale_oauth_error(
+    error_context: Optional[Dict[str, Any]], status_code: Optional[int]
+) -> bool:
+    """True for xAI's authoritative "stale token, not entitlement" 403.
+
+    xAI answers an *expired* OAuth access token with HTTP 403 -- not 401 --
+    carrying either a ``[WKE=unauthenticated:...]`` suffix or the phrase
+    ``OAuth2 access token could not be validated``.  Both mean the token is
+    merely stale and a refresh recovers it, which is exactly what separates
+    them from the entitlement 403s that refreshing can never fix (#29344).
+
+    Shared by the credential-pool recovery path and the singleton
+    ``codex_responses`` refresh path so the two cannot drift apart.
+    """
+    if status_code != 403 or not isinstance(error_context, dict):
+        return False
+    haystack = " ".join(
+        str(error_context.get(k) or "").lower()
+        for k in ("message", "reason", "code", "error")
+    )
+    return (
+        "[wke=unauthenticated:" in haystack
+        or "oauth2 access token could not be validated" in haystack
+    )
+
+
+_DEVICE_CODE_SOURCES = frozenset({"device_code", "manual:device_code"})
+
+
+def oauth_pool_entry_is_device_code(entry) -> bool:
+    return str(getattr(entry, "source", "") or "") in _DEVICE_CODE_SOURCES
+
+
+def oauth_active_key_is_foreign_pool_entry(agent, active_key: str) -> bool:
+    """True when ``active_key`` belongs to a pooled credential.
+
+    Used by the singleton OAuth refresh guard: if the live key is a real
+    pool entry, force-refreshing/adopting the device_code singleton would
+    silently swap accounts.
+    """
+    if not active_key:
+        return False
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None:
+        return False
+    try:
+        entries = pool.entries()
+    except Exception:
+        return False
+    needle = str(active_key).strip()
+    for entry in entries or ():
+        runtime = str(getattr(entry, "runtime_api_key", "") or "").strip()
+        if runtime and runtime == needle:
+            return True
+    return False
+
+
+def resolve_stale_oauth_pool_entry(agent, pool):
+    """Pool entry that owns a stale-token failure, or None if we must not guess.
+
+    ``_credential_pool_entry_id`` survives access-token rotation, so it is
+    preferred even when ``runtime_api_key`` no longer matches. Without an
+    id, only a sole device_code entry is unambiguous — a sole MANUAL
+    other-account entry is not the failed request's identity.
+    """
+    if pool is None:
+        return None
+    try:
+        entries_fn = getattr(pool, "entries", None)
+        entries = list(entries_fn() or []) if callable(entries_fn) else []
+    except Exception:
+        return None
+    by_id = {}
+    for entry in entries:
+        eid = getattr(entry, "id", None)
+        if isinstance(eid, str) and eid:
+            by_id[eid] = entry
+    cred_id = getattr(agent, "_credential_pool_entry_id", None)
+    if isinstance(cred_id, str) and cred_id and cred_id in by_id:
+        return by_id[cred_id]
+    if len(entries) == 1 and oauth_pool_entry_is_device_code(entries[0]):
+        return entries[0]
+    return None
+
+
 def recover_with_credential_pool(
     agent,
     *,
@@ -1352,11 +1437,7 @@ def recover_with_credential_pool(
         ):
             is_entitlement = True
         if not is_entitlement and status_code == 403 and (agent.provider or "") == "xai-oauth":
-            _is_xai_auth_failure = (
-                "[wke=unauthenticated:" in _auth_haystack
-                or "oauth2 access token could not be validated" in _auth_haystack
-            )
-            if not _is_xai_auth_failure:
+            if not is_xai_stale_oauth_error(error_context, status_code):
                 is_entitlement = True
         if is_entitlement:
             _ra().logger.info(
@@ -1374,6 +1455,35 @@ def recover_with_credential_pool(
         refresh_kwargs = {"api_key_hint": _api_key_hint}
         if _credential_id:
             refresh_kwargs["credential_id"] = _credential_id
+        if (
+            (agent.provider or "") == "xai-oauth"
+            and is_xai_stale_oauth_error(error_context, status_code)
+        ):
+            # Adopt a reminted token *before* try_refresh_matching so a
+            # bound _credential_pool_entry_id cannot force-POST the new
+            # single-use refresh token. Identify the failed account
+            # (stable id, else sole device_code); never guess a lone
+            # MANUAL other-account entry.
+            entry = resolve_stale_oauth_pool_entry(agent, pool)
+            if entry is not None:
+                runtime = str(getattr(entry, "runtime_api_key", "") or "").strip()
+                active = str(getattr(agent, "api_key", "") or "").strip()
+                if runtime and runtime != active:
+                    from hermes_cli.auth import _codex_access_token_is_expiring
+
+                    if not _codex_access_token_is_expiring(runtime, 60):
+                        _ra().logger.info(
+                            "xai-oauth stale 403: live key matched no pool "
+                            "entry; adopting reminted pool entry %s without "
+                            "a second refresh",
+                            getattr(entry, "id", "?"),
+                        )
+                        agent._swap_credential(entry)
+                        return True, has_retried_429
+                if not refresh_kwargs.get("credential_id"):
+                    eid = getattr(entry, "id", None)
+                    if isinstance(eid, str) and eid:
+                        refresh_kwargs["credential_id"] = eid
         refreshed = pool.try_refresh_matching(**refresh_kwargs)
         if refreshed is not None:
             # ``try_refresh_matching()`` re-mints a fresh OAuth token and reports

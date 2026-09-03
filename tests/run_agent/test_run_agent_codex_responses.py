@@ -1426,6 +1426,223 @@ def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_dif
     assert agent.api_key == pre_refresh_key
 
 
+def test_try_refresh_codex_client_credentials_adopts_store_token_when_pool_identity_misses(monkeypatch):
+    """Stale in-memory key + pool whose runtime key is the store token.
+
+    This is the 8:34 production hole: the live client still has the expired
+    access token, auth.json/pool already hold a different one, and the
+    account-swap guard used to skip because the strings differ. Adopting
+    the store token must succeed without spending a second refresh token.
+    """
+    agent = _build_xai_oauth_agent(monkeypatch)
+    refresh_calls = {"count": 0}
+    store_token = (
+        "eyJhbGciOiJub25lIn0."
+        "eyJleHAiOjk5OTk5OTk5OTl9."
+        "sig"
+    )
+
+    class _Pool:
+        def entries(self):
+            return [
+                SimpleNamespace(
+                    id="only",
+                    source="device_code",
+                    runtime_api_key=store_token,
+                )
+            ]
+
+    agent._credential_pool = _Pool()
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        if force_refresh:
+            refresh_calls["count"] += 1
+            return {
+                "api_key": "should-not-force-refresh",
+                "base_url": "https://api.x.ai/v1",
+            }
+        return {
+            "api_key": store_token,
+            "base_url": "https://api.x.ai/v1",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        _fake_resolve,
+    )
+
+    class _ExistingClient:
+        def close(self):
+            pass
+
+    class _RebuiltClient:
+        pass
+
+    rebuilt = {"kwargs": None}
+
+    def _fake_openai(**kwargs):
+        rebuilt["kwargs"] = kwargs
+        return _RebuiltClient()
+
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+    existing = _ExistingClient()
+    agent.client = existing
+    retired = {"client": None}
+    monkeypatch.setattr(
+        agent,
+        "_retire_shared_openai_client",
+        lambda client, *, reason: retired.__setitem__("client", client),
+    )
+
+    ok = agent._try_refresh_codex_client_credentials(force=True)
+
+    assert ok is True
+    assert refresh_calls["count"] == 0, "must adopt the store token, not remint"
+    assert agent.api_key == store_token
+    assert rebuilt["kwargs"]["api_key"] == store_token
+    assert retired["client"] is existing
+
+
+def test_try_refresh_codex_client_credentials_still_skips_foreign_pool_entry(monkeypatch):
+    """A live key that belongs to a pooled (non-singleton) credential must
+    not adopt the device_code singleton — that is the original account-swap
+    guard, now keyed off pool membership instead of string inequality."""
+    agent = _build_xai_oauth_agent(monkeypatch)
+    refresh_calls = {"count": 0}
+
+    class _Pool:
+        def entries(self):
+            return [SimpleNamespace(id="manual", runtime_api_key=agent.api_key)]
+
+    agent._credential_pool = _Pool()
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        if force_refresh:
+            refresh_calls["count"] += 1
+        return {
+            "api_key": "singleton-account-token",
+            "base_url": "https://api.x.ai/v1",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        _fake_resolve,
+    )
+    pre = agent.api_key
+    ok = agent._try_refresh_codex_client_credentials(force=True)
+    assert ok is False
+    assert refresh_calls["count"] == 0
+    assert agent.api_key == pre
+
+
+def test_try_refresh_skips_when_sole_pool_entry_is_manual_other_account(monkeypatch):
+    """Identity miss on a reminted MANUAL entry must not adopt device_code."""
+    agent = _build_xai_oauth_agent(monkeypatch)
+    refresh_calls = {"count": 0}
+
+    class _Pool:
+        def entries(self):
+            return [
+                SimpleNamespace(
+                    id="manual",
+                    source="manual",
+                    runtime_api_key="reminted-manual-token",
+                )
+            ]
+
+    agent._credential_pool = _Pool()
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        if force_refresh:
+            refresh_calls["count"] += 1
+        return {
+            "api_key": "singleton-account-token",
+            "base_url": "https://api.x.ai/v1",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        _fake_resolve,
+    )
+    pre = agent.api_key
+    ok = agent._try_refresh_codex_client_credentials(force=True)
+    assert ok is False
+    assert refresh_calls["count"] == 0
+    assert agent.api_key == pre
+
+
+def test_try_refresh_force_refreshes_when_store_token_is_expired_jwt(monkeypatch):
+    """Adopting an expired store token would burn the singleton retry."""
+    import base64
+    import json
+    import time
+
+    def _jwt(exp):
+        def _part(payload):
+            raw = json.dumps(payload, separators=(",", ":")).encode()
+            return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+        return f"{_part({'alg': 'none'})}.{_part({'exp': exp})}.sig"
+
+    agent = _build_xai_oauth_agent(monkeypatch)
+    expired_store = _jwt(int(time.time()) - 3600)
+    fresh = "fresh-after-force-refresh"
+    refresh_calls = {"count": 0}
+
+    class _Pool:
+        def entries(self):
+            return [
+                SimpleNamespace(
+                    id="dc",
+                    source="device_code",
+                    runtime_api_key=expired_store,
+                )
+            ]
+
+    agent._credential_pool = _Pool()
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        if force_refresh:
+            refresh_calls["count"] += 1
+            return {"api_key": fresh, "base_url": "https://api.x.ai/v1"}
+        return {"api_key": expired_store, "base_url": "https://api.x.ai/v1"}
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        _fake_resolve,
+    )
+
+    class _ExistingClient:
+        def close(self):
+            pass
+
+    class _RebuiltClient:
+        pass
+
+    rebuilt = {"kwargs": None}
+
+    def _fake_openai(**kwargs):
+        rebuilt["kwargs"] = kwargs
+        return _RebuiltClient()
+
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+    existing = _ExistingClient()
+    agent.client = existing
+    monkeypatch.setattr(
+        agent,
+        "_retire_shared_openai_client",
+        lambda client, *, reason: None,
+    )
+
+    ok = agent._try_refresh_codex_client_credentials(force=True)
+    assert ok is True
+    assert refresh_calls["count"] == 1
+    assert agent.api_key == fresh
+    assert rebuilt["kwargs"]["api_key"] == fresh
+
+
+
+
 
 
 

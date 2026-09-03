@@ -5441,16 +5441,31 @@ def run_conversation(
                         )
                         continue
 
+                # xAI expires OAuth access tokens with a 403, not a 401 (the
+                # #29344 body signatures).  Gating this branch on 401 alone
+                # meant the singleton refresh never fired for xai-oauth: a
+                # long-running gateway kept re-presenting a token that died
+                # ~6h earlier until the process was restarted, so `hermes
+                # update` appeared to "fix Grok" for exactly one token
+                # lifetime at a time.  The pool path already makes this
+                # distinction; reuse its predicate rather than a second copy.
+                from agent.agent_runtime_helpers import is_xai_stale_oauth_error
+
+                _xai_stale_oauth = (
+                    agent.provider == "xai-oauth"
+                    and is_xai_stale_oauth_error(error_context, status_code)
+                )
                 if (
                     agent.api_mode == "codex_responses"
                     and agent.provider in {"openai-codex", "xai-oauth"}
-                    and status_code == 401
+                    and (status_code == 401 or _xai_stale_oauth)
                     and not _retry.codex_auth_retry_attempted
                 ):
                     _retry.codex_auth_retry_attempted = True
                     if agent._try_refresh_codex_client_credentials(force=True):
                         _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
-                        agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
+                        _seen = status_code if status_code is not None else 401
+                        agent._buffer_vprint(f"🔐 {_label} auth refreshed after {_seen}. Retrying request...")
                         continue
                 if (
                     agent.api_mode == "chat_completions"

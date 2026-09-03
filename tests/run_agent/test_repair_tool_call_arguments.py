@@ -1,7 +1,11 @@
 """Tests for _repair_tool_call_arguments — malformed JSON repair pipeline."""
 
 import json
+import logging
 
+import pytest
+
+from agent.message_sanitization import RepairedArguments
 from run_agent import _repair_tool_call_arguments
 
 
@@ -11,7 +15,13 @@ class TestRepairToolCallArguments:
     # -- Stage 1: empty / whitespace-only --
 
     def test_empty_string_returns_empty_object(self):
-        assert _repair_tool_call_arguments("", "t") == "{}"
+        assert _repair_tool_call_arguments("", "t") == RepairedArguments("{}", True)
+
+    @pytest.mark.parametrize("raw", ["", "  \n\t", "{}"])
+    def test_empty_arguments_are_successful(self, raw):
+        result = _repair_tool_call_arguments(raw, "t")
+        assert result.arguments == "{}"
+        assert result.ok is True
 
 
 
@@ -24,8 +34,14 @@ class TestRepairToolCallArguments:
 
     def test_trailing_comma_in_array(self):
         result = _repair_tool_call_arguments('{"a": [1, 2,]}', "t")
-        parsed = json.loads(result)
+        assert result.ok is True
+        parsed = json.loads(result.arguments)
         assert parsed == {"a": [1, 2]}
+
+    def test_valid_arguments_are_byte_identical(self):
+        raw = '{"query":"café","n":1}'
+        result = _repair_tool_call_arguments(raw, "t")
+        assert result == RepairedArguments(raw, True)
 
 
     # -- Stage 4: unclosed brackets --
@@ -39,9 +55,15 @@ class TestRepairToolCallArguments:
     # -- Stage 6: last resort --
 
 
-    def test_unrepairable_partial_returns_empty_object(self):
+    def test_unrepairable_partial_returns_empty_object_and_warns(self, caplog):
         # Truncated in the middle of a string key — bracket closing won't help
-        assert _repair_tool_call_arguments('{"truncated": "val', "t") == "{}"
+        raw = '{"truncated": "val'
+        with caplog.at_level(logging.WARNING, logger="agent.message_sanitization"):
+            result = _repair_tool_call_arguments(raw, "t")
+        assert result == RepairedArguments("{}", False)
+        warnings = [record for record in caplog.records if "Unrepairable" in record.message]
+        assert len(warnings) == 1
+        assert raw in warnings[0].message
 
     # -- Valid JSON passthrough (this path is via except, but still works) --
 
@@ -59,5 +81,3 @@ class TestRepairToolCallArguments:
 
 
     # -- Stage 4: control-char escape fallback --
-
-

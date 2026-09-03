@@ -18,7 +18,7 @@ import hashlib
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -191,33 +191,51 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
 # the log.
 _FULL_ARGS_LOG_BOUND = 100_000
 
+TOOL_CALL_ARGUMENTS_ERROR = (
+    "Tool call arguments could not be parsed. The streamed arguments were "
+    "truncated or malformed and the tool was not executed. Retry with "
+    "complete, valid JSON arguments; if the payload is large, split it "
+    "across several smaller tool calls."
+)
 
-def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
+
+class RepairedArguments(NamedTuple):
+    arguments: str
+    ok: bool
+
+
+def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> RepairedArguments:
     """Attempt to repair malformed tool_call argument JSON.
 
     Models like GLM-5.1 via Ollama can produce truncated JSON, trailing
     commas, Python ``None``, etc.  The API proxy rejects these with HTTP 400
     "invalid tool call arguments".  This function applies common repairs;
     if all fail it returns ``"{}"`` so the request succeeds (better than
-    crashing the session).  All repairs are logged at WARNING level.
+    crashing the session). The ``ok`` flag distinguishes that fallback from
+    a legitimate empty-argument call.
     """
     raw_stripped = raw_args.strip() if isinstance(raw_args, str) else ""
 
     # Fast-path: empty / whitespace-only -> empty object
     if not raw_stripped:
         logger.warning("Sanitized empty tool_call arguments for %s", tool_name)
-        return "{}"
+        return RepairedArguments("{}", True)
 
     # Python-literal None -> normalise to {}
     if raw_stripped == "None":
         logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
-        return "{}"
+        return RepairedArguments("{}", True)
 
     # Repair pass 0: llama.cpp backends sometimes emit literal control
     # characters (tabs, newlines) inside JSON string values. json.loads
     # with strict=False accepts these and lets us re-serialise the
     # result into wire-valid JSON without any string surgery. This is
     # the most common local-model repair case (#12068).
+    try:
+        json.loads(raw_stripped)
+        return RepairedArguments(raw_stripped, True)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
     try:
         parsed = json.loads(raw_stripped, strict=False)
         reserialised = json.dumps(parsed, separators=(",", ":"))
@@ -226,7 +244,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
                 "Repaired unescaped control chars in tool_call arguments for %s",
                 tool_name,
             )
-        return reserialised
+        return RepairedArguments(reserialised, True)
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
@@ -260,7 +278,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
             "Repaired malformed tool_call arguments for %s: %s → %s",
             tool_name, raw_stripped[:80], fixed[:80],
         )
-        return fixed
+        return RepairedArguments(fixed, True)
     except json.JSONDecodeError:
         pass
 
@@ -275,7 +293,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
                 "Repaired control-char-laced tool_call arguments for %s: %s → %s",
                 tool_name, raw_stripped[:80], escaped[:80],
             )
-            return escaped
+            return RepairedArguments(escaped, True)
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
@@ -286,11 +304,11 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     # contain real user content (#80498: a truncated write_file call's
     # streamed file content).
     logger.warning(
-        "Unrepairable tool_call arguments for %s — "
+        "Unrepairable tool_call arguments for %s - "
         "replaced with empty object (was: %s)",
         tool_name, raw_stripped[:_FULL_ARGS_LOG_BOUND],
     )
-    return "{}"
+    return RepairedArguments("{}", False)
 
 
 def close_interrupted_tool_sequence(messages: list, final_response: Any = None) -> bool:
@@ -602,6 +620,8 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
 
 
 __all__ = [
+    "RepairedArguments",
+    "TOOL_CALL_ARGUMENTS_ERROR",
     "_SURROGATE_RE",
     "close_interrupted_tool_sequence",
     "_sanitize_surrogates",

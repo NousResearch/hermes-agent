@@ -4743,9 +4743,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # returns "{}" for unrepairable args, which is far
                         # better than a crashed session.
                         repaired = _repair_tool_call_arguments(arguments, tool_name)
-                        if repaired != "{}":
+                        if repaired.ok:
                             # Successfully repaired — use the fixed args
-                            arguments = repaired
+                            if repaired.arguments == "{}" and arguments.strip() != "{}":
+                                has_truncated_tool_args = True
+                            arguments = repaired.arguments
                         else:
                             # Unrepairable — flag for truncation handling
                             has_truncated_tool_args = True

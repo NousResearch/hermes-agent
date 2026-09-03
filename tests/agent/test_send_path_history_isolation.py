@@ -21,6 +21,7 @@ here loudly).
 
 import copy
 import json
+import logging
 
 import agent.conversation_loop as cl
 from agent.message_sanitization import (
@@ -87,6 +88,41 @@ def _run_full_pipeline(api_messages):
 
 
 class TestSendPathNeverMutatesHistory:
+    def test_failed_repair_is_healed_once_in_send_copy(self, caplog):
+        messages = [{
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "write_file", "arguments": TRUNCATED_ARGS},
+            }],
+        }]
+        api_messages = _api_copy(messages)
+        with caplog.at_level(logging.WARNING, logger="agent.message_sanitization"):
+            cl._canonicalize_api_tool_calls(api_messages)
+            first_warnings = [r for r in caplog.records if "Unrepairable" in r.message]
+            cl._canonicalize_api_tool_calls(api_messages)
+            second_warnings = [r for r in caplog.records if "Unrepairable" in r.message]
+
+        assert api_messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+        assert len(first_warnings) == 1
+        assert len(second_warnings) == 1
+
+    def test_valid_arguments_remain_structurally_equal_after_repair(self):
+        messages = [{
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": VALID_ARGS},
+            }],
+        }]
+        api_messages = _api_copy(messages)
+        cl._canonicalize_api_tool_calls(api_messages)
+        assert json.loads(
+            api_messages[0]["tool_calls"][0]["function"]["arguments"]
+        ) == json.loads(VALID_ARGS)
+
     def test_full_pipeline_leaves_history_byte_identical(self):
         history = _adversarial_history()
         before = copy.deepcopy(history)

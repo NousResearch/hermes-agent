@@ -225,6 +225,8 @@ from agent.message_sanitization import (  # noqa: F401
     _sanitize_messages_surrogates,
     _escape_invalid_chars_in_json_strings,
     _repair_tool_call_arguments,
+    RepairedArguments,
+    TOOL_CALL_ARGUMENTS_ERROR,
     _strip_non_ascii,
     _sanitize_messages_non_ascii,
     _sanitize_tools_non_ascii,

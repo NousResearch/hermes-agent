@@ -113,7 +113,7 @@ def canonicalize_pass_OLD(api_messages):
                     tc["function"]["arguments"] = _repair_tool_call_arguments(
                         tc["function"]["arguments"],
                         tc["function"].get("name", "?"),
-                    )
+                    ).arguments
             new_tcs.append(tc)
         am["tool_calls"] = new_tcs
 

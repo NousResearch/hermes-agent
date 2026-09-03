@@ -116,6 +116,53 @@ class TestOpenaiTtsLangCode:
 
 
 # ---------------------------------------------------------------------------
+# OpenAI TTS consent_attestation (cloned voices on OpenAI-compatible endpoints)
+# ---------------------------------------------------------------------------
+
+class TestOpenaiTtsConsentAttestation:
+    def _run(self, tts_config, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        mock_response = MagicMock()
+        mock_client = MagicMock()
+        mock_client.audio.speech.create.return_value = mock_response
+        mock_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
+             patch("tools.tts_tool._resolve_openai_audio_client_config",
+                   return_value=("test-key", None, False)):
+            from tools.tts_tool import _generate_openai_tts
+            _generate_openai_tts("Hello", str(tmp_path / "out.mp3"), tts_config)
+        return mock_client.audio.speech.create
+
+    def test_consent_attestation_forwarded(self, tmp_path, monkeypatch):
+        """consent_attestation config is forwarded via extra_body."""
+        create = self._run(
+            {"openai": {"consent_attestation": "I have the speaker's consent"}},
+            tmp_path, monkeypatch)
+        kwargs = create.call_args[1]
+        assert kwargs["extra_body"]["consent_attestation"] == "I have the speaker's consent"
+
+    def test_consent_attestation_coexists_with_language(self, tmp_path, monkeypatch):
+        """consent_attestation merges with lang_code instead of overwriting it."""
+        create = self._run(
+            {"openai": {"consent_attestation": "I have the speaker's consent",
+                        "language": "es"}},
+            tmp_path, monkeypatch)
+        kwargs = create.call_args[1]
+        assert kwargs["extra_body"] == {
+            "consent_attestation": "I have the speaker's consent",
+            "lang_code": "es",
+        }
+
+    def test_empty_consent_attestation_omitted(self, tmp_path, monkeypatch):
+        """Empty-string consent_attestation is not forwarded."""
+        create = self._run({"openai": {"consent_attestation": ""}},
+                           tmp_path, monkeypatch)
+        kwargs = create.call_args[1]
+        assert "extra_body" not in kwargs
+
+
+# ---------------------------------------------------------------------------
 # MiniMax TTS (t2a_v2 endpoint: nested voice_setting/audio_setting,
 # JSON response with hex-encoded audio.  Falls back to the legacy
 # text_to_speech endpoint shape when the base_url points at it.)

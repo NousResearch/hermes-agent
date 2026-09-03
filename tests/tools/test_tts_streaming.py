@@ -155,6 +155,73 @@ def test_openai_streamer_prefers_configured_api_key(monkeypatch):
     assert captured["client"]["api_key"] == "cfg-key"
 
 
+def _run_openai_streamer(monkeypatch, openai_section):
+    """Run OpenAIStreamer.stream() against a mocked SDK; return create kwargs."""
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_bytes(self):
+            yield b"\x01\x00"
+
+    class _StreamingCreate:
+        @staticmethod
+        def create(**kwargs):
+            captured["create"] = kwargs
+            return _Response()
+
+    class _OpenAI:
+        def __init__(self, **kwargs):
+            self.audio = MagicMock()
+            self.audio.speech.with_streaming_response = _StreamingCreate()
+
+    monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "env-key")
+    monkeypatch.setattr(ts, "get_env_value", lambda key, *args: None)
+    monkeypatch.setattr("openai.OpenAI", _OpenAI)
+
+    config = {"provider": "openai", "openai": dict(openai_section)}
+    streamer = ts.resolve_streaming_provider(config)
+    assert streamer is not None
+    assert list(streamer.stream("Streaming test.")) == [b"\x01\x00"]
+    return captured["create"]
+
+
+def test_openai_streamer_forwards_extra_body_fields(monkeypatch):
+    """language + consent_attestation merge into one extra_body dict."""
+    create = _run_openai_streamer(
+        monkeypatch,
+        {
+            "api_key": "cfg-key",
+            "language": "es",
+            "consent_attestation": "I have the speaker's consent",
+        },
+    )
+    assert create["extra_body"] == {
+        "lang_code": "es",
+        "consent_attestation": "I have the speaker's consent",
+    }
+
+
+def test_openai_streamer_omits_extra_body_when_unset(monkeypatch):
+    """No optional fields configured → no extra_body kwarg at all."""
+    create = _run_openai_streamer(monkeypatch, {"api_key": "cfg-key"})
+    assert "extra_body" not in create
+    assert create["response_format"] == "pcm"
+
+
+def test_openai_streamer_empty_consent_attestation_omitted(monkeypatch):
+    """Empty-string consent_attestation is not forwarded."""
+    create = _run_openai_streamer(
+        monkeypatch, {"api_key": "cfg-key", "consent_attestation": ""}
+    )
+    assert "extra_body" not in create
+
+
 # ── Dispatch: chunked streamer path ──────────────────────────────────────
 
 

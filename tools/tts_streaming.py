@@ -25,7 +25,7 @@ import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
 from tools.tts_tool import _get_provider, _load_tts_config, get_env_value
@@ -284,11 +284,28 @@ class OpenAIStreamer(StreamingTTSProvider):
         )
         model = self.section.get("model", "gpt-4o-mini-tts")
         voice = self.section.get("voice", "alloy")
+        # Mirror the sync provider (_generate_openai_tts): forward optional
+        # tts.openai fields via extra_body, omitted when unset so strict
+        # OpenAI-compatible servers that reject unknown fields are unaffected.
+        # lang_code and consent_attestation merge — configuring both forwards
+        # both.
+        extra_body: Dict[str, Any] = {}
+        language = self.section.get("language")
+        if language:
+            extra_body["lang_code"] = language
+        consent_attestation = self.section.get("consent_attestation")
+        if consent_attestation:
+            extra_body["consent_attestation"] = consent_attestation
+        create_kwargs: Dict[str, Any] = {
+            "model": model,
+            "voice": voice,
+            "input": text,
+            "response_format": "pcm",
+        }
+        if extra_body:
+            create_kwargs["extra_body"] = extra_body
         with client.audio.speech.with_streaming_response.create(
-            model=model,
-            voice=voice,
-            input=text,
-            response_format="pcm",
+            **create_kwargs
         ) as response:
             yield from _capped(response.iter_bytes(), "OpenAI streaming TTS")
 

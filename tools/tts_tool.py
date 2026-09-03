@@ -1869,6 +1869,12 @@ def _generate_openai_tts(
             OpenAI-compatible servers that reject unknown kwargs are
             unaffected.
 
+    Optional ``tts.openai`` fields forwarded via ``extra_body``:
+        ``language`` (as ``lang_code``, for multilingual OpenAI-compatible
+        backends) and ``consent_attestation`` (required by some
+        OpenAI-compatible servers for cloned voices). Both are omitted when
+        unset so strict servers that reject unknown fields are unaffected.
+
     Returns:
         Path to the saved audio file.
     """
@@ -1899,6 +1905,7 @@ def _generate_openai_tts(
         speed_default = tts_config.get("speed", 1.0) if isinstance(tts_config, dict) else 1.0
         speed = float(oai_config.get("speed", speed_default))
     language = oai_config.get("language")
+    consent_attestation = oai_config.get("consent_attestation")
 
     # The managed OpenAI audio gateway only proxies MANAGED_OPENAI_TTS_MODELS.
     # A model set for direct OpenAI (e.g. "tts-1-hd") 400s there with
@@ -1934,8 +1941,15 @@ def _generate_openai_tts(
             create_kwargs["speed"] = max(0.25, min(4.0, speed))
         if instructions:
             create_kwargs["instructions"] = instructions
+        # lang_code and consent_attestation share extra_body — merge rather
+        # than overwrite so configuring both forwards both.
+        extra_body: Dict[str, Any] = {}
         if language:
-            create_kwargs["extra_body"] = {"lang_code": language}
+            extra_body["lang_code"] = language
+        if consent_attestation:
+            extra_body["consent_attestation"] = consent_attestation
+        if extra_body:
+            create_kwargs["extra_body"] = extra_body
         response = client.audio.speech.create(**create_kwargs)
 
         response.stream_to_file(output_path)

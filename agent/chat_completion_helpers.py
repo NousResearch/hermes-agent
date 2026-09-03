@@ -73,6 +73,26 @@ def _context_thread_target(callback):
     return lambda: context.run(callback)
 
 
+def _is_watchdog_close_error(error: BaseException) -> bool:
+    """Whether *error* is the expected result of force-closing a connection."""
+    seen: set[int] = set()
+    current: Optional[BaseException] = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(
+            current,
+            (BrokenPipeError, ConnectionResetError, ConnectionAbortedError),
+        ):
+            return True
+        if (
+            type(current).__name__ in {"ReadError", "WriteError"}
+            and "broken pipe" in str(current).lower()
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _join_worker_for_relay_teardown(worker, *, label: str) -> None:
     """Bounded worker join before raising InterruptedError (#81521).
 
@@ -1794,7 +1814,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
             )
             # Wait briefly for the worker to notice the closed connection.
             t.join(timeout=2.0)
-            if result["error"] is None and result["response"] is None:
+            # Prefer a response or unrelated error that won the race, but
+            # replace a transport teardown caused by this forced close.
+            if result["response"] is None and (
+                result["error"] is None
+                or _is_watchdog_close_error(result["error"])
+            ):
                 if _silent_hint:
                     result["error"] = TimeoutError(
                         f"Codex stream produced no bytes within {int(_elapsed)}s "
@@ -1840,7 +1865,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 f"codex stream killed after {int(_event_stale_elapsed)}s with no SSE events"
             )
             t.join(timeout=2.0)
-            if result["error"] is None and result["response"] is None:
+            # Prefer a response or unrelated error that won the race, but
+            # replace a transport teardown caused by this forced close.
+            if result["response"] is None and (
+                result["error"] is None
+                or _is_watchdog_close_error(result["error"])
+            ):
                 result["error"] = TimeoutError(
                     f"Codex stream produced no SSE events for {int(_event_stale_elapsed)}s "
                     f"after first byte (threshold: {int(_codex_idle_timeout)}s)"
@@ -1874,7 +1904,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
             _touch_stale_kill_activity(agent, _elapsed)
             # Wait briefly for the thread to notice the closed connection.
             t.join(timeout=2.0)
-            if result["error"] is None and result["response"] is None:
+            # Prefer a response or unrelated error that won the race, but
+            # replace a transport teardown caused by this forced close.
+            if result["response"] is None and (
+                result["error"] is None
+                or _is_watchdog_close_error(result["error"])
+            ):
                 if _silent_hint:
                     result["error"] = TimeoutError(
                         f"Non-streaming API call timed out after {int(_elapsed)}s "

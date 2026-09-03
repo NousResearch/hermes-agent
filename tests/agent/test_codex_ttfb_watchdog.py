@@ -17,10 +17,12 @@ stall.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 import types
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 # Stub optional heavy imports so run_agent imports cleanly in isolation.
@@ -191,6 +193,134 @@ def test_non_codex_api_mode_installs_no_request_token(tmp_path, monkeypatch):
     assert seen["token"] in (None, "absent")
 
 
+
+
+def test_idle_watchdog_hides_its_forced_close_broken_pipe(tmp_path, monkeypatch):
+    """A watchdog-triggered socket abort is a timeout, not a provider EPIPE.
+
+    The real httpx worker can unwind quickly enough to store ``BrokenPipeError``
+    during the watchdog's two-second join.  The watchdog initiated that close,
+    so its descriptive timeout must win the race instead of leaking
+    ``[Errno 32] Broken pipe`` to the Desktop.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "0.4")
+
+    aborted = threading.Event()
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda _client, reason=None: aborted.set(),
+    )
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **k: None)
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        setattr(agent, "_codex_stream_last_event_ts", time.time())
+        assert aborted.wait(timeout=5), "idle watchdog never aborted the request"
+        raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    with pytest.raises(TimeoutError, match="produced no SSE events") as excinfo:
+        h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+
+    assert "Broken pipe" not in str(excinfo.value)
+
+
+def test_idle_watchdog_preserves_unrelated_error_during_close_join(tmp_path, monkeypatch):
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "0.2")
+
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(agent, "_abort_request_openai_client", lambda *a, **k: None)
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **k: None)
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        setattr(agent, "_codex_stream_last_event_ts", time.time())
+        time.sleep(0.35)
+        raise RuntimeError("provider failure won the race")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    with pytest.raises(RuntimeError, match="provider failure won the race"):
+        h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+
+
+def test_watchdog_close_error_recognizes_httpx_broken_pipe_wrapper():
+    from agent import chat_completion_helpers as h
+
+    assert h._is_watchdog_close_error(
+        httpx.ReadError("[Errno 32] Broken pipe")
+    )
+
+
+def test_ttfb_watchdog_hides_its_forced_close_broken_pipe(tmp_path, monkeypatch):
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0.4")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "0.4")
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "10")
+    monkeypatch.setenv("HERMES_PROVIDER_STALE_TIMEOUT", "10")
+
+    abort_started = threading.Event()
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda _client, reason=None: abort_started.set(),
+    )
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **k: None)
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        assert abort_started.wait(timeout=5), "TTFB watchdog did not abort the request"
+        raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    with pytest.raises(TimeoutError, match="produced no bytes") as excinfo:
+        h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+
+    assert "Broken pipe" not in str(excinfo.value)
+
+
+def test_stale_watchdog_hides_its_forced_close_broken_pipe(tmp_path, monkeypatch):
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent, "_compute_non_stream_stale_timeout", lambda _kwargs: 0.4)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "0")
+
+    abort_started = threading.Event()
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda _client, reason=None: abort_started.set(),
+    )
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **k: None)
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        assert abort_started.wait(timeout=5), "stale watchdog did not abort the request"
+        raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    with pytest.raises(TimeoutError, match="timed out.*no response") as excinfo:
+        h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+
+    assert "Broken pipe" not in str(excinfo.value)
 
 
 def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):

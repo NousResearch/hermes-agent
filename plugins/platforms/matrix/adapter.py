@@ -31,11 +31,6 @@ Environment variables:
                                 (default: false)
     MATRIX_ALLOW_ROOM_MENTIONS  Allow outbound @room mentions to notify whole rooms
                                 (default: false)
-    MATRIX_TOOLS_ALLOW_REDACTION
-                              Allow Matrix redaction tool execution (default: false)
-    MATRIX_TOOLS_ALLOW_INVITES Allow Matrix invite tool execution (default: false)
-    MATRIX_TOOLS_ALLOW_ROOM_CREATE
-                              Allow Matrix room creation tool execution (default: false)
     MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
     MATRIX_DM_AUTO_THREAD       Auto-create threads for DM messages (default: false)
     MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation

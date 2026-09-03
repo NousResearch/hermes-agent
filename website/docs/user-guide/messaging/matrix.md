@@ -408,17 +408,9 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-In Matrix conversations, Hermes exposes Matrix-specific tools to the agent:
+Hermes does not expose Matrix-specific agent tools (such as room creation, invites, or redaction) — the agent interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
 
-- `matrix_send_reaction`
-- `matrix_redact_message`
-- `matrix_create_room`
-- `matrix_invite_user`
-- `matrix_fetch_history`
-- `matrix_set_presence`
-
-These tools are scoped to Matrix contexts and are not available in non-Matrix toolsets. Admin-style tools are disabled by default: redaction requires `MATRIX_TOOLS_ALLOW_REDACTION=true`, invites require `MATRIX_TOOLS_ALLOW_INVITES=true`, and room creation requires `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true`. Public room creation also requires `MATRIX_ALLOW_PUBLIC_ROOMS=true`.
-If `MATRIX_ALLOWED_ROOMS` is set, Matrix tools may only target those rooms.
+If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms (DMs are exempt).
 
 Reaction controls use:
 

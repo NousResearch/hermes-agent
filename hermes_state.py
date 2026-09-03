@@ -4698,6 +4698,44 @@ def _connect_tracked_db(path, tracking_path=None, **kwargs):
     )
 
 
+def has_invalid_sqlite_header_preopen(
+    path: Path, *, probe_bytes: int = 100, force: bool = False
+) -> bool:
+    """Detect a pre-existing state.db whose first page is not SQLite.
+
+    This is intentionally a pre-open byte probe: use it before creating a
+    SQLite connection so startup can preserve a clobbered page 0 instead of
+    letting sqlite3 create sidecars or report an opaque NOTADB error. A live
+    tracked connection makes the helper return False unless ``force=True``.
+    """
+    try:
+        if not path.is_file():
+            return False
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size < 0:
+        return False
+    try:
+        from hermes_cli.sqlite_safe_read import (
+            has_live_connection,
+            read_header_bytes_preopen,
+        )
+
+        if not force and has_live_connection(path):
+            return False
+        head = read_header_bytes_preopen(
+            path, length=max(16, probe_bytes), force=force
+        )
+    except Exception:
+        return False
+    if head is None:
+        return False
+    if len(head) == 0:
+        return True
+    return not head.startswith(b"SQLite format 3")
+
+
 def is_zeroed_state_db(
     path: Path, *, probe_bytes: int = 100, force: bool = False
 ) -> bool:
@@ -4803,54 +4841,52 @@ def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
             handle.close()
 
 
-def quarantine_zeroed_state_db(
+def quarantine_invalid_state_db(
     path: Path, *, already_locked: bool = False
 ) -> Optional[Path]:
-    """Move a zeroed state.db aside (preserve bytes) and return quarantine path.
+    """Move a pre-existing non-SQLite state.db aside and preserve sidecars.
 
-    Uses a cross-process lock (``#68805``) so two concurrent startups cannot
-    race: the first process moves the zeroed file and the second re-checks
-    under the lock, finding the file already gone (or a fresh DB in its place)
-    instead of clobbering the quarantine.
+    Uses a cross-process lock (``#68805``) so concurrent startups cannot race:
+    the first process moves the damaged file and the second re-checks under the
+    lock, finding the file already gone or a fresh valid DB in its place.
     """
+
     def _do_quarantine():
         if not path.exists():
             logger.info(
-                "quarantine_zeroed_state_db: %s already moved by another process",
+                "quarantine_invalid_state_db: %s already moved by another process",
                 path,
             )
             return None
-        if not is_zeroed_state_db(path):
+        if not has_invalid_sqlite_header_preopen(path):
             logger.info(
-                "quarantine_zeroed_state_db: %s is no longer zeroed (another "
+                "quarantine_invalid_state_db: %s is no longer invalid (another "
                 "process quarantined it and a fresh DB was created)",
                 path,
             )
             return None
 
+        zeroed = is_zeroed_state_db(path)
         try:
             ts = time.strftime("%Y%m%d-%H%M%S")
         except Exception:
             ts = "unknown"
-        dest = path.with_name(
-            f"{path.name}.zeroed-{ts}-{os.getpid()}.bak"
-        )
+        suffix = "zeroed" if zeroed else "notadb"
+        dest = path.with_name(f"{path.name}.{suffix}-{ts}-{os.getpid()}.bak")
         n = 0
         while dest.exists():
             n += 1
-            dest = path.with_name(
-                f"{path.name}.zeroed-{ts}-{os.getpid()}-{n}.bak"
-            )
+            dest = path.with_name(f"{path.name}.{suffix}-{ts}-{os.getpid()}-{n}.bak")
         try:
             path.rename(dest)
         except OSError as exc:
-            logger.error("Failed to quarantine zeroed %s: %s", path, exc)
+            logger.error("Failed to quarantine invalid %s: %s", path, exc)
             return None
-        for suffix in ("-wal", "-shm"):
-            side = Path(str(path) + suffix)
+        for side_suffix in ("-wal", "-shm"):
+            side = Path(str(path) + side_suffix)
             if side.exists():
                 try:
-                    side.rename(Path(str(dest) + suffix))
+                    side.rename(Path(str(dest) + side_suffix))
                 except OSError:
                     pass
         return dest
@@ -4862,7 +4898,7 @@ def quarantine_zeroed_state_db(
         if not acquired:
             logger.error(
                 "quarantine lock for %s not acquired within 5s — refusing to "
-                "quarantine without the cross-process lock. The zeroed file "
+                "quarantine without the cross-process lock. The invalid file "
                 "is left in place. If sessions fail to load, restore from "
                 "state-snapshots via `hermes snapshot list` / "
                 "`hermes snapshot restore <id>`.",
@@ -4871,6 +4907,14 @@ def quarantine_zeroed_state_db(
             return None
         return _do_quarantine()
 
+
+def quarantine_zeroed_state_db(
+    path: Path, *, already_locked: bool = False
+) -> Optional[Path]:
+    """Move a zeroed state.db aside (preserve bytes) and return quarantine path."""
+    if path.exists() and not is_zeroed_state_db(path):
+        return None
+    return quarantine_invalid_state_db(path, already_locked=already_locked)
 
 # ── Read-only health/stats probes (hermes doctor, dashboards) ──────────
 
@@ -5499,32 +5543,32 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if not read_only:
                 preflight_db_writability(self.db_path, db_label="state.db")
 
-            # #68474 / #97568: Serialize startup across zero-byte check, quarantine,
-            # connect, and schema commit so concurrent openers don't race on an
-            # absent-path -> connect -> schema-commit window.
+            # #68474 / #97568 / #102198: Serialize startup across absent-path /
+            # invalid-header quarantine, connect, and schema commit so concurrent
+            # openers don't race on an absent-path -> connect -> schema-commit window.
             needs_startup_guard = (
                 not read_only
                 and (
                     not self.db_path.exists()
-                    or is_zeroed_state_db(self.db_path)
+                    or has_invalid_sqlite_header_preopen(self.db_path)
                 )
             )
 
-            def _handle_quarantine_if_zeroed(already_locked: bool = False):
+            def _handle_quarantine_if_invalid(already_locked: bool = False):
                 if (
                     self.db_path.exists()
-                    and is_zeroed_state_db(self.db_path)
+                    and has_invalid_sqlite_header_preopen(self.db_path)
                 ):
                     try:
                         zsize = self.db_path.stat().st_size
                     except OSError:
                         zsize = -1
-                    qpath = quarantine_zeroed_state_db(
+                    qpath = quarantine_invalid_state_db(
                         self.db_path, already_locked=already_locked
                     )
                     snaps = self.db_path.parent / "state-snapshots"
                     msg = (
-                        f"state.db looks ZEROED ({zsize} bytes, no SQLite header). "
+                        f"state.db has no SQLite header ({zsize} bytes). "
                         f"Preserved at {qpath or '(quarantine failed — file left in place)'}. "
                         f"Restore from {snaps} via `hermes snapshot list` / "
                         f"`hermes snapshot restore <id>` if available. "
@@ -5532,9 +5576,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     )
                     logger.error(msg)
                     _set_last_init_error(msg)
-                    # If quarantine failed, do not open the zeroed file (would fail
+                    # If quarantine failed, do not open the invalid file (would fail
                     # opaquely or risk further damage). Raise with the clear message.
-                    if qpath is None and self.db_path.exists() and is_zeroed_state_db(self.db_path):
+                    if (
+                        qpath is None
+                        and self.db_path.exists()
+                        and has_invalid_sqlite_header_preopen(self.db_path)
+                    ):
                         raise sqlite3.DatabaseError(msg)
 
             def _connect_and_init():
@@ -5609,10 +5657,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                                 "startup quarantine lock for %s not acquired within 5s; proceeding",
                                 self.db_path,
                             )
-                        _handle_quarantine_if_zeroed(already_locked=lock_acquired)
+                        _handle_quarantine_if_invalid(already_locked=lock_acquired)
                         _connect_and_init_with_lock_patience()
                 else:
-                    _handle_quarantine_if_zeroed(already_locked=False)
+                    _handle_quarantine_if_invalid(already_locked=False)
                     _connect_and_init_with_lock_patience()
 
             try:

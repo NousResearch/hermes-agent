@@ -959,6 +959,11 @@ class CredentialPool:
         # loop runs unbounded and non-interruptible.  Reset whenever a real
         # entry is identified or an escape path returns None.
         self._unmatched_rotation_streak: int = 0
+        # entry.id -> wall-clock time at which a positive Codex quota-restored
+        # probe was last acted on by lifting that entry's cooldown.  Guards the
+        # probe against its own false positives; see
+        # ``_codex_quota_restored_upstream``.
+        self._codex_probe_honored_at: Dict[str, float] = {}
 
     def has_credentials(self) -> bool:
         with self._lock:
@@ -2317,6 +2322,27 @@ class CredentialPool:
         Only fires for openai-codex entries frozen by a 429/quota-shaped
         error.  The underlying probe is throttled per token (5 min) so this
         is safe on the hot selection path.
+
+        The probe can be WRONG, and a false positive here is expensive.  It
+        reads ``/usage`` window utilisation, which reports below 100% while the
+        account is still being refused for a limit that endpoint does not
+        expose (burst caps, per-model windows).  Because a positive result both
+        lifts the cooldown and is cached for
+        ``CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS``, every selection during that
+        window hands the benched credential straight back: the pool never
+        reaches "no available entries", ``rotate()`` never returns None, and
+        the provider fallback chain (``fallback_providers`` — nous first) is
+        never reached.  Observed 2026-08-26: ~8,000 requests over 2.5h against
+        an ``openai-codex`` pool of one entry, hot-looping the same 429 at
+        roughly one request per second until the real quota window reopened.
+
+        So a positive probe buys exactly ONE optimistic retry per entry.  If
+        the account 429s again after we acted on the probe, the probe is
+        demonstrably wrong about this account and we keep the bench, letting
+        the pool empty and provider fallback take over.  The marker is dropped
+        when the entry legitimately returns to ``OK`` (see
+        ``_available_entries``), so a genuine early reopen in a later quota
+        window is still detected.
         """
         if self.provider != "openai-codex" or entry.last_status != STATUS_EXHAUSTED:
             return False
@@ -2329,8 +2355,14 @@ class CredentialPool:
         token = entry.access_token or ""
         if not token:
             return False
+        honored_at = self._codex_probe_honored_at.get(entry.id)
+        if honored_at is not None and (entry.last_status_at or 0.0) >= honored_at:
+            # We already lifted this entry's cooldown on a positive probe and
+            # it was re-benched by a later failure.  Do not spend another live
+            # request on the same wrong answer.
+            return False
         try:
-            return bool(
+            restored = bool(
                 auth_mod._probe_codex_quota_restored(
                     token,
                     base_url=entry.base_url,
@@ -2339,6 +2371,9 @@ class CredentialPool:
         except Exception:
             logger.debug("Codex quota-restored probe failed", exc_info=True)
             return False
+        if restored:
+            self._codex_probe_honored_at[entry.id] = time.time()
+        return restored
 
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
         if entry.auth_type != AUTH_TYPE_OAUTH:
@@ -2510,6 +2545,9 @@ class CredentialPool:
                 continue
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
+                # True when the cooldown below is being lifted on the strength
+                # of a live probe rather than because it actually elapsed.
+                lifted_by_probe = False
                 if exhausted_until is not None and now < exhausted_until:
                     # Codex quota windows can reopen EARLY: the user redeems a
                     # banked rate-limit reset (Codex CLI / ChatGPT UI), upgrades
@@ -2523,6 +2561,7 @@ class CredentialPool:
                         and self._codex_quota_restored_upstream(entry)
                     ):
                         continue
+                    lifted_by_probe = True
                 if clear_expired:
                     cleared = replace(
                         entry,
@@ -2536,6 +2575,12 @@ class CredentialPool:
                     self._replace_entry(entry, cleared)
                     entry = cleared
                     cleared_any = True
+                    if not lifted_by_probe:
+                        # The cooldown actually elapsed, so this entry is
+                        # genuinely healthy again: forget any one-shot Codex
+                        # probe marker and let the next quota window get its
+                        # own early-reopen detection.
+                        self._codex_probe_honored_at.pop(entry.id, None)
             if refresh and self._entry_needs_refresh(entry):
                 if self.provider in ("openai-codex", "xai-oauth"):
                     # Defer single-use-token refresh to avoid holding the

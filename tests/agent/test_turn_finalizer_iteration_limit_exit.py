@@ -186,13 +186,19 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
         conn,
         "task-123",
         error=(
-            "Iteration budget exhausted (60/60) — task could not complete "
-            "within the allowed iterations"
+            "Iteration budget exhausted (60/60) — task too large for "
+            "its budget; resize max_iterations or split the task, "
+            "then unblock"
         ),
         outcome="timed_out",
         release_claim=True,
         end_run=True,
-        event_payload_extra={"budget_used": 60, "budget_max": 60},
+        force_trip=True,
+        event_payload_extra={
+            "budget_used": 60,
+            "budget_max": 60,
+            "block_cause": "iteration_budget_exhausted",
+        },
     )
 
 

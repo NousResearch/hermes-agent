@@ -1115,6 +1115,14 @@ class Task:
     # ``kanban.failure_limit`` config, and then to ``DEFAULT_FAILURE_LIMIT``.
     # Name matches the ``--max-retries`` CLI flag on ``kanban create``.
     max_retries: Optional[int] = None
+    # Per-task iteration (agent-turn) budget for the dispatched worker.
+    # When set, the dispatcher exports ``HERMES_MAX_ITERATIONS=<n>`` into the
+    # worker subprocess env so this card runs with its own cap instead of the
+    # global ``agent.max_turns`` default. ``None`` (the common case) falls
+    # through to the global default — existing cards are unaffected. Lets the
+    # leader size a big card's budget up front rather than watching it hit the
+    # global wall and blind-retry.
+    max_iterations: Optional[int] = None
     # When True, the dispatched worker runs in a Ralph-style goal loop
     # (the same engine behind the ``/goal`` slash command): after each
     # turn an auxiliary judge model evaluates the worker's response
@@ -1217,6 +1225,11 @@ class Task:
             ),
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
+            ),
+            max_iterations=(
+                row["max_iterations"]
+                if "max_iterations" in keys and row["max_iterations"]
+                else None
             ),
             goal_mode=(
                 bool(row["goal_mode"]) if "goal_mode" in keys and row["goal_mode"] else False
@@ -1394,6 +1407,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
     max_retries          INTEGER,
+    -- Per-task iteration (agent-turn) budget for the dispatched worker.
+    -- When set, the dispatcher exports HERMES_MAX_ITERATIONS=<n> into the
+    -- worker env so the card runs with its own cap instead of the global
+    -- agent.max_turns default. NULL = use the global default (existing
+    -- behaviour; existing rows unaffected).
+    max_iterations       INTEGER,
     -- When 1, the dispatched worker runs in a Ralph-style goal loop: an
     -- auxiliary judge re-evaluates the worker's response against the
     -- card title/body after each turn and feeds a continuation prompt
@@ -2665,6 +2684,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "goal_max_turns", "goal_max_turns INTEGER"
         )
 
+    if "max_iterations" not in cols:
+        # Per-task iteration (agent-turn) budget. NULL = global
+        # agent.max_turns default (pre-existing behaviour for every row).
+        _add_column_if_missing(
+            conn, "tasks", "max_iterations", "max_iterations INTEGER"
+        )
+
     if "session_id" not in cols:
         # Originating agent/chat session id, populated when the task is
         # created from within an agent loop that propagated
@@ -3184,6 +3210,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    max_iterations: Optional[int] = None,
     model_override: Optional[str] = None,
     provider_override: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
@@ -3508,8 +3535,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id,
+                        max_iterations
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3535,6 +3563,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        int(max_iterations) if max_iterations is not None else None,
                     ),
                 )
                 for pid in parents:
@@ -10841,6 +10870,15 @@ def _default_spawn(
         env["HERMES_KANBAN_GOAL_MODE"] = "1"
         if task.goal_max_turns is not None:
             env["HERMES_KANBAN_GOAL_MAX_TURNS"] = str(int(task.goal_max_turns))
+    # Per-task iteration budget (#iter-budget). When the card sets an explicit
+    # max_iterations, export it as HERMES_MAX_ITERATIONS so the worker runs with
+    # that cap instead of the global agent.max_turns default. When unset (the
+    # common case) we leave whatever the child would otherwise resolve — the
+    # global default — so existing cards and behaviour are unchanged. A worker
+    # that still exhausts this larger budget routes to blocked, not blind-retry
+    # (see agent/turn_finalizer._record_kanban_budget_exhausted).
+    if task.max_iterations is not None:
+        env["HERMES_MAX_ITERATIONS"] = str(int(task.max_iterations))
     terminal_timeout = _worker_terminal_timeout_env(
         task.max_runtime_seconds,
         env.get("TERMINAL_TIMEOUT"),

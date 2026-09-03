@@ -89,15 +89,25 @@ def _record_kanban_budget_exhausted(
                 error=(
                     f"Iteration budget exhausted "
                     f"({api_call_count}/{max_iterations}) — "
-                    "task could not complete within the allowed "
-                    "iterations"
+                    "task too large for its budget; resize max_iterations "
+                    "or split the task, then unblock"
                 ),
                 outcome="timed_out",
                 release_claim=True,
                 end_run=True,
+                # Route iteration-cap exhaustion straight to blocked instead of
+                # the below-threshold auto-retry path. Retrying the same task
+                # into the same wall cannot succeed (same budget, same work) and
+                # burns 2-3x the tokens. force_trip flips the task to blocked
+                # (needs human: raise max_iterations or split) and emits a
+                # gave_up event, while _record_task_failure still preserves the
+                # reviewer-run guard (a review run is never downgraded to an
+                # implementation retry) and scrubs the reason of secrets/PII.
+                force_trip=True,
                 event_payload_extra={
                     "budget_used": api_call_count,
                     "budget_max": max_iterations,
+                    "block_cause": "iteration_budget_exhausted",
                 },
             )
         finally:

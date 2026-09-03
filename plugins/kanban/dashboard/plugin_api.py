@@ -611,6 +611,7 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    max_iterations: Optional[int] = None
     model_override: Optional[str] = None
     provider_override: Optional[str] = None
     # Per-task thinking depth (none|minimal|…|ultra). None = inherit the
@@ -643,6 +644,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            max_iterations=payload.max_iterations,
             model_override=payload.model_override,
             provider_override=payload.provider_override,
             reasoning_effort=payload.reasoning_effort,

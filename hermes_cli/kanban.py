@@ -76,6 +76,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "max_iterations": t.max_iterations,
         "model_override": t.model_override,
         "provider_override": t.provider_override,
         "session_id": t.session_id,
@@ -431,6 +432,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           metavar="N", dest="goal_max_turns",
                           help="Turn budget for --goal workers (default 20). "
                                "Ignored without --goal.")
+    p_create.add_argument("--max-iterations", type=int, default=None,
+                          metavar="N", dest="max_iterations",
+                          help="Per-card agent-turn (iteration) budget for the "
+                               "worker. Overrides the global agent.max_turns "
+                               "default for this card only. Size it up for large "
+                               "tasks so they don't hit the global wall and block. "
+                               "Unset = global default.")
     p_create.add_argument("--initial-status",
                           choices=sorted(kb.VALID_INITIAL_STATUSES),
                           default="running",
@@ -1662,6 +1670,13 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    max_iterations = getattr(args, "max_iterations", None)
+    if max_iterations is not None and max_iterations < 1:
+        print(
+            f"kanban: --max-iterations must be >= 1 (got {max_iterations}).",
+            file=sys.stderr,
+        )
+        return 2
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -1681,6 +1696,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            max_iterations=max_iterations,
             model_override=getattr(args, "model_override", None),
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
@@ -1879,6 +1895,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
             print(f"  max-retries: {int(cfg_val)} (config kanban.failure_limit)")
         else:
             print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
+    if task.max_iterations is not None:
+        print(f"  max-iterations: {task.max_iterations} (task)")
     print(f"  created:   {_fmt_ts(task.created_at)} by {task.created_by or '-'}")
 
     # Diagnostics section — surface active distress signals at the top

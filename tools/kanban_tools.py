@@ -1429,6 +1429,7 @@ def _handle_create(args: dict, **kw) -> str:
     if goal_bool_error:
         return tool_error(goal_bool_error)
     goal_max_turns = args.get("goal_max_turns")
+    max_iterations = args.get("max_iterations")
     model_override = args.get("model")
     provider_override = args.get("provider")
     if provider_override and not model_override:
@@ -1477,6 +1478,9 @@ def _handle_create(args: dict, **kw) -> str:
                 goal_mode=goal_mode,
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
+                ),
+                max_iterations=(
+                    int(max_iterations) if max_iterations is not None else None
                 ),
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
@@ -2255,6 +2259,19 @@ KANBAN_CREATE_SCHEMA = {
                     "Per-task runtime cap. When exceeded, the "
                     "dispatcher SIGTERMs the worker and re-queues the "
                     "task with outcome='timed_out'."
+                ),
+            },
+            "max_iterations": {
+                "type": "integer",
+                "description": (
+                    "Per-card agent-turn (iteration) budget for the "
+                    "dispatched worker. Overrides the global "
+                    "agent.max_turns default for this card only. Size it "
+                    "up for large tasks (e.g. 80) so they don't hit the "
+                    "global wall and block mid-work. Omit for the global "
+                    "default. A worker that still exhausts this budget "
+                    "routes to blocked (needs human) rather than "
+                    "auto-retrying into the same wall."
                 ),
             },
             "initial_status": {

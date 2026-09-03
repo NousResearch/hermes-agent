@@ -202,6 +202,12 @@ Problemas comuns:
   `voice()` do spectrum-ts via o endpoint `/send-attachment`
   do sidecar. Legendas chegam como bubble iMessage separado após a
   mídia.
+- **Confirmações de leitura são suportadas.** O sidecar marca um iMessage
+  inbound como lido depois de encaminhá-lo ao Hermes, então o remetente vê
+  `Read` sem esperar um turno de model/ferramenta. Receipts inbound para
+  mensagens enviadas pelo Hermes são consumidos como telemetria de presença e
+  nunca criam um turno do agente. Defina `PHOTON_READ_RECEIPTS=false` para
+  manter mensagens em `Delivered`.
 - **Quotas gratuitas do Photon:** 5.000 mensagens por servidor por dia,
   50 iniciações de conversa nova por linha compartilhada por dia. Aumentos
   disponíveis — email `help@photon.codes`.

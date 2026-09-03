@@ -35,6 +35,7 @@ approvals:
   timeout: 300                    # seconds to wait for user response (default: 300)
   cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
   single_query_mode: deny         # deny | approve — what single-query (-q) sessions do on a dangerous command
+  unattended_mode: deny           # deny | approve — what webhook/API sessions do on a dangerous command
   mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
   destructive_slash_confirm: true # /clear, /new, /reset, /undo prompt before discarding state
 ```
@@ -47,6 +48,7 @@ O conjunto completo de chaves:
 | `timeout` | `300` | Seconds Hermes waits for an approval reply before timing out. |
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
 | `single_query_mode` | `deny` | Como sessões one-shot [`hermes chat -q`](./cli.md) se comportam quando disparam um prompt de comando perigoso. Uma sessão `-q` roda um único turno e sai sem um usuário esperando para responder prompts; `deny` bloqueia o comando (o agente precisa achar outro caminho), `approve` auto-aprova tudo no contexto single-query. Espelha `cron_mode`. |
+| `unattended_mode` | `deny` | Como sessões em plataformas programáticas sem supervisão (webhook, msgraph_webhook, api_server) se comportam quando disparam um prompt de comando perigoso. Essas superfícies não têm um humano que possa responder `/approve`, então em vez de bloquear pelo timeout completo de aprovação, `deny` bloqueia o comando na hora (o agente precisa achar outro caminho) e `approve` auto-aprova tudo no contexto unattended. Espelha `cron_mode`. |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. O TUI também honra esta setting para o modal de `/clear`, `/new` e `/reset`; `HERMES_TUI_NO_CONFIRM=1` força pular aquele modal independente do valor configurado. |
 
@@ -476,6 +478,8 @@ Se você adicionar nomes a `terminal.docker_forward_env`, essas variáveis são 
 ## Environment Variable Passthrough {#environment-variable-passthrough}
 
 Tanto `execute_code` quanto `terminal` removem variáveis de ambiente sensíveis de processos filhos para prevenir exfiltração de credenciais por código gerado por LLM. Porém, skills que declaram `required_environment_variables` legitimamente precisam de acesso a essas vars.
+
+Credenciais de plataforma first-party — as variáveis `BUZZ_*` usadas pela plataforma de mensagens Buzz — são passadas a filhos de `terminal` (spawns foreground e background/PTY) **somente quando a sessão está de fato operando como um agente Buzz**: o processo é um agente gerenciado por Buzz-ACP (`BUZZ_MANAGED_AGENT` definido pelo harness do Buzz Desktop) ou a plataforma da sessão gateway ao vivo é `buzz`. Isso permite que um agente da plataforma Buzz invoque sua CLI mandada pela plataforma (ex. `buzz`) a partir da ferramenta terminal, enquanto sessões Telegram/CLI/cron no mesmo host mantêm as variáveis stripped. Como `_sanitize_subprocess_env` também alimenta workers de busca (ex. o subprocess de web-search ddgs), o binário driver de computer-use e runners de scripts do usuário (comandos bang `!`, quick commands, scripts de cron, scripts de filtro webhook), esses filhos também recebem as variáveis quando spawnados a partir de uma sessão Buzz. A exceção é **somente terminal**: não se aplica a `execute_code`, spawns de browser/TUI-host (`hermes_subprocess_env`), filhos Docker/Modal, ou registro `env_passthrough`, que permanecem selados.
 
 ### How It Works {#how-it-works}
 

@@ -22,18 +22,18 @@ Ambas são configuradas por uma única seleção de backend. Providers são esco
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | ✔ Grátis (self-hosted) |
 | **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 queries/mo |
 | **DDGS (DuckDuckGo)** | — (sem chave) | ✔ | — | ✔ Grátis |
-| **Tavily** | `TAVILY_API_KEY` (opcional) | ✔ | ✔ | ✔ Membro do ring keyless · 1 000 searches/mo com chave free |
 | **Exa** | `EXA_API_KEY` (opcional) | ✔ | ✔ | ✔ Membro do ring keyless · 1 000 searches/mo com chave |
 | **Parallel** | `PARALLEL_API_KEY` (opcional) | ✔ | ✔ | ✔ Membro do ring keyless · pago com chave |
+| **Tavily** | `TAVILY_API_KEY` (opcional) | ✔ | ✔ | ✔ Opt-in keyless quando selecionado |
 | **Keenable** | `KEENABLE_API_KEY` (opcional) | ✔ | ✔ | ✔ Membro do ring keyless · pago com chave |
 | **xAI (Grok)** | `XAI_API_KEY` ou `hermes auth add xai-oauth` | ✔ | — | Pago (SuperGrok ou por token) |
 
-Brave Search, DDGS e xAI são **search-only** — combine qualquer um com Firecrawl/Tavily/Exa/Parallel quando também precisar de `web_extract`. DDGS usa o pacote Python [`ddgs`](https://pypi.org/project/ddgs/) por baixo; se ainda não estiver instalado, rode `pip install ddgs` (ou deixe o Hermes lazy-install na primeira uso). xAI roda a ferramenta server-side `web_search` do Grok na Responses API — resultados são gerados por LLM em vez de index-backed, então títulos, descrições e escolha de URL são toda saída do modelo (veja a [ressalva de trust model](#xai-grok) abaixo).
+Brave Search, DDGS e xAI são **search-only** — combine qualquer um com Firecrawl/Tavily/Keenable/Exa/Parallel quando também precisar de `web_extract`. DDGS usa o pacote Python [`ddgs`](https://pypi.org/project/ddgs/) por baixo; se ainda não estiver instalado, rode `pip install ddgs` (ou deixe o Hermes lazy-install na primeira uso). xAI roda a ferramenta server-side `web_search` do Grok na Responses API — resultados são gerados por LLM em vez de index-backed, então títulos, descrições e escolha de URL são toda saída do modelo (veja a [ressalva de trust model](#xai-grok) abaixo).
 
 **Split por capacidade:** você pode usar providers diferentes para search e extract independentemente — por exemplo SearXNG (grátis) para search e Firecrawl para extract. Veja [Configuração por capacidade](#per-capability-configuration) abaixo.
 
 :::info Funciona out of the box — rotação keyless de free-tier
-Uma instalação nova **sem nenhuma credencial web** já tem `web_search` e `web_extract` funcionando: requests rotacionam round-robin pelos free tiers públicos de cinco vendors — **Exa, Parallel, Tavily, Firecrawl e Keenable** — espalhando carga de forma uniforme, e um request rate-limited automaticamente retenta no próximo vendor do ring (multi-hop, até um servir ou todos estarem throttled). Sem signup, sem chave. Esse tier é estritamente last-resort — qualquer backend configurado ou chave de API presente sempre vence — e os requests não carregam identificadores de usuário (só um session id aleatório por processo, rotacionado no restart). Para serviço garantido e sem throttle, configure um provider com chave. Desabilite o tier keyless por completo com `web.keyless_fallback: false`.
+Uma instalação nova **sem nenhuma credencial web** já tem `web_search` e `web_extract` funcionando: requests rotacionam round-robin pelos free tiers públicos dos vendors do ring — **Exa, Parallel, Firecrawl e Keenable** — espalhando carga de forma uniforme, e um request rate-limited automaticamente retenta no próximo vendor do ring (multi-hop, até um servir ou todos estarem throttled). Sem signup, sem chave. Esse tier é estritamente last-resort — qualquer backend configurado ou chave de API presente sempre vence — e os requests não carregam identificadores de usuário (só um session id aleatório por processo, rotacionado no restart). Para serviço garantido e sem throttle, configure um provider com chave. Desabilite o tier keyless por completo com `web.keyless_fallback: false`.
 :::
 
 **Escolher free vs paid explicitamente:** em `hermes tools`, Exa, Parallel e Keenable aparecem cada um como duas linhas — **Free (keyless)** e **Paid (API key)**. Escolher Free fixa o endpoint anônimo daquele vendor (mesmo que você depois adicione uma chave); escolher Paid fixa o caminho com chave (chave ausente então erra em vez de fazer downgrade silencioso para o free tier). A seleção é armazenada como `web.provider_tier.<name>: free|paid`; deixe unset para auto (chave presente → paid, senão o ring keyless).
@@ -287,7 +287,7 @@ SearXNG cuida do search; você precisa de um provider separado para `web_extract
 # ~/.hermes/config.yaml
 web:
   search_backend: "searxng"
-  extract_backend: "firecrawl"   # or tavily, exa, parallel
+  extract_backend: "firecrawl"   # or tavily, keenable, exa, parallel
 ```
 
 Com essa config, o Hermes usa SearXNG para todas as consultas de search e Firecrawl para extração de URL — combinando search grátis com extração de alta qualidade.
@@ -305,8 +305,6 @@ TAVILY_API_KEY=tvly-your-key-here
 ```
 
 Obtenha uma chave em [app.tavily.com](https://app.tavily.com/home). Veja [Tavily keyless](https://docs.tavily.com/documentation/keyless).
-
-Instalações vazias mantêm Firecrawl como o default nomeado. Tavily keyless não é auto-selecionado.
 
 ---
 
@@ -375,7 +373,7 @@ web:
     timeout: 90                  # seconds (default)
 ```
 
-**Search-only** — combine com Firecrawl / Tavily / Exa / Parallel se também precisar de `web_extract`. Em 401 o provider faz um único refresh forçado de token OAuth e retenta (cobre revogação mid-window e tokens opacos que o check proativo de expiração não decodifica); credenciais env-var pulam o retry.
+**Search-only** — combine com Firecrawl / Tavily / Keenable / Exa / Parallel se também precisar de `web_extract`. Em 401 o provider faz um único refresh forçado de token OAuth e retenta (cobre revogação mid-window e tokens opacos que o check proativo de expiração não decodifica); credenciais env-var pulam o retry.
 
 :::caution Trust model
 Diferente de providers index-backed (Brave, Tavily, Exa) que retornam resultados verbatim de motor de busca, xAI é um LLM escolhendo quais URLs surfacear e escrevendo títulos e descrições. O *conteúdo* da consulta influencia a saída, então uma consulta maliciosamente craftada (ex.: injetada via input upstream não confiável que o agente pegou) pode em princípio steer Grok a emitir URLs escolhidas por atacante. Trate URLs retornadas como trataria qualquer link gerado pelo modelo — valide antes de buscar, especialmente se a consulta veio de input não confiável.
@@ -392,7 +390,7 @@ Defina um provider para todas as capacidades web:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
+  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | keenable | exa | parallel | xai
 ```
 
 ### Configuração por capacidade {#per-capability-configuration}
@@ -426,9 +424,9 @@ Se nenhum backend **jamais** foi selecionado (nenhuma chave `web.backend` / por 
 | `SEARXNG_URL` | searxng |
 | `BRAVE_SEARCH_API_KEY` | brave-free |
 | `ddgs` package importable | ddgs |
-| *(nada definido)* | ring keyless: exa / parallel / tavily / firecrawl / keenable (round-robin) |
+| *(nada definido)* | ring keyless: exa / parallel / firecrawl / keenable (round-robin) |
 
-**Ring keyless de free-tier:** quando *nenhuma* credencial acima está presente, requests rotacionam pelos free tiers públicos de cinco vendors (Exa, Parallel, Tavily, Firecrawl, Keenable) para que as tools web funcionem numa instalação nova com zero setup — e um request rate-limited faz failover automaticamente para o próximo vendor do ring. Fixe um vendor em `hermes tools` para parar a rotação (o ring então só é usado como sucessão de failover em throttles). Todos os free tiers têm rate-limit do vendor sob carga em rajada; uso normal sustentado passa bem. Defina `web.keyless_fallback: false` para desligar o tier — com ele off e sem credenciais, as tools web ficam indisponíveis até um provider ser configurado.
+**Ring keyless de free-tier:** quando *nenhuma* credencial acima está presente, requests rotacionam pelos free tiers públicos dos vendors do ring (Exa, Parallel, Firecrawl, Keenable) para que as tools web funcionem numa instalação nova com zero setup — e um request rate-limited faz failover automaticamente para o próximo vendor do ring. Fixe um vendor em `hermes tools` para parar a rotação (o ring então só é usado como sucessão de failover em throttles). Todos os free tiers têm rate-limit do vendor sob carga em rajada; uso normal sustentado passa bem. Defina `web.keyless_fallback: false` para desligar o tier — com ele off e sem credenciais, as tools web ficam indisponíveis até um provider ser configurado.
 
 **Rescue keyless one-shot para backends com chave:** quando seu backend escolhido/com chave falha numa chamada (chave ruim, outage, 5xx upstream), aquela chamada única automaticamente retenta no ring keyless de free-tier em vez de errar — o resultado anota qual vendor serviu e o porquê (`rescued_from` / `backend_error`). O failover nunca é sticky: a próxima chamada `web_search`/`web_extract` tenta de novo seu backend escolhido. Desabilite com `web.keyless_rescue: false` (também off sempre que `keyless_fallback` estiver off).
 
@@ -476,7 +474,7 @@ SearXNG não pode extrair conteúdo de URL. Defina `web.extract_backend` para um
 ```yaml
 web:
   search_backend: "searxng"
-  extract_backend: "firecrawl"  # or tavily / exa / parallel
+  extract_backend: "firecrawl"  # or tavily / keenable / exa / parallel
 ```
 
 ### SearXNG retorna 0 resultados

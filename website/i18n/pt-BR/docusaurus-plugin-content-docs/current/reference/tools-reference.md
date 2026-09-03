@@ -8,7 +8,7 @@ description: "Referência oficial das ferramentas embutidas do Hermes, agrupadas
 
 Esta página documenta as ferramentas embutidas do Hermes, agrupadas por toolset. A disponibilidade varia por plataforma, credenciais e toolsets ativados.
 
-**Contagem rápida (registro atual):** ~86 ferramentas — 10 ferramentas de browser (core) + 2 ferramentas de browser condicionadas por CDP, 4 ferramentas de arquivo, 4 ferramentas do Home Assistant, 2 ferramentas de terminal (`terminal`, `process`), 11 ferramentas de GUI desktop (`read_terminal`, `close_terminal`, `open_preview`, `close_preview`, `read_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `tour` — apenas sessões do app desktop), 2 ferramentas web, 5 ferramentas do Feishu, 7 ferramentas do Spotify (registradas pelo plugin `spotify` incluído), 5 ferramentas do Yuanbao, 12 ferramentas de kanban (registradas quando o dispatcher do kanban cria o agente), 3 ferramentas de projeto (sessões desktop/GUI), 2 ferramentas do Discord, 3 ferramentas de vídeo (`video_generate`, `xai_video_edit`, `xai_video_extend`), e um punhado de ferramentas independentes (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`, `x_search`).
+**Contagem rápida (registro atual):** ~86 ferramentas — 10 ferramentas de browser (core) + 2 ferramentas de browser condicionadas por CDP, 4 ferramentas de arquivo, 4 ferramentas do Home Assistant, 2 ferramentas de terminal (`terminal`, `process`), 11 ferramentas de GUI desktop (`read_terminal`, `close_terminal`, `open_preview`, `close_preview`, `read_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `tour`, `tip` — apenas sessões do app desktop), 2 ferramentas web, 5 ferramentas do Feishu, 7 ferramentas do Spotify (registradas pelo plugin `spotify` incluído), 5 ferramentas do Yuanbao, 12 ferramentas de kanban (registradas quando o dispatcher do kanban cria o agente), 3 ferramentas de projeto (sessões desktop/GUI), 2 ferramentas do Discord, 3 ferramentas de vídeo (`video_generate`, `xai_video_edit`, `xai_video_extend`), e um punhado de ferramentas independentes (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`, `x_search`).
 
 :::tip Ferramentas MCP
 Além das ferramentas embutidas, o Hermes pode carregar ferramentas dinamicamente de servidores MCP. As ferramentas MCP aparecem com o prefixo `mcp_<server>_` (ex.: `mcp_github_create_issue` para o servidor MCP `github`). Veja [Integração MCP](/user-guide/features/mcp) para configuração.
@@ -199,6 +199,7 @@ Ativado em sessões cuja origem é o app desktop do Hermes, em qualquer backend 
 | `read_window_below` | Identifica a janela do SO diretamente abaixo da janela do Hermes desktop — nome do app, título, bounds (apenas metadados, nunca pixels). No macOS, títulos de outros apps só aparecem quando Screen Recording já foi concedida; a ferramenta nunca solicita a permissão. | — |
 | `focus_pane` | Revela e foca um painel no app desktop do Hermes (chat, files, terminal, review, sessions). | — |
 | `react_to_message` | Reage a uma mensagem com um único emoji, no estilo tapback do iMessage. Opt-in via Settings → Appearance (`display.message_reactions`). | — |
+| `tip` | Aponta para um elemento com um pequeno bubble de destaque e uma seta — o irmão quieto de `tour`, sem dimming, sem spotlight e sem Next/Prev. Os mesmos handles `data-tour` e a mesma chamada de descoberta `tour(action='targets')`. | — |
 | `tour` | Dá um tour guiado ao vivo: escurece a tela, destaca um elemento e anexa um popover narrado (driver.js). Funciona na própria UI do app Hermes e em qualquer página aberta no painel de preview; `targets` descobre o que está na tela, `show` narra passo a passo, `start` entrega ao usuário controles Next/Prev. | — |
 
 ### Tours {#tours}
@@ -247,11 +248,36 @@ startTour([
 
 Passe `'preview'` como segundo argumento para rodar contra a página no painel de preview em vez do app.
 
+
+### Dicas {#tips}
+
+Uma tip é um passo de tour sem a produção: um bubble, uma seta, sem scrim e
+nada para paginar. É o peso certo para uma frase que ficaria mais clara com um
+dedo no assunto — "o nome do modelo é um botão" — onde escurecer o app inteiro não seria.
+
+A ferramenta `tip` aceita os mesmos seletores que `tour(action='targets')` reporta, então
+a descoberta é uma chamada para ambos, e os handles duráveis `data-tour` acima nomeiam
+targets para qualquer um. Uma tip fica na tela por vez; uma nova substitui a última.
+
+O app também pode mostrar as próprias, percorrendo um catálogo built-in de features do app em
+ordem, no ritmo de tips de loading screen de jogo em vez de notificação: alguns
+minutos após um launch no mínimo, depois no máximo uma a cada seis horas, e
+só em um momento genuinamente idle. Uma tip do Hermes compartilha esse cooldown, então também
+compra ao usuário seis horas de quietude da rotação. Fechar uma tip de rotação
+com o ✕ a aposenta de vez, e a linha de settings as traz de volta.
+
+Tanto tips quanto tours estão on por padrão e desligam em Settings → Appearance
+(`display.in_app_tips`, `display.in_app_tours`). Off cobre Hermes e o app: o switch
+alcança a config do gateway conectado e a ferramenta sai do schema do modelo, então o agente
+nunca é informado de uma superfície que não pode usar. Como toda mudança de schema, isso
+entra na próxima sessão — uma conversa em andamento mantém o toolset com que começou, e o app
+recusa a chamada enquanto isso.
+
 ## Toolset `todo` {#todo-toolset}
 
 | Ferramenta | Descrição | Requer ambiente |
 |------|-------------|----------------------|
-| `todo` | Gerencia sua lista de tarefas para a sessão atual. Use para tarefas complexas com 3+ etapas ou quando o usuário fornece várias tarefas. Chame sem parâmetros para ler a lista atual. Escrita: - Forneça o array 'todos' para criar/atualizar itens - merge=… | — |
+| `todo` | Gerencie sua lista de tarefas da sessão atual. Use para tarefas complexas com 3+ passos ou quando o usuário fornece múltiplas tarefas. Chame sem parâmetros para ler a lista atual. Itens podem aninhar: o campo opcional `parent` de um item aponta para o id de outro, tornando-o subtarefa — as superfícies renderizam a árvore indentada. | — |
 
 ## Toolset `vision` {#vision-toolset}
 
@@ -286,8 +312,8 @@ A ferramenta única `video_generate` cobre ambas as modalidades — passe `image
 
 | Ferramenta | Descrição | Requer ambiente |
 |------|-------------|----------------------|
-| `web_search` | Busca informações na web. Retorna até 5 resultados por padrão com títulos, URLs e descrições. Aceita um `limit` opcional (1-100, padrão 5). A query é passada ao backend configurado, então operadores como `site:domain`, `filetype:pdf`, `intitle:word`, `-term` e `"frase exata"` podem funcionar quando o backend os suportar. | EXA_API_KEY ou PARALLEL_API_KEY ou FIRECRAWL_API_KEY ou TAVILY_API_KEY |
-| `web_extract` | Extrai conteúdo de URLs de páginas web. Retorna o conteúdo da página em formato markdown. Também funciona com URLs de PDF — passe o link do PDF diretamente e ele converte para texto markdown. Páginas com menos de 5000 caracteres retornam markdown completo; páginas maiores são resumidas por LLM. | EXA_API_KEY ou PARALLEL_API_KEY ou FIRECRAWL_API_KEY ou TAVILY_API_KEY |
+| `web_search` | Busca informações na web. Retorna até 5 resultados por padrão com títulos, URLs e descrições. Aceita um `limit` opcional (1-100, padrão 5). A query é passada ao backend configurado, então operadores como `site:domain`, `filetype:pdf`, `intitle:word`, `-term` e `"frase exata"` podem funcionar quando o backend os suportar. | EXA_API_KEY ou PARALLEL_API_KEY ou FIRECRAWL_API_KEY ou TAVILY_API_KEY ou KEENABLE_API_KEY |
+| `web_extract` | Extrai conteúdo de URLs de páginas web. Retorna o conteúdo da página em formato markdown. Também funciona com URLs de PDF — passe o link do PDF diretamente e ele converte para texto markdown. Páginas com menos de 5000 caracteres retornam markdown completo; páginas maiores são resumidas por LLM. | EXA_API_KEY ou PARALLEL_API_KEY ou FIRECRAWL_API_KEY ou TAVILY_API_KEY ou KEENABLE_API_KEY |
 
 ## Toolset `x_search` {#x_search-toolset}
 

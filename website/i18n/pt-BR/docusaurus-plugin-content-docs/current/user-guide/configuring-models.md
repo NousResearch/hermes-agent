@@ -11,7 +11,7 @@ O Hermes usa dois tipos de slots de model:
 - **Model principal** — com o que o agente pensa. Toda mensagem user, todo loop de tool-call, toda resposta streamed passa por este model.
 - **Models auxiliares** — side-jobs menores que o agente offloada. Compressão de contexto, visão (análise de imagem), resumo de página web, scoring de aprovação, roteamento de ferramentas MCP, geração de título de sessão e busca de skills. Cada um tem seu próprio slot e pode ser overridden independentemente.
 
-Esta página cobre configurar ambos pelo dashboard. Se preferir arquivos de config ou CLI, vá para [Métodos alternativos](#alternative-methods) no final.
+Esta página cobre configurar ambos pelo dashboard. Se preferir arquivos de config ou CLI, vá para [Métodos alternativos](#alternative-methods) no final. Para rodar modelos na sua própria máquina em vez de um provedor cloud, veja [Modelos locais](/user-guide/local-models).
 
 :::tip Caminho mais rápido: Nous Portal
 O [Nous Portal](/user-guide/features/tool-gateway) oferece 300+ models em uma assinatura. Em instalação fresh, rode `hermes setup --portal` para logar e definir Nous como provider em um comando. Inspecione o que está wired com `hermes portal info`.
@@ -59,7 +59,7 @@ Prompt caches são keyed ao model servindo a requisição, então qualquer mudan
 
 ### Tiers de data-training desassistidos {#unattended-data-training-tiers}
 
-Modelos como `muse-spark-1.2-contributor` são com desconto porque o vendor pode treinar nos seus prompts e completions. Seleção interativa de modelo sempre mostra um prompt de confirmação. Caminhos de startup não interativos como workers Kanban e agentes cron falham fechado porque não podem fazer aquela pergunta.
+Modelos com sufixo `-contributor` (ex.: `muse-spark-1.2-contributor`, `muse-spark-1.3-contributor`) têm desconto porque o vendor pode treinar com seus prompts e completions. Seleção interativa de modelo sempre mostra um prompt de confirmação. Caminhos de startup não interativos como workers Kanban e agentes cron falham fechado porque não podem fazer aquela pergunta.
 
 Se treinar nos dados da carga desassistida for aceitável, registre um acknowledgement persistente:
 
@@ -169,7 +169,7 @@ Quando `fallback_chain` está ausente, `auto` usa a cadeia top-level `fallback_p
 
 ## Opções de request por provider {#per-provider-request-options}
 
-Entradas de provider (`providers.<name>` no dict `providers:`, ou itens na lista legacy `custom_providers`) aceitam dois knobs que moldam como o Hermes fala com o endpoint:
+Entradas de provider (`providers.<name>` no dict `providers:`, ou itens na lista legacy `custom_providers`) aceitam knobs que moldam como o Hermes fala com o endpoint:
 
 **`extra_headers`** — mapping de headers HTTP extras anexados a toda requisição LLM roteada para a base URL daquele provider. Aplicados por último, após defaults de URL/profile e overrides de header do usuário, então sobrevivem a swaps de credencial e rebuilds de client. Útil para Cloudflare Access service tokens, auth de proxy ou esquemas bearer custom:
 
@@ -198,6 +198,18 @@ providers:
 ```
 
 Com discovery off, o model picker (`hermes model`, `/model`) mostra a lista configurada em vez de probe live.
+
+**`openai_native_compaction`** — defina esta capability como `true` só para um endpoint OpenAI-compatible
+em que você confia com o conteúdo da conversa. Compactação nativa envia seu payload ao `base_url` configurado daquele provedor:
+
+```yaml
+providers:
+  trusted-proxy:
+    api: https://llm.internal.example.com/v1
+    capabilities:
+      openai_native_compaction: true
+```
+
 
 Para um gateway que resolve um alias bare de modelo só
 depois de receber a requisição, opte o alias em marcadores de prompt-cache
@@ -278,7 +290,7 @@ Troca one-turn quebra o prefixo prompt-cache do provider duas vezes (saindo e vo
 
 ### Aliases custom
 
-Defina nomes curtos para models que você alcança frequentemente, depois use `/model <alias>` no CLI ou qualquer plataforma de mensagens. Dois formatos equivalentes — escolha o que encaixa no workflow.
+Defina nomes curtos para models que você alcança frequentemente, depois use `/model <alias>` numa sessão em andamento ou `hermes chat --model <alias>` no startup. Dois formatos equivalentes — escolha o que encaixa no workflow.
 
 **Canônico (top-level `model_aliases:`)** — controle total sobre provider + base_url:
 
@@ -292,6 +304,27 @@ model_aliases:
     model: grok-4
     provider: x-ai
 ```
+
+
+Um alias que aponta para seu próprio endpoint também pode carregar a credencial daquele endpoint,
+com `api_key` (literal, ou referência `"${VAR}"`) ou `key_env` (nome de variável de ambiente).
+Se ambos estiverem definidos, `api_key` vence:
+
+```yaml
+model_aliases:
+  theta:
+    model: theta-1
+    provider: custom
+    base_url: "https://theta.example.com/v1"
+    key_env: THETA_API_KEY        # or: api_key: "${THETA_API_KEY}"
+```
+
+Quando um alias não define nenhum dos dois, a chave é resolvida a partir do **host** do alias —
+`OLLAMA_API_KEY` para um endpoint `ollama.com`, `DEEPSEEK_API_KEY` para
+`api.deepseek.com`, e assim por diante. Nunca é herdada de qual provedor
+estivesse ativo antes da troca, então trocar para um alias não pode enviar
+o segredo de um provedor ao host de outro.
+
 
 **Forma string curta (`model.aliases.<name>: provider/model`)** — conveniente do shell porque `hermes config set` grava escalares e agora também parseia literais inline de list/mapping, embora esta forma curta de alias ainda não possa carregar um `base_url` custom:
 

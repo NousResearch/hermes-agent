@@ -56,7 +56,7 @@ Toda skill instalada fica automaticamente disponível como slash command:
 /gif-search funny cats
 /axolotl help me fine-tune Llama 3 on my dataset
 /github-pr-workflow create a PR for the auth refactor
-/plan design a rollout for migrating our auth provider
+/songsee analyze the frequency spread of this mix
 
 # Just the skill name loads it and lets the agent ask what you need:
 /excalidraw
@@ -82,7 +82,7 @@ que começam com `/` (como caminhos de arquivo) nunca são engolidos:
 Para combinações que você usa repetidamente, prefira um [skill bundle](#skill-bundles) —
 mesmo efeito sob um comando curto.
 
-A skill bundled `plan` é um bom exemplo. Executar `/plan [request]` carrega as instruções da skill, dizendo ao Hermes para inspecionar o contexto se necessário, escrever um plano de implementação em markdown em vez de executar a tarefa, e salvar o resultado em `.hermes/plans/` relativo ao workspace/backend working directory ativo.
+(O modo plan funciona do mesmo jeito, mas agora é um comando built-in: `/plan [request]` diz ao Hermes para inspecionar o contexto se necessário, escrever um plano de implementação em markdown em vez de executar a tarefa, e salvar o resultado em `.hermes/plans/` relativo ao workspace/backend working directory ativo.)
 
 Você também pode interagir com skills por conversa natural:
 
@@ -370,7 +370,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 ### Como funciona {#how-it-works}
 
-- **Criar localmente, atualizar no lugar**: Novas skills criadas pelo agente são escritas em `~/.hermes/skills/`. Skills existentes são modificadas onde são encontradas, incluindo skills em `external_dirs`, quando o agente usa ações `skill_manage` como `patch`, `edit`, `write_file`, `remove_file` ou `delete`.
+- **Criar localmente, atualizar no lugar**: Novas skills criadas pelo agente são escritas em `~/.hermes/skills/` (ou `skills.create_dir` quando configurado — veja abaixo). Skills existentes são modificadas onde são encontradas, incluindo skills em `external_dirs`, quando o agente usa ações `skill_manage` como `patch`, `edit`, `write_file`, `remove_file` ou `delete`.
 - **Dirs externos não são limite de proteção de escrita**: Se um diretório externo de skills for gravável pelo processo Hermes, atualizações de skill gerenciadas pelo agente podem alterar arquivos nesse diretório. Use permissões de filesystem ou setup separado de perfil/toolset se skills externas compartilhadas devem permanecer somente leitura.
 - **Precedência local**: Se o mesmo nome de skill existir no dir local e em um dir externo, a versão local vence.
 - **Integração completa**: Skills externas aparecem no índice do system prompt, `skills_list`, `skill_view` e como slash commands `/skill-name` — igual às skills locais.
@@ -393,6 +393,24 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 ```
 
 As quatro skills aparecem no seu índice de skills. Se você criar localmente uma skill chamada `my-custom-workflow`, ela faz shadow da versão externa.
+
+## Redirecionando a criação de skills (`skills.create_dir`) {#redirecting-skill-creation-skillscreate_dir}
+
+Por padrão o agente escreve novas skills no diretório local do perfil `~/.hermes/skills/`. Se quiser que skills criadas pelo agente caiam em outro lugar — um diretório "brain" compartilhado, um repo versionado em git ou um volume de skills da frota — defina `create_dir` na seção `skills`:
+
+```yaml
+skills:
+  create_dir: /opt/brain/skills
+```
+
+O que isso muda:
+
+- **`skill_manage` create escreve lá.** Novas skills (incluindo subdiretórios de categoria) são criadas sob `create_dir` em vez do dir local de skills. O diretório é criado na primeira escrita se não existir.
+- **As instruções do agente seguem a config.** Toda instrução voltada ao agente que nomeia o caminho de criação de skills — a descrição da ferramenta `skill_manage` e o texto de prompt relacionado — renderiza dinamicamente o diretório configurado, então o agente é instruído a criar skills ali. Sem overrides de system prompt nem truques de filesystem.
+- **O diretório fica totalmente integrado.** Skills sob `create_dir` são escaneadas junto com o dir local: aparecem no índice de skills, `skills_list`, `skill_view`, slash commands, e podem ser patchadas ou deletadas como qualquer skill local.
+- **Todo o resto continua local.** Skills existentes ainda são modificadas no lugar onde vivem; sync de skills bundled, o hub e o curator continuam operando no dir local do perfil.
+
+Paths suportam expansão de `~` e substituição `${VAR}`; paths relativos resolvem contra o Hermes home. Definir `create_dir` como o dir local de skills é o mesmo que deixar unset.
 
 ## Skills locais do projeto {#project-local-skills}
 

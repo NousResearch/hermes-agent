@@ -49,7 +49,7 @@ O que você verá:
 
 1. **Meta aceita** — `⊙ Goal set (20-turn budget): <sua meta>`
 2. **Turno 1 roda** — o Hermes começa a trabalhar como se você tivesse enviado a meta como mensagem normal.
-3. **Judge roda** — após o turno, o model judge decide `done` ou `continue`.
+3. **Judge roda** — após o turno, o model judge decide `done`, `continue` ou `blocked`.
 4. **Loop dispara se necessário** — se `continue`, você verá `↻ Continuing toward goal (1/20): <motivo do judge>` e o Hermes dá o próximo passo automaticamente.
 5. **Termina** — eventualmente você vê `✓ Goal achieved: <motivo>` ou `⏸ Goal paused — N/20 turns used`.
 
@@ -140,7 +140,7 @@ Um contrato de conclusão deixa o judge mais rigoroso, mas o judge ainda é um L
 Como funciona, a cada turno:
 
 1. **Gates rodam antes do judge.** Se algum gate falhar, o judge *não* é chamado — um gate vermelho é evidência determinística de que a meta não está pronta. O exit code e a cauda de saída do gate (últimos ~3 KB) viram o prompt de continuação, então o agente itera contra a falha real em vez de um "feeling".
-2. **Todos os gates passam → julgamento normal.** O judge LLM então decide done/continue/wait exatamente como antes.
+2. **Todos os gates passam → julgamento normal.** O judge LLM então decide done/blocked/continue/wait exatamente como antes.
 3. **Workspace inalterado → sem re-run.** Se um gate falhou e nada mudou no workspace desde então (rastreado via fingerprint git de HEAD + status da working tree), o gate não é reexecutado — a falha registrada é reproduzida e o contador de tentativas avança. Um agente preso não pode queimar wall-clock reexecutando a mesma suite vermelha idêntica. Fora de um repo git, gates simplesmente sempre reexecutam.
 4. **Retries são limitados.** Cada gate tem por padrão 3 retries e timeout de 5 minutos. Quando um gate esgota retries, a meta auto-pausa (como o orçamento de turnos) com mensagem dizendo para corrigir manualmente, remover o gate ou `/goal resume`.
 
@@ -179,9 +179,9 @@ Após cada turno, o Hermes chama um model auxiliar com:
 
 - O texto da meta contínua
 - A resposta final mais recente do agente (últimos ~4 KB de texto)
-- Um system prompt dizendo ao judge para responder com JSON estrito de uma linha: `{"verdict": "done" | "continue" | "wait", "reason": "<racional em uma frase>"}` (veredictos wait adicionam `wait_on_session` / `wait_on_pid` / `wait_for_seconds`; a forma legada `{"done": <bool>, "reason": "..."}` ainda é aceita)
+- Um system prompt dizendo ao judge para responder com JSON estrito de uma linha: `{"verdict": "done" | "blocked" | "continue" | "wait", "reason": "<racional em uma frase>"}` (veredictos wait adicionam `wait_on_session` / `wait_on_pid` / `wait_for_seconds`; a forma legada `{"done": <bool>, "reason": "..."}` ainda é aceita)
 
-O judge é deliberadamente conservador: marca uma meta como `done` só quando a resposta **explicitamente** confirma que a meta está completa, quando o deliverable final está claramente produzido, ou quando a meta é inalcançável/bloqueada (tratada como DONE com motivo de bloqueio para não queimar orçamento em tarefas impossíveis).
+O judge é deliberadamente conservador: marca uma meta como `done` só quando a resposta **explicitamente** confirma que a meta está completa, quando o deliverable final está claramente produzido. Uma meta que o agente explica ser **inalcançável** (impossível, fora de escopo, precisa de input do usuário) recebe veredicto `blocked` em vez de `done`: a meta **pausa** com o motivo do judge (`🚫 Goal judged unachievable — paused`), para você re-escopar com `/goal <text>` ou sobrescrever com `/goal resume` em vez de queimar orçamento ou deixar uma tarefa impossível passar como completa.
 
 ### Semântica fail-open {#fail-open-semantics}
 

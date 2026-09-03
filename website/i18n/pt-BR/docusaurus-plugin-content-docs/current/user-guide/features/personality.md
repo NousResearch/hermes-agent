@@ -124,7 +124,7 @@ O conteúdo passa por:
 - varredura de prompt injection
 - truncamento se for grande demais
 
-Se o arquivo estiver vazio, só com whitespace ou não puder ser lido, o Hermes usa identidade padrão built-in ("You are Hermes Agent, an intelligent AI assistant created by Nous Research..."). Esse fallback também se aplica quando `skip_context_files` está definido (por exemplo, em contextos de subagente/delegação).
+Se o arquivo estiver vazio, só com whitespace ou não puder ser lido, o Hermes usa identidade padrão built-in ("You are Hermes Agent, built by Nous Research. Be direct: match the length of your reply to the weight of the ask..."). Esse fallback também se aplica quando `skip_context_files` está definido (por exemplo, em contextos de subagente/delegação).
 
 ## Varredura de segurança {#security-scanning}
 

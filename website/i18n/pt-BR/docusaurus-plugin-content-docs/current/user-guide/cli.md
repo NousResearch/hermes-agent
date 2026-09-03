@@ -84,6 +84,12 @@ Garantias de segurança (todos os modos, qualquer idade):
   rebase/squash-merged upstream são detectados via equivalência de patch
   `git cherry` e contam como merged, o que finalmente permite recuperar o
   vazamento dominante "PR merged, árvore preservada para sempre".
+- **Lanes de PR aberto já pushed liberam disco sem perder nada**: quando o
+  head da branch de uma árvore limpa bate exatamente com o que `origin` tem
+  (checado com um `git ls-remote` por sweep), o checkout é redundante — a
+  árvore é removida mas a **ref da branch é mantida**, então a lane fica a um
+  `git worktree add .worktrees/<name> <branch>` de distância de restaurada. Se o
+  remoto não puder ser alcançado, a árvore é preservada.
 - Árvores **em uso por uma sessão hermes em execução** nunca são tocadas.
 - Scratch **só untracked** (rascunhos de body de PR, notas) é arquivado em
   `~/.hermes/archive/worktree-prune/` antes da árvore ser removida — nunca
@@ -92,6 +98,11 @@ Garantias de segurança (todos os modos, qualquer idade):
   local cujos commits estão todos no upstream é seguro de apagar; branches
   com trabalho único, branches checked-out e `main`/`master`/`develop`
   são sempre mantidos.
+
+O mesmo pruner conservador também roda a partir do agendador de cron (no máximo
+uma vez a cada 6 horas, em background), então máquinas só-gateway — onde ninguém
+lança `hermes -w` por dias — não acumulam mais árvores scratch merged
+entre sessões de CLI.
 
 Quando `.worktrees/` passa de 10 árvores ou 5 GB, o startup imprime um aviso
 de uma linha apontando para esses comandos.
@@ -118,7 +129,7 @@ Uma barra de status persistente fica acima da área de input, atualizando em tem
 | Barra de contexto | Indicador visual de preenchimento com limites codificados por cor |
 | Custo | Custo estimado da sessão (ou `n/a` para modelos com preço desconhecido/zero) |
 | 🗜️ N | **Contagem de compressão de contexto** — quantas vezes a sessão em execução foi comprimida automaticamente. Aparece depois que a primeira compressão ocorre. |
-| ▶ N | **Tarefas em background ativas** — quantos prompts `/background` ainda estão rodando na sessão atual. Aparece sempre que pelo menos uma tarefa está em andamento. |
+| ▶ N | **Tarefas em background ativas** — quantos prompts `/bg` ainda estão rodando na sessão atual. Aparece sempre que pelo menos uma tarefa está em andamento. |
 | Duração | Tempo decorrido da sessão |
 | Título da sessão | Depois que a sessão tem um título, ele aparece como um badge dourado preso à borda direita. Títulos longos truncam antes de deslocar os campos essenciais de modelo e contexto. |
 | ⚠ YOLO | **Aviso do modo YOLO** — exibido sempre que `HERMES_YOLO_MODE` está ativo (seja `hermes --yolo` na inicialização ou `/yolo` alternado no meio da sessão). Espelha o aviso da linha do banner para você não esquecer que está no modo de aprovação automática. |
@@ -174,7 +185,8 @@ Exemplos comuns:
 | `/model` | Mostrar ou alterar o modelo atual |
 | `/tools` | Listar ferramentas disponíveis no momento |
 | `/skills browse` | Navegar pelo hub de skills e skills opcionais oficiais |
-| `/background <prompt>` | Executar um prompt em uma sessão em background separada |
+| `/bg <prompt>` | Executar um prompt em uma sessão em background separada |
+| `/btw <question>` | Fazer uma pergunta lateral sobre a conversa atual sem interrompê-la |
 | `/skin` | Mostrar ou alternar a skin ativa do CLI |
 | `/voice on` | Ativar o modo de voz do CLI (pressione `Ctrl+B` para gravar) |
 | `/voice tts` | Alternar reprodução falada das respostas do Hermes |
@@ -445,7 +457,7 @@ Quando a compressão dispara, turnos do meio são resumidos enquanto os 3 primei
 Execute um prompt em uma sessão em background separada enquanto continua usando o CLI para outro trabalho:
 
 ```
-/background Analyze the logs in /var/log and summarize any errors from today
+/bg Analyze the logs in /var/log and summarize any errors from today
 ```
 
 O Hermes confirma a tarefa imediatamente e devolve o prompt:
@@ -457,7 +469,7 @@ O Hermes confirma a tarefa imediatamente e devolve o prompt:
 
 ### Como funciona
 
-Cada prompt `/background` cria uma **sessão de agente completamente separada** em uma thread daemon:
+Cada prompt `/bg` cria uma **sessão de agente completamente separada** em uma thread daemon:
 
 - **Conversa isolada** — o agente em background não tem conhecimento do histórico da sua sessão atual. Ele recebe apenas o prompt que você fornece.
 - **Mesma configuração** — o agente em background herda o seu modelo, provider, toolsets, configurações de raciocínio e modelo de fallback da sessão atual.
@@ -481,8 +493,8 @@ Se a tarefa falhar, você verá uma notificação de erro em vez disso. Se `disp
 
 ### Casos de uso
 
-- **Pesquisa demorada** — "/background research the latest developments in quantum error correction" enquanto você trabalha no código
-- **Processamento de arquivos** — "/background analyze all Python files in this repo and list any security issues" enquanto você continua uma conversa
+- **Pesquisa demorada** — "/bg research the latest developments in quantum error correction" enquanto você trabalha no código
+- **Processamento de arquivos** — "/bg analyze all Python files in this repo and list any security issues" enquanto você continua uma conversa
 - **Investigações paralelas** — inicie várias tarefas em background para explorar ângulos diferentes simultaneamente
 
 :::info

@@ -235,6 +235,8 @@ delegation:
 
 **Verifique os resultados.** Resumos de subagentes são apenas isso — resumos. Se um subagente diz "corrigi o bug e os testes passam", verifique executando os testes você mesmo ou lendo o diff.
 
+**Falhas são surfadas.** Um subagente que morre (erro de provider, timeout, crash) é reportado com um aviso limpo de uma linha — `⚠️ Subagent failed — "your goal": <reason>` — na árvore de delegação da CLI e como aviso de chat nas plataformas gateway, mesmo quando o progresso de ferramentas está desligado. O agente pai também recebe o erro completo no resultado da ferramenta.
+
 ---
 
 *Para a referência completa de delegação — todos os parâmetros, integração com ACP e configuração avançada — veja [Delegação de Subagentes](/user-guide/features/delegation).*

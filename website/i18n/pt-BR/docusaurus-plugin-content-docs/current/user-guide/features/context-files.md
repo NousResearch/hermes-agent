@@ -175,6 +175,7 @@ Este scanner protege contra padrões comuns de injection, mas não substitui rev
 | Limite | Valor |
 |-------|-------|
 | Máx. chars por arquivo | `context_file_max_chars` (padrão 20.000, ~7.000 tokens) |
+| Timeout de leitura por arquivo | `context_file_read_timeout` (padrão 5 segundos); um arquivo que demora mais para ler — p.ex. em iCloud Drive, OneDrive ou NFS — é pulado com um aviso |
 | Proporção de truncamento head | 70% |
 | Proporção de truncamento tail | 20% |
 | Marcador de truncamento | 10% (mostra contagens de chars e sugere usar ferramentas de arquivo) |

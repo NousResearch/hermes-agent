@@ -816,21 +816,70 @@ Tabelas principais em `state.db`:
 
 - Sessões de gateway fazem auto-reset com base na reset policy configurada
 - Antes do reset, o agente salva memórias e skills da sessão que expira
-- Auto-pruning opt-in: quando `sessions.auto_prune` é `true`, sessões encerradas com mais de `sessions.retention_days` (padrão 90) são podadas na inicialização CLI/gateway
-- Após um prune que realmente removeu linhas, `state.db` recebe `VACUUM` para recuperar espaço em disco (SQLite não encolhe o arquivo em DELETE simples)
-- Pruning roda no máximo uma vez por `sessions.min_interval_hours` (padrão 24); o timestamp da última execução é rastreado dentro do próprio `state.db` então é compartilhado entre todo processo Hermes no mesmo `HERMES_HOME`
+- Auto-pruning (**on por padrão** desde #54189): quando `sessions.auto_prune` é `true`, sessões encerradas inativas por `sessions.retention_days` (padrão 90) são podadas no startup CLI/gateway/cron
+- Após uma poda que de fato removeu rows, `state.db` é `VACUUM`ed para recuperar espaço em disco só quando **ambos** os gates passam: pelo menos `sessions.min_vacuum_interval_days` (padrão 30) passaram desde o último `VACUUM` bem-sucedido, **e** mais de 25% das páginas do arquivo são recuperáveis (`PRAGMA freelist_count / page_count`). Um database denso nunca paga um rewrite completo para recuperar poucos MB (SQLite não encolhe o arquivo em DELETE simples)
+- Pruning roda no máximo uma vez por `sessions.min_interval_hours` (padrão 24); o timestamp last-run é rastreado dentro do próprio `state.db` para ser compartilhado entre todo processo Hermes no mesmo `HERMES_HOME`
 
-O padrão é **off** — histórico de sessão é valioso para recall de `session_search`, e excluir silenciosamente poderia surpreender usuários. Habilite em `~/.hermes/config.yaml`:
+Sem pruning, `state.db` cresce sem limite — arquivos multi-GB em semanas foram reportados em installs gateway + cron. Se preferir manter toda sessão encerrada para sempre (o comportamento pré-#54189), desligue em `~/.hermes/config.yaml`:
 
 ```yaml
 sessions:
-  auto_prune: true          # opt in — default is false
-  retention_days: 90        # keep ended sessions this many days
+  auto_prune: false         # default is true — set false to keep all history
+  retention_days: 90        # keep ended sessions active within this window
   vacuum_after_prune: true  # reclaim disk space after a pruning sweep
+  min_vacuum_interval_days: 30 # don't rewrite the DB more often than this
   min_interval_hours: 24    # don't re-run the sweep more often than this
 ```
 
-Sessões ativas nunca são auto-pruned, independente da idade.
+Installs existentes que já definiram qualquer dessas chaves explicitamente mantêm seus
+valores; só chaves unset pegam os novos defaults.
+
+Só sessões **encerradas** são alguma vez deletadas. Sessões ativas nunca são auto-podadas,
+independentemente da idade. Sessões encerradas são envelhecidas a partir da mensagem mais recente, então uma
+conversa long-lived usada recentemente não é deletada só porque começou
+antes da janela de retention.
+
+**Sessões open stale de automação.** Alguns producers — jobs cron, workers
+kanban, subagentes, runs CLI one-shot — podem morrer sem marcar a
+sessão como encerrada, e pruning só deleta rows *ended*. Para impedir que acumulem
+para sempre, cada passe auto-prune também *fecha* sessões open dessas
+sources state-owned (`cli`, `cron`, `kanban`, `acp`, `api_server`,
+`subagent`, `tool`) cuja última atividade é mais antiga que `retention_days`
+(`end_reason: startup_orphan_reap`). Fechar é não-destrutivo — a
+sessão permanece resumível — e a row é envelhecida a partir do close, então só é
+deletada por um passe *posterior* após outra janela cheia de retention. Sessões de
+plataformas de mensagens (Telegram, Discord, …), sessões TUI/desktop, sessões pinadas,
+e sessões com turno live ou compressão em progresso
+nunca são fechadas por este sweep.
+
+### Guards de transcrição oversized {#oversized-transcript-guards}
+
+Dois limites impedem que uma transcrição runaway seja carregada na memória de uma vez
+(ambos padrão `20000` mensagens ativas; `0` desabilita o guard):
+
+```yaml
+sessions:
+  max_resume_messages: 20000   # interactive resume (CLI / TUI / Desktop)
+  max_export_messages: 20000   # one-shot in-memory export of a single session
+```
+
+`max_resume_messages` limita **o que o resume de fato carrega**, não o histórico
+inteiro da conversa:
+
+- Um resume interativo plain (CLI `--resume`, o TUI) materializa a lineage completa de
+  compressão — cada segmento compactado mais o tip live — então é
+  limitado across the lineage.
+- O cold resume do Desktop pagina a transcrição via REST e só segura o segmento tip live
+  na memória, então é limitado só pelo tip. Um chat long-lived
+  que foi compactado muitas vezes (dezenas de segmentos, dezenas de milhares de
+  rows arquivadas atrás de um tip pequeno) é exatamente o que compressão deve
+  produzir e abre normalmente; sua contagem de mensagens no footer reflete a lineage
+  armazenada, não o prompt live.
+
+Quando um resume é recusado o client recebe código de erro `4130` com a contagem
+e o escopo medido (`across its lineage` ou
+`in its tip segment`). `hermes sessions export` ainda funciona para tais sessões.
+
 
 ### Manual Cleanup {#manual-cleanup}
 

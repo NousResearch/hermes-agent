@@ -157,6 +157,13 @@ a qualquer design de progressive disclosure, não específicos desta implementa�
   carregado entra no histórico de conversa (então é cached em
   turnos subsequentes) mas nunca se beneficia do prefixo de cache do
   system prompt.
+- **Sem validação nativa do provider para schemas adiados.** `tool_describe`
+  deixa o modelo ler o schema de uma ferramenta adiada, mas o provider ainda
+  vê só o objeto genérico `tool_call.arguments`. O Hermes portanto faz coerce e
+  valida os argumentos subjacentes localmente antes do dispatch; a ferramenta
+  concreta ou servidor MCP permanece responsável por schemas que o Hermes não
+  consegue validar com segurança, como schemas malformados ou referências
+  externas.
 - **Dependência de qualidade do modelo.** Tool Search assume que o modelo consegue escrever uma
   query de busca razoável para a ferramenta que quer. Modelos menores fazem isso
   menos bem; os números publicados da Anthropic (49% → 74% no Opus 4 com

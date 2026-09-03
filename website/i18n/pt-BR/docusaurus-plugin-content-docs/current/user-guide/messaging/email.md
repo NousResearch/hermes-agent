@@ -48,6 +48,31 @@ A maioria dos provedores de email suporta IMAP/SMTP. Consulte a documentação d
 - Host e porta SMTP (geralmente porta 587 com STARTTLS)
 - Se senhas de app são necessárias
 
+### Proton Mail Bridge / relays locais {#proton-mail-bridge--local-relays}
+
+O Proton Mail Bridge (e relays locais semelhantes, como um MTA auto-hospedado) escuta em
+loopback com **STARTTLS** e um certificado autoassinado, então os padrões
+(TLS implícito no IMAP 993, certificados verificados) não conectam. Sobrescreva o
+transporte em `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  email:
+    enabled: true
+    extra:
+      imap_host: 127.0.0.1
+      imap_security: starttls     # tls (default) | starttls | plain
+      imap_tls_verify: false      # Bridge uses a self-signed cert
+      smtp_host: 127.0.0.1
+      smtp_security: starttls     # default: tls on port 465, starttls otherwise
+      smtp_tls_verify: false
+```
+
+e defina `EMAIL_IMAP_PORT=1143` / `EMAIL_SMTP_PORT=1025` junto com as credenciais do Bridge
+em `~/.hermes/.env`. Valores desconhecidos de `*_security` registram um aviso e
+caem no padrão seguro. Só desative `*_tls_verify` para hosts em loopback —
+o Hermes registra um aviso quando a verificação está desligada para qualquer outro host.
+
 ---
 
 ## Passo 1: Configure o Hermes {#step-1-configure-hermes}

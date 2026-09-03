@@ -214,7 +214,7 @@ A linha de status também mostra:
 - **Diretório de trabalho com branch git** — `~/projects/hermes-agent (docs/two-week-gap-sweep)`. O sufixo de branch atualiza quando você faz `git checkout` em um terminal lateral (cache por mtime) para a TUI refletir sua branch ativa real, não a que era no launch.
 - **Tempo decorrido por prompt** — `⏱ 12s/3m 45s` enquanto o turn está executando (ao vivo), congelado em `⏲ 32s / 3m 45s` após o turn completar. O primeiro número é o tempo desde a última mensagem do usuário; o segundo é a duração total da sessão. Reseta a cada novo prompt.
 - **`🗜️ N`** — número de vezes que a sessão em execução foi auto-comprimida. Aparece após a primeira compressão.
-- **`▶ N`** — número de tarefas `/background` atualmente em execução nesta sessão. Aparece sempre que pelo menos uma tarefa está em andamento.
+- **`▶ N`** — número de tarefas `/bg` atualmente em execução nesta sessão. Aparece sempre que pelo menos uma tarefa está em andamento.
 - **`⚠ YOLO`** — aviso visível sempre que o modo YOLO está ativo (`hermes --yolo`, `/yolo`, ou `HERMES_YOLO_MODE=1`). O mesmo badge também aparece no banner de inicialização para você não lançar uma sessão auto-aprovadora sem perceber.
 
 ## Configuration {#configuration}

@@ -178,7 +178,7 @@ delegation:
   provider: "openrouter"             # optional: route children to a different provider
 ```
 
-Ordem de resolução: `delegation.base_url` (endpoint direto) tem precedência, depois `delegation.provider` (bundle completo de credenciais resolvido via o sistema de providers em runtime), e quando nenhum está definido os filhos herdam o provider e as credenciais do pai; `delegation.model` aplica em todos os casos, e quando está vazio os filhos herdam o modelo do pai.
+Ordem de resolução: `delegation.base_url` (endpoint direto) tem precedência, depois `delegation.provider` (bundle completo de credenciais resolvido via o sistema de providers em runtime), e quando nenhum está definido os filhos herdam o provider e as credenciais do pai; `delegation.model` aplica em todos os casos, e quando está vazio os filhos herdam o modelo do pai. Definir `delegation.provider` junto com `delegation.base_url` mantém o endpoint explícito, mas leva os request overrides e o max output tokens desse provider para o filho. Um dict explícito `delegation.request_overrides` é honrado em todo ramo e faz merge por cima desses valores derivados em runtime (veja [Configuração](#configuration) abaixo).
 
 Note que o pin é global: `delegate_task` não tem parâmetro de modelo por tarefa, então todo filho em um lote roda no modelo de delegação configurado. Para subtarefas sensíveis a qualidade que precisam de um modelo mais forte, ou deixe `delegation.model` indefinido para aquela sessão ou entregue a tarefa ao [quadro kanban](kanban.md#per-task-model-override), que de fato suporta override de modelo por tarefa.
 
@@ -257,6 +257,16 @@ delegation:
 Um valor positivo impõe um limite rígido de relógio em cada filho; `0` ou um valor negativo desativa.
 
 Quando um limite configurado dispara, o resultado do filho traz metadados estruturados de timeout junto com a mensagem de erro para que pais e hooks distingam um kill por cronômetro de outras falhas sem analisar texto: `timeout_seconds` (o limite configurado), `timed_out_after_seconds` (relógio real) e `timeout_phase` (`before_first_llm_call` quando o filho nunca chegou à primeira requisição, `after_llm_calls` caso contrário). Os três são `null` em erros que não são timeout.
+
+## Visibilidade de falhas {#failure-visibility}
+
+Um subagente que falha — erro de provedor não retentável (404/400), timeout, crash ou saída inutilizável — nunca fica em silêncio:
+
+- **CLI**: a árvore de delegação imprime um motivo em uma linha: `⚠️ Subagent failed — "your goal": HTTP 404: model not found (after 12s)`. Execuções em lote anexam o motivo à linha de conclusão `✗` por tarefa.
+- **Plataformas do gateway** (Telegram, Discord, Slack, ...): a mesma linha limpa é entregue como aviso independente no chat, **mesmo quando `tool_progress` está desligado** para aquela plataforma.
+- **Agente pai**: a entrada de resultado da ferramenta traz `status: "failed"` mais o texto completo de `error`, para o modelo reagir (retentar, redirecionar, reportar).
+
+O texto de erro é reduzido à linha mais informativa (a mensagem da exceção, não um muro de traceback) e limitado em comprimento.
 
 :::tip Dump de diagnóstico em timeout com zero chamadas
 Com um limite rígido configurado, se um subagente expira tendo feito **zero** chamadas de API (geralmente: provedor inacessível, falha de autenticação ou rejeição de schema de ferramenta), `delegate_task` grava um diagnóstico estruturado em `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` contendo snapshot de config do subagente, trace de resolução de credenciais, quaisquer mensagens de erro iniciais e stack traces de **todas** as threads vivas (não só a do filho) — um filho parado aguardando uma thread auxiliar aninhada é indistinguível de um provedor lento sem o quadro completo.
@@ -495,9 +505,22 @@ delegation:
   base_url: "http://localhost:1234/v1"
   api_key: "local-key"
   # api_mode: "anthropic_messages"  # Optional. Wire protocol override for base_url ("chat_completions", "codex_responses", or "anthropic_messages"). Empty = auto-detect from URL (e.g. /anthropic suffix). Set explicitly for endpoints the heuristic can't classify (Azure AI Foundry, MiniMax, Zhipu GLM, LiteLLM proxies, …).
+
+# Send per-child request settings on every subagent API call — e.g. OpenRouter
+# routing hints when delegating straight to openrouter.ai via base_url:
+delegation:
+  model: "deepseek/deepseek-v4-flash-0731"
+  base_url: "https://openrouter.ai/api/v1"
+  api_key: "sk-or-..."
+  request_overrides:
+    extra_body:
+      provider:
+        sort: throughput   # children route to the fastest OpenRouter provider
 ```
 
 Quando `base_url` aponta para um endpoint compatível com Anthropic — por exemplo um caminho terminando em `/anthropic`, uma rota Claude do Azure Foundry ou um proxy MiniMax `/anthropic` — `api_mode` é auto-detectado como `anthropic_messages` para o subagente usar o formato wire correto sem você configurar nada. Defina `api_mode` explicitamente quando a detecção automática estiver errada (raro).
+
+`delegation.request_overrides` funciona nos **três** ramos de resolução — `base_url` direto, `provider` nomeado e herança pura — então sempre tem efeito. Chaves de nível superior são kwargs da API (ex.: `service_tier`); um sub-dict `extra_body` é mesclado no `extra_body` da requisição. Valores explícitos fazem merge **por cima** de overrides derivados do runtime ou do pai: chaves top-level explícitas vencem, e `extra_body` é deep-merged um nível, então a personalidade de request do próprio provedor (ex.: `thinking: {type: disabled}`) sobrevive a menos que sua chave a redefina. Veja [Configuração → Delegação](../configuration.md#delegation) para detalhes.
 
 :::tip
 O agente lida com delegação automaticamente com base na complexidade da tarefa. Você não precisa pedir explicitamente para delegar — ele fará quando fizer sentido.

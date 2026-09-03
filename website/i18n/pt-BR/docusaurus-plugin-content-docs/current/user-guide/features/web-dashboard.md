@@ -235,7 +235,7 @@ Mudanças de config entram em vigor na próxima sessão do agent ou restart do g
 Gerencie o arquivo `.env` onde API keys e credenciais são armazenadas. Keys são agrupadas por categoria:
 
 - **LLM Providers** — OpenRouter, Anthropic, OpenAI, DeepSeek, etc.
-- **Tool API Keys** — Browserbase, Firecrawl, Tavily, ElevenLabs, etc.
+- **Tool API Keys** — Browserbase, Firecrawl, Tavily, Keenable, ElevenLabs, etc.
 - **Messaging Platforms** — tokens de bot Telegram, Discord, Slack, etc.
 - **Agent Settings** — env vars não-secretas como `API_SERVER_ENABLED`
 
@@ -937,6 +937,8 @@ Para deploys atrás de reverse proxies que não encaminham esses headers de form
 ```yaml
 dashboard:
   public_url: "https://dashboard.example.com/hermes"
+  trusted_proxies:
+    - "172.20.0.5"
 ```
 
 Quando definido, OAuth callback URL vira `<public_url>/auth/callback` verbatim — `X-Forwarded-Prefix` é ignorado nesse code path porque operador declarou explicitamente a URL pública. Isso é intencional: empilhar prefix em cima double-prefixaria o caso comum onde prefix já está baked em `public_url`.
@@ -951,8 +953,23 @@ Declarar um `public_url` non-loopback sempre aciona o auth gate do dashboard,
 mesmo quando o backend binda em loopback. Configure password ou provider OAuth
 primeiro; sem um, o Hermes falha closed no startup. Isso impede que o token de sessão
 da SPA local vire mecanismo de autenticação remota pelo
-proxy. Uvicorn também habilita processamento de proxy headers confiável neste modo para um
-terminador TLS local poder fornecer `X-Forwarded-Proto: https` para cookies seguros.
+proxy. Uvicorn também habilita processamento de proxy headers neste modo. Proxies
+loopback são confiáveis automaticamente. Se o terminador TLS conecta de outro
+container ou host, adicione o IP exato dele a `dashboard.trusted_proxies`, ou
+adicione um CIDR limitado para uma rede dedicada de proxy quando o endereço for dinâmico:
+
+```yaml
+dashboard:
+  public_url: "https://dashboard.example.com/hermes"
+  trusted_proxies:
+    - "172.20.0.0/24"
+```
+
+Só peers listados podem fornecer `X-Forwarded-Proto` e `X-Forwarded-For`.
+O Hermes sempre preserva trust de loopback e rejeita `*`, `0.0.0.0/0` e
+`::/0`. Confiar numa rede significa que todo container ou máquina nessa rede
+pode fornecer metadata de forwarding, então prefira um IP exato de proxy ou uma rede
+só-proxy dedicada.
 
 ```bash
 # Backend remains reachable only on this machine.
@@ -979,7 +996,7 @@ Mesma precedência das outras settings do dashboard — env vence `config.yaml`:
 
 Validação rejeita valores sem scheme `http://` / `https://`, sem host, ou contendo quote / angle / whitespace / control characters. Valor malformado cai silenciosamente para reconstrução por header para login flow continuar funcionando em vez de despachar user para URL hostil.
 
-> **Nota:** `public_url` override só OAuth callback URL. Flag cookie `Secure` ainda é controlada por `request.url.scheme` (X-Forwarded-Proto sob proxy_headers), então `public_url` `http://` num deploy público TLS-terminated produz cookies non-Secure. Footgun de operador — combine `public_url` com terminação TLS adequada upstream.
+> **Nota:** `public_url` override só OAuth callback URL. Flag cookie `Secure` ainda é controlada por `request.url.scheme`, usando `X-Forwarded-Proto` só quando o peer conectado é loopback ou listado em `trusted_proxies`. Combine um `public_url` HTTPS com terminação TLS e uma entrada bounded de trusted-proxy quando o proxy não estiver em loopback.
 
 ### OAuth flow {#oauth-flow}
 

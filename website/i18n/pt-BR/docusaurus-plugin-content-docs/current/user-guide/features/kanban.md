@@ -501,7 +501,7 @@ Para o card ocasional sensível à qualidade, pin só aquela tarefa de volta a u
 
 ### Cards goal-mode (`--goal`) {#goal-mode-cards-goal}
 
-Por padrão cada worker tem **uma chance** no card — faz o trabalho, chama `kanban_complete`/`kanban_block`, sai. Passe `--goal` (CLI) ou `goal_mode=True` (tool `kanban_create` / dashboard) para rodar esse worker num **goal loop**, o mesmo engine estilo Ralph por trás do slash command `/goal`: após cada turn um judge auxiliar checa a saída do worker contra title + body do card (tratados como critérios de aceitação), e se o trabalho não está done — e o orçamento de turns resta — o worker continua **na mesma sessão** até o judge concordar, o worker terminar a tarefa, ou o orçamento acabar (o que **block** o card para review humana em vez de sair silenciosamente).
+Por padrão cada worker tem **uma chance** no card — faz o trabalho, chama `kanban_complete`/`kanban_block`, sai. Passe `--goal` (CLI) ou `goal_mode=True` (tool `kanban_create` / dashboard) para rodar esse worker num **goal loop**, o mesmo engine estilo Ralph por trás do slash command `/goal`: após cada turn um judge auxiliar checa a saída do worker contra title + body do card (tratados como critérios de aceitação), e se o trabalho não está done — e o orçamento de turns resta — o worker continua **na mesma sessão** até o judge concordar, o worker terminar a tarefa, ou o orçamento acabar (o que **block** o card para review humana em vez de sair silenciosamente). Se o judge julgar o goal **inatingível** como escrito, o card é blocked imediatamente com o motivo do judge — um card impossível nunca é marcado done, e `kanban complete` / `kanban request-review` nesse card são rejeitados com um ponteiro para `kanban block` ou re-scoping.
 
 ```bash
 hermes kanban create "Translate the docs site to French" \
@@ -599,7 +599,7 @@ Knobs de config (todos sob `kanban:` em `~/.hermes/config.yaml`):
 | `orchestrator_profile` | `""` | Profile atribuído à tarefa root/orchestration após decomposição. Vazio = fallback para profile default ativo. |
 | `default_assignee` | `""` | Onde uma tarefa filha cai quando o LLM escolhe profile desconhecido. Vazio = fallback para default ativo. |
 | `auto_subscribe_on_create` | `true` | Quando `kanban_create` roda dentro de sessão persistente gateway/TUI, eventos terminais retomam aquele agente originador com um turno sintético de status. Set `false` para completion passivo ou para exigir chamadas explícitas `kanban_notify-subscribe`. Independente de `auto_decompose`. |
-| `done_sub_retention_days` | `30` | Subscriptions de notify sobrevivem a `done` (reopen-safe) e são removidas em `archived`. O GC do notifier purge subscriptions cuja tarefa ficou `done` sem eventos novos por estes dias, limitando crescimento da tabela de subs em boards que nunca arquivam. `0` desabilita o sweep. |
+| `done_sub_retention_days` | `30` | Subscriptions de notify sobrevivem a `done` (reopen-safe) e são removidas em `archived`. O GC do notifier purge subscriptions cuja tarefa ficou `done` ou `blocked` sem eventos novos por estes dias, limitando crescimento da tabela de subs em boards que nunca arquivam. `0` desabilita o sweep. |
 
 E os dois slots LLM auxiliares:
 
@@ -872,7 +872,7 @@ bot> ✓ t_9fc1a3 completed by transcriber
      transcribed 42 minutes, saved to podcast/2026-05-04.md
 ```
 
-Subscriptions sobrevivem a uma tarefa atingir `done` — completion é reversível (um reviewer ou controller pode reabrir uma tarefa done), então a sessão origin continua recebendo notify através de ciclos reopen. Elas auto-remove em `archived` (o estado final irreversível). Em boards que nunca arquivam, um sweep GC purge subscriptions de tarefas que ficaram em `done` sem atividade nova por `kanban.done_sub_retention_days` dias (padrão 30; set 0 para desabilitar), então rows stale não acumulam para sempre. Se você scripta create com `--json` (saída machine) o auto-subscribe é pulado — assume-se que callers scriptados querem gerenciar subscriptions explicitamente via `/kanban notify-subscribe`.
+Subscriptions sobrevivem a uma tarefa atingir `done` — completion é reversível (um reviewer ou controller pode reabrir uma tarefa done), então a sessão origin continua recebendo notify através de ciclos reopen. Elas auto-remove em `archived` (o estado final irreversível). Em boards que nunca arquivam, um sweep GC purge subscriptions de tarefas que ficaram em `done` ou `blocked` sem atividade nova por `kanban.done_sub_retention_days` dias (padrão 30; set 0 para desabilitar), então rows stale não acumulam para sempre. Se você scripta create com `--json` (saída machine) o auto-subscribe é pulado — assume-se que callers scriptados querem gerenciar subscriptions explicitamente via `/kanban notify-subscribe`.
 
 Um auto-subscribe originado de chat é criado no modo `notify+wake`: num evento terminal o agente destino recebe a mensagem passiva **e** toma um turno real, então pode ler o contexto do board e responder na própria voz. Veja [Delivery modes](#delivery-modes) abaixo.
 
@@ -944,8 +944,8 @@ não tem o contexto do peer e confiavelmente sobrescreve o outro lado ou
 abandona o próprio. Em vez disso, crie um card de reconciliação atribuído a um **terceiro
 profile neutro** com **ambos** os cards em conflito linkados como parents: os links
 parent carregam os summaries de completion de ambos os lados no contexto do reconciler, então
-ele recebe ambos os diffs *e* ambas as intents. A skill bundled
-[`merge-reconciler`](https://github.com/NousResearch/hermes-agent/blob/main/skills/autonomous-ai-agents/merge-reconciler/SKILL.md)
+ele recebe ambos os diffs *e* ambas as intents. A
+[`agent-merge-conflict-arbiter` optional skill](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/autonomous-ai-agents/agent-merge-conflict-arbiter/SKILL.md)
 dá a esse worker o procedimento completo: classificar cada hunk em conflito, resolver
 imparcialmente, verificar, e devolver um summary nomeando cada decisão.
 
@@ -969,7 +969,7 @@ path** devem criar um card dedicado de refactor/decomposição para aquele arqui
 **antes** de enfileirar mais trabalho que o toca — splittar o arquivo ímã é
 mais barato do que reconciliar cada colisão futura que ele causaria. Para conflitos
 que *já* aconteceram, use o padrão de card de reconciliação acima com a
-skill `merge-reconciler`; hotspot flagging é o fix upstream que impede
+`agent-merge-conflict-arbiter` optional skill; hotspot flagging é o fix upstream que impede
 o reconciler de virar uma lane permanente.
 
 ## Uso multi-tenant {#multi-tenant-usage}

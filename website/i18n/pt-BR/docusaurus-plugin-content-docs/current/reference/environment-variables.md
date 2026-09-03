@@ -55,6 +55,8 @@ O Hermes lê variáveis de ambiente do ambiente do processo e, para segredos ger
 | `UPSTAGE_BASE_URL` | Sobrescreve a URL base da Upstage (padrão: `https://api.upstage.ai/v1`) |
 | `TOKENHUB_API_KEY` | Chave de API do Tencent TokenHub ([tokenhub.tencentmaas.com](https://tokenhub.tencentmaas.com)) |
 | `TOKENHUB_BASE_URL` | Sobrescreve a URL base do Tencent TokenHub (padrão: `https://tokenhub.tencentmaas.com/v1`) |
+| `TOKENPLAN_API_KEY` | Chave de API do Tencent TokenPlan (LKEAP; endpoint Anthropic Messages) |
+| `TOKENPLAN_BASE_URL` | Sobrescreve a URL base do Tencent TokenPlan (padrão: `https://api.lkeap.cloud.tencent.com/plan/anthropic`) |
 | `AZURE_FOUNDRY_API_KEY` | Chave de API do Microsoft Foundry / Azure OpenAI ([ai.azure.com](https://ai.azure.com/)). Não necessária quando `model.auth_mode: entra_id` |
 | `AZURE_FOUNDRY_BASE_URL` | URL de endpoint do Microsoft Foundry (ex.: `https://<resource>.openai.azure.com/openai/v1` para estilo OpenAI, ou `https://<resource>.services.ai.azure.com/anthropic` para estilo Anthropic) |
 | `AZURE_ANTHROPIC_KEY` | Chave de API Azure Anthropic para `provider: anthropic` + `base_url` apontando para uma implantação Claude no Microsoft Foundry (alternativa a `ANTHROPIC_API_KEY` quando tanto Anthropic quanto Azure Anthropic estão configurados) |
@@ -75,12 +77,23 @@ O Hermes lê variáveis de ambiente do ambiente do processo e, para segredos ger
 | `ANTHROPIC_TOKEN` | Sobrescrita manual ou legada do OAuth/setup-token da Anthropic |
 | `DASHSCOPE_API_KEY` | Chave de API Qwen Cloud (Alibaba DashScope) para modelos Qwen ([modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/)) |
 | `DASHSCOPE_BASE_URL` | URL base customizada do DashScope (padrão: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`; use `https://dashscope.aliyuncs.com/compatible-mode/v1` para a região da China continental) |
-| `ALIBABA_CODING_PLAN_API_KEY` | Chave de API do Qwen Coding Plan (provedor `alibaba-coding-plan`) |
-| `ALIBABA_CODING_PLAN_BASE_URL` | Sobrescreve a URL base do Qwen Coding Plan |
+| `DASHSCOPE_CN_BASE_URL` | Sobrescreve a URL base DashScope mainland-China do `alibaba-cn` |
+| `ALIBABA_CODING_PLAN_API_KEY` | Chave de API do Qwen Coding Plan (`alibaba-coding-plan`; também fallback para `alibaba-coding-plan-cn`) |
+| `ALIBABA_CODING_PLAN_CN_API_KEY` | Chave de API do Qwen Coding Plan para o provedor mainland-China `alibaba-coding-plan-cn` (verificada antes da chave compartilhada, então só a linha CN acende) |
+| `ALIBABA_CODING_PLAN_BASE_URL` | Sobrescreve a URL base do Qwen Coding Plan (internacional) |
+| `ALIBABA_CODING_PLAN_CN_BASE_URL` | Sobrescreve a URL base do Qwen Coding Plan (China continental) |
+| `ALIBABA_TOKEN_PLAN_API_KEY` | Chave de API do Alibaba Model Studio Token Plan (`alibaba-token-plan`; também fallback para `alibaba-token-plan-cn`) |
+| `ALIBABA_TOKEN_PLAN_CN_API_KEY` | Chave de API do Token Plan para o provedor mainland-China `alibaba-token-plan-cn` (verificada antes da chave compartilhada) |
+| `ALIBABA_TOKEN_PLAN_BASE_URL` | Sobrescreve a URL base do Token Plan (internacional) |
+| `ALIBABA_TOKEN_PLAN_CN_BASE_URL` | Sobrescreve a URL base do Token Plan (China continental) |
 | `DEEPSEEK_API_KEY` | Chave de API DeepSeek para acesso direto ao DeepSeek ([platform.deepseek.com](https://platform.deepseek.com/api_keys)) |
 | `DEEPSEEK_BASE_URL` | URL base customizada da API DeepSeek |
 | `NOVITA_API_KEY` | Chave de API NovitaAI — nuvem nativa de IA para Model API, Agent Sandbox e GPU Cloud ([novita.ai/settings/key-management](https://novita.ai/settings/key-management)) |
 | `NOVITA_BASE_URL` | Sobrescreve a URL base do NovitaAI (padrão: `https://api.novita.ai/openai/v1`) |
+| `RAMP_ROUTER_API_KEY` | Chave de API Ramp Router ([app.router.com/keys](https://app.router.com/keys)); alias `ROUTER_API_KEY` também aceito |
+| `RAMP_ROUTER_BASE_URL` | Sobrescreve a URL base do Ramp Router (padrão: `https://api.router.com/v1`) |
+| `NEBIUS_API_KEY` | Chave de API Nebius Token Factory ([tokenfactory.nebius.com](https://tokenfactory.nebius.com/)); `NEBIUS_TOKEN_FACTORY_API_KEY` também aceito |
+| `NEBIUS_BASE_URL` | Sobrescreve a URL base do Nebius Token Factory (padrão: `https://api.tokenfactory.nebius.com/v1`) |
 | `NVIDIA_API_KEY` | Chave de API NVIDIA NIM — Nemotron e modelos abertos ([build.nvidia.com](https://build.nvidia.com)) |
 | `NVIDIA_BASE_URL` | Sobrescreve a URL base da NVIDIA (padrão: `https://integrate.api.nvidia.com/v1`; defina como `http://localhost:8000/v1` para um endpoint NIM local) |
 | `STEPFUN_API_KEY` | Chave de API StepFun — modelos da série Step ([platform.stepfun.com](https://platform.stepfun.com)) |
@@ -134,8 +147,8 @@ Para autenticação nativa da Anthropic, o Hermes prefere os próprios arquivos 
 | `FIRECRAWL_API_KEY` | Web scraping e browser em nuvem ([firecrawl.dev](https://firecrawl.dev/)) |
 | `FIRECRAWL_API_URL` | Endpoint customizado da API Firecrawl para instâncias auto-hospedadas (opcional) |
 | `TAVILY_API_KEY` | Chave de API Tavily opcional para limites maiores de busca/extração. Depois de selecionar Tavily como backend web, o acesso sem chave funciona sem ela ([app.tavily.com](https://app.tavily.com/home), [docs keyless](https://docs.tavily.com/documentation/keyless)) |
-| `SEARXNG_URL` | URL da instância SearXNG para busca web gratuita auto-hospedada — sem necessidade de chave de API ([searxng.github.io](https://searxng.github.io/searxng/)) |
 | `TAVILY_BASE_URL` | Sobrescreve o endpoint da API Tavily. Útil para proxies corporativos e backends de busca compatíveis com Tavily auto-hospedados. Mesmo padrão que `GROQ_BASE_URL`. |
+| `SEARXNG_URL` | URL da instância SearXNG para busca web gratuita auto-hospedada — sem necessidade de chave de API ([searxng.github.io](https://searxng.github.io/searxng/)) |
 | `EXA_API_KEY` | Chave de API Exa para busca web e conteúdos nativos de IA ([exa.ai](https://exa.ai/)) |
 | `BRAVE_SEARCH_API_KEY` | Token de assinatura da API Brave Search para busca web (camada gratuita disponível) ([brave.com/search/api](https://brave.com/search/api/)) |
 | `BROWSERBASE_API_KEY` | Automação de navegador ([browserbase.com](https://browserbase.com/)) |
@@ -149,7 +162,7 @@ Para autenticação nativa da Anthropic, o Hermes prefere os próprios arquivos 
 | `CAMOFOX_ADOPT_EXISTING_TAB` | Defina como `true` para reutilizar uma aba Camofox existente antes de criar uma nova |
 | `BROWSER_INACTIVITY_TIMEOUT` | Timeout de inatividade da sessão de navegador em segundos |
 | `AGENT_BROWSER_ARGS` | Flags extras de inicialização do Chromium (separadas por vírgula ou nova linha). O Hermes injeta automaticamente `--no-sandbox,--disable-dev-shm-usage` quando rodando como root ou em namespaces de usuário não privilegiado restritos por AppArmor (Ubuntu 23.10+, DGX Spark, muitas imagens de container); defina isso manualmente apenas para sobrescrever ou adicionar outras flags. |
-| `AGENT_BROWSER_ENGINE` | Motor de navegador para modo local: `auto` (padrão — família Chromium via CDP), ou uma sobrescrita de motor específico. |
+| `AGENT_BROWSER_ENGINE` | Motor de navegador local: `auto` (padrão — família Chromium via CDP), `lightpanda` (modo Browser Use spawna `lightpanda serve`; as ferramentas built-in passam `--engine lightpanda` ao agent-browser), ou `chrome`. Mesmo que `browser.engine` em config.yaml. |
 | `FAL_KEY` | Geração de imagem ([fal.ai](https://fal.ai/)) |
 | `KREA_API_KEY` | Chave de API Krea para geração de imagem Krea 2 ([krea.ai](https://krea.ai/)) |
 | `GROQ_API_KEY` | Chave de API Groq Whisper STT ([groq.com](https://groq.com/)) |
@@ -637,6 +650,7 @@ Conecte o Hermes ao [Photon](https://photon.codes/) / Spectrum (iMessage e outra
 | `PHOTON_HOME_CHANNEL_NAME` | Rótulo humano para o canal home. |
 | `PHOTON_MARKDOWN` | Envia respostas do agente como markdown — o iMessage renderiza nativamente, outras plataformas Spectrum degradam para texto simples (`true`/`false`, padrão `true`). |
 | `PHOTON_REACTIONS` | Tapback 👀/👍/👎 em mensagens como status de processamento e roteia tapbacks em mensagens do bot para o agente (`true`/`false`, padrão `false`). |
+| `PHOTON_READ_RECEIPTS` | Marca iMessages de entrada como lidos depois de encaminhar ao Hermes (`true`/`false`, padrão `true`). |
 | `PHOTON_TELEMETRY` | Ativa a telemetria do SDK Spectrum no sidecar (`true`/`false`, padrão `false`; alterne com `hermes photon telemetry on|off`). |
 | `PHOTON_SIDECAR_PORT` | Porta de loopback para o controle do sidecar Node + canal de entrada (padrão `8789`). |
 | `PHOTON_SIDECAR_AUTOSTART` | Inicia o sidecar Node ao conectar (`true`/`false`, padrão `true`). |
@@ -693,7 +707,7 @@ Configurações avançadas por plataforma para regular o batcher de mensagens de
 | `HERMES_VISION_MAX_CONCURRENCY` | Máximo de rajadas de **encode/resize** de imagem simultâneas em todo o processo (sobrescrita para `auxiliary.vision.max_concurrency`; padrão: contagem de núcleos de CPU do host, sem limite). Limita apenas a etapa de encode ligada à CPU para que um fan-out de frames de vídeo não sature todos os núcleos e prive o event loop — as chamadas de LLM permanecem totalmente concorrentes. Valores `< 1` são ignorados. |
 | `HERMES_RESTART_DRAIN_TIMEOUT` | Gateway: segundos para esperar as execuções ativas drenarem em `/restart` antes de forçar a reinicialização (padrão: `900`). |
 | `HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT` | Timeout de conexão por plataforma durante a inicialização e reconexão do gateway (segundos; `0`/negativo espera indefinidamente). Aplica-se à tentativa de conexão *e* à espera de pronto do adaptador do Discord, para que contas com muitos slash commands para sincronizar não sejam mortas no meio da inicialização. Vinculado a `gateway.platform_connect_timeout` no `config.yaml` (padrão `30`); esta variável de ambiente é a sobrescrita manual e prevalece se definida explicitamente. |
-| `HERMES_GATEWAY_BUSY_INPUT_MODE` | Comportamento padrão de entrada ocupada do gateway: `queue`, `steer`, ou `interrupt`. Pode ser sobrescrito por chat com `/busy`. |
+| `HERMES_GATEWAY_BUSY_INPUT_MODE` | Comportamento padrão de entrada ocupada do gateway: `queue`, `steer`, ou `interrupt`. Pode ser sobrescrito para o perfil ativo com `/busy`. |
 | `HERMES_GATEWAY_BUSY_ACK_ENABLED` | Se o gateway envia uma mensagem de confirmação (⚡/⏳/⏩) quando um usuário envia entrada enquanto o agente está ocupado (padrão: `true`). Defina como `false` para suprimir completamente essas mensagens — a entrada ainda é enfileirada/direcionada/interrompe normalmente, apenas a resposta no chat é silenciada. Vinculado a `display.busy_ack_enabled` no `config.yaml`. |
 | `HERMES_GATEWAY_NO_SUPERVISE` | Dentro da imagem Docker s6-overlay, opta por sair da auto-supervisão ao executar `hermes gateway run` e usa a semântica de primeiro plano pré-s6 (sem auto-reinicialização, o gateway é o processo principal do container). Valores verdadeiros: `1`, `true`, `yes`. Equivalente à flag CLI `--no-supervise`. Sem efeito fora da imagem s6. |
 | `HERMES_GATEWAY_BOOTSTRAP_STATE` | Dentro da imagem Docker s6-overlay, declara o estado supervisionado **inicial** do gateway em um volume novo. Em um volume vazio não há `gateway_state.json` persistido, então o reconciliador de boot registra o slot `gateway-default`, mas o deixa **parado** (só inicia automaticamente quando o último estado registrado era `running`). Defina isso como `running` e o hook de configuração de primeiro boot preenche `gateway_state.json` *antes* de o reconciliador rodar, para que o gateway suba já no primeiro boot. Apenas o valor literal `running` é respeitado. Apenas primeiro-boot: um `gateway_state.json` existente nunca é sobrescrito, então um gateway deliberadamente parado permanece parado entre reinicializações. Sem efeito fora da imagem s6. |

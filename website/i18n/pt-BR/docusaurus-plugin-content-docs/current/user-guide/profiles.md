@@ -62,6 +62,10 @@ hermes profile create backup --clone-all
 
 Copia **tudo** — config, API keys, personalidade, todas as memórias, skills, cron jobs, plugins. Um snapshot funcional completo. Histórico por profile é excluído (histórico de sessão, `state.db`, `backups/`, `state-snapshots/`, `checkpoints/`) — estes pertencem ao profile de origem e podem chegar a dezenas de GB. Para backup completo incluindo histórico, use `hermes profile export` ou `hermes backup`.
 
+:::note Logins OAuth são compartilhados, não copiados
+Logins OAuth da Anthropic (Claude Pro/Max), OpenAI Codex e xAI usam **refresh tokens de uso único** — uma cópia de um não é uma segunda credencial, é a mesma credencial com dois donos, e o primeiro profile a dar refresh a revoga para toda outra cópia. `--clone-all` (e o mirroring de credenciais do dashboard) portanto descarta essas linhas OAuth do clone. O novo profile continua lendo o login do `~/.hermes/auth.json` raiz, e um refresh de token feito dentro de qualquer profile é escrito de volta na raiz, então todos os profiles permanecem logados. API keys estáticas são copiadas normalmente. Para dar a um profile seu próprio login OAuth separado, rode `hermes -p <name> auth add <provider>` dentro dele.
+:::
+
 ### Clone from a specific profile {#clone-from-a-specific-profile}
 
 ```bash

@@ -71,14 +71,11 @@ Veja a seção [Where the logs go](#where-the-logs-go) abaixo para o mapa comple
 :::
 
 :::note Tool-loop hard stops for unattended gateways
-A setting `tool_loop_guardrails.hard_stop_enabled` default para `false`, o que é razoável para sessões CLI e TUI interativas onde uma pessoa vê avisos repetidos de tool-call. Em deploys de gateway ou server unattended, avisos sozinhos podem não parar um agente preso em um loop repetido de tool-call. Operadores que querem comportamento circuit-breaker devem habilitar explicitamente hard stops no `config.yaml` do profile:
+Sessões unattended de gateway e cron habilitam hard stops de tool-loop por padrão via `non_interactive_hard_stop_enabled`. Sessões interativas de CLI, TUI, Desktop e ACP continuam só com avisos. Para optar um deploy unattended por fora no `config.yaml` do profile:
 
 ```yaml
 tool_loop_guardrails:
-  hard_stop_enabled: true
-  hard_stop_after:
-    exact_failure: 5
-    idempotent_no_progress: 5
+  non_interactive_hard_stop_enabled: false
 ```
 :::
 
@@ -137,6 +134,24 @@ Há três formas bundled de satisfazer a segunda condição:
 - **OIDC self-hosted** — para autenticar contra seu próprio identity provider via OpenID Connect padrão: o provider `dashboard_auth/self_hosted` ativa quando `HERMES_DASHBOARD_OIDC_ISSUER` + `HERMES_DASHBOARD_OIDC_CLIENT_ID` estão definidos.
 
 Qualquer que escolha, o gate redireciona callers para uma login page antes de alcançarem qualquer rota protegida. Veja [Web Dashboard → Authentication](features/web-dashboard.md#authentication-gated-mode) para os três providers.
+
+Quando um reverse proxy como Traefik ou nginx roda em outro container, o
+endereço da bridge-network dele não é confiável por padrão. Defina a URL pública
+do dashboard e confie só no IP exato desse proxy, ou um CIDR limitado para uma rede
+dedicada de proxy, no `config.yaml` montado:
+
+```yaml
+dashboard:
+  public_url: "https://dashboard.example.com"
+  trusted_proxies:
+    - "172.20.0.5"
+    # Or, if the proxy address is dynamic on a dedicated network:
+    # - "172.20.0.0/24"
+```
+
+Isso permite que o `X-Forwarded-Proto: https` do proxy controle cookies OAuth
+seguros enquanto deixa headers de forwarding de outros peers não confiáveis. Não
+use `*`, `0.0.0.0/0` ou `::/0`; o Hermes rejeita essas entradas unbounded.
 
 Se nenhum provider estiver registrado e o bind for non-loopback, o dashboard **falha fechado na inicialização** com um erro específico apontando para a env var ausente. Não há mais escape hatch que serve o dashboard sem autenticação em bind público: `HERMES_DASHBOARD_INSECURE=1` agora é um no-op deprecated (loga um aviso e é ignorado). Configure um provider, ou faça bind `HERMES_DASHBOARD_HOST=127.0.0.1` e alcance o dashboard via túnel SSH / Tailscale.
 

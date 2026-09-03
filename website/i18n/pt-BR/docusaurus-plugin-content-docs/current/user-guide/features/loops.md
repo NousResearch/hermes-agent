@@ -28,8 +28,8 @@ Quando o trabalho deve rodar **sem supervisão** — de madrugada, em um schedul
 O que você vai ver:
 
 1. **Loop aceito** — `↻ Loop set (every 5m): check the deploy status…`
-2. **Primeiro wakeup em 5m** — enquanto a sessão está idle, o Hermes injeta o wakeup e roda um turno normal contra o estado atual.
-3. **Repetir** — a cada 5 minutos, até uma condição de parada disparar ou você parar.
+2. **Primeiro wakeup dispara na hora** — no próximo poll de idle (gateway: o próximo scan de 15s do watcher), o Hermes injeta o wakeup e roda um turno normal contra o estado atual.
+3. **Repetir** — a cada 5 minutos depois disso, até uma condição de parada disparar ou você parar.
 
 Loopar um slash command é igualmente simples:
 
@@ -61,7 +61,7 @@ Um loop termina quando qualquer uma destas dispara:
 |---|---|
 | O agente decide que terminou | O prompt de wakeup ensina o agente a encerrar a resposta com `LOOP_COMPLETE` numa linha própria quando a tarefa está pronta ou sem objeto. |
 | Um cap de execuções | `--times N` — para depois de N wakeups. |
-| Uma condição baseada em evidência | `--until <condition>` — após cada wakeup, o mesmo auxiliary judge que alimenta `/goal` checa a resposta contra a sua condição (fail-open: um judge quebrado nunca trava o loop). |
+| Uma condição baseada em evidência | `--until <condition>` — após cada wakeup, o mesmo auxiliary judge que alimenta `/goal` checa a resposta contra a sua condição. Se o judge julgar a condição inalcançável, o loop **pausa** com o motivo em vez de re-disparar até o orçamento de ticks (fail-open: um judge quebrado nunca trava o loop). |
 | Você | `/loop stop` (ou `/loop pause` para mantê-lo). |
 | O orçamento de backstop | `loops.max_ticks` (padrão 100) pausa o loop para uma sessão sem supervisão não queimar tokens para sempre. `0` = ilimitado. |
 
@@ -76,7 +76,7 @@ Exemplos:
 
 | Comando | O que faz |
 |---|---|
-| `/loop [interval] <prompt> [--times N] [--until <cond>]` | Inicia (ou substitui) o loop desta sessão. |
+| `/loop [interval] <prompt> [--times N] [--until <cond>]` | Inicia (ou substitui) o loop desta sessão. O primeiro wakeup dispara imediatamente; os seguintes seguem a cadência. |
 | `/loop` ou `/loop status` | Mostra cadência, ticks disparados e tempo até o próximo wakeup. |
 | `/loop pause` | Para de disparar sem perder o loop. |
 | `/loop resume` | Retoma. |

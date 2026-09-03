@@ -226,6 +226,12 @@ Servers ficam vivos durante a vida do processo Hermes. Não há
 reaper de idle-timeout — o custo de reiniciar o índice do server
 a cada escrita seria muito maior que manter o daemon.
 
+Servers que suportam workspaces multi-root (atualmente pyright) rodam como um
+**único processo** por processo Hermes: o primeiro projeto Python o spawna,
+e cada raiz de projeto adicional — por exemplo git worktrees irmãos
+editados por subagentes em paralelo — é anexada a esse mesmo server como uma
+pasta de workspace adicional em vez de iniciar outra cópia.
+
 ## Desativar {#disabling}
 
 Defina `lsp.enabled: false` em `config.yaml` para desativar todo o

@@ -456,11 +456,14 @@ platforms:
 | `platforms.slack.reply_to_mode` | `"first"` | Modo de threading para mensagens de múltiplas partes: `"off"`, `"first"`, ou `"all"` |
 | `platforms.slack.extra.reply_in_thread` | `true` | Quando `false`, mensagens de canal recebem respostas diretas em vez de threads. Mensagens dentro de threads existentes continuam respondendo na thread. |
 | `platforms.slack.extra.reply_broadcast` | `false` | Quando `true`, respostas em thread também são postadas no canal principal. Apenas o primeiro trecho é transmitido. |
+| `platforms.slack.extra.unfurl_links` | Slack default | Defina `false` para suprimir previews automáticos de páginas web linkadas preservando links clicáveis. Quando qualquer chave unfurl está definida, captions de mídia são postados como mensagem separada *antes* do arquivo (a API de upload do Slack não carrega controles unfurl), e draft streaming nativo cai para delivery baseada em edit. |
+| `platforms.slack.extra.unfurl_media` | Slack default | Defina `false` para suprimir previews automáticos de mídia preservando links clicáveis. Mesmas notas de ordenação de caption e streaming que `unfurl_links`. |
 | `platforms.slack.extra.rich_blocks` | `false` | Quando `true`, mensagens do agente são renderizadas como blocos do [Block Kit](https://docs.slack.dev/block-kit/) (cabeçalhos, divisores, listas aninhadas reais e tabelas nativas). Um fallback em texto simples é sempre enviado junto. Tabelas que excedem os limites do Slack recorrem a texto monoespaçado alinhado. Nenhuma reinstalação do aplicativo é necessária — é uma alteração apenas do lado do envio. |
 | `platforms.slack.extra.feedback_buttons` | `false` | Quando `true` junto com `rich_blocks`, adiciona controles de feedback nativos do Slack às respostas finais. |
 | `platforms.slack.extra.native_task_cards` | `false` | Quando `true`, renderiza tool calls ao vivo como cards nativos de plan/task do Slack. Este é um opt-in explícito de progresso independente do `tool_progress: off` padrão do Slack; falhas da API nativa recuam para uma atualização de texto editada continuamente. |
 | `platforms.slack.extra.suggested_prompts` | `[]` | Até quatro prompts `{title, message}` para os pontos de entrada de DM do Agent/Assistant; aceita uma lista ou `{title, prompts}`. |
 | `platforms.slack.extra.assistant_thread_titles` | `true` | Quando `true`, nomeia as threads de DM do Agent/Assistant a partir da primeira mensagem do usuário. |
+| `platforms.slack.extra.api_human_users` | `[]` | IDs de usuário Slack cujos posts **Web-API (user-token) contam como humanos**. Tais posts carregam o `app_id` postador e nenhum `client_msg_id`, então por padrão são dropados como tráfego de app; allowlist os usuários do seu próprio front-end aqui em vez de `allow_bots: all`. Veja [Tratando posts user-token do seu próprio app como humanos](#treating-your-own-apps-user-token-posts-as-human-api_human_users). |
 | `platforms.slack.extra.allow_bots` | `"none"` | Controla mensagens de outros bots do Slack: `"none"` os ignora, `"mentions"` aceita uma mensagem de bot apenas quando **essa própria mensagem** @menciona o Hermes, e `"all"` aceita todas elas. Use `"mentions"` para o modo mais seguro de colaboração bot a bot. Veja [Aceitando mensagens de outros bots](#accepting-messages-from-other-bots-allow_bots). |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | Superfície de entrega para [jobs de cron continuáveis](../features/cron.md#flat-in-channel-continuation-slack). `"thread"` abre uma thread dedicada por entrega (padrão); `"in_channel"` entrega de forma direta na linha do tempo do canal. Combine `in_channel` com `reply_in_thread: false` (e `require_mention: false`) para que uma resposta simples no canal continue o job. |
 
@@ -691,6 +694,39 @@ Como o modo `mentions` restringe:
 `mentions` é o modo recomendado para colaboração bot a bot: cada agente precisa convocar explicitamente o outro a cada turno. Evite `all`, a menos que a política de resposta de cada bot par seja segura contra loops — dois bots que respondem a tudo vão responder um ao outro para sempre. A detecção cobre mensagens de bot rotuladas (`bot_id`, `subtype: bot_message`), eventos originados de aplicativos, e *usuários* bot não rotulados (verificados via `users.info`), então agentes Hermes pares são filtrados de forma consistente entre workspaces.
 
 Para implantações estritas com múltiplos bots, combine com `require_mention: true` e `strict_mention: true` — veja o perfil de verificação rápida abaixo.
+
+
+### Tratando posts user-token do seu próprio app como humanos (`api_human_users`) {#treating-your-own-apps-user-token-posts-as-human-api_human_users}
+
+Uma mensagem postada pela Web API com um **user token** (`xoxp-`) é
+autoria de uma pessoa real, mas chega com o `app_id` postador e sem
+`client_msg_id` — a mesma assinatura que o Hermes usa para reconhecer posts de app — então é
+dropada como tráfego de bot. Isso bloqueia um padrão comum: um front-end custom (um
+dashboard interno, um shell mobile, um kiosk) que envia mensagens ao Hermes *como*
+o usuário logado.
+
+`allow_bots: all` deixaria esses posts passarem, mas abre a porta a todo
+bot no canal e enfraquece as proteções de loop. Em vez disso, allowlist só
+as pessoas que usam seu front-end:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      api_human_users: ["U0AAAAAAA", "U0BBBBBBB"]
+```
+
+A variável de ambiente equivalente é `SLACK_API_HUMAN_USERS` (comma-separated).
+
+Escopo e segurança:
+
+- A allowlist é **só usuários**. Deliberadamente não há variante app-ID: um
+  bot token moderno (`xoxb-`) posta com a mesma forma `user` + `app_id`, então
+  confiar num app também admitiria os próprios posts de bot e derrotaria o loop guard.
+- Events carregando `bot_id` ou `subtype: bot_message`, ou nenhum `user`, são
+  sempre tratados como posts de bot independentemente da allowlist.
+- O resto do pipeline fica inalterado: mention gating, `allowed_channels`,
+  e `SLACK_ALLOWED_USERS` ainda se aplicam ao sender (agora humano).
 
 ### Gatilhos de Reação (`reaction_triggers`) {#reaction-triggers-reaction_triggers}
 

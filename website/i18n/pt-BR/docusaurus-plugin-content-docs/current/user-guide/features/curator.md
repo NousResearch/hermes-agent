@@ -345,14 +345,15 @@ após `archive_after_days` de não uso — nunca corrigidas, consolidadas ou
 excluídas. Defina `curator.prune_builtins: false` para isentar completamente
 as skills embutidas.
 
-Um pequeno conjunto de **built-ins protegidos** é fixado no código como nunca
+Um pequeno conjunto de **built-ins protegidos** pode ser fixado no código como nunca
 arquiváveis e nunca consolidáveis, independentemente de
 `curator.prune_builtins`, do estado de pin, ou do julgamento do LLM. Esses
-sustentam UX estrutural — por exemplo, `plan` alimenta o fluxo do comando de
-barra `/plan` — então arquivar um deles silenciosamente transformaria seu
+sustentam UX estrutural, então arquivar um deles silenciosamente transformaria seu
 comando de barra em um erro "Unknown command" sem nenhum aviso para você.
-Built-ins protegidos são filtrados por completo da lista de candidatos do
-curator, então a passagem de consolidação nunca os enxerga.
+(O conjunto está atualmente vazio — `plan`, seu membro original, graduou para um
+comando embutido `/plan` sem skill em disco.) Built-ins protegidos são filtrados
+por completo da lista de candidatos do curator, então a passagem de consolidação
+nunca os enxerga.
 
 Se você quiser uma garantia mais forte do que "sem exclusão" — por exemplo,
 congelar o conteúdo de uma skill por completo enquanto o agente ainda a

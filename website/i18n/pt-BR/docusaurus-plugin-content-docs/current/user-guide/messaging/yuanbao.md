@@ -322,7 +322,7 @@ Resultados são entregues ao seu canal home.
 Execute operações longas sem bloquear a conversa:
 
 ```
-/background Analyze all files in the archive
+/bg Analyze all files in the archive
 ```
 
 ### Mensagens cross-platform

@@ -6,6 +6,14 @@ description: "Configure um servidor de LLM local, compatível com a API da OpenA
 
 # Execute LLMs Locais no Mac
 
+:::tip Usuários Desktop: há um caminho de um clique
+No app desktop Hermes, **Settings → Providers → Local Models** instala
+e gerencia um servidor llama.cpp local para você — downloads de modelo, encaixe de
+memória e sizing de contexto incluídos. Veja [Local Models](/user-guide/local-models).
+Este guia é para setup manual: MLX, builds custom, ou servers que você quer
+rodar você mesmo.
+:::
+
 Este guia mostra como executar um servidor de LLM local no macOS com uma API compatível com a OpenAI. Você ganha privacidade total, custo zero de API e um desempenho surpreendentemente bom em Apple Silicon.
 
 Cobrimos dois backends:

@@ -20,6 +20,7 @@ Você precisa de pelo menos uma forma de se conectar a um LLM. Use `hermes model
 | **GitHub Copilot ACP** | `hermes model` (inicia `copilot --acp --stdio` localmente) |
 | **Anthropic** | `hermes model` (Claude Max + créditos de uso extra via OAuth; também suporta chave de API da Anthropic ou setup-token manual — veja a nota abaixo) |
 | **OpenRouter** | `OPENROUTER_API_KEY` em `~/.hermes/.env` |
+| **Ramp Router** | `RAMP_ROUTER_API_KEY` em `~/.hermes/.env` (provedor: `router`; aliases: `ramp-router`, `ramp`, `router.com`; gateway nativo Responses, catálogo live com escopo de conta) |
 | **Fireworks AI** | `FIREWORKS_API_KEY` em `~/.hermes/.env` (provedor: `fireworks`; aliases: `fireworks-ai`, `fw`) |
 | **NovitaAI** | `NOVITA_API_KEY` em `~/.hermes/.env` (provedor: `novita`, mais de 200 modelos, Model API, Agent Sandbox, GPU Cloud) |
 | **z.ai / GLM** | `GLM_API_KEY` em `~/.hermes/.env` (provedor: `zai`) |
@@ -27,19 +28,22 @@ Você precisa de pelo menos uma forma de se conectar a um LLM. Use `hermes model
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` em `~/.hermes/.env` (provedor: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
 | **Arcee AI** | `ARCEEAI_API_KEY` em `~/.hermes/.env` (provedor: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` em `~/.hermes/.env` (provedor: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
+| **Nebius Token Factory** | `NEBIUS_API_KEY` em `~/.hermes/.env` (provedor: `nebius-token-factory`; aliases: `nebius`, `nebius-tf`, `tokenfactory`) |
 | **MiniMax** | `MINIMAX_API_KEY` em `~/.hermes/.env` (provedor: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` em `~/.hermes/.env` (provedor: `minimax-cn`) |
 | **xAI (Grok) — API Responses** | `XAI_API_KEY` em `~/.hermes/.env` (provedor: `xai`) |
 | **xAI Grok OAuth (SuperGrok)** | `hermes model` → "xAI Grok OAuth (SuperGrok / Premium+)" — login pelo navegador, sem chave de API. Veja o [guia](../guides/xai-grok-oauth.md) |
-| **Qwen Cloud (Alibaba DashScope)** | `DASHSCOPE_API_KEY` em `~/.hermes/.env` (provedor: `alibaba`) |
-| **Alibaba Cloud (Coding Plan)** | `DASHSCOPE_API_KEY` (provedor: `alibaba-coding-plan`, alias: `alibaba_coding`) — SKU de faturamento separado, endpoint diferente |
+| **Qwen Cloud (Alibaba DashScope)** | `DASHSCOPE_API_KEY` em `~/.hermes/.env` (provedor: `alibaba`; endpoint China continental: `alibaba-cn`) |
+| **Alibaba Cloud (Coding Plan)** | `ALIBABA_CODING_PLAN_API_KEY` (cai para `DASHSCOPE_API_KEY`) (provedor: `alibaba-coding-plan`, alias: `alibaba_coding`; endpoint China continental: `alibaba-coding-plan-cn` com `ALIBABA_CODING_PLAN_CN_API_KEY`, caindo para as chaves compartilhadas) — SKU de faturamento separado, endpoint diferente |
+| **Alibaba Cloud (Token Plan)** | `ALIBABA_TOKEN_PLAN_API_KEY` em `~/.hermes/.env` (provedor: `alibaba-token-plan`; endpoint China continental: `alibaba-token-plan-cn` com `ALIBABA_TOKEN_PLAN_CN_API_KEY`, caindo para a chave compartilhada) — tier flat-token do Model Studio |
 | **Kilo Code** | `KILOCODE_API_KEY` em `~/.hermes/.env` (provedor: `kilocode`) |
 | **Xiaomi MiMo** | `XIAOMI_API_KEY` em `~/.hermes/.env` (provedor: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`) |
 | **Tencent TokenHub** | `TOKENHUB_API_KEY` em `~/.hermes/.env` (provedor: `tencent-tokenhub`, aliases: `tencent`, `tokenhub`, `tencentmaas`) |
+| **Tencent TokenPlan** | `TOKENPLAN_API_KEY` em `~/.hermes/.env` (provedor: `tencent-tokenplan`, aliases: `tokenplan`, `tencent-lkeap`; endpoint Anthropic Messages) |
 | **OpenCode Zen** | `OPENCODE_ZEN_API_KEY` em `~/.hermes/.env` (provedor: `opencode-zen`) |
 | **CommandCode** | `COMMANDCODE_API_KEY` em `~/.hermes/.env` (provedor: `commandcode`, alias: `commandcode-chat`; modelos Claude via `commandcode-anthropic`, alias: `commandcode-claude`). Funciona com planos GOAT/Pro/Max/Provider (não o plano Go de $1 — sem acesso à API). |
 | **OpenCode Go** | `OPENCODE_GO_API_KEY` em `~/.hermes/.env` (provedor: `opencode-go`) |
-| **OpenCode Free** | Sem chave — não precisa de API key nem conta (provedor: `opencode-free`, aliases: `free`, `opencode_free`). Selecione via `hermes model` ou `/model free`; requisições são enviadas anonimamente |
+| **OpenCode Free** | Sem chave — não precisa de API key nem conta (provedor: `opencode-free`, aliases: `free`, `opencode_free`). Selecione via `hermes model` ou `/model free`; requisições são enviadas anonimamente. A lista de modelos atualiza automaticamente do catálogo live do OpenCode, então promoções free rotativas aparecem (e as delistadas desaparecem) sem um update do Hermes |
 | **DeepSeek** | `DEEPSEEK_API_KEY` em `~/.hermes/.env` (provedor: `deepseek`) |
 | **Hugging Face** | `HF_TOKEN` em `~/.hermes/.env` (provedor: `huggingface`, aliases: `hf`) |
 | **Google / Gemini** | `GOOGLE_API_KEY` (ou `GEMINI_API_KEY`) em `~/.hermes/.env` (provedor: `gemini`) |
@@ -54,6 +58,8 @@ Você precisa de pelo menos uma forma de se conectar a um LLM. Use `hermes model
 | **StepFun** | `STEPFUN_API_KEY` em `~/.hermes/.env` (provedor: `stepfun`) |
 | **LM Studio** | `hermes model` → "LM Studio" (provedor: `lmstudio`, `LM_API_KEY` opcional) |
 | **Endpoint Personalizado** | `hermes model` → escolha "Custom endpoint" (salvo em `config.yaml`) |
+
+Todos os três provedores OpenCode enviam um header opaco por conversa `x-opencode-session` em cada requisição (turnos principais em todo transporte mais chamadas auxiliares como compressão e títulos). O OpenCode o usa para fixar uma conversa a um backend para o prompt cache permanecer quente; o valor é derivado do session id do Hermes e não carrega dados pessoais.
 
 Para o caminho oficial com chave de API, veja o [guia dedicado do Google Gemini](/guides/google-gemini).
 
@@ -225,6 +231,10 @@ hermes chat --provider fireworks --model accounts/fireworks/models/kimi-k2p6
 hermes chat --provider novita --model moonshotai/kimi-k2.5
 # Requer: NOVITA_API_KEY em ~/.hermes/.env
 
+# Ramp Router (IDs de modelo vêm do catálogo live da sua conta)
+hermes chat --provider router --model gpt-5.4-mini
+# Requer: RAMP_ROUTER_API_KEY em ~/.hermes/.env
+
 # z.ai / ZhipuAI GLM
 hermes chat --provider zai --model glm-5
 # Requer: GLM_API_KEY em ~/.hermes/.env
@@ -253,9 +263,13 @@ hermes chat --provider alibaba --model qwen3.5-plus
 hermes chat --provider xiaomi --model mimo-v2-pro
 # Requer: XIAOMI_API_KEY em ~/.hermes/.env
 
-# Tencent TokenHub (Hy3 Preview)
-hermes chat --provider tencent-tokenhub --model hy3-preview
+# Tencent TokenHub (Hy4 preview)
+hermes chat --provider tencent-tokenhub --model hy4-preview
 # Requer: TOKENHUB_API_KEY em ~/.hermes/.env
+
+# Tencent TokenPlan (Hy4 preview via endpoint Anthropic Messages)
+hermes chat --provider tencent-tokenplan --model hy4-preview
+# Requer: TOKENPLAN_API_KEY em ~/.hermes/.env
 
 # Arcee AI (modelos Trinity)
 hermes chat --provider arcee --model trinity-large-thinking
@@ -269,6 +283,10 @@ hermes chat --provider meta-ai --model muse-spark-1.2
 # Use o ID de modelo exato retornado pelo endpoint /v1/models da GMI.
 hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Requer: GMI_API_KEY em ~/.hermes/.env
+
+# Nebius Token Factory
+hermes chat --provider nebius --model deepseek-ai/DeepSeek-V4-Pro
+# Requer: NEBIUS_API_KEY em ~/.hermes/.env
 ```
 
 A Fireworks usa seus IDs de catálogo nativos em formato de barra, como `accounts/fireworks/models/kimi-k2p6`. Execute `hermes model`, escolha **Fireworks AI** e selecione a partir do catálogo ativo ou digite outro ID de modelo da Fireworks. O endpoint padrão é `https://api.fireworks.ai/inference/v1`; configure um endpoint diferente através de `model.base_url` em `config.yaml`, não em `.env`.
@@ -283,7 +301,7 @@ model:
 As URLs base podem ser sobrescritas com as variáveis de ambiente `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `META_BASE_URL`, ou `TOKENHUB_BASE_URL`.
 
 :::note Tier de contribuidores Meta
-`muse-spark-1.2-contributor` é o tier com desconto da Meta — a Meta pode treinar com seus prompts e completions, então a [seleção interativa de modelo pede confirmação](../user-guide/configuring-models.md) antes de usá-lo. Use `muse-spark-1.2` (preço padrão, sem treinamento) para trabalho confidencial.
+`muse-spark-1.2-contributor` e `muse-spark-1.3-contributor` são os tiers de contribuidores da Meta — a Meta pode treinar com seus prompts e completions, então a [seleção interativa de modelo pede confirmação](../user-guide/configuring-models.md) antes de usar qualquer um. Para preços e rate limits atuais, veja [Meta Model API pricing and rate limits](https://dev.meta.ai/docs/pricing-rate-limits/). Use o padrão `muse-spark-1.2` / `muse-spark-1.3` (sem treinamento) para trabalho confidencial.
 :::
 
 :::note Detecção Automática de Endpoint da Z.AI
@@ -458,6 +476,8 @@ hermes chat --provider alibaba_coding --model qwen3-coder-plus
 ```
 
 `alibaba_coding` usa a mesma `DASHSCOPE_API_KEY` que sua entrada `alibaba` já usa — nenhuma chave separada é necessária, apenas um destino de roteamento diferente. Antes de este provedor ser registrado, usuários que definiam `provider: alibaba_coding` no `config.yaml` caíam silenciosamente no roteamento do OpenRouter.
+
+Para o endpoint China continental (`alibaba-coding-plan-cn`, `https://coding.dashscope.aliyuncs.com/v1`) defina `ALIBABA_CODING_PLAN_CN_API_KEY`. O provedor CN ainda cai para `ALIBABA_CODING_PLAN_API_KEY` / `DASHSCOPE_API_KEY`, mas com só a chave compartilhada definida o picker `/model` lista apenas a linha internacional — defina a chave CN (ou `provider: alibaba-coding-plan-cn` em `config.yaml`) para surfacer a CN. O mesmo se aplica a `alibaba-token-plan-cn` com `ALIBABA_TOKEN_PLAN_CN_API_KEY`.
 
 ### MiniMax (OAuth) {#minimax-oauth}
 
@@ -1273,6 +1293,8 @@ extra_body:
     enable_thinking: false
 ```
 
+O `extra_body` configurado segue o provedor em todo lugar: é mesclado na construção do agente, **sobrevive a todo turno do gateway** (incluindo turnos onde `/fast` empilha overrides `service_tier`/`speed` por cima — esses mesclam sobre seu `extra_body` em vez de substituí-lo), e é **re-derivado em trocas `/model`** — trocar para um provedor custom nomeado aplica seu `extra_body`, e trocar para longe o limpa para nunca vazar a outro provedor.
+
 O assistente `hermes model` → Custom Endpoint agora pergunta explicitamente pelo `api_mode` e persiste sua resposta em `config.yaml`. A detecção automática baseada em URL (por exemplo, caminhos `/anthropic` → `anthropic_messages`) ainda ocorre como fallback quando o campo é deixado em branco.
 
 **Visão nativa para modelos de provedor personalizado.** Se seu endpoint personalizado serve um modelo com capacidade de visão que não está no models.dev, defina `model.supports_vision: true` para que o Hermes roteie as imagens anexadas nativamente (como partes `image_url`) em vez de pré-processá-las através de `vision_analyze`. Um único interruptor — não é necessário também definir `agent.image_input_mode: native`.
@@ -1523,7 +1545,7 @@ fallback_model:
 
 Quando ativado, o fallback troca o modelo e o provedor no meio da sessão sem perder sua conversa. A cadeia é tentada entrada por entrada; a ativação é única por sessão.
 
-Provedores suportados: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Provedores suportados: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
 
 :::tip
 O fallback é configurado exclusivamente através de `config.yaml` — ou interativamente via `hermes fallback`. Para detalhes completos sobre quando ele é acionado, como a cadeia avança e como interage com tarefas auxiliares e delegação, veja [Provedores de Fallback](/user-guide/features/fallback-providers).

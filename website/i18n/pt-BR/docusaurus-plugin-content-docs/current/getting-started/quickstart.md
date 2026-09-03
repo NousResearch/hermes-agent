@@ -130,9 +130,12 @@ Bons defaults:
 | **xAI** | Modelos Grok via API direta | Defina `XAI_API_KEY` |
 | **xAI Grok OAuth** | Assinatura SuperGrok / Premium+, sem API key | `hermes model` → xAI Grok OAuth |
 | **NovitaAI** | Gateway de API multi-modelo | Defina `NOVITA_API_KEY` |
+| **Ramp Router** | Gateway LLM Responses-native roteando entre OpenAI/Anthropic/xAI/... | Defina `RAMP_ROUTER_API_KEY` |
+| **Nebius Token Factory** | Modelos open na nuvem Nebius AI | Defina `NEBIUS_API_KEY` |
 | **StepFun** | Modelos Step Plan | Defina `STEPFUN_API_KEY` |
 | **Xiaomi MiMo** | Modelos hospedados pela Xiaomi | Defina `XIAOMI_API_KEY` |
 | **Tencent TokenHub** | Modelos hospedados pela Tencent | Defina `TOKENHUB_API_KEY` |
+| **Tencent TokenPlan** | Modelos Tencent Hy via endpoint estilo Anthropic | Defina `TOKENPLAN_API_KEY` |
 | **Ollama Cloud** | Modelos Ollama gerenciados na nuvem | Defina `OLLAMA_API_KEY` |
 | **LM Studio** | App desktop local expondo API compatível com OpenAI | Defina `LM_API_KEY` (e `LM_BASE_URL` se não for o default) |
 | **Qwen OAuth** | OAuth no browser do Qwen Portal — sem API key | `hermes model` → Qwen OAuth |

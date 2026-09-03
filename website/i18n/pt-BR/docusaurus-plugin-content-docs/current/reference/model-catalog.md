@@ -59,6 +59,7 @@ Notas de campo:
 | Quando | O que acontece |
 |---|---|
 | `/model` ou `hermes model` | Busca se o cache em disco está obsoleto, senão usa o cache |
+| Gateway rodando | Refresh em background a cada `ttl_minutes` (padrão 20), então o picker nunca atrasa o manifesto publicado em mais de uma janela |
 | Cache em disco atualizado (< TTL) | Nenhum acesso à rede |
 | Falha de rede com cache | Recai silenciosamente no cache, uma linha de log |
 | Falha de rede, sem cache | Recai silenciosamente no snapshot embutido |
@@ -72,11 +73,11 @@ Local do cache: `~/.hermes/cache/model_catalog.json`.
 model_catalog:
   enabled: true
   url: https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
-  ttl_hours: 1
+  ttl_minutes: 20
   providers: {}
 ```
 
-Defina `enabled: false` para desativar totalmente a busca remota e sempre usar o snapshot embutido no repositório.
+Defina `enabled: false` para desativar totalmente a busca remota e sempre usar o snapshot embutido no repositório (isso também desativa o refresh em background do gateway). `ttl_minutes` define tanto o tempo de vida do cache quanto a cadência de refresh do gateway; a chave legada `ttl_hours` ainda é honrada se você a definir explicitamente.
 
 ### URLs de sobrescrita por provedor {#per-provider-override-urls}
 

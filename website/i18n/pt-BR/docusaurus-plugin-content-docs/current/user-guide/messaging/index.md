@@ -208,7 +208,8 @@ ordinária da plataforma como falha de event loop.
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display |
 | `/voice [on\|off\|tts\|join\|leave\|status]` | Control messaging voice replies and Discord voice-channel behavior |
 | `/rollback [number]` | List or restore filesystem checkpoints |
-| `/background <prompt>` | Run a prompt in a separate background session |
+| `/bg <prompt>` | Rodar um prompt em sessão background separada |
+| `/btw <question>` | Fazer pergunta lateral sobre a conversa atual sem interrompê-la |
 | `/reload-mcp` | Reload MCP servers from config |
 | `/update` | Update Hermes Agent to the latest version |
 | `/help` | Show available commands |
@@ -222,7 +223,7 @@ Sessões persistem entre mensagens até resetarem. O agente lembra o contexto da
 
 ### Encontrar sessões anteriores (`/sessions`) {#finding-past-sessions-sessions}
 
-`/sessions` lista suas sessões anteriores para o chat atual, e `/sessions <name>` retoma uma (atalho para `/resume`). Quando a lista cresce, `/sessions search <query>` (alias `find`) filtra por título ou id de sessão, ordenado pela mais recentemente ativa. Listagem cross-origin com `/sessions all` é apenas para admin — usuários regulares só veem sessões da própria origem de chat.
+`/sessions` lista suas sessões anteriores do chat atual — incluindo a que você está agora, marcada `(current)` — e `/sessions <name>` retoma uma (atalho para `/resume`). Quando a lista cresce, `/sessions search <query>` (alias `find`) filtra por match de título ou session-id, ordenado pela mais recentemente ativa. Listagem cross-origin com `/sessions all` é só admin — usuários regulares recebem um aviso explicando que a lista ficou com escopo do chat, e só veem sessões da própria origem de chat.
 
 ### Overrides persistentes de `/model` {#persistent-model-overrides}
 
@@ -492,7 +493,7 @@ Quando habilitado, o bot envia mensagens de status enquanto trabalha:
 Execute um prompt em uma sessão em background separada para o agente trabalhar independentemente enquanto seu chat principal permanece responsivo:
 
 ```
-/background Check all servers in the cluster and report any that are down
+/bg Check all servers in the cluster and report any that are down
 ```
 
 O Hermes confirma imediatamente:
@@ -504,7 +505,7 @@ O Hermes confirma imediatamente:
 
 ### Como funciona {#how-it-works}
 
-Cada prompt `/background` gera uma **instância separada do agente** que roda de forma assíncrona:
+Cada prompt `/bg` gera uma **instância separada do agente** que roda de forma assíncrona:
 
 - **Sessão isolada** — o agente em background tem sua própria sessão com seu próprio histórico. Não tem conhecimento do contexto do chat atual e recebe só o prompt que você fornece.
 - **Mesma configuração** — herda model, provider, toolsets, configurações de raciocínio e roteamento de provider do setup atual do gateway.
@@ -536,10 +537,10 @@ HERMES_BACKGROUND_NOTIFICATIONS=result
 
 ### Casos de uso {#use-cases}
 
-- **Monitoramento de servidores** — "/background Check the health of all services and alert me if anything is down"
-- **Builds longos** — "/background Build and deploy the staging environment" enquanto continua conversando
-- **Tarefas de pesquisa** — "/background Research competitor pricing and summarize in a table"
-- **Operações de arquivo** — "/background Organize the photos in ~/Downloads by date into folders"
+- **Monitoramento de servidores** — "/bg Check the health of all services and alert me if anything is down"
+- **Builds longos** — "/bg Build and deploy the staging environment" enquanto continua conversando
+- **Tarefas de pesquisa** — "/bg Research competitor pricing and summarize in a table"
+- **Operações de arquivo** — "/bg Organize the photos in ~/Downloads by date into folders"
 
 :::tip
 Tarefas em background em plataformas de mensagens são fire-and-forget — não precisa esperar ou verificar. Resultados chegam no mesmo chat automaticamente quando a tarefa termina.
@@ -668,6 +669,55 @@ Com o gateway rodando, use o comando slash `/platform` de qualquer sessão CLI o
 `/platform list` mostra se cada adaptador está `running`, `paused` (manualmente) ou `paused-by-breaker` (veja abaixo). Pausar mantém o adaptador carregado e seus loops em background vivos — mensagens recebidas são descartadas, mas a conexão permanece aberta para resume instantâneo.
 
 Veja também o comando de resumo de status mais amplo [`/platforms`](../../reference/slash-commands.md#info).
+
+
+### Desabilitando uma plataforma cujas credenciais ainda estão no `.env` {#disabling-a-platform-whose-credentials-are-still-in-env}
+
+`platforms.<name>.enabled: false` em `~/.hermes/config.yaml` é autoritativo.
+Credenciais daquela plataforma deixadas no ambiente (`TELEGRAM_BOT_TOKEN`,
+`WEIXIN_TOKEN`, `HASS_TOKEN`, `EMAIL_*`, `TWILIO_ACCOUNT_SID`, ...) ainda são
+ligadas à config da plataforma para tooling send-only continuar funcionando, mas
+não iniciam mais o adapter:
+
+```yaml title="~/.hermes/config.yaml"
+platforms:
+  weixin:
+    enabled: false   # wins over WEIXIN_TOKEN in .env
+```
+
+Releases anteriores deixavam a mera presença de credenciais reabilitar doze
+plataformas (Weixin, WhatsApp Cloud, Home Assistant, Email, SMS, DingTalk, Feishu,
+WeCom, WeCom callback, BlueBubbles, QQ Bot, Yuanbao) independentemente dessa chave. Se
+você dependia disso, o gateway agora loga um WARNING por plataforma afetada no
+startup para não simplesmente apagar:
+
+```
+Platform 'weixin' is explicitly disabled by platforms.weixin.enabled: false in config.yaml,
+so the credentials found in the environment (WEIXIN_TOKEN, WEIXIN_ACCOUNT_ID) will NOT start
+its adapter. Environment credentials no longer override an explicit disable. Remove the key
+or set platforms.weixin.enabled: true to turn it back on.
+```
+
+Omitir a chave `enabled` por completo mantém o comportamento só-env: credenciais
+presentes → adapter inicia.
+
+### Ignorando um proxy herdado (`gateway.trust_env`) {#ignoring-an-inherited-proxy-gatewaytrust_env}
+
+Por padrão todo adapter de plataforma honra `HTTP_PROXY` / `HTTPS_PROXY` /
+`NO_PROXY` (e `SSL_CERT_FILE`) do ambiente do gateway, e
+auto-detecta o proxy de sistema do macOS. Um gateway iniciado por Windows Scheduled
+Task ou service manager pode herdar um proxy que o shell interativo nunca
+vê — um listener Clash/V2Ray local que ainda não está rodando — e logar
+`Cannot connect to host 127.0.0.1:7890` em todo poll. Desligue o proxy herdado
+para todos os adapters de uma vez:
+
+```yaml title="~/.hermes/config.yaml"
+gateway:
+  trust_env: false
+```
+
+Variáveis explícitas de proxy por plataforma (`DISCORD_PROXY`, `TELEGRAM_PROXY`,
+`MATRIX_PROXY`, ...) ainda são honradas. Reinicie o gateway depois de mudar.
 
 ### Circuit breaker automático {#automatic-circuit-breaker}
 

@@ -14,7 +14,7 @@ O Hermes Agent inclui um conjunto completo de ferramentas de automação de nave
 - **Modo Browser Use** via a [Browser Use CLI 3.0](https://github.com/browser-use/browser-use), o driver de browser default para Chrome local e navegadores na nuvem do Browser Use
 - **Modo na nuvem Firecrawl** via [Firecrawl](https://firecrawl.dev) para navegadores na nuvem com scraping integrado
 - **Modo local Camofox** via [Camofox](https://github.com/jo-inc/camofox-browser) para navegação local anti-detecção (spoofing de fingerprint baseado em Firefox)
-- **Engine local Lightpanda** via [Lightpanda](https://lightpanda.io) — um navegador headless construído do zero em Zig para máquinas; startup instantâneo, 16x menos memória e 9x mais rápido que o Chrome, com fallback automático para Chrome nas ações que ainda não suporta
+- **Engine local Lightpanda** via [Lightpanda](https://lightpanda.io) — um navegador headless construído do zero em Zig para máquinas; startup instantâneo, 16x menos memória e 9x mais rápido que o Chrome. Funciona no modo Browser Use (Hermes o spawna, sem Chromium ou Node) e com as ferramentas built-in (fallback automático para Chrome nas ações que ainda não suporta)
 - **CDP local da família Chromium** — conecte as ferramentas de navegador à sua própria instância de Chrome, Brave, Chromium ou Edge usando `/browser connect`
 - **Modo de navegador local** via a CLI `agent-browser` e uma instalação local do Chromium
 
@@ -157,6 +157,99 @@ portanto você precisa tê-la instalada (`hermes setup tools → Browser Automat
 instala automaticamente). Redirecionamentos pós-navegação de uma URL pública para um endereço
 privado ainda são bloqueados (você não pode usar um truque de redirect-to-internal para alcançar
 sua LAN pelo caminho público).
+
+
+### Navegação com perfil real (use seus próprios logins) {#real-profile-browsing-use-your-own-logins}
+
+Por padrão, a navegação local roda num perfil limpo e descartável — o agente
+não está logado em nada. Ligue **real profile browsing** para o agente navegar
+como *você*, com seus logins e cookies existentes:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  use_real_profile: true
+```
+
+Quando habilitado, o Hermes copia o perfil **ativo** do seu browser padrão — aquele
+em que você realmente navega (`Local State → profile.last_used`), com cookies, logins
+salvos e preferências — para um snapshot gerenciado em
+`~/.hermes/browser-profile/<browser>/`, depois lança o **binário real do browser**
+naquele snapshot e anexa o motor de browsing a ele. Lançar o binário real
+(em vez de um Chromium bundled com switches de mock-keychain) é o que
+mantém cookies criptografados pelo SO descriptografáveis — no macOS, cookies do Chrome são
+criptografados pelo Keychain, e um launch mock-keychain dropava silenciosamente cada um,
+abrindo deslogado. Seu perfil live de browser **nunca é aberto
+diretamente**: o
+snapshot é um diretório separado, então não briga com seu browser rodando pelo
+lock do perfil e contorna o bloqueio do Chrome 136+ a remote-debugging do
+diretório de perfil padrão. Os arquivos de auth (cookies/logins/preferências) são
+re-sincronizados do seu perfil real sempre que uma sessão fresh é lançada, então logins
+que você faz no próprio browser aparecem na sessão do agente. Só o perfil ativo
+é copiado — outros perfis do Chrome nunca são snapshotados.
+
+O browser do snapshot roda **headless** — dirige seu perfil em
+background sem janela visível e nunca rouba foco, para você continuar
+trabalhando enquanto o agente twitta, preenche forms ou scrapa por você.
+(Headless aqui usa o modo headless *novo* do Chrome, que lê seu cookie store
+normal, então seus logins ainda carregam.) Se preferir assistir, o mesmo
+toggle de [modo headed](#headed-mode-visible-browser-window) se aplica —
+`browser.headed: true` (ou `AGENT_BROWSER_HEADED=1`) abre uma janela visível para
+navegação com perfil real também. Num host sem display (servers, CI) sempre roda
+headless.
+
+Se seu browser tem vários perfis (digamos trabalho e pessoal)
+e você não quer que "qualquer perfil que você tocou por último" decida a identidade
+do agente, pin a fonte do snapshot explicitamente:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  use_real_profile: true
+  real_profile_pin: "Profile 2"   # directory name under the browser's user-data dir
+```
+
+Um pin nomeando um diretório de perfil que não existe falha fechado com mensagem
+acionável — nunca cai silenciosamente para o last-used profile.
+
+Quando você desliga o toggle, o Hermes deleta o store de snapshot
+(`~/.hermes/browser-profile/`) no próximo uso do browser, para as credenciais
+copiadas não ficarem após você revogar o consentimento.
+
+:::note Windows: o browser precisa estar totalmente fechado
+No Windows um Chrome/Edge/Brave rodando segura seus databases de cookie e login com
+lock exclusivo (deny-all), então o Hermes não consegue copiá-los enquanto o browser está
+aberto — falha rápido com mensagem "fully quit the browser and retry" em vez de
+pendurar ou produzir sessão deslogada. Navegação com perfil real no Windows
+portanto exige o browser **totalmente fechado**, incluindo qualquer instância background/tray
+(o "continue running background apps when closed" do Chrome mantém um
+`chrome.exe` vivo depois que você fecha a janela). macOS e Linux podem copiar o
+perfil enquanto o browser está rodando.
+
+Defina `browser.real_profile_autoclose: true` para o Hermes **oferecer fechar o
+browser por você** quando ele está segurando o perfil. Mesmo com isso on, o Hermes nunca
+fecha automaticamente — quando o perfil está locked ele sempre para e o
+agente pergunta primeiro; só com sua aprovação roda `hermes browser
+close-profile` (termina a árvore de processos do browser ligada àquele perfil,
+perdendo abas não salvas), depois retenta. Se o perfil ainda estiver locked depois disso
+(ex.: instância background/tray relançou), o Hermes permanece bloqueado e diz para
+você fechar o browser por completo — não loopa nem mata de novo sozinho.
+:::
+
+- **Browsers suportados:** Chrome, Edge, Brave, Brave Origin, Chromium (o que for o
+  padrão do OS). Um padrão não-Chromium (ex. Firefox) falha fechado com mensagem clara
+  em vez de adivinhar.
+- **Funciona em qualquer backend.** Num backend local é automático uma vez o toggle
+  está on. Sob um backend de browser **cloud**, o agente ainda pode abrir uma
+  sessão local de perfil real sob demanda via argumento `local` da ferramenta `browser_exec`
+  (a ferramenta só expõe esse argumento quando este toggle está on) — o
+  backend cloud continua servindo todo o resto.
+- **Enquadramento de segurança:** isso é conveniência consent-gated, não um limite de
+  isolamento. Uma página que o agente visita roda com seus logins reais, então só habilite
+  quando quiser o agente agindo como você. Off por padrão.
+- **Desktop:** alterne em **Capabilities → Tools → Browser → Use My Real
+  Browser Profile** (o switch fica acima das opções de backend), ou em
+  Settings → Config sob a seção `browser`.
 
 ### Modo local Camofox
 
@@ -346,11 +439,12 @@ Quando o Camofox roda em modo headed (com janela de navegador visível), ele exp
 
 [Lightpanda](https://lightpanda.io) é um navegador headless open-source escrito do zero. Sobe instantaneamente, roda 9x mais rápido e usa 16x menos memória que o Chrome, o que importa para agentes que vivem em VMs pequenas por longos períodos.
 
-Lightpanda é uma **engine local**, selecionada no caminho local do `agent-browser` (não um provedor na nuvem). Instale o binário e coloque-o no seu `PATH` (veja o [guia de instalação do Lightpanda](https://lightpanda.io/docs)), depois defina:
+Lightpanda é uma **engine local** (uma fonte de browser, como "Local Browser"), não um provedor na nuvem. Instale o binário e coloque-o no seu `PATH` (veja o [guia de instalação do Lightpanda](https://lightpanda.io/docs/run-locally/installation/one-liner)), depois escolha **Lightpanda** em `hermes tools` → Browser Automation, ou defina:
 
 ```yaml
 # Add to ~/.hermes/config.yaml
 browser:
+  cloud_provider: local
   engine: lightpanda
 ```
 
@@ -360,9 +454,12 @@ Ou via variável de ambiente:
 AGENT_BROWSER_ENGINE=lightpanda
 ```
 
-O Hermes dirige o Lightpanda através de `agent-browser` sobre CDP, do mesmo jeito que dirige o Chrome local.
+A engine funciona com ambos os drivers de browser:
 
-**Fallback automático para Chrome.** O Lightpanda ainda não cobre tudo que o Chrome faz, então a integração é não disruptiva: o Lightpanda trata as ações que suporta, e o Hermes retenta de forma transparente no Chrome qualquer coisa que não suporte. O conjunto suportado cobre o fluxo principal do agente — navigate, snapshot, click, type, scroll, back, press e eval. Screenshots também recuam para o Chrome porque o Lightpanda não tem renderer gráfico; `browser_vision` é pré-roteado direto para o Chrome pelo mesmo motivo.
+- **Modo Browser Use (o padrão).** O Hermes lança `lightpanda serve --host 127.0.0.1 --port <free>` ele mesmo — um processo por nome de sessão `browser_exec` (ou por task) — e aponta o Browser Use CLI para ele. Sem Chromium, Playwright ou Node.js. O processo é recolhido após `browser.inactivity_timeout`, na saída, e pelo orphan sweep se o Hermes crashar. Todos esses processos compartilham um cache HTTP on-disk em `$HERMES_HOME/cache/browser-use/lightpanda/http-cache`, então visitas repetidas pulam re-download de assets. O Hermes passa a flag de cache só quando o Lightpanda instalado a suporta (0.3.x+); binários mais antigos simplesmente rodam sem cache. Para limpar, pare suas sessões Lightpanda primeiro, depois delete aquele diretório. Lightpanda não tem renderer gráfico, então `capture_screenshot()` fica indisponível e a descrição da ferramenta diz ao modelo para trabalhar text-first; também segura uma página por sessão, então o modelo é instruído a chamar `new_tab()` uma vez e `goto_url()` depois (rastreado upstream em [lightpanda-io/browser#1962](https://github.com/lightpanda-io/browser/issues/1962)).
+- **Ferramentas built-in de browser** (`/browser use off`). O Hermes dirige o Lightpanda através de `agent-browser --engine lightpanda` sobre CDP, do mesmo jeito que dirige o Chrome local, com **fallback automático para Chrome**: Lightpanda trata as ações que suporta (navigate, snapshot, click, type, scroll, back, press, eval) e o Hermes retenta de forma transparente no Chrome qualquer coisa que não suporte. Screenshots e `browser_vision` são roteados direto para o Chrome.
+
+**Quando a engine é ignorada.** `browser.engine` é a setting de browser de menor precedência: um provedor cloud (incluindo o browser de assinatura Nous — e em setups never-configured, qualquer `BROWSERBASE_API_KEY` / `BROWSER_USE_API_KEY` em `~/.hermes/.env` auto-seleciona um), Camofox, um override `browser.cdp_url` / `/browser connect`, ou `browser.use_real_profile` todos têm precedência. Escolher Lightpanda em `hermes tools` grava `cloud_provider: local` por você; `/browser status` e `hermes doctor` reportam quando a engine está configurada mas sombreada, e por quê.
 
 ### Navegador local da família Chromium via CDP (`/browser connect`)
 
@@ -381,7 +478,7 @@ Na CLI, use:
 /browser disconnect              # Detach and return to cloud/local mode
 ```
 
-Se um navegador ainda não estiver rodando com remote debugging, o Hermes tentará iniciar automaticamente um navegador suportado da família Chromium com `--remote-debugging-port=9222`. A detecção inclui Brave, Google Chrome, Chromium e Microsoft Edge, com caminhos comuns de instalação no Linux como `/opt/brave-bin/brave` e `/snap/bin/brave`.
+Se um navegador ainda não estiver rodando com remote debugging, o Hermes tentará iniciar automaticamente um navegador suportado da família Chromium com `--remote-debugging-port=9222`. A detecção inclui Brave, Brave Origin/Nightly, Google Chrome, Chromium e Microsoft Edge, com caminhos comuns de instalação no Linux como `/opt/brave-bin/brave` e `/snap/bin/brave`.
 
 :::tip
 Para iniciar manualmente um navegador da família Chromium com CDP habilitado, use um user-data-dir dedicado para que a porta de debug realmente suba mesmo se o navegador já estiver rodando com seu perfil normal:
@@ -462,9 +559,10 @@ BROWSERBASE_SESSION_TIMEOUT=1800
 # Inactivity timeout before auto-cleanup in seconds (default: 120)
 BROWSER_INACTIVITY_TIMEOUT=120
 
-# Local browser engine. Applies to the built-in browser tools
-# (agent-browser path). Equivalent to browser.engine in config.yaml.
-#   auto       — agent-browser's default (currently Chrome)
+# Local browser engine. Equivalent to browser.engine in config.yaml. In
+# Browser Use mode (default) "lightpanda" makes Hermes spawn `lightpanda serve`;
+# with the built-in tools it is passed to agent-browser as --engine.
+#   auto       — Chrome (default)
 #   lightpanda — Lightpanda
 #   chrome     — force Chrome explicitly
 AGENT_BROWSER_ENGINE=auto

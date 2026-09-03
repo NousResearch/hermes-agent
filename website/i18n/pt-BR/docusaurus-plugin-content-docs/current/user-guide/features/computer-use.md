@@ -98,34 +98,19 @@ ou adicione `computer_use` aos toolsets habilitados em `~/.hermes/config.yaml`.
 ## Modos de permissão e profiles de browser logados {#permission-modes-and-logged-in-browser-profiles}
 
 O Hermes mapeia seu UX de aprovação existente nos modos de runtime imutáveis
-do cua-driver. Modo de permissão, aprovação de capability manifest, e o grant de
-existing-profile são settings de launch. Não podem mudar depois que o runtime inicia:
+do cua-driver. Modo de permissão e aprovação de capability manifest são settings de
+launch. Não podem mudar depois que o runtime inicia:
 
-| Sessão Hermes | Modo cua-driver | Intervenção humana | `existing_profile` |
-|---|---|---|---|
-| Aprovações manual ou smart (padrão) | `standard` | Aprovações Hermes normais; Cua para na fronteira protegida | Recusa a menos que `computer_use.grant_existing_profile: true` (opt-in de config one-time) |
-| `computer_use.permission_mode: bounded` + manifest revisado | daemon privado `bounded` | Você revisa e aprova o capability manifest uma vez, no launch | Permitido só dentro dos profiles/origins/tools declarados no manifest; todo o resto falha closed |
-| `--yolo`, `/yolo`, ou `approvals.mode: off` | daemon privado `unrestricted` | Uma aceitação de risco Hermes explícita; sem prompts Cua em runtime | Recusa a menos que `computer_use.grant_existing_profile: true`; YOLO não substitui este grant |
+| Sessão Hermes | Modo cua-driver | Intervenção humana |
+|---|---|---|
+| Aprovações manual ou smart (padrão) | `standard` | Aprovações Hermes normais; Cua para na fronteira protegida |
+| `computer_use.permission_mode: bounded` + manifest revisado | daemon privado `bounded` | Você revisa e aprova o capability manifest uma vez, no launch |
+| `--yolo`, `/yolo`, ou `approvals.mode: off` | daemon privado `unrestricted` | Uma aceitação de risco Hermes explícita; sem prompts Cua em runtime |
 
-### Anexar ao seu browser signed-in {#attaching-to-your-signed-in-browser}
-
-O agente pode dirigir uma janela Chrome/Edge que você já tem aberta — incluindo um
-profile signed-in — **sem restartar o browser, copiar o profile, ou
-tocar suas tabs**. Como acesso DevTools expõe as páginas live,
-cookies e storage daquele profile, o cua-driver exige um grant humano explícito que
-aprovação de ferramenta comum não pode substituir. Você opta in uma vez, no config.yaml:
-
-```yaml
-computer_use:
-  grant_existing_profile: true
-```
-
-O Hermes então lança o runtime cua-driver com o grant de trusted-launcher
-(`--grant existing-profile`), e
-`cua_browser_prepare` com um existing profile sucede contra o par exato
-`(pid, window_id)` que o agente prova. Deixe `false` (o padrão) e
-anexação de existing-profile falha closed; profiles isolados owned pelo driver funcionam
-de qualquer forma e são o que o agente prefere.
+Trabalho de browser — incluindo páginas em um profile signed-in — passa pelo
+toolset `browser` (`browser_exec`), não por `computer_use`. O antigo opt-in
+`computer_use.grant_existing_profile` foi removido junto com a rota tipada de
+browser; uma chave residual em config.yaml é ignorada.
 
 ### Modo bounded para automação repetível {#bounded-mode-for-repeatable-automation}
 
@@ -166,14 +151,12 @@ nome de sessão público é só um label para identidade de cursor e estado
 escopado à sessão. Não seleciona, compartilha ou mantém um runtime vivo. Desligar `/yolo`,
 resetar ou fechar a sessão Hermes, cancellation cleanup, ou saída do processo
 fecha essa sessão de transporte. O Hermes também para runtimes privados que lançou
-para acesso bounded, unrestricted ou existing-profile. Uma conversa Hermes
-não pode mudar o modo ou grants de outro runtime. No macOS, um
-runtime standard com grant existing-profile usa um daemon CuaDriver.app fresh
-num socket privado. Modos bounded e unrestricted usam um serviço embedded privado
-sob a identidade host do Hermes.
+para acesso bounded ou unrestricted. Uma conversa Hermes
+não pode mudar o modo ou grants de outro runtime. Modos bounded e unrestricted usam um
+serviço embedded privado sob a identidade host do Hermes.
 
 Aprovação `smart` permanece `standard`: uma classificação LLM não pode substituir
-um manifest revisado ou um grant de launch-time.
+um manifest revisado.
 
 <div class="alert alert--warning">
 
@@ -444,8 +427,18 @@ Modo de permissão e manifest (veja
 computer_use:
   permission_mode: standard        # standard (default) | bounded
   capability_manifest: ""          # capability manifest path, required for bounded
-  grant_existing_profile: false    # opt-in: attach in standard or unrestricted mode
 ```
+
+No Linux, suporte Wayland nativo continua um opt-in explícito. O Hermes passa o
+opt-in a todo processo cua-driver, inclusive sessões de gateway, só quando aquele
+processo também tem `WAYLAND_DISPLAY`:
+
+```yaml
+computer_use:
+  native_wayland: true
+```
+
+Reinicie um gateway em execução depois de mudar esta setting.
 
 Sobrescreva o caminho do binário driver (testes / CI / builds locais):
 

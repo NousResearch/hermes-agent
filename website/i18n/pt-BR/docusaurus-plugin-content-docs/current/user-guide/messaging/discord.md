@@ -633,7 +633,7 @@ O Hermes registra automaticamente skills instaladas como **Discord Application C
 - Cada skill vira um comando slash Discord (ex.: `/code-review`, `/ascii-art`)
 - Skills aceitam um parâmetro string `args` opcional
 - O Discord tem limite de 100 application commands por bot — se você tiver mais skills do que slots disponíveis, skills extras são ignoradas com aviso nos logs
-- Skills são registradas durante o startup do bot junto com comandos embutidos como `/model`, `/reset` e `/background`
+- Skills são registradas durante o startup do bot junto com comandos embutidos como `/model`, `/reset` e `/bg`
 
 Nenhuma configuração extra é necessária — qualquer skill instalada via `hermes skills install` é automaticamente registrada como comando slash Discord no próximo restart do gateway.
 

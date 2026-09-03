@@ -42,7 +42,7 @@ A linha única no rodapé da TUI. Segmentos aparecem só quando relevantes e cae
 | `⏱` | Tempo decorrido por prompt enquanto o turno roda, por exemplo `⏱ 12s/3m 45s` (tempo do turno / tempo da sessão). |
 | `⏲` | O mesmo timer, congelado depois que o turno completa. |
 | `cmp N` | A sessão foi auto-comprimida N vezes. |
-| `▶ N` | N tarefas `/background` rodando agora. |
+| `▶ N` | N tarefas `/bg` rodando agora. |
 | `⚠ YOLO` | Modo YOLO ligado (auto-aprovação). Também mostrado no banner de startup. |
 | `⛓ N` | N subagents ativos agora. |
 | `↩ resumes when subagent finishes` | Reassurance mostrado enquanto você está idle mas trabalho delegado ainda está em voo — o resultado volta sozinho. |

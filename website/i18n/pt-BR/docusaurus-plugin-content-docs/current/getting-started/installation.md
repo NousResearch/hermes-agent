@@ -94,7 +94,7 @@ Você não precisa montar o setup do zero. Restaure um backup completo com `herm
 
 - **uv** (gerenciador rápido de pacotes Python)
 - **Python 3.11** (via uv, sem sudo)
-- **Node.js v22** (para automação de browser e bridge do WhatsApp)
+- **Node.js v26** (para automação de browser e bridge do WhatsApp; Node de sistema existente 22.22+, 24.11+ ou 26+ é usado como está)
 - **ripgrep** (busca rápida em arquivos)
 - **ffmpeg** (conversão de áudio para TTS)
 

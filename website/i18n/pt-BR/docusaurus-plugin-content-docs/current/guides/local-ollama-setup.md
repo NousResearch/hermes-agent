@@ -6,6 +6,14 @@ description: "Guia passo a passo para executar o Hermes Agent inteiramente na su
 
 # Execute o Hermes Localmente com Ollama — Custo Zero de API
 
+:::tip Usuários Desktop: há um caminho de um clique
+No app desktop Hermes, **Settings → Providers → Local Models** instala
+e gerencia um servidor llama.cpp local para você — downloads de modelo, encaixe de
+memória e sizing de contexto incluídos. Veja [Local Models](/user-guide/local-models).
+Este guia é para setup manual: Ollama especificamente, workflows CLI-first,
+ou servers que você quer rodar você mesmo.
+:::
+
 ## O Problema {#the-problem}
 
 APIs de LLM na nuvem cobram por token. Uma sessão pesada de programação pode custar de US$ 5 a US$ 20. Para projetos pessoais, aprendizado ou trabalho sensível à privacidade, isso soma rápido — e você está enviando cada conversa para terceiros.

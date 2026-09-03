@@ -171,6 +171,15 @@ GOOGLE_CHAT_MAX_BYTES=16777216                  # 16 MiB — cap on in-flight me
 O ID do projeto também recai sobre `GOOGLE_CLOUD_PROJECT`, e o caminho da SA
 recai sobre `GOOGLE_APPLICATION_CREDENTIALS` — use a convenção que preferir.
 
+Sob um [gateway multi-profile](../multi-profile-gateways.md), toda
+setting `GOOGLE_CHAT_*` é lida do próprio `.env` do perfil roteado; um
+perfil secundário nunca herda o projeto, subscription
+ou service account do perfil default. Se um perfil não tem SA configurada enquanto o
+ambiente do processo carrega uma de outro perfil, o adaptador se recusa a cair
+para Application Default Credentials (que autenticaria como aquele outro
+perfil) e loga um erro explícito em vez disso — coloque
+`GOOGLE_CHAT_SERVICE_ACCOUNT_JSON` no `.env` daquele perfil.
+
 Instale as dependências do adaptador do Google Chat através do instalador
 mantido para isso. Ele aplica os mesmos pisos de segurança fixados usados
 pelas verificações em tempo de execução:

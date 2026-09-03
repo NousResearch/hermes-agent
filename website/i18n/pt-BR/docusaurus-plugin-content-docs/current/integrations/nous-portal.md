@@ -233,6 +233,13 @@ O token de refresh do OAuth é armazenado separadamente em `~/.hermes/auth.json`
 
 O Hermes gera um JWT de curta duração a partir do seu token de refresh do Portal armazenado em cada chamada de inferência, em vez de reutilizar uma chave de API de longa duração. O ciclo de vida do token é totalmente automático — refresh, geração, nova tentativa em caso de 401 transitório — e você nunca o vê.
 
+Processos longos de gateway e dashboard também rodam um keepalive em background que refresca o token antes de expirar, para agentes idle não pagarem um round-trip 401 na primeira request de cada lifetime de credencial. O keepalive deriva seu tick do lifetime que o Portal realmente emitiu (vários ticks por lifetime), limitado acima por:
+
+```yaml
+nous:
+  keepalive_interval_seconds: 900   # upper bound on the tick; 0 disables the keepalive
+```
+
 Se o Portal invalidar o token de refresh (mudança de senha, revogação manual, expiração de sessão), o token de refresh inválido é **colocado em quarentena localmente** para que o Hermes deixe de reproduzi-lo e você não veja uma sequência de 401 idênticos. A próxima chamada exibe uma mensagem clara de "reautenticação necessária". Execute `hermes auth add nous` para fazer login novamente; a quarentena é liberada no próximo login bem-sucedido.
 
 ## Solução de problemas {#troubleshooting}

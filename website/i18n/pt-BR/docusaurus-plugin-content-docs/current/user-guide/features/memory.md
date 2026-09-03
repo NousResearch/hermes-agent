@@ -340,6 +340,58 @@ Uso do fork é persistido em `session_model_usage` com `task='background_review'
 e uma linha de completion é escrita em `agent.log`
 (`Background review complete: thread=bg-review calls=… in=… out=… result=…`).
 
+
+### Permitindo uma ferramenta extra de review de escopo estreito (`extra_tools`) {#allowing-a-narrowly-scoped-extra-review-tool-extra_tools}
+
+A review em background pode usar memória, gerenciamento de skills e ferramentas de arquivo read-only
+por padrão. Se um perfil oferece outra ferramenta segura para review não supervisionada,
+opte-a pelo nome:
+
+```yaml
+auxiliary:
+  background_review:
+    extra_tools:
+      - propose_shared_memory
+```
+
+A ferramenta já precisa estar disponível ao agente pai; esta setting só a adiciona
+à whitelist de runtime do fork de review. Não habilita ferramentas arbitrárias,
+e ferramentas não listadas aqui continuam negadas. Mantenha a lista estreita e prefira ferramentas
+que fazem stage de uma proposta para review humana em vez de aplicar mudanças externas ou
+destrutivas diretamente. O padrão é uma lista vazia.
+
+### Modelos locais: reviews esperam GPU idle (`defer`) {#local-models-reviews-wait-for-an-idle-gpu-defer}
+
+Num provedor cloud a review termina em segundos e roda junto do
+que você fizer em seguida. Quando o runtime da review é o **llama-server local gerenciado**
+(Settings → Local models), o mesmo fork ocupa a GPU que seu
+próximo prompt precisa — por minutos num modelo grande — e enviar um novo prompt
+a cancela, descartando o aprendizado. Então no runtime local gerenciado, reviews
+são **adiadas por padrão**: enfileiradas no fim do turno e executadas quando a máquina
+fica quieta por uma janela curta de settle. Nada na review em si
+muda — mesmo modelo, mesmo replay full-transcript, mesmos writes — só o
+momento de execução se move.
+
+```yaml
+auxiliary:
+  background_review:
+    defer: auto            # auto (default) | never
+    defer_max_age_s: 1800  # run a queued review anyway after this long
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `auto` (padrão) | Reviews cujo runtime resolve para o servidor local gerenciado são enfileiradas e rodam no idle; qualquer outro runtime (cloud, servidores externos) spawna imediatamente como antes. |
+| `never` | Comportamento antigo em todo lugar: spawna imediatamente no fim do turno, mesmo na GPU local gerenciada. |
+
+Reviews enfileiradas coalescem por sessão (o snapshot de um turno mais novo substitui o
+mais antigo — a review replay a conversa inteira, então nada se perde),
+uma review preemptada por um novo prompt é re-enfileirada em vez de descartada, e uma
+review que esperou mais que `defer_max_age_s` roda mesmo se a máquina
+nunca ficar idle. `/refine` explícito sempre roda imediatamente. A fila é
+in-memory: reviews ainda pendentes quando o app sai são dropadas, igual a um
+fork in-flight teria sido.
+
 ## Controlando escritas de skills (`skills.write_approval`) {#controlling-skill-writes-skillswrite_approval}
 
 Skills usam o mesmo gate liga/desliga, mas a UX de revisão difere porque um

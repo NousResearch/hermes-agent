@@ -441,6 +441,13 @@ Cria um novo agent run. Retorna um `run_id` que pode ser usado para assinar even
 
 Runs aceitam uma string `input` simples e `session_id`, `instructions`, `conversation_history` ou `previous_response_id` opcionais. Quando `session_id` é fornecido, o Hermes o expõe no status do run para UIs externas correlacionarem runs com seus próprios IDs de conversa.
 
+Para criação com retry seguro, envie um header `Idempotency-Key` (1–255 caracteres ASCII visíveis). O Hermes reserva a chave de forma durável antes de começar o trabalho. Um retry idêntico retorna o `run_id` original com HTTP 202 e `Idempotency-Replayed: true`, inclusive após um restart do gateway e depois que o run completou, falhou ou foi cancelado. Reusar a mesma chave com um JSON payload diferente retorna HTTP 409 com código `idempotency_key_conflict`. Chaves são isoladas por perfil/credencial API autenticados e retidas por 24 horas após a última atualização de status; clientes devem usar chaves únicas e não adivinháveis e não devem reutilizá-las para operações não relacionadas. Requests sem o header mantêm o comportamento legado e sempre criam um novo run.
+
+Quando `session_id` identifica uma sessão Hermes existente e nenhum
+`conversation_history` ou `previous_response_id` explícito é fornecido, o run carrega
+o transcript ativo daquela sessão. Leases de turno de sessão serializam writers
+concorrentes e atualizam o transcript após uma espera contendida.
+
 ### GET /v1/runs/\{run_id\} {#get-v1runsrun_id}
 
 Consulta o estado atual do run. Útil para dashboards que precisam de status sem manter conexão SSE aberta, ou UIs que reconectam após navegação.
@@ -467,8 +474,9 @@ Quando o agente delega trabalho a subagentes em background, o stream também car
 eventos de ciclo de vida `subagent.start` e `subagent.complete`, para clientes
 observarem resultados de delegação — incluindo timeouts e falhas — em vez do
 run ficar silencioso enquanto um filho trabalha. O payload `subagent.complete` carrega
-status, summary, duração, figuras de token/custo e
-`child_session_id` do filho para correlação; campos de texto livre passam por
+status, summary, duração, figuras de token/custo, um
+`child_session_id` do filho para correlação, e o `delegation_id` do batch a que
+pertence (para fan-outs concorrentes ou aninhados permanecerem distinguíveis); campos de texto livre passam por
 redação forçada de secrets antes de sair do processo. Eventos por ferramenta do filho
 (`subagent.tool`, ticks de progresso) são intencionalmente **não** encaminhados — são
 ruído de UI de alto volume; use os arquivos de transcrição live por filho para
@@ -618,6 +626,10 @@ ao perfil roteado**:
 - Rotas sem prefixo e `/p/default/...` continuam usando a chave do perfil padrão.
 - Um perfil nomeado sem seu próprio `API_SERVER_KEY` falha fechado — seu
   prefixo fica inalcançável até você definir um.
+- Runs são scoped por perfil: `/v1/runs/{run_id}` e suas rotas `events`, `stop`,
+  `steer` e `approval` só respondem para o perfil que criou
+  o run (incluindo runs iniciados via `/api/sessions/{id}/chat/stream`);
+  o run id de outro perfil retorna `404`, nunca `403`.
 
 :::warning Breaking change (July 2026)
 Antes desta correção, uma chave válida do perfil padrão era aceita em qualquer

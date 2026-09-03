@@ -99,6 +99,14 @@ cron:
   wrap_response: false
 ```
 
+### Verificação 5: Plataformas fronted por relay (Hermes Cloud / Team Gateway) {#check-5-relay-fronted-platforms-hermes-cloud--team-gateway}
+
+Quando a credencial de uma plataforma vive no connector de relay (ex.: Slack ou Discord fronted por um Team Gateway) em vez do seu `.env` local, o **adaptador de relay ao vivo do gateway em execução é o único sender** — não há path standalone de delivery.
+
+- Disparos agendados funcionam enquanto o gateway estiver rodando: o ticker dele é dono da delivery fronted por relay.
+- Um `hermes cron run <id>` standalone automaticamente **encaminha o run ao gateway** pelo api_server (`POST /api/jobs/{id}/run`). Isso exige a plataforma `api_server` habilitada com um `API_SERVER_KEY` (16+ caracteres). Um contexto `--prompt` / `cronjob(action='run', prompt=...)` é encaminhado junto e aplica só àquele disparo.
+- Se o gateway não estiver alcançável, o run falha com um erro "relay-fronted … start the gateway" em vez do enganoso `platform 'slack' not configured/enabled`. Inicie o gateway e tente de novo.
+
 ---
 
 ## Falhas de Carregamento de Skills {#skill-loading-failures}

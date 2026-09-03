@@ -535,7 +535,7 @@ Para encontrar um Room ID: no Element, vá na sala → **Settings** → **Advanc
 
 ## Comandos no Matrix {#commands-in-matrix}
 
-O Hermes suporta os mesmos comandos de gateway no Matrix que suporta em outras plataformas de mensagens, incluindo `/commands`, `/model`, `/stop`, `/queue`, `/steer`, `/goal`, `/subgoal`, `/background`, `/bg`, `/btw`, `/tasks` e `/yolo`.
+O Hermes suporta os mesmos comandos de gateway no Matrix que suporta em outras plataformas de mensagens, incluindo `/commands`, `/model`, `/stop`, `/queue`, `/steer`, `/goal`, `/subgoal`, `/bg`, `/btw`, `/tasks` e `/yolo`.
 
 Alguns clientes Matrix reservam `/` inicial para comandos locais do cliente e podem não enviar comandos slash desconhecidos para a sala. Nesse caso, use `!` como alias seguro para Matrix:
 

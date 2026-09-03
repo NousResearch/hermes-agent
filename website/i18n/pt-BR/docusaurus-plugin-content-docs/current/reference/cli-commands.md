@@ -103,11 +103,12 @@ Opções comuns:
 
 | Opção | Descrição |
 |--------|-------------|
-| `-q`, `--query "..."` | Prompt não interativo de disparo único. |
-| `--query-file PATH` | Lê o prompt de disparo único de um arquivo (`-` = stdin). Nada é interpretado pelo shell, então aspas, `$(...)` e backticks chegam verbatim — use para corpos de mensagem programáticos ou não confiáveis (DMs de teammate no Bot Mode usam isso). Mutualmente exclusivo com `-q`. |
+| `-q`, `--query "..."` | Seed a sessão com um prompt. Num TTY real o prompt é submetido **literalmente** como o primeiro turno de uma sessão interativa normal (nunca é parseado como slash command ou escape shell `!`) e a sessão permanece aberta — ideal para launchers OS e integrações desktop. Com `--oneshot`, `-Q`, ou stdio non-TTY responde e sai. |
+| `--query-file PATH` | Lê a query de um arquivo (`-` = stdin). Nada é shell-interpreted, então aspas, `$(...)`, e backticks chegam verbatim — use para corpos de mensagem programáticos ou untrusted (Bot Mode teammate DMs usam). Mutuamente exclusivo com `-q`. |
+| `--oneshot` | Com `-q`/`--query-file`: responde a query e sai (o comportamento single-query pré-0.21) em vez de seedar uma sessão interativa. Implícito em stdio non-TTY e por `-Q`. |
 | `-m`, `--model <model>` | Sobrescreve o modelo para esta execução. |
 | `-t`, `--toolsets <csv>` | Ativa um conjunto de toolsets separados por vírgula. |
-| `--provider <provider>` | Força um provedor: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `huggingface`, `novita` (aliases `novita-ai`, `novitaai`), `openai-api`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `upstage` (alias `solar`), `alibaba`, `alibaba-coding-plan` (alias `alibaba_coding`), `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `xai-oauth` (alias `grok-oauth`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `opencode-free` (aliases `free`, `opencode_free`; keyless), `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry`, `lmstudio`, `stepfun`, `tencent-tokenhub` (alias `tencent`, `tokenhub`). |
+| `--provider <provider>` | Força um provedor: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `huggingface`, `novita` (aliases `novita-ai`, `novitaai`), `openai-api`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `upstage` (alias `solar`), `alibaba`, `alibaba-cn`, `alibaba-coding-plan` (alias `alibaba_coding`), `alibaba-coding-plan-cn`, `alibaba-token-plan`, `alibaba-token-plan-cn` (alias `alibaba_coding`), `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `xai-oauth` (alias `grok-oauth`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `opencode-free` (aliases `free`, `opencode_free`; keyless), `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry`, `lmstudio`, `stepfun`, `tencent-tokenhub` (alias `tencent`, `tokenhub`), `router` (aliases `ramp-router`, `ramp`), `nebius-token-factory` (aliases `nebius`, `nebius-tf`, `tokenfactory`), `tencent-tokenplan` (aliases `tokenplan`, `tencent-lkeap`). |
 | `-s`, `--skills <name>` | Pré-carrega uma ou mais skills para a sessão (pode ser repetido ou separado por vírgula). |
 | `-v`, `--verbose` | Saída detalhada. |
 | `-Q`, `--quiet` | Modo programático: suprime banner/spinner/prévias de ferramentas. |
@@ -127,7 +128,8 @@ Exemplos:
 
 ```bash
 hermes
-hermes chat -q "Summarize the latest PRs"
+hermes chat -q "Summarize the latest PRs"          # seeds an interactive session
+hermes chat --oneshot -q "Summarize the latest PRs"  # answer and exit
 hermes chat --provider openrouter --model anthropic/claude-sonnet-4.6
 hermes chat --toolsets web,terminal,skills
 hermes chat --quiet -q "Return only JSON"
@@ -408,6 +410,9 @@ hermes send --list telegram         # filter by platform
 hermes peer add <name> --url http://host:port --key <API_SERVER_KEY>
 hermes peer list
 hermes peer dm <peer>[/<agent>] "message"
+hermes peer run <peer>[/<agent>] --idempotency-key <key> "message"
+hermes peer status <peer>[/<agent>] <run_id>
+hermes peer stop <peer>[/<agent>] <run_id>
 hermes peer remove <name>
 ```
 
@@ -557,7 +562,7 @@ hermes status [--all] [--deep]
 ## `hermes cron`
 
 ```bash
-hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
+hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|doctor|tick>
 ```
 
 | Subcomando | Descrição |
@@ -909,6 +914,34 @@ Restaura um backup do Hermes criado anteriormente no seu diretório home do Herm
 Pare o gateway antes de importar para evitar conflitos com processos em execução.
 :::
 
+### Bancos SQLite {#sqlite-databases}
+
+Membros `.db` (`state.db`, `kanban.db`, `response_store.db`, …) não são publicados
+com um rename como arquivos ordinários. Renomear substituiria o inode do arquivo
+enquanto um processo de gateway, dashboard ou WebUI ainda mantém o antigo aberto:
+esse processo continuaria lendo páginas pré-import e gravando sessões que ninguém
+mais vê, e essas sessões simplesmente estariam ausentes do banco que todo mundo
+abre em seguida — sem nada nos logs. Em vez disso as páginas importadas são
+escritas **dentro do arquivo de banco existente**, do mesmo jeito que
+`/snapshot restore` faz, para que toda conexão aberta convirja nos dados
+importados.
+
+Se o banco live não puder ser substituído com segurança — a cópia de páginas
+falhou *e* outro processo ainda mantém o arquivo aberto — o import deixa aquele
+banco intacto e o lista sob `Warnings (N files skipped)`. Pare os processos que
+seguram o arquivo e rode de novo.
+
+Importar um backup mais antigo sobre trabalho mais novo ainda é permitido, mas
+deixou de ser silencioso. Quando o `state.db` importado tem menos mensagens que
+o que substituiu, o resumo reporta:
+
+```
+  ⚠ Session data replaced by older backup contents:
+    state.db: 12 session(s) / 8912 message(s) -> 3 / 24
+    Anything recorded after the backup was taken is not in it.
+    Recover from a newer backup or snapshot: hermes snapshot list
+```
+
 ### Exemplos {#examples-3}
 ```bash
 hermes import ~/hermes-backup-20260423.zip           # Prompts before overwriting existing config
@@ -1046,6 +1079,28 @@ Subcomandos:
 | `env-path` | Imprime o caminho do arquivo `.env`. |
 | `check` | Verifica config ausente ou obsoleta. |
 | `migrate` | Adiciona interativamente opções recém-introduzidas. |
+
+
+### Pontos dentro de nomes de chave {#dots-inside-key-names}
+
+`hermes config set/get/unset` usam `.` como separador de nesting, mas muitos nomes de chave
+reais contêm pontos literais — IDs de modelo (`grok-4.6`, `glm-5.3-flash`),
+IDs de room Matrix (`!room:example.org`), nomes de provedor versionados. Duas regras
+tornam isso endereçável:
+
+- **Chaves existentes simplesmente funcionam.** Ao navegar um mapping existente, uma
+  chave literal existente que casa com o remainder dotted é preferida em vez de
+  split. `hermes config set providers.p.models.grok-4.6.supports_vision true`
+  atualiza a entrada real `grok-4.6` (e `get`/`unset` resolvem do mesmo jeito).
+- **Criar uma chave dotted nova exige escaping.** Escape pontos literais com
+  backslash: `hermes config set 'providers.p.models.grok-4\.7.context_length' 128000`
+  cria a chave literal `grok-4.7`. (Quote a chave para seu shell manter o
+  backslash.)
+
+Se um write unescaped criaria um mapping aninhado que sombreia um sibling dotted
+existente (ex. criar `grok-4` ao lado de um `grok-4.6` existente), o
+comando falha com erro em vez de escrever silenciosamente uma entrada fantasma que o
+runtime nunca leria.
 
 ## `hermes pairing`
 

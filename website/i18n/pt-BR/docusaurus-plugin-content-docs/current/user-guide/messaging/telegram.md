@@ -93,6 +93,7 @@ platforms:
         priority_mode: prepend  # prepend | append | replace
         priority:
           - my_plugin_command
+          - songsee          # skill commands work here too
 ```
 
 `priority_mode` controla como sua lista se combina com a lista de prioridade integrada do Hermes:
@@ -101,7 +102,26 @@ platforms:
 - `append`: mantém os padrões do Hermes primeiro, depois seus comandos
 - `replace`: usa apenas sua lista para ordenação de prioridade
 
+Priority é aplicada à lista candidata **combinada** (comandos core, plugin e skill) antes do cap ser enforced — então um comando de skill priorizado tem slot de menu garantido mesmo quando comandos core sozinhos encheriam o menu. Antes skills sempre eram trimadas primeiro e alfabeticamente, então skills no fim do alfabeto nunca apareciam independentemente de `priority`.
+
 O Telegram permite até 100 BotCommands, mas payloads grandes de comandos podem falhar. O Hermes usa 60 por padrão por confiabilidade e limita valores configurados a `1..100`; use `/commands` para a lista completa de comandos.
+
+
+### Inline command picker: busque todo comando (sem cap) {#inline-command-picker-search-every-command-no-cap}
+
+O menu `/` tem cap, mas o **inline mode** do Telegram não. Uma vez habilitado, digite `@yourbotname` seguido de um termo de busca em qualquer chat para obter um picker live e pesquisável sobre **todo** comando Hermes e skill instalada — resultados são computados por keystroke e paginados, então nada nunca é trimado:
+
+```
+@yourbotname plan            → tap the /plan result to send it
+@yourbotname plan migrate auth to OIDC   → sends /plan migrate auth to OIDC
+@yourbotname pdf             → finds skills matching "pdf" by name or description
+```
+
+A primeira palavra filtra o catálogo; tudo depois é carregado no comando enviado como argumento. Tocar um resultado envia o comando como mensagem normal sua, então despacha pelo path padrão de comando (mensagens prefixadas de comando alcançam o bot mesmo com privacy mode on).
+
+**Setup one-time:** inline mode é off por padrão para todo bot Telegram. Habilite em [@BotFather](https://t.me/BotFather) com `/setinline` (escolha seu bot, defina qualquer placeholder, ex. `Search commands and skills...`). Até lá, o Telegram nunca entrega inline queries e o picker fica inerte.
+
+Resultados só são servidos a usuários que passam sua allowlist do gateway — usuários não autorizados recebem lista vazia, então seu catálogo de skills instaladas não é exposto a estranhos (inline queries podem ser enviados de qualquer chat, mesmo ones em que o bot não está).
 
 ## Passo 3: Modo de privacidade (Crítico para grupos) {#step-3-privacy-mode-critical-for-groups}
 
@@ -827,8 +847,8 @@ Mostra a vinculação do tópico atual: título da sessão, ID da sessão e dica
 
 ### Por baixo dos panos {#under-the-hood}
 
-- A ativação persiste em `telegram_dm_topic_mode(chat_id, user_id, enabled, ...)` em `state.db`
-- Cada vinculação de tópico persiste em `telegram_dm_topic_bindings(chat_id, thread_id, session_id, ...)` com `ON DELETE CASCADE` em `session_id` — podar uma sessão limpa automaticamente sua vinculação de tópico
+- A ativação persiste em `telegram_dm_topic_mode(profile_name, chat_id, user_id, enabled, ...)` em `state.db`. A chave primária é `(profile_name, chat_id)` para bots multiplexados / profile-routed compartilhando um `state.db` não sobrescreverem uns aos outros quando o mesmo usuário Telegram manda DM a múltiplos bots (o `chat_id` privado é o user id e é idêntico entre bots).
+- Cada vinculação de tópico persiste em `telegram_dm_topic_bindings(profile_name, chat_id, thread_id, session_id, ...)` com `ON DELETE CASCADE` em `session_id` — podar uma sessão limpa automaticamente sua vinculação de tópico
 - A migração SQLite do modo de tópicos é **opt-in**: executa na primeira chamada `/topic`, nunca na inicialização do gateway. Até um usuário executar `/topic` neste perfil, `state.db` permanece inalterado
 - Cada mensagem DM de entrada consulta sua vinculação `(chat_id, thread_id)`. Se presente, a consulta roteia a mensagem para a sessão vinculada via `SessionStore.switch_session()` para que o mapeamento session-key-to-session-id permaneça consistente em disco
 - `/new` dentro de um tópico reescreve a linha de vinculação para apontar ao novo ID de sessão, então a próxima mensagem permanece na sessão fresca

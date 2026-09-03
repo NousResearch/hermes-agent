@@ -270,8 +270,9 @@ mcp_servers:
 
 Na primeira conexão, o Hermes imprime URL de autorização, abre o navegador quando possível e espera o callback OAuth numa porta loopback local. Tokens são cacheados em `~/.hermes/mcp-tokens/<server>.json` com perms 0o600; execuções seguintes reutilizam silenciosamente até refresh falhar.
 
-**Hosts remotos / headless.** Quando o Hermes roda numa máquina diferente do seu navegador, o callback loopback não alcança seu laptop. Duas formas de completar o fluxo:
+**Hosts remotos / headless.** Quando o Hermes roda numa máquina diferente do seu navegador, o callback loopback não alcança seu laptop. Formas de completar o fluxo:
 
+- **Hermes Desktop (automático):** quando você roda o sign-in OAuth a partir da UI de setup MCP do app Desktop contra um backend remoto, o Desktop hospeda o listener de callback *na sua* máquina e retransmite a autorização de volta ao gateway automaticamente — sem tunnel, paste ou proxy. Requer que o app Desktop e o backend estejam atualizados.
 - **Paste-back (sem setup):** num terminal interativo o Hermes imprime "Or paste the redirect URL here…" junto com a URL de autorização. Abra a URL no navegador, aprove, copie a URL completa onde o navegador termina (o redirect mostrará erro de conexão — esperado), cole no prompt. Query strings nuas `?code=…&state=…` também funcionam.
 - **Port forward SSH:** `ssh -N -L <port>:127.0.0.1:<port> user@host` num terminal separado, depois deixe o redirect fluir normalmente.
 - **Callback proxied (`redirect_uri`):** quando um endpoint HTTPS público encaminha ao host (ex. Tailscale Funnel ou reverse proxy apontado à porta de callback), defina `oauth.redirect_uri` e o redirect do navegador alcança o Hermes sozinho — sem tunnel nem paste:
@@ -642,7 +643,7 @@ Se mudar config MCP, use:
 /reload-mcp
 ```
 
-Isso recarrega servidores MCP da config e refresha a lista de ferramentas disponíveis. Para mudanças de ferramenta em runtime empurradas pelo servidor, veja [Descoberta Dinâmica de Ferramentas](#dynamic-tool-discovery) acima.
+Isso recarrega servidores MCP da config e refresha a lista de ferramentas disponíveis. Também é o jeito explícito de re-probear ferramentas gated por disponibilidade (Docker, `HASS_TOKEN`, OAuth…): o conjunto de ferramentas de uma sessão fica congelado de outra forma, então uma credencial ou daemon que aparece no meio da sessão só é capturado em `/reload-mcp`, `/new`, ou compactação de contexto. Para mudanças de ferramenta em runtime empurradas pelo servidor, veja [Descoberta Dinâmica de Ferramentas](#dynamic-tool-discovery) acima.
 
 ### Toolsets {#toolsets}
 

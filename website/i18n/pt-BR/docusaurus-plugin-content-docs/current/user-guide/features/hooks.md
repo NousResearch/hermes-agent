@@ -383,6 +383,7 @@ def register(ctx):
 
 - Callbacks recebem **argumentos nomeados**. Sempre aceite `**kwargs` para compatibilidade futura.
 - Exceções de callback são logadas e ignoradas; callbacks posteriores continuam.
+- Se um callback de plugin Python num hook **limitado por timeout** (observers de hot-path como `post_tool_call` / `pre_llm_call`, mais o hook de política `pre_tool_call`) **bloquear** por mais que `plugins.hook_callback_timeout` (padrão 30s, defina `0` para desabilitar, máx 600), ele é abandonado sem join no worker para o agent loop continuar. Callbacks `pre_tool_call` timed-out ou ainda rodando **falham fechados** (bloqueiam a ferramenta); outros hooks limitados falham abertos (pulam). Hooks com contrato documentado de caller-thread (`subagent_stop`) nunca são movidos para um timeout worker. Shell hooks mantêm seu próprio `timeout` por entrada.
 - O catálogo abaixo é descritivo: **observers** ignoram retornos, **transforms** aceitam a primeira substituição string válida, e hooks **directive/control** consomem shapes de retorno documentados. Plugin middleware é um registry e superfície separados, não outra categoria de hook.
 - Campos de correlação como `turn_id`, `api_request_id`, `task_id`, `session_id` e `api_call_count` são específicos do hook e podem estar ausentes. Trate IDs como opacos.
 - Validade de nome de evento em runtime vem de `hermes_cli.plugins.VALID_HOOKS`. `hermes hooks list` lista hooks shell/outbound configurados, não todo evento disponível; `hermes hooks test <event>` reporta o set válido só quando um evento inválido é fornecido.
@@ -568,6 +569,8 @@ Shell hooks também aceitam o formato compatível Claude Code:
 ```
 
 Ambos os formatos são normalizados internamente para `{"action": "modify", "args": {...}}`.
+
+Se um callback `pre_tool_call` exceder `plugins.hook_callback_timeout` (ou ainda estiver rodando de um disparo timed-out anterior), o Hermes **falha fechado**: a ferramenta é bloqueada com uma mensagem de timeout em vez de prosseguir sem uma decisão de política.
 
 **Casos de uso:** Logging, trilhas de auditoria, contadores de chamadas de ferramentas, bloqueio de operações perigosas, rate limiting, enforcement de política por usuário, sanitização de argumentos, reescrita de path, injeção de parâmetros default.
 
@@ -1115,7 +1118,7 @@ def register(ctx):
 
 ### `subagent_stop`
 
-Dispara **uma vez por agente filho** após `delegate_task` terminar. Se você delegou uma tarefa ou batch de três, este hook dispara uma vez para cada filho, serializado na thread pai.
+Dispara **uma vez por agente filho** após `delegate_task` terminar. Se você delegou uma tarefa ou batch de três, este hook dispara uma vez para cada filho. O dispatch é serializado na thread pai depois que os futures filhos drenam, e cada body de callback Python roda nessa mesma caller thread (não num timeout worker).
 
 **Assinatura do callback:**
 
@@ -1134,7 +1137,7 @@ def my_callback(parent_session_id: str, child_role: str | None,
 | `tool_call_history` | `list[dict]` | Ordered metadata-only tool calls: `tool_name`, bounded `tool_input`, `input_bytes`, `output_bytes`, and `status`; raw inputs and outputs are excluded |
 | `duration_ms` | `int` | Wall-clock time spent running the child, in milliseconds |
 
-**Dispara:** Em `tools/delegate_tool.py`, após `ThreadPoolExecutor.as_completed()` drenar todos os futures filhos. O disparo é marshalled para a thread pai para autores de hook não precisarem raciocinar sobre execução concorrente de callbacks.
+**Dispara:** Em `tools/delegate_tool.py`, após `ThreadPoolExecutor.as_completed()` drenar todos os futures filhos. `invoke_hook("subagent_stop", ...)` é marshalled para a thread pai para autores não verem reentrância do child-pool, e callbacks ficam nessa caller thread.
 
 **Valor de retorno:** Ignorado.
 
@@ -1875,11 +1878,12 @@ Secrets: prefira `secret_env` (nome de variável de ambiente, tipicamente em `~/
 
 ### Formato wire {#wire-format}
 
-Cada disparo POSTa corpo JSON com a mesma forma top-level do stdin de shell hooks, mais metadata de entrega:
+Cada disparo POSTa corpo JSON com a mesma forma top-level do stdin de shell hooks, mais metadata de entrega. `profile` nomeia o perfil Hermes que emitiu o evento (`"default"` fora de profiles), para receivers atrás de um gateway multiplexado distinguirem profiles:
 
 ```json
 {
   "hook_event_name": "on_session_end",
+  "profile": "default",
   "tool_name": null,
   "tool_input": null,
   "session_id": "sess_abc123",

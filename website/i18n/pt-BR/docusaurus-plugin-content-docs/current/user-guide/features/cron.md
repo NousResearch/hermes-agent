@@ -28,6 +28,8 @@ Tudo isso está disponível ao próprio Hermes pela ferramenta `cronjob`, então
 - **`cron.model` / `cron.model_provider`** — default da frota cron: todo job não pinado roda neste modelo, independente do seu modelo de chat. Defina uma vez (`hermes config set cron.model <name>`) e trocar seu modelo de chat com `hermes model` ou `/model` nunca toca sua frota cron.
 - **Default global** — só quando nenhum dos acima está definido um job segue `hermes model`. Neste caso o Hermes **snapshot** provider e modelo na criação, e se o default global mudar depois o job **falha fechado**: pula a execução, não faz chamada de inferência e alerta você **uma vez** — o job permanece pulado (e silencioso) nos ticks seguintes até você agir ou a config ser restaurada (#44585). Para jobs recorrentes ou de outro modo repetíveis, pinar o provider/modelo explicitamente (`hermes cron edit <job_id> --provider <provider> --model <model>`) para continuar. Um one-shot finito já consumido não pode ser atualizado; crie um novo one-shot futuro com provider e modelo explícitos. Isso impede job desassistido de herdar silenciosamente troca para provider/modelo pago. Definir `cron.model` (ou pin por job) é a forma deliberada de rotear gasto cron, e o drift guard não entra num eixo coberto por ele. Operadores que em vez disso querem jobs não pinados acompanharem o default global mutável podem [desabilitar o drift guard](#letting-unpinned-jobs-track-global-defaults).
 
+Qualquer provedor que um job resolver, suas settings de request específicas do provedor (ex.: `request_overrides` como `extra_body`/`extra_headers` para provedores custom) carregam na execução agendada exatamente como numa sessão interativa.
+
 `hermes setup --portal` é a opção de menor atrito para execuções desassistidas já que refresh OAuth é automático. Veja [Nous Portal](/integrations/nous-portal).
 :::
 
@@ -44,7 +46,7 @@ Sessões rodadas por cron não podem criar recursivamente mais jobs cron. O Herm
 ### No chat com `/cron` {#in-chat-with-cron}
 
 ```bash
-/cron add 30m "Remind me to check the build"
+/cron add "in 30m" "Remind me to check the build"
 /cron add "every 2h" "Check server status"
 /cron add "every 1h" "Summarize new feed items" --skill blogwatcher
 /cron add "every 1h" "Use both skills and combine the result" --skill blogwatcher --skill maps
@@ -185,8 +187,8 @@ Quando `workdir` está definido:
 - O caminho deve ser diretório absoluto existente — caminhos relativos e diretórios ausentes são rejeitados em create / update
 - Passe `--workdir ""` (ou `workdir=""` via ferramenta) no edit para limpar e restaurar comportamento antigo
 
-:::note Serialização
-Jobs com `workdir` rodam sequencialmente no tick do scheduler, não no pool paralelo. Isso é deliberado: o worker cron aplica o workdir do job via estado global de terminal do processo, então dois jobs workdir rodando ao mesmo tempo corromperiam o cwd um do outro. Jobs sem workdir ainda rodam em paralelo como antes.
+:::note Isolamento
+Cada execução de agente vincula seu `workdir` à identidade única de task daquela execução. Jobs com workdir portanto usam o pool paralelo normal sem mutar estado de terminal process-global nem vazar caminhos entre execuções concorrentes. Defina `cron.max_parallel_jobs` se quiser limitar a concorrência total de cron.
 :::
 
 ## Editando jobs {#editing-jobs}
@@ -378,6 +380,33 @@ escrito.
 O registro está sempre ligado e não custa nada ignorar — nenhum ping é
 suprimido até você `ack` explicitamente.
 
+
+### Health check da frota: `hermes cron doctor` {#fleet-health-check-hermes-cron-doctor}
+
+`hermes cron doctor` é um health check read-only sobre todo job ativo. Imprime
+issues agrupadas por job e sai `1` quando algo acionável é
+encontrado (`0` quando saudável), então funciona de um terminal, script watchdog ou
+smoke check estilo CI:
+
+```bash
+hermes cron doctor
+```
+
+Checks por job ativo:
+
+- última execução falhou (`last_status` não ok, com o erro registrado),
+- última delivery falhou (a saída foi produzida mas nunca chegou a você),
+- `next_run_at` ausente, ou parado no passado além de uma janela de grace de 15 minutos do ticker
+  — o sinal de "job silenciosamente não está disparando" (scheduler morto,
+  gateway down, ou fire-claim travado),
+- script ausente, não é arquivo, ou resolve fora de `HERMES_HOME/scripts`,
+- job `no_agent` sem script,
+- `workdir` configurado que não existe mais.
+
+Doctor nunca muta jobs ou estado — só reporta. Combine com
+`hermes cron incidents` (registros duráveis de falha) e `hermes cron runs`
+(ledger de tentativas) ao investigar um job sinalizado.
+
 ## Opções de entrega {#delivery-options}
 
 Ao agendar jobs, você especifica para onde vai a saída:
@@ -412,6 +441,20 @@ Ao agendar jobs, você especifica para onde vai a saída:
 | `"origin,all"` | Entrega na origem **mais** todo outro canal conectado | Combine quaisquer tokens |
 
 A resposta final do agente é entregue automaticamente ao target `deliver:` configurado — o agente não envia mensagens sozinho, então não há nada para chamar no prompt cron.
+
+
+### Falhas de delivery são um status distinto {#delivery-failures-are-a-distinct-status}
+
+Execução e delivery são rastreados separadamente. Quando a execução do agente sucede mas
+a saída nunca chega ao alvo (5xx da plataforma, rate limit, sessão stale,
+adapter sem evidência positiva de send), o job registra
+`last_status: delivery_failed` — nunca um `ok` simples — com o motivo em
+`last_delivery_error`. `hermes cron list` mostra em amarelo como
+`delivery_failed: <reason>`, `hermes cron doctor` reporta como issue de delivery,
+e um `cronjob run` manual reporta `success: false` com o erro de
+delivery. Uma falha de delivery não conta para o `failure_streak` do job
+(o agente fez seu trabalho); a próxima execução totalmente bem-sucedida devolve o status a
+`ok`.
 
 ### Entrega Bot Chat (`bot-chat`) {#bot-chat-delivery-bot-chat}
 
@@ -461,6 +504,44 @@ Para entregar saída bruta do agente sem envelope, defina `cron.wrap_response` c
 cron:
   wrap_response: false
 ```
+
+
+### Push notifications (`cron.delivery.notify`) {#push-notifications-crondeliverynotify}
+
+Saída de cron é uma delivery *final*, não mensagem de progresso, então por padrão é
+enviada com a flag de notificação da plataforma ligada — no Telegram isso significa que o
+brief dispara push mesmo quando o modo de notificação do adapter é `important`
+(que de outra forma envia com `disable_notification=true`, e usuários reportam o
+brief silencioso como "never delivered"). Para restaurar deliveries silenciosas:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  delivery:
+    notify: false   # default: true
+```
+
+A flag viaja tanto no send de texto quanto em anexos de mídia, então uma execução nunca
+dá push por um e fica silenciosa pelo outro.
+
+### Confirmação de delivery e o estado `UNVERIFIED` {#delivery-confirmation-and-the-unverified-state}
+
+Uma delivery de adapter live só é logada como delivered com evidência positiva do
+adapter: um `success` explícito que não é drop filtrado
+(`delivered: false`), mais um `message_id` ou `raw_response`. Um resultado carregando
+`success` mas nenhuma das evidências — a forma que adapters Slack, Matrix e
+Mattermost retornam — ainda é aceito (não é prova de falha),
+mas a execução é registrada no job como `last_delivery_unverified` e aparece
+em `hermes cron list`:
+
+```
+⚠ Delivery UNVERIFIED: adapter acked slack:C0123456 without message_id/raw_response
+```
+
+e em `hermes cron doctor` como `last delivery unverified (...)`. O marcador é
+limpo pela próxima execução que entrega com evidência. Um payload vazio (sem texto
+e sem mídia) nunca é entregue a um adapter; falha fechado e é reportado em
+`last_delivery_error` em vez de logado como delivered.
 
 ### Jobs continuáveis (responder a entrega cron) {#continuable-jobs-reply-to-a-cron-delivery}
 
@@ -772,9 +853,9 @@ Resposta final do agente é entregue automaticamente ao target `deliver:` do job
 ### Atrasos relativos (one-shot) {#relative-delays-one-shot}
 
 ```text
-30m     → Rodar uma vez em 30 minutos
-2h      → Rodar uma vez em 2 horas
-1d      → Rodar uma vez em 1 dia
+in 30m  → Rodar uma vez em 30 minutos
+in 2h   → Rodar uma vez em 2 horas
+in 1d   → Rodar uma vez em 1 dia
 ```
 
 ### Intervalos (recorrentes) {#intervals-recurring}
@@ -785,11 +866,26 @@ every 2h     → A cada 2 horas
 every 1d     → Todo dia
 ```
 
+
+### Agendamentos naturais de dia/hora (recorrentes) {#natural-daytime-schedules-recurring}
+
+```text
+every monday 9am         → Weekly, Mondays at 9:00 AM
+every day at 9am         → Daily at 9:00 AM
+weekdays at 9am          → Weekdays at 9:00 AM
+weekends at 10am         → Saturdays and Sundays at 10:00 AM
+daily at 7am             → Daily at 7:00 AM
+monday, wednesday at 9am → Mondays and Wednesdays at 9:00 AM
+```
+
+Horários aceitam `9am`, `9:30pm`, `14:00`, horas bare 24h (`at 7`), `noon` e `midnight`. Essas formas compilam para expressões cron internamente (requerem o pacote `croniter`, instalado por padrão).
+
 ### Expressões cron {#cron-expressions}
 
 ```text
 0 9 * * *       → Diariamente às 9:00
 0 9 * * 1-5     → Dias úteis às 9:00
+0 9 * * MON-FRI → Dias úteis às 9:00 (weekdays/months nomeados aceitos)
 0 */6 * * *     → A cada 6 horas
 30 8 1 * *      → Primeiro dia de todo mês às 8:30
 0 0 * * 0       → Todo domingo à meia-noite
@@ -805,7 +901,7 @@ every 1d     → Todo dia
 
 | Tipo de schedule | Repetição padrão | Comportamento |
 |--------------|----------------|----------|
-| One-shot (`30m`, timestamp) | 1 | Roda uma vez |
+| One-shot (`in 30m`, timestamp) | 1 | Roda uma vez |
 | Intervalo (`every 2h`) | forever | Roda até remover |
 | Expressão cron | forever | Roda até remover |
 

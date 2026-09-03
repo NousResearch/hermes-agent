@@ -84,6 +84,39 @@ O padrão é `4096`. O Hermes limita o alvo ao hard limit do sistema operacional
 onde o limite não pode ser alterado, o startup continua sem mudar o
 limite.
 
+## Configurações de banco de dados {#database-settings}
+
+A seção `database:` controla como o Hermes abre seu banco de estado SQLite
+(`state.db`), que armazena sessões, mensagens e roteamento do gateway:
+
+```yaml
+database:
+  # Journal mode for state.db: wal (default) or delete.
+  # Use delete on filesystems where WAL is unsafe (network mounts, some
+  # virtiofs setups). Note: an existing on-disk WAL database is never
+  # live-downgraded — Hermes keeps WAL and logs an error telling you the
+  # configured delete did not apply. To convert an existing database, stop
+  # every process using it and run a one-time offline
+  # `PRAGMA journal_mode=DELETE` on the file.
+  journal_mode: wal
+
+  # Durability level for every state.db connection: OFF, NORMAL, FULL,
+  # EXTRA (or 0-3). Unset leaves SQLite's compile-time default, which
+  # differs between interpreter builds. On macOS this is a floor, not a
+  # pin: values below FULL are refused to protect against Darwin fsync
+  # reordering; EXTRA is honored.
+  # synchronous: FULL
+
+  # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
+  # wal_autocheckpoint: 1000     # pages between automatic checkpoints
+  # journal_size_limit: 67108864 # cap the WAL/journal size in bytes
+```
+
+O Hermes também avisa (uma vez por processo por banco) quando o modo de journal
+on-disk de um banco existente é silenciosamente alterado para WAL na abertura — por
+exemplo um banco que um operador tinha convertido manualmente para `delete` — e
+cita `database.journal_mode` como a configuração que faz a escolha persistir.
+
 ## Substituição de variáveis de ambiente {#environment-variable-substitution}
 
 Você pode referenciar variáveis de ambiente em `config.yaml` com a sintaxe `${VAR_NAME}`:
@@ -99,6 +132,8 @@ delegation:
 ```
 
 Múltiplas referências em um único valor funcionam: `url: "${HOST}:${PORT}"`. Se uma variável referenciada não estiver definida, o placeholder permanece literal (`${UNDEFINED_VAR}` fica como está) e um aviso é registrado. `$VAR` simples não é expandido.
+
+Sob um [gateway multi-perfil multiplexado](/user-guide/multi-profile-gateways), referências no `config.yaml` de um perfil resolvem contra o `.env` **daquele perfil** (seu escopo de segredos), não o ambiente compartilhado do processo — um `${MATRIX_ACCESS_TOKEN}` no perfil B permanece sem resolução a menos que B defina a variável. Execuções de perfil único não mudam.
 
 A sintaxe SecretRef estilo Cursor também é aceita: `${env:VAR_NAME}` resolve exatamente como `${VAR_NAME}` (o prefixo `env:` é removido), então trechos MCP ou de provedor copiados de configs Cursor / Claude funcionam inalterados tanto em `config.yaml` quanto no bloco `mcp_servers`. Outras fontes SecretRef (`${file:...}`, `${vault:...}`, `${bitwarden:...}`) **não** são resolvidas inline — backends de segredos externos injetam seus valores no ambiente na inicialização via o bloco `secrets:`, então referencie-os como `${env:NAME}`; prefixos desconhecidos avisam uma vez e permanecem literais.
 
@@ -138,6 +173,7 @@ O Hermes suporta sete backends de terminal. Cada um determina onde os comandos s
 terminal:
   backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
+  temp_dir: ""      # Session temp root; empty = TMPDIR, else ~/.hermes/cache/terminal
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
@@ -146,6 +182,18 @@ terminal:
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
 ```
+
+`terminal.temp_dir` controla onde o Hermes coloca artefatos temporários de sessão no
+backend local — logs/pid/exit de processos em background, sandboxes de
+execução de código e resultados de ferramentas derramados em disco. Quando está vazio (o padrão), o Hermes
+honra um `TMPDIR`/`TMP`/`TEMP` explícito do ambiente e, caso contrário,
+usa um diretório gerenciado em armazenamento real em `~/.hermes/cache/terminal`
+em vez de `/tmp` — em muitas distros (especialmente setups baseados em Arch) `/tmp`
+é um tmpfs pequeno em RAM que artefatos de sessão do Hermes podem encher sob
+carga. O diretório gerenciado é auto-podado: artefatos com mais de 72 horas são
+varridos de hora em hora pelo housekeeping do gateway e uma vez por processo em instalações
+só-CLI. Defina `temp_dir` para um caminho absoluto existente para redirecionar o temp de
+sessão para qualquer outro lugar; caminhos definidos pelo usuário nunca são auto-podados.
 
 `terminal.font_family` controla o terminal embutido no Hermes Desktop. Aceita um nome de família instalada localmente (por exemplo, `MesloLGS NF`) ou uma pilha CSS de fontes. O Hermes anexa sua pilha JetBrains Mono incluída como fallback, e um valor vazio mantém o padrão. Você pode editar a mesma config com escopo de perfil em **Settings → Appearance → Terminal Font**; não é necessário download de Google Fonts nem permissão de fonte do sistema.
 
@@ -332,6 +380,7 @@ Toda chave sob `terminal:` tem uma sobrescrita de env var da forma `TERMINAL_<KE
 | `TERMINAL_CONTAINER_DISK` | `container_disk` | MB |
 | `TERMINAL_CONTAINER_PERSISTENT` | `container_persistent` | `true` / `false` — controla dirs de workspace bind-mount, distinto de `docker_persist_across_processes` |
 | `TERMINAL_LIFETIME_SECONDS` | `lifetime_seconds` | Janela idle reaper |
+| `TERMINAL_TEMP_DIR` | `temp_dir` | Raiz de temp de sessão (backend local) |
 | `TERMINAL_TIMEOUT` | `timeout` | Timeout por comando |
 | `HERMES_DOCKER_BINARY` | _none_ | Força caminho específico do binário docker/podman |
 
@@ -693,6 +742,12 @@ Defina um inteiro positivo para fixar um limite fixo em vez do comportamento din
 context_file_max_chars: 25000
 ```
 
+Cada leitura de arquivo de contexto também é limitada por `context_file_read_timeout` (segundos, padrão `5.0`). Um arquivo que demora mais para ler — tipicamente em filesystem baseado em rede como iCloud Drive, OneDrive ou NFS — é pulado com um aviso para o restante do prompt de sistema ainda carregar:
+
+```yaml
+context_file_read_timeout: 5.0
+```
+
 ## Segurança de leitura de arquivo {#file-read-safety}
 
 Controla quanto conteúdo uma única chamada `read_file` pode retornar. Leituras que excedem o limite são rejeitadas com erro dizendo ao agente para usar `offset` e `limit` para um intervalo menor. Isso evita que uma leitura de bundle JS minificado ou arquivo de dados grande inunde a janela de contexto.
@@ -819,7 +874,7 @@ compression:
   threshold: 0.50                                   # Compress at this % of context limit
   threshold_tokens: null                            # Absolute token cap (optional) — takes lower of ratio vs absolute
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
-  tail_mode: lean                                   # Tail retention: "lean" (default — clamped 2.5% tail, 10K-25K, with digests + anchor index + session_search recovery pointers in the summary; ~3x fewer retained tokens after compaction) or "legacy" (0.20×threshold verbatim tail)
+  tail_mode: lean                                   # Tail retention: "lean" (default — clamped 2.5% tail, 10K-25K, with a detailed session log + anchor index + session_search recovery pointers in the summary, all from ONE auxiliary summarizer call; ~3x fewer retained tokens after compaction) or "legacy" (0.20×threshold verbatim tail)
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
   in_place: true                                    # Compact on the same session id (no rotation) — see below
@@ -827,6 +882,7 @@ compression:
   hygiene_hard_message_limit: 5000                  # Gateway safety valve — see below
   hygiene_timeout_seconds: 30                       # Max seconds of NO summary-model output before hygiene compression is cut off
   hygiene_total_ceiling_seconds: 600                # Absolute cap on the hygiene wait even while tokens are still streaming
+  hygiene_max_turn_hold_seconds: 10                 # Max wall-clock the incoming turn waits on hygiene compression before proceeding uncompressed — see below
   hygiene_failure_cooldown_seconds: 300             # First rung of the per-session hygiene-failure backoff (x1/x3/x9, capped at 1h)
   context_timeout_seconds: 120                      # Inactivity budget for in-agent compress_context (loop /compress / preflight) — see below
   context_total_ceiling_seconds: 600                # Absolute cap on the *pre-commit* in-agent compress_context wait even while tokens are still streaming (an already-started SessionDB commit is never abandoned; overruns are logged + surfaced)
@@ -854,13 +910,15 @@ Configs antigas com `compression.summary_model`, `compression.summary_provider` 
 
 `hygiene_total_ceiling_seconds` (padrão `600`) limita a espera total mesmo enquanto tokens ainda se movem, para um stream trickle degenerado não prender um turno indefinidamente. É limitado a pelo menos `hygiene_timeout_seconds`.
 
+`hygiene_max_turn_hold_seconds` (padrão `10`) é o **orçamento de hold de turno** do gateway — o máximo de wall-clock que a mensagem entrante é segura esperando compressão hygiene antes do gateway parar de esperar e seguir na transcrição sem compressão. Existe porque `hygiene_total_ceiling_seconds` sozinho pode deixar o fio silencioso por muito mais tempo que o idle-timeout de um transporte de chat: um modelo de resumo que continua fazendo stream de tokens continua resetando o slice de inatividade, então sem um orçamento de hold de turno a espera pode se esticar até o teto enquanto zero bytes chegam ao usuário — Telegram (e transportes similares) então derrubam a conexão e o turno parece congelado. Limitar a espera do turno a este orçamento (bem abaixo do idle-timeout típico de ~30s do transporte) garante que a mensagem seja respondida prontamente. **A compressão não é perdida quando o orçamento expira**: o worker continua rodando detached e — quando seu commit está cercado por watermark (o caso normal com um DB de sessão) — mantém sua admissão de commit, então o resumo finalizado é adotado no próximo limite seguro e turnos anexados depois que a espera foi abandonada sobrevivem verbatim como cauda concorrente. Isso importa especialmente para **modelos de resumo thinking/reasoning** (DeepSeek, QwQ, etc.) cuja fase de raciocínio sozinha pode exceder o orçamento: seus resumos chegam um turno atrasados em vez de nunca. Se o commit não puder ser cercado com segurança, o resultado tardio é descartado (`CompressionCommitFence`) e não pode sobrescrever turnos mais novos. Aumente o orçamento se preferir que a compressão se aplique no mesmo turno e seu transporte tolera a espera; diminua para recuperação mais ágil em backends muito lentos.
+
 `hygiene_failure_cooldown_seconds` controla esse cooldown por sessão após timeout ou abort de compressão hygiene. Durante o cooldown, o gateway pula tentativas hygiene repetidas para a mesma sessão oversized para toda mensagem entrante não bloquear no mesmo backend auxiliar quebrado. `/compress`, `/reset` ou um turno saudável posterior ainda podem recuperar a sessão.
 
 O valor é a **primeira degrau** de uma escada escalonada, não intervalo fixo: falhas consecutivas para a mesma sessão esperam `1x`, `3x`, depois `9x` este valor, limitado a uma hora. Uma sessão cujo modelo de resumo está permanentemente quebrado faz backoff em vez de retry forever em intervalo fixo, e uma execução que realmente encolhe a transcrição reseta para o primeiro degrau. Escalonamento é por sessão e process-local — reinício do gateway reseta para o primeiro degrau enquanto o deadline do cooldown sobrevive.
 
-`context_timeout_seconds` (padrão `120`) é o mesmo **orçamento de inatividade** para `compress_context` in-agent — loop de conversa, compactação preflight e `/compress` manual — para um modelo de resumo pendurado não travar uma sessão indefinidamente. Tokens de resumo em stream estendem a espera; só um worker silencioso é cortado. No timeout o Hermes pula compactação, mantém as mensagens existentes e avisa o usuário. Defina `0` para desabilitar. Hygiene de sessão do gateway mantém seu próprio caminho `hygiene_timeout_seconds` e não é double-wrapped.
+`context_timeout_seconds` (padrão `120`) é o mesmo **orçamento de inatividade** para `compress_context` in-agent — loop de conversa, compactação preflight e `/compress` manual — para um modelo de resumo pendurado não travar uma sessão indefinidamente. Tokens de resumo em stream estendem a espera; só um worker silencioso é cortado. No timeout o Hermes tenta o resumo uma vez contra a primeira entrada de `auxiliary.compression.fallback_chain` (usando o próprio `timeout` daquela entrada quando declara um) — uma rota travada nunca levanta, então o tratamento de fallback do próprio cliente auxiliar não a vê. Só se essa tentativa também falhar, ou nenhuma cadeia de fallback estiver configurada, o Hermes pula compactação, mantém as mensagens existentes e avisa o usuário. Defina `0` para desabilitar. Hygiene de sessão do gateway mantém seu próprio caminho `hygiene_timeout_seconds` e não é double-wrapped.
 
-`context_total_ceiling_seconds` (padrão `600`) limita a espera **pré-commit** in-agent (fase summary / stream) mesmo enquanto tokens ainda se movem. É limitado a pelo menos `context_timeout_seconds`. A garantia exata: **a fase de resumo é limitada por este teto; a fase de commit é logada e exposta se exceder.** Uma vez que o worker entrou na fence de commit de compressão e mutação SessionDB está em flight, o commit nunca é abandonado no meio — isso arriscaria divergência de transcrição — mas a espera deixa de ser silenciosa: se o commit passa do teto, o Hermes loga o overrun (WARNING, escalando para ERROR em repetição), envia aviso one-shot pelo canal de warning visível ao usuário e continua esperando em incrementos limitados até o commit completar.
+`context_total_ceiling_seconds` (padrão `600`) limita a espera **pré-commit** in-agent (fase summary / stream) mesmo enquanto tokens ainda se movem. É limitado a pelo menos `context_timeout_seconds`. A garantia exata: **a fase de resumo é limitada por este teto; a fase de commit é logada e exposta se exceder.** Uma vez que o worker entrou na fence de commit de compressão e mutação SessionDB está em flight, o commit nunca é abandonado no meio — isso arriscaria divergência de transcrição — mas a espera deixa de ser silenciosa: se o commit passa do teto, o Hermes loga o overrun (WARNING, escalando para ERROR em repetição), envia aviso one-shot pelo canal de warning visível ao usuário e continua esperando em incrementos limitados até o commit completar. Quando o teto expira durante a fase de resumo, o stream do modelo de resumo é fechado naquele mesmo instante em todo fio auxiliar (chat.completions, Codex Responses, Anthropic Messages) — um resumo abandonado não é cobrado até o fim em uma conexão que ninguém está esperando, e seu lease de sessão é liberado para a próxima tentativa.
 
 `protect_first_n` controla quantas mensagens **não-system** de cabeça são fixadas em toda compactação. Padrão `3` — a troca user/assistant inicial sobrevive a todo passe do summarizer para o objetivo original permanecer visível. Em sessões de compactação rolling de longa duração onde o turno inicial não é mais relevante, defina `protect_first_n: 0` para não fixar nada além do prompt de sistema + resumo + tail. O prompt de sistema em si é sempre preservado independentemente desta config.
 
@@ -924,7 +982,7 @@ máxima de lease independentemente do timeout de inatividade ordinário do agent
 
 ```yaml
 agent:
-  gateway_turn_lease_timeout: 1800
+  gateway_turn_lease_timeout: 5
 ```
 
 Se outro turno ainda segura o lease da sessão quando este orçamento expira, o Hermes
@@ -932,7 +990,7 @@ falha fechado: não carrega a transcrição nem roda o modelo para a mensagem
 esperando. O usuário recebe aviso de rejeição e deve reenviar. O Hermes não
 reencadeia automaticamente a mensagem porque fazer isso sem ordenação durável e
 idempotência poderia processá-la duas vezes. Valores não positivos usam o padrão
-de 1800 segundos.
+de 5 segundos.
 
 ## Watchdog de parada de sessão {#session-stall-watchdog}
 
@@ -1095,7 +1153,18 @@ A **stale stream detection** mata conexões que recebem pings SSE keep-alive mas
 
 A **stale non-stream detection** mata chamadas não-streaming que não produzem resposta por tempo demais. Por padrão o Hermes desabilita isso em endpoints locais para evitar false positives durante prefills longos. Se definir explicitamente `providers.<id>.stale_timeout_seconds`, `providers.<id>.models.<model>.stale_timeout_seconds` ou `HERMES_API_CALL_STALE_TIMEOUT`, esse valor explícito é honrado mesmo em endpoints locais.
 
-Este orçamento limita toda chamada não-streaming, incluindo as que jobs cron e subagentes delegados rodam inline. Um provedor que aceita requisição e depois fica silencioso — conexão aberta, sem bytes, sem erro — é abortado no stale timeout e retentado, em vez de pendurar até o socket read timeout muito mais longo (ou, para execução cron não supervisionada, até algo externo matar o processo).
+Este orçamento limita toda chamada não-streaming. Um provedor que aceita requisição e depois fica silencioso — conexão aberta, sem bytes, sem erro — é abortado no stale timeout e retentado, em vez de pendurar até o socket read timeout muito mais longo (ou, para execução cron não supervisionada, até algo externo matar o processo).
+
+Jobs cron e subagentes delegados também fazem stream. Eles rodam a requisição inline no próprio thread (o worker de interrupt que outras sessões usam trava dentro dos thread pools aninhados do gateway), mas a requisição no fio ainda é `stream: true`, então o orçamento de **stale stream detection** acima os governa — cada token conta como liveness, então um modelo de raciocínio que pensa por minutos não é confundido com um provedor pendurado, e proxies de borda que matam conexões silenciosas continuam vendo bytes.
+
+### Desabilitando streaming da API {#disabling-api-streaming}
+
+`model.streaming: false` força requisições não-streaming para a sessão inteira — pai e subagentes. É um escape hatch para servidores OpenAI-compatíveis self-hosted cujo caminho de tool-call *streaming* está quebrado (por exemplo vLLM com `--tool-call-parser qwen3_xml` mais um parser de reasoning podem vazar markup de tool-call em texto simples e retornar zero `tool_calls`, então tarefas delegadas silenciosamente não fazem nada). O padrão é `true`; deixe assim a menos que bata nessa classe de bug, já que chamadas não-streaming perdem as propriedades de liveness descritas acima. Isso é separado de `display.streaming`, que só controla a renderização de tokens no terminal.
+
+```yaml
+model:
+  streaming: false
+```
 
 ## Avisos de pressão de contexto {#context-pressure-warnings}
 
@@ -1630,6 +1699,27 @@ Não há suporte `hermes config set` para chaves `reasoning_overrides` — edite
 
 A sobrescrita aplica automaticamente em todo lugar: startup CLI, gateway de mensagens, Desktop/TUI, jobs cron, trocas mid-session `/model` e ativação de modelo fallback.
 
+## Modo rápido {#fast-mode}
+
+O modo rápido pede ao provedor saída mais rápida a um preço premium: [Priority Processing](https://openai.com/api-priority-processing/) da OpenAI (`service_tier: priority`), Priority Processing da xAI no Grok 4.6, e [Fast Mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode) da Anthropic (`speed: fast`, só Opus 4.8 / Opus 5). Está **desligado por padrão**.
+
+```yaml
+agent:
+  service_tier: ""          # "" / normal | fast | auto | cold
+  fast_auto_seconds: 60     # window for auto / cold
+```
+
+| Mode | Quando params fast são enviados | Use para |
+|------|---------------------------|------------|
+| `normal` (padrão, `""`) | Nunca | Mais barato; latência padrão |
+| `fast` | Toda requisição | Sessões interativas longas onde você sempre quer velocidade |
+| `auto` | Requisições nos primeiros `fast_auto_seconds` de **cada** turno | Primeira resposta ágil; loops longos de ferramenta voltam ao preço padrão |
+| `cold` | Mesma janela, mas só no **primeiro turno** de uma sessão (sem histórico prévio) | Resposta rápida de onboarding, preço padrão depois |
+
+`/fast normal|fast|auto|cold` troca o modo da sessão; adicione `--global` para persistir em `config.yaml`. `/fast` sozinho mostra o modo atual.
+
+**Nota de custo:** ambos os provedores cobram requisições fast com um multiplicador sobre as taxas padrão (Anthropic: $10 / $50 por MTok in/out em Opus 4.8 e Opus 5), empilhando com preço de prompt-cache. `auto`/`cold` limitam esse premium só à janela. Params fast só são enviados ao endpoint first-party que os suporta (`api.openai.com` / assinatura Codex, `api.anthropic.com`, `api.x.ai`); OpenRouter, Nous Portal, Copilot, Azure, Bedrock e rotas `base_url` customizadas nunca os recebem em nenhum modo. Só o parâmetro por requisição muda entre requisições — o prompt de sistema, ferramentas e mensagens permanecem byte-idênticos, então o prompt cache sobrevive ao limite da janela.
+
 ## Enforcement de uso de ferramentas {#tool-use-enforcement}
 
 Alguns modelos ocasionalmente descrevem ações pretendidas como texto em vez de fazer tool calls ("I would run the tests..." em vez de chamar terminal de fato). Tool-use enforcement injeta orientação no prompt de sistema que direciona o modelo de volta a chamar ferramentas de fato.
@@ -1641,7 +1731,7 @@ agent:
 
 | Valor | Comportamento |
 |-------|----------|
-| `"auto"` (padrão) | Habilitado para modelos que correspondem: `gpt`, `codex`, `gemini`, `gemma`, `grok`, `glm`, `qwen`, `deepseek`. Desabilitado para todos os outros (ex.: Claude). |
+| `"auto"` (padrão) | Habilitado para modelos que correspondem: `gpt`, `codex`, `gemini`, `gemma`, `grok`, `glm`, `qwen`, `deepseek`, `muse`. Desabilitado para todos os outros (ex.: Claude). |
 | `true` | Sempre habilitado, independentemente do modelo. Útil se notar seu modelo atual descrevendo ações em vez de executá-las. |
 | `false` | Sempre desabilitado, independentemente do modelo. |
 | `["gpt", "codex", "qwen", "llama"]` | Habilitado só quando o nome do modelo contém um dos substrings listados (case-insensitive). |
@@ -1676,7 +1766,7 @@ agent:
 
 | Value | Behavior |
 |-------|----------|
-| `"auto"` (default) | Habilitado para modelos que batem: `gpt`, `codex`, `grok`, `deepseek`, `kimi`, `qwen`, `glm`, `minimax`, `mimo`, `mistral`. |
+| `"auto"` (default) | Habilitado para modelos que batem: `gpt`, `codex`, `grok`, `deepseek`, `kimi`, `qwen`, `glm`, `minimax`, `mimo`, `mistral`, `muse`. |
 | `true` | Sempre habilitado, independentemente do modelo. |
 | `false` | Sempre desabilitado, independentemente do modelo. |
 | `["deepseek", "my-custom-model"]` | Habilitado só quando o nome do modelo contém um dos substrings listados (case-insensitive). |
@@ -1694,14 +1784,15 @@ O gate é independente de `tool_use_enforcement` — qualquer um pode estar on s
 
 ## Guardrails de tool-loop {#tool-loop-guardrails}
 
-O Hermes detecta quando o agente está preso em loop improdutivo de tool-calling — mesma tool call falhando repetidamente, mesma ferramenta falhando uma atrás da outra, ou chamada idempotente retornando o mesmo resultado sem progresso. Por padrão injeta um **aviso** no resultado da ferramenta para o modelo se autocorrigir; não para hard-stop, já que alguém observando CLI/TUI pode intervir.
+O Hermes detecta quando o agente está preso em loop improdutivo de tool-calling — mesma tool call falhando repetidamente, mesma ferramenta falhando uma atrás da outra, ou chamada idempotente retornando o mesmo resultado sem progresso. Por padrão injeta um **aviso** no resultado da ferramenta para o modelo se autocorrigir. Sessões interativas CLI, TUI, Desktop e ACP permanecem só-aviso porque uma pessoa pode intervir; sessões não supervisionadas de gateway e cron habilitam hard stops por padrão.
 
-Para deploys gateway / servidor não supervisionados, habilite hard stops para um agente preso ser circuit-broken em vez de queimar o orçamento de iterações:
+O padrão ciente de plataforma pode ser desabilitado para um deploy não supervisionado, ou hard stops podem ser habilitados explicitamente em toda plataforma:
 
 ```yaml
 tool_loop_guardrails:
   warnings_enabled: true       # inject warnings into tool results (default: true)
   hard_stop_enabled: false     # also BLOCK the call past the hard-stop threshold (default: false)
+  non_interactive_hard_stop_enabled: true  # default hard stops for gateway/cron
   warn_after:
     exact_failure: 2           # identical failing call repeated N times
     same_tool_failure: 3       # same tool failing N times (different args)
@@ -1715,7 +1806,13 @@ tool_loop_guardrails:
     max_subagents: 50          # max subagents spawned per turn (0 = unlimited)
 ```
 
-`hard_stop_enabled` padrão `false` porque sessões interativas têm humano no loop. Em deploys não supervisionados (gateway, cron, workers kanban) defina `true` para falhas repetidas serem bloqueadas em vez de só avisadas. Veja também [Docker / deploys não supervisionados](docker.md).
+`hard_stop_enabled` habilita explicitamente hard stops em toda plataforma. Quando permanece `false`, `non_interactive_hard_stop_enabled` ainda os habilita para plataformas estilo gateway/cron não supervisionadas enquanto preserva comportamento só-aviso para CLI, TUI, Desktop, ACP, subagentes e execuções `api_server` (loops de tarefa supervisionados com pai ou cliente ao vivo). Defina `non_interactive_hard_stop_enabled: false` para optar um deploy não supervisionado fora. Veja também [Docker / deploys não supervisionados](docker.md).
+
+Hard stops são projetados para pegar **replays** — a mesma chamada, inalterada, sem nada acontecendo no meio — não iteração legítima:
+
+- **Edit → re-run nunca é um loop.** Qualquer chamada mutante bem-sucedida (`write_file`, `patch`, um `terminal`/`execute_code` verde, uma ação de browser, uma mutação de job/mensagem/cron) marca progresso para toda chamada falhando ainda sendo contada. O próximo retry idêntico (re-rodar um teste vermelho após um fix, re-snapshot após um clique) começa uma sequência fresca em vez de acumular rumo a um bloqueio.
+- **Comandos vermelhos distintos são diagnóstico, não um loop.** Para ferramentas cujo exit não-zero é saída ordinária (`terminal`, `execute_code`, pollers de processo, `browser_navigate`, `web_extract`) o threshold `same_tool_failure` só avisa e nunca para. Só um replay de args exatos sem mudança interveniente, ou uma sequência de resultado idêntico, pode pará-las.
+- **Uma parada termina o turno, não a sessão.** O agente responde com qual guardrail disparou e por quê; responder "continue" retoma com contadores frescos por turno.
 
 ### Caps de loop runaway por turno {#per-turn-runaway-loop-caps}
 
@@ -1727,7 +1824,7 @@ Isso espelha os caps por sessão WebSearch e subagent do Claude Code (v2.1.212),
 
 ### Guards anti-stall em runtime {#runtime-anti-stall-guards}
 
-Complementando os guardrails baseados em falha acima, `agent.stall_guards` (default `true`) habilita dois guards conservadores de runtime contra turns desperdiçados. Primeiro, um **identical-call loop breaker**: quando a mesma tool é chamada 3+ vezes consecutivas com argumentos idênticos *e* retorna um resultado idêntico, um aviso curto de uma linha é anexado àquele tool result dizendo ao modelo para não repetir a chamada — nunca bloqueia a chamada, e pollers legitimamente-repetíveis (`process`, `*_get_result`, `*_poll`) estão isentos. Segundo, uma **continue-intent recovery**: quando o modelo termina um turn sem tool calls mas sua reply curta termina anunciando uma ação ("Let me now update the file…"), o Hermes o re-prompta a agir via o mesmo mecanismo bounded de continuação usado para intent-ack recovery (máx. 2 re-prompts por turn). Ambos são cache-safe (avisos são adicionados na construção do result, nunca retroativamente) e podem ser desabilitados juntos:
+Complementando os guardrails baseados em falha acima, `agent.stall_guards` (default `true`) habilita dois guards conservadores de runtime contra turns desperdiçados. Primeiro, um **identical-call loop breaker**: quando a mesma tool é chamada 3+ vezes consecutivas com argumentos idênticos *e* retorna um resultado idêntico, um aviso curto de uma linha é anexado àquele tool result dizendo ao modelo para não repetir a chamada — em sessões só-aviso nunca bloqueia a chamada, e pollers legitimamente-repetíveis (`process`, `*_get_result`, `*_poll`) estão isentos. Quando hard stops estão ativos (`hard_stop_enabled` explícito, ou plataforma gateway/cron não supervisionada), a mesma sequência também vira hard stop ao atingir `hard_stop_after.idempotent_no_progress` chamadas idênticas consecutivas — para **qualquer** ferramenta, não só as read-only que o guardrail `idempotent_no_progress` rastreia — então um modelo replaying a mesma chamada bem-sucedida de `terminal` ou `skill_view` é parado em vez de esgotar o orçamento de iterações (`identical_call_streak_halt`). Segundo, uma **continue-intent recovery**: quando o modelo termina um turn sem tool calls mas sua reply curta termina anunciando uma ação ("Let me now update the file…"), o Hermes o re-prompta a agir via o mesmo mecanismo bounded de continuação usado para intent-ack recovery (máx. 2 re-prompts por turn). Ambos são cache-safe (avisos são adicionados na construção do result, nunca retroativamente) e podem ser desabilitados juntos:
 
 ```yaml
 agent:
@@ -1735,6 +1832,19 @@ agent:
 ```
 
 O mesmo gate também habilita **result-reference stubbing**: quando uma tool call idêntica re-emitida retorna um resultado fresh byte-idêntico, o payload duplicado entra no contexto como um stub de referência curto apontando para o resultado anterior (nome da tool, `tool_call_id`, um resumo de args, e — se o primeiro resultado foi persistido em disco — seu path de spillover) em vez de repetir a saída completa. A tool ainda executa toda vez, então a semântica de polling é preservada: um resultado mudado sempre flui inteiro. Resultados sob 512 caracteres, resultados de erro e resultados multimodais nunca são stubbed, e pollers *são* stubbed (um poll inalterado é exatamente o caso em que o payload duplicado não carrega informação).
+
+### Watchdog de liveness de turno {#turn-liveness-watchdog}
+
+`agent.turn_liveness` limita quanto tempo um turno de conversa pode fazer **nenhum progresso observável** antes do Hermes forçar a recuperação. O watchdog se baseia no relógio de atividade (o mesmo sinal que marca esperas de API, tokens de stream e heartbeats de ferramenta — renovação de lease nunca conta), então um turno que trava silenciosamente no meio do voo (observado como issue #95548: sem execução de ferramenta, sem chamada de API, sem erro, mas a sessão fica "busy" indefinidamente) é exposto alto, interrompido para desenrolar como turno interrompido retentável, e — quando o interrupt não consegue desenrolar o wedge — seu lease durável de turno para de renovar para a limpeza de turnos stale poder recuperar a sessão em vez de ela pendurar até o processo ser morto.
+
+```yaml
+agent:
+  turn_liveness:
+    timeout_s: 600.0   # idle bound; <= 0 disables the watchdog
+    poll_s: 15.0        # sampling interval (seconds)
+```
+
+Trabalho legitimamente lento não é penalizado: respostas em streaming, heartbeats de ferramenta (a cada 30s enquanto uma ferramenta roda) e esperas de aprovação todos continuam tocando o relógio, então só um turno fazendo *zero* progresso pelo bound completo dispara o watchdog. Valores inválidos (typo, `NaN`, `Inf`, `poll_s` não positivo) logam um aviso e caem para os padrões — nunca crasham o startup nem desabilitam o watchdog silenciosamente. Um abort disparado reporta o stall ao começar a recuperação, e publica o resultado definitivo abortado/lease-parado só depois que o interrupt de fato commitou.
 
 ## Configuração TTS {#tts-configuration}
 
@@ -1797,6 +1907,11 @@ display:
   cli_multiline_shortcuts: true  # CLI: Ctrl+J, \ + Enter, and supported Shift+Enter insert newlines (false = legacy c-j submit fallback)
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
+  bell_on_prompt: false   # Play terminal bell when a blocking prompt opens (clarify, approval, sudo password, secret capture) — works over SSH
+  # Both bell flags also emit an OSC 9 desktop notification (Ghostty, iTerm2, Kitty, WezTerm raise an OS
+  # notification; other terminals ignore it) and, inside Warp (TERM_PROGRAM=WarpTerminal with the CLI-agent
+  # protocol advertised), a warp://cli-agent OSC 777 event (`stop` on completion, `permission_request` on
+  # blocking prompts) so Warp's tab status and notification mailbox track Hermes. No extra keys needed.
   show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
@@ -1808,6 +1923,8 @@ display:
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
     fields: ["model", "context_pct", "cwd"]
+  status_bar:             # CLI/TUI: choose which status-bar fields are visible
+    fields: []            # empty = show the default set; see below
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   cli_rebuild_scrollback_on_redraw: false  # Classic CLI: also wipe terminal scrollback (CSI 3J) on /redraw / Ctrl+L / width-change resize recovery. Enable when a terminal/tmux stack stamps stale prompt chrome into scrollback on maximize/restore.
@@ -1908,6 +2025,28 @@ Tool progress requer adaptador de gateway que possa exibir atualizações de pro
 
 Focus view é **só display**. Nunca edita histórico de conversa, prompt de sistema, schemas de ferramenta ou payload de requisição — detalhe escondido é suprimido na tela, nunca descartado, e prompt caching não é afetado.
 
+### Seleção de campos da status bar (CLI/TUI) {#status-bar-field-selection-clitui}
+
+A barra de status interativa no fundo da CLI/TUI mostra o modelo, uso de contexto, contagem de compressões, contadores de atividade em background, timers e badges de modo. `display.status_bar.fields` escolhe quais desses são visíveis — útil para uma barra mínima (só modelo + duração) ou para surfacer o total opt-in de tokens da sessão:
+
+```yaml
+display:
+  status_bar:
+    fields: ["model", "duration", "total_tokens"]   # visibility only; built-in order is preserved
+```
+
+Campos suportados: `model`, `context_detail` (tokens usados/total), `context_pct` (percentual + medidor), `cache_hit` (taxa de hit do prompt cache — reseta em troca de modelo e compressão), `latency` (latência média móvel da API, últimas 10 chamadas), `tps` (tokens/sec de saída móvel, últimas 10 chamadas), `compressions`, `bg_tasks`, `bg_processes`, `bg_subagents`, `goal`, `duration`, `prompt_elapsed`, `idle_since`, `focus`, `yolo`, `stash`, `battery`, `title` (badge de sessão alinhado à direita) e `total_tokens` (Σ da sessão — só opt-in, nunca mostrado por padrão).
+
+Notas:
+
+- Uma lista vazia (o padrão) mantém o conjunto padrão — tudo exceto `total_tokens`.
+- A config controla **visibilidade, não ordem**; campos renderizam em suas posições built-in.
+- Terminais estreitos ainda dropam campos só de wide-mode (`context_detail`, `cache_hit`, `latency`, `tps`, `prompt_elapsed`, `idle_since`) independentemente da config (`cache_hit` também aparece no tier médio ≥52 cols).
+- `latency`/`tps` ficam escondidos até chamadas de API terem sido registradas (ex.: o backend app-server do Codex não reporta latência).
+- Visibilidade de `battery` e `title` aqui se compõe com seus próprios toggles (`/battery`, `/title`) — ambos precisam estar on para o segmento aparecer.
+- A mesma chave também filtra a regra de status do **Ink TUI** (`hermes tui`), onde `cache_hit`, `latency` e `tps` renderizam como segmentos de cauda com orçamento de largura (◎ / ◷ / ↑) em terminais ≥96/104/110 colunas respectivamente.
+- Só display: sem efeito no prompt caching ou payloads de requisição. Mudanças entram em vigor no próximo início de sessão.
+
 ### Rodapé de metadados de runtime (só gateway) {#runtime-metadata-footer-gateway-only}
 
 Quando `display.runtime_footer.enabled: true`, o Hermes anexa rodapé pequeno de contexto runtime à **mensagem final** de cada turno do gateway. O rodapé atual pode mostrar modelo, porcentagem de janela de contexto e diretório de trabalho atual. Desligado por padrão; opte in por gateway se sua equipe quer toda resposta com esta proveniência.
@@ -1955,6 +2094,8 @@ display:
     slack:
       tool_progress: 'off'    # quiet in shared Slack workspace
 ```
+
+Na CLI, use o caminho canônico — `hermes config set display.platforms.telegram.streaming false`. O atalho `hermes config set platforms.telegram.streaming false` também é aceito: porque settings de *display* por plataforma (`streaming`, `show_reasoning`, `tool_progress`, …) só são lidos de `display.platforms`, `config set`/`get`/`unset` redirecionam esse atalho para a chave canônica e imprimem uma nota. Chaves de conexão sob o bloco top-level `platforms.<name>` (`token`, `enabled`, `reply_to_mode`, `extra`) não são redirecionadas.
 
 Plataformas sem sobrescrita caem para o valor global `tool_progress`. Chaves de plataforma válidas: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. A chave legada `display.tool_progress_overrides` ainda carrega por retrocompatibilidade mas está depreciada e migrada para `display.platforms` no primeiro carregamento.
 
@@ -2256,7 +2397,7 @@ As ferramentas `web_search` e `web_extract` suportam cinco providers backend. Co
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | searxng | parallel | tavily | exa
+  backend: firecrawl    # firecrawl | searxng | parallel | tavily | keenable | exa
 
   # Or use per-capability keys to mix providers (e.g. free search + paid extract):
   search_backend: "searxng"
@@ -2264,7 +2405,7 @@ web:
 
   # Keyless free-tier fallback (default: true). With no backend configured
   # and no API keys present, web tools rotate across the Exa/Parallel/
-  # Tavily/Firecrawl/Keenable free tiers. Set false to disable.
+  # Firecrawl/Keenable free tiers. Set false to disable.
   keyless_fallback: true
 
   # One-shot keyless rescue (default: true). When the chosen/keyed backend
@@ -2288,7 +2429,7 @@ web:
 | **Tavily** | `TAVILY_API_KEY` (opcional — keyless quando selecionado) | ✔ | ✔ |
 | **Exa** | `EXA_API_KEY` (opcional — free tier keyless) | ✔ | ✔ |
 
-**Seleção de backend:** O runtime sempre usa a seleção armazenada de `web.backend` (definida via `hermes tools`; `nous` roteia pelo Tool Gateway gerenciado). Só se nenhum backend web jamais foi selecionado um é auto-detectado de chaves de API disponíveis: se só `SEARXNG_URL` está definido, SearXNG é usado; se só `EXA_API_KEY` está definido, Exa; se só `TAVILY_API_KEY` está definido, Tavily; se só `PARALLEL_API_KEY` está definido, Parallel; se só `KEENABLE_API_KEY` está definido, Keenable. Com **nenhuma seleção e nenhuma credencial**, requests rotacionam round-robin pelo ring keyless de free-tier (Exa / Parallel / Tavily / Firecrawl / Keenable) com failover automático next-in-line em rate limits — veja o [guia Web Search](/user-guide/features/web-search) para detalhes. Uma vez que uma seleção existe, adicionar uma chave ao `.env` não muda a rota. Selecionar Tavily, Firecrawl ou Keenable em `hermes tools` também funciona sem chave.
+**Seleção de backend:** O runtime sempre usa a seleção armazenada de `web.backend` (definida via `hermes tools`; `nous` roteia pelo Tool Gateway gerenciado). Só se nenhum backend web jamais foi selecionado um é auto-detectado de chaves de API disponíveis: se só `SEARXNG_URL` está definido, SearXNG é usado; se só `EXA_API_KEY` está definido, Exa; se só `TAVILY_API_KEY` está definido, Tavily; se só `PARALLEL_API_KEY` está definido, Parallel; se só `KEENABLE_API_KEY` está definido, Keenable. Com **nenhuma seleção e nenhuma credencial**, requests rotacionam round-robin pelo ring keyless de free-tier (Exa / Parallel / Firecrawl / Keenable) com failover automático next-in-line em rate limits — veja o [guia Web Search](/user-guide/features/web-search) para detalhes. Uma vez que uma seleção existe, adicionar uma chave ao `.env` não muda a rota. Selecionar Tavily, Firecrawl ou Keenable em `hermes tools` também funciona sem chave.
 
 **SearXNG** é metasearch engine gratuito, self-hosted e respeitoso à privacidade que consulta 70+ search engines. Sem API key — só defina `SEARXNG_URL` para sua instância (ex.: `http://localhost:8080`). SearXNG é só search; `web_extract` requer provider extract separado (defina `web.extract_backend`). Veja o [guia de setup Web Search](/user-guide/features/web-search) para instruções Docker.
 
@@ -2484,6 +2625,10 @@ delegation:
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
   # api_key: "local-key"                    # API key for base_url (falls back to OPENAI_API_KEY)
   # api_mode: ""                            # Wire protocol for base_url: "chat_completions", "codex_responses", or "anthropic_messages". Empty = auto-detect from URL (e.g. /anthropic suffix → anthropic_messages). Set explicitly for non-standard endpoints the heuristic can't detect.
+  # request_overrides:                      # Per-child request settings sent on every subagent API call (all resolution branches).
+  #   extra_body:                           # Merged into the request's extra_body — e.g. OpenRouter routing hints:
+  #     provider:
+  #       sort: throughput
   max_concurrent_children: 3                # Parallel children per batch (floor 1, no ceiling). Also via DELEGATION_MAX_CONCURRENT_CHILDREN env var.
   worktree_isolation: false                 # Give each child its own git worktree branched from HEAD (local backend + git repos only; inspired by Muse Code). See Subagent Delegation → Worktree Isolation.
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
@@ -2492,7 +2637,20 @@ delegation:
 
 **Sobrescrita provider:model de subagente:** Por padrão, subagentes herdam provider e modelo do agente pai. Defina `delegation.provider` e `delegation.model` para rotear subagentes a par provider:model diferente — ex.: usar modelo barato/rápido para subtarefas estreitas enquanto agente primário roda modelo de raciocínio caro.
 
-**Sobrescrita de endpoint direto:** Se quer o caminho óbvio de endpoint custom, defina `delegation.base_url`, `delegation.api_key` e `delegation.model`. Isso envia subagentes diretamente àquele endpoint OpenAI-compatible e tem precedência sobre `delegation.provider`. Se `delegation.api_key` for omitida, o Hermes cai para `OPENAI_API_KEY` apenas.
+**Sobrescrita de endpoint direto:** Se quer o caminho óbvio de endpoint custom, defina `delegation.base_url`, `delegation.api_key` e `delegation.model`. Isso envia subagentes diretamente àquele endpoint OpenAI-compatible e tem precedência sobre `delegation.provider`. Se `delegation.api_key` for omitida, o Hermes cai para `OPENAI_API_KEY` apenas. Quando `delegation.provider` está definido junto com `delegation.base_url`, o endpoint e a chave explícitos ainda vencem, mas as settings de request daquele provider (`extra_body` overrides e max output tokens da sua entrada `custom_providers`) são carregadas no subagente.
+
+**Settings de request por filho (`request_overrides`):** `delegation.request_overrides` é um dict de settings de request enviadas em toda chamada de API de subagente. Chaves top-level são kwargs da API (ex.: `service_tier`); um sub-dict `extra_body` é mesclado no `extra_body` da requisição. É honrado em **todos os três** branches de resolução — `base_url` direto, `provider` nomeado e herança pura — então a chave sempre tem efeito. Precedência: valores explícitos de `request_overrides` mesclam **sobre** quaisquer overrides derivados de runtime ou do pai — chaves top-level explícitas vencem, e `extra_body` é deep-merged um nível para chaves de `extra_body` do runtime (ex.: `thinking: {type: disabled}` de personalidade de um provider) sobreviverem a menos que sua chave as redefina. O caso de uso canônico é hints de roteamento OpenRouter para filhos de delegation:
+
+```yaml
+delegation:
+  model: "deepseek/deepseek-v4-flash-0731"
+  base_url: "https://openrouter.ai/api/v1"
+  api_key: "sk-or-..."
+  request_overrides:
+    extra_body:
+      provider:
+        sort: throughput   # route children to the fastest OpenRouter provider
+```
 
 **Wire protocol (`api_mode`):** O Hermes auto-detecta wire protocol de `delegation.base_url` (ex.: caminhos terminando em `/anthropic` → `anthropic_messages`; hostnames Codex / Anthropic nativo / Kimi-coding mantêm detecção existente). Para endpoints que a heurística não classifica — por exemplo Azure AI Foundry, MiniMax, Zhipu GLM ou proxies LiteLLM fronteando backend shaped Anthropic — defina `delegation.api_mode` explicitamente para um de `chat_completions`, `codex_responses` ou `anthropic_messages`. Deixe vazio (padrão) para manter auto-detecção.
 
@@ -2587,6 +2745,7 @@ dashboard:
   theme: "default"            # "default" | "midnight" | "ember" | "mono" | "cyberpunk" | "rose"
   show_token_analytics: false # Re-enable the (local-estimate-only) token/cost analytics surfaces
   public_url: ""              # Full public authority for OAuth redirect_uri (env: HERMES_DASHBOARD_PUBLIC_URL)
+  trusted_proxies: []         # Proxy IPs/CIDRs allowed to supply X-Forwarded-* headers
   oauth:                      # Portal OAuth gate (engaged with --host and not --insecure)
     client_id: ""             # agent:{instance_id} — Portal provisions this
     portal_url: ""            # blank → plugin default (production Portal)
@@ -2602,13 +2761,16 @@ dashboard:
   ws_ping_interval: 20.0      # Non-loopback WebSocket keepalive ping interval (seconds)
   ws_ping_timeout: 20.0       # Non-loopback WebSocket keepalive pong timeout (seconds)
   ws_orphan_reap_grace_s: 20.0 # Grace before a WS-detached session is reaped (seconds)
+  ws_orphan_activity_stale_s: 600.0 # Activity idle bound before a detached RUNNING turn is interrupted (seconds)
   startup_orphan_sweep: true  # Close session rows orphaned by a dead gateway process at boot
 ```
 
 - `theme` — tema visual do dashboard.
 - `show_token_analytics` — desligado por padrão. A página Analytics e figuras token/cost são **estimativa local lower-bound** (excluem chamadas auxiliares, retries, fallbacks e cache writes), então podem ler muito abaixo da fatura do provider. Defina `true` só se entende que não são billing.
 - `public_url` — quando definido, esta é a authority completa (scheme + host + optional path prefix) de onde o OAuth `redirect_uri` é construído. Defina para deploys atrás de reverse proxies que não encaminham headers `X-Forwarded-*` de forma confiável. Deixe vazio para usar reconstrução proxy-header.
+- `trusted_proxies` — endereços IP ou redes CIDR limitadas autorizadas a fornecer `X-Forwarded-Proto` e `X-Forwarded-For`. Loopback permanece confiável automaticamente. Configure quando o reverse proxy TLS conecta de outro container ou host. Prefira o IP exato do proxy; use uma rede dedicada pequena só quando o endereço for dinâmico. Wildcards e redes `/0` são rejeitadas.
 - `oauth` / `basic_auth` / `drain_auth` — config de auth provider lida pelos plugins dashboard-auth incluídos. O segredo drain em si **não** é definido aqui; é provisionado via env var `HERMES_DASHBOARD_DRAIN_SECRET`. Veja [Web Dashboard](/user-guide/features/web-dashboard) para setup auth completo.
 - `ws_ping_interval` / `ws_ping_timeout` — tuning de keepalive WebSocket para binds non-loopback (conexões loopback nunca pingam). Aumente em links de alta latência (Tailscale, túneis SSH distantes) onde os defaults de 20 s podem fabricar disconnects 1006 espúrios.
 - `ws_orphan_reap_grace_s` — quanto tempo uma sessão WS-detached espera antes do orphan reaper coletá-la. Aumente junto com os valores de keepalive se clientes reconectam devagar. (`HERMES_TUI_WS_ORPHAN_REAP_GRACE_S` permanece como override interno.)
+- `ws_orphan_activity_stale_s` (padrão `600`) — quanto tempo o relógio de atividade de um turno **running** detached (o mesmo relógio que o watchdog `agent.turn_liveness` amostra: esperas de API, tokens de stream, heartbeats de ferramenta) deve estar idle antes do orphan reaper interrompê-lo. Um turno sem cliente que ainda está produzindo ativamente continua até completar detached — fechar o laptop, backgroundar o app mobile ou uma atualização do desktop não cancelam mais turnos longos saudáveis; só um turno genuinamente travado é interrompido. Defina `0` para interromper na janela de grace independentemente da atividade (comportamento antigo).
 - `startup_orphan_sweep` (default `true`) — o timer de reap WS-orphan acima é in-process, então restart de gateway (update, crash, systemd) antes de disparar deixa a row de sessão aberta forever — trabalho "ativo" fantasma em `/resume` e dashboards. Em todo boot de gateway — tanto a TUI stdio (`entry.main`) quanto o sidecar WebSocket desktop/dashboard (`handle_ws`) — rows com source `tui` / `desktop` / `subagent` cujo start time **e** mensagem mais nova são ambos mais antigos que o session TTL (`HERMES_TUI_SESSION_TTL_S`, default 6 horas) são fechadas com `end_reason: startup_orphan_reap`. Sessões de plataformas de messaging (Telegram, Discord, …) nunca são tocadas, sessões live in-memory (client que já retomou) são excluídas, e sessões swept permanecem resumíveis.

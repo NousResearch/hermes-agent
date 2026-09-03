@@ -156,7 +156,7 @@ configure them only on the default profile.
 
 Plataformas com bind de porta cobertas por esta regra: `webhook`, `api_server`,
 `msgraph_webhook`, `feishu`, `wecom_callback`, `bluebubbles`, `sms`,
-`whatsapp_cloud`, `line`. Configure qualquer uma delas **apenas no profile default**;
+`whatsapp_cloud`, `line`, `teams`. Configure qualquer uma delas **apenas no profile default**;
 todo profile é alcançável pelo prefixo `/p/<profile>/`.
 
 Apenas este conflito de listener compartilhado degrada para profile ignorado. Erros de config
@@ -194,7 +194,13 @@ continuam funcionando.
 O isolamento de credenciais `.env` por profile é preservado e, se algo,
 mais rígido: as chaves de um profile são resolvidas do escopo próprio e nunca unidas
 em um ambiente compartilhado (isso também significa que subprocessos como servidores MCP e
-workers Kanban só veem os segredos do próprio profile). Kanban,
+workers Kanban só veem os segredos do próprio profile). Settings de terminal
+(`terminal.backend`, `terminal.cwd`, `terminal.docker_volumes`,
+`terminal.docker_shared_container_key`, alvos SSH, …) são igualmente resolvidas
+por profile em todo turno roteado: um profile que omite uma chave de terminal recebe o
+default documentado, nunca o valor do profile de launch, e um profile cujo
+`config.yaml`/`.env` não pode ser parseado tem execução de terminal recusada em vez de
+rodar sob a política de sandbox de outro profile. Kanban,
 skills/memória/SOUL com escopo de profile e roteamento de modelo se comportam por profile
 exatamente como com gateways separados.
 
@@ -253,6 +259,12 @@ gateway:
       platform: telegram
       chat_id: "-1001234567890"
       profile: tg-profile
+
+    # Uma DM WhatsApp — escreva o número de telefone; formas JID e LID também casam
+    - name: owner-whatsapp
+      platform: whatsapp
+      chat_id: "15551234567"
+      profile: owner
 ```
 
 Rotas são casadas da mais específica para a menos (`thread_id` > `chat_id` > `guild_id`),
@@ -260,12 +272,31 @@ todos os campos declarados devem valer (AND), e uma rota keyed em um canal tamb�
 casa threads/forum posts cujo pai é aquele canal. Mensagens sem rota ficam no profile default/ativo. O profile roteado recebe o isolamento per-profile completo descrito acima (config, skills, memória, credenciais,
 namespace de sessão). Roteamento funciona em todo adapter de plataforma, não só Discord.
 
+No WhatsApp e WhatsApp Cloud, uma rota `chat_id` casa entre formas de identidade
+do usuário: um número puro (`15551234567`), um JID
+(`15551234567@s.whatsapp.net`) e um LID (`…@lid`) referem a mesma
+pessoa depois que o bridge os pareou (a mesma canonicalização que chaves de
+sessão e allowlists do adapter já usam). Você pode colocar o número em
+`profile_routes` e DMs de entrada ainda casam quer o WhatsApp entregue um JID ou
+um LID. Sem um mapeamento LID ainda, a forma numérica ainda casa um JID (o
+sufixo é removido) mas não resolve um LID desconhecido — aquele ingresso cai
+no profile default até o mapeamento aparecer. Chats de grupo
+(`…@g.us`) não são identidades de remetente e ainda casam exatamente. IDs
+numéricos do Telegram não mudam.
+
 `profile_routes` exige `gateway.multiplex_profiles: true`; com
 multiplexação off as rotas são ignoradas. Se uma rota explícita casar mas seu
 profile alvo não estiver instalado ou estiver fora de `multiplex_profile_allowlist`,
 o gateway rejeita aquele ingresso e registra a rota e o alvo. Ele não
 roda o profile default. Tráfego que não casa com nenhuma rota mantém o
 comportamento histórico de profile default.
+
+Jobs cron de um profile roteado também entregam pelo bot compartilhado, mas
+só a alvos que uma rota habilitada com `chat_id`/`thread_id` mapeia para aquele
+profile — um job de profile roteado mirando um chat sem rota (ou um chat
+roteado a outro profile) nunca é enviado pelo bot compartilhado. Rotas só de
+guild não qualificam um alvo cron; adicione uma rota `chat_id` para o canal
+de entrega.
 
 ## Iniciar, parar ou reiniciar todos os gateways de uma vez
 

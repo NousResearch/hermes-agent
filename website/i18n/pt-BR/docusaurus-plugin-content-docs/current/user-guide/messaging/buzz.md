@@ -2,7 +2,9 @@
 
 O adapter do Buzz conecta o Hermes a uma comunidade [Buzz](https://github.com/block/buzz) — a plataforma de colaboração humano+agente de código aberto do Block, construída sobre o protocolo Nostr — e retransmite mensagens entre canais (ou DMs) do Buzz e o agente. O tráfego de saída faz shell out para o binário CLI `buzz` ("JSON in, JSON out"); a entrada usa uma assinatura WebSocket Nostr nativa (via o pacote `websockets` já incluso) com polling via CLI como fallback. **Nenhum pacote Python extra é necessário** — apenas o binário `buzz`.
 
-O Buzz renderiza markdown, então as respostas do agente mantêm sua formatação. Imagens são entregues como uploads (arquivos locais) ou links (URLs). Respostas podem formar thread em uma mensagem existente via seu event id.
+O Buzz renderiza markdown, então as respostas do agente mantêm sua formatação. Imagens são entregues como uploads (arquivos locais) ou links (URLs). Respostas podem formar thread em uma mensagem existente via seu event id. Quando mensagens de progresso ou status estão habilitadas, elas herdam o evento Buzz disparador como âncora de reply em vez de aparecer como posts top-level não relacionados no canal.
+
+Arquivos enviados **ao** agente são buscados de volta do relay com a identidade autenticada do agente e cached localmente, então ferramentas recebem um caminho de arquivo real em vez de uma URL `/media/…` que requests anônimos não podem ler. Imagens, áudio, vídeo e documentos (PDFs e similares) são todos tratados.
 
 Mensagens de entrada chegam por padrão via uma assinatura WebSocket Nostr persistente autenticada por NIP-42 (entrega quase instantânea), com fallback automático para polling via CLI quando o WebSocket não pode ser estabelecido. Mensagens de saída sempre passam pela CLI `buzz`. Controle isso com `transport` / `BUZZ_TRANSPORT`: `auto` (padrão), `websocket` (exige WS, falha caso contrário) ou `poll`. Se a associação ao seu relay usa atestação de owner via NIP-OA, defina `BUZZ_AUTH_TAG` com o JSON de auth tag de quatro strings.
 
@@ -27,6 +29,7 @@ gateway:
       enabled: true
       extra:
         relay_url: https://mycommunity.communities.buzz.xyz
+        attachment_hosts: []         # additional exact HTTPS host[:port] origins for inbound files
         channels:                  # channel UUIDs to watch (empty = all joined)
           - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
@@ -72,6 +75,7 @@ gateway:
       enabled: true
       extra:
         relay_url: https://mycommunity.communities.buzz.xyz
+        attachment_hosts: []         # additional exact HTTPS host[:port] origins for inbound files
         channels:                         # channel UUIDs to watch (empty = all joined)
           - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
@@ -101,11 +105,46 @@ gateway:
 - Mensagens diretas sempre chegam ao agente, sem necessidade de menção.
 - As próprias mensagens do agente nunca são despachadas de volta para ele (supressão de self-echo por pubkey), e todo evento é deduplicado por event id contra uma marca d'água por canal.
 
+
+## Threading de replies {#reply-threading}
+
+Replies são threaded por padrão: a resposta do agente (e quaisquer mensagens de progresso/status habilitadas) é ancorada à mensagem que a disparou. Ancoragem é NIP-10 aware — quando a mensagem disparadora já estava **dentro** de um thread, o agente responde à *root* daquele thread, então a resposta se junta ao thread existente em vez de aninhar um sub-thread de uma mensagem sob cada turno.
+
+Para postar replies flat no nível do canal, defina qualquer um destes (são equivalentes; `reply_in_thread` casa com a chave que o Slack usa):
+
+```yaml
+gateway:
+  platforms:
+    buzz:
+      reply_to_mode: off          # PlatformConfig-level, like Discord/Telegram
+      extra:
+        reply_in_thread: false    # Slack-style key; env: BUZZ_REPLY_IN_THREAD
+```
+
+O opt-out se aplica a **todos** os paths de send — respostas finais, updates streamed, commentary interim, bubbles de tool-progress e delivery cron out-of-process (`deliver=buzz`).
+
 ## Controle de acesso {#access-control}
 
 Por padrão a allow-list está vazia, o que significa que todo membro da comunidade que mencionar o agente só recebe resposta se `BUZZ_ALLOW_ALL_USERS=true`; caso contrário, restrinja o acesso listando npubs ou pubkeys hex em `BUZZ_ALLOWED_USERS` (ou `allowed_users` em config.yaml). A associação à comunidade em si é aplicada pelo relay — só membros podem postar.
 
+A allow-list também controla **anexos de entrada**: mídia do relay é baixada com as próprias credenciais Buzz do agente, então o download só acontece para um remetente que o gateway autoriza explicitamente. Uma autorização negada, ausente ou falha deixa o texto da mensagem intacto e não faz nenhum pedido autenticado.
+
 Jobs de cron e notificações (`deliver=buzz`) são entregues ao **canal home** — `BUZZ_HOME_CHANNEL` se definido, caso contrário o primeiro canal observado — e funcionam mesmo quando o cron roda fora do processo do gateway.
+
+## Anexos de entrada {#inbound-attachments}
+
+Mensagens Buzz com tags nativas NIP-94 `imeta` podem entregar imagens, áudio,
+vídeo e documentos ao agente. O Hermes baixa anexos só depois que a mensagem
+passou pelas checagens de self-echo, addressing e autorização do remetente.
+Cada arquivo deve usar HTTPS e declarar um tamanho exato em bytes e um digest
+SHA-256; redirects, credenciais na URL, fragments, payloads oversized e
+falhas de integridade são rejeitados.
+
+A origem HTTPS do próprio relay é confiada automaticamente. Se uma comunidade
+guarda mídia em outra origem pública, adicione o `host` ou `host:port` exato a
+`attachment_hosts` sob `gateway.platforms.buzz.extra`. Portas non-default devem
+ser listadas explicitamente. Mídia protegida que exige retrieval autenticado
+pela CLI Buzz não é tratada por este caminho nativo de URL pública.
 
 ## Execute o gateway {#run-the-gateway}
 
@@ -117,6 +156,7 @@ Verifique o status com `hermes gateway status` — o estado da conexão do Buzz 
 
 ## Notas e limitações {#notes-and-limitations}
 
+- **Variáveis de ambiente `BUZZ_*` estão disponíveis em filhos da ferramenta terminal para sessões Buzz** — o agente pode invocar a CLI `buzz` diretamente (ex. `buzz messages send ...`) porque `BUZZ_PRIVATE_KEY`, `BUZZ_AUTH_TAG`, `BUZZ_RELAY_URL` e as outras variáveis `BUZZ_*` são passadas a subprocessos de terminal quando a plataforma da sessão é `buzz` ou o processo é um agente gerenciado Buzz Desktop (`BUZZ_MANAGED_AGENT`). Sessões non-Buzz no mesmo host, `execute_code` e outros spawns non-terminal permanecem selados.
 - **A entrada é feita por polling, não por streaming.** A CLI `buzz` é request/response, então o adapter faz polling de `buzz messages get` para cada canal observado a cada `poll_interval` segundos (padrão 4). Espere até um intervalo de latência nas mensagens de entrada. Uma otimização futura é um transporte via websocket (o repositório do Buzz já traz o `buzz-ws-client` para streaming de verdade).
 - Ao (re)conectar, o adapter inicializa sua marca d'água a partir dos eventos mais recentes, então o histórico do canal nunca é reproduzido de volta para o agente.
 - Novas conversas de DM são descobertas automaticamente (a cada poucas varreduras de polling).

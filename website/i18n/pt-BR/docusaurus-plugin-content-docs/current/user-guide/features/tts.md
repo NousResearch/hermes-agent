@@ -237,6 +237,19 @@ tts:
 
 **Knobs avançados** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspondem 1:1 ao `SynthesisConfig` do Piper. São ignorados em versões antigas de `piper-tts`.
 
+### Warm-up e unload via toggles de speech (engines locais) {#warm-up-and-unload-via-speech-toggles-local-engines}
+
+Engines locais (Piper, KittenTTS) carregam o modelo de forma lazy, então sem ajuda a *primeira* resposta falada depois que você liga speech paga o load inteiro do modelo — e numa instalação nova o download da voz — como silêncio antes da primeira palavra. O Hermes trata os toggles de saída de speech como o sinal de que TTS está prestes a ser necessário:
+
+- **Desktop** — ligar **Read replies aloud**, ou iniciar uma **voice conversation**, pré-carrega o engine configurado em background imediatamente. Desligar ambos de novo descarrega o modelo residente (uma voz Piper tem dezenas de MB; KittenTTS até ~80MB) para não ficar parado na RAM sem necessidade.
+- **CLI / TUI** — `/voice tts` (e `/voice on` quando `voice.auto_tts` está definido) fazem o mesmo; `/voice off` libera.
+
+Cada toggle segura um *lease* no engine; o modelo só é descarregado quando o último lease entre superfícies é liberado, então desligar read-aloud numa janela Desktop nunca tira a voz debaixo de uma conversa rodando em outra. Para provedores cloud não há modelo para segurar — o toggle só garante que um SDK instalado de forma lazy (edge-tts, ElevenLabs, Mistral) esteja presente. Warm-up é best-effort: se o engine não puder carregar, o toggle ainda sucede e a primeira resposta cai no load sob demanda como antes.
+
+O Desktop chama `POST /api/audio/tts-lease` com `{"lease": "<name>", "active": true|false}`; outros frontends podem usar o mesmo endpoint.
+
+O mesmo lease também alcança providers declarados pelo usuário, então um servidor TTS self-hosted pode pré-carregar e descarregar seu modelo nos toggles: um [command provider](#custom-command-providers) roda seus `warm_command` / `release_command` opcionais, e um [Python plugin provider](#python-plugin-providers) recebe `warm()` / `release()`.
+
 ### Providers de comando customizado {#custom-command-providers}
 
 Se um engine TTS que você quer não é suportado nativamente (VoxCPM, MLX-Kokoro, XTTS CLI, script de clonagem de voz, qualquer outro que exponha CLI), você pode conectá-lo como **provider type command** sem escrever Python. O Hermes escreve o texto de entrada em um arquivo UTF-8 temp, roda seu comando shell e lê o arquivo de áudio que o comando produziu.
@@ -315,6 +328,7 @@ Use `{{` e `}}` para chaves literais.
 | `voice_compatible`   | `false`| Quando `true`, o Hermes converte saída MP3/WAV para Opus/OGG via ffmpeg para o Telegram renderizar voice bubble. |
 | `max_text_length`    | `5000` | Máximo de caracteres de entrada por invocação do comando; texto mais longo é dividido em chunks ordenados. |
 | `voice` / `model`    | vazio  | Repassados ao comando apenas como valores de placeholder.                                                  |
+| `warm_command` / `release_command` | unset | Comandos shell rodados quando uma superfície liga saída de speech / quando o último lease entre superfícies é liberado — ex.: `curl -s localhost:5002/load?model={model}` para pré-carregar um servidor TTS local, e o counterpart `unload`. Best-effort e non-blocking: rodam em background com o mesmo `timeout`, `env_passthrough` e placeholders `{voice}` / `{model}` / `{speed}` que `command`; a saída é descartada e falhas só são logadas em debug. |
 
 #### Notas de comportamento {#behavior-notes}
 
@@ -404,6 +418,7 @@ Sobrescreva estes na sua classe provider para integração mais rica:
 - `get_setup_schema()` → retorna `{name, badge, tag, env_vars: [{key, prompt, url}]}` para alimentar a linha do picker em `hermes tools` / `hermes setup`. Sem isso, o plugin ainda funciona mas sua linha no picker é mínima.
 - `stream(text, *, voice, model, format, **extra)` → iterador que produz bytes de áudio para entrega streaming (padrão levanta `NotImplementedError`).
 - propriedade `voice_compatible` → defina `True` se sua saída for compatível com Opus e o gateway deve entregá-la como voice bubble (padrão `False` = anexo de áudio regular).
+- `warm()` / `release()` → chamados quando uma superfície liga saída de speech / quando o último lease entre superfícies é liberado, enquanto seu provider é o `tts.provider` configurado — pré-carregue ou descarregue um model server local aqui. Ambos defaultam para no-ops; exceções são logadas em debug e nunca falham o toggle.
 
 Veja `agent/tts_provider.py` para o ABC completo incluindo docstrings.
 

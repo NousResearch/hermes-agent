@@ -110,6 +110,22 @@ pkg install -y git python clang rust make pkg-config libffi openssl nodejs ripgr
 Por que esses pacotes?
 
 - `python` — runtime + suporte a venv
+
+:::warning Supported Python range
+O Hermes exige **Python >=3.11,&lt;3.14**. O Termux atual entrega `python`
+3.14.x, fora desse intervalo — o instalador detecta isso e tenta
+automaticamente o [Termux User Repository (TUR)](https://github.com/termux-user-repository/tur)
+por um interpretador suportado. Para instalação manual, obtenha um você mesmo:
+
+```bash
+pkg install tur-repo
+pkg install python3.13
+```
+
+Depois use `python3.13` no lugar de `python` nos comandos abaixo
+(ex.: `python3.13 -m venv venv`).
+:::
+
 - `git` — clonar/atualizar o repo
 - `clang`, `rust`, `make`, `pkg-config`, `libffi`, `openssl` — necessários para buildar algumas dependências Python no Android
 - `nodejs` — runtime Node opcional para experimentos além do caminho core testado

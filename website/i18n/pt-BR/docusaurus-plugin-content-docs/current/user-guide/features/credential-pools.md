@@ -206,6 +206,8 @@ Subagentes se beneficiam da mesma resiliência a rate limit que o pai, sem confi
 
 O pool de credenciais usa lock de threading em todas as mutações de estado (`select()`, `mark_exhausted_and_rotate()`, `try_refresh_current()`, `mark_used()`). Isso garante acesso concorrente seguro quando o gateway trata várias sessões de chat simultaneamente.
 
+Entre processos (muitos subagentes, um gateway mais uma CLI, cron jobs), refreshes OAuth são serializados por um file lock em `auth.json`. Quando um grant OAuth compartilhado expira sob muitos processos concorrentes, exatamente um processo faz o refresh; os outros detectam que o token em disco não corresponde mais ao que falhou e o adotam em vez de rotacionar de novo o refresh token de uso único. Um processo que perde a corrida pelo lock mantém a entrada saudável e retenta — contenção de lock nunca é registrada como falha de credencial.
+
 ## Arquitetura {#architecture}
 
 Para o diagrama completo de fluxo de dados, veja [`docs/credential-pool-flow.excalidraw`](https://excalidraw.com/#json=2Ycqhqpi6f12E_3ITyiwh,c7u9jSt5BwrmiVzHGbm87g) no repositório.

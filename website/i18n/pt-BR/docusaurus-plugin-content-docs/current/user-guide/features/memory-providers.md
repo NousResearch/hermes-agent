@@ -311,7 +311,21 @@ echo "OPENVIKING_API_KEY=..." >> ~/.hermes/.env
 - Esquema URI `viking://` para navegação hierárquica de conhecimento
 
 `OPENVIKING_ACCOUNT` e `OPENVIKING_USER` são usados para modo local/trusted.
-`OPENVIKING_AGENT` é o peer ID do Hermes no OpenViking para memórias com escopo de peer.
+Identidade de peer é opcional. Por padrão, o Hermes não envia peer ID e escreve
+memórias explícitas em `viking://user/<user>/memories/...`. O setup não pergunta
+por um peer ID. Para contexto separado de assistant, defina
+`memory.openviking.agent: work-assistant` em `config.yaml`.
+
+Settings de peer existentes e não vazias mantêm writes e recall com escopo de peer.
+Isso inclui `OPENVIKING_AGENT` e `actor_peer_id` ou o legado `agent_id` em um
+config OpenViking linkado. Memórias existentes não são movidas nem deletadas.
+Sem peer ID, a busca padrão cobre memória de usuário e memórias de peer existentes
+sob o mesmo usuário OpenViking. Memórias de peer antigas continuam pesquisáveis em seus
+paths existentes. Ranking e limites de resultado determinam quais memórias retornam.
+Defina `memory.openviking.agent: hermes` para restaurar os writes antigos com escopo de peer.
+Memórias escritas em escopo de usuário antes desta mudança ficam lá e continuam
+pesquisáveis. A setting muda writes futuros, não localizações de memória existentes.
+
 O Hermes envia `User-Agent: openviking-memory-hermes/<version>` em requisições
 OpenViking. Este identificador padrão de harness não contém identificador por usuário e
 não adiciona uma requisição separada.

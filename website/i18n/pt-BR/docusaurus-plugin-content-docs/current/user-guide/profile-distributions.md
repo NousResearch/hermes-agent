@@ -624,10 +624,23 @@ Quando você não precisa de versionamento, pule o repo. `/export` empacota um p
 Na CLI, TUI ou chat do desktop:
 
 ```
-/export                          # the active profile → <name>.tar.gz
+/export                          # the active profile → managed profile-exports/<name>-<timestamp>.tar.gz
 /export research-bot             # a named profile
 /export research-bot -o ~/Desktop/research-bot.tar.gz
 ```
+
+Sem `-o`, a CLI e a TUI colocam o archive no diretório gerenciado
+`profile-exports/` sob o Hermes home padrão, não no diretório de
+trabalho atual. Isso mantém exports de rotina fora de checkouts de código e
+impede que um snapshot gerado de profile seja confundido com um arquivo fonte
+do repositório. Se o próprio Hermes home vive dentro de um checkout Git (alguns
+deploys Docker/custom), o archive vai para `~/.hermes-profile-exports/`
+ou, falhando isso, um diretório por usuário sob o temp dir do OS — nunca para
+dentro do checkout. Se nenhum local automático seguro existir (todo candidato
+está dentro de um checkout Git), o export recusa com "No safe automatic
+export destination" e você deve passar `-o` com um path fora do
+checkout. Um path `-o` explícito ainda é honrado
+quando você escolhe intencionalmente onde salvar o archive.
 
 Ou de um shell, mesma maquinaria:
 

@@ -104,6 +104,28 @@ image_gen:
 
 A qualidade de requisição de `fal-ai/gpt-image-1.5` e `fal-ai/gpt-image-2` está fixada em `medium` (~$0.034–$0.06/image em 1024×1024). Não expomos os tiers `low` / `high` como opção voltada ao usuário para que a cobrança do Nous Portal permaneça previsível entre todos os usuários — a diferença de custo entre tiers é 3–22×. Se quiser uma opção mais barata, escolha Klein 9B ou Z-Image Turbo; se quiser qualidade maior, use Nano Banana Pro ou Recraft V4 Pro.
 
+### Meta Model API: Muse Image {#meta-model-api-muse-image}
+
+Com `image_gen.provider: meta-ai`, as imagens são geradas pela
+[Meta Model API](https://api.meta.ai) (`https://api.meta.ai/v1`), o mesmo
+endpoint compatível com OpenAI que serve os modelos de chat Muse Spark. É o
+companheiro de image-gen do provedor de chat bundled `meta-ai`.
+
+| Model | Speed | Strengths | Price |
+|---|---|---|---|
+| `muse-image-1.0` *(default)* | ~10s | Meta Model API image generation | $0.01/image |
+
+```yaml
+image_gen:
+  provider: meta-ai
+  model: muse-image-1.0
+```
+
+A autenticação reutiliza as mesmas env vars do provedor de chat Meta — `MODEL_API_KEY`
+(o nome documentado pela Meta), com `META_API_KEY` / `META_MODEL_API_KEY` aceitos
+como aliases. Defina `META_BASE_URL` para apontar a um proxy ou host alternativo. Por enquanto
+apenas text-to-image; as respostas são salvas em `$HERMES_HOME/cache/images/`.
+
 ## Uso {#usage}
 
 O schema voltado ao agente é intencionalmente mínimo — o modelo usa o que você configurou:

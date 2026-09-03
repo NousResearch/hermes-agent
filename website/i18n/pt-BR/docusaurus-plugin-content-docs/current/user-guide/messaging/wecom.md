@@ -96,10 +96,12 @@ hermes gateway
 - **Reconexão automática** — backoff exponencial em quedas de conexão
 
 :::note Streaming e indicadores de digitação
-O adaptador WeCom entrega cada resposta como uma única mensagem completa — ele **não**
-transmite respostas token a token e **não** exibe um indicador de
-digitação. "Correlação de resposta" (abaixo) apenas encadeia uma resposta à sua solicitação de
-entrada; não é streaming ao vivo.
+O adaptador WeCom faz stream das respostas nativamente pelo protocolo `msgtype: "stream"`
+do WeCom: o cliente mostra um bubble de thinking/typing assim que um turno começa,
+e a resposta renderiza token a token num único bubble conforme o modelo
+gera. Progresso de tool-call é dobrado no mesmo bubble. Streaming nativo
+está habilitado por padrão (`display.platforms.wecom.streaming: true` em
+`config.yaml`); defina como `false` para restaurar entrega single-shot.
 :::
 
 ## Opções de configuração {#configuration-options}
@@ -116,6 +118,9 @@ Defina estes em `config.yaml` em `platforms.wecom.extra`:
 | `allow_from` | `[]` | IDs de usuário permitidos para DMs (quando dm_policy=allowlist) |
 | `group_allow_from` | `[]` | IDs de grupo permitidos (quando group_policy=allowlist) |
 | `groups` | `{}` | Configuração por grupo (veja abaixo) |
+| `stream_keepalive_enabled` | `false` | Envia frames periódicos de keepalive para renovar a janela ~6 minutos de reply-stream do WeCom em turnos longos |
+| `stream_keepalive_interval_seconds` | `120` | Cadência dos frames de keepalive quando habilitado |
+| `stream_safe_duration_seconds` | `330` | Idade do stream após a qual o finalize prefere o envio proativo confiável |
 
 ## Políticas de acesso {#access-policies}
 
@@ -237,7 +242,7 @@ Arquivos que excedem o limite absoluto de 20 MB são rejeitados com uma mensagem
 
 Quando o bot recebe uma mensagem via callback WeCom, o adaptador lembra o ID da requisição de entrada. Se uma resposta for enviada enquanto o contexto da requisição ainda estiver ativo, o adaptador usa o modo reply do WeCom (`aibot_respond_msg`) para correlacionar a resposta diretamente à mensagem de entrada. Isso proporciona uma experiência de conversa mais natural no cliente WeCom.
 
-A resposta completa é entregue como uma única mensagem — o adaptador não transmite tokens incrementalmente. Se o contexto da requisição de entrada tiver expirado ou estiver indisponível, o adaptador recorre ao envio proativo de mensagens via `aibot_send_msg`.
+Quando um reply stream nativo está ativo, a resposta faz stream incrementalmente por frames reply-mode `msgtype: "stream"`. Se o contexto da requisição de entrada tiver expirado ou estiver indisponível (ou um frame de stream falhar), o adaptador recorre ao envio proativo de mensagens via `aibot_send_msg`.
 
 O modo reply também funciona para mídia: mídia enviada pode ser enviada como resposta à mensagem de origem.
 

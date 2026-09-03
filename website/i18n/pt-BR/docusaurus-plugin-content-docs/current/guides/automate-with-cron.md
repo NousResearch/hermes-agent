@@ -74,6 +74,10 @@ Configure a tarefa cron:
 Para tarefas cron de monitoramento, instrua o agente a responder apenas com `[SILENT]` quando nada mudar. A entrega do cron trata `[SILENT]` como o marcador de silêncio, então você só é notificado quando algo realmente acontece — sem spam nas horas tranquilas.
 :::
 
+:::tip Mantendo avisos de falha fora de canais compartilhados
+`[SILENT]` só se aplica a execuções bem-sucedidas — quando um job falha de forma dura, o engine posta um aviso `⚠️ Cron 'X' failed…` no destino de entrega do job. Para jobs que entregam em canais compartilhados movimentados, defina `--failure-deliver local` para suprimir esses avisos por completo (o estado da execução continua visível em `hermes cron list` e no histórico de runs), ou aponte falhas para um canal de ops com `--failure-deliver slack:C_OPS`. A mesma gramática de `--deliver`; omita e as falhas seguem `--deliver` como antes.
+:::
+
 ---
 
 ## Padrão 2: Relatório Semanal {#pattern-2-weekly-report}

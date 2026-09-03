@@ -17,7 +17,7 @@ Não há primitivo novo para aprender: um Bot **é** um profile do Hermes — co
 
 O roster mostra uma linha por profile de agente: avatar, preview da última mensagem e timestamp.
 
-- **Clique num Bot** para cair no chat dele — todo Bot tem uma conversa canônica e persistente **Bot Chat**, criada (e pinada) no momento em que o Bot nasce.
+- **Clique num Bot** para cair no chat dele — todo Bot tem uma conversa canônica e persistente **Bot Chat**, criada (e pinada) no momento em que o Bot nasce. Um clique na linha sempre abre aquele Bot Chat (a mesma conversa que a linha pré-visualiza), mesmo quando você tem outras abas abertas para o Bot; essas abas ficam abertas ao lado. Na faixa de abas o Bot Chat é legendado com o nome do Bot, para dois Bots abertos se distinguirem de relance.
 - **Active now** — uma faixa de presença acima do roster mostra todo Bot trabalhando agora: o profile ocupado no gateway mais qualquer Bot que escreveu nos últimos 90 segundos. Cada chip abre o chat daquele Bot. A faixa nunca reordena o roster e some quando a frota está idle.
 - **Search** filtra o roster enquanto você digita.
 - **Hide a Bot** — clique com o botão direito numa linha → **Hide Bot** para tirar do roster e da faixa Active-now um Bot que você não usa. Esconder é só display: @mentions ainda resolvem, memberships de group chat ficam intactas e as rotinas continuam rodando. Assim que pelo menos um Bot está escondido, um **toggle de olho** aparece no header do painel — clique para revelar Bots escondidos esmaecidos no lugar, depois botão direito → **Unhide Bot** para trazer um de volta. Bots escondidos nunca fazem toast, mas acumulam atividade unread em silêncio e o olho ganha um ponto para você saber que algo aconteceu. O estado hidden fica salvo nos metadados do profile do Bot, então acompanha o Bot em todo desktop conectado àquele backend.
@@ -25,6 +25,18 @@ O roster mostra uma linha por profile de agente: avatar, preview da última mens
 :::note O Bot Chat canônico é um forever-chat
 Digitar `/new` (ou `/reset`) dentro do chat canônico de um Bot bifurcaria o relacionamento numa sessão scratch — a única coisa que o Bot Mode promete que nunca acontece. O composer redireciona para `/compact` em vez disso: contexto de trabalho fresco, mesma conversa. Sessões regulares no mesmo profile mantêm a liberdade total de `/new`.
 :::
+
+
+### Organize bots em seções {#organize-bots-into-sections}
+
+Seções são pastas que você mesmo cria — **Clients**, **Team**, o que couber — como um segundo eixo ao lado do agrupamento automático por gateway. Sem seções criadas o roster é a lista simples de sempre.
+
+- **Crie uma** no menu **+** do painel → **New section**, ou clique com o direito num Bot → **Move to section** → **New section…** (isso já arquiva o Bot nela ao criar).
+- **Arquive um Bot** arrastando a linha até uma seção — o alvo destaca enquanto você paira, e **Esc** cancela o drag — ou clique com o direito → **Move to section** e escolha uma. **Remove from section** o devolve a **Unassigned**.
+- **Renomeie, reordene ou delete** uma seção no menu de clique-direito do heading (ou no **⋯** que aparece no hover); dê duplo clique num heading para renomear. Headings dobram como os headings de gateway.
+- **Deletar uma seção nunca deleta Bots** — eles voltam a **Unassigned**, e o toast oferece **Undo**. Nenhuma confirmação é pedida.
+
+A associação fica nos metadados de perfil de cada Bot (`ui_meta`), então a seção de um Bot o segue a todo desktop conectado àquele backend. Quando o roster mostra mais de um gateway, seções aninham dentro do bucket de cada gateway.
 
 ## Criando um Bot {#creating-a-bot}
 
@@ -134,13 +146,35 @@ hermes peer add spark --url http://spark.lan:8377 --key <API_SERVER_KEY>
 hermes peer list
 hermes peer dm spark < /tmp/dm.txt        # message body from a file (nothing shell-interpreted)
 hermes peer dm spark/researcher < /tmp/dm.txt   # named profile on a multiplexed peer
+
+hermes peer run spark --idempotency-key ticket-123 < /tmp/long-task.txt
+hermes peer status spark run_abc123
+hermes peer stop spark run_abc123
 ```
 
 `hermes peer dm` entrega no Bot Chat canônico do agente remoto pelo API server existente do peer, roda um turno de agente lá e imprime a resposta no stdout — o gêmeo cross-machine exato do comando local `hermes -p <bot> chat`.
 
+
+Use `peer dm` só para queries curtas e receipts porque segura uma conexão HTTP
+até o turno terminar. Para um turno longo, `peer run` retorna um
+`run_id` imediatamente; faça poll com `peer status`. O run herda a
+transcrição canônica do Bot Chat, e um `--idempotency-key` estável faz um retry
+devolver o run original em vez de iniciar trabalho duplicado. Use `peer stop`
+com aquele run ID exato para interrompê-lo sem mirar outro turno.
+
 Uma vez que um peer está registrado, o protocolo de messaging ensinado a todo Bot Chat (`agent.bot_mode_protocol`) inclui automaticamente o roster de peers, e `message_agent` aceita targets peer diretamente — `message_agent(target="spark/researcher", …)`, ou `target="spark"` para o agente principal do peer — então **seus bots aprendem sozinhos** que teammates existem em outras máquinas e como alcançá-los. Registrar ou remover um peer refresca o protocolo de cada Bot Chat na próxima mensagem (capability epoch).
 
 Requisitos: a máquina peer roda a plataforma de gateway `api_server` com um `API_SERVER_KEY` forte; reachability é assunto da sua rede (LAN, Tailscale, VPN). A key é uma credencial e vive em `~/.hermes/.env` como `HERMES_PEER_<NAME>_KEY`; nomes/URLs de peer vivem em `config.yaml` sob `bot_peers`.
+
+
+:::note Alcance unidirecional (NAT)
+Links cross-gateway são conexões diretas gateway-a-gateway — o Desktop é um
+viewer, não um relay. Um gateway atrás de NAT residencial pode discar out para um peer público
+(laptop → VPS funciona), mas a direção reversa não tem rota inbound
+(VPS → home falha) a menos que sua rede forneça uma. Se seu Group Chat atravessa
+um limite de NAT, coloque a autoridade da room no host que todo participante consegue
+alcançar (tipicamente o VPS público), ou faça bridge da rede com Tailscale/VPN.
+:::
 
 ## Bots entre máquinas {#bots-across-machines}
 

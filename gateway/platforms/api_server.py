@@ -6297,6 +6297,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if selection_error:
             return web.json_response(_openai_error(selection_error), status=400)
 
+        from agent.mcp_run_context import read_mcp_run_metadata
+
+        request_mcp_metadata = read_mcp_run_metadata()
         idempotency_key = request.headers.get("Idempotency-Key")
         idempotency_fingerprint = None
         if idempotency_key:
@@ -6315,6 +6318,7 @@ class APIServerAdapter(BasePlatformAdapter):
             idempotency_fingerprint = _make_request_fingerprint(
                 fingerprint_body,
                 keys=sorted(fingerprint_body),
+                mcp_metadata=request_mcp_metadata,
             )
 
         def _cached_idempotency_response():
@@ -6342,9 +6346,19 @@ class APIServerAdapter(BasePlatformAdapter):
         if cached_response is not None:
             return cached_response
 
-        response_session_id = session_id
-        if not conversation_history and session_id:
+        if not explicit_history_provided and not conversation_history and session_id:
             try:
+                session_db = await self._ensure_session_db_async()
+                if session_db is not None:
+                    resolve_session = getattr(
+                        session_db, "resolve_resume_session_id", None
+                    )
+                    if callable(resolve_session):
+                        resolved_session_id = await asyncio.to_thread(
+                            resolve_session, session_id
+                        )
+                        if isinstance(resolved_session_id, str) and resolved_session_id:
+                            session_id = resolved_session_id
                 conversation_history = await self._conversation_history_for_session(
                     session_id,
                     fail_closed=True,
@@ -6357,6 +6371,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                     status=503,
                 )
+        response_session_id = session_id
         cached_response = _cached_idempotency_response()
         if cached_response is not None:
             return cached_response
@@ -6410,9 +6425,6 @@ class APIServerAdapter(BasePlatformAdapter):
         # Background task outlives the HTTP response (and thus the middleware
         # profile scope). Capture now and re-enter inside the task/executor.
         request_profile = _api_request_profile.get()
-        from agent.mcp_run_context import read_mcp_run_metadata
-
-        request_mcp_metadata = read_mcp_run_metadata()
 
         async def _run_and_close():
             try:

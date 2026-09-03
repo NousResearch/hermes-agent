@@ -527,3 +527,52 @@ async def test_idempotency_cache_is_scoped_by_private_mcp_metadata(
 
     assert responses == ["data-for-a", "data-for-b"]
     assert run_agent.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_idempotency_key_cannot_cross_private_mcp_metadata():
+    adapter = _adapter()
+    observed = []
+    mock_agent = MagicMock()
+
+    def _run_conversation(**_kwargs):
+        observed.append(read_mcp_run_metadata()["employee"])
+        return {"final_response": "done", "messages": []}
+
+    mock_agent.run_conversation.side_effect = _run_conversation
+    mock_agent.session_prompt_tokens = 0
+    mock_agent.session_completion_tokens = 0
+    mock_agent.session_total_tokens = 0
+
+    with patch.object(adapter, "_create_agent", return_value=mock_agent):
+        async with TestClient(TestServer(_app(adapter))) as client:
+            first = await client.post(
+                "/v1/runs",
+                json={"input": "hello"},
+                headers={
+                    "Authorization": "Bearer sk-test-secret",
+                    "Idempotency-Key": "same-run-key",
+                    "X-Hermes-MCP-Metadata": _encode_metadata(
+                        {"employee": "a"}
+                    ),
+                },
+            )
+            assert first.status == 202
+            first_run_id = (await first.json())["run_id"]
+
+            second = await client.post(
+                "/v1/runs",
+                json={"input": "hello"},
+                headers={
+                    "Authorization": "Bearer sk-test-secret",
+                    "Idempotency-Key": "same-run-key",
+                    "X-Hermes-MCP-Metadata": _encode_metadata(
+                        {"employee": "b"}
+                    ),
+                },
+            )
+            assert second.status == 409
+            assert (await second.json())["error"]["code"] == "idempotency_conflict"
+            await _wait_for_run(adapter, first_run_id)
+
+    assert observed == ["a"]

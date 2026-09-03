@@ -609,17 +609,21 @@ def _resolve_backend_cdp(
     # Browser Use direct-API configs: the CLI talks to Browser Use cloud
     # natively (BU_AUTOSPAWN / auth login) — routing through the legacy
     # provider here would just create a second, redundant session. The
-    # Nous-gateway variant (use_gateway: true) DOES resolve through the
-    # provider: the gateway provisions the cloud browser server-side and
-    # returns its CDP URL, giving subscribers CLI mode with no raw key.
+    # managed Nous selection DOES resolve through the provider: the gateway
+    # provisions the cloud browser server-side and returns its CDP URL, giving
+    # subscribers CLI mode with no raw key. Use the shared persisted-selection
+    # reader so canonical cloud_provider: nous and legacy use_gateway: true
+    # configs follow the same runtime contract.
     provider_key = str(getattr(provider, "name", "") or "").strip().lower()
-    if provider_key == _BACKEND_KEY and not is_truthy_value(
-        _read_browser_cfg().get("use_gateway"), default=False
-    ):
-        # Named BU cloud browsers are exclusive to their daemon — no shared
-        # tab to isolate from.
-        env[_PRIVATE_BROWSER_SENTINEL] = "1"
-        return None
+    if provider_key == _BACKEND_KEY:
+        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
+
+        managed_selection = read_selection("browser") == NOUS_MANAGED_PROVIDER
+        if not managed_selection:
+            # Named BU cloud browsers are exclusive to their daemon — no shared
+            # tab to isolate from.
+            env[_PRIVATE_BROWSER_SENTINEL] = "1"
+            return None
 
     try:
         # Named sessions get their OWN provider browser, keyed by name so the

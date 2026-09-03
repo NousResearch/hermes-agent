@@ -4711,6 +4711,7 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
             # switching providers keeps the driver choice intact.
             _set_selection("browser", "cloud_provider", bp)
         else:
+            browser_cfg.pop("cloud_provider", None)
             browser_cfg.pop("use_gateway", None)
 
     if provider.get("browser_backend"):

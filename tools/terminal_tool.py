@@ -3660,7 +3660,10 @@ def terminal_tool(
                         return json.dumps({
                             "output": "",
                             "exit_code": 124,
-                            "error": f"Command timed out after {effective_timeout} seconds"
+                            "error": f"Command timed out after {effective_timeout} seconds",
+                            "status": "timeout",
+                            "error_type": "terminal_timeout",
+                            "effect_disposition": "unknown",
                         }, ensure_ascii=False)
                     
                     # Retry on transient errors
@@ -3828,6 +3831,12 @@ def terminal_tool(
                 "exit_code": returncode,
                 "error": None,
             }
+            if result.get("timed_out") is True:
+                result_dict.update({
+                    "status": "timeout",
+                    "error_type": "terminal_timeout",
+                    "effect_disposition": "unknown",
+                })
             # cwd echo: when the command changed the session's working
             # directory (cd, pushd, ...), tell the model where it ended up.
             # Production mining shows 60% of terminal calls carry a

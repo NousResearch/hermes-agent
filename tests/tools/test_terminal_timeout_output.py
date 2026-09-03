@@ -13,6 +13,7 @@ class TestTimeoutPreservesPartialOutput:
         result = env.execute("echo 'hello from test' && sleep 30", timeout=2)
 
         assert result["returncode"] == 124
+        assert result["timed_out"] is True
         assert "hello from test" in result["output"]
         assert "timed out" in result["output"].lower()
 
@@ -23,5 +24,12 @@ class TestTimeoutPreservesPartialOutput:
         result = env.execute("sleep 30", timeout=1)
 
         assert result["returncode"] == 124
+        assert result["timed_out"] is True
         assert "timed out" in result["output"].lower()
         assert not result["output"].startswith("\n")
+
+    def test_natural_exit_124_is_not_timeout(self):
+        env = LocalEnvironment()
+        result = env.execute("exit 124", timeout=5)
+        assert result["returncode"] == 124
+        assert result.get("timed_out") is not True

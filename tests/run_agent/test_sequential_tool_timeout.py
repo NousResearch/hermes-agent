@@ -106,6 +106,17 @@ def _tool_call(call_id: str):
     )
 
 
+def _terminal_call(call_id: str, command: str = "original"):
+    return SimpleNamespace(
+        id=call_id,
+        type="function",
+        function=SimpleNamespace(
+            name="terminal",
+            arguments=json.dumps({"command": command}),
+        ),
+    )
+
+
 def _clarify_call(call_id: str = "clarify-1"):
     return SimpleNamespace(
         id=call_id,
@@ -164,6 +175,50 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
     assert len(timeout_events) == 1
     assert timeout_events[0]["status"] == "timeout"
     agent._flush_messages_to_session_db.assert_called()
+
+
+def test_sequential_terminal_deadline_records_final_mutated_args(tmp_path, monkeypatch):
+    agent = _make_agent(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+    recorded: list[tuple[str, dict, str]] = []
+    messages: list[dict] = []
+    final_args = {"command": "final command", "timeout": 7}
+
+    def _dispatch(*_args, **_kwargs):
+        started.set()
+        release.wait()
+        return "late result"
+
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "1.0")
+    monkeypatch.setattr(
+        "agent.tool_timeout_circuit.is_tool_timeout_blocked", lambda *_args: False
+    )
+    monkeypatch.setattr(
+        "agent.tool_timeout_circuit.record_tool_timeout",
+        lambda name, args, session_id: recorded.append((name, args, session_id)),
+    )
+
+    try:
+        with (
+            patch("run_agent.handle_function_call", side_effect=_dispatch),
+            patch(
+                "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+                return_value=(None, final_args),
+            ),
+        ):
+            execute_tool_calls_sequential(
+                agent,
+                SimpleNamespace(tool_calls=[_terminal_call("hung-terminal")]),
+                messages,
+                "task",
+            )
+    finally:
+        release.set()
+
+    assert started.is_set()
+    assert recorded == [("terminal", final_args, agent.session_id)]
+    assert messages[0]["effect_disposition"] == "unknown"
 
 
 def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkeypatch):

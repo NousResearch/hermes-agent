@@ -104,6 +104,53 @@ class TestPruneStaleSessionsLocked:
         assert key in store._entries
         assert store._entries[key].session_id == "sid_parent"
 
+    def test_keeps_stale_entry_when_recovery_returns_same_session_id(self, tmp_path):
+        """A successful same-id recovery must NOT prune the routing entry.
+
+        When the startup sweep finds a stale entry whose session has ended in
+        state.db but ``_recover_session_from_db`` succeeds and returns the SAME
+        session id (proving the route is still resumable — the ``!=`` repoint
+        guard only exists for the compression-rotation child case), the entry
+        must be kept in place. The old code fell through to the prune branch
+        whenever the recovered id did not differ, deleting a perfectly valid
+        resumable mapping (#95957).
+        """
+        key = "agent:main:telegram:dm:5140768830"
+        db = _db_returning(
+            {"sid_parent": {"end_reason": "agent_close", "id": "sid_parent"}}
+        )
+        # Recovery returns the row for sid_parent itself — same id as the entry.
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_parent",
+            "started_at": (datetime.now() - timedelta(hours=5)).timestamp(),
+            "last_activity_at": (
+                datetime.now() - timedelta(hours=4)
+            ).timestamp(),
+        }
+        store = _make_store_with_db(tmp_path, db)  # default mode="none"
+        original_entry = _make_entry_with_origin(key, "sid_parent")
+        original_entry.model_override = {"model": "custom/model", "provider": "openrouter"}
+        original_entry.resume_pending = True
+        store._entries[key] = original_entry
+
+        with patch.object(store, "_save") as mock_save:
+            store._prune_stale_sessions_locked()
+
+        # The successfully-recovered route must survive the sweep.
+        assert key in store._entries
+        assert store._entries[key].session_id == "sid_parent"
+        # The ORIGINAL entry object is kept — a rebuilt entry would silently
+        # drop live state (model_override, resume_pending, token counters).
+        assert store._entries[key] is original_entry
+        assert store._entries[key].model_override == {
+            "model": "custom/model", "provider": "openrouter"
+        }
+        assert store._entries[key].resume_pending is True
+        # The row is reopened in state.db by recovery.
+        db.reopen_session.assert_called_once_with("sid_parent")
+        # Nothing in sessions.json changed, so no rewrite is needed.
+        mock_save.assert_not_called()
+
     def test_noop_when_db_is_none(self, tmp_path):
         config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))
         with patch("gateway.session.SessionStore._ensure_loaded"):

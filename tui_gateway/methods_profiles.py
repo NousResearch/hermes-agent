@@ -95,10 +95,13 @@ def _(rid, params: dict) -> dict:
 
         Exact-lookup semantics, deliberately different from the listing:
         hidden rows still resolve (canonical chats are always hidden),
-        compression lineages resolve to the live tip with the same resolver
-        ``session.resume`` uses, and denied internal sources (tool/kanban)
-        count as absent. The reported ``id`` stays the durable registry row
-        while ``resolved_id`` names the live tip. Best-effort: any failure
+        compression lineages resolve to the live tip via
+        ``get_compression_tip`` (not the generic resume walker, whose
+        unmarked-child fallback can select an ordinary child).
+        ``session.resume`` uses that same tip resolver when the target is
+        titled ``Bot Chat``. Denied internal sources (tool/kanban) count as
+        absent. The reported ``id`` stays the durable registry row while
+        ``resolved_id`` names the live tip. Best-effort: any failure
         degrades to None rather than failing the whole profiles.list call.
         """
         if db is None:
@@ -125,7 +128,11 @@ def _(rid, params: dict) -> dict:
                 if not _resurrect_recoverable_canonical(db, profile_path, session_id):
                     return None
             try:
-                tip = db.resolve_resume_session_id(session_id) or session_id
+                # Canonical Bot Chat identity may advance only across a proven
+                # compression edge.  The generic resume resolver also carries
+                # a legacy unmarked-child fallback, which is intentionally too
+                # broad for this exact-title registry lookup.
+                tip = db.get_compression_tip(session_id) or session_id
             except Exception:
                 tip = session_id
             tip_row = db.get_session(tip) or row
@@ -168,7 +175,7 @@ def _(rid, params: dict) -> dict:
                 return False
             tip = row
             try:
-                tip_id = db.resolve_resume_session_id(session_id) or session_id
+                tip_id = db.get_compression_tip(session_id) or session_id
                 if tip_id != session_id:
                     tip = db.get_session(tip_id) or row
             except Exception:
@@ -180,12 +187,14 @@ def _(rid, params: dict) -> dict:
 
             from pathlib import Path
 
-            wdb = SessionDB(db_path=Path(profile_path) / "state.db")
+            from hermes_state import get_shared_session_db
+            wdb = get_shared_session_db(Path(profile_path) / "state.db")
             try:
                 return bool(wdb.unarchive_recoverable_session(session_id))
             finally:
                 try:
-                    wdb.close()
+                    from hermes_state import release_or_close
+                    release_or_close(wdb)
                 except Exception:
                     pass
         except Exception:
@@ -457,6 +466,15 @@ def _(rid, params: dict) -> dict:
                 try:
                     os.chmod(str(dst_auth), 0o600)
                 except OSError:
+                    pass
+                # Mirroring must not fork single-use OAuth grants (Anthropic /
+                # Codex / xAI): the first profile to refresh strands every
+                # sibling (#100339). API keys stay; OAuth rows are dropped
+                # and read from the root grant via the pool fallback.
+                try:
+                    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+                    strip_cloned_single_use_oauth_grants(path)
+                except Exception:
                     pass
                 mirrored["auth"] = True
         except Exception:
@@ -884,14 +902,34 @@ def _(rid, params: dict) -> dict:
 
         model = str(params.get("model") or "").strip()
         provider = str(params.get("provider") or "").strip()
+        confirm_message = None
         if model and provider:
-            try:
-                from hermes_cli.web_routers.profiles import _write_profile_model
+            # #95293 remainder: this is the Bots editor's model-switch path,
+            # and it used to write guarded (data-policy / expensive) models
+            # silently — the ONE surface that bypassed the selection guard
+            # every other switch path enforces. Same handshake contract as
+            # ``config.set model``: without ``confirm_expensive_model`` a
+            # guarded pick answers ``confirm_required`` + ``confirm_message``
+            # and writes NOTHING; the client resends with
+            # ``confirm_expensive_model: true`` once the user confirms. A
+            # misbehaving guard must never break the save (treated as "no
+            # warning"), matching ``_apply_model_switch``.
+            if not is_truthy_value(params.get("confirm_expensive_model", False)):
+                try:
+                    from hermes_cli.model_selection_guards import combined_selection_warning
 
-                _write_profile_model(profile_dir, provider, model)
-                applied["model"] = True
-            except Exception:
-                applied["model"] = False
+                    warning = combined_selection_warning(model, provider=provider or None)
+                    confirm_message = warning.message if warning is not None else None
+                except Exception:
+                    confirm_message = None
+            if confirm_message is None:
+                try:
+                    from hermes_cli.web_routers.profiles import _write_profile_model
+
+                    _write_profile_model(profile_dir, provider, model)
+                    applied["model"] = True
+                except Exception:
+                    applied["model"] = False
 
         needs_cfg = (
             isinstance(params.get("disabled_skills"), list)
@@ -987,7 +1025,13 @@ def _(rid, params: dict) -> dict:
             finally:
                 reset_hermes_home_override(token)
 
-        return _ok(rid, {"ok": all(applied.values()) if applied else True, "applied": applied})
+        result = {"ok": all(applied.values()) if applied else True, "applied": applied}
+        if confirm_message is not None:
+            # Model write pending user confirmation — same shape config.set
+            # returns, so clients reuse one confirm handler for both surfaces.
+            result["confirm_required"] = True
+            result["confirm_message"] = confirm_message
+        return _ok(rid, result)
     except Exception as e:
         return _err(rid, 5064, str(e))
 

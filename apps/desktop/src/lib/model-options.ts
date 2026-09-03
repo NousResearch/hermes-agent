@@ -34,6 +34,64 @@ export function manualPickRemoved(
   return !models.includes(model)
 }
 
+const MOA_PROVIDER_SLUG = 'moa'
+
+/** True when `model` appears in any provider's live list. Used after Refresh
+ *  Models so a group/catalog swap can tell "still offered" from "gone". */
+export function selectionInCatalog(providers: ModelOptionProvider[] | undefined, model: string): boolean {
+  if (!providers?.length || !model) {
+    return false
+  }
+
+  return providers.some(provider => (provider.models ?? []).includes(model))
+}
+
+/** First real (non-MoA) catalog row that still has models. */
+export function firstSelectableCatalogModel(
+  providers: ModelOptionProvider[] | undefined
+): { model: string; provider: string } | null {
+  if (!providers?.length) {
+    return null
+  }
+
+  for (const provider of providers) {
+    if (provider.slug === MOA_PROVIDER_SLUG) {
+      continue
+    }
+
+    const model = provider.models?.[0]
+
+    if (model) {
+      return { model, provider: provider.slug }
+    }
+  }
+
+  return null
+}
+
+/**
+ * After Refresh Models replaces the catalog: keep the current pick when it is
+ * still listed; otherwise switch to the first available model in the new
+ * catalog. Returns null when the catalog is empty/unloaded so we never wipe
+ * a selection on a failed or still-hydrating refresh.
+ */
+export function reconcileSelectionAfterCatalogRefresh(
+  currentModel: string,
+  providers: ModelOptionProvider[] | undefined
+): { model: string; provider: string } | null {
+  const next = firstSelectableCatalogModel(providers)
+
+  if (!next) {
+    return null
+  }
+
+  if (selectionInCatalog(providers, currentModel)) {
+    return null
+  }
+
+  return next
+}
+
 interface ModelOptionsRequest {
   /** When false, include ambient/unconfigured providers (onboarding/setup
    *  surfaces). Chat pickers default to true so only explicitly configured
@@ -51,10 +109,15 @@ interface ModelOptionsRequest {
   sessionId?: null | string
 }
 
-export function modelOptionsQueryKey(profile: null | string | undefined, sessionId?: null | string) {
+export function modelOptionsQueryKey(
+  profile: null | string | undefined,
+  sessionId?: null | string,
+  ownerConnectionId?: null | string
+) {
   const profileKey = (profile ?? '').trim() || 'default'
+  const ownerKey = (ownerConnectionId ?? '').trim()
 
-  return ['model-options', profileKey, sessionId || 'global'] as const
+  return ['model-options', profileKey, sessionId || 'global', ...(ownerKey ? ['owner', ownerKey] : [])] as const
 }
 
 function hasSelectableModels(options: ModelOptionsResponse | null | undefined): boolean {
@@ -97,6 +160,12 @@ export async function requestModelOptions({
       params.explicit_only = true
     }
 
+    const profileKey = (profile ?? '').trim()
+
+    if (profileKey) {
+      params.profile = profileKey
+    }
+
     let gatewayError: unknown
     let gatewayOptions: ModelOptionsResponse | undefined
 
@@ -110,23 +179,26 @@ export async function requestModelOptions({
       return gatewayOptions
     }
 
-    // A connected Desktop gateway can occasionally return only the current
-    // provider/model (or an empty provider list) while its authenticated REST
-    // catalog is already populated. Recover through the same profile-scoped
-    // endpoint Settings uses, but keep the live session selection authoritative.
-    try {
-      const restOptions = await restModelOptions(explicitOnly, refresh, profile)
+    // An owner-routed dispatcher can name a different registry connection than
+    // the ambient REST client. Never recover that request through ambient REST:
+    // profile names are not unique across sources, so doing so can cache B's
+    // catalog under A's tile. Ambient gateway requests retain the compatibility
+    // recovery used by older backends with incomplete model.options responses.
+    if (!request) {
+      try {
+        const restOptions = await restModelOptions(explicitOnly, refresh, profile)
 
-      if (hasSelectableModels(restOptions)) {
-        return {
-          ...restOptions,
-          ...(gatewayOptions?.provider ? { provider: gatewayOptions.provider } : {}),
-          ...(gatewayOptions?.model ? { model: gatewayOptions.model } : {})
+        if (hasSelectableModels(restOptions)) {
+          return {
+            ...restOptions,
+            ...(gatewayOptions?.provider ? { provider: gatewayOptions.provider } : {}),
+            ...(gatewayOptions?.model ? { model: gatewayOptions.model } : {})
+          }
         }
+      } catch {
+        // Preserve the gateway result (or its original error) when the recovery
+        // path is unavailable.
       }
-    } catch {
-      // Preserve the gateway result (or its original error) when the recovery
-      // path is unavailable.
     }
 
     if (gatewayOptions) {

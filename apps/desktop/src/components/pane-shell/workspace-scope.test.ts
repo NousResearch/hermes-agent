@@ -4,32 +4,15 @@ import {
   $workspaceMode,
   $workspaceNewSessionTarget,
   $workspaceOwnerKey,
-  contributesToWorkspace,
-  filterContributionsForWorkspace,
   forgetActivePane,
   forgetRememberedPane,
   rememberActivePane,
   resetRememberedActivePanes,
   resolveRememberedActivePane,
-  setWorkspaceScope
+  setWorkspaceOwnerLabel,
+  setWorkspaceScope,
+  workspaceOwnerTitle
 } from './workspace-scope'
-
-interface ScopedContribution {
-  id: string
-  workspaceMode?: 'sessions' | 'bots'
-  workspaceOwnerKey?: string
-}
-
-const contribution = (
-  id: string,
-  scope?: Pick<ScopedContribution, 'workspaceMode' | 'workspaceOwnerKey'>
-): ScopedContribution => ({ id, ...scope })
-
-const bot = (ownerKey: string, suffix: string) =>
-  contribution(`bot:${suffix}`, {
-    workspaceMode: 'bots',
-    workspaceOwnerKey: ownerKey
-  })
 
 afterEach(() => {
   setWorkspaceScope('sessions')
@@ -76,7 +59,7 @@ describe('workspace scope', () => {
     expect($workspaceNewSessionTarget.get()).toBeNull()
   })
 
-  it('keeps a group owner explicit while blocking generic session creation', () => {
+  it('keeps a group owner explicit while publishing why it has no generic route', () => {
     const target = { kind: 'blocked' as const, message: 'New group conversations start in the group composer.' }
 
     setWorkspaceScope('bots', 'group:room-1', target)
@@ -84,72 +67,20 @@ describe('workspace scope', () => {
     expect($workspaceOwnerKey.get()).toBe('group:room-1')
     expect($workspaceNewSessionTarget.get()).toEqual(target)
   })
-
-  it('keeps global contributions visible in both modes', () => {
-    expect(contributesToWorkspace(undefined, 'sessions', null)).toBe(true)
-    expect(contributesToWorkspace(undefined, 'bots', 'bot-a')).toBe(true)
-  })
-
-  it('separates sessions and bots contributions by mode', () => {
-    const sessionsOnly = contribution('sessions-pane', { workspaceMode: 'sessions' })
-    const botsOnly = bot('bot-a', 'pane')
-
-    expect(contributesToWorkspace(sessionsOnly, 'sessions')).toBe(true)
-    expect(contributesToWorkspace(sessionsOnly, 'bots', 'bot-a')).toBe(false)
-    expect(contributesToWorkspace(botsOnly, 'sessions')).toBe(false)
-    expect(contributesToWorkspace(botsOnly, 'bots', 'bot-a')).toBe(true)
-  })
-
-  it('requires an exact non-empty owner match for bots contributions', () => {
-    const scoped = bot('bot-a', 'pane')
-
-    expect(contributesToWorkspace(scoped, 'bots', 'bot-b')).toBe(false)
-    expect(contributesToWorkspace(scoped, 'bots', null)).toBe(false)
-    expect(contributesToWorkspace(scoped, 'bots', '')).toBe(false)
-    expect(contributesToWorkspace(scoped, 'bots', 'bot-a')).toBe(true)
-
-    // A bots-scoped contribution with an empty owner key never participates.
-    const noOwner = contribution('no-owner', { workspaceMode: 'bots' })
-    expect(contributesToWorkspace(noOwner, 'bots', 'bot-a')).toBe(false)
-  })
-
-  it('does not collide on shared profile suffixes across connection-qualified keys', () => {
-    // Same profile suffix, different connections — opaque exact strings only.
-    const localProfile = bot('local:main', 'main')
-    const remoteProfile = bot('ssh:server:main', 'main')
-
-    expect(contributesToWorkspace(localProfile, 'bots', 'ssh:server:main')).toBe(false)
-    expect(contributesToWorkspace(remoteProfile, 'bots', 'local:main')).toBe(false)
-    expect(contributesToWorkspace(localProfile, 'bots', 'local:main')).toBe(true)
-    expect(contributesToWorkspace(remoteProfile, 'bots', 'ssh:server:main')).toBe(true)
-  })
 })
 
-describe('filterContributionsForWorkspace', () => {
-  it('filters to the current mode and preserves input order', () => {
-    const contributions = [
-      bot('bot-a', 'zeta'),
-      contribution('global-1'),
-      contribution('sessions-only', { workspaceMode: 'sessions' }),
-      bot('bot-a', 'alpha')
-    ]
+describe('workspace owner title', () => {
+  it('captions a bot chat by its bot instead of the canonical stored title, and leaves everything else alone (#99152)', () => {
+    setWorkspaceOwnerLabel('bot:alpha', 'Alpha')
+    const botChat = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:alpha', workspaceTabTitle: 'Bot Chat' }
 
-    expect(filterContributionsForWorkspace(contributions, 'bots', 'bot-a').map(c => c.id)).toEqual([
-      'bot:zeta',
-      'global-1',
-      'bot:alpha'
-    ])
-    expect(filterContributionsForWorkspace(contributions, 'sessions', null).map(c => c.id)).toEqual([
-      'global-1',
-      'sessions-only'
-    ])
-  })
-
-  it('returns the original array reference on a no-op', () => {
-    const contributions: ScopedContribution[] = [contribution('a'), contribution('b')]
-
-    expect(filterContributionsForWorkspace(contributions, 'sessions', null)).toBe(contributions)
-    expect(filterContributionsForWorkspace(contributions, 'bots', 'anything').length).toBe(2)
+    expect(workspaceOwnerTitle('Bot Chat', botChat)).toBe('Alpha')
+    // A `+` side thread under the same bot keeps its own title.
+    expect(workspaceOwnerTitle('Plan the launch', botChat)).toBe('Plan the launch')
+    // A Sessions tab titled the same way is not a bot chat.
+    expect(workspaceOwnerTitle('Bot Chat', { workspaceMode: 'sessions' })).toBe('Bot Chat')
+    // No label yet (roster not loaded): the stored title stands.
+    expect(workspaceOwnerTitle('Bot Chat', { ...botChat, workspaceOwnerKey: 'bot:beta' })).toBe('Bot Chat')
   })
 })
 

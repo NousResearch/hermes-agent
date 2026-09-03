@@ -1,4 +1,4 @@
-"""Tests for Tencent TokenHub provider support (Hy3 Preview)."""
+"""Tests for Tencent TokenHub provider support (Hy4 preview)."""
 
 import json
 import os
@@ -122,7 +122,7 @@ class TestTencentTokenhubModelCatalog:
 
     def test_default_model(self):
         from hermes_cli.models import get_default_model_for_provider
-        assert get_default_model_for_provider("tencent-tokenhub") == "hy3-preview"
+        assert get_default_model_for_provider("tencent-tokenhub") == "hy4-preview"
 
 
 # =============================================================================
@@ -134,10 +134,10 @@ class TestTencentTokenhubCanonicalProvider:
     """Tencent TokenHub appears in the interactive model picker."""
 
 
-    def test_description_contains_hy3(self):
+    def test_description_contains_hy4(self):
         from hermes_cli.models import CANONICAL_PROVIDERS
         entry = next(p for p in CANONICAL_PROVIDERS if p.slug == "tencent-tokenhub")
-        assert "Hy3 Preview" in entry.tui_desc
+        assert "Hy4 preview" in entry.tui_desc
 
 
 # =============================================================================
@@ -159,8 +159,9 @@ class TestTencentTokenhubNormalization:
 
 
     def test_not_in_matching_prefix_strip_set(self):
-        """tencent-tokenhub does NOT need prefix stripping — it only has
-        one model (hy3-preview) and users won't copy vendor/ form."""
+        """tencent-tokenhub does NOT need prefix stripping — its models
+        (hy4-preview, hy3-preview, hy3) are used as-is and users won't
+        copy vendor/ form."""
         from hermes_cli.model_normalize import _MATCHING_PREFIX_STRIP_PROVIDERS
         assert "tencent-tokenhub" not in _MATCHING_PREFIX_STRIP_PROVIDERS
 

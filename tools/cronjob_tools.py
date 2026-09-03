@@ -770,6 +770,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
         "last_delivery_error": job.get("last_delivery_error"),
+        "last_delivery_unverified": job.get("last_delivery_unverified"),
         "last_fire_error": job.get("last_fire_error"),
         "enabled": job.get("enabled", True),
         # Derive from enabled so half-paused records never render as paused.
@@ -807,6 +808,141 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(job.get("attach_to_session"), bool):
         result["attach_to_session"] = job["attach_to_session"]
     return result
+
+
+def _relay_fronted_delivery_platforms(job: Dict[str, Any]) -> set:
+    """Delivery-platform names for this job that the relay connector fronts."""
+    try:
+        from gateway.relay import relay_fronted_platforms
+    except Exception:
+        return set()
+    fronted = relay_fronted_platforms()
+    if not fronted:
+        return set()
+    try:
+        from cron.scheduler import _resolve_delivery_targets
+
+        targets = _resolve_delivery_targets(job) or []
+    except Exception:
+        return set()
+    theirs = {t.get("platform") for t in targets if t.get("platform")}
+    return theirs & fronted
+
+
+def _forward_relay_fronted_run(
+    job: Dict[str, Any], extra_prompt: Optional[str] = None
+) -> Optional[str]:
+    """Forward a manual run to the gateway when it targets a relay-fronted
+    platform and this process has no live relay adapter.
+
+    Relay-fronted delivery has no standalone sender: the connector owns the
+    credential and the gateway's live relay adapter is the only path. The
+    gateway api_server's ``POST /api/jobs/{id}/run`` marks the job due for its
+    own ticker, which fires it with the live adapter. ``extra_prompt``
+    (transient per-run context) rides in the request body so the forwarded
+    fire keeps it. Returns a JSON result string when forwarding engages
+    (dispatch or the accurate error), else None to fall through to the normal
+    in-process run.
+    """
+    if not _relay_fronted_delivery_platforms(job):
+        return None
+    job_id = job["id"]
+    import os
+
+    port_raw = os.getenv("API_SERVER_PORT", "").strip()
+    try:
+        port = int(port_raw) if port_raw else 8642
+    except ValueError:
+        port = 8642
+    # Mirror the api_server's own bind resolution (adapter reads
+    # extra.host -> API_SERVER_HOST -> 127.0.0.1). A wildcard bind
+    # (0.0.0.0/::) listens on loopback too, so dial loopback for those.
+    host = ""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        host = str(
+            cfg_get(
+                load_config_readonly(), "platforms", "api_server", "extra", "host",
+                default="",
+            )
+            or ""
+        ).strip()
+    except Exception:
+        host = ""
+    if not host:
+        host = os.getenv("API_SERVER_HOST", "").strip()
+    if not host or host in ("0.0.0.0", "::", "*"):
+        host = "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"  # bare IPv6 literal
+    url = f"http://{host}:{port}/api/jobs/{job_id}/run"
+
+    from agent.secret_scope import get_secret
+
+    key = get_secret("API_SERVER_KEY", "") or ""
+
+    resp = None
+    try:
+        import httpx
+
+        resp = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {key}"},
+            json=({"prompt": extra_prompt} if extra_prompt else {}),
+            timeout=10.0,
+        )
+    except Exception:
+        resp = None
+
+    if resp is not None and resp.status_code < 300:
+        return json.dumps(
+            {
+                "success": True,
+                "forwarded_to_gateway": True,
+                "note": (
+                    "This job targets a relay-fronted platform; it was dispatched "
+                    "to the running gateway, whose live relay adapter owns that "
+                    "delivery."
+                ),
+            },
+            indent=2,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "error": (
+                "This job targets a relay-fronted platform, which has no "
+                "standalone sender. Start the gateway — its ticker will "
+                "deliver the job on schedule via the live relay adapter."
+            ),
+        },
+        indent=2,
+    )
+
+
+def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
+    """Parenthetical delivery note for a manual run's completion summary.
+
+    Follows the refreshed job record (#83993): ``run_one_job`` writes
+    ``last_delivery_error`` via ``mark_job_run`` when the post-run delivery
+    (telegram/discord/…) failed, and the summary must not claim success over
+    that record — the calling agent relays this line to the user. Local jobs
+    never deliver; an empty/missing error keeps the legacy wording
+    byte-for-byte.
+    """
+    # Falsy deliver ("", stored JSON null) means no delivery target — the
+    # fire-time path normalizes it to "local" (no delivery, output persisted
+    # in last_output, no delivery error), so it must read as saved-locally,
+    # not as a delivered remote target. Whitespace-only values are NOT folded
+    # in here: they keep falling through to the error check, where the
+    # fire-time "no delivery target resolved" error gets surfaced.
+    if not deliver or deliver == "local":
+        return " (output saved locally only)"
+    err = str(refreshed.get("last_delivery_error") or "").strip()
+    if not err:
+        return " (output was delivered there by the job itself)"
+    return f" (⚠ delivery FAILED: {err[:200]})"
 
 
 def _execute_job_now(
@@ -989,11 +1125,33 @@ def _run_claimed_job(
             _registered = False
             release_running_job(job_id)
         refreshed = get_job(job_id) or {}
-        ok = refreshed.get("last_status") == "ok"
+        execution = None
+        execution_id = job.get("execution_id")
+        if execution_id:
+            from cron.executions import get_execution
+
+            execution = get_execution(str(execution_id))
+        last_status = refreshed.get("last_status")
+        # "delivery_failed" (#83993): the agent run itself succeeded but the
+        # output never reached the user. That is NOT a success for the caller
+        # — the calling agent relays this result — so report it as failed
+        # and surface the delivery error, which lives in last_delivery_error
+        # (last_error is None for these runs, and a bare success=False with
+        # error=None reads as an unexplained failure).
+        ok = last_status == "ok"
+        run_error = refreshed.get("last_error")
+        if last_status == "delivery_failed" and not run_error:
+            run_error = refreshed.get("last_delivery_error")
+        if execution is not None and execution.get("status") != "completed":
+            ok = False
+            run_error = (
+                execution.get("error")
+                or f"execution ended in {execution.get('status') or 'unknown'} state"
+            )
         return {
             "claimed": True,
             "success": bool(processed and ok),
-            "error": refreshed.get("last_error"),
+            "error": run_error,
         }
 
     except Exception as e:
@@ -1223,7 +1381,14 @@ def _try_dispatch_background_run(
         max_async = 3
 
     started_at = time.time()
-    deliver = job.get("deliver", "local")
+    # Canonicalize with the scheduler's own normalizer so the summary states
+    # the same target fire time will use: falsy ("", stored JSON null) reads
+    # "local", legacy list-form deliver flattens to its comma string. Read
+    # from the claimed snapshot — the owner-bearing record the run actually
+    # executes — not the pre-claim `job` the tool loaded.
+    from cron.scheduler import _normalize_deliver_value
+
+    deliver = _normalize_deliver_value(claimed_job.get("deliver", "local"))
 
     def _runner() -> Dict[str, Any]:
         res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
@@ -1234,11 +1399,7 @@ def _try_dispatch_background_run(
             f"Result: {'ok' if res.get('success') else 'FAILED'}"
             + (f" — {res.get('error')}" if res.get("error") else ""),
             f"Delivery target: {deliver}"
-            + (
-                " (output was delivered there by the job itself)"
-                if deliver != "local"
-                else " (output saved locally only)"
-            ),
+            + _manual_run_delivery_note(deliver, refreshed),
         ]
         if refreshed.get("next_run_at"):
             lines.append(f"Next scheduled run: {refreshed['next_run_at']}")
@@ -1371,6 +1532,7 @@ def cronjob(
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    failure_deliver: Optional[Union[str, List[str]]] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1431,6 +1593,12 @@ def cronjob(
             bot_chat_error = _validate_bot_chat_deliver(_normalize_deliver_param(deliver))
             if bot_chat_error:
                 return tool_error(bot_chat_error, success=False)
+            # failure_deliver shares deliver's grammar and validators (NS-788).
+            bot_chat_error = _validate_bot_chat_deliver(
+                _normalize_deliver_param(failure_deliver)
+            )
+            if bot_chat_error:
+                return tool_error(bot_chat_error, success=False)
 
             # Validate context_from references existing jobs
             if context_from:
@@ -1487,6 +1655,9 @@ def cronjob(
                     # dispatch below: models do not make model-config
                     # decisions (standing policy).
                     reasoning_effort=reasoning_effort,
+                    failure_deliver=_resolve_cron_context_deliver(
+                        _normalize_deliver_param(failure_deliver)
+                    ),
                 )
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
@@ -1641,10 +1812,16 @@ def cronjob(
             # bg carries a terminal result (claim lost, or inline fallback
             # after pool rejection); None means background delivery is
             # unsupported here — run synchronously as before.
-            exec_result = (
-                bg if bg is not None
-                else _execute_job_now(job, extra_prompt=extra_prompt)
-            )
+            if bg is not None:
+                exec_result = bg
+            else:
+                # Relay-fronted manual run: a standalone process has no live
+                # relay adapter and no standalone sender, so forward to the
+                # running gateway (its live adapter owns that delivery).
+                forwarded = _forward_relay_fronted_run(job, extra_prompt=extra_prompt)
+                if forwarded is not None:
+                    return forwarded
+                exec_result = _execute_job_now(job, extra_prompt=extra_prompt)
             # A claimed direct run advances next_run_at and may race the
             # external one-shot for the same occurrence. If Chronos loses that
             # claim, its consumed fire cannot re-arm itself; reconcile from the
@@ -1683,6 +1860,19 @@ def cronjob(
                 updates["deliver"] = _resolve_cron_context_deliver(
                     _normalize_deliver_param(deliver)
                 )
+            if failure_deliver is not None:
+                # '' clears the override (job falls back to deliver on
+                # failures); non-empty values share deliver's validation
+                # AND its cron-context origin resolution (a job created
+                # from inside a cron run must never store literal
+                # 'origin' — same rule as deliver).
+                _norm_fd = _normalize_deliver_param(failure_deliver)
+                if _norm_fd:
+                    bot_chat_error = _validate_bot_chat_deliver(_norm_fd)
+                    if bot_chat_error:
+                        return tool_error(bot_chat_error, success=False)
+                    _norm_fd = _resolve_cron_context_deliver(_norm_fd)
+                updates["failure_deliver"] = _norm_fd
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills
@@ -1800,8 +1990,12 @@ def cronjob(
                         )
                 updates["no_agent"] = target_no_agent
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                # Coerce string forms ('forever'/'once'/'3') and 0/negative
+                # via the shared chokepoint — a bare `repeat <= 0` here
+                # raised TypeError for string repeats on the UPDATE path
+                # (create was fixed first; same class).
+                from cron.jobs import normalize_repeat_value
+                normalized_repeat = normalize_repeat_value(repeat)
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
@@ -1832,7 +2026,7 @@ def cronjob(
 
 
 CRONJOB_SCHEMA = {
-    "name": "cronjob",
+    "name": "cronjob_manage",
     "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Prefer updating an existing job over creating near-duplicates.""",
@@ -1853,7 +2047,8 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "schedule": {
                 "type": "string",
-                "description": "REQUIRED for create. '30m' (every 30 minutes), 'every 2h', cron syntax '0 9 * * *' (daily 9am), or an ISO timestamp for one-shot ('2026-06-01T09:00:00')."
+                "type": "string",
+                "description": "REQUIRED for create. Schedule forms: (1) recurring interval — '30m', 'every 2h', 'every hour' (EVERY 30 minutes / 2 hours / hour, forever by default); (2) explicit one-shot by duration — 'in 30m', 'in 2h' (fires ONCE that far from now; use this for 'remind me in N minutes' — do NOT hand-compute an absolute timestamp); (3) natural day/time — 'every monday 9am', 'weekdays at 9am', 'every day at 9am' (recurring weekly/daily); (4) cron syntax — '0 9 * * *' (daily 9am); (5) absolute one-shot — ISO timestamp '2026-06-01T09:00:00'."
             },
             "name": {
                 "type": "string",
@@ -1866,6 +2061,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "deliver": {
                 "type": "string",
                 "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'."
+            },
+            "failure_deliver": {
+                "type": "string",
+                "description": "Optional override target for FAILURE notices only (same grammar as deliver). When set, engine failure/interruption notices go here instead of the deliver target; 'local' suppresses them entirely (state still recorded in cron list/run history). Use for jobs delivering into shared channels where failure noise is unwanted. Omit = failures follow deliver (default). On update, '' clears."
             },
             "skills": {
                 "type": "array",
@@ -1957,6 +2156,7 @@ def _cronjob_handler(args, **kw):
         name=args.get("name"),
         repeat=args.get("repeat"),
         deliver=args.get("deliver"),
+        failure_deliver=args.get("failure_deliver"),
         include_disabled=args.get("include_disabled", True),
         skill=args.get("skill"),
         skills=args.get("skills"),
@@ -1981,7 +2181,7 @@ def _cronjob_handler(args, **kw):
 
 
 registry.register(
-    name="cronjob",
+    name="cronjob_manage",
     toolset="cronjob",
     schema=CRONJOB_SCHEMA,
     handler=_cronjob_handler,

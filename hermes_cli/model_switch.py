@@ -3475,7 +3475,10 @@ def list_authenticated_providers(
                 )
                 from hermes_cli.auth import get_provider_auth_state as _nous_state
 
-                _pricing = _nous_pricing("nous") or {}
+                # Cache-only: both Portal unions below discard the pricing map
+                # (``model_ids, _ = ...``) — only the appended IDs matter, so
+                # a live catalog fetch here buys nothing but latency.
+                _pricing = _nous_pricing("nous", cached_only=True) or {}
                 _portal = ""
                 try:
                     _st = _nous_state("nous") or {}

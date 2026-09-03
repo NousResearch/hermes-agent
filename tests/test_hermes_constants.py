@@ -205,6 +205,43 @@ class TestHermesManagedNode:
         assert find_node_executable("npm") is None
         assert find_node_executable("npm") != str(path_npm)
 
+    def test_unreadable_managed_tree_is_kept_off_path(self, tmp_path, monkeypatch):
+        """An unreadable managed tree must not be prepended to PATH.
+
+        Windows process creation *fails* on an unreadable PATH entry rather
+        than skipping it — ``spawn`` returns ``EPERM`` (errno -4048) as soon as
+        one precedes the real directory — so injecting the tree breaks every
+        child process, not just the ones wanting a managed runtime. That is how
+        the packaged desktop build died: ``cross-env`` could not spawn ``node``
+        at all.
+
+        An ``is_dir()`` check cannot catch this, because an unreadable
+        directory still stats as a directory. Usability is probed by listing.
+        """
+        home = tmp_path / "hermes"
+        node_dir = home / "node"
+        node_dir.mkdir(parents=True)
+        readable = tmp_path / "other-home" / "node"
+        readable.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        real_scandir = os.scandir
+
+        def _deny_unreadable(path=".", *args, **kwargs):
+            if Path(path) == node_dir:
+                raise PermissionError(13, "Access is denied", str(path))
+            return real_scandir(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "scandir", _deny_unreadable)
+
+        entries = with_hermes_node_path({"PATH": "/usr/bin"})["PATH"].split(os.pathsep)
+        assert str(node_dir) not in entries
+
+        # Positive control: a tree we *can* enumerate is still prepended, so
+        # the probe rejects unreadable trees rather than all of them.
+        monkeypatch.setenv("HERMES_HOME", str(readable.parent))
+        assert str(readable) in with_hermes_node_path({"PATH": "/usr/bin"})["PATH"]
+
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")

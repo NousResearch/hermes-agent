@@ -467,3 +467,66 @@ moa:
     # Bare /moa is usage-only now; switching to a preset is via the model picker.
     assert "error" in r
     assert "model_override" not in s
+
+
+class TestIsSuccessfulGoalTurn:
+    """Regression tests for _is_successful_goal_turn (#102213)."""
+
+    def test_normal_successful_turn(self, server):
+        result = {"completed": True, "failed": False}
+        assert server._is_successful_goal_turn(result, "complete", "Goal accomplished.") is True
+
+    def test_max_iterations_reached_with_handoff_summary(self, server):
+        """A non-failed max_iterations_reached exit with a summary must reach the goal judge."""
+        result = {
+            "completed": False,
+            "failed": False,
+            "interrupted": False,
+            "turn_exit_reason": "max_iterations_reached(100/100)",
+        }
+        assert server._is_successful_goal_turn(
+            result, "complete", "Work is incomplete; continue from checkpoint."
+        ) is True
+
+    def test_max_iterations_reached_failed_does_not_loop(self, server):
+        """If failed=True, the turn must be rejected even with max_iterations_reached."""
+        result = {
+            "completed": False,
+            "failed": True,
+            "turn_exit_reason": "max_iterations_reached(100/100)",
+        }
+        assert server._is_successful_goal_turn(
+            result, "complete", "Error occurred before iteration cap."
+        ) is False
+
+    def test_max_iterations_reached_interrupted_does_not_loop(self, server):
+        """If user interrupted, the turn must not be forwarded as successful."""
+        result = {
+            "completed": False,
+            "interrupted": True,
+            "turn_exit_reason": "max_iterations_reached(100/100)",
+        }
+        assert server._is_successful_goal_turn(
+            result, "complete", "Interrupted."
+        ) is False
+
+    def test_generic_uncompleted_or_provider_error(self, server):
+        """Generic completed=False without max_iterations_reached is rejected."""
+        result = {
+            "completed": False,
+            "failed": False,
+            "turn_exit_reason": "provider_error",
+        }
+        assert server._is_successful_goal_turn(
+            result, "complete", "API timeout."
+        ) is False
+
+    def test_empty_or_whitespace_raw_response(self, server):
+        result = {"completed": True, "failed": False}
+        assert server._is_successful_goal_turn(result, "complete", "") is False
+        assert server._is_successful_goal_turn(result, "complete", "   \n\t  ") is False
+
+    def test_incomplete_status(self, server):
+        result = {"completed": True, "failed": False}
+        assert server._is_successful_goal_turn(result, "error", "Some error") is False
+

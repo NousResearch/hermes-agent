@@ -592,7 +592,9 @@ HARDLINE_PATTERNS = [
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system — anchor the command-name token so
     # `echo "kill -1 sends SIGHUP to everything"` doesn't trip (#93392).
-    (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    # The flag run also consumes -s/--signal operands: the signal may be a
+    # separate argument (`kill -s KILL -1`), not just glued (`kill -9 -1`).
+    (_CMDPOS + r'kill\s+(-[^\s]+\s+|(?:-s|--signal)(?:=|\s+)\S+\s+)*-1\b', "kill all processes"),
     # System shutdown / reboot — anchor to command position (start of line,
     # after a command separator, or after sudo/env wrappers) so we don't
     # false-positive on "echo reboot" or "grep 'shutdown' logs".

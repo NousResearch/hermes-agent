@@ -449,7 +449,12 @@ def _handle_send(args):
     if not chat_id:
         home = config.get_home_channel(platform)
         if not home and platform_name == "weixin":
-            wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
+            # Read through get_secret (not raw os.getenv), mirroring the
+            # WEIXIN_TOKEN/ACCOUNT_ID/BASE_URL/CDN_BASE_URL resolution above:
+            # under multiplex the winning profile's secret scope is installed
+            # around this call (cron delivery, or a live agent turn), and
+            # os.environ may hold a different profile's WEIXIN_HOME_CHANNEL.
+            wx_home = get_secret("WEIXIN_HOME_CHANNEL", "").strip()
             if wx_home:
                 from gateway.config import HomeChannel
                 home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")

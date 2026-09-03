@@ -50,6 +50,7 @@ describe('useRuntimeMessageRepository', () => {
       timestamp: 1_700_000_000,
       pending: false
     }
+
     const durable: ChatMessage = {
       ...live,
       id: '1700000000-42-assistant',

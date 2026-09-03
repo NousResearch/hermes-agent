@@ -420,3 +420,63 @@ def test_update_profile_model_runs_off_loop(client, monkeypatch, loop_probe):
 
     assert resp.status_code == 200, resp.text
     assert_off_loop(seen, "write_profile_model")
+
+
+# ── POST /api/profiles — copytree-based profile creation ─────────────────────
+
+
+def test_create_profile_runs_off_loop(client, monkeypatch, loop_probe, tmp_path):
+    seen, probe = loop_probe
+    from hermes_cli import profiles as profiles_mod
+
+    def fake_create_profile(**kwargs):
+        probe("create_profile")
+        return tmp_path / "profiles" / kwargs["name"]
+
+    monkeypatch.setattr(profiles_mod, "create_profile", fake_create_profile)
+    monkeypatch.setattr(profiles_mod, "seed_profile_skills", lambda *a, **k: None)
+    # A collision short-circuits the wrapper-script write, keeping this test
+    # focused on the copytree-heavy create_profile() call.
+    monkeypatch.setattr(
+        profiles_mod, "check_alias_collision", lambda name: "reserved for the test"
+    )
+
+    resp = client.post("/api/profiles", json={"name": "newprof"})
+
+    assert resp.status_code == 200, resp.text
+    assert_off_loop(seen, "create_profile")
+
+
+def test_create_profile_does_not_block_the_dashboard(client, monkeypatch, tmp_path):
+    """``create_profile`` copytree()s a profile directory tree — the same
+    class of unbounded filesystem work as delete/rename, but unlike every
+    sibling profile-mutation endpoint it was never routed off the loop."""
+    from hermes_cli import profiles as profiles_mod
+
+    blocker = _Blocker(result=tmp_path / "profiles" / "newprof")
+    monkeypatch.setattr(profiles_mod, "create_profile", blocker)
+    monkeypatch.setattr(profiles_mod, "seed_profile_skills", lambda *a, **k: None)
+    monkeypatch.setattr(
+        profiles_mod, "check_alias_collision", lambda name: "reserved for the test"
+    )
+
+    assert_serves_concurrently(
+        client,
+        blocker,
+        lambda: client.post("/api/profiles", json={"name": "newprof"}),
+    )
+
+
+def test_create_profile_invalid_name_is_still_400(client, monkeypatch):
+    """``create_profile`` still runs its own validation inside the worker hop;
+    a ValueError from it must surface as a 400, not a 500."""
+    from hermes_cli import profiles as profiles_mod
+
+    def fake_create_profile(**kwargs):
+        raise ValueError("not a valid profile name")
+
+    monkeypatch.setattr(profiles_mod, "create_profile", fake_create_profile)
+
+    resp = client.post("/api/profiles", json={"name": "!!!"})
+
+    assert resp.status_code == 400, resp.text

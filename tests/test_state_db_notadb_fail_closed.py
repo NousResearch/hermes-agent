@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_state import SessionDB, _on_disk_journal_mode
+from hermes_state import SessionDB, StateDbCorruptError, _on_disk_journal_mode
 
 
 class _NotADbOnce:
@@ -42,9 +42,12 @@ class TestFailClosedAfterNotADb:
             reopen = MagicMock()
             monkeypatch.setattr("hermes_state._connect_tracked_db", reopen)
             db._conn = _NotADbOnce(real_conn)
-            with pytest.raises(sqlite3.DatabaseError, match="not a database"):
+            with pytest.raises(sqlite3.DatabaseError, match="not a database") as excinfo:
                 db.create_session(session_id="s2", source="cli", model="test")
             reopen.assert_not_called()
+            # NOTADB on a live write is structural: the handle is quarantined.
+            assert isinstance(excinfo.value, StateDbCorruptError)
+            assert db._db_corrupt is True
         finally:
             db._conn = real_conn
             db.close()

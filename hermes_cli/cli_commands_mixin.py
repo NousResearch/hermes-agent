@@ -1986,7 +1986,13 @@ class CLICommandsMixin:
                     print(f"  Skills: {', '.join(job['skills'])}")
                 print(f"  Prompt: {job.get('prompt_preview', '')}")
                 if job.get("last_run_at"):
-                    print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
+                    status = job.get("last_status") or "?"
+                    # delivery_failed: the agent ran fine but the output never
+                    # reached the target — name the delivery reason, which
+                    # lives in last_delivery_error (last_error is None).
+                    if status == "delivery_failed" and job.get("last_delivery_error"):
+                        status = f"delivery_failed: {job['last_delivery_error']}"
+                    print(f"  Last run: {job['last_run_at']} ({status})")
                 print()
             return
 
@@ -3983,9 +3989,9 @@ class CLICommandsMixin:
 
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or parts[1].strip().lower() == "status":
-            status = "fast" if self.service_tier == "priority" else "normal"
+            status = {"priority": "fast", None: "normal"}.get(self.service_tier, self.service_tier)
             _cprint(f"  {_ACCENT}{feature_name}: {status}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|auto|cold|status] [--global]{_RST}")
             return
 
         arg_tokens = parts[1].strip().lower().split()
@@ -4003,9 +4009,13 @@ class CLICommandsMixin:
             self.service_tier = None
             saved_value = "normal"
             label = "NORMAL"
+        elif arg in {"auto", "cold"}:
+            self.service_tier = arg
+            saved_value = arg
+            label = arg.upper()
         else:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|auto|cold|status] [--global]{_RST}")
             return
 
         self.agent = None  # Force agent re-init with new service-tier config

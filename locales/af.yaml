@@ -137,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nHuidige modus: `{mode}`\\n\\nKies \\'n opsie:"
     choice_fast:           "fast — Priority Processing aan"
     choice_normal:         "normal — standaardverwerking"
+    choice_auto:           "auto — vinnig vir die eerste sekondes van elke beurt"
+    choice_cold:           "cold — vinnig slegs vir die eerste beurt van 'n sessie"
 
   footer:
     status:                "📎 Looptyd-voetstuk: **{state}**\nVelde: `{fields}`\nPlatform: `{platform}`"

@@ -838,6 +838,22 @@ def _check_gateway_running(profile_dir: Path) -> bool:
         return False
 
 
+def _served_by_running_multiplexer(profile_name: str) -> bool:
+    """True when the live default gateway multiplexes ``profile_name``.
+
+    A served named profile has no gateway.pid of its own, so
+    ``_check_gateway_running`` alone reports it stopped while the default
+    multiplexer is actually its inbound process. Single shared lookup with the
+    named-profile start guard and cron liveness (#97120).
+    """
+    try:
+        from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+
+        return named_profile_served_by_running_multiplexer(profile_name)
+    except Exception:
+        return False
+
+
 # In-process cache for skill counts. Walking ``skills_dir.rglob("SKILL.md")``
 # recurses the entire skill tree (each skill carries references/scripts/assets
 # sub-trees); the default profile alone has ~270 skills, and ``list_profiles``
@@ -1084,7 +1100,10 @@ def list_profiles() -> List[ProfileInfo]:
                 name=name,
                 path=entry,
                 is_default=False,
-                gateway_running=_check_gateway_running(entry),
+                gateway_running=(
+                    _check_gateway_running(entry)
+                    or _served_by_running_multiplexer(name)
+                ),
                 model=model,
                 provider=provider,
                 has_env=(entry / ".env").exists(),
@@ -1261,6 +1280,18 @@ def create_profile(
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)
+        # A clone-all copies auth.json and .anthropic_oauth.json verbatim.
+        # Single-use OAuth grants (Anthropic / Codex / xAI) forked that way
+        # are one credential with two owners: the first profile to refresh
+        # revokes the pair for every sibling (#100339). Drop the copies; the
+        # clone reads the root grant through the credential-pool fallback.
+        from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+        stripped = strip_cloned_single_use_oauth_grants(profile_dir)
+        if any(stripped.values()):
+            logger.info(
+                "profile %s: dropped cloned single-use OAuth grants %s "
+                "(inherits the root grant instead)", canon, stripped,
+            )
     else:
         # Bootstrap directory structure
         profile_dir.mkdir(parents=True, exist_ok=True)
@@ -2008,6 +2039,19 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         raw = pid_file.read_text(encoding="utf-8").strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
+        # Cross-profile kill refusal (#89315): the record's hermes_home stamp
+        # names the gateway's TRUE owner. A contaminated/poisoned gateway.pid
+        # inside this profile dir can point at another profile's live gateway
+        # — killing it starts the mutual SIGTERM restart loop from the issue.
+        from gateway.status import recorded_gateway_home_conflicts
+
+        if recorded_gateway_home_conflicts(data, expected_home=profile_dir):
+            print(
+                f"✗ Refusing to stop PID {pid}: its recorded HERMES_HOME "
+                f"belongs to a different profile than {profile_dir} "
+                "(stale/poisoned PID record, #89315)."
+            )
+            return
         # Route through terminate_pid so Windows uses the appropriate
         # primitive (taskkill / TerminateProcess) — raw os.kill with
         # _signal.SIGKILL raises AttributeError at import time on Windows,

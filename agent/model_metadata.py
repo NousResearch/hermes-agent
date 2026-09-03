@@ -370,6 +370,58 @@ def _save_model_metadata_disk_cache(data: Dict[str, Dict[str, Any]]) -> None:
     except Exception as e:
         logger.debug("Failed to save OpenRouter model metadata disk cache: %s", e)
 
+def _get_endpoint_metadata_cache_path() -> Path:
+    """On-disk memo of remote ``/models`` probes (see ``_endpoint_disk_cache_get``)."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "endpoint_model_metadata.json"
+
+
+def _endpoint_disk_cache_get(normalized: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Return a still-fresh (``_ENDPOINT_MODEL_CACHE_TTL``) disk memo for one endpoint.
+
+    The in-memory endpoint cache only helps within a process. One-shot runs
+    (``hermes -q``, cron, every Bot Mode DM hop) start cold and re-probed the
+    live ``/models`` endpoint on every launch — 0.3–0.6s of pure network per
+    process on Nous, whose persistent context cache is bypassed by design so
+    the portal stays authoritative. This memo keeps that authority (same TTL
+    as the in-memory cache, so reconciliation still lands within 5 minutes)
+    while sharing the answer across processes. Local endpoints are never
+    memoized: their loaded context is transient (LM Studio reloads).
+    """
+    try:
+        with _get_endpoint_metadata_cache_path().open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        entry = data.get(normalized) if isinstance(data, dict) else None
+        if not isinstance(entry, dict):
+            return None
+        if (time.time() - float(entry.get("at", 0))) >= _ENDPOINT_MODEL_CACHE_TTL:
+            return None
+        models = entry.get("models")
+        return models if isinstance(models, dict) else None
+    except Exception:
+        return None
+
+
+def _endpoint_disk_cache_put(normalized: str, cache: Dict[str, Dict[str, Any]]) -> None:
+    """Memoize a successful remote ``/models`` probe; expired siblings are dropped."""
+    try:
+        path = _get_endpoint_metadata_cache_path()
+        data: Dict[str, Any] = {}
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                now = time.time()
+                data = {
+                    k: v for k, v in loaded.items()
+                    if isinstance(v, dict) and (now - float(v.get("at", 0))) < _ENDPOINT_MODEL_CACHE_TTL
+                }
+        data[normalized] = {"at": time.time(), "models": cache}
+        atomic_json_write(path, data, indent=0, separators=(",", ":"))
+    except Exception as e:
+        logger.debug("Failed to save endpoint model metadata disk cache: %s", e)
+
+
 # Descending tiers for context length probing when the model is unknown.
 # We start at 256K (covers GPT-5.x, many current large-context models) and
 # step down on context-length errors until one works.  Tier[0] is also the
@@ -1362,6 +1414,12 @@ def fetch_endpoint_model_metadata(
         cached_at = _endpoint_model_metadata_cache_time.get(normalized, 0)
         if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
+        if not is_local_endpoint(normalized):
+            memo = _endpoint_disk_cache_get(normalized)
+            if memo is not None:
+                _endpoint_model_metadata_cache[normalized] = memo
+                _endpoint_model_metadata_cache_time[normalized] = time.time()
+                return memo
 
     # Blackholed endpoint: every candidate below would spend its full 5s
     # connect budget. Returned empty rather than cached, so the endpoint is
@@ -1536,6 +1594,8 @@ def fetch_endpoint_model_metadata(
 
             _endpoint_model_metadata_cache[normalized] = cache
             _endpoint_model_metadata_cache_time[normalized] = time.time()
+            if cache and not is_local_endpoint(normalized):
+                _endpoint_disk_cache_put(normalized, cache)
             return cache
         except Exception as exc:
             last_error = exc
@@ -3592,13 +3652,29 @@ def estimate_tokens_rough(text: str) -> int:
     if text.isascii():
         # O(1) fast path — ASCII text cannot contain token-dense CJK chars.
         return (len(text) + 3) // 4
-    dense = len(text) - len(_CJK_DENSE_RE.sub("", text))
+    stripped = _CJK_DENSE_RE.sub("", text)
+    dense = len(text) - len(stripped)
     if not dense:
-        # Non-ASCII but no CJK (accents, Cyrillic, emoji, ...): keep the
-        # classic ~4 chars/token rule.
-        return (len(text) + 3) // 4
-    sparse = len(text) - dense
-    return dense + ((sparse + 3) // 4)
+        # Non-ASCII but no CJK (accents, Cyrillic, emoji, ...): count UTF-8
+        # BYTES at ~4/token instead of characters. The byte width is the
+        # corrective: Cyrillic/Greek/Arabic are 2 bytes per char, so they
+        # count as ~chars/2 — matching their real BPE cost (~2-3 chars per
+        # token) where chars/4 under-counted them ~2x and let sessions ride
+        # the provider's context ceiling below the compaction threshold.
+        # ASCII spans inside mixed text still count at 1 byte each.
+        #
+        # Calibrated against cl100k/o200k/Qwen2.5 (estimate / mean real):
+        # Russian 0.67->1.24, Ukrainian 0.55->1.03, Arabic 0.53->0.96,
+        # Hindi 0.34->0.90, Greek 0.37->0.68, Polish 0.63->0.69; accented
+        # Latin barely moves (French 1.02->1.03, German 0.99->1.02,
+        # Spanish 1.04->1.07) because only the accented chars widen.
+        # Pure-ASCII prose already over-counts at ~1.4 on the same rule.
+        # errors="replace": lone surrogates (routine in tool output; see
+        # message_sanitization) must not turn an estimate into a raise.
+        return (len(text.encode("utf-8", "replace")) + 3) // 4
+    # Mixed CJK + other: dense chars stay ~1 token each; the sparse
+    # remainder is byte-counted for the same corrective.
+    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // 4)
 
 
 def estimate_messages_tokens_rough(

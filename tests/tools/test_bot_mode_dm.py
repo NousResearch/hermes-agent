@@ -422,6 +422,29 @@ def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     assert not dm_file.exists()
 
 
+def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
+    """#100523: the CLI's single-owner lease refusal is a delivery FAILURE the
+    sender can read, not a raw exit-1 with the payload silently gone."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hi", encoding="utf-8")
+    child = tmp_path / "owned.py"
+    child.write_text(
+        "import sys\n"
+        "print('Session abc already has a live owner (desktop, pid 1).', file=sys.stderr)\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+
+    returncode = bot_mode_dm._run_delivery(
+        [sys.executable, str(child), "-p", "ops"], str(dm_file), stdin_file=False
+    )
+
+    assert returncode == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reason"] == "target_busy"
+    assert "NOT delivered" in payload["error"]
+
+
 def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
     tmp_path, monkeypatch
 ):

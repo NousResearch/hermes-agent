@@ -2838,7 +2838,20 @@ def _expand_routing_tokens(part: str) -> List[str]:
     return expanded
 
 
-def _resolve_delivery_targets(job: dict) -> List[dict]:
+def _delivery_lane_value(job: dict, *, for_failure: bool = False):
+    """Raw deliver-lane value for a run outcome: the failure lane when
+    ``for_failure`` and the job overrides it, else ``deliver``. Keeps
+    delivery bookkeeping (outcome classification, unresolved-origin,
+    incident 'alerted' marking) reading the SAME lane the notice was
+    actually routed through (NS-788 review finding B1)."""
+    if for_failure:
+        failure_deliver = job.get("failure_deliver")
+        if failure_deliver is not None and str(failure_deliver).strip():
+            return failure_deliver
+    return job.get("deliver", "local")
+
+
+def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[dict]:
     """Resolve all concrete auto-delivery targets for a cron job.
 
     Accepts the legacy comma-separated ``deliver`` string plus the
@@ -2847,8 +2860,17 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     targets: ``origin,all`` and ``all,telegram:-100:17`` both work.
     Duplicate (platform, chat_id, thread_id) tuples are collapsed by the
     existing dedup pass.
+
+    ``for_failure=True`` resolves failure-category engine notices
+    (failure summaries, interrupted-run notices, drift/preflight
+    alerts): when the job carries a ``failure_deliver`` value, targets
+    resolve from it INSTEAD of ``deliver`` — ``failure_deliver: local``
+    is the structural opt-out for shared channels (NS-788, Coatue).
+    Absent ``failure_deliver``, failure delivery follows ``deliver``
+    exactly as before.
     """
-    deliver = _normalize_deliver_value(job.get("deliver", "local"))
+    deliver_raw = _delivery_lane_value(job, for_failure=for_failure)
+    deliver = _normalize_deliver_value(deliver_raw)
     if deliver == "local":
         return []
 
@@ -2984,7 +3006,7 @@ def _send_media_via_adapter(
     return errors
 
 
-def _confirm_adapter_delivery(send_result) -> bool:
+def _confirm_adapter_delivery(send_result, job_id: str = "?", unverified: Optional[list] = None) -> bool:
     """Return True only if ``send_result`` unambiguously confirms delivery.
 
     A live adapter that returns ``None`` (e.g. a swallowed exception, a busy
@@ -2993,16 +3015,54 @@ def _confirm_adapter_delivery(send_result) -> bool:
     scheduler to log ``"delivered to <chat> via live adapter"`` while the
     gateway never actually sees the message (#47056).
 
-    Likewise, an object missing a ``success`` attribute (e.g. a bare ``dict``
-    or a partial mock) is a contract violation: it does not actually tell us
-    whether the send succeeded.  Require an explicit, truthy ``success``
-    attribute to count as confirmed.
+    Likewise, a result carrying no ``success`` at all (a partial mock, or a
+    ``dict`` from a code path that never reached the adapter) is a contract
+    violation: it does not actually tell us whether the send succeeded.
+    Require an explicit, truthy ``success`` to count as confirmed.
+
+    Both shapes are inspected the same way, because ``_deliver_to_platform``
+    returns either a ``SendResult`` object or a plain ``dict``:
+
+    * ``delivered is False`` is a REJECTION even when ``success`` is truthy.
+      The silence-narration filter returns
+      ``{"success": True, "delivered": False}`` — a successfully *dropped*
+      message, not a delivered one.  Reading only ``success`` there is how a
+      cron brief was logged as delivered while the user got nothing (#77763).
+    * No ``message_id`` and no ``raw_response`` means we have no positive
+      evidence of a send.  That is not proof of failure either (some adapters
+      legitimately return a bare success), so it is still accepted — but
+      logged at WARNING so an UNVERIFIED delivery is visible in the log
+      instead of masquerading as a confirmed one.  Telegram ``SendResult``
+      objects carry ``message_id``; the dict-filter shape does not.
     """
     if send_result is None:
         return False
-    if not hasattr(send_result, "success"):
+    if isinstance(send_result, dict):
+        if "success" not in send_result:
+            return False
+        success = bool(send_result.get("success"))
+        delivered = send_result.get("delivered")
+        message_id = send_result.get("message_id")
+        raw_response = send_result.get("raw_response")
+    else:
+        if not hasattr(send_result, "success"):
+            return False
+        success = bool(getattr(send_result, "success"))
+        delivered = getattr(send_result, "delivered", None)
+        message_id = getattr(send_result, "message_id", None)
+        raw_response = getattr(send_result, "raw_response", None)
+    if not success or delivered is False:
         return False
-    return bool(getattr(send_result, "success"))
+    if message_id is None and not raw_response:
+        logger.warning(
+            "Job '%s': live adapter reported success with no delivery evidence "
+            "(no message_id, no raw_response) — treating as delivered but "
+            "UNVERIFIED",
+            job_id,
+        )
+        if unverified is not None:
+            unverified.append(True)
+    return True
 
 
 def _is_channel_dm_topic(
@@ -3061,7 +3121,51 @@ def _is_channel_dm_topic(
     return is_channel
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _cron_delivery_notify_enabled(cfg: Optional[dict]) -> bool:
+    """Resolve ``cron.delivery.notify`` (config.yaml). Default True.
+
+    Only an explicit boolean ``False`` (or a YAML ``false``/``off`` that parses
+    to it) disables the push notification; a missing/malformed section keeps
+    the default so a typo can never silently make cron briefs silent.
+    """
+    try:
+        cron_cfg = (cfg or {}).get("cron")
+        if not isinstance(cron_cfg, dict):
+            return True
+        delivery_cfg = cron_cfg.get("delivery")
+        if not isinstance(delivery_cfg, dict):
+            return True
+        return delivery_cfg.get("notify", True) is not False
+    except Exception:
+        return True
+
+
+def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
+    """Persist the UNVERIFIED-delivery marker on the job record.
+
+    ``last_delivery_unverified`` is a list of ``platform:chat_id`` targets
+    whose live adapter acked the send with no message_id/raw_response, or
+    ``None`` once a run delivered with positive evidence (or to no live
+    target). Skips the write when nothing changed so the common verified
+    path costs no jobs.json save. Never raises — status bookkeeping must not
+    fail a delivery.
+    """
+    new_value = list(unverified_targets) or None
+    if (job.get("last_delivery_unverified") or None) == new_value:
+        return
+    try:
+        from cron.jobs import update_job
+
+        update_job(job["id"], {"last_delivery_unverified": new_value})
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            "Job '%s': could not record delivery verification: %s", job.get("id"), exc,
+        )
+
+
+def _deliver_result(
+    job: dict, content: str, adapters=None, loop=None, *, for_failure: bool = False
+) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -3070,11 +3174,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
 
+    ``for_failure=True`` routes failure-category engine notices through the
+    job's ``failure_deliver`` override when present (NS-788).
+
     Returns None on success, or an error string on failure.
     """
-    targets = _resolve_delivery_targets(job)
+    targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
-        deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+        deliver_value = _normalize_deliver_value(
+            _delivery_lane_value(job, for_failure=for_failure)
+        )
         if deliver_value == "local":
             return None  # local-only jobs don't deliver — not a failure
         # deliver=origin with no resolvable origin and no configured home
@@ -3107,6 +3216,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     except Exception:
         pass
+
+    # cron.delivery.notify (default True): mark live-adapter cron sends as
+    # FINAL notifications so the platform pushes them (Telegram's "important"
+    # mode otherwise sends with disable_notification=True). Configurable so
+    # operators who prefer silent briefs can opt back out.
+    notify_delivery = _cron_delivery_notify_enabled(user_cfg)
+    # Set when a live adapter acked a send with NO delivery evidence (no
+    # message_id / raw_response — the Slack/Matrix/Mattermost bare
+    # SendResult(success=True) shape). Persisted on the job as
+    # ``last_delivery_unverified`` so `hermes cron list` shows the state
+    # instead of it living only in a WARNING log line.
+    unverified_targets: list = []
 
     if wrap_response:
         task_name = job.get("name", job["id"])
@@ -3261,7 +3382,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         from gateway.delivery import resolve_delivery_transport
 
-        transport = resolve_delivery_transport(platform, config, adapters)
+        target_adapters = adapters
+        if isinstance(adapters, SharedRouteAdapters):
+            # Credentialless satellite: the primary adapter is a valid
+            # transport for THIS target only when an exact primary route maps
+            # it to this profile (#101113). Miss → fail closed below.
+            shared = adapters.get(platform, target)
+            target_adapters = {platform: shared} if shared is not None else {}
+        transport = resolve_delivery_transport(platform, config, target_adapters)
         if transport is not None:
             pconfig = transport.config
             runtime_adapter = transport.adapter
@@ -3483,10 +3611,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 route_metadata = {
                     "direct_messages_topic_id": str(thread_id),
                     "job_id": job["id"],
+                    "notify": notify_delivery,
                 }
                 # Media metadata mirrors the text routing so attachments land in
                 # the same DM topic instead of the General lane (#22773).
-                media_metadata = {"direct_messages_topic_id": str(thread_id)}
+                media_metadata = {
+                    "direct_messages_topic_id": str(thread_id),
+                    "notify": notify_delivery,
+                }
             else:
                 # Forum-style topic (private chat / supergroup) or non-topic
                 # target: route via message_thread_id (#52060).  Put thread_id in
@@ -3497,10 +3629,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # anchor, so the metadata key bypasses that check and lets the
                 # adapter route via a plain message_thread_id.
                 route_thread_id = str(thread_id) if thread_id is not None else None
-                route_metadata = {"job_id": job["id"]}
+                route_metadata = {"job_id": job["id"], "notify": notify_delivery}
                 if route_thread_id:
                     route_metadata["thread_id"] = route_thread_id
-                media_metadata = {"thread_id": thread_id} if thread_id else None
+                media_metadata = {"notify": notify_delivery}
+                if thread_id:
+                    media_metadata["thread_id"] = thread_id
 
             # Relay egress needs a tenant discriminator on the frame: the
             # connector's fail-closed guard resolves the workspace/guild from
@@ -3530,10 +3664,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 adapter_ok = True
                 timed_out = False
                 delivered_message_id = None
-                if text_to_send:
+                if not text_to_send and not media_files:
+                    # Nothing to hand the adapter at all.  This used to fall
+                    # straight through to the `if adapter_ok:` branch below and
+                    # log "delivered to <chat> via live adapter" for a send that
+                    # never happened (#77763).  Fail closed so the run reports
+                    # the empty payload instead.
+                    msg = (
+                        f"live adapter send skipped (empty text and no media) "
+                        f"for {platform_name}:{chat_id}"
+                    )
+                    logger.warning("Job '%s': %s", job["id"], msg)
+                    target_errors.append(msg)
+                    adapter_ok = False
+                elif text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
 
-                    router = DeliveryRouter(config, adapters)
+                    router = DeliveryRouter(config, target_adapters)
                     route_target = DeliveryTarget(
                         platform=platform,
                         chat_id=str(chat_id),
@@ -3623,19 +3770,32 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             # {"success": True, "delivered": False, ...}.
                             # Normalize both shapes so a getattr default doesn't
                             # misread a dict, and so a None / success-less object
-                            # is NOT counted as delivered (#47056).
+                            # is NOT counted as delivered (#47056).  The
+                            # confirmation itself handles both shapes: a truthy
+                            # `success` with `delivered: False` is a drop, not a
+                            # delivery (#77763).
                             if isinstance(send_result, dict):
-                                send_success = bool(send_result.get("success", False))
                                 send_raw_response = send_result.get("raw_response")
                                 delivered_message_id = send_result.get("message_id")
                             else:
-                                send_success = _confirm_adapter_delivery(send_result)
                                 send_raw_response = getattr(send_result, "raw_response", None)
                                 delivered_message_id = getattr(send_result, "message_id", None)
+                            _evidence_gap: list = []
+                            send_success = _confirm_adapter_delivery(
+                                send_result, job["id"], _evidence_gap,
+                            )
+                            if send_success and _evidence_gap:
+                                unverified_targets.append(f"{platform_name}:{chat_id}")
 
                             if not send_success:
                                 if isinstance(send_result, dict):
-                                    err = send_result.get("error", "unknown")
+                                    # A filtered drop carries no "error" — name
+                                    # the filter instead of reporting "unknown".
+                                    err = (
+                                        send_result.get("error")
+                                        or send_result.get("filtered")
+                                        or "unknown"
+                                    )
                                     shape = "dict"
                                 elif send_result is not None:
                                     err = getattr(send_result, "error", None)
@@ -3712,7 +3872,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     delivery_errors.append(msg)
 
                 if adapter_ok:
-                    logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                    # Log WHERE it went, not just that it went: a ghost delivery
+                    # that landed in the wrong lane (General topic instead of the
+                    # routed thread) is indistinguishable from a real one without
+                    # the routing identity (#77763).
+                    logger.info(
+                        "Job '%s': delivered to %s:%s via live adapter thread=%s message_id=%s",
+                        job["id"], platform_name, chat_id,
+                        route_thread_id if route_thread_id is not None else "-",
+                        delivered_message_id if delivered_message_id is not None else "-",
+                    )
                     delivered = True
                     # Seed the thread session only now that delivery into it
                     # succeeded (deferred from thread-open above).
@@ -3826,6 +3995,22 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 target_errors.append(msg)
                 delivery_errors.extend(target_errors)
                 continue
+            # The live lane already failed closed on an empty payload; the
+            # standalone senders do not. The Telegram adapter returns
+            # SendResult(success=True) for empty content WITHOUT an API call,
+            # so falling through here turns a phantom live delivery into a
+            # phantom standalone one and logs it as delivered (#77763). Both
+            # _send_to_platform call sites below are reached through this
+            # point, so one guard closes the lane.
+            if not cleaned_delivery_content.strip() and not media_files:
+                msg = (
+                    f"standalone send skipped (empty text and no media) "
+                    f"for {platform_name}:{chat_id}"
+                )
+                logger.warning("Job '%s': %s", job["id"], msg)
+                target_errors.append(msg)
+                delivery_errors.extend(target_errors)
+                continue
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
             coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
             try:
@@ -3856,7 +4041,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 try:
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                        # The fallback worker is a fresh thread: it does NOT
+                        # inherit the multiplexed profile ContextVars (home
+                        # override + secret scope). Run inside a copy of the
+                        # active context so the standalone sender reads THIS
+                        # profile's bot token, not the process default's
+                        # (#100489) — same pattern as the session-db and
+                        # heartbeat workers in this module.
+                        _fallback_context = contextvars.copy_context()
+                        future = pool.submit(
+                            _fallback_context.run,
+                            asyncio.run,
+                            _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files),
+                        )
                         result = future.result(timeout=30)
                     finally:
                         pool.shutdown(wait=False)
@@ -3915,6 +4112,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if policy_drop_errors:
         # Filter-time drops apply to every target; report them once.
         delivery_errors.extend(policy_drop_errors)
+    _record_delivery_verification(job, unverified_targets)
     if delivery_errors:
         return "; ".join(delivery_errors)
     return None
@@ -5141,21 +5339,20 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     return None
 
 
-def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
-    """True when the primary gateway routes this platform to the profile the
-    scheduler is currently serving.
+def _primary_profile_routes_for_current_home() -> list:
+    """Primary gateway ``profile_routes`` that target the profile currently
+    being served, or ``[]`` (also when this IS the primary home).
 
     Under ``gateway.multiplex_profiles`` a satellite profile's cron jobs are
     ticked by the primary gateway's in-process ticker (#69377) and delivered
     through the primary gateway's live adapters — the satellite home never
     holds the platform credentials itself (giving it a token of its own is a
-    ``duplicate_credential`` fatal). ``_preflight_check_delivery`` loads the
-    gateway config of the job's OWN home, where such a platform correctly
-    reads as unconnected; consulting the primary home's ``profile_routes``
-    keeps routed satellite jobs from being permanently false-blocked (#97476).
-    Reads the primary config.yaml directly (both the top-level and nested
-    ``gateway.`` forms) instead of ``load_gateway_config()`` so no primary
-    platform config leaks into this process's environment.
+    ``duplicate_credential`` fatal). Reads the primary config.yaml directly
+    (both the top-level and nested ``gateway.`` forms) instead of
+    ``load_gateway_config()`` so no primary platform config leaks into this
+    process's environment. Shared by the preflight rescue (#97476) and the
+    delivery-time shared-transport resolver (#101113) so route semantics
+    cannot drift between the two halves.
     """
     try:
         from hermes_constants import get_default_hermes_root, get_hermes_home
@@ -5166,10 +5363,10 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
             primary_home.expanduser().resolve(strict=False)
             == current_home.expanduser().resolve(strict=False)
         ):
-            return False  # this IS the primary home — nothing to consult
+            return []  # this IS the primary home — nothing to consult
         config_path = primary_home.expanduser() / "config.yaml"
         if not config_path.exists():
-            return False
+            return []
 
         import yaml
 
@@ -5179,25 +5376,75 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
         if routes_raw is None and isinstance(raw.get("gateway"), dict):
             routes_raw = raw["gateway"].get("profile_routes")
         if not isinstance(routes_raw, list):
-            return False
+            return []
 
         from gateway.profile_routing import parse_profile_routes
         from hermes_cli.profiles import profile_matches_home
 
-        platform_key = platform_name.lower()
-        for route in parse_profile_routes(routes_raw):
-            if (
-                route.enabled
-                and str(route.platform).lower() == platform_key
-                and profile_matches_home(route.profile)
-            ):
-                return True
-        return False
+        return [
+            route
+            for route in parse_profile_routes(routes_raw)
+            if route.enabled and profile_matches_home(route.profile)
+        ]
     except Exception:
         logger.debug(
-            "preflight: primary-gateway profile-route lookup unavailable",
+            "primary-gateway profile-route lookup unavailable",
             exc_info=True,
         )
+        return []
+
+
+def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
+    """True when the primary gateway routes this platform to the profile the
+    scheduler is currently serving (preflight rescue, #97476)."""
+    platform_key = platform_name.lower()
+    return any(
+        str(route.platform).lower() == platform_key
+        for route in _primary_profile_routes_for_current_home()
+    )
+
+
+class SharedRouteAdapters:
+    """Read-only adapter map for a credentialless satellite profile (#101113).
+
+    A satellite under ``gateway.profile_routes`` owns no bot credential and so
+    has no adapter map of its own; its inbound traffic arrives on the PRIMARY
+    adapter and is routed to it by an exact route. Its cron output must go
+    back out the same transport — but ONLY for targets an enabled primary
+    route maps to this profile. ``get(platform, target)`` resolves the primary
+    adapter iff the route matcher used by inbound routing
+    (``ProfileRoute.matches``) accepts the target's ``chat_id``/``thread_id``;
+    every other lookup is a miss, so an unmatched target, a disabled route, or
+    a route naming another profile still fails closed (never the default bot).
+    A plain ``get(platform)`` (no target) is always a miss: routing is
+    per-target, not per-platform.
+    """
+
+    def __init__(self, primary_adapters, routes) -> None:
+        self._primary = dict(primary_adapters or {})
+        self._routes = list(routes or [])
+
+    def __bool__(self) -> bool:
+        return bool(self._primary) and bool(self._routes)
+
+    def get(self, platform, target=None, default=None):
+        if not target:
+            return default
+        adapter = self._primary.get(platform)
+        if adapter is None:
+            return default
+        platform_key = str(getattr(platform, "value", platform)).lower()
+        chat_id = str(target.get("chat_id") or "") or None
+        thread_id = target.get("thread_id")
+        thread_id = str(thread_id) if thread_id else None
+        for route in self._routes:
+            if str(route.platform).lower() != platform_key:
+                continue
+            if not (route.chat_id or route.thread_id):
+                continue  # guild-only routes are not target-exact
+            if route.matches(str(route.platform), chat_id=chat_id, thread_id=thread_id):
+                return adapter
+        return default
         return False
 
 
@@ -5212,19 +5459,30 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     the same source `cron_delivery_targets` uses). Gateway-config load
     failures fail OPEN so a transient config hiccup never wedges delivery
     that would have worked.
+
+    ``failure_deliver`` is checked with the same rules: a typo'd failure
+    platform would otherwise only surface when a failure occurs — exactly
+    when the notice must not be lost (NS-788 follow-up).
     """
     deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+    failure_deliver_value = _normalize_deliver_value(
+        _delivery_lane_value(job, for_failure=True)
+    )
+    lane_values = [deliver_value]
+    if failure_deliver_value != deliver_value:
+        lane_values.append(failure_deliver_value)
     platform_parts: list[str] = []
-    for part in deliver_value.split(","):
-        part = part.strip()
-        if not part or part.lower() in {"local", "origin", "all"}:
-            continue
-        # bot-chat targets need no gateway credentials — they deliver via a
-        # local chat subprocess. Unknown-profile failures surface per run in
-        # last_delivery_error (and are validated at create time).
-        if parse_bot_chat_deliver_token(part) is not None:
-            continue
-        platform_parts.append(part.split(":", 1)[0].strip())
+    for lane_value in lane_values:
+        for part in lane_value.split(","):
+            part = part.strip()
+            if not part or part.lower() in {"local", "origin", "all"}:
+                continue
+            # bot-chat targets need no gateway credentials — they deliver via a
+            # local chat subprocess. Unknown-profile failures surface per run in
+            # last_delivery_error (and are validated at create time).
+            if parse_bot_chat_deliver_token(part) is not None:
+                continue
+            platform_parts.append(part.split(":", 1)[0].strip())
     if not platform_parts:
         return None
 
@@ -7244,6 +7502,22 @@ def _run_one_job_body(
         _scope_token = set_secret_scope(
             build_profile_secret_scope(_get_hermes_home())
         )
+        # Same isolation for terminal settings (third profile seam; see
+        # gateway/run.py _profile_runtime_scope): installs the firing
+        # profile's COMPLETE terminal policy for this fire — run, delivery,
+        # and bookkeeping — resetting in this function's finally alongside
+        # the secret scope. Without it the ticker thread reads the
+        # process-global TERMINAL_* env vars a concurrent profile's turn may
+        # have pinned (#68559). Resolution failure installs a refusal scope:
+        # terminal execution inside the fire raises instead of falling back
+        # to the launch process's ambient policy.
+        from tools.terminal_scope import (
+            install_profile_terminal_scope,
+        )
+
+        _terminal_scope_token = install_profile_terminal_scope(
+            _get_hermes_home()
+        )
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in
         # its finally block; doing that before _deliver_result runs means the
@@ -7442,8 +7716,9 @@ def _run_one_job_body(
 
             if should_deliver:
                 unresolved_origin = (
-                    _normalize_deliver_value(job.get("deliver", "local")) == "origin"
-                    and not _resolve_delivery_targets(job)
+                    _normalize_deliver_value(_delivery_lane_value(job, for_failure=not success))
+                    == "origin"
+                    and not _resolve_delivery_targets(job, for_failure=not success)
                 )
                 try:
                     with _side_effect_fence() as owns_delivery:
@@ -7455,6 +7730,10 @@ def _run_one_job_body(
                             deliver_content,
                             adapters=adapters,
                             loop=loop,
+                            # Failure summaries (and drift/blocked-config alerts
+                            # composed into deliver_content on the failure path)
+                            # honor the job's failure_deliver override (NS-788).
+                            for_failure=not success,
                         )
                 except Exception as de:
                     if isinstance(de, _FireClaimLostDuringSideEffect):
@@ -7542,7 +7821,9 @@ def _run_one_job_body(
                 error="Fire claim ownership lost before terminal completion.",
             )
             return True
-        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
+        normalized_deliver = _normalize_deliver_value(
+            _delivery_lane_value(job, for_failure=not success)
+        )
         if delivery_error:
             delivery_outcome = "failed"
         elif should_deliver and unresolved_origin:
@@ -7599,7 +7880,7 @@ def _run_one_job_body(
             and not _fire_claim_ownership_lost()
         ):
             normalized_deliver = _normalize_deliver_value(
-                job.get("deliver", "local")
+                _delivery_lane_value(job, for_failure=True)
             )
             unresolved_origin = False
             # Durable failure incident: same ack gate as the normal failure
@@ -7625,6 +7906,7 @@ def _run_one_job_body(
                         + _failure_streak_nudge(job),
                         adapters=adapters,
                         loop=loop,
+                        for_failure=True,
                     )
                 except Exception as delivery_exc:
                     delivery_error = str(delivery_exc)
@@ -7632,7 +7914,9 @@ def _run_one_job_body(
                         "Delivery failed for job %s: %s", job["id"], delivery_exc
                     )
                 if not delivery_error and normalized_deliver == "origin":
-                    unresolved_origin = not _resolve_delivery_targets(job)
+                    unresolved_origin = not _resolve_delivery_targets(
+                        job, for_failure=True
+                    )
                 if delivery_error:
                     delivery_outcome = "failed"
                 elif unresolved_origin:
@@ -7677,6 +7961,10 @@ def _run_one_job_body(
         # _deliver_result unscoped — do not move it back in a tidy-up.
         if _scope_token is not None:
             reset_secret_scope(_scope_token)
+        if _terminal_scope_token is not None:
+            from tools.terminal_scope import reset_terminal_scope
+
+            reset_terminal_scope(_terminal_scope_token)
 
 
 def _notify_provider_jobs_changed() -> None:

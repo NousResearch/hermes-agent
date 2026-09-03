@@ -42,6 +42,7 @@ for the full rationale):
 
 from __future__ import annotations
 
+import copy
 import functools
 import json
 import logging
@@ -56,6 +57,8 @@ import snowballstemmer
 from tools.registry import tool_error
 
 logger = logging.getLogger("tools.tool_search")
+
+_SCHEMA_LITERAL_KEYS = frozenset({"const", "default", "enum", "example", "examples"})
 
 
 # Bridge tool names. These names are reserved and may not collide with a
@@ -1268,8 +1271,85 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     return frozenset(names)
 
 
+def _schema_for_local_validation(node: Any) -> Any:
+    """Return a JSON-Schema-compatible copy that honors ``nullable: true``.
+
+    Some MCP/plugin schemas use OpenAPI's ``nullable`` extension instead of a
+    JSON Schema null union.  Hermes' normal coercion path accepts that shape;
+    mirror it here so local validation never rejects a value dispatch would
+    intentionally accept.
+    """
+    if isinstance(node, list):
+        return [_schema_for_local_validation(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    normalized = {}
+    for key, value in node.items():
+        if key == "nullable":
+            continue
+        # These keywords contain instance data, not nested schemas. An enum
+        # value such as {"nullable": true} must remain byte-for-byte data.
+        normalized[key] = (
+            copy.deepcopy(value)
+            if key in _SCHEMA_LITERAL_KEYS
+            else _schema_for_local_validation(value)
+        )
+    if node.get("nullable") is not True:
+        return normalized
+
+    schema_type = normalized.get("type")
+    if isinstance(schema_type, str):
+        if schema_type != "null":
+            normalized["type"] = [schema_type, "null"]
+        return normalized
+    if isinstance(schema_type, list):
+        if "null" not in schema_type:
+            normalized["type"] = [*schema_type, "null"]
+        return normalized
+
+    # ``nullable`` alongside a $ref/combinator has no ``type`` to extend.
+    # Wrap the original constraint so local references keep resolving from the
+    # parameters schema's root while null remains an explicit alternative.
+    return {"anyOf": [normalized, {"type": "null"}]}
+
+
+def _schema_has_external_ref(node: Any) -> bool:
+    """Return whether *node* contains a non-local ``$ref``.
+
+    Local validation must never turn a tool call into an implicit network
+    fetch.  Schemas with remote/file references remain the underlying tool's
+    responsibility and therefore follow the existing fail-open contract.
+    """
+    if isinstance(node, list):
+        return any(_schema_has_external_ref(item) for item in node)
+    if not isinstance(node, dict):
+        return False
+    ref = node.get("$ref")
+    if isinstance(ref, str) and not ref.startswith("#"):
+        return True
+    return any(
+        _schema_has_external_ref(value)
+        for key, value in node.items()
+        if key not in _SCHEMA_LITERAL_KEYS
+    )
+
+
+def _validation_path(error: Any) -> str:
+    """Format a jsonschema error path as a compact argument path."""
+    path = "arguments"
+    for part in getattr(error, "absolute_path", ()):
+        if isinstance(part, int):
+            path += f"[{part}]"
+        elif isinstance(part, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part):
+            path += f".{part}"
+        else:
+            path += f"[{json.dumps(part, ensure_ascii=False)}]"
+    return path
+
+
 def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str]:
-    """Probe-validate ``tool_call`` arguments against the deferred tool's schema.
+    """Validate ``tool_call`` arguments against the deferred tool's schema.
 
     A deferred tool's parameter schema is invisible to the model until it
     calls ``tool_describe`` — so models routinely invoke deferred tools
@@ -1278,17 +1358,16 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
     that tells the model nothing about what the tool expects, and cheap
     models loop on it until the iteration budget dies.
 
-    Port of the describe-first probe-validation fix from nearai/ironclaw#5149:
-    when required arguments are missing, return the tool's parameter schema
-    instead of dispatching blind — the model repairs the call in one
-    round-trip. Valid calls (and any call we can't confidently validate)
-    dispatch untouched, so this can never block a legitimate invocation.
+    Keep the original describe-first required-field probe from
+    nearai/ironclaw#5149, then run the same schema-guided coercion used by
+    normal dispatch and validate the repaired copy.  This restores the
+    concrete-schema checks that the provider cannot perform through the
+    generic ``arguments: object`` bridge.
 
-    Only *key absence* of schema-``required`` fields counts as invalid.
-    No type checking, no null rejection — nullable/typed edge cases are the
-    tool's own business, and ``coerce_tool_args`` already handles type repair
-    downstream. Returns a JSON error string when invalid, ``None`` when the
-    call should dispatch.
+    Missing/malformed schemas, unavailable validators, and external references
+    fail open so validation cannot make a previously callable tool unavailable.
+    Returns a JSON error string when invalid, ``None`` when the call should
+    dispatch through the existing middleware/hook/approval pipeline.
     """
     try:
         from tools.registry import registry as _registry
@@ -1302,14 +1381,68 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         if not isinstance(params, dict):
             return None
         required = params.get("required")
-        if not isinstance(required, list) or not required:
+        if isinstance(required, list) and required:
+            missing = [r for r in required if isinstance(r, str) and r not in args]
+            if missing:
+                return tool_error(
+                    f"tool_call to '{name}' is missing required argument(s): "
+                    f"{', '.join(missing)}. The tool was NOT invoked.",
+                    path="arguments",
+                    constraint="required",
+                    parameters=params,
+                    hint=(
+                        "Retry tool_call with 'arguments' matching the parameters "
+                        "schema above."
+                    ),
+                )
+
+        validation_schema = _schema_for_local_validation(params)
+        if _schema_has_external_ref(validation_schema):
+            logger.debug(
+                "Skipping local deferred-argument validation for %s: external $ref",
+                name,
+            )
             return None
-        missing = [r for r in required if isinstance(r, str) and r not in args]
-        if not missing:
+
+        # Validate the same repaired shape normal dispatch will receive. Work on
+        # a copy because coerce_tool_args may normalize values in place; actual
+        # dispatch performs the canonical coercion again after this probe.
+        candidate_args = dict(args)
+        try:
+            from model_tools import coerce_tool_args
+            candidate_args = coerce_tool_args(name, candidate_args)
+        except Exception:
+            logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
+            candidate_args = dict(args)
+
+        try:
+            from jsonschema.exceptions import best_match
+            from jsonschema.validators import validator_for
+        except ImportError:
+            logger.debug(
+                "jsonschema unavailable; keeping required-only validation for %s",
+                name,
+            )
             return None
+
+        validator_cls = validator_for(validation_schema)
+        validator_cls.check_schema(validation_schema)
+        validation_error = best_match(
+            validator_cls(validation_schema).iter_errors(candidate_args)
+        )
+        if validation_error is None:
+            return None
+
+        path = _validation_path(validation_error)
+        constraint = str(getattr(validation_error, "validator", None) or "schema")
+        detail = re.sub(r"\s+", " ", str(validation_error.message)).strip()
+        if len(detail) > 600:
+            detail = detail[:597] + "..."
         return tool_error(
-            f"tool_call to '{name}' is missing required argument(s): "
-            f"{', '.join(missing)}. The tool was NOT invoked.",
+            f"tool_call to '{name}' failed argument validation at {path} "
+            f"({constraint}): {detail}. The tool was NOT invoked.",
+            path=path,
+            constraint=constraint,
             parameters=params,
             hint=(
                 "Retry tool_call with 'arguments' matching the parameters "

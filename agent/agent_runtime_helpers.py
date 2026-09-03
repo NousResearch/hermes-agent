@@ -2709,6 +2709,71 @@ def anthropic_prompt_cache_policy(
 
 
 
+def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
+    """Ask the registered ProviderProfile for a custom client, if any.
+
+    Resolves by provider name first, then by the ``base_url`` scheme prefix so a
+    runtime configured only by URL (``acp://…``) still reaches its profile.
+    A profile that raises is logged and skipped: a third-party plugin must not
+    be able to take the turn down, it can only fail to provide a client.
+    """
+    try:
+        from providers import get_provider_profile
+    except Exception:
+        return None
+
+    profile = None
+    provider_name = (getattr(agent, "provider", "") or "").strip()
+    if provider_name:
+        try:
+            profile = get_provider_profile(provider_name)
+        except Exception:
+            profile = None
+    if profile is None:
+        base_url = str(client_kwargs.get("base_url", "") or "").strip()
+        if base_url:
+            profile = _profile_for_base_url(base_url)
+    if profile is None:
+        return None
+
+    try:
+        return profile.create_client(**client_kwargs)
+    except Exception:
+        _ra().logger.warning(
+            "Provider profile %r failed to create a client; falling back to the "
+            "standard client path",
+            getattr(profile, "name", provider_name) or "?",
+            exc_info=True,
+        )
+        return None
+
+
+def _profile_for_base_url(base_url: str) -> Any | None:
+    """Find a registered profile whose own base_url matches ``base_url``.
+
+    Only used when the provider name did not resolve. Matches on exact base_url
+    so a non-HTTP scheme (``acp://copilot``) routes to its profile even when the
+    caller passed no provider name.
+    """
+    try:
+        from providers import list_providers
+    except Exception:
+        return None
+    target = base_url.rstrip("/").lower()
+    try:
+        candidates = list_providers()
+    except Exception:
+        return None
+    for candidate in candidates or []:
+        own = str(getattr(candidate, "base_url", "") or "").rstrip("/").lower()
+        # Prefix match, not equality: the replaced copilot-acp branch keyed on
+        # ``startswith("acp://copilot")``, so a base_url carrying a path or a
+        # user override under the same root must still resolve.
+        if own and (target == own or target.startswith(own + "/")):
+            return candidate
+    return None
+
+
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
     from agent.ssl_verify import resolve_httpx_verify
@@ -2737,17 +2802,24 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
-    if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
-        from agent.copilot_acp_client import CopilotACPClient
-
-        client = CopilotACPClient(**client_kwargs)
+    # ── Provider-supplied client (registration seam) ──────────────────────
+    # A provider whose wire protocol is not OpenAI-over-HTTP supplies its own
+    # client from its ProviderProfile.create_client(). Consulted before the
+    # built-in ladder so a profile registered from ~/.hermes/plugins/ or a pip
+    # entry point can ship a transport without editing this function — that is
+    # what makes an out-of-tree ACP provider possible at all. Returning None
+    # (the default) falls through to the paths below, so every existing
+    # provider is unaffected.
+    provider_client = _provider_supplied_client(agent, client_kwargs)
+    if provider_client is not None:
         _ra().logger.info(
-            "Copilot ACP client created (%s, shared=%s) %s",
+            "%s client created from provider profile (%s, shared=%s) %s",
+            agent.provider,
             reason,
             shared,
             agent._client_log_context(),
         )
-        return client
+        return provider_client
     if agent.provider == "gemini":
         from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 

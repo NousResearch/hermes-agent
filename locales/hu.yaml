@@ -137,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nJelenlegi mód: `{mode}`\\n\\nVálassz egy opciót:"
     choice_fast:           "fast — Priority Processing bekapcsolva"
     choice_normal:         "normal — normál feldolgozás"
+    choice_auto:           "auto — gyors minden kör első másodperceiben"
+    choice_cold:           "cold — gyors csak a munkamenet első körében"
 
   footer:
     status:                "📎 Futási idejű lábléc: **{state}**\nMezők: `{fields}`\nPlatform: `{platform}`"

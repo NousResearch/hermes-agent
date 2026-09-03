@@ -1775,7 +1775,7 @@ class TestSchemaInit:
         assert binding["user_id"] == "208214988"
         assert binding["session_key"] == "telegram:dm:208214988:thread:17585"
         assert binding["session_id"] == "topic-session"
-        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        assert db.get_meta("telegram_dm_topic_schema_version") == "3"
         db.close()
 
 
@@ -2752,6 +2752,24 @@ class TestCompressionChainProjection:
         assert db.get_compression_tip("mid1") == "tip1"
         assert db.get_compression_tip("tip1") == "tip1"
 
+    def test_list_serves_full_lineage_ids_for_projected_rows(self, db):
+        """The projected tip row must carry every chain id. Root and tip
+        alone are not enough client-side: a persisted tile or route can hold
+        a MIDDLE segment's id (it was the tip when opened), and without the
+        intermediates that surface cannot prove it names this conversation —
+        which is how one chat ends up open twice after a compaction."""
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.create_session("solo", "cli")
+        db.append_message("solo", "user", "standalone")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+        assert tip_row["_lineage_ids"] == ["root1", "mid1", "tip1"]
+        solo_row = next(s for s in sessions if s["id"] == "solo")
+        assert solo_row.get("_lineage_ids") is None
+
 
 
     def test_list_surfaces_tip_for_compressed_root(self, db):
@@ -2989,6 +3007,7 @@ class TestVacuum:
 
     def test_auto_maintenance_records_successful_vacuum(self, db, monkeypatch):
         monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.5)  # ratio gate open
         vacuum_calls = []
         monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
 
@@ -3000,6 +3019,7 @@ class TestVacuum:
 
     def test_auto_maintenance_skips_recent_vacuum(self, db, monkeypatch):
         monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.5)  # ratio gate open
         db.set_meta("last_vacuum", str(time.time()))
         vacuum_calls = []
         monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
@@ -3014,6 +3034,7 @@ class TestVacuum:
 
     def test_auto_maintenance_retries_after_vacuum_interval(self, db, monkeypatch):
         monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.5)  # ratio gate open
         db.set_meta("last_vacuum", str(time.time() - 31 * 86400))
         vacuum_calls = []
         monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
@@ -3028,6 +3049,7 @@ class TestVacuum:
 
     def test_auto_maintenance_retries_after_failed_vacuum(self, db, monkeypatch):
         monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.5)  # ratio gate open
         vacuum_calls = []
 
         def fail_first_vacuum():
@@ -3047,6 +3069,97 @@ class TestVacuum:
         assert second["vacuumed"] is True
         assert vacuum_calls == [True, True]
         assert db.get_meta("last_vacuum") is not None
+
+    # ── freelist-ratio gate (#54189) ─────────────────────────────────────
+    def test_auto_maintenance_skips_vacuum_below_freelist_ratio(self, db, monkeypatch):
+        """A prune that frees few pages on a dense DB must NOT trigger VACUUM."""
+        monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 1)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.05)
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
+
+        result = db.maybe_auto_prune_and_vacuum(min_interval_hours=0)
+
+        assert result["pruned"] == 1
+        assert result["vacuumed"] is False
+        assert result["freelist_ratio"] == 0.05
+        assert vacuum_calls == []
+        assert db.get_meta("last_vacuum") is None
+        # The prune itself still counts as a maintenance run.
+        assert db.get_meta("last_auto_prune") is not None
+
+    def test_auto_maintenance_vacuums_above_freelist_ratio(self, db, monkeypatch):
+        monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 1)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.40)
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
+
+        result = db.maybe_auto_prune_and_vacuum(min_interval_hours=0)
+
+        assert result["vacuumed"] is True
+        assert result["freelist_ratio"] == 0.40
+        assert vacuum_calls == [True]
+
+    def test_auto_maintenance_freelist_ratio_exactly_at_threshold_skips(self, db, monkeypatch):
+        """Gate is strictly greater-than: 25.0% reclaimable does not VACUUM."""
+        from hermes_state import AUTO_VACUUM_MIN_FREELIST_RATIO
+
+        monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 1)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: AUTO_VACUUM_MIN_FREELIST_RATIO)
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
+
+        result = db.maybe_auto_prune_and_vacuum(min_interval_hours=0)
+
+        assert result["vacuumed"] is False
+        assert vacuum_calls == []
+
+    def test_auto_maintenance_unknown_freelist_ratio_falls_back_to_time_throttle(self, db, monkeypatch):
+        """If the pragmas cannot be read, don't silently disable VACUUM forever."""
+        monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 1)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: None)
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
+
+        result = db.maybe_auto_prune_and_vacuum(min_interval_hours=0)
+
+        assert result["vacuumed"] is True
+        assert result["freelist_ratio"] is None
+        assert vacuum_calls == [True]
+
+    def test_auto_maintenance_ratio_gate_threshold_is_overridable(self, db, monkeypatch):
+        monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 1)
+        monkeypatch.setattr(db, "_freelist_ratio", lambda: 0.10)
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
+
+        result = db.maybe_auto_prune_and_vacuum(
+            min_interval_hours=0, min_vacuum_freelist_ratio=0.05
+        )
+
+        assert result["vacuumed"] is True
+        assert vacuum_calls == [True]
+
+    def test_freelist_ratio_reads_real_pragmas(self, db):
+        """Real-DB check: freeing most of the file pushes the ratio past the gate."""
+        from hermes_state import AUTO_VACUUM_MIN_FREELIST_RATIO
+
+        db.create_session(session_id="keep", source="cli")
+        db.append_message(session_id="keep", role="user", content="hi")
+        for i in range(6):
+            sid = f"bulk{i}"
+            db.create_session(session_id=sid, source="cli")
+            for _ in range(20):
+                db.append_message(session_id=sid, role="assistant", content="z" * 4000)
+        db._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        dense = db._freelist_ratio()
+        assert dense is not None and dense < AUTO_VACUUM_MIN_FREELIST_RATIO
+
+        for i in range(6):
+            db.delete_session(f"bulk{i}")
+        db._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        sparse = db._freelist_ratio()
+        assert sparse is not None and sparse > AUTO_VACUUM_MIN_FREELIST_RATIO
 
     def test_wal_size_limit_is_bounded(self, db):
         """journal_size_limit must be a finite bound, not SQLite's -1 default.
@@ -3178,7 +3291,8 @@ class TestAutoMaintenance:
         )
         db._conn.commit()
 
-    def test_first_run_prunes_and_vacuums(self, db):
+    def test_first_run_prunes_and_skips_vacuum_when_little_reclaimable(self, db):
+        """Pruning two empty sessions frees almost nothing → prune yes, VACUUM no."""
         self._make_old_ended(db, "old1", days_old=100)
         self._make_old_ended(db, "old2", days_old=100)
         db.create_session(session_id="new", source="cli")  # active, must survive
@@ -3186,11 +3300,39 @@ class TestAutoMaintenance:
         result = db.maybe_auto_prune_and_vacuum(retention_days=90)
         assert result["skipped"] is False
         assert result["pruned"] == 2
-        assert result["vacuumed"] is True
+        assert result["vacuumed"] is False  # freelist ratio gate (#54189)
+        assert result["freelist_ratio"] is not None
+        assert result["freelist_ratio"] <= 0.25
         assert result.get("error") is None
         assert db.get_session("old1") is None
         assert db.get_session("old2") is None
         assert db.get_session("new") is not None
+
+    def test_first_run_prunes_and_vacuums_when_mostly_reclaimable(self, db):
+        """Pruning the bulk of the file's pages crosses the 25% gate → VACUUM runs."""
+        db.create_session(session_id="new", source="cli")  # active, must survive
+        db.append_message(session_id="new", role="user", content="hi")
+        for i in range(6):
+            sid = f"old{i}"
+            self._make_old_ended(db, sid, days_old=100)
+            for _ in range(20):
+                db.append_message(session_id=sid, role="assistant", content="z" * 4000)
+            # Keep the row aged: append_message bumps activity, prune ages by
+            # latest message, so push the message timestamps back too.
+            db._conn.execute(
+                "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+                (time.time() - 100 * 86400, sid),
+            )
+        db._conn.commit()
+
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90)
+        assert result["skipped"] is False
+        assert result["pruned"] == 6
+        assert result["freelist_ratio"] > 0.25
+        assert result["vacuumed"] is True
+        assert result.get("error") is None
+        assert db.get_session("new") is not None
+        assert db.get_meta("last_vacuum") is not None
 
     def test_second_call_within_interval_skips(self, db):
         self._make_old_ended(db, "old", days_old=100)
@@ -4335,6 +4477,63 @@ def test_gateway_session_recovery_does_not_cross_newer_reset_boundary(
         chat_id="chat-1",
         chat_type="dm",
     ) is None
+
+
+def test_peer_fallback_never_adopts_a_sibling_profiles_row(tmp_path, monkeypatch):
+    """#74285: the peer-tuple fallback is fenced by the store's own profile.
+
+    A Telegram DM peer tuple (chat_id == user_id, no thread) is identical for
+    every bot, so a legacy sibling-profile row sitting in this store — written
+    before the per-profile partition — must lose to the older own row, and
+    with no own row recovery must return nothing rather than the sibling's.
+    """
+    import hermes_state
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    store = SessionDB(db_path=root / "state.db")  # owner: default
+    try:
+        peer = {"user_id": "42", "chat_id": "42", "chat_type": "dm"}
+        store.create_session("sibling", "telegram", session_key="agent:bot2:telegram:dm:42",
+                             profile_name="bot2", **peer)
+        store.append_message("sibling", "user", "bot2's conversation")
+
+        def recover():
+            return store.find_latest_gateway_session_for_peer(
+                source="telegram", session_key="agent:main:telegram:dm:42", **peer
+            )
+
+        assert recover() is None  # only the sibling exists: fail closed
+
+        store.create_session("own", "telegram", session_key="agent:main:telegram:dm:42:old", **peer)
+        store.append_message("own", "user", "default's conversation")
+        store._execute_write(
+            lambda c: c.execute("UPDATE sessions SET last_activity_at = 1 WHERE id = 'own'")
+        )
+        assert recover()["id"] == "own"  # older own row beats newer sibling row
+    finally:
+        store.close()
+
+
+def test_child_inherits_parent_profile_only_within_its_key_namespace(db):
+    """#88381: parent→child ``profile_name`` COALESCE is fenced by ``agent:<ns>:``.
+
+    A default child (``agent:main:``) forked from a sibling profile's row must
+    not be durably mislabelled as that profile's; same-namespace and keyless
+    (CLI/subagent) children keep inheriting.
+    """
+    db.create_session("parent", "telegram", session_key="agent:bot2:telegram:dm:42",
+                      profile_name="bot2")
+    db.create_session("cross", "telegram", parent_session_id="parent",
+                      session_key="agent:main:telegram:dm:42")
+    db.create_session("same", "telegram", parent_session_id="parent",
+                      session_key="agent:bot2:telegram:dm:42:r2")
+    db.create_session("keyless", "cli", parent_session_id="parent")
+    assert db.get_session("cross")["profile_name"] is None
+    assert db.get_session("same")["profile_name"] == "bot2"
+    assert db.get_session("keyless")["profile_name"] == "bot2"
 
 
 

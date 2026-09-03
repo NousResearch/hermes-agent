@@ -786,3 +786,109 @@ def test_multiplex_missing_secondary_does_not_fall_back_to_shared(tmp_path):
     assert default_ad is shared
     assert sec_ad is not shared
     assert not sec_ad
+
+
+def test_multiplex_ticker_isolates_profile_failures(tmp_path):
+    """A failing profile's tick must not skip healthy siblings in the same
+    cycle, nor darken their status (#74878)."""
+    from cron.jobs import get_ticker_last_error, record_ticker_error, use_cron_store
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    failing_home = tmp_path / "failing"
+    healthy_home = tmp_path / "healthy"
+    for home in (failing_home, healthy_home):
+        (home / "cron").mkdir(parents=True)
+        with use_cron_store(home):
+            record_ticker_error("RuntimeError: stale failure")
+
+    stop = threading.Event()
+    tick_homes: list[str] = []
+
+    def _tick(*args, **kwargs):
+        home = str(get_hermes_home())
+        tick_homes.append(home)
+        if home == str(failing_home):
+            raise RuntimeError("profile-local failure")
+        stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_tick):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [("failing", failing_home), ("healthy", healthy_home)],
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert str(healthy_home) in tick_homes, "healthy sibling was skipped"
+    assert not (failing_home / "cron" / "ticker_last_success").exists()
+    assert (healthy_home / "cron" / "ticker_last_success").exists()
+    with use_cron_store(failing_home):
+        assert get_ticker_last_error() == "RuntimeError: profile-local failure"
+    with use_cron_store(healthy_home):
+        assert get_ticker_last_error() is None
+
+
+def test_multiplex_recovery_isolates_profile_failures(tmp_path):
+    """A startup-recovery error in one profile's ledger must not kill the
+    ticker thread before it ever ticks (#74878)."""
+    import sqlite3
+
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    failing_home = tmp_path / "failing"
+    healthy_home = tmp_path / "healthy"
+    for home in (failing_home, healthy_home):
+        (home / "cron").mkdir(parents=True)
+
+    stop = threading.Event()
+    recovery_homes: list[str] = []
+    tick_homes: list[str] = []
+
+    def _recover():
+        home = str(get_hermes_home())
+        recovery_homes.append(home)
+        if home == str(failing_home):
+            raise sqlite3.OperationalError("unable to open database file")
+        return 0
+
+    def _tick(*args, **kwargs):
+        tick_homes.append(str(get_hermes_home()))
+        if len(tick_homes) >= 2:
+            stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with (
+        patch.object(provider, "recover_interrupted", side_effect=_recover),
+        patch("cron.scheduler.tick", side_effect=_tick),
+    ):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [("failing", failing_home), ("healthy", healthy_home)],
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert recovery_homes == [str(failing_home), str(healthy_home)]
+    # The failing profile stays in rotation: its ledger may still hold jobs.
+    assert set(tick_homes) == {str(failing_home), str(healthy_home)}

@@ -609,6 +609,17 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
                     )
             # Re-emit the transport's streams: stdout is the reply text the
             # completion notification carries back to the sending agent.
+            if proc.returncode != 0 and "already has a live owner" in (proc.stderr or ""):
+                # #100523: the target's Bot Chat is held live by another
+                # surface (Desktop). The turn never ran, so tell the sender
+                # plainly instead of leaking a raw lease error + exit code.
+                who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
+                print(json.dumps({
+                    "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
+                             "surface right now, so your message was NOT delivered. Try again later.",
+                    "reason": "target_busy",
+                }))
+                return 1
             if proc.stdout:
                 sys.stdout.write(proc.stdout)
                 sys.stdout.flush()

@@ -1831,6 +1831,9 @@ def init_agent(
     except Exception:
         agent.show_commentary = True
 
+    # Window (seconds) for the bounded /fast auto|cold modes (agent.fast_mode).
+    agent.fast_auto_seconds = (_agent_cfg.get("agent") or {}).get("fast_auto_seconds", 60)
+
     # LM Studio can either be explicitly preloaded through LM Studio's
     # management API (the historical Hermes behavior) or left to LM Studio's
     # just-in-time / Auto-Evict chat-completions path.  Keep the default
@@ -1882,7 +1885,8 @@ def init_agent(
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(
-                _agent_cfg.get("tool_loop_guardrails", {})
+                _agent_cfg.get("tool_loop_guardrails", {}),
+                platform=platform,
             )
         )
     except Exception as _tlg_err:
@@ -3027,8 +3031,10 @@ def init_agent(
         except Exception as _ce_err:
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
 
+    from agent.runtime_cwd import scope_terminal_cwd as _scope_terminal_cwd
+
     agent._subdirectory_hints = SubdirectoryHintTracker(
-        working_dir=os.getenv("TERMINAL_CWD") or None,
+        working_dir=_scope_terminal_cwd() or None,
     )
     agent._user_turn_count = 0
     # Copilot x-initiator flag: first API call of a user turn sends "user" (#3040).

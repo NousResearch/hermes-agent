@@ -533,12 +533,14 @@ browser:
 # Tool Loop Guardrails
 # =============================================================================
 # Soft warnings are enabled by default. They append guidance to repeated failed
-# or non-progressing tool results but still let the tool execute. Hard stops are
-# opt-in circuit breakers for autonomous/cron sessions where stopping a loop is
-# preferable to spending the full iteration budget.
+# or non-progressing tool results but still let the tool execute. Hard stops stay
+# opt-in for interactive CLI/TUI/Desktop/ACP sessions, but default on for unattended
+# gateway/cron sessions where nobody is present to interrupt a model that
+# ignores loop warnings.
 tool_loop_guardrails:
   warnings_enabled: true
   hard_stop_enabled: false
+  non_interactive_hard_stop_enabled: true
   warn_after:
     exact_failure: 2
     same_tool_failure: 3
@@ -698,6 +700,19 @@ compression:
   # post-compression target = threshold × target_ratio), so it never wastes a
   # summarization on a short idle thread. Example: 1800 = compact after 30 min idle.
   idle_compact_after_seconds: 0
+
+  # Gateway session-hygiene turn-hold budget (default: 10). Max seconds an
+  # arriving user turn is held while a still-streaming hygiene summary
+  # finishes. Distinct from hygiene_timeout_seconds (compressor inactivity
+  # budget): this bounds user-visible latency so chat transports (Telegram
+  # ~30s) do not drop a silent connection. On expiry the turn proceeds
+  # uncompressed; the detached worker keeps its commit admission (when the
+  # commit is watermark-fenced) and the summary is adopted at the next safe
+  # boundary. Thinking-model summarizers often need longer than 10s to emit
+  # the first content token — raise to 300 (or >= your summarizer's real
+  # time-to-first-content) only if you want THIS turn to wait for the
+  # compression instead of adopting it one turn late.
+  hygiene_max_turn_hold_seconds: 10
 
   # Proactive tool-result prune (default: 0 = disabled). Opt-in token trigger
   # for a deterministic, no-LLM prune of OLD tool-result payloads, run
@@ -933,6 +948,32 @@ max_concurrent_sessions: null
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# =============================================================================
+# Session Storage Retention (state.db)
+# =============================================================================
+# ~/.hermes/state.db keeps every session, message, and tool call, plus the
+# FTS5 search indexes. Since #54189, auto-pruning is ON by default so the file
+# stays bounded: at CLI/gateway/cron startup (at most once per
+# min_interval_hours) Hermes deletes ENDED sessions whose last activity is
+# older than retention_days. Open, pinned, and in-progress sessions are never
+# deleted. Stale automation sessions (cron/kanban/subagent/one-shot CLI) whose
+# process died without closing them are first *closed*, then aged through a
+# further full retention window before removal.
+#
+# After a prune that removed rows, VACUUM reclaims disk space only when both
+# the time throttle (min_vacuum_interval_days) has elapsed AND more than 25%
+# of the file's pages are reclaimable — a dense database never pays for a full
+# rewrite to reclaim a few MB.
+#
+# Uncomment to change the defaults shown; set auto_prune: false to keep every
+# ended session forever (the pre-#54189 behavior).
+# sessions:
+#   auto_prune: true
+#   retention_days: 90
+#   vacuum_after_prune: true
+#   min_vacuum_interval_days: 30
+#   min_interval_hours: 24
+
 # Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
 # Leave unset for the safe default: Desktop coordinates cross-gateway rooms and
 # same-gateway rooms can still continue on their own. Set this only to the
@@ -1166,7 +1207,17 @@ agent:
   #   "claude-opus-4.6": "high"           # bare model name also works
   #   "deepseek/deepseek-v4-pro": "xhigh" # dots and dashes are interchangeable
   reasoning_overrides: {}
-  
+
+  # Fast mode (OpenAI Priority Processing / xAI Grok 4.6 / Anthropic Fast Mode
+  # on Opus 4.8+). Premium pricing; only sent to first-party endpoints.
+  #   "" / "normal" - off (default)
+  #   "fast"        - every request
+  #   "auto"        - only the first fast_auto_seconds of every turn
+  #   "cold"        - that window on the first turn of a session only
+  # Also: /fast normal|fast|auto|cold [--global]
+  service_tier: ""
+  fast_auto_seconds: 60
+
   # Custom personalities (use with /personality command).
   # Built-ins (helpful, concise, technical, creative, teacher, kawaii, catgirl,
   # pirate, shakespeare, surfer, noir, uwu, philosopher, hype) are always
@@ -1189,6 +1240,13 @@ gateway:
   # Adapter, bridge, and database teardown starts after this many seconds even
   # if an agent has not unwound. Keep it below the service-manager stop budget.
   # signal_interrupt_grace_timeout: 1
+
+  # Let platform adapters honor HTTP_PROXY / HTTPS_PROXY / NO_PROXY (and
+  # SSL_CERT_FILE) from the process environment, plus macOS system-proxy
+  # auto-detection. Set to false when the gateway inherits a proxy it must not
+  # use (e.g. a Windows Scheduled Task picking up a local Clash/V2Ray proxy that
+  # isn't running). Explicit per-platform vars like DISCORD_PROXY still apply.
+  # trust_env: true
 
 # =============================================================================
 # Toolsets
@@ -1288,6 +1346,10 @@ platform_toolsets:
 #       # Render live tool calls as Slack-native plan/task cards. This explicit
 #       # opt-in works even though Slack text tool_progress defaults to off.
 #       native_task_cards: false
+#       # Slack user IDs whose Web-API posts (user token, e.g. your own
+#       # dashboard/mobile front-end) count as human instead of being dropped
+#       # as app traffic. Narrower than allow_bots: all. Users only — never apps.
+#       api_human_users: ["U0AAAAAAA", "U0BBBBBBB"]
 #       # Suppress automatic link-preview cards without removing clickable links.
 #       # Omit either key to preserve Slack's default for that preview type.
 #       unfurl_links: false
@@ -1731,6 +1793,13 @@ display:
   #   true:  Ring the terminal bell on each response
   #   false: Silent (default)
   bell_on_complete: false
+
+  # Play terminal bell when a blocking prompt opens and waits on you:
+  # clarify questions, dangerous-command approvals, sudo password, secret
+  # capture. Same mechanism as bell_on_complete (\a) — works over SSH.
+  #   true:  Ring whenever the agent is waiting for your input
+  #   false: Silent (default)
+  bell_on_prompt: false
 
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.

@@ -296,9 +296,7 @@ describe('Hermes REST helpers', () => {
 
     api.mockImplementation(({ path }: { path: string }) => {
       if (path.startsWith('/api/profiles/sessions/sidebar')) {
-        return Promise.reject(
-          new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}')
-        )
+        return Promise.reject(new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'))
       }
 
       if (path.includes('source=cron')) {

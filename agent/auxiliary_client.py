@@ -453,6 +453,16 @@ _aux_progress = threading.local()
 _aux_dispatch = threading.local()
 _aux_provider_response = threading.local()
 
+# Absolute wall-clock deadline (time.monotonic) of the HOST waiting for this
+# auxiliary call, when it has one (#99692). Liveness alone is not enough: a
+# host also stops waiting at its own total ceiling, and the streamed consumer
+# below bounds itself only by _aux_stream_total_ceiling() — a budget derived
+# from the aux request timeout, which is >= the host ceiling for every
+# configured value AND starts counting later. So the stream that outlives its
+# abandoned host is not an edge case; it is the guaranteed outcome of every
+# total-ceiling timeout.
+_aux_stream_deadline = threading.local()
+
 
 def _notify_aux_progress() -> None:
     """Tick the installed forward-progress hook, if any. Never raises."""
@@ -525,6 +535,37 @@ def _anthropic_event_has_content(event: Any) -> bool:
     return False
 
 
+def _anthropic_aux_stream_event_hook() -> Callable[[Any], None]:
+    """Per-event callback for the Anthropic auxiliary wire.
+
+    Records provider-response timing for every frame, ticks the forward-progress
+    hook only for substantive payloads (keepalive pings must not keep a stalled
+    summary alive), and — #99692 — stops the stream at the waiting host's
+    absolute deadline (``aux_stream_deadline``) or on an explicit hard cancel,
+    the same two stop conditions the chat.completions and Codex wires honour.
+    The ``TimeoutError`` is phrased with "timed out" so ``_is_timeout_error``
+    classifies it like any other request timeout.
+    """
+    host_deadline = _current_aux_stream_deadline()
+    started = time.monotonic()
+
+    def _on_event(event: Any) -> None:
+        if _anthropic_event_has_content(event):
+            _notify_aux_provider_response()
+        else:
+            _notify_aux_timing_response()
+        if _aux_interrupt_cancel_requested():
+            raise AuxiliaryExplicitCancellation()
+        if host_deadline is not None and time.monotonic() >= host_deadline:
+            raise TimeoutError(
+                "Anthropic auxiliary stream timed out at the host compression "
+                f"deadline after {time.monotonic() - started:.0f}s "
+                "(the caller already stopped waiting)"
+            )
+
+    return _on_event
+
+
 _CODEX_PROGRESS_DELTA_TYPES = frozenset(
     {
         "response.output_text.delta",
@@ -587,6 +628,38 @@ def aux_progress_hook(hook):
         yield
 
 
+def _current_aux_stream_deadline() -> Optional[float]:
+    """The waiting host's absolute monotonic deadline, if one is installed."""
+    return getattr(_aux_stream_deadline, "value", None)
+
+
+@contextlib.contextmanager
+def aux_stream_deadline(deadline: Optional[float]):
+    """Publish the waiting host's absolute deadline to the stream consumer.
+
+    *deadline* is a ``time.monotonic()`` timestamp — the same instant the host
+    itself stops waiting — or ``None`` for callers with no host deadline (a
+    no-op passthrough, so callers can wire it unconditionally). Re-entrant-safe.
+
+    #99692: the progress hook is a one-way channel (worker -> host). This is the
+    return leg. ``8207862212`` releases the compression OWNER when the fence is
+    cancelled, but the isolated provider daemon
+    (:func:`_run_protected_sync_provider_call`) that holds the socket keeps
+    streaming to its own ``_aux_stream_total_ceiling`` budget — >= the host's
+    ceiling by construction — billing an abandoned summary the commit fence is
+    already guaranteed to refuse, and stacking one fresh orphan per turn on a
+    session that compression never managed to shrink.
+    """
+    previous = getattr(_aux_stream_deadline, "value", None)
+    _aux_stream_deadline.value = (
+        deadline if isinstance(deadline, (int, float)) else previous
+    )
+    try:
+        yield
+    finally:
+        _aux_stream_deadline.value = previous
+
+
 # Back-compat alias — the timing hooks were introduced with this name.
 _aux_timing_hook = _aux_thread_local_hook
 
@@ -629,6 +702,11 @@ def _run_protected_sync_provider_call(
     # the protected daemon path is taken.
     dispatch_hook = getattr(_aux_dispatch, "hook", None)
     provider_response_hook = getattr(_aux_provider_response, "hook", None)
+    # #99692: the stream is consumed on the daemon below, and thread-locals do
+    # not cross that boundary — an owner-thread-only deadline would leave the
+    # fix inert on exactly the path large-session compression takes (protected
+    # call + hard-cancel source installed).
+    host_deadline = _current_aux_stream_deadline()
     provider_context = contextvars.copy_context()
     done = threading.Event()
     outcome: dict[str, Any] = {}
@@ -639,6 +717,7 @@ def _run_protected_sync_provider_call(
                 aux_progress_hook(progress_hook),
                 _aux_thread_local_hook(_aux_dispatch, dispatch_hook),
                 _aux_thread_local_hook(_aux_provider_response, provider_response_hook),
+                aux_stream_deadline(host_deadline),
                 aux_interrupt_protection(cancel_check=cancel_check),
             ):
                 outcome["result"] = callback(kwargs)
@@ -668,6 +747,23 @@ def _run_protected_sync_provider_call(
         if exception is not None:
             raise exception
         return outcome.get("result")
+
+
+def _client_declares(client_obj: Any, flag: str) -> bool:
+    """Whether ``client_obj`` (or its class) sets ``flag`` truthy.
+
+    Capability declaration instead of isinstance: a client shipped by an
+    out-of-tree provider profile can opt out of the transport/async wrappers
+    without this module importing it. Mirrors ``SUPPORTS_HERMES_TOOL_CALLS`` in
+    ``agent/background_review.py``. Absent attribute → False, so every ordinary
+    client keeps its existing behaviour.
+    """
+    if client_obj is None:
+        return False
+    try:
+        return bool(getattr(client_obj, flag, False))
+    except Exception:
+        return False
 
 
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
@@ -1889,6 +1985,15 @@ class _CodexCompletionsAdapter:
         if total_timeout is not None:
             no_progress_timeout = min(no_progress_timeout, float(total_timeout))
         hard_deadline = _start_monotonic + _aux_stream_total_ceiling(total_timeout)
+        # #99692: the waiting host's absolute deadline (compress_context
+        # publishes its commit-fence ceiling via aux_stream_deadline) clamps
+        # the hard ceiling so the re-armable watchdog Timer wakes and severs
+        # the socket at the instant the host stops waiting — a live Codex
+        # stream cannot otherwise be stopped by a per-event cancel check
+        # while it is blocked between events.
+        _host_deadline = _current_aux_stream_deadline()
+        if isinstance(_host_deadline, (int, float)) and _host_deadline < hard_deadline:
+            hard_deadline = float(_host_deadline)
         deadline_lock = threading.Lock()
         progress_deadline = [_start_monotonic + no_progress_timeout]
         saw_content = threading.Event()
@@ -2504,13 +2609,7 @@ class _AnthropicCompletionsAdapter:
             # stalled summary open. No-op when no hook is installed (None
             # keeps the fast get_final_message path).
             on_stream_event=(
-                (
-                    lambda event: (
-                        _notify_aux_provider_response()
-                        if _anthropic_event_has_content(event)
-                        else _notify_aux_timing_response()
-                    )
-                )
+                _anthropic_aux_stream_event_hook()
                 if _aux_progress_active()
                 else None
             ),
@@ -2751,7 +2850,9 @@ def _maybe_wrap_anthropic(
 
     Returns ``client_obj`` unchanged when:
 
-    - It's already an Anthropic/Codex/Gemini/CopilotACP wrapper.
+    - It's already a complete client — an Anthropic/Codex wrapper, or any
+      client declaring ``HERMES_SKIP_TRANSPORT_WRAP`` (the native and ACP
+      shims, in-tree or from a provider plugin).
     - The endpoint is an OpenAI-wire endpoint.
     - ``api_mode`` is explicitly set to a non-Anthropic transport.
     - The ``anthropic`` SDK is not installed (falls back to OpenAI wire).
@@ -2769,18 +2870,12 @@ def _maybe_wrap_anthropic(
     # Other specialized adapters we should never re-dispatch.
     if _safe_isinstance(client_obj, CodexAuxiliaryClient):
         return client_obj
-    try:
-        from agent.gemini_native_adapter import GeminiNativeClient
-        if _safe_isinstance(client_obj, GeminiNativeClient):
-            return client_obj
-    except ImportError:
-        pass
-    try:
-        from agent.copilot_acp_client import CopilotACPClient
-        if _safe_isinstance(client_obj, CopilotACPClient):
-            return client_obj
-    except ImportError:
-        pass
+    # A client that declares itself complete is never re-dispatched through a
+    # wire adapter. Declared as a class attribute rather than isinstance-checked
+    # so an out-of-tree provider's client is covered too — and so this hot path
+    # no longer imports the native/ACP client modules just to type-test.
+    if _client_declares(client_obj, "HERMES_SKIP_TRANSPORT_WRAP"):
+        return client_obj
 
     # Explicit non-anthropic api_mode wins over URL heuristics.
     if api_mode and api_mode != "anthropic_messages":
@@ -4940,6 +5035,38 @@ def _is_invalid_aux_response_error(exc: Exception) -> bool:
     )
 
 
+# Auxiliary tasks that sit on a user-visible critical path. A same-provider
+# retry after a full-budget timeout costs another whole ``timeout`` window
+# before the fallback chain is reached, so these skip it and fall through
+# immediately. Fast blips (a streaming-close or a 5xx) still retry, since
+# those are cheap. See issue #54465 for the compression case.
+_TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision"})
+
+
+def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> bool:
+    """True when a transient error should go straight to fallback.
+
+    Compression is on the critical preflight path: a user cannot continue or
+    resume an oversized session until it compacts. Vision is on the
+    interactive path: the turn holding the image cannot answer, and because
+    turns are serialised the following user messages stall behind it. For
+    those tasks a same-provider retry on a full-budget timeout means another
+    whole ``timeout`` of wall-clock before the fallback chain runs, doubling
+    the user-visible stall (#54465).
+
+    Carve-out: a fast first-token fail (dead stream detected within the 60s
+    no-progress window, zero output seen — see ``_timeout_message``) is cheap,
+    so it keeps the normal same-provider retry; the provider is often fine
+    and only that one stream was stillborn. Mid-stream stalls and hard-ceiling
+    timeouts skip to fallback.
+    """
+    return (
+        task in _TIMEOUT_NO_RETRY_TASKS
+        and _is_timeout_error(exc)
+        and "no-progress timeout" not in str(exc)
+    )
+
+
 def _evict_cached_clients(provider: str) -> None:
     """Drop cached auxiliary clients for a provider so fresh creds are used."""
     normalized = _normalize_aux_provider(provider)
@@ -6578,12 +6705,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
             return AsyncGeminiNativeClient(sync_client), model
     except ImportError:
         pass
-    try:
-        from agent.copilot_acp_client import CopilotACPClient
-        if isinstance(sync_client, CopilotACPClient):
-            return sync_client, model
-    except ImportError:
-        pass
+    # Clients that are already usable from async code (the ACP shims drive a
+    # subprocess, not an HTTP connection pool) opt out of the async wrapper.
+    if _client_declares(sync_client, "HERMES_SKIP_ASYNC_WRAP"):
+        return sync_client, model
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -7397,34 +7522,55 @@ def resolve_provider_client(
             or _read_main_model_for_aux(),
             provider,
         )
-        if provider == "copilot-acp":
+        # Any external-process provider whose registered profile supplies a
+        # client is served here — keyed on the profile, not on a provider name,
+        # so an out-of-tree ACP provider reaches the auxiliary path (compression,
+        # vision, background review) exactly like the in-tree one.
+        _extproc_profile = None
+        try:
+            from providers import get_provider_profile as _get_provider_profile
+
+            _extproc_profile = _get_provider_profile(provider)
+        except Exception:
+            _extproc_profile = None
+        if _extproc_profile is not None:
             api_key = str(creds.get("api_key", "")).strip()
             base_url = str(creds.get("base_url", "")).strip()
             command = str(creds.get("command", "")).strip() or None
             args = list(creds.get("args") or [])
             if not final_model:
                 logger.warning(
-                    "resolve_provider_client: copilot-acp requested but no model "
-                    "was provided or configured"
+                    "resolve_provider_client: %s requested but no model "
+                    "was provided or configured",
+                    provider,
                 )
                 return None, None
             if not api_key or not base_url:
                 logger.warning(
-                    "resolve_provider_client: copilot-acp requested but external "
-                    "process credentials are incomplete"
+                    "resolve_provider_client: %s requested but external "
+                    "process credentials are incomplete",
+                    provider,
                 )
                 return None, None
-            from agent.copilot_acp_client import CopilotACPClient
-
-            client = CopilotACPClient(
-                api_key=api_key,
-                base_url=base_url,
-                command=command,
-                args=args,
-            )
-            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
-                    else (client, final_model))
+            try:
+                client = _extproc_profile.create_client(
+                    api_key=api_key,
+                    base_url=base_url,
+                    command=command,
+                    args=args,
+                )
+            except Exception:
+                logger.warning(
+                    "resolve_provider_client: profile %r failed to create an "
+                    "external-process client",
+                    provider,
+                    exc_info=True,
+                )
+                client = None
+            if client is not None:
+                logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                        else (client, final_model))
         if provider not in _LOGGED_UNSUPPORTED_EXTPROC_KEYS:
             _LOGGED_UNSUPPORTED_EXTPROC_KEYS.add(provider)
             logger.debug("resolve_provider_client: external-process provider %s not "
@@ -8129,8 +8275,29 @@ def _refresh_nous_auxiliary_client(
     api_mode: Optional[str] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    lookup_model: Optional[str] = None,
+    lookup_task: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
-    """Refresh Nous runtime creds, rebuild the client, and replace the cache entry."""
+    """Refresh Nous runtime creds, rebuild the client, and replace the cache entry.
+
+    ``model`` is the resolved model actually sent on the wire (e.g. the provider
+    default ``"Hermes-4-405B"``); it is stored as the entry's usable model and
+    returned to the caller. ``lookup_model`` is the model as it was passed to
+    ``_get_cached_client`` when the (now stale) client was acquired -- ``None``
+    on the default Nous config, where ``call_llm`` looks up with
+    ``resolved_model=None``. The cache KEY MUST be built from ``lookup_model`` so
+    the fresh client overwrites the exact entry the stale client is served from.
+    Keying on the resolved ``model`` instead stored under a different key (model
+    element ``"Hermes-4-405B"`` vs the lookup's ``""``), leaving the expired
+    client immortal so every auxiliary call 401s forever (#56889).
+
+    ``lookup_task`` is the task the stale client was acquired under. For
+    ``provider == "auto"`` the task participates in the cache key (task-specific
+    fallback policy), so it MUST be carried into the key here for the same
+    reason as ``lookup_model``; otherwise an auto-provider client refreshed on a
+    401 lands under the ``task=""`` key while the stale entry survives under the
+    task-scoped key (#58894).
+    """
     runtime = _resolve_nous_runtime_api(force_refresh=True)
     if runtime is None:
         return None, model
@@ -8158,7 +8325,8 @@ def _refresh_nous_auxiliary_client(
         api_mode=api_mode,
         main_runtime=main_runtime,
         is_vision=is_vision,
-        model=final_model,
+        task=lookup_task,
+        model=lookup_model,
     )
     _store_cached_client(cache_key, client, final_model, bound_loop=current_loop)
     return client, final_model
@@ -9872,7 +10040,11 @@ def _aggregate_chat_stream(
     Accumulation is shared with the async mirror via
     :class:`_ChatStreamAccumulator`.
     """
-    acc = _ChatStreamAccumulator(model=model, total_ceiling=total_ceiling)
+    acc = _ChatStreamAccumulator(
+        model=model,
+        total_ceiling=total_ceiling,
+        host_deadline=_current_aux_stream_deadline(),
+    )
     try:
         for chunk in chunks:
             acc.feed(chunk)
@@ -9894,9 +10066,20 @@ class _ChatStreamAccumulator:
     tool-call delta reassembly, same "timed out" ceiling phrasing).
     """
 
-    def __init__(self, model: str = "", total_ceiling: Optional[float] = None):
+    def __init__(
+        self,
+        model: str = "",
+        total_ceiling: Optional[float] = None,
+        host_deadline: Optional[float] = None,
+    ):
         self._started = time.monotonic()
         self._total_ceiling = total_ceiling
+        # #99692: absolute instant the WAITING HOST gives up. Checked as well
+        # as (not instead of) the ceiling above: the ceiling still bounds
+        # callers with no host deadline, and the host deadline is absolute, so
+        # it is unaffected by however long dispatch and TTFT took before this
+        # accumulator was constructed.
+        self._host_deadline = host_deadline
         self.content_parts: List[str] = []
         self.reasoning_parts: List[str] = []
         self.reasoning_details: List[Any] = []
@@ -9919,6 +10102,16 @@ class _ChatStreamAccumulator:
             raise TimeoutError(
                 f"Auxiliary streamed call timed out after {self._total_ceiling:.0f}s "
                 "total ceiling (stream still open but over budget)"
+            )
+        if (
+            self._host_deadline is not None
+            and time.monotonic() >= self._host_deadline
+        ):
+            raise TimeoutError(
+                "Auxiliary streamed call timed out at the host compression "
+                f"deadline after {time.monotonic() - self._started:.0f}s "
+                "(the caller already stopped waiting; streaming on would only "
+                "pin its session lease)"
             )
         self.resp_id = getattr(chunk, "id", None) or self.resp_id
         self.resp_model = getattr(chunk, "model", None) or self.resp_model
@@ -10031,7 +10224,11 @@ async def _aggregate_chat_stream_async(
     the sync helper raises. Same accumulation and ceiling semantics via
     :class:`_ChatStreamAccumulator`.
     """
-    acc = _ChatStreamAccumulator(model=model, total_ceiling=total_ceiling)
+    acc = _ChatStreamAccumulator(
+        model=model,
+        total_ceiling=total_ceiling,
+        host_deadline=_current_aux_stream_deadline(),
+    )
     try:
         async for chunk in chunks:
             acc.feed(chunk)
@@ -10456,29 +10653,15 @@ def _call_llm_impl(
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
-            # Compression is on the critical preflight path: a user cannot
-            # continue or resume an oversized session until it compacts. A
-            # same-provider retry on a timeout means another full ``timeout``-
-            # long wall-clock block before the except-chain below can fall
-            # back — doubling the user-visible stall (issue #54465). Skip the
-            # same-provider retry for compression on a full-budget timeout and
-            # fall straight through to provider/model fallback; fast blips (a
-            # streaming-close or a 5xx) still retry, since those are cheap.
-            if task == "compression" and _is_timeout_error(transient_err):
-                # A fast first-token fail (dead stream detected within the
-                # 60s no-progress window, zero output seen) is cheap — take
-                # the normal same-provider retry chain first; the provider
-                # is often fine and only that one stream was stillborn. A
-                # mid-stream stall or hard-ceiling timeout skips straight to
-                # fallback, because re-running a multi-minute summary on the
-                # same provider doubles the user-visible stall (#54465).
-                if "no-progress timeout" not in str(transient_err):
-                    logger.info(
-                        "Auxiliary compression: timeout on the critical path; "
-                        "skipping same-provider retry and falling back: %s",
-                        transient_err,
-                    )
-                    raise
+            # Critical-path tasks skip the same-provider retry on a
+            # full-budget timeout; see _should_skip_same_provider_retry.
+            if _should_skip_same_provider_retry(task, transient_err):
+                logger.info(
+                    "Auxiliary %s: timeout on the critical path; "
+                    "skipping same-provider retry and falling back: %s",
+                    task, transient_err,
+                )
+                raise
             _max_transient_retries = _transient_retry_count()
             _last_transient = transient_err
             for _attempt in range(1, _max_transient_retries + 1):
@@ -10657,6 +10840,8 @@ def _call_llm_impl(
             refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
                 cache_provider=resolved_provider or "nous",
                 model=final_model,
+                lookup_model=resolved_model,
+                lookup_task=task,
                 async_mode=False,
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
@@ -10693,6 +10878,8 @@ def _call_llm_impl(
             refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
                 cache_provider=resolved_provider or "nous",
                 model=final_model,
+                lookup_model=resolved_model,
+                lookup_task=task,
                 async_mode=False,
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
@@ -11290,14 +11477,13 @@ async def _async_call_llm_impl(
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
-            # See call_llm(): compression is on the critical preflight path,
-            # so skip the same-provider retry on a full-budget timeout and
-            # fall straight through to fallback (issue #54465).
-            if task == "compression" and _is_timeout_error(transient_err):
+            # Same rule as call_llm(); the async Codex adapter wraps the sync
+            # stream via to_thread, so the same TimeoutError reaches here.
+            if _should_skip_same_provider_retry(task, transient_err):
                 logger.info(
-                    "Auxiliary compression (async): timeout on the critical "
+                    "Auxiliary %s (async): timeout on the critical "
                     "path; skipping same-provider retry and falling back: %s",
-                    transient_err,
+                    task, transient_err,
                 )
                 raise
             logger.info(
@@ -11453,10 +11639,13 @@ async def _async_call_llm_impl(
             refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
                 cache_provider=resolved_provider or "nous",
                 model=final_model,
+                lookup_model=resolved_model,
+                lookup_task=task,
                 async_mode=True,
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
                 api_mode=resolved_api_mode,
+                main_runtime=main_runtime,
                 is_vision=(task == "vision"),
             )
             if refreshed_client is not None:
@@ -11488,10 +11677,13 @@ async def _async_call_llm_impl(
             refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
                 cache_provider=resolved_provider or "nous",
                 model=final_model,
+                lookup_model=resolved_model,
+                lookup_task=task,
                 async_mode=True,
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
                 api_mode=resolved_api_mode,
+                main_runtime=main_runtime,
                 is_vision=(task == "vision"),
             )
             if refreshed_client is not None:

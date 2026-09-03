@@ -752,9 +752,11 @@ def _(rid, params: dict) -> dict:
                 _cancel_ws_orphan_reap(sid)
                 return _ok(rid, _reuse_live_payload(sid, session))
 
-        # Fast path: if the session is already live, reuse it under the lock.
+        # Fast path: if the session is already live IN THIS PROFILE, reuse it
+        # under the lock. Never another profile's runtime of the same stored id
+        # — that ran profile B's turn on profile A's agent/memory (#100029).
         with _session_resume_lock:
-            live = _find_live_session_by_key(target)
+            live = _find_live_session_by_key(target, profile_home)
         if live is not None:
             return _reuse_live_response(*live)
 
@@ -1077,7 +1079,7 @@ def _(rid, params: dict) -> dict:
         # live session while we were building. Re-check under the lock; if it won,
         # discard our just-built agent and reuse theirs (no worker/poller wired yet).
         with _session_resume_lock:
-            live = _find_live_session_by_key(target)
+            live = _find_live_session_by_key(target, profile_home)
             if live is not None:
                 try:
                     if hasattr(agent, "close"):
@@ -1707,7 +1709,8 @@ def _(rid, params: dict) -> dict:
     except (ValueError, KeyError):
         return _err(rid, 4024, f"unknown platform '{platform_name}'")
     try:
-        gw_config = load_gateway_config()
+        with _session_profile_runtime_scope(session):
+            gw_config = load_gateway_config()
     except Exception as e:
         return _err(rid, 5021, f"could not load gateway config: {e}")
     pcfg = gw_config.platforms.get(platform)
@@ -3006,13 +3009,37 @@ def _(rid, params: dict) -> dict:
         sid = str(params.get("session_id") or "")
         focus_topic = str(params.get("focus_topic", "") or "").strip()
         command = "/compress" + (f" {focus_topic}" if focus_topic else "")
+        _late_session = session
+
+        def _on_late_ack(late: dict, _sid=sid) -> None:
+            _adopt_late_compute_host_compress_ack(_sid, _late_session, late, route_name="session.compress")
+
         try:
             ack = _send_compute_host_control(
                 sid,
                 route_name="session.compress",
                 command=command,
                 wait=True,
-                timeout=120.0,
+                # Follows compression.context_total_ceiling_seconds instead of
+                # a fixed 120s: the host legitimately runs that long (#97948).
+                timeout=_compute_host_compress_wait_seconds(),
+                on_late_ack=_on_late_ack,
+            )
+        except queue.Empty:
+            # The waiter gave up but the host is still compressing; the late
+            # ack handler adopts the rotated session and pushes session.info
+            # when it lands. Not an error — the old 5019 made Desktop/TUI
+            # report a timeout while compression later succeeded silently.
+            return _ok(
+                rid,
+                {
+                    "status": "pending",
+                    "turn_isolation": True,
+                    "message": (
+                        "compression still running in the background; "
+                        "the transcript will refresh when it finishes"
+                    ),
+                },
             )
         except Exception as exc:
             return _err(rid, 5019, f"compute-host compress failed: {exc}")

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import socket
 import time
 
 
@@ -168,7 +169,26 @@ def _display_chat_id(platform_name: str, chat_id: str) -> str:
     return chat_id
 
 
+def _is_preconnect_dns_failure(exc: BaseException) -> bool:
+    """Return True only when an exception chain proves DNS failed pre-connect."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, socket.gaierror):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
+    # A gaierror is raised by getaddrinfo before a connection exists, so the
+    # current API call cannot have reached Telegram.  This is narrower than
+    # matching error text and therefore safe to retry without risking a
+    # duplicate message after an ambiguous/post-send failure.
+    if _is_preconnect_dns_failure(exc):
+        return (0.25, 1.0)[min(attempt, 1)]
+
     retry_after = getattr(exc, "retry_after", None)
     if retry_after is not None:
         try:

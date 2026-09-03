@@ -18,6 +18,10 @@ export type ChatMessage = {
   id: string
   role: SessionMessage['role']
   parts: ChatMessagePart[]
+  /** Original body for timeline rows whose compact label replaces the text. */
+  displayContent?: string
+  /** Durable display kind, retained for specialized timeline rendering. */
+  displayKind?: SessionMessage['display_kind']
   timestamp?: number
   completedAt?: number
   pending?: boolean

@@ -14,13 +14,13 @@ $displayTimestamps.set(true)
 const timestamp = new Date('2026-05-01T00:00:00.000Z')
 stubThreadEnvironment()
 
-function Harness({ text }: { text: string }) {
+function Harness({ custom = {}, text }: { custom?: Record<string, unknown>; text: string }) {
   const message = {
     id: 'system-1',
     role: 'system',
     content: [{ type: 'text', text }],
     createdAt: timestamp,
-    metadata: { custom: { timelineTimestamp: timestamp.getTime() / 1000 } }
+    metadata: { custom: { timelineTimestamp: timestamp.getTime() / 1000, ...custom } }
   } as unknown as ThreadMessage
 
   const runtime = useExternalStoreRuntime<ThreadMessage>({
@@ -45,6 +45,25 @@ function expectTimestampSeparated(container: HTMLElement, precedingText: string)
 }
 
 afterEach(cleanup)
+
+describe('async completion Markdown rendering', () => {
+  it('renders async completion bodies through the Markdown renderer', async () => {
+    const { container, findByRole } = render(
+      <Harness
+        custom={{
+          displayKind: 'async_delegation_complete',
+          displayContent: '# Report\n\n**Conclusion:** healthy\n\n| Strategy | Status |\n|---|---|\n| Alpha | running |'
+        }}
+        text="background agent work finished"
+      />
+    )
+
+    expect(await findByRole('heading', { name: 'Report' })).toBeTruthy()
+    expect(container.textContent).toContain('Conclusion:')
+    expect(container.textContent).toContain('Alpha')
+    expect(container.querySelector('table')).toBeTruthy()
+  })
+})
 
 describe('system message timestamp text separation', () => {
   it('separates an ordinary system row timestamp in accessible and copied text', () => {

@@ -1,6 +1,7 @@
 import { MessagePrimitive, useAuiState } from '@assistant-ui/react'
 import { type FC } from 'react'
 
+import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { messageContentText } from '@/components/assistant-ui/thread/content'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
@@ -15,9 +16,28 @@ const REVIEW_NOTE_RE = /^review:(?<label>[^:\n]+):?\s*(?<detail>[\s\S]*)$/
 
 export const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
+  const displayKind = useAuiState(s => s.message.metadata?.custom?.displayKind)
+  const displayContent = useAuiState(s => s.message.metadata?.custom?.displayContent)
 
   if (!text) {
     return null
+  }
+
+  // Async cron/delegation completions are persisted as system timeline rows
+  // to prevent them from starting an unsolicited agent turn. Their original
+  // body is nevertheless user-facing Markdown, so render it with the same
+  // pipeline as an assistant answer instead of treating it as plain text.
+  if (displayKind === 'async_delegation_complete' && typeof displayContent === 'string' && displayContent.trim()) {
+    return (
+      <MessagePrimitive.Root
+        className="w-full min-w-0 max-w-full self-start px-(--message-text-indent) py-0.5"
+        data-role="system"
+        data-slot="aui_system-message-root"
+      >
+        <MarkdownTextContent isRunning={false} text={displayContent} />
+        <MessageTimelineTimestamp className="mt-0.5 block" />
+      </MessagePrimitive.Root>
+    )
   }
 
   // The self-improvement review saved something to memory/skills — the same

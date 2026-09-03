@@ -118,7 +118,8 @@ class TestFeishuExecApproval:
         card = json.loads(kwargs["payload"])
         assert card["header"]["template"] == "orange"
         assert "rm -rf /important" in card["elements"][0]["content"]
-        assert "dangerous deletion" in card["elements"][0]["content"]
+        assert "删除命令指定的文件或临时目录" in card["elements"][0]["content"]
+        assert "为什么现在需要" in card["elements"][0]["content"]
 
         # Check buttons
         actions = card["elements"][1]["actions"]
@@ -152,6 +153,24 @@ class TestFeishuExecApproval:
         assert state["session_key"] == "my-session-key"
         assert state["message_id"] == "msg_002"
         assert state["chat_id"] == "oc_12345"
+
+    @pytest.mark.asyncio
+    async def test_approval_card_uses_chinese_human_readable_risk_summary(self):
+        adapter = _make_adapter()
+        mock_response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="msg_zh"))
+        with patch.object(adapter, "_feishu_send_with_retry", new_callable=AsyncMock, return_value=mock_response) as mock_send:
+            await adapter.send_exec_approval(
+                chat_id="oc_12345", command="rm -rf /tmp/demo", session_key="session", description="dangerous deletion"
+            )
+
+        card = json.loads(mock_send.call_args.kwargs["payload"])
+        content = card["elements"][0]["content"]
+        assert card["header"]["title"]["content"] == "⚠️ 需要你的授权"
+        for label in ("要做什么", "影响范围", "为什么现在需要", "可否撤销", "风险等级"):
+            assert label in content
+        assert [action["text"]["content"] for action in card["elements"][1]["actions"]] == [
+            "✅ 本次允许", "✅ 本次会话允许", "⚠️ 永久允许此类操作", "❌ 拒绝"
+        ]
 
 
 # ===========================================================================
@@ -329,7 +348,7 @@ class TestCardActionCallbackResponse:
         assert response.card.type == "raw"
         card = response.card.data
         assert card["header"]["template"] == "green"
-        assert "Approved once" in card["header"]["title"]["content"]
+        assert "本次操作已允许" in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
 
 

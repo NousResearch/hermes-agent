@@ -223,7 +223,8 @@ _FEISHU_APP_LOCK_SCOPE = "feishu-app-id"
 _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
 _DEFAULT_TEXT_BATCH_MAX_CHARS = 4000
-_DEFAULT_MEDIA_BATCH_DELAY_SECONDS = 0.8
+# Keep a 30-second media→following-text window; ordinary text remains immediate.
+_DEFAULT_MEDIA_BATCH_DELAY_SECONDS = 30.0
 _DEFAULT_DEDUP_CACHE_SIZE = 2048
 _DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _DEFAULT_WEBHOOK_PORT = 8765
@@ -2159,6 +2160,119 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    @staticmethod
+    def _classify_command_risk(command: str, smart_denied: bool) -> tuple[str, str, str]:
+        """Return (risk_level, action_label, color) for the approval card.
+
+        🟢 只读/查询 — 不修改文件或外部数据。
+        🟡 修改本机配置/依赖 — 影响当前环境，但通常可回滚。
+        🟠 删除/写入外部账号 — 修改后不一定能完全恢复。
+        🔴 智能审批主动拦截 — 系统已判定为高风险。
+        """
+        normalized = command.lower()
+        if smart_denied:
+            return "🔴 高", "智能拦截操作", "red"
+        if re.search(r"\brm\s+.*(?:-r|-R|--recursive)", command):
+            return "🔴 高", "删除文件 / 目录", "red"
+        if re.search(r"\brm\b", command):
+            return "🟠 中高", "删除文件", "orange"
+        if "open.feishu.cn" in normalized or "/bitable/" in normalized:
+            return "🟠 中高", "修改飞书数据", "orange"
+        if "pip install" in normalized or "npm install" in normalized or "brew install" in normalized:
+            return "🟡 中", "安装依赖", "amber"
+        if "config.yaml" in normalized or "hermes config" in normalized:
+            return "🟡 中", "修改 Hermes 配置", "amber"
+        if re.search(r"\bhermes\b.*\b(model|gateway|update)\b", normalized):
+            return "🟡 中", "变更 Hermes 运行参数", "amber"
+        if "dyld_" in normalized:
+            return "🟢 低", "设置临时运行环境", "green"
+        if re.search(r"\b(cat|less|head|tail|grep|rg|find|ls|stat|shasum|file|printf|echo|hermes\s+(version|gateway|status|doctor))\b", normalized):
+            return "🟢 低", "读取 Hermes / 文件信息", "green"
+        return "🟡 中", "运行管理命令", "amber"
+    @staticmethod
+    def _translate_description(description: str) -> str:
+        """Map known English smart-approval / system descriptions to Chinese.
+
+        Returns an empty string when the description is unrecognised so the
+        caller can fall back to its own human-readable reason.
+        """
+        if not description:
+            return ""
+        d = description.strip()
+        if not d:
+            return ""
+        mapping = {
+            "dangerous command": "智能审批认为这是一条可能影响系统的命令，需要你确认。",
+            "command parser limit or malformed executable payload": (
+                "智能审批无法完整解析这条命令的内容。"
+                "它可能太长、太复杂，或包含不被识别的符号，因此请你亲自看一眼。"
+            ),
+            "smart deny": "智能审批主动拦截此操作，需要你确认。",
+        }
+        if d in mapping:
+            return mapping[d]
+        low = d.lower()
+        if "parser limit" in low or "malformed executable payload" in low:
+            return mapping["command parser limit or malformed executable payload"]
+        if "dangerous" in low:
+            return mapping["dangerous command"]
+        if "smart deny" in low:
+            return mapping["smart deny"]
+        return ""
+    @staticmethod
+    def _build_human_approval_summary(command: str, description: str) -> Dict[str, str]:
+        """Presentation-only Chinese summary; approval policy remains unchanged."""
+        normalized = command.lower()
+        purpose = "执行一项被安全系统拦截的命令"
+        impact = "仅执行本卡片下方列出的这条命令；不会自动获得所有系统权限。"
+        rollback = "不确定时请选择“本次允许”。"
+        if re.search(r"\brm\s+.*(?:-r|-R|--recursive)", command):
+            purpose = "删除命令指定的文件或临时目录"
+            impact = "会删除技术详情中指定的路径；删除后通常无法通过系统回收站恢复。"
+            rollback = "不可直接撤销。仅在确认目标是临时文件时允许。"
+        elif re.search(r"\brm\b", command):
+            purpose = "删除指定的文件"
+            impact = "会删除技术详情中列出的单个文件。"
+            rollback = "不可直接撤销。"
+        elif "pip install" in normalized or "npm install" in normalized or "brew install" in normalized:
+            purpose = "安装或更新本机软件依赖"
+            impact = "会向当前软件环境加入依赖文件。"
+            rollback = "通常可卸载对应依赖。"
+        elif "open.feishu.cn" in normalized or "/bitable/" in normalized:
+            purpose = "在飞书中创建或修改表格/文件数据"
+            impact = "会向你的飞书空间写入本命令指定的数据；不会自动发送给其他人。"
+            rollback = "大多数表格记录可编辑或删除。"
+        elif "config.yaml" in normalized or "hermes config" in normalized:
+            purpose = "修改 Hermes 运行配置"
+            impact = "会影响后续 Hermes 的模型、显示或工具设置。"
+            rollback = "可通过配置备份或反向修改恢复。"
+        elif re.search(r"\bhermes\b.*\b(version|gateway|status|doctor|model|update)\b", normalized):
+            purpose = "查询或检查 Hermes 的运行信息"
+            impact = "只读取本机 Hermes 的运行状态；不会修改任何文件或远端数据。"
+            rollback = "没有副作用。"
+        elif "hermes model" in normalized or re.search(r"\bhermes\b.*\bmodel\b", normalized):
+            purpose = "切换或查询 Hermes 的主模型"
+            impact = "会改变后续对话使用的 AI 模型和按量计费通道。"
+            rollback = "可随时切回原模型。"
+        elif "hermes " in normalized:
+            purpose = "运行 Hermes 自身的一条管理命令"
+            impact = "只会影响本机 Hermes 的运行状态；不会触及外部服务。"
+            rollback = "大多数命令可重新执行或恢复。"
+        elif "dyld_" in normalized:
+            purpose = "仅为本次程序运行设置临时动态库路径"
+            impact = "只影响当前子进程，不会修改系统环境变量。"
+            rollback = "命令结束后自动失效。"
+        elif re.search(r"\b(cat|less|head|tail|grep|rg|find|ls|stat|shasum|file|printf|echo)\b", normalized):
+            purpose = "读取本机文件或目录信息"
+            impact = "只读取信息，不修改文件。"
+            rollback = "没有副作用。"
+        return {
+            "purpose": purpose,
+            "impact": impact,
+            "rollback": rollback,
+            "reason_zh": FeishuAdapter._translate_description(description),
+        }
+
     # Template attrs for the shared _format_exec_approval core. The card
     # header carries the title, so the text core starts at the code fence.
     _EA_HEADER = ""
@@ -2194,27 +2308,37 @@ class FeishuAdapter(BasePlatformAdapter):
                     "value": {"hermes_action": action_name, "approval_id": approval_id},
                 }
 
-            actions = [_btn("✅ Allow Once", "approve_once", "primary")]
+            actions = [_btn("✅ 本次允许", "approve_once", "primary")]
             if not smart_denied and allow_session:
-                actions.append(_btn("✅ Session", "approve_session"))
+                actions.append(_btn("✅ 本次会话允许", "approve_session"))
                 if allow_permanent:
-                    actions.append(_btn("✅ Always", "approve_always"))
-            actions.append(_btn("❌ Deny", "deny", "danger"))
+                    actions.append(_btn("⚠️ 永久允许此类操作", "approve_always"))
+            actions.append(_btn("❌ 拒绝", "deny", "danger"))
+            summary = self._build_human_approval_summary(command, description)
+            permanent_note = "\n\n**永久允许的含义：** 今后匹配同类命令的操作可能不再询问；不确定请选“本次允许”。" if allow_permanent and not smart_denied else ""
+            smart_note = "\n\n**安全系统提示：** 此操作被自动判为高风险；“本次允许”仅放行当前操作。" if smart_denied else ""
+            reason_zh = summary.get("reason_zh") or "智能审批认为需要你确认。"
+            risk_level, risk_label, risk_color = self._classify_command_risk(command, smart_denied)
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
-                    "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
+                    "title": {"content": "⚠️ 需要你的授权", "tag": "plain_text"},
                     "template": "orange",
                 },
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": self._format_exec_approval(command, description, smart_denied),
+                        "content": (
+                            f"**操作类型：** <font color='{risk_color}'>{risk_label}</font>　**风险等级：** <font color='{risk_color}'>{risk_level}</font>\n"
+                            f"**要做什么：** {summary['purpose']}\n"
+                            f"**影响范围：** {summary['impact']}\n"
+                            f"**为什么现在需要：** {reason_zh}\n"
+                            f"**可否撤销：** {summary['rollback']}"
+                            f"{permanent_note}{smart_note}\n\n"
+                            f"<font color='grey'>技术详情（仅供核对，无需理解代码）：</font>\n```\n{command[:self._EA_CMD_BUDGET]}\n```"
+                        ),
                     },
-                    {
-                        "tag": "action",
-                        "actions": actions,
-                    },
+                    {"tag": "action", "actions": actions},
                 ],
             }
 
@@ -2233,6 +2357,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
+                    "command": command,
                 }
             return result
         except Exception as exc:
@@ -2308,22 +2433,33 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
-    def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
-        """Build raw card JSON for a resolved approval action."""
+    def _build_resolved_approval_card(*, choice: str, user_name: str, command: str = "") -> Dict[str, Any]:
+        """Build a user-readable resolved approval card without changing policy."""
         icon = "❌" if choice == "deny" else "✅"
-        label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
+        labels = {
+            "once": "本次操作已允许",
+            "session": "本次会话内已允许",
+            "always": "已永久允许此类操作",
+            "deny": "已拒绝该操作",
+        }
+        label = labels.get(choice, "审批已处理")
+        if choice == "always":
+            detail = "你选择了永久允许：今后匹配同类命令的操作可能不再询问。\n\n如需撤销：请告诉 Hermes“查看并撤销永久审批规则”，或在 approvals.allowlist 删除对应规则。"
+        elif choice == "session":
+            detail = "该类操作仅在当前会话内可自动通过；开启新会话后会再次询问。"
+        elif choice == "once":
+            detail = "只允许当前这一项操作；后续同类操作仍会再次询问。"
+        else:
+            detail = "该操作没有执行。"
+        if command:
+            detail += "\n\n<font color='grey'>已处理的技术详情：</font>\n```\n" + command[:1000] + "\n```"
         return {
             "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"content": f"{icon} {label}", "tag": "plain_text"},
                 "template": "red" if choice == "deny" else "green",
             },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
-                },
-            ],
+            "elements": [{"tag": "markdown", "content": f"{detail}\n\n操作人：{user_name}"}],
         }
 
     @staticmethod
@@ -2962,7 +3098,9 @@ class FeishuAdapter(BasePlatformAdapter):
         if CallBackCard is not None:
             card = CallBackCard()
             card.type = "raw"
-            card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
+            card.data = self._build_resolved_approval_card(
+                choice=choice, user_name=user_name, command=str(state.get("command", "") or "")
+            )
             response.card = card
         return response
 
@@ -3476,6 +3614,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 text = f"{hint}\n\n{text}" if text else hint
 
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        # Feishu P2P quoted replies carry root/thread IDs but are not real threads.
+        # Keep reply_to_* below for quote context while routing through the main DM.
+        if chat_type == "p2p":
+            thread_id = None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
@@ -3533,6 +3675,8 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
         """Apply Feishu-specific burst protection before entering the base adapter."""
         if event.message_type == MessageType.TEXT and not event.is_command():
+            if await self._merge_text_into_pending_media(event):
+                return
             await self._enqueue_text_event(event)
             return
         if self._should_batch_media_event(event):
@@ -3560,6 +3704,43 @@ class FeishuAdapter(BasePlatformAdapter):
             profile=self._session_key_profile(event.source),
         )
         return f"{session_key}:media:{event.message_type.value}"
+
+    async def _merge_text_into_pending_media(self, event: MessageEvent) -> bool:
+        """Attach a prompt sent immediately after media to that media event.
+
+        Feishu sends ordinary attachments and their user-written instructions
+        as separate messages.  During the media quiet window, merge a compatible
+        following text message instead of making the gateway run two turns.
+        Commands and quoted/threaded replies are intentionally excluded by the
+        caller and compatibility check.
+        """
+        session_key = self._text_batch_key(event)
+        prefix = f"{session_key}:media:"
+        for key, pending in tuple(self._pending_media_batches.items()):
+            if not key.startswith(prefix) or not self._media_instruction_is_compatible(pending, event):
+                continue
+            pending.text = self._merge_caption(pending.text, event.text)
+            pending.timestamp = event.timestamp
+            if event.message_id:
+                pending.message_id = event.message_id
+            task = self._pending_media_batch_tasks.pop(key, None)
+            if task and not task.done():
+                task.cancel()
+            logger.info(
+                "[Feishu] Merged following text instruction into pending media batch %s",
+                key,
+            )
+            await self._flush_media_batch_now(key)
+            return True
+        return False
+    @staticmethod
+    def _media_instruction_is_compatible(existing: MessageEvent, incoming: MessageEvent) -> bool:
+        """Allow a following text instruction for the same media context."""
+        return (
+            existing.reply_to_message_id == incoming.reply_to_message_id
+            and existing.reply_to_text == incoming.reply_to_text
+            and existing.source.thread_id == incoming.source.thread_id
+        )
 
     @staticmethod
     def _media_batch_is_compatible(existing: MessageEvent, incoming: MessageEvent) -> bool:

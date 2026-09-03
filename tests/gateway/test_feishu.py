@@ -950,6 +950,84 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.source.user_id_alt, "on_union")
         self.assertEqual(event.source.chat_name, "Feishu DM")
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_p2p_quoted_reply_keeps_dm_session_and_quote_context(self):
+        """A Feishu DM quote is not a real thread, but quote context remains."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter.get_chat_info = AsyncMock(return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"})
+        adapter._fetch_message_text = AsyncMock(return_value="quoted text")
+        message = SimpleNamespace(
+            chat_id="oc_chat", thread_id="om_quoted", root_id="om_quoted",
+            parent_id="om_quoted", upper_message_id=None, message_type="text",
+            content='{"text":"reply"}', message_id="om_reply",
+        )
+
+        asyncio.run(adapter._process_inbound_message(
+            data=SimpleNamespace(event=SimpleNamespace(message=message)), message=message,
+            sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+            is_bot=False, chat_type="p2p", message_id="om_reply",
+        ))
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertIsNone(event.source.thread_id)
+        self.assertEqual(event.reply_to_message_id, "om_quoted")
+        self.assertEqual(event.reply_to_text, "quoted text")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_group_quoted_reply_preserves_real_thread_id(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter.get_chat_info = AsyncMock(return_value={"chat_id": "oc_group", "name": "Group", "type": "group"})
+        adapter._fetch_message_text = AsyncMock(return_value="quoted text")
+        message = SimpleNamespace(
+            chat_id="oc_group", thread_id="omt_real", root_id="omt_real",
+            parent_id="om_quoted", upper_message_id=None, message_type="text",
+            content='{"text":"reply"}', message_id="om_reply",
+        )
+
+        asyncio.run(adapter._process_inbound_message(
+            data=SimpleNamespace(event=SimpleNamespace(message=message)), message=message,
+            sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+            is_bot=False, chat_type="group", message_id="om_reply",
+        ))
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.source.thread_id, "omt_real")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_following_text_merges_into_pending_media_only_when_context_matches(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.session import SessionSource
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(platform=adapter.platform, chat_id="oc_chat", chat_name="Feishu DM", chat_type="dm", user_id="ou_user", user_name="张三")
+        media = MessageEvent(text="", message_type=MessageType.PHOTO, source=source, message_id="om_photo", media_urls=["/tmp/a.png"], media_types=["image/png"])
+        instruction = MessageEvent(text="请总结这张图", message_type=MessageType.TEXT, source=source, message_id="om_instruction")
+
+        async def _run():
+            await adapter._enqueue_media_event(media)
+            self.assertTrue(await adapter._merge_text_into_pending_media(instruction))
+
+        asyncio.run(_run())
+        adapter.handle_message.assert_awaited_once()
+        self.assertIn("请总结这张图", adapter.handle_message.await_args.args[0].text)
+
 
     @patch.dict(
         os.environ,

@@ -3175,6 +3175,7 @@ def create_task(
     created_by: Optional[str] = None,
     workspace_kind: str = "scratch",
     workspace_path: Optional[str] = None,
+    requested_workspace: Optional[str] = None,
     branch_name: Optional[str] = None,
     tenant: Optional[str] = None,
     priority: int = 0,
@@ -3555,6 +3556,10 @@ def create_task(
                         "status": task_status,
                         "parents": list(parents),
                         "tenant": tenant,
+                        # Preserve the caller's pre-normalization request as
+                        # separate creation provenance. The established fields
+                        # below remain the normalized creation state.
+                        "requested_workspace": requested_workspace,
                         "workspace_kind": workspace_kind,
                         "workspace_path": workspace_path,
                         "branch_name": branch_name,
@@ -4306,6 +4311,33 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
             )
         )
     return out
+
+
+def get_created_requested_workspace(
+    conn: sqlite3.Connection, task_id: str
+) -> Optional[str]:
+    """Return the immutable workspace request recorded at task creation.
+
+    Legacy or malformed ``created`` events may not carry the additive field;
+    those are treated like an omitted request. Reading the durable event (not
+    the current create invocation) keeps idempotent retries from inventing or
+    suppressing a supersession warning for the pre-existing task they return.
+    """
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'created' ORDER BY created_at ASC, id ASC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None or not row["payload"]:
+        return None
+    try:
+        payload = json.loads(row["payload"])
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    requested = payload.get("requested_workspace")
+    return requested if isinstance(requested, str) else None
 
 
 def _append_event(
@@ -7903,13 +7935,58 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
 
 
 def set_workspace_path(
-    conn: sqlite3.Connection, task_id: str, path: Path | str
-) -> None:
+    conn: sqlite3.Connection,
+    task_id: str,
+    path: Path | str,
+    *,
+    branch_name: Optional[str] = None,
+) -> bool:
+    """Persist a claim-resolved workspace and its provenance atomically.
+
+    Emit ``workspace_resolved`` only when resolution changes the persisted
+    path or branch. The row update and event share one transaction, so history
+    cannot claim a resolution whose task update rolled back. Returns whether
+    either resolved value changed.
+    """
+    resolved_path = str(path)
     with write_txn(conn):
+        row = conn.execute(
+            "SELECT workspace_path, branch_name, current_run_id "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown task: {task_id}")
+
+        previous_path = row["workspace_path"]
+        previous_branch = row["branch_name"]
+        resolved_branch = branch_name if branch_name is not None else previous_branch
+        if previous_path == resolved_path and previous_branch == resolved_branch:
+            return False
+
         conn.execute(
-            "UPDATE tasks SET workspace_path = ? WHERE id = ?",
-            (str(path), task_id),
+            "UPDATE tasks SET workspace_path = ?, branch_name = ? WHERE id = ?",
+            (resolved_path, resolved_branch, task_id),
         )
+        _append_event(
+            conn,
+            task_id,
+            "workspace_resolved",
+            {
+                "previous_path": previous_path,
+                "resolved_path": resolved_path,
+                "previous_branch_name": previous_branch,
+                "resolved_branch_name": resolved_branch,
+                # Backward-compatible alias retained for existing consumers.
+                "branch_name": resolved_branch,
+            },
+            run_id=(
+                int(row["current_run_id"])
+                if row["current_run_id"] is not None
+                else None
+            ),
+        )
+    return True
 
 
 def set_branch_name(
@@ -10255,10 +10332,22 @@ def _dispatch_once_locked(
             if auto:
                 result.auto_blocked.append(claimed.id)
             continue
-        # Persist the resolved workspace path so the worker can cd there.
-        set_workspace_path(conn, claimed.id, str(workspace))
-        if claimed.workspace_kind == "worktree":
-            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+        # Persist the resolved workspace and branch together with the provenance
+        # event so readers never observe a path/branch pair from different
+        # claim-resolution states.
+        resolved_branch = (
+            resolved_branch_name
+            or (claimed.branch_name or "").strip()
+            or f"wt/{claimed.id}"
+            if claimed.workspace_kind == "worktree"
+            else None
+        )
+        set_workspace_path(
+            conn,
+            claimed.id,
+            str(workspace),
+            branch_name=resolved_branch,
+        )
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
@@ -10382,10 +10471,22 @@ def _dispatch_once_locked(
             if auto:
                 result.auto_blocked.append(claimed.id)
             continue
-        # Persist the resolved workspace path so the worker can cd there.
-        set_workspace_path(conn, claimed.id, str(workspace))
-        if claimed.workspace_kind == "worktree":
-            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+        # Persist the resolved workspace and branch together with the provenance
+        # event so readers never observe a path/branch pair from different
+        # claim-resolution states.
+        resolved_branch = (
+            resolved_branch_name
+            or (claimed.branch_name or "").strip()
+            or f"wt/{claimed.id}"
+            if claimed.workspace_kind == "worktree"
+            else None
+        )
+        set_workspace_path(
+            conn,
+            claimed.id,
+            str(workspace),
+            branch_name=resolved_branch,
+        )
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         # Force-load the sdlc-review skill for review agents — it carries
         # the review logic (AC verification, merge, etc.). The mandatory

@@ -1125,15 +1125,24 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 
 | Kind | Payload | When |
 |---|---|---|
-| `created` | `{assignee, status, parents, tenant}` | Task inserted. `run_id` is `NULL`. |
+| `created` | `{assignee, status, parents, tenant, requested_workspace, workspace_kind, workspace_path, branch_name, project_id, …}` | Task inserted. `requested_workspace` is the caller's pre-normalization workspace string (or `null` when omitted); `workspace_kind` and `workspace_path` are the normalized creation state. This event is immutable and its `run_id` is `NULL`. |
 | `promoted` | — | `todo → ready` because all parents hit `done`. `run_id` is `NULL`. |
 | `claimed` | `{lock, expires, run_id}` | Dispatcher atomically claimed a `ready` task for spawn. |
+| `workspace_resolved` | `{previous_path, resolved_path, previous_branch_name, resolved_branch_name, branch_name}` | Claim-time workspace resolution changed the persisted path or branch. The task-row update and event are atomic; repeated resolution to the same path and branch emits no duplicate event. `branch_name` remains a backward-compatible alias for `resolved_branch_name`. |
 | `completed` | `{result_len, summary?}` | Worker wrote `--result` / `--summary` and task hit `done`. `summary` is the first-line handoff (400-char cap); full version lives on the run row. If `complete_task` is called on a never-claimed task with handoff fields, a zero-duration run is synthesized so `run_id` still points at something. |
 | `blocked` | `{reason, kind, recurrences}` | Worker or human flipped the task to `blocked`. `kind` is the typed block reason (`needs_input`, `capability`, `transient`, or `null` for a generic block); `recurrences` is the unblock-loop counter. Synthesizes a zero-duration run when called on a never-claimed task with `--reason`. |
 | `dependency_wait` | `{reason, kind}` | Worker blocked with `kind=dependency` — the task is only waiting on another task, so it routes to `todo` (parent-gated, auto-promoted) instead of `blocked`. No human needed. |
 | `block_loop_detected` | `{reason, kind, recurrences, limit}` | A task was unblocked and re-blocked for the same reason `BLOCK_RECURRENCE_LIMIT` times (default 2). Instead of landing in `blocked` again — where a cron would keep unblocking it — it routes to `triage` for a human decision, breaking the unblock↔re-block loop. |
 | `unblocked` | — | `blocked → ready` (or `todo` if parents are still open), either manually or via `/unblock`. Resets the dispatcher's `consecutive_failures` but deliberately preserves `block_recurrences` so the loop breaker keeps its memory. `run_id` is `NULL`. |
 | `archived` | — | Hidden from the default board. If the task was still running, carries the `run_id` of the run that was reclaimed as a side effect. |
+
+Workspace provenance is additive and backward-compatible. Readers must accept older `created`
+events without `requested_workspace`; in that case the explicit pre-normalization request is
+unknown, while the existing workspace fields still describe creation-time state. The absence of a
+later `workspace_resolved` event means only that no recorded post-creation path or branch change exists. The
+kernel does not backfill or rewrite older events. When a project binding supersedes an explicitly
+requested `scratch` workspace, creation succeeds and the CLI/API returns a warning naming both the
+request and selected project worktree; omitted/default project inheritance remains silent.
 
 **Edits** (human-driven changes that aren't transitions):
 

@@ -747,10 +747,13 @@ class LineAdapter(BasePlatformAdapter):
             os.getenv("LINE_ALLOWED_ROOMS", "")
         ) | set(extra.get("allowed_rooms", []))
 
-        # Slow-LLM postback button threshold
+        # Slow-LLM postback button threshold. Scope-aware (see
+        # _get_scoped_secret's docstring): a secondary multiplex profile
+        # must not borrow the default profile's bridged env values here
+        # either — same leak mechanism as host/port/allowlists above.
         try:
             self.slow_response_threshold = float(
-                os.getenv("LINE_SLOW_RESPONSE_THRESHOLD")
+                _get_scoped_secret("LINE_SLOW_RESPONSE_THRESHOLD")
                 or extra.get("slow_response_threshold", DEFAULT_SLOW_RESPONSE_THRESHOLD)
             )
         except (TypeError, ValueError):
@@ -758,19 +761,19 @@ class LineAdapter(BasePlatformAdapter):
 
         # User-overridable copy
         self.pending_text = (
-            os.getenv("LINE_PENDING_TEXT")
+            _get_scoped_secret("LINE_PENDING_TEXT")
             or extra.get("pending_text", DEFAULT_PENDING_REPLY_TEXT)
         )
         self.button_label = (
-            os.getenv("LINE_BUTTON_LABEL")
+            _get_scoped_secret("LINE_BUTTON_LABEL")
             or extra.get("button_label", DEFAULT_BUTTON_LABEL)
         )
         self.delivered_text = (
-            os.getenv("LINE_DELIVERED_TEXT")
+            _get_scoped_secret("LINE_DELIVERED_TEXT")
             or extra.get("delivered_text", DEFAULT_DELIVERED_TEXT)
         )
         self.interrupted_text = (
-            os.getenv("LINE_INTERRUPTED_TEXT")
+            _get_scoped_secret("LINE_INTERRUPTED_TEXT")
             or extra.get("interrupted_text", DEFAULT_INTERRUPTED_TEXT)
         )
 

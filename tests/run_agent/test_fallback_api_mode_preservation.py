@@ -14,6 +14,8 @@ Three behaviors salvaged from PR #79787:
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from run_agent import AIAgent
 
 
@@ -158,6 +160,33 @@ class TestOriginalUrlDetection:
         mock_rpc = _activate(agent, "https://api.anthropic.com", "claude-opus-4-6")
         assert agent.api_mode == "anthropic_messages"
         assert mock_rpc.call_args.kwargs["api_mode"] == "anthropic_messages"
+
+
+@pytest.mark.parametrize(
+    ("override", "expected"),
+    [
+        ({"enabled": True, "effort": "high"}, {"enabled": True, "effort": "high"}),
+        ({"enabled": False}, {"enabled": False}),
+    ],
+)
+def test_delegation_reasoning_override_survives_fallback(override, expected):
+    """Fallback transport changes must not replace a child-only override."""
+    agent = _make_agent(fallback_model=[{
+        "provider": "custom",
+        "model": "fallback-model",
+        "base_url": "https://fallback.invalid/v1",
+        "api_key": "k",
+    }])
+    agent.reasoning_config = dict(override)
+    agent._delegation_reasoning_override = dict(override)
+
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={"agent": {"reasoning_effort": "low"}},
+    ):
+        _activate(agent, "https://fallback.invalid/v1", "fallback-model")
+
+    assert agent.reasoning_config == expected
 
 
 class TestPlainFallbackUnchanged:

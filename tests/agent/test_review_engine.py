@@ -113,37 +113,245 @@ def test_build_review_task_without_prompt_has_no_instruction_block():
 # auxiliary.review credential resolution
 # ---------------------------------------------------------------------------
 
-def test_load_review_credentials_cfg_reads_config(monkeypatch):
+def test_load_review_config_separates_reasoning_from_credentials(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly",
         lambda: {"auxiliary": {"review": {
             "provider": "openrouter",
             "model": "anthropic/claude-opus-4.6",
+            "reasoning_effort": "high",
         }}},
     )
-    cfg = re_mod._load_review_credentials_cfg()
-    assert cfg == {
+    snapshot = re_mod._load_review_config()
+    assert snapshot.credentials_cfg == {
         "provider": "openrouter",
         "model": "anthropic/claude-opus-4.6",
         "base_url": "",
         "api_key": "",
         "api_mode": "",
     }
+    assert snapshot.reasoning_effort == "high"
 
 
-def test_load_review_credentials_cfg_auto_means_inherit(monkeypatch):
+def test_load_review_config_reasoning_only_keeps_credentials_inherit(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly",
-        lambda: {"auxiliary": {"review": {"provider": "auto", "model": ""}}},
+        lambda: {"auxiliary": {"review": {"reasoning_effort": "xhigh"}}},
     )
-    assert re_mod._load_review_credentials_cfg() is None
+    snapshot = re_mod._load_review_config()
+    assert snapshot.credentials_cfg is None
+    assert snapshot.reasoning_effort == "xhigh"
 
 
-def test_load_review_credentials_cfg_missing_section(monkeypatch):
+@pytest.mark.parametrize(
+    ("config", "expected_reasoning"),
+    [
+        ({"auxiliary": {"review": {}}}, None),
+        ({"auxiliary": {"review": {"reasoning_effort": ""}}}, ""),
+        ({"auxiliary": {"review": {"provider": "auto", "model": ""}}}, None),
+        ({"auxiliary": {}}, None),
+    ],
+)
+def test_load_review_config_inert_values_keep_credentials_inherited(
+    monkeypatch, config, expected_reasoning
+):
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly", lambda: {"auxiliary": {}}
+        "hermes_cli.config.load_config_readonly",
+        lambda: config,
     )
-    assert re_mod._load_review_credentials_cfg() is None
+    snapshot = re_mod._load_review_config()
+    assert snapshot.credentials_cfg is None
+    assert snapshot.reasoning_effort == expected_reasoning
+
+
+def test_load_review_config_preserves_yaml_false(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"auxiliary": {"review": {"reasoning_effort": False}}},
+    )
+    snapshot = re_mod._load_review_config()
+    assert snapshot.credentials_cfg is None
+    assert snapshot.reasoning_effort is False
+
+
+def test_load_review_config_reads_real_isolated_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "auxiliary:\n  review:\n    provider: auto\n    reasoning_effort: high\n",
+        encoding="utf-8",
+    )
+
+    snapshot = re_mod._load_review_config()
+    assert snapshot.credentials_cfg is None
+    assert snapshot.reasoning_effort == "high"
+
+
+@pytest.mark.parametrize("effort", ["high", "", False, "not-a-level"])
+def test_start_review_forwards_raw_review_reasoning_effort(monkeypatch, effort):
+    import tools.delegate_tool as dt
+
+    captured = {}
+
+    def fake_delegate_task(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"status": "dispatched"})
+
+    monkeypatch.setattr(
+        re_mod,
+        "_load_review_config",
+        lambda: re_mod._ReviewConfig(
+            credentials_cfg=None, reasoning_effort=effort
+        ),
+    )
+    monkeypatch.setattr(dt, "delegate_task", fake_delegate_task)
+
+    result = start_review(
+        _fake_parent(),
+        [{"role": "user", "content": "review this"}],
+    )
+
+    assert result["status"] == "dispatched"
+    assert captured["credentials_cfg"] is None
+    assert captured["override_reasoning_effort"] == effort
+
+
+def test_start_review_forwards_dedicated_credentials_and_effort(monkeypatch):
+    import tools.delegate_tool as dt
+
+    captured = {}
+    credentials = {
+        "provider": "openrouter",
+        "model": "review-model",
+        "base_url": "",
+        "api_key": "",
+        "api_mode": "",
+    }
+
+    monkeypatch.setattr(
+        re_mod,
+        "_load_review_config",
+        lambda: re_mod._ReviewConfig(
+            credentials_cfg=credentials, reasoning_effort="minimal"
+        ),
+    )
+    monkeypatch.setattr(
+        dt,
+        "delegate_task",
+        lambda **kwargs: captured.update(kwargs) or json.dumps({
+            "status": "dispatched",
+        }),
+    )
+
+    result = start_review(
+        _fake_parent(),
+        [{"role": "user", "content": "review this"}],
+    )
+
+    assert result["status"] == "dispatched"
+    assert captured["credentials_cfg"] == credentials
+    assert captured["override_reasoning_effort"] == "minimal"
+
+
+def test_start_review_loads_credentials_and_reasoning_from_one_snapshot(monkeypatch):
+    import tools.delegate_tool as dt
+
+    calls = []
+    captured = {}
+
+    def load_config_once():
+        calls.append(object())
+        return {"auxiliary": {"review": {
+            "provider": "auto",
+            "model": "review-model",
+            "reasoning_effort": "high",
+        }}}
+
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", load_config_once)
+    monkeypatch.setattr(
+        dt,
+        "delegate_task",
+        lambda **kwargs: captured.update(kwargs) or json.dumps({
+            "status": "dispatched",
+        }),
+    )
+
+    result = start_review(
+        _fake_parent(),
+        [{"role": "user", "content": "review this"}],
+    )
+
+    assert result["status"] == "dispatched"
+    assert len(calls) == 1
+    assert captured["credentials_cfg"]["model"] == "review-model"
+    assert captured["override_reasoning_effort"] == "high"
+
+
+def test_start_review_resolves_real_config_into_child(tmp_path, monkeypatch):
+    """The live config and delegation path agree at child construction."""
+    import run_agent
+    import tools.delegate_tool as dt
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "delegation:\n"
+        "  reasoning_effort: low\n"
+        "auxiliary:\n"
+        "  review:\n"
+        "    model: review-model\n"
+        "    base_url: https://review.invalid/v1\n"
+        "    reasoning_effort: high\n",
+        encoding="utf-8",
+    )
+
+    constructed = {}
+    child = MagicMock()
+    child._delegate_role = "leaf"
+
+    def fake_agent(**kwargs):
+        constructed.update(kwargs)
+        return child
+
+    monkeypatch.setattr(run_agent, "AIAgent", fake_agent)
+    monkeypatch.setattr(
+        dt,
+        "_run_single_child",
+        lambda *args, **kwargs: {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "ok",
+            "api_calls": 0,
+            "duration_seconds": 0.0,
+            "model": "review-model",
+            "exit_reason": "completed",
+        },
+    )
+
+    parent = _fake_parent()
+    parent.base_url = "https://parent.invalid/v1"
+    parent.api_key = "parent-key"
+    parent.provider = "openrouter"
+    parent.api_mode = "chat_completions"
+    parent.model = "parent-model"
+    parent.reasoning_config = {"enabled": True, "effort": "medium"}
+    parent.enabled_toolsets = ["terminal", "file"]
+    parent.disabled_toolsets = []
+    parent._session_db = None
+    parent._fallback_chain = []
+
+    result = start_review(
+        parent,
+        [{"role": "user", "content": "review this"}],
+    )
+
+    assert result["status"] == "dispatched"
+    assert constructed["model"] == "review-model"
+    assert constructed["provider"] == "custom"
+    assert constructed["base_url"] == "https://review.invalid/v1"
+    assert constructed["reasoning_config"] == {"enabled": True, "effort": "high"}
+    assert child._delegation_reasoning_override == {
+        "enabled": True,
+        "effort": "high",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +439,11 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
     monkeypatch.setattr(dt, "_build_child_agent", fake_build)
     monkeypatch.setattr(dt, "_run_single_child", fake_run_single_child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(
+        re_mod,
+        "_load_review_config",
+        lambda: re_mod._ReviewConfig(credentials_cfg=None, reasoning_effort=""),
+    )
 
     msgs = [
         {"role": "user", "content": "open a PR for the fix"},
@@ -366,7 +578,11 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
             "exit_reason": "completed",
         },
     )
-    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(
+        re_mod,
+        "_load_review_config",
+        lambda: re_mod._ReviewConfig(credentials_cfg=None, reasoning_effort=""),
+    )
 
     parent = _fake_parent()
     parent.ephemeral_system_prompt = (
@@ -460,7 +676,11 @@ def test_review_child_gets_workspace_context_via_dispatch(monkeypatch, tmp_path)
             "exit_reason": "completed",
         },
     )
-    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(
+        re_mod,
+        "_load_review_config",
+        lambda: re_mod._ReviewConfig(credentials_cfg=None, reasoning_effort=""),
+    )
 
     result = start_review(_fake_parent(), [
         {"role": "user", "content": "open a PR"},

@@ -3067,17 +3067,23 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 api_mode=agent.api_mode,
             )
 
-        # Re-resolve reasoning_config for the new fallback model (Closes #21256).
-        # Shared chokepoint: per-model override > global reasoning_effort
-        # (YAML boolean False = disabled). Wrapped in try/except because a
-        # config load failure must not kill the swap.
+        # Explicit delegation and review levels remain authoritative when the
+        # child changes transport. Otherwise re-resolve for the fallback model
+        # as before (Closes #21256). Provider adapters perform their normal
+        # model-specific clamping when constructing the request.
+        delegated_reasoning = getattr(
+            agent, "_delegation_reasoning_override", None
+        )
         try:
-            from hermes_cli.config import load_config
-            from hermes_constants import resolve_reasoning_config
+            if isinstance(delegated_reasoning, dict):
+                agent.reasoning_config = dict(delegated_reasoning)
+            else:
+                from hermes_cli.config import load_config
+                from hermes_constants import resolve_reasoning_config
 
-            agent.reasoning_config = resolve_reasoning_config(
-                load_config() or {}, agent.model
-            )
+                agent.reasoning_config = resolve_reasoning_config(
+                    load_config() or {}, agent.model
+                )
             logger.info(
                 "Fallback %s: reasoning_config resolved: %s",
                 agent.model, agent.reasoning_config,

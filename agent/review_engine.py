@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -200,38 +201,54 @@ def build_review_task(
     return goal, "\n".join(lines)
 
 
-def _load_review_credentials_cfg() -> Optional[Dict[str, Any]]:
-    """Read ``auxiliary.review`` into a delegation-credentials-shaped dict.
+@dataclass(frozen=True)
+class _ReviewConfig:
+    """Snapshot of the review-specific routing and reasoning settings."""
 
-    Returns None when the user configured nothing (provider=auto/empty and no
-    model/base_url), which makes the reviewer inherit the parent agent's
-    credentials — the main-model-first default.
+    credentials_cfg: Optional[Dict[str, Any]]
+    reasoning_effort: Any = None
+
+
+def _load_review_config() -> _ReviewConfig:
+    """Read ``auxiliary.review`` once, keeping routing and reasoning separate.
+
+    Credential overrides are only activated when provider, model, or base_url
+    is configured.  A reasoning-only review config therefore keeps the normal
+    delegation credential chain intact while still carrying the raw effort
+    value to the child-agent reasoning resolver.
     """
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_cli.config import cfg_get, load_config_readonly
 
         full = load_config_readonly()
-        aux = full.get("auxiliary") or {}
-        review = aux.get("review") or {}
+        review = cfg_get(full, "auxiliary", "review", default={}) or {}
         if not isinstance(review, dict):
-            return None
+            return _ReviewConfig(credentials_cfg=None)
     except Exception:
-        return None
+        return _ReviewConfig(credentials_cfg=None)
 
     provider = str(review.get("provider") or "").strip()
     if provider.lower() == "auto":
         provider = ""
     model = str(review.get("model") or "").strip()
     base_url = str(review.get("base_url") or "").strip()
+    credentials_cfg: Optional[Dict[str, Any]] = None
     if not (provider or model or base_url):
-        return None
-    return {
+        return _ReviewConfig(
+            credentials_cfg=None,
+            reasoning_effort=review.get("reasoning_effort"),
+        )
+    credentials_cfg = {
         "provider": provider,
         "model": model,
         "base_url": base_url,
         "api_key": str(review.get("api_key") or "").strip(),
         "api_mode": str(review.get("api_mode") or "").strip(),
     }
+    return _ReviewConfig(
+        credentials_cfg=credentials_cfg,
+        reasoning_effort=review.get("reasoning_effort"),
+    )
 
 
 def start_review(
@@ -257,7 +274,8 @@ def start_review(
 
     loaded_skills = collect_parent_loaded_skills(parent_agent, messages)
     goal, context = build_review_task(snapshot, user_prompt, loaded_skills)
-    credentials_cfg = _load_review_credentials_cfg()
+    review_cfg = _load_review_config()
+    credentials_cfg = review_cfg.credentials_cfg
 
     from tools.delegate_tool import delegate_task
 
@@ -267,6 +285,7 @@ def start_review(
         background=True,
         parent_agent=parent_agent,
         credentials_cfg=credentials_cfg,
+        override_reasoning_effort=review_cfg.reasoning_effort,
     )
     try:
         result = json.loads(raw)

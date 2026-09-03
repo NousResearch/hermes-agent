@@ -1758,6 +1758,9 @@ def _build_child_agent(
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
     override_max_tokens: Optional[int] = None,
+    # Internal per-call reasoning override used by auxiliary review.  This is
+    # deliberately separate from credential overrides and is not model-facing.
+    override_reasoning_effort: Any = None,
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -1996,9 +1999,12 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: delegation override > parent inherit.  A
+    # review-only per-call override is applied after that existing chain so an
+    # invalid review value can fall back to the already-resolved result.
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
+    child_reasoning_override = None
     try:
         # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
         # False (``reasoning_effort: false``) to "" and inherit the parent
@@ -2010,6 +2016,7 @@ def _build_child_agent(
             parsed = parse_reasoning_effort(delegation_effort)
             if parsed is not None:
                 child_reasoning = parsed
+                child_reasoning_override = parsed
             else:
                 logger.warning(
                     "Unknown delegation.reasoning_effort '%s', inheriting parent level",
@@ -2017,6 +2024,33 @@ def _build_child_agent(
                 )
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
+
+    # ``None`` and blank strings mean that the review caller did not request an
+    # override.  Keep YAML ``false`` distinct from omission: the canonical
+    # parser turns it into an explicit disabled config.  Invalid present
+    # values warn and leave the delegation-or-parent result intact.
+    if not (
+        override_reasoning_effort is None
+        or (
+            isinstance(override_reasoning_effort, str)
+            and not override_reasoning_effort.strip()
+        )
+    ):
+        try:
+            from hermes_constants import parse_reasoning_effort
+
+            parsed = parse_reasoning_effort(override_reasoning_effort)
+            if parsed is not None:
+                child_reasoning = parsed
+                child_reasoning_override = parsed
+            else:
+                logger.warning(
+                    "Unknown auxiliary.review.reasoning_effort '%s', "
+                    "retaining delegation or parent reasoning level",
+                    override_reasoning_effort,
+                )
+        except Exception as exc:
+            logger.debug("Could not load review reasoning_effort: %s", exc)
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
@@ -2172,6 +2206,15 @@ def _build_child_agent(
                 except Exception:
                     pass
             raise
+    # Fallback activation normally re-resolves reasoning for the fallback
+    # model. Preserve an explicit delegation or review level across that
+    # transport switch; provider adapters still clamp unsupported levels at
+    # request construction time.
+    child._delegation_reasoning_override = (
+        dict(child_reasoning_override)
+        if isinstance(child_reasoning_override, dict)
+        else None
+    )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Ownership transfer for the dedicated handle: the child's close() must
     # release it (nothing else holds a reference), and no parent teardown can
@@ -3933,6 +3976,9 @@ def delegate_task(
     message: Optional[str] = None,
     parent_agent=None,
     credentials_cfg: Optional[Dict[str, Any]] = None,
+    # Internal-only per-call override for auxiliary.review.  Kept out of the
+    # registered schema so ordinary model-controlled delegation is unchanged.
+    override_reasoning_effort: Any = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks, or control
@@ -4206,6 +4252,7 @@ def delegate_task(
                 override_api_mode=creds["api_mode"],
                 override_request_overrides=creds.get("request_overrides"),
                 override_max_tokens=creds.get("max_output_tokens"),
+                override_reasoning_effort=override_reasoning_effort,
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,

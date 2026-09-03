@@ -97,7 +97,11 @@ async def test_review_command_dispatches_background_subagent(monkeypatch):
             "exit_reason": "completed",
         },
     )
-    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(
+        re_mod,
+        "_load_review_config",
+        lambda: re_mod._ReviewConfig(credentials_cfg=None, reasoning_effort=""),
+    )
 
     agent = _make_agent()
     runner = _make_runner(agent)

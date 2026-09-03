@@ -875,6 +875,19 @@ prompt_caching:
 #     model: ""
 #     # max_concurrency: 2    # Optional: cap simultaneous compression calls
 #
+#   # Full-agent work-product reviewer started by /review.
+#   # Provider/model routing is independent from the reasoning override, so
+#   # they can stay at their defaults when only the reviewer's thinking level
+#   # should differ from the parent.
+#   review:
+#     provider: "auto"
+#     model: ""
+#     reasoning_effort: ""   # none, minimal, low, medium, high, xhigh, max, ultra
+#                            # Precedence: review, delegation, then parent.
+#                            # Empty/unset falls through. Invalid values warn and
+#                            # fall through. "none" explicitly disables reasoning.
+#                            # The transport may clamp unsupported levels.
+#
 #   # Post-turn memory/skill self-improvement review fork. Runs after a turn
 #   # when the nudge intervals fire; writes skills/memories in a daemon thread.
 #   # Usage is recorded under session_model_usage task='background_review'.

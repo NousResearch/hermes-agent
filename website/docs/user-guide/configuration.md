@@ -1310,11 +1310,23 @@ MoA is the one exception: reasoning depth for Mixture-of-Agents is configured **
 
 ```yaml
 auxiliary:
+  review:
+    reasoning_effort: "high"  # /review only; independent of provider/model
   compression:
     reasoning_effort: "low"    # summaries don't need deep thinking
   vision:
     reasoning_effort: "none"   # disable thinking for image description
 ```
+
+For the full-agent `/review` worker, `auxiliary.review.reasoning_effort` accepts
+`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`. `none`
+explicitly disables reasoning. The precedence is strict: the review-specific
+value, then `delegation.reasoning_effort`, then the parent's inherited
+reasoning setting. An empty or unset review value falls through that chain. An
+invalid review value emits a warning and also falls through. This setting is
+independent of the review provider and model, and belongs in `config.yaml`
+rather than as a separate environment variable. The provider transport may
+clamp a level that it does not support.
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 

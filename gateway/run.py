@@ -3386,8 +3386,8 @@ def _resolve_runtime_agent_kwargs() -> dict:
         # carrying ``chat_template_kwargs``) resolved by resolve_runtime_provider().
         # Must flow through to the per-turn route or the provider's configured
         # request body never reaches the model on the gateway path.
-        "request_overrides": runtime.get("request_overrides"),
         "capabilities": capabilities,
+        "model": runtime.get("model"),
     }
 
 
@@ -3530,6 +3530,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "request_overrides": dict(runtime.get("request_overrides") or {}),
         "capabilities": dict(runtime.get("capabilities") or {}),
         "max_tokens": runtime.get("max_output_tokens"),
+        "model": runtime.get("model"),
     }
 
 
@@ -4301,19 +4302,30 @@ def _load_gateway_runtime_config() -> dict:
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
-    """Read model from config.yaml — single source of truth.
+    """Read the effective model name from config, falling back to the provider's default.
 
-    Without this, temporary AIAgent instances (e.g. /compress) fall
-    back to the hardcoded default which fails when the active provider is
-    openai-codex.
+    Without this, temporary AIAgent instances (e.g. /compress) fail when the
+    active provider is openai-codex or a custom provider with no model.default.
     """
     cfg = config if config is not None else _load_gateway_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):
         return model_cfg
-    elif isinstance(model_cfg, dict):
-        return model_cfg.get("default") or model_cfg.get("model") or ""
-    return ""
+    if isinstance(model_cfg, dict):
+        explicit = model_cfg.get("default") or model_cfg.get("model") or ""
+        if explicit:
+            return explicit
+    # Only call resolve_runtime_provider when using the live config (not a
+    # caller-supplied dict), so unit tests that pass a minimal config dict
+    # don't accidentally pick up the real ~/.hermes/config.yaml.
+    if config is not None:
+        return ""
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        runtime = resolve_runtime_provider()
+        return str(runtime.get("model") or "")
+    except Exception:
+        return ""
 
 
 def _channel_override_lookup_keys(

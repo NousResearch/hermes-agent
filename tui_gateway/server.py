@@ -5418,8 +5418,10 @@ def _resolve_model() -> str:
         return env
     m = _load_cfg().get("model", "")
     if isinstance(m, dict):
-        return str(m.get("default", "") or "").strip()
-    if isinstance(m, str) and m:
+        explicit = str(m.get("default", "") or "").strip()
+        if explicit:
+            return explicit
+    elif isinstance(m, str) and m:
         return m.strip()
     # No env seed and no config preference: fall back to the cost-safe silent
     # default (catalog-labeled, cache-only read), never an expensive Anthropic

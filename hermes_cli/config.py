@@ -817,7 +817,9 @@ from utils import atomic_replace, fast_safe_load
 
 def get_config_path() -> Path:
     """Get the main config file path."""
-    return get_hermes_home() / "config.yaml"
+    path = get_hermes_home() / "config.yaml"
+    _ensure_config_test_isolation(path)
+    return path
 
 
 def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
@@ -863,7 +865,9 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
 
 def get_env_path() -> Path:
     """Get the .env file path (for API keys)."""
-    return get_hermes_home() / ".env"
+    path = get_hermes_home() / ".env"
+    _ensure_config_test_isolation(path)
+    return path
 
 def get_project_root() -> Path:
     """Get the project installation directory."""
@@ -3750,6 +3754,115 @@ def read_raw_config_readonly() -> Dict[str, Any]:
         return cached_copy
 
 
+# ── Live-system test isolation guard (mirrors hermes_state._ensure_test_isolation)
+_CONFIG_GUARD_BYPASS: bool = False
+_CONFIG_GUARD_EXTRA_DENY_ROOTS: Tuple[Path, ...] = ()
+
+
+def _real_platform_config_root() -> Optional[Path]:
+    """Resolve the REAL platform-default Hermes root for the test guard.
+
+    Deliberately avoids ``Path.home()`` / ``hermes_constants``: tests
+    routinely monkeypatch ``Path.home`` to a tempdir, and ``hermes_cli.config``
+    is often imported lazily *while* such a patch is active — resolving
+    through the patched callable would misidentify the test's own hermetic
+    home as "production" (false positive) or, worse, miss the real one
+    (false negative). ``os.path.expanduser`` reads the HOME environment
+    variable / passwd entry, which the hermetic conftest never rewrites.
+    """
+    try:
+        if sys.platform == "win32":
+            base = os.environ.get("LOCALAPPDATA", "").strip()
+            root = (
+                Path(base) / "hermes"
+                if base
+                else Path(os.path.expanduser("~")) / "AppData" / "Local" / "hermes"
+            )
+        else:
+            root = Path(os.path.expanduser("~")) / ".hermes"
+        return root.resolve()
+    except Exception:
+        return None
+
+
+def _running_under_test() -> bool:
+    """True when this process (or a parent test process) is running tests."""
+    return bool(
+        os.environ.get("PYTEST_CURRENT_TEST")
+        or os.environ.get("PYTEST_VERSION")
+        or ("unittest" in sys.modules and any("unittest" in getattr(f.f_code, "co_filename", "") for f in sys._current_frames().values() if f))
+    )
+
+
+def _production_config_roots() -> List[Path]:
+    roots: List[Path] = []
+    real_root = _real_platform_config_root()
+    if real_root is not None:
+        roots.append(real_root)
+    for extra in _CONFIG_GUARD_EXTRA_DENY_ROOTS:
+        try:
+            roots.append(Path(extra).expanduser().resolve())
+        except Exception:
+            continue
+    return roots
+
+
+def _is_production_config_or_env(resolved: Path, root: Path) -> bool:
+    """True when *resolved* is a config.yaml or .env of the real Hermes home *root*.
+
+    Matches files directly in the root (``<root>/config.yaml``, ``<root>/.env``)
+    and profile homes (``<root>/profiles/<name>/config.yaml``, ``<root>/profiles/<name>/.env``).
+    Deliberately does NOT match deeper scratch paths (e.g. repo worktrees that happen
+    to live under ``~/.hermes/hermes-agent/...``) so hermetic tests using unusual
+    tempdirs cannot false-positive.
+    """
+    if resolved.parent == root and resolved.name in ("config.yaml", ".env"):
+        return True
+    try:
+        rel = resolved.relative_to(root)
+    except ValueError:
+        return False
+    parts = rel.parts
+    return len(parts) == 3 and parts[0] == "profiles" and parts[2] in ("config.yaml", ".env")
+
+
+def _ensure_config_test_isolation(target_path: Path) -> None:
+    """Fail hard when an active test runner resolves or writes production config.yaml or .env.
+
+    Raises ``RuntimeError`` before any file mutation or production path return can
+    touch the live user configuration. No-op outside test runners and for hermetic
+    (tempdir ``HERMES_HOME``) paths.
+
+    Root cause: External plugins, standalone plugin repos, and subagents
+    running unit tests do not inherit tests/conftest.py. If HERMES_HOME is
+    unset, leaked, or temporarily restored to live, any config write
+    truncates the user's live ~/.hermes/config.yaml.
+
+    Escape hatch:
+        Set ``HERMES_ALLOW_TEST_WRITES_TO_REAL_HOME=1`` or mark the test with
+        ``@pytest.mark.live_system_guard_bypass``.
+    """
+    if _CONFIG_GUARD_BYPASS or os.environ.get("HERMES_ALLOW_TEST_WRITES_TO_REAL_HOME") == "1":
+        return
+    if not _running_under_test():
+        return
+    try:
+        resolved = Path(target_path).expanduser().resolve()
+    except Exception:
+        return
+    for root in _production_config_roots():
+        if _is_production_config_or_env(resolved, root):
+            raise RuntimeError(
+                "live-system guard: test attempted to write or resolve production "
+                f"configuration file at {resolved} (under real Hermes root {root}). "
+                "Tests must run against an isolated temporary HERMES_HOME — set "
+                "os.environ['HERMES_HOME'] to a temp directory in your fixture. "
+                "If this test genuinely needs the live configuration, set "
+                "HERMES_ALLOW_TEST_WRITES_TO_REAL_HOME=1 or mark it with "
+                "@pytest.mark.live_system_guard_bypass."
+            )
+
+
 def require_readable_config_before_write(
     config_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -3773,6 +3886,7 @@ def require_readable_config_before_write(
     """
     if config_path is None:
         config_path = get_config_path()
+    _ensure_config_test_isolation(config_path)
     try:
         config_path.stat()
     except FileNotFoundError:

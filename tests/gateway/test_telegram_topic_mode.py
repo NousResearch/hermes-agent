@@ -830,3 +830,36 @@ def test_get_telegram_topic_binding_by_session_returns_binding(tmp_path):
 # Test for session-split thread_id recovery (issue #27166)
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# Regression: /topic activation must not create the "System" forum topic
+# (issue #98066)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_topic_activation_does_not_create_system_topic(tmp_path, monkeypatch):
+    """/topic activation must not mint a "System" forum topic.
+
+    The root DM is the documented system lobby (/topic help), and the
+    "System" topic's thread id was never persisted — no code path ever
+    read from it, so it only ever produced an unexplained pinned topic
+    that silently survived deletion (#98066).
+    """
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=session_db)
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("root /topic activation must not enter the agent loop")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/topic"))
+
+    assert "Telegram multi-session topics are enabled" in result
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter._create_dm_topic.assert_not_called()
+

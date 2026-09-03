@@ -5021,9 +5021,6 @@ class GatewaySlashCommandsMixin:
             logger.exception("Failed to enable Telegram topic mode")
             return t("gateway.topic.enable_failed", error=exc)
 
-        if not source.thread_id:
-            await self._ensure_telegram_system_topic(source)
-
         if source.thread_id:
             try:
                 binding = await self._session_db.get_telegram_topic_binding(

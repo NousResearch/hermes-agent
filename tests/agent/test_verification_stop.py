@@ -202,6 +202,30 @@ def test_ad_hoc_pass_satisfies_no_suite_stop_loop(tmp_path, monkeypatch):
     assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed]) is None
 
 
+def test_ad_hoc_pass_survives_temp_script_cleanup(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    changed = str(tmp_path / "src" / "app.ts")
+    script = Path(tempfile.gettempdir()) / f"hermes-verify-stop-{tmp_path.name}.py"
+    script.write_text("print('ALL PASS')\n", encoding="utf-8")
+
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+    record_terminal_result(
+        command=f"python {script}",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="ALL PASS",
+    )
+    script.unlink()
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[str(script)])
+
+    assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed]) is None
+
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+    assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed]) is not None
+
+
 def test_nudge_attempts_are_bounded(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)

@@ -434,6 +434,50 @@ def _moa_reference_metrics_for_hook(agent: Any) -> Any:
         return None
 
 
+def _rate_limit_state_for_hook(agent: Any) -> Any:
+    """Dict snapshot of the parsed x-ratelimit-* state for post_api_request, or None.
+
+    ``agent/rate_limit_tracker.py`` already parses the full 12-header
+    ``x-ratelimit-*`` schema into ``agent._rate_limit_state`` on every
+    streamed response (it feeds the ``/usage`` slash command), but the state
+    was unreachable from plugins: the ``post_api_request`` payload carried a
+    token-usage summary only, so approaching-limit observers had to
+    approximate provider state from configured caps. Pure passthrough of
+    state the loop already computes — no new parsing, no new headers read.
+    Buckets serialize with their derived ``usage_pct`` so a consumer does not
+    re-implement the tracker's own arithmetic.
+    """
+    getter = getattr(agent, "get_rate_limit_state", None)
+    if not callable(getter):
+        return None
+    try:
+        state = getter()
+    except Exception:
+        return None
+    if state is None:
+        return None
+    try:
+        from dataclasses import asdict, is_dataclass
+
+        if not is_dataclass(state):
+            return None
+        payload = asdict(state)
+        # Attach each bucket's derived usage_pct by shape rather than by a
+        # hardcoded name list, so a future fifth bucket field serializes with
+        # its percentage instead of silently missing it (review nit, #101688).
+        for field_name, serialized in payload.items():
+            if not (isinstance(serialized, dict)
+                    and "limit" in serialized and "remaining" in serialized):
+                continue
+            bucket = getattr(state, field_name, None)
+            usage_pct = getattr(bucket, "usage_pct", None)
+            if usage_pct is not None:
+                serialized["usage_pct"] = usage_pct
+        return payload
+    except Exception:
+        return None
+
+
 def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text: str) -> None:
     """Append a provider-safe checkpoint and correction to the live turn.
 
@@ -7504,6 +7548,10 @@ def run_conversation(
                             finish_reason=finish_reason,
                         ),
                         usage=agent._usage_summary_for_api_request_hook(response),
+                        # Parsed x-ratelimit-* snapshot (dict form of
+                        # RateLimitState, buckets carrying usage_pct), or None
+                        # when the provider sent no rate-limit headers.
+                        rate_limit=_rate_limit_state_for_hook(agent),
                         assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),

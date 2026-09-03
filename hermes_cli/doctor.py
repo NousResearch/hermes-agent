@@ -2701,7 +2701,16 @@ def run_doctor(args):
                 )
                 import json as _json
                 audit_data = _json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
-                vuln_count = audit_data.get("metadata", {}).get("vulnerabilities", {})
+                # A network/registry failure (e.g. DNS lookup to registry.npmjs.org
+                # fails) still exits 0 with a JSON body shaped like a result, but
+                # it carries a top-level "error" instead of "metadata.vulnerabilities".
+                # Treating the missing/invalid shape as zero vulnerabilities turns
+                # an audit failure into a false "no known vulnerabilities". See #101760.
+                vuln_count = audit_data.get("metadata", {}).get("vulnerabilities") \
+                    if isinstance(audit_data, dict) else None
+                if not isinstance(audit_data, dict) or audit_data.get("error") or not isinstance(vuln_count, dict):
+                    check_warn(f"{label} deps", "(npm audit unavailable: registry/network error)")
+                    continue
                 critical = vuln_count.get("critical", 0)
                 high = vuln_count.get("high", 0)
                 moderate = vuln_count.get("moderate", 0)
@@ -2758,7 +2767,7 @@ def run_doctor(args):
                         f"{'vulnerability' if moderate == 1 else 'vulnerabilities'})",
                     )
             except Exception:
-                pass
+                check_warn(f"{label} deps", "(npm audit unavailable: registry/network error)")
 
     if _is_termux():
         check_info("Termux compatibility fallbacks:")

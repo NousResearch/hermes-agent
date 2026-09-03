@@ -155,6 +155,8 @@ class TestCLIJudgeGate:
             goal_mode=goal_mode,
             title="Finish report",
             body="acceptance: criteria",
+            status="ready",
+            block_kind=None,
         )
         fake_conn = MagicMock()
         complete_calls: list = []

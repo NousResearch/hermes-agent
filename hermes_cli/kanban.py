@@ -638,6 +638,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+    p_complete.add_argument("--force", action="store_true",
+                            help="Allow completing a blocked task (e.g. a satisfied "
+                                 "needs_input gate) instead of refusing it.")
 
     p_edit = sub.add_parser(
         "edit",
@@ -2384,6 +2387,25 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             # to every terminal handoff so request-review cannot bypass the
             # acceptance contract that protects complete.
             task = kb.get_task(conn, tid)
+            # A blocked card is a deliberate stop (a needs_input gate or the
+            # dispatcher's failure circuit breaker); completing it silently
+            # erases that gate and promotes the children. Refuse like the
+            # scheduled case, unless the caller passes --force. The DB layer
+            # must keep accepting blocked so worker completion after a
+            # circuit-breaker block still lands.
+            if (
+                task is not None
+                and task.status == "blocked"
+                and not getattr(args, "force", False)
+            ):
+                print(
+                    f"cannot complete {tid} "
+                    f"(blocked: {task.block_kind or 'blocked'}) — unblock it "
+                    f"first, or pass --force to close it deliberately",
+                    file=sys.stderr,
+                )
+                failed.append(tid)
+                continue
             gate_verdict, rejection = _goal_mode_handoff_rejection(
                 task,
                 (summary or args.result or "").strip(),

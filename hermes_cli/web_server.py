@@ -7411,37 +7411,52 @@ def get_model_info(profile: Optional[str] = None):
     Also returns model capabilities (vision, reasoning, tools) when available.
     """
     try:
+        # Read the profile's config AND the profile-wide context ceiling
+        # INSIDE the same _profile_scope block: _profile_scope sets the
+        # _HERMES_HOME_OVERRIDE ContextVar, and _get_max_context_length() reads
+        # the profile-scoped config via load_config_readonly(). Reading the
+        # ceiling after the `with` block exits would resolve it against the
+        # DEFAULT profile (the ContextVar is reset on exit), so a per-profile
+        # ceiling would be ignored. Capturing both in one scope guarantees the
+        # ceiling belongs to the profile whose model info is being reported.
         with _profile_scope(profile):
             cfg = load_config()
-        model_cfg = cfg.get("model", "")
+            try:
+                from agent.model_metadata import _get_max_context_length
+                _profile_ceiling = _get_max_context_length()
+            except Exception:
+                _profile_ceiling = None
 
-        # Extract model name and provider from the config
-        if isinstance(model_cfg, dict):
-            model_name = model_cfg.get("default", model_cfg.get("name", ""))
-            provider = model_cfg.get("provider", "")
-            base_url = model_cfg.get("base_url", "")
-            config_ctx = model_cfg.get("context_length")
-        else:
-            model_name = str(model_cfg) if model_cfg else ""
-            provider = ""
-            base_url = ""
-            config_ctx = None
+            # Extract model name and provider from the config
+            model_cfg = cfg.get("model", "")
+            if isinstance(model_cfg, dict):
+                model_name = model_cfg.get("default", model_cfg.get("name", ""))
+                provider = model_cfg.get("provider", "")
+                base_url = model_cfg.get("base_url", "")
+                config_ctx = model_cfg.get("context_length")
+            else:
+                model_name = str(model_cfg) if model_cfg else ""
+                provider = ""
+                base_url = ""
+                config_ctx = None
 
-        if not model_name:
-            return dict(_EMPTY_MODEL_INFO, provider=provider)
+            if not model_name:
+                return dict(_EMPTY_MODEL_INFO, provider=provider)
 
-        # Resolve auto-detected context length (pass config_ctx=None to get
-        # purely auto-detected value, then separately report the override)
-        try:
-            from agent.model_metadata import get_model_context_length
-            auto_ctx = get_model_context_length(
-                model=model_name,
-                base_url=base_url,
-                provider=provider,
-                config_context_length=None,  # ignore override — we want auto value
-            )
-        except Exception:
-            auto_ctx = 0
+            # Resolve auto-detected context length INSIDE the profile scope so
+            # the raw capability resolution (cache lookup, probes) runs against
+            # the REQUESTED profile's _HERMES_HOME, not the default profile.
+            # Pass config_ctx=None for purely auto-detected value.
+            try:
+                from agent.model_metadata import get_model_context_length
+                auto_ctx = get_model_context_length(
+                    model=model_name,
+                    base_url=base_url,
+                    provider=provider,
+                    config_context_length=None,
+                )
+            except Exception:
+                auto_ctx = 0
 
         config_ctx_int = 0
         if isinstance(config_ctx, int) and config_ctx > 0:
@@ -7449,6 +7464,17 @@ def get_model_info(profile: Optional[str] = None):
 
         # Effective is what the agent actually uses
         effective_ctx = config_ctx_int if config_ctx_int > 0 else auto_ctx
+
+        # Apply the profile-wide ceiling to the effective window. (We clamp the
+        # already-computed value rather than calling effective_context_length()
+        # because this endpoint reports auto/config/effective as SEPARATE fields
+        # and honors the per-model context_length override itself — the helper
+        # would re-resolve and drop the override.) The ceiling is the one
+        # captured inside _profile_scope above (profile-correct), not a fresh
+        # read outside the scope (which would resolve against the default
+        # profile).
+        if _profile_ceiling:
+            effective_ctx = min(effective_ctx, _profile_ceiling)
 
         # Try to get model capabilities from models.dev
         caps = {}

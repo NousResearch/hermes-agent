@@ -3409,7 +3409,7 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
     slash commands. Call it off the event loop: runtime credential resolution
     and model metadata may perform blocking work.
     """
-    from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
+    from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, effective_context_length
 
     resolved_model = model or _resolve_gateway_model()
     config_context_length = None
@@ -3484,7 +3484,7 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
         except Exception:
             pass
 
-    context_length = get_model_context_length(
+    context_length = effective_context_length(
         resolved_model,
         base_url=base_url or "",
         api_key=api_key or "",
@@ -20893,7 +20893,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _msg_config_ctx = _msg_custom_ctx
                     except Exception:
                         pass
-                _msg_ctx_len = await get_model_context_length_async(
+                # Use the EFFECTIVE window (raw capability clamped by the
+                # profile-wide model.max_context_length ceiling). The ceiling
+                # applies to every invocation, so context-reference admission
+                # must size against the effective window.
+                from agent.model_metadata import effective_context_length_async
+                _msg_ctx_len = await effective_context_length_async(
                     _msg_model,
                     base_url=_msg_base_url,
                     api_key=_msg_runtime.get("api_key") or "",
@@ -21821,7 +21826,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
             if _hyg_compression_enabled:
-                _hyg_context_length = await get_model_context_length_async(
+                # Use the EFFECTIVE window (raw capability clamped by the
+                # profile-wide model.max_context_length ceiling). The ceiling is
+                # a profile-wide hard operating ceiling on every invocation, so
+                # the hygiene threshold must be derived from the effective
+                # window — a 900K model capped to 272K should hygiene at
+                # 272K × threshold, not 900K × threshold.
+                from agent.model_metadata import effective_context_length_async
+                _hyg_context_length = await effective_context_length_async(
                     _hyg_model,
                     base_url=_hyg_base_url or "",
                     api_key=_hyg_api_key or "",
@@ -29285,6 +29297,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # Add more here as new baked-at-construction config settings are added.
     _CACHE_BUSTING_CONFIG_KEYS: tuple = (
         ("model", "context_length"),
+        ("model", "max_context_length"),
         ("model", "max_tokens"),
         ("compression", "enabled"),
         ("compression", "progress_notices"),

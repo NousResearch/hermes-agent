@@ -48,7 +48,13 @@ class TestContextCompressorModelThresholds:
         )
         # 1M context >= 512K, so no small-context floor — override wins
         assert cc.threshold_percent == 0.40
-        assert cc.threshold_tokens == int(1_000_000 * 0.40)
+        # Option A: threshold reserves the resolved output allowance (no
+        # explicit max_tokens, no provider cap → DEFAULT_OUTPUT_RESERVATION),
+        # so the input budget is (context_length - reservation).
+        from agent.model_metadata import resolve_output_reservation
+
+        _res = resolve_output_reservation(None, explicit_cap=cc.max_tokens)
+        assert cc.threshold_tokens == int((1_000_000 - _res) * 0.40)
 
 
 
@@ -89,7 +95,11 @@ class TestContextCompressorModelThresholds:
         )
         # 1M >= 512K → no floor; override 0.25 applies directly
         assert cc.threshold_percent == 0.25
-        assert cc.threshold_tokens == int(1_000_000 * 0.25)
+        # Option A: reservation-aware input budget (see sibling test above).
+        from agent.model_metadata import resolve_output_reservation
+
+        _res = resolve_output_reservation(None, explicit_cap=cc.max_tokens)
+        assert cc.threshold_tokens == int((1_000_000 - _res) * 0.25)
 
 
 

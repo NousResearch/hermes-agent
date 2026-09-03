@@ -2341,6 +2341,21 @@ class ContextCompressor(ContextEngine):
       5. On subsequent compactions, iteratively update the previous summary
     """
 
+    # Stable capability marker consumed by agent_runtime_helpers.transition_model_context
+    # / refresh_context_window:
+    # this engine handles the max_context_length ceiling ITSELF — its setter
+    # receives the RAW pre-cap window and derives effective = min(pre_cap,
+    # ceiling). The host routes by this marker (not by isinstance / class
+    # identity) because a module reload or re-import of agent.context_compressor
+    # produces a NEW class object while live instances still belong to the OLD
+    # one; an identity check would then misroute built-in instances into the
+    # generic-engine branch and hand them a pre-clamped window. The marker lives
+    # on the class, so every instance of any generation of this class carries
+    # it. A generic plugin engine that clamps its own window against the
+    # ceiling may opt in by setting the same marker; engines without it are
+    # supplied the already-capped effective window.
+    _handles_context_ceiling = True
+
     @property
     def name(self) -> str:
         return "compressor"
@@ -2527,15 +2542,28 @@ class ContextCompressor(ContextEngine):
         )
 
     def _resolve_context_length(self) -> int:
-        """Resolve and cache the model's context length on first access."""
-        if self._resolved_context_length is None:
-            self._resolved_context_length = get_model_context_length(
+        """Resolve the model's context window and cache the effective value.
+
+        The raw value from ``get_model_context_length()`` (auto-detection,
+        explicit ``model.context_length`` override, provider window) is stored
+        on ``_pre_cap_context_length`` — that is the model's real capability
+        and what the persistent context cache is fed. The effective window
+        (``_resolved_context_length``) is the raw value clamped by the global
+        ``max_context_length`` ceiling: ``effective = min(pre_cap, ceiling)``.
+        The ceiling never raises a window; it only lowers one, so it composes
+        correctly with a ``model.context_length`` that is already below it.
+        """
+        if self._pre_cap_context_length is None:
+            raw = get_model_context_length(
                 self.model,
                 base_url=self.base_url,
                 api_key=self.api_key,
                 config_context_length=self._config_context_length,
                 provider=self.provider,
             )
+            self._pre_cap_context_length = raw
+            cap = getattr(self, "max_context_length", None)
+            self._resolved_context_length = min(raw, cap) if cap else raw
             # Small-context threshold floor: models under 512K trigger at
             # >=75% so compaction doesn't fire with half the window still
             # free. Raise-only; must run AFTER context_length is resolved
@@ -2547,23 +2575,45 @@ class ContextCompressor(ContextEngine):
                 self._resolved_context_length, self._base_threshold_percent,
             )
             self._emit_init_summary_once()
+        assert self._resolved_context_length is not None
         return self._resolved_context_length
 
     @property
     def context_length(self) -> int:
+        """Effective context window (pre-cap value clamped by the ceiling)."""
         return self._resolve_context_length()
+
+    @property
+    def pre_cap_context_length(self) -> int:
+        """The resolved window BEFORE the ``max_context_length`` ceiling.
+
+        This is the model's actual capability (auto-detection, explicit
+        ``model.context_length`` override, or provider-reported window). The
+        persistent context cache (``context_length_cache.yaml``) is fed from
+        this value, never from :attr:`context_length`, so the runtime ceiling
+        policy can never contaminate the cached native capability.
+        """
+        self._resolve_context_length()
+        assert self._pre_cap_context_length is not None
+        return self._pre_cap_context_length
 
     @context_length.setter
     def context_length(self, value: int) -> None:
-        # No-op guard: repeated assignment of the SAME window (e.g. the codex
-        # app-server usage callback re-reports the window on every response)
-        # must not invalidate the derived budgets — that would wipe runtime
-        # corrections applied directly to threshold_tokens/tail_token_budget
-        # (see conversation_compression's aux-context threshold sync), which
+        # The value assigned here is the raw/pre-cap window (e.g. the codex
+        # app-server usage callback re-reports the provider window on every
+        # response, or switch_model/fallback pass a freshly resolved value).
+        # Store it as the pre-cap capability and recompute the effective
+        # window against the ceiling.
+        # No-op guard: repeated assignment of the SAME window must not
+        # invalidate the derived budgets — that would wipe runtime corrections
+        # applied directly to threshold_tokens/tail_token_budget (see
+        # conversation_compression's aux-context threshold sync), which
         # persisted on main's eager-init behavior.
-        if value == getattr(self, "_resolved_context_length", None):
+        if value == getattr(self, "_pre_cap_context_length", None):
             return
-        self._resolved_context_length = value
+        self._pre_cap_context_length = value
+        cap = getattr(self, "max_context_length", None)
+        self._resolved_context_length = min(value, cap) if cap else value
         # Re-apply the small-context floor (raise-only) for the genuinely new
         # window so the invalidated budgets below recompute coherently —
         # percent and tokens must derive from the same window. Skipped on
@@ -2572,7 +2622,7 @@ class ContextCompressor(ContextEngine):
         _base = getattr(self, "_base_threshold_percent", None)
         if _base is not None:
             self.threshold_percent = self._effective_threshold_percent(
-                value, _base,
+                self._resolved_context_length, _base,
             )
         self._threshold_tokens = None
         self._tail_token_budget = None
@@ -2590,7 +2640,7 @@ class ContextCompressor(ContextEngine):
             # if the percentage would suggest a lower value (#14690 handles
             # the degenerate small-window case inside the helper).
             self._threshold_tokens = self._compute_threshold_tokens(
-                _ctx, self.threshold_percent, self.max_tokens,
+                _ctx, self.threshold_percent, self._resolve_output_reservation(),
             )
             # Apply absolute token cap (compression.threshold_tokens) —
             # takes the lower of the ratio-based threshold and the cap.
@@ -3237,7 +3287,14 @@ class ContextCompressor(ContextEngine):
         self.api_key = api_key
         self.provider = provider
         self.api_mode = api_mode
+        # Set the context window via the property: the setter stores the raw
+        # (pre-cap) value and derives the EFFECTIVE window
+        # (``self.context_length``) by clamping against the max_context_length
+        # ceiling. Every threshold/budget below is computed from the EFFECTIVE
+        # window (``self.context_length``), never the raw parameter, so the
+        # ceiling holds on switch/fallback/provider-error paths too.
         self.context_length = context_length
+        effective_ctx = self.context_length
         # Re-resolve per-model threshold for the NEW model, then re-apply the
         # small-context threshold floor. Starting from _config_threshold_percent
         # (the raw config value) so a switch from a model with an override to
@@ -3250,7 +3307,7 @@ class ContextCompressor(ContextEngine):
         )
         self._base_threshold_percent = _new_base
         self.threshold_percent = self._effective_threshold_percent(
-            context_length, _new_base,
+            effective_ctx, _new_base,
         )
         # max_tokens=None here means "caller didn't specify" → keep the existing
         # output reservation. A switch that genuinely changes the output budget
@@ -3258,7 +3315,8 @@ class ContextCompressor(ContextEngine):
         if max_tokens is not None:
             self.max_tokens = self._coerce_max_tokens(max_tokens)
         self.threshold_tokens = self._compute_threshold_tokens(
-            context_length, self.threshold_percent, self.max_tokens,
+            effective_ctx, self.threshold_percent,
+            self._resolve_output_reservation(),
         )
         # Re-apply the absolute token cap so it survives model switches
         # and fallback activations. The cap is a first-class config value
@@ -3274,7 +3332,7 @@ class ContextCompressor(ContextEngine):
         self._tail_token_budget = None
         _ = self.tail_token_budget  # eager recompute, same timing as before
         self.max_summary_tokens = min(
-            int(context_length * 0.05), _SUMMARY_TOKENS_CEILING,
+            int(effective_ctx * 0.05), _SUMMARY_TOKENS_CEILING,
         )
 
         # Reset cross-call calibration state captured under the PREVIOUS model.
@@ -3378,6 +3436,35 @@ class ContextCompressor(ContextEngine):
             return None
         return ivalue if ivalue > 0 else None
 
+    @staticmethod
+    def _coerce_max_context_length(value: Any) -> int | None:
+        """Normalize the global context ceiling to a positive int or None.
+
+        ``model.max_context_length`` is a hard upper bound on the effective
+        context window (``effective = min(pre_cap, ceiling)``). Delegates to
+        the single shared CONFIG validator (``agent.model_metadata.
+        validate_context_ceiling``) so the built-in compressor and every other
+        resolution path agree on strictness AND on the 64K floor.
+
+        Two strictness guarantees:
+          * only a genuine positive integer is a real cap — ``None``, ``bool``,
+            non-integral floats, numeric strings, infinity, and ``<= 0`` all
+            mean "no ceiling" so a malformed config value can never zero out
+            or truncate the window;
+          * a positive integer BELOW the 64K ``MINIMUM_CONTEXT_LENGTH`` floor
+            is an INVALID ceiling (a mis-configuration, not a capability
+            statement) and is likewise treated as "no ceiling" — the pre-cap
+            window is left intact, never truncated to a sub-floor value.
+
+        Using the floor-enforcing validator (not the runtime ``coerce_``
+        variant) is deliberate: a ceiling below 64K must not silently clamp
+        the window, because Hermes cannot operate below the floor — the value
+        is a mis-configuration and the effective window must stay at the
+        model's real pre-cap capability.
+        """
+        from agent.model_metadata import validate_context_ceiling
+        return validate_context_ceiling(value)
+
     def _apply_threshold_tokens_cap(self) -> None:
         """Apply the absolute token cap if configured.
 
@@ -3408,6 +3495,34 @@ class ContextCompressor(ContextEngine):
         if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
             return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
         return threshold_percent
+
+    def _resolve_output_reservation(self) -> int:
+        """The compressor's output reservation, from the shared policy.
+
+        Preflight budgeting must reserve the SAME output allowance the
+        terminal gate and the wire do, so the compressor, the gate, and the
+        provider agree on how much of the window the model's output will
+        consume.  Resolution:
+
+          * an explicit positive ``max_tokens`` (the invocation/user cap,
+            already coerced) wins;
+          * else the provider/profile-derived implicit cap (e.g. ``custom``
+            → 65536);
+          * else :data:`DEFAULT_OUTPUT_RESERVATION` (4096) — never 0, so a
+            no-cap request is NOT budgeted as a zero-reservation (the audit's
+            flagged "compressor may reserve 0/None" defect).
+
+        Delegates to the shared :func:`agent.model_metadata.resolve_output_reservation`
+        policy so every surface derives one identical allowance.
+        """
+        from agent.model_metadata import resolve_output_reservation
+
+        return resolve_output_reservation(
+            None,
+            explicit_cap=self.max_tokens,
+            provider=getattr(self, "provider", None),
+            model=getattr(self, "model", None),
+        )
 
     @staticmethod
     def _compute_threshold_tokens(
@@ -3476,6 +3591,7 @@ class ContextCompressor(ContextEngine):
         base_url: str = "",
         api_key: str = "",
         config_context_length: int | None = None,
+        max_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
@@ -3604,6 +3720,20 @@ class ContextCompressor(ContextEngine):
         self._config_context_length = config_context_length
         self._configured_threshold_percent = self.threshold_percent
         self._resolved_context_length: int | None = None
+        # Pre-cap window: the value resolved BEFORE the max_context_length
+        # ceiling is applied (i.e. the model's real capability / explicit
+        # override). Kept separate from the effective window so the persistent
+        # context cache can be fed the pre-cap value — the ceiling is a
+        # runtime/user policy and must never contaminate context_length_cache.yaml.
+        self._pre_cap_context_length: int | None = None
+        # Global context ceiling (model.max_context_length in config). A hard
+        # upper bound on the EFFECTIVE window: effective = min(pre_cap, ceiling).
+        # Never raises a window, only lowers it. None / non-positive = no cap.
+        # Exposed as a public attribute so plugin context engines can read it
+        # too; the built-in setter clamps against it automatically. Set via the
+        # constructor for the built-in compressor, or assigned directly on a
+        # plugin engine by agent_init before its update_model() call.
+        self.max_context_length: int | None = self._coerce_max_context_length(max_context_length)
         self._threshold_tokens: int | None = None
         self._tail_token_budget: int | None = None
         self._max_summary_tokens: int | None = None

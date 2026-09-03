@@ -586,6 +586,54 @@ def _run_reference(
             # ``copilot-language-server`` integrator even though standalone
             # Copilot calls work.
             extra_headers = {"x-initiator": "user"}
+        # Hard-ceiling gate for the MoA reference dispatch:
+        # this is a provider-owning path that bypasses the
+        # main-loop gate.  The trim above sizes to the reference model's own
+        # EFFECTIVE window (raw capability clamped by the profile ceiling),
+        # but it deliberately keeps the trailing user turn even when still
+        # over budget — so an unshrinkable reference can slip through.  Enforce
+        # the final trimmed payload against the reference's own effective limit
+        # immediately before call_llm.  A refusal raises into _run_reference's
+        # try/except and becomes a labelled [failed: …] note — a LOCAL failure
+        # (no provider I/O, no API slot consumed): an unshrinkable reference
+        # request must fail locally, not be dispatched.
+        # The reference's pre-cap is its own resolved effective window (its own
+        # raw capability + the profile ceiling), NOT the main conversation's.
+        try:
+            from agent.model_metadata import effective_context_length as _ref_ecl
+            _ref_model = str(slot.get("model") or "")
+            _ref_provider = str(runtime.get("provider") or slot.get("provider") or "")
+            _ref_limit = _ref_ecl(
+                model=_ref_model,
+                base_url=str(runtime.get("base_url") or ""),
+                api_key=str(runtime.get("api_key") or ""),
+                provider=_ref_provider,
+            )
+        except Exception:
+            _ref_limit = None
+        if _ref_limit is not None:
+            from agent.agent_runtime_helpers import (
+                canonical_request_budget as _canon_budget,
+                enforce_effective_context_limit as _enforce,
+            )
+            # SAME resolved allowance the trim above used (explicit cap or the
+            # established MoA default — never 0), so the gate and the trim agree.
+            _ref_reserve = _resolve_moa_output_reserve(
+                _effective_max_tokens,
+                provider=str(runtime.get("provider") or slot.get("provider") or "")
+                or None,
+                model=str(slot.get("model") or "") or None,
+            )
+            _ref_budget = _canon_budget(
+                messages,
+                output_reserve=_ref_reserve,
+            )
+            _enforce(
+                _ref_budget,
+                pre_cap=_ref_limit,
+                ceiling=None,
+                reason="MoA reference dispatch",
+            )
         response = call_llm(
             task="moa_reference",
             messages=messages,
@@ -664,6 +712,43 @@ _REFERENCE_DEFAULT_OUTPUT_RESERVE = 8192
 _REFERENCE_TRIM_SAFETY_FRACTION = 0.10
 
 
+def _resolve_moa_output_reserve(
+    explicit_cap: int | None,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+) -> int:
+    """ONE resolved output allowance for MoA reference/aggregator dispatch.
+
+    The reference TRIM sizes the payload using an output reserve; the
+    reference gate and the aggregator gate then enforce the final payload
+    against the model's window.  Both must reserve the SAME allowance or an
+    unshrinkable reference can slip past the gate (or the gate can refuse a
+    payload the trim thought fit).
+
+    This is the MoA surface of the shared :func:`resolve_output_reservation`
+    policy, so the MoA reference gate, the aggregator gate, the compressor,
+    and the main terminal gate all reserve the SAME allowance:
+
+      * an explicit, positive integer output cap (``max_tokens`` /
+        ``reference_max_tokens``) wins;
+      * else the provider/profile-derived implicit cap for the reference's
+        own provider/model (when resolvable);
+      * else the documented finite :data:`DEFAULT_OUTPUT_RESERVATION` (4096).
+
+    Never 0 (an omitted cap is not a zero-reservation) and never an invented
+    provider maximum.
+    """
+    from agent.model_metadata import resolve_output_reservation
+
+    return resolve_output_reservation(
+        None,
+        explicit_cap=explicit_cap,
+        provider=provider,
+        model=model,
+    )
+
+
 def _trim_messages_for_reference(
     messages: list[dict[str, Any]],
     slot: dict[str, str],
@@ -710,7 +795,7 @@ def _trim_messages_for_reference(
 
     from agent.model_metadata import (
         estimate_messages_tokens_rough,
-        get_model_context_length,
+        effective_context_length,
     )
 
     model = str(slot.get("model") or "")
@@ -724,7 +809,21 @@ def _trim_messages_for_reference(
         context_length = context_length_cache[cache_key]
     else:
         try:
-            context_length = get_model_context_length(
+            # Use the EFFECTIVE window (raw reference capability clamped by the
+            # profile-wide model.max_context_length ceiling). max_context_length
+            # is a profile-wide hard operating ceiling on EVERY model invocation,
+            # so a reference/advisor request is sized against the effective
+            # window, not the raw reference capability. The ceiling only lowers
+            # a window — a reference whose raw window is already below the ceiling
+            # keeps its (smaller) real limit.
+            #
+            # ``context_length_cache`` is the LOCAL per-fan-out budget dict (a
+            # budgeting input, discarded after the MoA iteration). It stores the
+            # effective value here and is NEVER written to the persistent
+            # context_length_cache.yaml — that remains raw-capability-only and is
+            # fed exclusively through save_context_length() on the provider
+            # confirmation paths.
+            context_length = effective_context_length(
                 model=model,
                 base_url=str(runtime.get("base_url") or ""),
                 api_key=str(runtime.get("api_key") or ""),
@@ -744,10 +843,14 @@ def _trim_messages_for_reference(
     if not isinstance(context_length, int) or context_length <= 0:
         return messages
 
-    reserve = (
-        int(reserve_output_tokens)
-        if isinstance(reserve_output_tokens, int) and reserve_output_tokens > 0
-        else _REFERENCE_DEFAULT_OUTPUT_RESERVE
+    # ONE resolved output allowance — the SAME value the reference gate and
+    # aggregator gate use for terminal enforcement (see
+    # _resolve_moa_output_reserve).  An explicit cap wins; else the
+    # provider-derived implicit cap; else the established MoA default (never 0).
+    reserve = _resolve_moa_output_reserve(
+        reserve_output_tokens,
+        provider=str(runtime.get("provider") or slot.get("provider") or "") or None,
+        model=str(slot.get("model") or "") or None,
     )
     budget = int(context_length * (1.0 - _REFERENCE_TRIM_SAFETY_FRACTION)) - reserve
     if budget <= 0:
@@ -1371,6 +1474,50 @@ def aggregate_moa_context(
             agg_cache_runtime,
             cache_ttl=_agg_cache_ttl,
         )
+        # Hard-ceiling gate for the MoA aggregator dispatch:
+        # this synthesis call carries every joined reference
+        # output, so it is the largest MoA payload and a provider-owning path
+        # that bypasses the main-loop gate.  Enforce its final payload against
+        # the aggregator model's OWN effective window (raw capability clamped
+        # by the profile ceiling) immediately before call_llm.  The enclosing
+        # ``except Exception`` below turns a refusal into synthesis="" (a local
+        # fallback to the joined references), not an unhandled error.
+        from agent.agent_runtime_helpers import (
+            canonical_request_budget as _agg_budget_fn,
+            enforce_effective_context_limit as _agg_enforce,
+        )
+        from agent.model_metadata import effective_context_length as _agg_ecl
+        try:
+            _agg_limit = _agg_ecl(
+                model=str(aggregator.get("model") or ""),
+                base_url=str(agg_runtime.get("base_url") or ""),
+                api_key=str(agg_runtime.get("api_key") or ""),
+                provider=str(agg_runtime.get("provider") or ""),
+            )
+        except Exception:
+            _agg_limit = None
+        if _agg_limit is not None:
+            # SAME resolved allowance the reference gate uses (explicit cap or
+            # the established MoA default — never 0).  The aggregator call
+            # carries no explicit max_tokens, so the provider-derived implicit
+            # cap (or the documented default) applies via the shared policy.
+            _agg_budget = _agg_budget_fn(
+                agg_messages,
+                output_reserve=_resolve_moa_output_reserve(
+                    None,
+                    provider=str(agg_runtime.get("provider") or "") or None,
+                    model=str(aggregator.get("model") or "") or None,
+                ),
+            )
+            try:
+                _agg_enforce(
+                    _agg_budget,
+                    pre_cap=_agg_limit,
+                    ceiling=None,
+                    reason="MoA aggregator dispatch",
+                )
+            except Exception as _agg_ce:
+                raise RuntimeError(str(_agg_ce)) from _agg_ce
         response = call_llm(
             task="moa_aggregator",
             messages=agg_messages,

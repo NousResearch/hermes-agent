@@ -401,6 +401,82 @@ class TestProfileScopedModel:
         resp = client.get("/api/model/info", params={"profile": "ghost"})
         assert resp.status_code == 404
 
+    def test_model_info_two_profile_isolation(self, client, isolated_profiles):
+        """Round 4.1 item 2: /api/model/info?profile=X must resolve profile X's
+        OWN model, ceiling, and cached context length — with no cross-profile
+        leakage through the process-global models.dev or context-length cache.
+
+        Two real, distinct profile homes:
+          A (default):     model-a, ceiling 200K, cached ctx 300K → effective 200K
+          B (worker_beta): model-b, ceiling 272K, cached ctx 400K → effective 272K
+
+        The ceiling is read INSIDE _profile_scope (profile A's ceiling must not
+        appear in B's response, and vice versa). The auto_context_length is read
+        from each profile's OWN context_length_cache.yaml (distinct files,
+        distinct model+base_url keys), NOT from the process-global models.dev
+        in-memory cache.
+        """
+        import yaml as _yaml
+
+        home_a = isolated_profiles["default"]
+        home_b = isolated_profiles["worker_beta"]
+
+        # Distinct configs: different model, base_url, ceiling.
+        (home_a / "config.yaml").write_text(_yaml.safe_dump({
+            "model": {
+                "default": "model-a",
+                "provider": "openrouter",
+                "base_url": "https://a.example/v1",
+                "max_context_length": 200_000,
+            },
+        }), encoding="utf-8")
+
+        (home_b / "config.yaml").write_text(_yaml.safe_dump({
+            "model": {
+                "default": "model-b",
+                "provider": "openrouter",
+                "base_url": "https://b.example/v1",
+                "max_context_length": 272_000,
+            },
+        }), encoding="utf-8")
+
+        # Distinct per-profile context-length caches (the real disk cache
+        # that get_model_context_length reads at step 1 — before any network).
+        (home_a / "context_length_cache.yaml").write_text(_yaml.safe_dump({
+            "context_lengths": {"model-a@https://a.example/v1": 300_000},
+        }), encoding="utf-8")
+
+        (home_b / "context_length_cache.yaml").write_text(_yaml.safe_dump({
+            "context_lengths": {"model-b@https://b.example/v1": 400_000},
+        }), encoding="utf-8")
+
+        # Clear the process-global models.dev in-memory cache so it cannot
+        # mask the per-profile disk cache (it's a separate global dict).
+        from agent import models_dev
+        models_dev._models_dev_cache.clear()
+        models_dev._models_dev_cache_time = 0
+
+        # Profile A resolves its OWN values.
+        resp_a = client.get("/api/model/info", params={"profile": "default"})
+        assert resp_a.status_code == 200
+        data_a = resp_a.json()
+        assert data_a["model"] == "model-a"
+        assert data_a["auto_context_length"] == 300_000
+        assert data_a["effective_context_length"] == 200_000  # min(300K, 200K ceiling)
+
+        # Profile B resolves its OWN values — NO leakage from A.
+        resp_b = client.get("/api/model/info", params={"profile": "worker_beta"})
+        assert resp_b.status_code == 200
+        data_b = resp_b.json()
+        assert data_b["model"] == "model-b"
+        assert data_b["auto_context_length"] == 400_000
+        assert data_b["effective_context_length"] == 272_000  # min(400K, 272K ceiling)
+
+        # Explicit non-equality: no cross-profile leakage.
+        assert data_a["effective_context_length"] != data_b["effective_context_length"]
+        assert data_a["auto_context_length"] != data_b["auto_context_length"]
+        assert data_a["model"] != data_b["model"]
+
 
 class TestProfileScopedPostSetup:
     def test_post_setup_spawns_with_profile_flag(

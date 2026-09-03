@@ -1227,13 +1227,18 @@ model:
 
 ### Context Length Detection
 
-:::note Two settings, easy to confuse
-**`context_length`** is the **total context window** — the combined budget for input *and* output tokens (e.g. 200,000 for Claude Opus 4.6). Hermes uses this to decide when to compress history and to validate API requests.
+:::note Three settings, easy to confuse
+**`context_length`** is the **total context window** — the combined budget for input *and* output tokens (e.g. 200,000 for Claude Opus 4.6). It is the **exact pre-cap override** for the *active* model and is discarded on `/model` switch (re-resolved for the new model). Hermes uses this to decide when to compress history and to validate API requests.
+
+**`model.max_context_length`** is the **profile-wide hard upper ceiling** on the effective window: `effective = min(resolved_context, max_context_length)`. Unlike `context_length`, it is a **model-independent policy that survives `/model` switches** and applies to every model in the profile. It never *raises* a window — it only lowers one. It is a runtime policy and never contaminates the persistent `context_length_cache.yaml` (which retains the model's real capability). A request still above the ceiling when it reaches the provider is refused before dispatch, regardless of whether compression is enabled.
 
 **`model.max_tokens`** is the **output cap** — the maximum number of tokens the model may generate in a *single response*. It has nothing to do with how long your conversation history can be. The industry-standard name `max_tokens` is a common source of confusion; Anthropic's native API has since renamed it `max_output_tokens` for clarity.
 
 Set `context_length` when auto-detection gets the window size wrong.
+Set `model.max_context_length` to cap the effective window a profile is allowed to use (a budget or provider-tier ceiling) across every model.
 Set `model.max_tokens` only when you need to limit how long individual responses can be.
+
+**`max_context_length` validation:** must be a positive integer token count with a **minimum of 64000 (64K)**. A value below the floor is an invalid ceiling (a mis-configuration). `bool`, float, numeric strings, `infinity`, and values `<= 0` are all rejected.
 :::
 
 Hermes uses a multi-source resolution chain to detect the correct context window for your model and provider:
@@ -1257,6 +1262,17 @@ model:
   default: "qwen3.5:9b"
   base_url: "http://localhost:8080/v1"
   context_length: 131072  # tokens
+```
+
+To cap the effective window across every model in the profile (a budget or
+provider-tier ceiling that survives `/model` switches), set
+`max_context_length`:
+
+```yaml
+model:
+  default: "some-large-context-model"
+  base_url: "https://api.example.com/v1"
+  # max_context_length: 272000   # hard ceiling; effective = min(resolved, 272000)
 ```
 
 For custom endpoints, you can also set context length per model:

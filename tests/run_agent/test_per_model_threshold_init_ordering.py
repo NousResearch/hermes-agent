@@ -114,7 +114,13 @@ class TestFloorInteractionOnModelSwitch:
         mock_ctx.return_value = 128_000
         cc.update_model(model="small-model", context_length=128_000)
         assert cc.threshold_percent == 0.75  # raise-only floor wins
-        assert cc.threshold_tokens == int(128_000 * 0.75)
+        # Option A: threshold reserves the resolved output allowance (no
+        # explicit max_tokens, no provider cap → DEFAULT_OUTPUT_RESERVATION),
+        # so the input budget is (context_length - reservation).
+        from agent.model_metadata import resolve_output_reservation
+
+        _res = resolve_output_reservation(None, explicit_cap=cc.max_tokens)
+        assert cc.threshold_tokens == int((128_000 - _res) * 0.75)
 
 
 

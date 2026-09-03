@@ -111,6 +111,33 @@ model:
   #
   # context_length: 131072
   #
+  # max_context_length: GLOBAL CEILING on the effective context window.
+  #   Unlike context_length (per-model, absolute, discarded on /model switch),
+  #   max_context_length is a hard upper bound that survives model switches:
+  #
+  #     effective = min(resolved_context, max_context_length)
+  #
+  #   It NEVER raises a window — only lowers one — so it composes safely with
+  #   an explicit context_length that is already below it. Use it to cap the
+  #   effective window a profile is allowed to use — e.g. to keep a very large
+  #   auto-detected window within a budget or a provider tier, or to protect a
+  #   downstream model whose real limit is smaller than auto-detection.
+  #
+  #   max_context_length: 272000
+  #
+  #   Rules:
+  #   * Must be a positive integer token count (minimum 64000). bool, float,
+  #     numeric strings, infinity, and values <= 0 are all rejected. A value
+  #     below the 64K floor is an invalid ceiling (a mis-configuration), not a
+  #     statement about model capability.
+  #   * Applies to every model in the profile and survives /model switches.
+  #   * Is a runtime policy: it never contaminates the persistent
+  #     context_length_cache.yaml, which retains the model's real capability
+  #     while all consumers observe the capped value.
+  #   * Is enforced as a hard ceiling: a request still above it after any
+  #     compression (or with compression disabled) is refused before provider
+  #     dispatch rather than silently sent on the provider's larger window.
+  #
   # max_tokens: OUTPUT cap — maximum tokens the model may generate per response.
   #   Unrelated to how long your conversation history can be.
   #   The OpenAI-standard name "max_tokens" is a misnomer; Anthropic's native

@@ -3627,6 +3627,33 @@ def run_conversation(
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
+                    # ── Hard-ceiling gate ──────────────────────────────────
+                    # The transport-normalized terminal gate now fires at the
+                    # PHYSICAL dispatch owner (the last stage immediately before
+                    # provider I/O), where the FINAL post-middleware,
+                    # post-relay, post-transformation payload is available:
+                    #   * non-streaming main: _dispatch_nonstreaming_api_request
+                    #   * streaming main:     interruptible_streaming_api_call
+                    #   * auxiliary:          the relay helpers / call_llm
+                    #   * MoA aggregator:     call_llm streaming bypass
+                    # (see agent.model_metadata — build_final_context_budget /
+                    # enforce_final_context_budget).
+                    #
+                    # The earlier gate here was REMOVED because it (a) read the
+                    # non-existent agent.system_prompt attribute (AttributeError
+                    # on every real turn — see test_moa_loop_mode), and (b) ran
+                    # BEFORE relay_llm, which rewrites the request via
+                    # final_request=_provider_request(...), so it accounted the
+                    # PRE-relay payload, not the one actually dispatched.  Both
+                    # are now fixed by gating at the true physical owner.
+                    #
+                    # On over-limit, the owner raises ContextCeilingExceeded
+                    # (NOT a sentinel dict): the exception propagates cleanly
+                    # through the execution-middleware chain and is caught at
+                    # the call site, where it refunds the counters and returns
+                    # a clean local refusal.  A locally refused request is not
+                    # an API call — no provider I/O, no api_call_count, no
+                    # iteration slot.
                     if agent.api_mode == "codex_responses":
                         next_api_kwargs = agent._get_transport().preflight_kwargs(
                             next_api_kwargs,
@@ -3661,6 +3688,34 @@ def run_conversation(
                         defer_logical_completion=True,
                     )
 
+                # Hard-ceiling enforcement is done ONCE, at the terminal
+                # provider-I/O call (``_perform_api_call``), on the FINAL
+                # (post-middleware) payload. There is deliberately NO
+                # pre-middleware fast-fail gate here, even though it would be
+                # a cheap optimization: the middleware contract allows
+                # *shrink/rewrite* of the request, so a pre-middleware
+                # rejection could be a FALSE rejection of a payload that
+                # middleware would legitimately reduce to fit.
+                #
+                #   * request middleware may return ``{"request": {...}}`` to
+                #     replace the effective provider kwargs
+                #     (hermes_cli/middleware.py ``apply_llm_request_middleware``);
+                #   * execution middleware may forward a different payload to
+                #     the terminal call via ``next_call(next_payload)``
+                #     (``_run_execution_chain``).
+                #
+                # Either can reduce request pressure (e.g. strip verbose
+                # content, drop tools, swap a large sidecar for a compact
+                # substitute). A monotonic-size assumption (payload can only
+                # grow) does NOT hold, so a pre-middleware ceiling refusal is
+                # not provably safe and is therefore removed. The terminal
+                # gate remains the single authoritative enforcement point; the
+                # only cost of deferring to it is running the middleware chain
+                # for a request that turns out to be over-limit — an
+                # acceptable optimization tradeoff, not a correctness one.
+                # A locally refused request still consumes no API call /
+                # iteration slot: the terminal gate refunds on refusal.
+
                 from hermes_cli.middleware import run_llm_execution_middleware
 
                 _model_request_active = getattr(agent, "_model_request_active", None)
@@ -3672,6 +3727,8 @@ def run_conversation(
                 elif _model_request_active is not None:
                     _model_request_active.set()
                 _redirect_crossed_response = False
+                from agent.agent_runtime_helpers import ContextCeilingExceeded
+
                 try:
                     response = run_llm_execution_middleware(
                         api_kwargs,
@@ -3689,6 +3746,38 @@ def run_conversation(
                         api_call_count=api_call_count,
                         middleware_trace=list(_llm_middleware_trace),
                     )
+                except ContextCeilingExceeded as _ce:
+                    # Terminal-gate refusal: the FINAL
+                    # (post-middleware) payload exceeded the effective context
+                    # limit. The exception propagates cleanly through the
+                    # execution-middleware chain (it is not a "response" a
+                    # middleware can copy/wrap), so we catch it here — at the
+                    # boundary that owns the counters — and refund: a locally
+                    # refused request is NOT an API call, so it
+                    # must not keep the incremented api_call_count or the
+                    # iteration-budget slot. Surface a clean local refusal.
+                    api_call_count = max(0, api_call_count - 1)
+                    agent._api_call_count = api_call_count
+                    _ib2 = getattr(agent, "iteration_budget", None)
+                    if _ib2 is not None and hasattr(_ib2, "refund"):
+                        try:
+                            _ib2.refund()
+                        except Exception:
+                            pass
+                    agent._flush_status_buffer()
+                    agent._vprint(
+                        f"{agent.log_prefix}\u274c {_ce}",
+                        force=True,
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": str(_ce),
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "error": "context_ceiling_exceeded",
+                    }
                 finally:
                     if _redirect_lock is not None:
                         with _redirect_lock:
@@ -4772,9 +4861,32 @@ def run_conversation(
                     # Cache discovered context length after successful call.
                     # Only persist limits confirmed by the provider (parsed
                     # from the error message), not guessed probe tiers.
-                    if getattr(agent.context_compressor, "_context_probed", False):
-                        ctx = agent.context_compressor.context_length
-                        if getattr(agent.context_compressor, "_context_probe_persistable", False):
+                    if getattr(agent.context_compressor, "_context_probed", False) is True:
+                        # Use the HOST-OWNED ACTIVE PRE-CAP value so
+                        # the persistent context cache stores the model's real
+                        # capability, not the clamped effective window. For a
+                        # generic plugin the engine's context_length IS the capped
+                        # effective window (it has no pre_cap property), so
+                        # resolve_engine_pre_cap would resolve to the CAPPED value
+                        # (e.g. 272K) and contaminate context_length_cache.yaml.
+                        # get_pre_cap(agent) returns the host-retained ACTIVE
+                        # pre-cap (the raw capability), which is authoritative for
+                        # BOTH engine types. Fall back to resolve_engine_pre_cap
+                        # only when the host store was never set (legacy / a
+                        # test-built standalone engine) — never when it holds a
+                        # valid positive int.
+                        #
+                        # Probe flags use explicit boolean semantics (is True) so
+                        # a MagicMock flag (truthy child) does not trigger a
+                        # spurious persist or a spurious flag reset.
+                        from agent.agent_runtime_helpers import (
+                            get_pre_cap,
+                            resolve_engine_pre_cap,
+                        )
+                        ctx = get_pre_cap(agent)
+                        if ctx <= 0:
+                            ctx = resolve_engine_pre_cap(agent.context_compressor)
+                        if ctx > 0 and getattr(agent.context_compressor, "_context_probe_persistable", False) is True:
                             save_context_length(agent.model, agent.base_url, ctx)
                             agent._safe_print(f"{agent.log_prefix}💾 Cached context length: {ctx:,} tokens for {agent.model}")
                         agent.context_compressor._context_probed = False
@@ -5893,14 +6005,16 @@ def run_conversation(
                     compressor = agent.context_compressor
                     old_ctx = compressor.context_length
                     if old_ctx > _reduced_ctx:
-                        compressor.update_model(
-                            model=agent.model,
-                            context_length=_reduced_ctx,
-                            base_url=agent.base_url,
-                            api_key=getattr(agent, "api_key", ""),
-                            provider=agent.provider,
-                            api_mode=agent.api_mode,
-                        )
+                        # SAME-MODEL CONTEXT-WINDOW REFRESH: the 200K tier
+                        # reduction is a NON-PERSISTABLE runtime restriction on
+                        # the ACTIVE model, so it becomes the new PRE-CAP
+                        # operating window (host + engine), and the ceiling
+                        # still caps it on top (effective = min(200K, ceiling)).
+                        # A plugin receives the capped value via update_model
+                        # (recalc threshold/budget) — strictly more correct than
+                        # the original uncapped 200K passed straight to it.
+                        from agent.agent_runtime_helpers import refresh_context_window
+                        refresh_context_window(agent, _reduced_ctx, model=agent.model)
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).
                         if hasattr(compressor, "_context_probed"):
@@ -6490,7 +6604,23 @@ def run_conversation(
                     # exceeds the context window", keep the configured window
                     # and try compression; guessing probe tiers can incorrectly
                     # turn a user-configured 1M window into 256K/128K/64K.
-                    new_ctx = get_context_length_from_provider_error(error_msg, old_ctx)
+                    # Compare the provider-reported limit against the PRE-CAP
+                    # operating window (host-retained), NOT the capped getter:
+                    # a provider limit is a capability correction and must be
+                    # judged against the model's real pre-ceiling window, so a
+                    # ceiling never hides a genuine capability reduction.
+                    from agent.agent_runtime_helpers import get_pre_cap, resolve_engine_pre_cap
+                    _host_precap = get_pre_cap(agent)
+                    # The engine's live pre-cap is the floor: a direct
+                    # compressor.update_model() call (e.g. from a test or a
+                    # Codex app-server re-report) updates the engine but not
+                    # the host copy, so the host may be stale-low.  Taking the
+                    # max preserves the PR's invariant (compare against the
+                    # pre-cap, not the capped getter) while never rejecting a
+                    # genuine capability correction because of a stale host.
+                    _engine_precap = resolve_engine_pre_cap(agent.context_compressor)
+                    _pre_cap = max(_host_precap, _engine_precap) if _engine_precap > 0 else _host_precap
+                    new_ctx = get_context_length_from_provider_error(error_msg, _pre_cap)
                     _provider_lower = (getattr(agent, "provider", "") or "").lower()
                     _base_lower = (getattr(agent, "base_url", "") or "").rstrip("/").lower()
                     is_minimax_provider = (
@@ -6508,14 +6638,18 @@ def run_conversation(
 
                     if new_ctx is not None:
                         agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
-                        compressor.update_model(
-                            model=agent.model,
-                            context_length=new_ctx,
-                            base_url=agent.base_url,
-                            api_key=getattr(agent, "api_key", ""),
-                            provider=agent.provider,
-                            api_mode=agent.api_mode,
-                        )
+                        # SAME-MODEL CONTEXT-WINDOW REFRESH: the provider-reported
+                        # limit is a capability correction on the ACTIVE model.
+                        # new_ctx was already validated downward-only against the
+                        # active model's pre-cap (get_pre_cap below), so it never
+                        # inflates the window. Built-in receives the raw value
+                        # (setter re-derives effective against the ceiling and
+                        # recalculates thresholds); plugin receives the effective
+                        # value via update_model (recalc threshold/budget). The
+                        # host pre-cap becomes the provider limit; save_context_length
+                        # below persists that raw capability.
+                        from agent.agent_runtime_helpers import refresh_context_window
+                        refresh_context_window(agent, new_ctx, model=agent.model)
                         # Persist an explicit provider-reported limit before
                         # compression/retry. The next request can be rate
                         # limited, omit usage, or the process can restart; none

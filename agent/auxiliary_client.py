@@ -170,8 +170,28 @@ def aux_probe_mode():
 from agent.credential_pool import load_pool
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
+    ContextCeilingExceeded,
     get_model_context_length,
     strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
+    # Ceiling contextvar API — re-exported so tests / callers can publish the
+    # auxiliary effective ceiling and the relay-helper gates read it.
+    set_aux_ceiling,
+    get_aux_ceiling,
+    reset_aux_ceiling,
+)
+# Auxiliary context-ceiling authority now lives in the bounded owner shard
+# ``agent.auxiliary_context_ceiling`` (#78635 fracture).  These four names are
+# re-imported so historical import paths AND monkeypatch targets keep working:
+# the relay helpers and fallback dispatchers below still CONSUME these names,
+# and they resolve through THIS module's globals — so patching
+# ``agent.auxiliary_client._aux_provider_callback`` (etc.) still affects the
+# live path.  There is exactly one implementation of each (in the shard); this
+# is a compatibility re-export, not a second copy of the authority.
+from agent.auxiliary_context_ceiling import (
+    _aux_relay_gate,
+    _aux_provider_callback,
+    _rebind_aux_ceiling_for_fallback,
+    _rebind_aux_ceiling_for_fallback_async,
 )
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
@@ -1226,7 +1246,6 @@ def _get_aux_model_for_provider(provider_id: str, *, prefer_fast: bool = False) 
     if picked and provider_id.strip().lower() == "nous" and _nous_policy_blocks(picked):
         return ""
     return picked
-
 
 
 # Fallback for providers not yet migrated to ProviderProfile.default_aux_model,
@@ -3833,7 +3852,14 @@ def _relay_sync_completion(
     api_mode: str | None = None,
     create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    callback = create or (lambda request: client.chat.completions.create(**request))
+    _aux_relay_gate(
+        kwargs, provider=provider, model=str(kwargs.get("model") or "") or None
+    )
+    callback = _aux_provider_callback(
+        create or (lambda request: client.chat.completions.create(**request)),
+        provider=provider,
+        model=str(kwargs.get("model") or "") or None,
+    )
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Protected compression calls isolate only the provider callback and stream
     # aggregation.  The owning thread remains free to unwind its lease/DB
@@ -3861,7 +3887,14 @@ async def _relay_async_completion(
     api_mode: str | None = None,
     create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    callback = create or (lambda request: client.chat.completions.create(**request))
+    _aux_relay_gate(
+        kwargs, provider=provider, model=str(kwargs.get("model") or "") or None
+    )
+    callback = _aux_provider_callback(
+        create or (lambda request: client.chat.completions.create(**request)),
+        provider=provider,
+        model=str(kwargs.get("model") or "") or None,
+    )
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return await callback(kwargs)
@@ -3885,15 +3918,25 @@ def _relay_sync_stream(
     provider: str | None = None,
     api_mode: str | None = None,
 ) -> Any:
+    _stream_model = str(kwargs.get("model") or "") or None
+    _aux_relay_gate(kwargs, provider=provider, model=_stream_model)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return client.chat.completions.create(**kwargs)
+        return _aux_provider_callback(
+            lambda request: client.chat.completions.create(**request),
+            provider=provider,
+            model=_stream_model,
+        )(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
 
     return relay_llm.stream_current(
         kwargs,
-        lambda request: client.chat.completions.create(**request),
+        _aux_provider_callback(
+            lambda request: client.chat.completions.create(**request),
+            provider=provider,
+            model=_stream_model,
+        ),
         name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model),
         finalizer=dict,
@@ -5754,24 +5797,26 @@ def _call_fallback_candidate_sync(
         fb_kwargs.update(
             auxiliary_max_tokens_param(fallback_max_tokens, model=destination.model)
         )
+    _fb_api_key = _fallback_entry_api_key(fallback_entry) or ""
     try:
-        return _validate_llm_response(
-            _relay_sync_completion(
-                fb_client,
-                fb_kwargs,
-                provider=destination.provider,
-                api_mode=destination.api_mode,
-                create=lambda request: _create_with_progress(
+        with _rebind_aux_ceiling_for_fallback(destination, api_key=_fb_api_key):
+            return _validate_llm_response(
+                _relay_sync_completion(
                     fb_client,
-                    request,
-                    task,
-                    force_stream=_provider_requires_stream(
-                        destination.provider, destination.base_url
+                    fb_kwargs,
+                    provider=destination.provider,
+                    api_mode=destination.api_mode,
+                    create=lambda request: _create_with_progress(
+                        fb_client,
+                        request,
+                        task,
+                        force_stream=_provider_requires_stream(
+                            destination.provider, destination.base_url
+                        ),
                     ),
                 ),
-            ),
-            task,
-        )
+                task,
+            )
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
@@ -5825,24 +5870,27 @@ def _call_fallback_candidate_sync(
                         )
                     )
                 try:
-                    return _validate_llm_response(
-                        _relay_sync_completion(
-                            retry_client,
-                            retry_kwargs,
-                            provider=retry_destination.provider,
-                            api_mode=retry_destination.api_mode,
-                            create=lambda request: _create_with_progress(
+                    with _rebind_aux_ceiling_for_fallback(
+                        retry_destination, api_key=_fb_api_key
+                    ):
+                        return _validate_llm_response(
+                            _relay_sync_completion(
                                 retry_client,
-                                request,
-                                task,
-                                force_stream=_provider_requires_stream(
-                                    retry_destination.provider,
-                                    retry_destination.base_url,
+                                retry_kwargs,
+                                provider=retry_destination.provider,
+                                api_mode=retry_destination.api_mode,
+                                create=lambda request: _create_with_progress(
+                                    retry_client,
+                                    request,
+                                    task,
+                                    force_stream=_provider_requires_stream(
+                                        retry_destination.provider,
+                                        retry_destination.base_url,
+                                    ),
                                 ),
                             ),
-                        ),
-                        task,
-                    )
+                            task,
+                        )
                 except Exception as retry_err:
                     if not _is_auth_error(retry_err):
                         raise
@@ -5894,16 +5942,26 @@ async def _call_fallback_candidate_async(
         tools=fallback_tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
         base_url=destination.base_url, task=task)
+    # The async mirror does not retain the configured-chain entry (the sync
+    # path does) — resolve the credential from the same helper the sync path
+    # uses, via the task/label chain entry lookup.  Best-effort: when no
+    # configured entry exists the key resolves to "" and the resolver falls
+    # back to the endpoint's own credentials.
+    _fb_entry = _fallback_chain_entry(task, fb_label) or {}
+    _fb_api_key = _fallback_entry_api_key(_fb_entry) or ""
     try:
-        return _validate_llm_response(
-            await _relay_async_completion(
-                fb_client,
-                fb_kwargs,
-                provider=destination.provider,
-                api_mode=destination.api_mode,
-            ),
-            task,
-        )
+        async with _rebind_aux_ceiling_for_fallback_async(
+            destination, api_key=_fb_api_key
+        ):
+            return _validate_llm_response(
+                await _relay_async_completion(
+                    fb_client,
+                    fb_kwargs,
+                    provider=destination.provider,
+                    api_mode=destination.api_mode,
+                ),
+                task,
+            )
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
@@ -5941,15 +5999,18 @@ async def _call_fallback_candidate_async(
                     reasoning_config=reasoning_config,
                     base_url=retry_destination.base_url, task=task)
                 try:
-                    return _validate_llm_response(
-                        await _relay_async_completion(
-                            retry_client,
-                            retry_kwargs,
-                            provider=retry_destination.provider,
-                            api_mode=retry_destination.api_mode,
-                        ),
-                        task,
-                    )
+                    async with _rebind_aux_ceiling_for_fallback_async(
+                        retry_destination, api_key=_fb_api_key
+                    ):
+                        return _validate_llm_response(
+                            await _relay_async_completion(
+                                retry_client,
+                                retry_kwargs,
+                                provider=retry_destination.provider,
+                                api_mode=retry_destination.api_mode,
+                            ),
+                            task,
+                        )
                 except Exception as retry_err:
                     if not _is_auth_error(retry_err):
                         raise
@@ -10325,6 +10386,7 @@ def call_llm(
         latency_info["queue_wait_ms"] = max(
             0, int((request_started_at - queue_started_at) * 1000)
         )
+    _ceiling_scope: Dict[str, Any] = {"token": None}
     prior_progress_hook = getattr(_aux_progress, "hook", None)
 
     def _timed_response() -> None:
@@ -10368,6 +10430,7 @@ def call_llm(
                 stream=stream,
                 stream_options=stream_options,
                 route_info=route_info,
+                ceiling_scope=_ceiling_scope,
             )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
@@ -10375,6 +10438,12 @@ def call_llm(
             return _release_sync_semaphore_after_stream(response, stream_semaphore)
         return response
     finally:
+        # Reset the auxiliary ceiling so it is not left ambient after return
+        # or exception. The impl retains the ContextVar token in the scope
+        # when it publishes the ceiling; the owner resets it here so nested
+        # or sequential calls never inherit a stale ceiling.
+        if _ceiling_scope["token"] is not None:
+            reset_aux_ceiling(_ceiling_scope["token"])
         if latency_info is not None:
             latency_info["summary_generation_ms"] = max(
                 0, int((time.monotonic() - request_started_at) * 1000)
@@ -10418,6 +10487,7 @@ def _call_llm_impl(
     stream: bool = False,
     stream_options: dict = None,
     route_info: Optional[Dict[str, str]] = None,
+    ceiling_scope: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -10608,6 +10678,41 @@ def _call_llm_impl(
     if _is_anthropic_compat_endpoint(request_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
+    # ── Hard-ceiling gate for ALL auxiliary dispatch ──────────────────
+    # ``call_llm`` is the single shared provider-owning transport behind
+    # every auxiliary path. Compute this invocation's ceiling (effective
+    # window of the resolved auxiliary model — raw capability clamped
+    # downward by the profile ceiling) and PUBLISH it in a contextvar;
+    # the three relay helpers (the physical owner — the actual
+    # ``client.chat.completions.create`` calls) read it and enforce the
+    # transport-normalized budget on the FINAL payload. A refusal raises
+    # the TYPED ``ContextCeilingExceeded`` (NOT wrapped in ``RuntimeError``)
+    # so the auxiliary catch-all chain classifies it as a local ceiling
+    # refusal: no fallback, no credential-refresh retry.
+    from agent.model_metadata import (
+        effective_context_length as _aux_ecl,
+        set_aux_ceiling as _set_aux_ceiling,
+        build_final_context_budget as _build_aux_budget,
+        enforce_final_context_budget as _aux_enforce,
+    )
+    try:
+        _aux_limit = _aux_ecl(
+            model=str(final_model or ""),
+            base_url=str(resolved_base_url or _base_info or ""),
+            api_key=api_key or "",
+            provider=str(request_provider or ""),
+        )
+    except Exception:
+        _aux_limit = None
+    if _aux_limit is not None:
+        # Publish the invocation ceiling and retain the ContextVar token in
+        # the owner's scope so the owner resets it in its finally. This keeps
+        # the ceiling scoped to THIS invocation: nested/sequential calls each
+        # publish their own and reset to the prior value on return.
+        _aux_token = _set_aux_ceiling(_aux_limit)
+        if ceiling_scope is not None:
+            ceiling_scope["token"] = _aux_token
+
     # Streaming path: return the raw SDK Stream iterator directly. This is used by
     # the MoA aggregator so its tokens stream to the user. It deliberately skips
     # _validate_llm_response and the temperature/max_tokens/payment fallback chain
@@ -10629,6 +10734,19 @@ def _call_llm_impl(
             # Return the provider call directly; the MoA facade converts a
             # completed response into a one-chunk delta iterator at its
             # boundary.
+            # ── Ceiling gate (aggregator streaming bypass) ─────────────
+            # This path skips the relay helpers (the physical owner), so
+            # enforce here directly, immediately before the physical I/O.
+            if _aux_limit is not None:
+                _aux_enforce(
+                    _build_aux_budget(
+                        kwargs,
+                        provider=str(request_provider or "") or None,
+                        model=str(final_model or "") or None,
+                    ),
+                    ceiling=_aux_limit,
+                    reason=f"auxiliary {task or 'call'}",
+                )
             return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(
             client,
@@ -10674,6 +10792,13 @@ def _call_llm_impl(
                 ),
                 task,
                 provider=request_provider, base_url=_base_info)
+        except ContextCeilingExceeded:
+            # Terminal by type — never a transient transport blip. Raising here
+            # (before the ``except Exception as transient_err`` handler) makes
+            # the refusal independent of _is_transient_transport_error's current
+            # behaviour: a ceiling refusal must never enter the same-provider
+            # retry loop, regardless of what the retry predicate matches.
+            raise
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -10721,6 +10846,13 @@ def _call_llm_impl(
                     _last_transient = retry_transient
             # Retries exhausted — fall through to first_err fallback handling.
             raise _last_transient
+    except ContextCeilingExceeded:
+        # A LOCAL ceiling refusal is terminal by type: it is not a transport
+        # blip, not a credential problem, and not a provider 400 — the request
+        # was rejected before any provider I/O. It must NEVER be retried on the
+        # same provider, used to trigger a credential refresh, or escalated to a
+        # fallback candidate (a second provider call would just re-refuse).
+        raise
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
@@ -11311,6 +11443,7 @@ async def async_call_llm(
     route_info: Optional[Dict[str, str]] = None,
 ) -> Any:
     """Run an asynchronous auxiliary LLM request under the configured limit."""
+    _ceiling_scope: Dict[str, Any] = {"token": None}
     semaphore = _acquire_async_aux_semaphore(task)
     if semaphore is not None:
         await semaphore.acquire()
@@ -11330,8 +11463,16 @@ async def async_call_llm(
             extra_body=extra_body,
             reasoning_config=reasoning_config,
             route_info=route_info,
+            ceiling_scope=_ceiling_scope,
         )
     finally:
+        # Reset the auxiliary ceiling so it is not left ambient after return or
+        # exception. The impl retains the ContextVar token in the scope when it
+        # publishes the ceiling; the owner resets it here so nested /
+        # concurrent calls each see their own ceiling (ContextVars are
+        # per-context, and the reset restores the prior value).
+        if _ceiling_scope["token"] is not None:
+            reset_aux_ceiling(_ceiling_scope["token"])
         if semaphore is not None:
             semaphore.release()
 
@@ -11352,6 +11493,7 @@ async def _async_call_llm_impl(
     extra_body: dict = None,
     reasoning_config: Optional[dict] = None,
     route_info: Optional[Dict[str, str]] = None,
+    ceiling_scope: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -11452,6 +11594,33 @@ async def _async_call_llm_impl(
         route_info, _fallback_provider_from_label(request_provider), final_model
     )
 
+    # ── Auxiliary effective-ceiling publication (mirrors the sync owner) ─────
+    # Resolve the invocation-specific effective ceiling (model context clamped
+    # by the profile ceiling), publish it to the ContextVar the relay-helper
+    # gates read, and retain the token in the owner's scope so the owner
+    # resets it in its finally. Without this the async path never publishes a
+    # ceiling, so an oversized request is never refused and the provider is
+    # called physically (Round 5 finding #1). The ceiling is terminal by type:
+    # the relay-helper gate raises ContextCeilingExceeded, which the except
+    # chain below re-raises without retry/fallback/credential-refresh.
+    from agent.model_metadata import (
+        effective_context_length as _aux_ecl_async,
+        set_aux_ceiling as _set_aux_ceiling_async,
+    )
+    try:
+        _aux_limit_async = _aux_ecl_async(
+            model=str(final_model or ""),
+            base_url=str(resolved_base_url or getattr(client, "base_url", "") or ""),
+            api_key=api_key or "",
+            provider=str(request_provider or ""),
+        )
+    except Exception:
+        _aux_limit_async = None
+    if _aux_limit_async is not None:
+        _aux_token_async = _set_aux_ceiling_async(_aux_limit_async)
+        if ceiling_scope is not None:
+            ceiling_scope["token"] = _aux_token_async
+
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish
     # api.moonshot.ai vs api.kimi.com/coding even on auto-detected routes.
@@ -11498,6 +11667,13 @@ async def _async_call_llm_impl(
                 ),
                 task,
                 provider=request_provider, base_url=_client_base)
+        except ContextCeilingExceeded:
+            # Terminal by type — never a transient transport blip. Raising here
+            # (before the ``except Exception as transient_err`` handler) makes
+            # the refusal independent of _is_transient_transport_error's current
+            # behaviour: a ceiling refusal must never enter the same-provider
+            # retry loop, regardless of what the retry predicate matches.
+            raise
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -11524,6 +11700,13 @@ async def _async_call_llm_impl(
                     create=_acreate,
                 ),
                 task)
+    except ContextCeilingExceeded:
+        # A LOCAL ceiling refusal is terminal by type: it is not a transport
+        # blip, not a credential problem, and not a provider 400 — the request
+        # was rejected before any provider I/O. It must NEVER be retried on the
+        # same provider, used to trigger a credential refresh, or escalated to a
+        # fallback candidate (a second provider call would just re-refuse).
+        raise
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)

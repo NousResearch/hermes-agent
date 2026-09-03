@@ -1850,12 +1850,18 @@ class TestSummaryTargetRatio:
 
     def test_default_threshold_floored_at_75_percent_below_512k(self):
         """Sub-512K models get the 75% small-context threshold floor."""
+        from agent.model_metadata import DEFAULT_OUTPUT_RESERVATION
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
             _ = c.context_length
         assert c.threshold_percent == 0.75
-        # 75% of 100K = 75K, above the 64K minimum floor
-        assert c.threshold_tokens == 75_000
+        # The shared output-reservation policy reserves a finite output
+        # allowance out of the window before the percent is applied (the
+        # compressor and the terminal gate must agree on the output
+        # reservation — never a 0-reservation). No explicit cap, no
+        # registered provider → DEFAULT_OUTPUT_RESERVATION (4096).
+        expected = int((100_000 - DEFAULT_OUTPUT_RESERVATION) * 0.75)
+        assert c.threshold_tokens == expected
 
 
 
@@ -2231,13 +2237,21 @@ class TestThresholdTokensCap:
 
 
     def test_no_cap_uses_ratio_only(self):
-        """Without a cap, the ratio-based threshold is used."""
+        """Without a cap, the ratio-based threshold is used.
+
+        The shared reservation policy reserves DEFAULT_OUTPUT_RESERVATION
+        (4096) for an unknown provider with no output cap — never 0 — so the
+        input budget is (window - reservation) * percent, matching the
+        terminal gate and the wire (Test A/B: coherence).
+        """
+        from agent.model_metadata import DEFAULT_OUTPUT_RESERVATION
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             comp = ContextCompressor(
                 "model-a", threshold_percent=0.50, quiet_mode=True,
             )
             _ = comp.context_length
-        assert comp.threshold_tokens == 500_000
+        expected = int((1_000_000 - DEFAULT_OUTPUT_RESERVATION) * 0.50)
+        assert comp.threshold_tokens == expected
         assert comp.threshold_tokens_cap is None
 
 
@@ -2246,14 +2260,22 @@ class TestThresholdTokensCap:
 
 
     def test_invalid_cap_treated_as_none(self):
-        """Non-numeric, zero, or negative cap values are treated as None."""
+        """Non-numeric, zero, or negative cap values are treated as None.
+
+        A `threshold_tokens_cap` that fails coercion is dropped to `None`;
+        the shared reservation policy then reserves DEFAULT_OUTPUT_RESERVATION
+        (4096) for the unknown provider, so the threshold is
+        (window - 4096) * percent rather than the full window.
+        """
+        from agent.model_metadata import DEFAULT_OUTPUT_RESERVATION
+        expected = int((1_000_000 - DEFAULT_OUTPUT_RESERVATION) * 0.50)
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             comp0 = ContextCompressor(
                 "model-a", threshold_percent=0.50, quiet_mode=True,
                 threshold_tokens_cap=0,
             )
             assert comp0.threshold_tokens_cap is None
-            assert comp0.threshold_tokens == 500_000
+            assert comp0.threshold_tokens == expected
 
             comp_neg = ContextCompressor(
                 "model-a", threshold_percent=0.50, quiet_mode=True,
@@ -3441,6 +3463,7 @@ class TestContextLengthSetterCoherence:
         assert c.tail_token_budget == 8_400
 
     def test_new_value_assignment_refloors_and_invalidates(self):
+        from agent.model_metadata import DEFAULT_OUTPUT_RESERVATION
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             c = ContextCompressor(model="test", quiet_mode=True)
             _ = c.context_length
@@ -3449,8 +3472,11 @@ class TestContextLengthSetterCoherence:
         c.context_length = 200_000
         # Floor re-applied for the new window...
         assert c.threshold_percent == 0.75
-        # ...and budgets recompute from the same window+percent.
-        assert c.threshold_tokens == 150_000
+        # ...and budgets recompute from the same window+percent, reserving
+        # the shared-policy output allowance (4096 for the unknown provider).
+        assert c.threshold_tokens == int(
+            (200_000 - DEFAULT_OUTPUT_RESERVATION) * 0.75
+        )
 
 
 

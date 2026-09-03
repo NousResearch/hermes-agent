@@ -50,6 +50,623 @@ from agent.credential_pool import (
 from agent.error_classifier import FailoverReason
 from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
+from agent.model_metadata import ContextCeilingExceeded  # noqa: F401  (re-export)
+
+
+def resolve_engine_pre_cap(engine) -> int:
+    """Read the pre-cap operating window from a ContextEngine instance.
+
+    Returns a valid positive integer or 0. Accepts ``pre_cap_context_length``
+    only when it is a genuine positive int; otherwise falls back to the
+    engine's ``context_length``. This is the single definition of the
+    engine-side pre-cap fallback semantics.
+
+    A MagicMock (or any non-int) ``pre_cap_context_length`` is rejected by the
+    ``isinstance`` check, so the fallback to ``context_length`` is used. The
+    same check applies to ``context_length`` so a MagicMock there also
+    resolves to 0 rather than leaking a non-int downstream (e.g. into
+    ``save_context_length``'s ``length <= 0`` guard).
+    """
+    if engine is None:
+        return 0
+    val = getattr(engine, "pre_cap_context_length", None)
+    if isinstance(val, int) and not isinstance(val, bool) and val > 0:
+        return val
+    val = getattr(engine, "context_length", None)
+    if isinstance(val, int) and not isinstance(val, bool) and val > 0:
+        return val
+    return 0
+
+
+def get_pre_cap(agent) -> int:
+    """Return the host's current PRE-CAP operating window for the active model.
+
+    ``pre_cap`` is the window AFTER all capability/provider resolution and
+    non-persistable runtime restrictions (e.g. the Anthropic 200K tier
+    reduction) but BEFORE the ``model.max_context_length`` ceiling. It is the
+    correct baseline for:
+
+      * fallback snapshot / restore (preserve the pre-cap operating window),
+      * provider-error correction comparison (``parsed_limit < pre_cap``),
+      * feeding the built-in ContextCompressor's setter (which derives the
+        effective window from it).
+
+    The host owns this value (``agent._pre_cap_context_length``) so it is
+    authoritative for BOTH engine types. For the built-in ContextCompressor
+    the engine also stores it internally (``pre_cap_context_length``), but the
+    host copy is the single source of truth for cross-path consistency.
+
+    Falls back to ``resolve_engine_pre_cap(engine)`` if the host store was
+    never set (e.g. a test built the engine standalone).
+    """
+    raw = getattr(agent, "_pre_cap_context_length", None)
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+        return raw
+    return resolve_engine_pre_cap(getattr(agent, "context_compressor", None))
+
+
+def _engine_effective_window(agent, pre_cap: int) -> int:
+    """Return the EFFECTIVE window (pre-cap clamped by the ceiling).
+
+    The ceiling only ever LOWERS a window; it can never raise one. A ceiling
+    is only meaningful as a positive int (enforced by the shared strict
+    validator upstream), so anything else is treated as "no ceiling".
+    """
+    ceiling = getattr(agent, "_max_context_length", None)
+    if isinstance(ceiling, int) and not isinstance(ceiling, bool) and ceiling > 0:
+        return pre_cap if pre_cap <= ceiling else ceiling
+    return pre_cap
+
+
+def ceiling_exceeded(agent, request_tokens: int) -> bool:
+    """Pre-dispatch ceiling gate (test / reference surface).
+
+    Returns ``True`` if a request of ``request_tokens`` exceeds the effective
+    ceiling (``agent._max_context_length`` when set as a strict positive int).
+    A no-op when no ceiling is configured.
+
+    .. note::
+       **No production call sites in-tree.**  Production dispatch owners use
+       :func:`enforce_final_context_budget` (or the streaming helper
+       :func:`_enforce_streaming_final_budget`), which additionally bounds the
+       request by the invocation's own pre-cap.  This helper is retained as a
+       lightweight reference for tests and for callers that only need a
+       simple ``tokens > ceiling`` predicate.
+    """
+    ceiling = getattr(agent, "_max_context_length", None)
+    if not (isinstance(ceiling, int) and not isinstance(ceiling, bool) and ceiling > 0):
+        return False
+    if not isinstance(request_tokens, int) or isinstance(request_tokens, bool):
+        return False
+    return request_tokens > ceiling
+
+
+# ContextCeilingExceeded is defined in agent.model_metadata (single source of
+# truth) and re-exported at the top of this module for backward compatibility
+# with callers that import it from agent_runtime_helpers.
+
+
+# Token accounting for the hard ceiling.
+#
+# model.max_context_length is a HARD CEILING ON HERMES'S EFFECTIVE CONTEXT
+# BUDGET under Hermes canonical pre-dispatch accounting.  It is not a claim
+# of exact provider-token enforcement.
+#
+# Hermes has NO exact tokenizer on the dispatch path -- tiktoken and
+# transformers are both optional and absent from core dependencies
+# (pyproject.toml).  The gate therefore relies on the existing
+# estimate_request_tokens_rough family (see agent.model_metadata): a rough,
+# heuristic estimate of the FINAL provider-bound payload (system/instructions
+# + messages/input + tool schemas + multimodal image estimate at
+# _IMAGE_TOKEN_COST per image), plus the resolved output reservation.
+#
+# This is Hermes canonical accounting -- a practical budget, not a proven
+# bound.  The rough estimate is known to under-count some token-dense scripts
+# (Cyrillic, Greek, Thai, Arabic) and irregular ASCII (code, base64);
+# provider-native tokenization may differ in either direction.  The provider's
+# own context-overflow error (error_classifier -> reactive compaction in the
+# loop) remains the authoritative backstop for any request this estimate still
+# mis-estimates, exactly as the compressor already relies on it.
+#
+# Hard invariant enforced by the terminal gate
+# (enforce_final_context_budget; check_ceiling_for_kwargs is the retained
+# test/reference surface):
+#
+#     canonical_request_budget(final payload)
+#         <= min(invocation_pre_cap, profile_max_context_length)
+#
+# before provider I/O.  A request that exceeds the bound is refused locally
+# and never dispatched; the refusal is NOT an API call, so it does not
+# consume api_call_count or an iteration/provider-call slot.
+
+def canonical_request_budget(
+    api_messages: list,
+    *,
+    system_prompt: str = "",
+    tools: list | None = None,
+    output_reserve: int = 0,
+) -> int:
+    """Hermes canonical token budget for a FINAL provider-bound request.
+
+    Reuses Hermes's existing rough token accounting
+    (``estimate_request_tokens_rough`` — the same estimator the conversation
+    loop and context compressor already use for preflight and shrink
+    decisions).  There is no duplicated token-accounting implementation and
+    no second estimator; this function is the single canonical budget
+    calculator the ``model.max_context_length`` ceiling enforces.
+
+    The components are the FINAL payload's system/instructions text, final
+    messages/input, final tool schemas, the flat per-image estimate
+    (``_IMAGE_TOKEN_COST`` per image part), and the RESOLVED output
+    reservation.
+
+    This is a Hermes canonical budget, NOT a proven provider-token bound:
+    the underlying estimator is a rough heuristic that can under-count some
+    token-dense scripts and irregular ASCII, and provider-native
+    tokenization may differ in either direction.  Where Hermes lacks the
+    exact native tokenizer, the provider's context-overflow response remains
+    the final authority (see the module-level note above).
+
+    ``output_reserve`` must be the RESOLVED output allowance for this
+    dispatch — Hermes's effective ``max_tokens`` after its clamp-to-remaining-
+    context — not merely "max_tokens if known".  A meaningful hard ceiling
+    needs the actual value the provider will be asked to honour.
+    """
+    from agent.model_metadata import estimate_request_tokens_rough
+
+    base = estimate_request_tokens_rough(
+        list(api_messages or []),
+        system_prompt=system_prompt or "",
+        tools=tools,
+    )
+    reserve = (
+        int(output_reserve)
+        if isinstance(output_reserve, int)
+        and not isinstance(output_reserve, bool)
+        and output_reserve > 0
+        else 0
+    )
+    return base + reserve
+
+
+def effective_dispatch_limit(
+    pre_cap: int | None,
+    ceiling: int | None,
+) -> int | None:
+    """The effective dispatch limit = ``min(invocation pre-cap, profile ceiling)``.
+
+    ``pre_cap`` is the invocation's OWN operating pre-cap (the active host
+    pre-cap for the main/fallback model; the reference/auxiliary model's own
+    resolved pre-cap for those invocations). ``ceiling`` is the profile-wide
+    ``model.max_context_length`` (a strict positive int when valid). The
+    ceiling only lowers the limit — a smaller model stays smaller. Returns
+    ``None`` (no limit → enforcement is a no-op) when neither value is set.
+    """
+    def _valid(v) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+    limits = []
+    if _valid(pre_cap):
+        limits.append(pre_cap)
+    if _valid(ceiling):
+        limits.append(ceiling)
+    if not limits:
+        return None
+    return min(limits)
+
+
+def enforce_effective_context_limit(
+    request_tokens: int,
+    *,
+    pre_cap: int | None = None,
+    ceiling: int | None = None,
+    reason: str = "",
+) -> None:
+    """Raise :class:`ContextCeilingExceeded` if the final request exceeds the
+    effective limit for its invocation.
+
+    The effective limit is ``min(invocation pre-cap, profile ceiling)`` —
+    see :func:`effective_dispatch_limit`. A request whose Hermes canonical
+    budget exceeds that limit is refused locally. When neither a pre-cap nor
+    a ceiling is configured the check is a no-op.
+
+    Ordering contract: this must be called BEFORE the dispatch owner commits
+    ``api_call_count`` / an iteration slot, so a refused request consumes
+    neither. Callers handle the raised exception as a normal local refusal.
+    """
+    limit = effective_dispatch_limit(pre_cap, ceiling)
+    if limit is None:
+        return
+    tokens = (
+        request_tokens
+        if isinstance(request_tokens, int)
+        and not isinstance(request_tokens, bool)
+        and request_tokens >= 0
+        else 0
+    )
+    if tokens > limit:
+        raise ContextCeilingExceeded(tokens, limit, reason=reason)
+
+
+def check_ceiling_for_kwargs(
+    api_kwargs: dict,
+    *,
+    pre_cap: int | None,
+    ceiling: int | None,
+    system_prompt: str = "",
+    tools: list | None = None,
+    reason: str = "",
+) -> None:
+    """Shared dispatch-owner ceiling enforcement (test / reference surface).
+
+    Builds the canonical Hermes budget from the FINAL payload and raises
+    :class:`ContextCeilingExceeded` if the budget exceeds
+    ``min(invocation pre-cap, profile ceiling)``.
+
+    ``api_kwargs`` is the FINAL request as it will be sent (post-middleware,
+    post-transformation).  ``system_prompt`` and ``tools`` are supplied
+    explicitly for owners whose payload builder keeps them out of
+    ``api_kwargs`` (e.g. the summary path, which prepends a system message to
+    ``api_kwargs["messages"]``).  ``output_reserve`` is read from the
+    provider-specific key already present in ``api_kwargs``
+    (``max_tokens`` / ``max_completion_tokens`` / ``max_output_tokens``).
+
+    When neither ``pre_cap`` nor ``ceiling`` is set the check is a no-op.
+    Callers catch the raised exception and surface it as a local refusal —
+    not an API call, not an iteration slot, not a provider callback.
+
+    .. note::
+       **No production call sites in-tree.**  Production dispatch owners use
+       :func:`enforce_final_context_budget` (or the streaming helper
+       :func:`_enforce_streaming_final_budget`).  This function is retained as
+       a reference surface for tests and as the legacy API that the summary
+       gate was migrated off.
+    """
+    _msgs = (
+        api_kwargs.get("messages")
+        or api_kwargs.get("input")
+        or []
+    )
+    _tools = (
+        api_kwargs.get("tools")
+        or api_kwargs.get("functions")
+        or tools
+    )
+    _reserve = (
+        api_kwargs.get("max_tokens")
+        or api_kwargs.get("max_completion_tokens")
+        or api_kwargs.get("max_output_tokens")
+        or 0
+    )
+    budget = canonical_request_budget(
+        _msgs,
+        system_prompt=system_prompt,
+        tools=_tools,
+        output_reserve=_reserve,
+    )
+    enforce_effective_context_limit(
+        budget,
+        pre_cap=pre_cap,
+        ceiling=ceiling,
+        reason=reason,
+    )
+
+
+def _agent_ceiling(agent) -> int | None:
+    """The profile ceiling from the agent host, or ``None`` if unset/invalid.
+
+    The value is already validated at agent init (strict positive int >= the
+    64K floor); a non-int / bool / <=0 value here is treated as "no ceiling".
+    """
+    ceiling = getattr(agent, "_max_context_length", None)
+    if isinstance(ceiling, int) and not isinstance(ceiling, bool) and ceiling > 0:
+        return ceiling
+    return None
+
+
+def _engine_handles_ceiling(engine) -> bool:
+    """Stable capability marker check.
+
+    Dispatch on an explicit OPT-IN marker (``_handles_context_ceiling is
+    True``), not isinstance / class identity / type-name string comparison.
+    A module reload re-imports ``agent.context_compressor`` as a NEW class
+    object while live instances keep the old one, so an identity check would
+    misroute; a type-name string check would let an unrelated plugin that
+    merely reuses the name "ContextCompressor" masquerade as the built-in.
+
+    The ``is True`` comparison (rather than ``bool(getattr(...))``) is what
+    makes a ``MagicMock`` (or any object with a dynamic ``__getattr__``)
+    classify correctly: a MagicMock's ``__getattr__`` returns a truthy child
+    MagicMock, which ``bool()`` would treat as True and misroute into the
+    built-in branch. ``is True`` rejects it, so a missing-marker engine
+    (including a MagicMock) receives the EFFECTIVE window, not raw.
+    """
+    return getattr(engine, "_handles_context_ceiling", False) is True
+
+
+def transition_model_context(
+    agent,
+    pre_cap: int,
+    *,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    provider: Optional[str] = None,
+    api_mode: Optional[str] = None,
+    commit_host_precap: bool = True,
+    rollback_via_lifecycle: bool = True,
+) -> int:
+    """MODEL LIFECYCLE TRANSITION: apply a new model's pre-cap window.
+
+    Use for genuine model/provider/base_url/api_key changes — agent init,
+    /model switch, fallback activation, primary restoration. The generic
+    ``ContextEngine.update_model()`` contract MUST run for the new model even
+    when the final effective integer happens to be unchanged: the engine also
+    tracks model/provider/credential state and recalculates threshold/budget
+    from the new window.
+
+    Failure semantics: exceptions from ``update_model`` PROPAGATE to the
+    owning transaction. This shared primitive must not manufacture success —
+    the caller (init / switch / fallback / restore) decides whether a failed
+    transition aborts the whole operation.
+
+    Host-state separation: ``commit_host_precap``
+    controls whether ``agent._pre_cap_context_length`` is set to ``pre_cap``
+    as part of this call.
+
+    - ``True`` (default): the helper commits the host pre-cap after a
+      successful engine transition. Suitable for standalone calls (agent init,
+      provider-corrected refresh) where the engine transition IS the whole
+      transaction.
+    - ``False``: the helper performs ONLY the engine transition and leaves the
+      host pre-cap for the caller to commit in its final atomic step. Suitable
+      for the validate-then-commit lifecycle transactions (switch / fallback /
+      restore) where the caller commits model + client + host-pre-cap together
+      after the engine transition succeeds. This ensures a failed transition
+      leaves ALL host state (model/provider/client/_pre_cap) in its prior
+      coherent state.
+
+    Engine snapshot/restore: the engine's own
+    model/provider/base_url/api_key/context_length are snapshotted before
+    ``update_model()`` and restored if it raises. This guards against a
+    generic plugin whose ``update_model()`` mutates internal state and then
+    raises — the engine is returned to its prior state even in that case.
+    Built-in engines (which set all five fields atomically before
+    ``context_length``) are unaffected, but the snapshot is cheap and makes
+    the contract explicit rather than assumed.
+
+    Dispatch: on the stable ``_handles_context_ceiling is True`` marker.
+    Built-in (marker) receives the RAW pre-cap — its setter stores pre-cap and
+    derives ``effective = min(pre_cap, ceiling)``. A generic plugin (no
+    marker) receives the pre-computed EFFECTIVE window — it has a single
+    ``context_length`` and no pre-cap property.
+
+    ``pre_cap`` is the window BEFORE the ceiling (capability resolution +
+    non-persistable runtime restrictions). The ceiling only lowers it.
+
+    Returns the value actually supplied to the engine (raw for built-in,
+    effective for plugin).
+    """
+    engine = getattr(agent, "context_compressor", None)
+    if engine is None:
+        # No engine — nothing to transition.
+        if commit_host_precap:
+            agent._pre_cap_context_length = pre_cap
+        return pre_cap
+
+    _m = model if model is not None else getattr(agent, "model", "")
+    _bu = base_url if base_url is not None else getattr(agent, "base_url", "")
+    _ak = api_key if api_key is not None else getattr(agent, "api_key", "")
+    _pv = provider if provider is not None else getattr(agent, "provider", "")
+    _am = api_mode if api_mode is not None else getattr(agent, "api_mode", "")
+
+    if _engine_handles_ceiling(engine):
+        # Built-in: pass the RAW value so its setter stores pre-cap = raw and
+        # derives effective = min(raw, ceiling). Do NOT pre-clamp — the engine
+        # owns its own pre-cap.
+        supplied = pre_cap
+    else:
+        # Generic plugin: pass the EFFECTIVE value.
+        supplied = _engine_effective_window(agent, pre_cap)
+
+    # --- Rollback via the plugin's OWN lifecycle contract ---
+    # A generic ContextEngine plugin's ``update_model()`` may mutate derived
+    # / internal state (threshold_percent, threshold_tokens, budgets,
+    # accounting, plugin-private fields) and THEN raise. Restoring only the
+    # five route fields via setattr would leave that derived state on the NEW
+    # model's values — silently inconsistent. The user's contract: prefer
+    # restoration through the plugin's lifecycle itself — re-apply the PRIOR
+    # route with ``update_model(old...)`` so every derived field is recomputed
+    # from the prior route. A bare setattr restore of the route fields is only
+    # a LAST-RESORT fallback if even that rollback call raises, and a rollback
+    # failure must be SURFACED (loud log + the original exception propagates),
+    # never silently claimed as coherence.
+    #
+    # Capture the prior route + the value the engine was last supplied BEFORE
+    # we hand it the new route. The supplied value mirrors the forward path
+    # (built-in → raw pre-cap; plugin → its single context_length).
+    _prior_pre_cap = resolve_engine_pre_cap(engine)
+    if _engine_handles_ceiling(engine):
+        _prior_supplied = _prior_pre_cap
+    else:
+        _prior_supplied = getattr(engine, "context_length", None) or _prior_pre_cap
+    _prior_model = getattr(engine, "model", None)
+    _prior_provider = getattr(engine, "provider", None)
+    _prior_base_url = getattr(engine, "base_url", None)
+    _prior_api_key = getattr(engine, "api_key", None)
+    _prior_api_mode = getattr(engine, "api_mode", None)
+
+    # Always run the transition — no skip-if-effective-unchanged.
+    # A model/provider/credential change must reach update_model even when
+    # the effective integer is identical.
+    try:
+        engine.update_model(
+            model=_m,
+            context_length=supplied,
+            base_url=_bu,
+            api_key=_ak,
+            provider=_pv,
+            api_mode=_am,
+        )
+    except Exception as _transition_exc:
+        # Preferred rollback: re-apply the PRIOR route through update_model
+        # so the plugin recomputes ALL derived state from the prior route.
+        #
+        # ``rollback_via_lifecycle=False`` (used by the primary-runtime RESTORE
+        # path) skips the extra update_model call: that path is expected to be
+        # RETRIED by the caller on a transient failure (see
+        # test_restore_retry_preserves_fallback_identity_after_partial_failure),
+        # and a lifecycle rollback would consume a second update_model() call
+        # per failed attempt — breaking the retry contract (each restore
+        # attempt must make exactly ONE update_model() call). For the built-in
+        # engine the setattr route-restore below is semantically complete
+        # because its ``context_length`` setter re-derives thresholds/budgets.
+        if rollback_via_lifecycle:
+            _rollback_failed = None
+            try:
+                engine.update_model(
+                    model=_prior_model,
+                    context_length=_prior_supplied,
+                    base_url=_prior_base_url,
+                    api_key=_prior_api_key,
+                    provider=_prior_provider,
+                    api_mode=_prior_api_mode,
+                )
+            except Exception as _rollback_exc:
+                # Rollback through the contract itself failed. Last resort: put
+                # the six route fields back so the engine is not left on the
+                # NEW model paired with the prior route — but this does NOT
+                # restore derived state, so we must surface the partial
+                # restoration loudly.
+                for _attr, _val in (
+                    ("model", _prior_model),
+                    ("provider", _prior_provider),
+                    ("base_url", _prior_base_url),
+                    ("api_key", _prior_api_key),
+                    ("api_mode", _prior_api_mode),
+                    ("context_length", _prior_supplied),
+                ):
+                    if _val is not None:
+                        try:
+                            setattr(engine, _attr, _val)
+                        except Exception:
+                            pass
+                _rollback_failed = _rollback_exc
+            if _rollback_failed is not None:
+                # Do NOT claim coherence: the engine's derived state may still
+                # be on the new model's values. Surface this clearly.
+                logger.error(
+                    "transition_model_context: engine route rollback INCOMPLETE — "
+                    "re-applying the prior route via update_model failed (%s) and "
+                    "only the six route fields were restored; engine derived state "
+                    "(thresholds/budgets/accounting) may be inconsistent. Original "
+                    "transition failure: %s",
+                    _rollback_failed,
+                    _transition_exc,
+                )
+        else:
+            # Restore path: put the six route fields back via setattr. This is
+            # exactly ONE update_model() call (the forward one) per attempt,
+            # so the caller's retry contract holds. For the built-in engine the
+            # context_length setter re-derives thresholds/budgets, so derived
+            # state is coherent; for a plugin this is the documented last-resort
+            # route-restore, surfaced as a warning (never claimed as full
+            # coherence).
+            for _attr, _val in (
+                ("model", _prior_model),
+                ("provider", _prior_provider),
+                ("base_url", _prior_base_url),
+                ("api_key", _prior_api_key),
+                ("api_mode", _prior_api_mode),
+                ("context_length", _prior_supplied),
+            ):
+                if _val is not None:
+                    try:
+                        setattr(engine, _attr, _val)
+                    except Exception:
+                        pass
+            logger.warning(
+                "transition_model_context: transition failed; restored the six "
+                "route fields via setattr (lifecycle rollback skipped per "
+                "rollback_via_lifecycle=False). Engine derived state may be on "
+                "the new model's values. Original transition failure: %s",
+                _transition_exc,
+            )
+        raise
+
+    # Host pre-cap = the ACTIVE model's pre-cap. Set only AFTER a successful
+    # transition, and only when the caller hasn't deferred the commit.
+    if commit_host_precap:
+        agent._pre_cap_context_length = pre_cap
+    return supplied
+
+
+def refresh_context_window(
+    agent,
+    pre_cap: int,
+    *,
+    model: Optional[str] = None,
+) -> int:
+    """SAME-MODEL CONTEXT-WINDOW REFRESH: recalc derived state for the window.
+
+    Use when the ACTIVE model is unchanged but its context window changed —
+    Codex app-server re-reports the provider window on each response, Anthropic
+    long-context tier reduction (1M → 200K), provider-reported limit correction.
+    This is NOT a model/provider lifecycle transition and must not masquerade
+    as one: it recalculates context-derived thresholds/budgets from the new
+    window while PRESERVING freshly recorded token accounting.
+
+    Dispatch: on the stable ``_handles_context_ceiling is True`` marker.
+      * Built-in (marker): route through the ``context_length`` SETTER, which
+        stores the raw pre-cap, derives effective = min(raw, ceiling), and
+        recalculates threshold/budget — WITHOUT zeroing last_*_tokens or the
+        other calibration fields that ``update_model()`` resets. So accounting
+        recorded by the just-completed ``update_from_response()`` survives.
+      * Generic plugin (no marker): call ``update_model()`` to recalculate
+        threshold/budget from the EFFECTIVE window (a bare attribute write would
+        leave its derived state on the old window). A plugin MAY legitimately
+        reset accounting in ``update_model()``; the caller that just recorded
+        fresh accounting (the Codex path) therefore records it AFTER this call,
+        so it is not erased.
+
+    The host pre-cap is set to ``pre_cap`` (the active model's new pre-cap).
+
+    ``pre_cap`` is the window BEFORE the ceiling. The ceiling only lowers it.
+
+    Returns the value actually supplied to the engine.
+    """
+    engine = getattr(agent, "context_compressor", None)
+    if engine is None:
+        agent._pre_cap_context_length = pre_cap
+        return pre_cap
+
+    _m = model if model is not None else getattr(agent, "model", "")
+
+    if _engine_handles_ceiling(engine):
+        # Built-in: the setter preserves accounting while recalculating.
+        supplied = pre_cap
+        engine.context_length = pre_cap
+    else:
+        # Generic plugin: recalc threshold/budget from the effective window.
+        # Route through transition_model_context (which has engine
+        # snapshot/rollback) so a failed update_model() that mutated derived
+        # state is rolled back via the plugin's OWN lifecycle — never leaving
+        # the engine half-transitioned.  The host pre-cap (L609 below) is only
+        # committed after this returns, so the host stays consistent.
+        supplied = _engine_effective_window(agent, pre_cap)
+        cur = getattr(engine, "context_length", 0)
+        if not (isinstance(cur, int) and cur == supplied):
+            # Model unchanged; skip only when the window is genuinely identical
+            # (a no-op that would needlessly invalidate derived budgets).
+            transition_model_context(
+                agent,
+                pre_cap,
+                model=_m,
+                commit_host_precap=False,  # host pre-cap committed at L609
+            )
+
+    agent._pre_cap_context_length = pre_cap
+    return supplied
 
 logger = logging.getLogger(__name__)
 
@@ -1725,6 +2342,7 @@ def restore_primary_runtime(agent) -> bool:
     agent._restore_wait_logged = False
 
     rt = agent._primary_runtime
+    # ── Upstream: record the fallback identity being left ──
     fallback_route = getattr(agent, "_provider_fallback_route", None)
     if (
         isinstance(fallback_route, (list, tuple))
@@ -1738,6 +2356,34 @@ def restore_primary_runtime(agent) -> bool:
     provider_fallback_active = bool(
         getattr(agent, "_provider_fallback_active", False)
     )
+    # ── Feature: lifecycle atomicity snapshot (Finding #4) ──
+    # Snapshot the CURRENT host route (the fallback's state) before the commit
+    # region mutates it. If the transition_model_context call (or any commit
+    # step) raises, the except handler restores this snapshot so the agent is
+    # left on the fallback in a coherent state — not half-mutated toward the
+    # primary.
+    _restore_snap = {
+        "model": agent.model,
+        "provider": agent.provider,
+        "requested_provider": getattr(agent, "requested_provider", None),
+        "base_url": agent.base_url,
+        "api_mode": agent.api_mode,
+        "api_key": getattr(agent, "api_key", None),
+        "client": getattr(agent, "client", None),
+        "_anthropic_client": getattr(agent, "_anthropic_client", None),
+        "_anthropic_api_key": getattr(agent, "_anthropic_api_key", None),
+        "_anthropic_base_url": getattr(agent, "_anthropic_base_url", None),
+        "_is_anthropic_oauth": getattr(agent, "_is_anthropic_oauth", None),
+        "_client_kwargs": dict(getattr(agent, "_client_kwargs", {}) or {}),
+        "_config_context_length": getattr(agent, "_config_context_length", None),
+        "_reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", None),
+        "_credential_pool": getattr(agent, "_credential_pool", None),
+        "_credential_pool_entry_id": getattr(agent, "_credential_pool_entry_id", None),
+        "_fallback_activated": getattr(agent, "_fallback_activated", None),
+        "_use_prompt_caching": getattr(agent, "_use_prompt_caching", None),
+        "_use_native_cache_layout": getattr(agent, "_use_native_cache_layout", None),
+        "_pre_cap_context_length": getattr(agent, "_pre_cap_context_length", None),
+    }
     try:
         # ── Core runtime state ──
         agent.model = rt["model"]
@@ -1806,14 +2452,34 @@ def restore_primary_runtime(agent) -> bool:
             )
 
         # ── Restore context engine state ──
-        cc = agent.context_compressor
-        cc.update_model(
-            model=rt["compressor_model"],
-            context_length=rt["compressor_context_length"],
-            base_url=rt["compressor_base_url"],
-            api_key=rt["compressor_api_key"],
-            provider=rt["compressor_provider"],
-            api_mode=rt.get("compressor_api_mode", ""),
+        # The snapshot's compressor_context_length holds the PRIMARY's PRE-CAP
+        # operating window (captured via get_pre_cap before the fallback
+        # overwrote it). Route it through the shared helper so the built-in
+        # receives the raw value (setter re-derives effective against the
+        # current ceiling) and a plugin receives the effective value via
+        # update_model (recalculating threshold/budget). The host re-retains
+        # the raw pre-cap.
+        # MODEL LIFECYCLE TRANSITION: restore the PRIMARY model. The snapshot's
+        # compressor_context_length holds the PRIMARY's pre-cap (captured via
+        # get_pre_cap before the fallback overwrote the host). transition_model_context
+        # sets the host pre-cap back to the primary's (active again) and always
+        # runs update_model so a plugin re-tracks the primary's model/provider
+        # state even when the effective integer is unchanged. A failed
+        # transition propagates to the restore transaction so the agent is
+        # never left with the fallback committed but the primary transition
+        # half-applied.
+        transition_model_context(
+            agent, rt["compressor_context_length"], model=rt["compressor_model"],
+            commit_host_precap=False,
+            rollback_via_lifecycle=False,
+        )
+        # The restore owns the host-pre-cap commit atomically: the snapshot's
+        # pre-cap (captured via get_pre_cap before the fallback overwrote the
+        # host) is restored together with the other host fields by the outer
+        # except-handler snapshot if a later commit step fails — so the
+        # transition must not commit it half-way through the transaction.
+        agent._pre_cap_context_length = rt.get(
+            "_pre_cap_context_length", rt["compressor_context_length"],
         )
 
         # ── Rebind and re-select the primary credential pool ──
@@ -1896,12 +2562,32 @@ def restore_primary_runtime(agent) -> bool:
                     # ``_swap_credential`` rebuilds the OpenAI/Anthropic client,
                     # reapplies base-url-scoped headers, and carries the
                     # accumulated base_url / OAuth-detection fixes (#33163).
-                    agent._swap_credential(entry)
-                    logger.info(
-                        "Restore re-selected pool entry %s (%s)",
-                        getattr(entry, "id", "?"),
-                        getattr(entry, "label", "?"),
-                    )
+                    #
+                    # Lifecycle atomicity (Finding #4): this swap happens
+                    # AFTER ``transition_model_context`` has already committed
+                    # the engine to the PRIMARY route. If the swap raises and
+                    # propagates to the outer ``except``, that handler rolls the
+                    # HOST back to the fallback snapshot while the ENGINE stays
+                    # on primary — an incoherent host≠engine state. The swap
+                    # is therefore NON-FATAL: on failure we keep the snapshot
+                    # api_key (the documented fallback, #25205), log loudly, and
+                    # let the restore complete with the host on primary —
+                    # coherent with the already-committed engine.
+                    try:
+                        agent._swap_credential(entry)
+                    except Exception as _swap_exc:
+                        logger.warning(
+                            "Restore primary credential swap failed; keeping "
+                            "snapshot api_key (host+engine stay coherent on "
+                            "primary): %s", _swap_exc,
+                            exc_info=True,
+                        )
+                    else:
+                        logger.info(
+                            "Restore re-selected pool entry %s (%s)",
+                            getattr(entry, "id", "?"),
+                            getattr(entry, "label", "?"),
+                        )
                 elif entry_key:
                     logger.info(
                         "Restore skipped pool entry %s (%s): provider %s does not match primary provider %s",
@@ -1952,6 +2638,23 @@ def restore_primary_runtime(agent) -> bool:
                 pass
         return True
     except Exception as e:
+        # Lifecycle atomicity: the commit region had already mutated the host
+        # route toward the primary. If the transition
+        # (or any later commit step) failed, restore the fallback's coherent
+        # host state so the agent is not left half-mutated. The engine's own
+        # route was either restored by transition_model_context's snapshot
+        # (if the failure was in the transition) or was never mutated (if the
+        # failure was in a later commit step).
+        for _name, _val in _restore_snap.items():
+            try:
+                setattr(agent, _name, _val)
+            except Exception:
+                pass
+        if hasattr(agent, "_transport_cache"):
+            try:
+                agent._transport_cache.clear()
+            except Exception:
+                pass
         logger.warning("Failed to restore primary runtime: %s", e)
         return False
 
@@ -3083,6 +3786,7 @@ def switch_model(
             "_config_context_length",
             "_reasoning_echo_flag",
             "runtime_capabilities",
+            "_pre_cap_context_length",
         )
     }
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
@@ -3281,84 +3985,98 @@ def switch_model(
         raise
 
     # ── LM Studio: preload before probing context length ──
+    # This phase sits BETWEEN the client-rebuild try/except (above) and the
+    # engine-transition try/except (below).  A failure here — most commonly a
+    # network error / HTTP error from the LM Studio management API inside
+    # ``_ensure_lmstudio_runtime_loaded`` (a real I/O call) — must roll the
+    # host route back to its pre-swap state: the host route was already
+    # committed above (model/provider/client), but the engine pre-cap and
+    # ``_primary_runtime`` are only updated AFTER this phase, so without this
+    # rollback the agent is left with a NEW model/provider/client paired with
+    # the OLD engine window and OLD ``_primary_runtime`` — the exact
+    # incoherence the switch_model rollback exists to prevent.
     _sm_custom_providers = None
     try:
-        from hermes_cli.config import (
-            get_compatible_custom_providers,
-            get_custom_provider_context_length,
-            load_config,
-        )
-
-        _sm_cfg = load_config()
-        _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
-        _destination_context_intent = get_custom_provider_context_length(
-            model=agent.model,
-            base_url=agent.base_url,
-            custom_providers=_sm_custom_providers,
-        )
-    except Exception:
-        _destination_context_intent = None
-    agent._config_context_length = _destination_context_intent
-    if hasattr(agent, "_ensure_lmstudio_runtime_loaded"):
         try:
-            _runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
-                _destination_context_intent
+            from hermes_cli.config import (
+                get_compatible_custom_providers,
+                get_custom_provider_context_length,
+                load_config,
+            )
+
+            _sm_cfg = load_config()
+            _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
+            _destination_context_intent = get_custom_provider_context_length(
+                model=agent.model,
+                base_url=agent.base_url,
+                custom_providers=_sm_custom_providers,
             )
         except Exception:
-            _restore_snapshot()
-            raise
-    else:
-        _runtime_context_length = None
-    if (
-        hasattr(agent, "_lmstudio_load_was_unverified")
-        and agent._lmstudio_load_was_unverified(_runtime_context_length)
-    ):
-        logger.warning(
-            "LM Studio model activation was rejected or completed without a "
-            "verifiable active context length during model switch; continuing "
-            "with configured context"
+            _destination_context_intent = None
+        agent._config_context_length = _destination_context_intent
+        _runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
+            _destination_context_intent
         )
-    if hasattr(agent, "_effective_lmstudio_context_length"):
+        if agent._lmstudio_load_was_unverified(_runtime_context_length):
+            logger.warning(
+                "LM Studio model activation was rejected or completed without a "
+                "verifiable active context length during model switch; continuing "
+                "with configured context"
+            )
         _effective_context_length = agent._effective_lmstudio_context_length(
             _destination_context_intent,
             _runtime_context_length,
         )
-    else:
-        _effective_context_length = _destination_context_intent
+    except Exception:
+        # Roll back every mutated field to the pre-swap snapshot (see the
+        # Window A rollback above for the full rationale); re-raise so the
+        # caller surfaces a meaningful warning.
+        _restore_snapshot()
+        raise
 
-    # ── Re-evaluate prompt caching ──
-    # Refresh the custom-provider snapshot from the config just loaded above
-    # so the per-model ``prompt_caching`` capability lookup sees the same
-    # live list the context-length resolution used — without this, a flag
-    # added to config.yaml after session start is invisible to a /model
-    # switch (the policy would read the stale init-time snapshot).
-    if _sm_custom_providers is not None:
-        agent._custom_providers = _sm_custom_providers
-    agent._use_prompt_caching, agent._use_native_cache_layout = (
-        agent._anthropic_prompt_cache_policy(
-            provider=new_provider,
-            base_url=agent.base_url,
-            api_mode=api_mode,
-            model=new_model,
+    # ── Post-client / pre-finalized region: one rollback transaction ──
+    # This entire region (prompt-cache policy → context/capability resolution
+    # → engine transition → final pre-cap commit) sits AFTER the host route
+    # has been committed in Window A (model/provider/client/api_key/
+    # _client_kwargs) and BEFORE the engine and _primary_runtime are
+    # finalized.  An exception from ANY source in this region must roll the
+    # host route back to its prior coherent state — the agent must not be
+    # left with a new model/provider/client paired with the old engine route
+    # or old _primary_runtime.
+    try:
+        # ── Re-evaluate prompt caching ──
+        # Refresh the custom-provider snapshot from the config just loaded
+        # above so the per-model ``prompt_caching`` capability lookup sees
+        # the same live list the context-length resolution used — without
+        # this, a flag added to config.yaml after session start is invisible
+        # to a /model switch (the policy would read the stale init-time
+        # snapshot).
+        if _sm_custom_providers is not None:
+            agent._custom_providers = _sm_custom_providers
+        agent._use_prompt_caching, agent._use_native_cache_layout = (
+            agent._anthropic_prompt_cache_policy(
+                provider=new_provider,
+                base_url=agent.base_url,
+                api_mode=api_mode,
+                model=new_model,
+            )
         )
-    )
 
-    # ── Update context compressor ──
-    if hasattr(agent, "context_compressor") and agent.context_compressor:
-        from agent.model_metadata import get_model_context_length
-        if _sm_custom_providers is None:
-            try:
-                from hermes_cli.config import get_compatible_custom_providers, load_config
-                _sm_custom_providers = get_compatible_custom_providers(load_config())
-            except Exception:
-                _sm_custom_providers = None
-        # ``agent.api_key`` may be a callable (Azure Foundry Entra ID
-        # token provider). ``get_model_context_length`` expects a
-        # string for its live-probe paths; for Foundry the context
-        # length normally resolves via config or static catalogs and
-        # never hits a probe, but coerce to empty string defensively.
-        _ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
-        try:
+        # ── Update context compressor ──
+        if hasattr(agent, "context_compressor") and agent.context_compressor:
+            from agent.model_metadata import get_model_context_length
+            if _sm_custom_providers is None:
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers, load_config
+                    _sm_custom_providers = get_compatible_custom_providers(load_config())
+                except Exception:
+                    _sm_custom_providers = None
+            # ``agent.api_key`` may be a callable (Azure Foundry Entra ID
+            # token provider). ``get_model_context_length`` expects a
+            # string for its live-probe paths; for Foundry the context
+            # length normally resolves via config or static catalogs and
+            # never hits a probe, but coerce to empty string defensively.
+            _ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
             new_context_length = get_model_context_length(
                 agent.model,
                 base_url=agent.base_url,
@@ -3367,17 +4085,27 @@ def switch_model(
                 config_context_length=_effective_context_length,
                 custom_providers=_sm_custom_providers,
             )
-            agent.context_compressor.update_model(
-                model=agent.model,
-                context_length=new_context_length,
-                base_url=agent.base_url,
-                api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
-                provider=agent.provider,
-                api_mode=agent.api_mode,
-            )
-        except Exception:
-            _restore_snapshot()
-            raise
+            # Route through the shared host helper: built-in receives the raw value
+            # (setter derives effective + preserves pre-cap), plugin receives the
+            # effective value via update_model (recalc threshold/budget). The host
+            # retains the raw pre-cap for snapshot/restore.
+            # MODEL LIFECYCLE TRANSITION: /model switch to a new model. transition_model_context
+            # always runs update_model so a plugin re-tracks the new model/provider/
+            # credential state even when the effective integer is unchanged,
+            # sets the host pre-cap to the new model's window,
+            # and propagates any engine failure to the switch transaction
+            # — the pre-feature baseline semantics.
+            #
+            # Lifecycle atomicity: the host route (model,
+            # provider, client, api_key, _client_kwargs) was already committed
+            # above. If the engine transition fails, we must restore the host
+            # route to its prior state — the agent must not be left with a new
+            # client + old engine. The engine's own route is restored by
+            # transition_model_context's snapshot/restore.
+            transition_model_context(agent, new_context_length, model=agent.model)
+    except Exception:
+        _restore_snapshot()
+        raise
 
     # ── Re-resolve reasoning_config from per-model override ──
     # The new model may have a different reasoning_effort override. Re-read
@@ -3436,7 +4164,11 @@ def switch_model(
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
         "compressor_provider": getattr(_cc, "provider", agent.provider) if _cc else agent.provider,
-        "compressor_context_length": _cc.context_length if _cc else 0,
+        # PRE-CAP operating window (host-retained), NOT the capped getter:
+        # restore feeds this back through transition_model_context which re-derives
+        # the effective value against the ceiling. Storing the capped getter
+        # here would lose the raw pre-cap on the restore round trip.
+        "compressor_context_length": get_pre_cap(agent) if _cc else 0,
         "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
         "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
     }

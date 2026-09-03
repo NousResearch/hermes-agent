@@ -436,6 +436,18 @@ class TestPerProviderReasoningEcho:
             "use_prompt_caching": True,
             "use_native_cache_layout": False,
             "reasoning_echo_flag": True,  # snapshot saved by switch_model
+            # Context-engine snapshot fields. switch_model (and agent_init) always
+            # write these, and restore_primary_runtime() now routes the pre-cap
+            # window through transition_model_context(), which reads
+            # rt["compressor_context_length"]. The snapshot below must therefore
+            # carry a complete field set, exactly as production produces it.
+            "compressor_model": "glm-5.2",
+            "compressor_base_url": "https://gw.example.com/v1",
+            "compressor_api_key": "sk-test",
+            "compressor_provider": "custom",
+            "compressor_api_mode": "chat_completions",
+            "compressor_context_length": 128000,
+            "compressor_threshold_tokens": 0.8,
         }
         agent._transport_cache = {}
         agent.client = None

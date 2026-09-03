@@ -69,6 +69,15 @@ def test_compressor_updated_on_fallback(mock_ctx_len, mock_resolve):
     assert c.api_key == "sk-fallback"
     assert c.provider == "openai"
     assert c.context_length == 128_000
-    assert c.threshold_tokens == int(128_000 * c.threshold_percent)
+    # Option A contract: threshold reserves the resolved output allowance. No
+    # explicit max_tokens here and provider "openai" declares no implicit cap,
+    # so the reservation is DEFAULT_OUTPUT_RESERVATION (4096) and the input
+    # budget is (context_length - reservation), not the raw window.
+    from agent.model_metadata import resolve_output_reservation
+
+    _res = resolve_output_reservation(
+        None, explicit_cap=c.max_tokens, provider=c.provider, model=c.model
+    )
+    assert c.threshold_tokens == int((128_000 - _res) * c.threshold_percent)
 
 

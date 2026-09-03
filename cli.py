@@ -17065,8 +17065,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if isinstance(message, str) and "@" in message:
             try:
                 from agent.context_references import preprocess_context_references
-                from agent.model_metadata import get_model_context_length
-                _ctx_len = get_model_context_length(
+                from agent.model_metadata import effective_context_length
+                _ctx_len = effective_context_length(
                     self.model, base_url=self.base_url or "", api_key=self.api_key or "",
                     provider=self.provider or "",
                     config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None)

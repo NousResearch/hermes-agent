@@ -10952,6 +10952,13 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     )
     fake_meta = types.ModuleType("agent.model_metadata")
     fake_meta.get_model_context_length = lambda *args, **kwargs: 100000
+    # tui_gateway/server.py imports effective_context_length (the
+    # ceiling-aware wrapper) on the @-context-reference path. Mirror the
+    # real semantics: effective = min(raw, profile_ceiling); with no
+    # ceiling configured (this test's case) it equals the raw capability.
+    fake_meta.effective_context_length = (
+        lambda *args, **kwargs: fake_meta.get_model_context_length(*args, **kwargs)
+    )
 
     server._sessions["sid"] = _session(agent=_Agent())
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)

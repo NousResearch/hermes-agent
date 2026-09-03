@@ -1819,7 +1819,11 @@ class TestMoAContextLength:
             )
 
         assert compressor.context_length == configured_context
-        assert compressor.threshold_tokens == configured_context // 2
+        # 50% of (600K − shared-policy output reservation 4096 for "moa").
+        from agent.model_metadata import DEFAULT_OUTPUT_RESERVATION
+        assert compressor.threshold_tokens == int(
+            (configured_context - DEFAULT_OUTPUT_RESERVATION) * 0.50
+        )
         endpoint_probe.assert_not_called()
 
 

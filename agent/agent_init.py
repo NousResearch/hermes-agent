@@ -2708,6 +2708,52 @@ def init_agent(
     # AFTER the custom_providers branch so per-model overrides aren't lost.
     agent._config_context_length = _config_context_length
 
+    # Read the global context ceiling (model.max_context_length) from config.
+    # Unlike model.context_length (per-model, absolute, discarded on switch),
+    # this is a model-independent runtime policy ceiling that survives /model
+    # switches: effective window = min(resolved, ceiling). It never raises a
+    # window, only lowers one. Stored on the agent for display/gate paths and
+    # passed to the built-in compressor (the plugin-engine path applies it
+    # inside the compressor's setter as well).
+    _max_context_length = None
+    if isinstance(_model_cfg, dict):
+        _raw_max_ctx = _model_cfg.get("max_context_length")
+        if _raw_max_ctx is not None:
+            # Single strict validator (findings #9/#10). validate_context_ceiling
+            # rejects bool/float/numeric-string/inf/nan/<=0 AND enforces the
+            # 64K configuration floor — a ceiling below MINIMUM_CONTEXT_LENGTH is
+            # an INVALID ceiling (a mis-configuration), NOT "the model only has
+            # this capability". Distinguish the two rejection classes so the
+            # user gets a ceiling-specific error, not a model-capability one.
+            from agent.model_metadata import (
+                coerce_context_ceiling,
+                validate_context_ceiling,
+            )
+            _coerced = coerce_context_ceiling(_raw_max_ctx)
+            if _coerced is None:
+                # Malformed (bool/float/string/inf/<=0/non-numeric) — not a
+                # usable ceiling. Reject with a ceiling-specific message.
+                _ra().logger.warning(
+                    "model.max_context_length in config.yaml is %r — a ceiling "
+                    "must be a positive integer token count (e.g. 272000). "
+                    "Bool, float, numeric strings, infinity, and values <= 0 "
+                    "are all invalid. Ignoring (no ceiling).", _raw_max_ctx,
+                )
+            elif _coerced < MINIMUM_CONTEXT_LENGTH:
+                # Valid integer but below the 64K floor — an INVALID ceiling,
+                # reported as a ceiling problem, not a model capability.
+                _ra().logger.warning(
+                    "model.max_context_length in config.yaml is %r, below the "
+                    "minimum of %s — Hermes cannot operate below %s tokens, so "
+                    "this ceiling is invalid. Set it to at least %s, or remove "
+                    "it to disable the ceiling.",
+                    _raw_max_ctx, f"{MINIMUM_CONTEXT_LENGTH:,}",
+                    f"{MINIMUM_CONTEXT_LENGTH:,}", f"{MINIMUM_CONTEXT_LENGTH:,}",
+                )
+            else:
+                _max_context_length = validate_context_ceiling(_raw_max_ctx)
+    agent._max_context_length = _max_context_length
+
     _lmstudio_runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
         _config_context_length
     )
@@ -2810,14 +2856,26 @@ def init_agent(
         # and may ignore the attribute.
         if compression_model_thresholds:
             agent.context_compressor.model_thresholds = compression_model_thresholds
-        agent.context_compressor.update_model(
-            model=agent.model,
-            context_length=_plugin_ctx_len,
-            base_url=agent.base_url,
-            api_key=getattr(agent, "api_key", ""),
-            provider=agent.provider,
-            api_mode=agent.api_mode,
-        )
+        # Expose the global context ceiling on the engine (for engines that
+        # honor it) and clamp the resolved window: plugin engines own their
+        # compaction policy and don't share the built-in setter's automatic
+        # clamp, so we apply it here at the one call site.
+        _plugin_max_ctx = getattr(agent, "_max_context_length", None)
+        if _plugin_max_ctx is not None:
+            try:
+                agent.context_compressor.max_context_length = _plugin_max_ctx
+            except Exception:
+                pass
+        # MODEL LIFECYCLE TRANSITION: for a plugin this supplies the effective
+        # (capped) value via update_model() and sets the host pre-cap to the
+        # raw value; for the built-in (impossible here since _selected_engine
+        # is not None) it would supply the raw value. transition_model_context
+        # propagates any engine failure to init (init must not start with a
+        # half-transitioned engine) and always runs update_model even if the
+        # effective integer is unchanged (the engine recalculates thresholds
+        # from the new route).
+        from agent.agent_runtime_helpers import transition_model_context
+        transition_model_context(agent, _plugin_ctx_len, model=agent.model)
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
@@ -2860,6 +2918,7 @@ def init_agent(
             base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""),
             config_context_length=_effective_context_length,
+            max_context_length=_max_context_length,
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
@@ -2872,6 +2931,18 @@ def init_agent(
             min_tail_user_messages=compression_min_tail_users,
             tail_mode=compression_tail_mode,
         )
+        # HOST STATE (Phase 6): the host owns the pre-cap operating window so
+        # it is authoritative for BOTH engine types and every cross-path
+        # consumer (get_pre_cap, the dispatch gate, provider-error correction,
+        # snapshot/restore). For the built-in engine the raw pre-cap lives on
+        # the compressor (pre_cap_context_length); surface it on the host so
+        # the built-in path does not depend on the resolve_engine_pre_cap
+        # fallback. This never raises a window — it only mirrors the raw
+        # capability the ceiling clamps.
+        from agent.agent_runtime_helpers import resolve_engine_pre_cap
+        _builtin_precap = resolve_engine_pre_cap(agent.context_compressor)
+        if _builtin_precap > 0:
+            agent._pre_cap_context_length = _builtin_precap
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
         try:
@@ -3215,6 +3286,7 @@ def init_agent(
     # activates during a turn, the next turn restores these values so the
     # preferred model gets a fresh attempt each time.  Uses a single dict
     # so new state fields are easy to add without N individual attributes.
+    from agent.agent_runtime_helpers import get_pre_cap
     _cc = agent.context_compressor
     agent._primary_runtime = {
         "model": agent.model,
@@ -3235,7 +3307,10 @@ def init_agent(
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url),
         "compressor_api_key": getattr(_cc, "api_key", ""),
         "compressor_provider": getattr(_cc, "provider", agent.provider),
-        "compressor_context_length": _cc.context_length,
+        # PRE-CAP operating window (host-retained via transition_model_context /
+        # get_pre_cap), NOT the capped getter — see the switch-path snapshot
+        # for why the raw value is what restore needs.
+        "compressor_context_length": get_pre_cap(agent),
         "compressor_threshold_tokens": _cc.threshold_tokens,
     }
     if agent.api_mode == "anthropic_messages":

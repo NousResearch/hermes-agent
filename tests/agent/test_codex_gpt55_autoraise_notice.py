@@ -83,7 +83,22 @@ def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
 
 def _threshold_ratio(agent: AIAgent) -> float:
     compressor = getattr(agent, "context_compressor")
-    return round(compressor.threshold_tokens / compressor.context_length, 2)
+    # Option A: the threshold is ``pct * (context_length - reservation)`` — the
+    # autoraise sets a percentage of the EFFECTIVE INPUT budget, not the raw
+    # window. Measuring the ratio against the effective budget recovers the
+    # configured percentage (0.85) instead of a reservation-diluted 0.84.
+    from agent.model_metadata import resolve_output_reservation
+
+    reservation = resolve_output_reservation(
+        None,
+        explicit_cap=compressor.max_tokens,
+        provider=compressor.provider,
+        model=compressor.model,
+    )
+    effective = compressor.context_length - reservation
+    if effective <= 0:
+        effective = compressor.context_length
+    return round(compressor.threshold_tokens / effective, 2)
 
 
 # ── config display gate ──────────────────────────────────────────────────────

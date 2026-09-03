@@ -464,6 +464,569 @@ def _warn_context_length_fallback(model: str, base_url: str) -> None:
 # Sessions, model switches, and cron jobs should reject models below this.
 MINIMUM_CONTEXT_LENGTH = 64_000
 
+
+def coerce_context_ceiling(value: Any) -> Optional[int]:
+    """Coerce a ``model.max_context_length`` value to a strict positive int.
+
+    Returns the ceiling as an ``int`` when ``value`` is a genuine positive
+    integer, else ``None`` (no ceiling). This is the SINGLE strict validator
+    for the ceiling across every code path (agent init, the built-in
+    compressor, the display/resolve helpers, and the runtime routing).
+
+    Strictness rules (one shared parser, reused by every resolution path):
+      * ``bool`` is rejected — ``True``/``False`` are ``int`` subclasses and
+        must never be coerced to ``1``/``0``.
+      * floats (``272000.0``, ``2.9``) are rejected — a ceiling must be an
+        exact integer token count; a non-integral float is not a valid window.
+      * ``float('inf')`` / ``float('nan')`` are rejected.
+      * numeric strings (``"272000"``) are rejected — a ceiling is a strict
+        integer, not a string that happens to parse.
+      * ``<= 0`` is rejected (not a real upper bound).
+      * anything non-numeric (``None``, objects, MagicMock) is rejected.
+
+    A malformed value therefore means "no ceiling" at the runtime, never a
+    silently-truncated window.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if not isinstance(value, int):
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
+def validate_context_ceiling(value: Any) -> Optional[int]:
+    """Validate a ``model.max_context_length`` value for CONFIG loading.
+
+    Returns the ceiling as an ``int`` when valid, else ``None``. Unlike
+    :func:`coerce_context_ceiling` (runtime use), this ALSO enforces the
+    64K configuration floor: a ceiling below
+    ``MINIMUM_CONTEXT_LENGTH`` is an INVALID ceiling, not a model-capability
+    statement. Callers at config-load time should surface a ceiling-specific
+    error for ``None``-when-a-value-was-supplied (see the init path).
+
+    Strictness is identical to :func:`coerce_context_ceiling` (rejects bool,
+    float, numeric string, infinity, nan, ``<= 0``, non-numeric).
+    """
+    ceiling = coerce_context_ceiling(value)
+    if ceiling is None:
+        return None
+    if ceiling < MINIMUM_CONTEXT_LENGTH:
+        # A positive integer below the 64K floor is a mis-configuration:
+        # Hermes cannot operate below MINIMUM_CONTEXT_LENGTH, so the ceiling
+        # is invalid. This is NOT "the model only has this capability" — it is
+        # a ceiling-specific rejection (a mis-configuration).
+        return None
+    return ceiling
+
+
+# ── Round 4: transport-normalized terminal ceiling enforcement ──────────────
+#
+# The single shared primitive every PHYSICAL dispatch owner calls immediately
+# before provider I/O.  It builds a :class:`FinalContextBudget` from the FINAL
+# provider-bound payload (post-middleware, post-transformation, post-relay)
+# and raises :class:`ContextCeilingExceeded` when the budget exceeds the
+# effective limit = ``min(invocation pre-cap, profile ceiling)``.
+#
+# Two physical owners (proven 2026-08-22, round 4):
+#   * Main:      _dispatch_nonstreaming_api_request  (chat_completion_helpers)
+#   * Auxiliary: _relay_sync_completion / _relay_async_completion /
+#                _relay_sync_stream  (auxiliary_client)  — does NOT converge
+#                on the main seam; the MoA aggregator stream (auxiliary_client:9556)
+#                bypasses even the relay.
+#
+# This lives in model_metadata (no import cycle: model_metadata is a leaf)
+# and is re-exported by agent_runtime_helpers for back-compat.
+
+# Finite default output reservation used when the FINAL payload omits an
+# explicit output cap (``max_tokens`` / ``max_completion_tokens`` /
+# ``max_output_tokens`` / ``inferenceConfig.maxTokens`` / ``maxOutputTokens``).
+# Hermes's existing convention for an omitted output cap is a finite 4096
+# (see chat_completion_helpers.py:1868 — ``agent.max_tokens or 4096``), NOT
+# zero (an omitted cap is not a zero-reservation) and NOT an invented
+# provider-native maximum Hermes cannot know.  This is the documented,
+# reusable source of the finite reservation for the omitted-cap case.
+DEFAULT_OUTPUT_RESERVATION = 4096
+
+
+class ContextCeilingExceeded(Exception):
+    """Local pre-dispatch refusal: the final request exceeds the effective
+    context limit for its invocation.
+
+    A locally refused request is **not** an API call: no provider network
+    I/O, no ``api_call_count`` increment, no iteration-budget slot consumed.
+    Dispatch owners catch this and surface it the same way Hermes surfaces
+    other local pre-dispatch refusals.  The auxiliary fallback / transient-
+    retry / credential-refresh chains MUST let this propagate (it is not a
+    provider error — no fallback, no retry, no credential refresh).
+    """
+
+    def __init__(
+        self,
+        request_tokens: int,
+        effective_limit: int,
+        *,
+        reason: str = "",
+    ) -> None:
+        self.request_tokens = request_tokens
+        self.effective_limit = effective_limit
+        self.reason = reason
+        detail = f" ({reason})" if reason else ""
+        super().__init__(
+            f"Final request (~{request_tokens:,} tokens) exceeds the effective "
+            f"context limit ({effective_limit:,} tokens){detail}. Reduce the "
+            f"request size, raise model.max_context_length, or enable compression."
+        )
+
+
+class FinalContextBudget:
+    """Transport-normalized accounting of a FINAL provider-bound payload.
+
+    The hard invariant is ``total`` = the rough estimate of the FINAL payload
+    (system/instructions + messages/input + final tool schemas + flat per-image
+    cost — all folded into ``estimate_request_tokens_rough`` EXACTLY ONCE)
+    PLUS the resolved output reservation.
+
+    The individual fields are a reporting breakdown of that estimate:
+      * ``input_tokens_estimate`` — the rough estimate of the FINAL payload
+        (messages/input + system + tools + images), computed by
+        ``estimate_request_tokens_rough``.  The flat per-image cost is ALREADY
+        folded in (``_count_image_tokens``) — so a SEPARATE multimodal term is
+        NOT added (design detail: no double-count).
+      * ``tool_tokens_estimate`` / ``system_tokens_estimate`` — informational
+        sub-components of ``input_tokens_estimate`` (the rough estimator
+        already includes them); reported for observability, not summed on top.
+      * ``output_reservation`` — the RESOLVED output allowance for this
+        dispatch (explicit cap, or :data:`DEFAULT_OUTPUT_RESERVATION` when
+        omitted — never 0, never an invented provider max).
+
+    ``total`` = ``input_tokens_estimate`` + ``output_reservation``.
+    This is Hermes canonical accounting — a practical budget, not a proven
+    provider-token bound.
+    """
+
+    __slots__ = (
+        "input_tokens_estimate",
+        "tool_tokens_estimate",
+        "system_tokens_estimate",
+        "output_reservation",
+        "total",
+    )
+
+    def __init__(
+        self,
+        input_tokens_estimate: int,
+        output_reservation: int,
+        *,
+        tool_tokens_estimate: int = 0,
+        system_tokens_estimate: int = 0,
+    ) -> None:
+        self.input_tokens_estimate = int(input_tokens_estimate)
+        self.output_reservation = int(output_reservation)
+        self.tool_tokens_estimate = int(tool_tokens_estimate)
+        self.system_tokens_estimate = int(system_tokens_estimate)
+        # total = input (messages/input, system included when it is a message)
+        # + system (only when it is a SEPARATE field, NOT already in input)
+        # + tools (estimate_messages_tokens_rough does NOT walk tool schemas,
+        #   so the final tool/schema payload is added here exactly once)
+        # + resolved output reservation.  No component is summed twice.
+        self.total = (
+            self.input_tokens_estimate
+            + self.system_tokens_estimate
+            + self.tool_tokens_estimate
+            + self.output_reservation
+        )
+
+
+def _final_request_output_cap(api_kwargs: dict | None) -> int | None:
+    """Return the positive output cap present in a FINAL provider-bound request,
+    or ``None`` when the request carries no explicit cap.
+
+    Reads whichever provider-specific key is present: ``max_tokens`` /
+    ``max_completion_tokens`` / ``max_output_tokens`` / Bedrock
+    ``inferenceConfig.maxTokens`` (nested) / ``maxOutputTokens``.  A
+    clamp/ephemeral/continuation value that survives into the final request
+    is AUTHORITATIVE — it wins over any larger provider default.
+    """
+    if not isinstance(api_kwargs, dict):
+        return None
+    for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
+        v = api_kwargs.get(key)
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            return v
+    # Bedrock Converse nests the cap under inferenceConfig.maxTokens.
+    ic = api_kwargs.get("inferenceConfig")
+    if isinstance(ic, dict):
+        v = ic.get("maxTokens")
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            return v
+    v = api_kwargs.get("maxOutputTokens")
+    if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+        return v
+    return None
+
+
+def _provider_implicit_output_cap(
+    provider: str | None, model: str | None = None
+) -> int | None:
+    """Resolve a provider/profile-derived implicit output cap, or ``None``.
+
+    The registered provider profile's ``get_max_tokens(model)`` is the
+    authoritative implicit completion allowance for a provider Hermes can
+    resolve (a static ``default_max_tokens``, or a per-model override for a
+    relay fronting several backends).  ``None`` means the provider is
+    unknown or declares no implicit cap — the caller then falls back to
+    :data:`DEFAULT_OUTPUT_RESERVATION`.
+
+    Lazily imports the provider registry (``model_metadata`` is a leaf; the
+    ``providers`` package does not import it back, so no cycle).  Any lookup
+    failure — provider not registered, plugin import error — degrades to
+    ``None`` so budgeting never raises.
+    """
+    name = str(provider or "").strip().lower()
+    if not name:
+        return None
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(name)
+    except Exception:
+        return None
+    if profile is None:
+        return None
+    try:
+        cap = profile.get_max_tokens(model)
+    except Exception:
+        return None
+    if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0:
+        return cap
+    return None
+
+
+def resolve_output_reservation(
+    api_kwargs: dict | None = None,
+    *,
+    explicit_cap: int | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+) -> int:
+    """ONE shared output-reservation policy for every budgeting surface.
+
+    The compressor preflight budget, the terminal :class:`FinalContextBudget`,
+    the MoA reference trim/gate, and the MoA aggregator gate all derive their
+    output reservation from this single policy so they cannot disagree.
+
+    Precedence (highest → lowest):
+
+      1. A positive integer output cap present in the FINAL provider-bound
+         request (``max_tokens`` / ``max_completion_tokens`` /
+         ``max_output_tokens`` / Bedrock ``inferenceConfig.maxTokens`` /
+         ``maxOutputTokens``).  A legitimate clamp/ephemeral/continuation
+         value is AUTHORITATIVE — it wins over a larger provider default
+         (provider default 65536 + final cap 8192 → reserve 8192).
+      2. An explicit invocation/user output cap (``explicit_cap``) — used by
+         surfaces that budget BEFORE the final request is built.
+      3. A provider/profile-derived implicit cap (``provider`` resolved via
+         the registry) — the provider's documented completion limit for
+         ``model`` (no request cap + registered profile 65536 → reserve 65536).
+      4. :data:`DEFAULT_OUTPUT_RESERVATION` (4096) — ONLY when nothing more
+         authoritative is known (unknown custom provider, no resolvable cap).
+
+    Never 0 (an omitted cap is not a zero-reservation) and never an invented
+    maximum Hermes cannot know.
+    """
+    # 1. Final provider-bound request cap (authoritative over provider default).
+    v = _final_request_output_cap(api_kwargs)
+    if v is not None:
+        return v
+    # 2. Explicit invocation/user cap.
+    if (
+        isinstance(explicit_cap, int)
+        and not isinstance(explicit_cap, bool)
+        and explicit_cap > 0
+    ):
+        return explicit_cap
+    # 3. Provider/profile-derived implicit cap.
+    p = _provider_implicit_output_cap(provider, model)
+    if p is not None:
+        return p
+    # 4. Finite documented default.
+    return DEFAULT_OUTPUT_RESERVATION
+
+
+def _resolve_output_reservation(api_kwargs: dict) -> int:
+    """Back-compat wrapper: resolve from the final request only.
+
+    Delegates to :func:`resolve_output_reservation`.  Callers that know the
+    provider/model should call that directly (or via
+    :func:`build_final_context_budget`) so the provider-derived implicit cap
+    participates in the resolution.
+    """
+    return resolve_output_reservation(api_kwargs)
+
+
+def _system_in_messages(messages) -> bool:
+    """True when the final ``messages`` already contains a system message.
+
+    For Chat Completions the system prompt is the first ``messages`` entry —
+    it is ALREADY in the input estimate, so it must NOT be counted again from
+    a separate ``system``/``instructions`` field (avoid double-count).
+    """
+    for m in messages or []:
+        if isinstance(m, dict) and m.get("role") == "system":
+            return True
+    return False
+
+
+def build_final_context_budget(
+    api_kwargs: dict,
+    *,
+    system_prompt: str = "",
+    tools: list | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+) -> FinalContextBudget:
+    """Build a :class:`FinalContextBudget` from a FINAL provider-bound payload.
+
+    Transport-normalized: reads the final ``messages``/``input``, the final
+    tools field, and the resolved output reservation.  Each semantic component
+    is counted EXACTLY ONCE:
+
+      * ``input_tokens_estimate`` — the rough estimate of the FINAL messages /
+        input (system-included when the system prompt is a ``messages`` entry —
+        the Chat Completions case).  The flat per-image cost is ALREADY folded
+        in by ``estimate_messages_tokens_rough`` (``_count_image_tokens``), so
+        a separate multimodal term is NOT added — no double-count.
+      * ``system_tokens_estimate`` — the system/instructions text, added ONLY
+        when it is NOT already one of the ``messages``/``input`` entries (the
+        Codex ``instructions`` / Bedrock ``system`` list case).  When it IS in
+        the message list it is already in ``input_tokens_estimate`` and is NOT
+        added again — the "count system exactly once" rule.
+      * ``tool_tokens_estimate`` — the final tool/schema payload (from
+        ``tools`` / ``functions`` / ``toolConfig.tools``), already included in
+        the rough estimate's tool walk but reported here for observability.
+      * ``output_reservation`` — the RESOLVED output allowance, from the
+        shared :func:`resolve_output_reservation` policy: the final request's
+        explicit cap (authoritative) → provider/profile-derived implicit cap →
+        :data:`DEFAULT_OUTPUT_RESERVATION`.  Never 0, never an invented
+        provider maximum.
+
+    ``provider`` / ``model`` let the resolver consult the registered provider
+    profile's implicit completion limit when the final request omits an
+    explicit cap (omitted cap + registered profile 65536 → reserve 65536).
+    Pass them at every call site where the provider is known.
+
+    ``total`` = ``input_tokens_estimate`` + ``system_tokens_estimate`` +
+    ``output_reservation``.  (``tool_tokens_estimate`` is part of
+    ``input_tokens_estimate`` and is not summed again.)
+    This is Hermes canonical accounting — a practical budget, not a proven
+    provider-token bound.
+    """
+    messages = list(api_kwargs.get("messages") or api_kwargs.get("input") or [])
+    final_tools = (
+        api_kwargs.get("tools")
+        or api_kwargs.get("functions")
+        or tools
+    )
+    # Bedrock nests tools under toolConfig.tools.
+    tc = api_kwargs.get("toolConfig")
+    if isinstance(tc, dict) and tc.get("tools"):
+        final_tools = tc.get("tools")
+
+    # input estimate: the final messages/input, system included when present.
+    input_tokens_estimate = estimate_messages_tokens_rough(messages)
+
+    # system/instructions: count it ONLY when it is a SEPARATE field (not
+    # already one of the messages).  When it is in the message list, it is
+    # already in input_tokens_estimate — adding it again would double-count.
+    system_text = ""
+    if not _system_in_messages(messages):
+        system_text = (
+            api_kwargs.get("system")
+            or api_kwargs.get("instructions")
+            or system_prompt
+            or ""
+        )
+        if isinstance(system_text, list):
+            system_text = " ".join(
+                p.get("text", "") for p in system_text if isinstance(p, dict)
+            )
+    system_tokens_estimate = (
+        estimate_tokens_rough(system_text) if system_text else 0
+    )
+
+    tool_tokens_estimate = (
+        _estimate_tools_tokens_rough(final_tools) if final_tools else 0
+    )
+
+    return FinalContextBudget(
+        input_tokens_estimate=input_tokens_estimate,
+        tool_tokens_estimate=tool_tokens_estimate,
+        system_tokens_estimate=system_tokens_estimate,
+        output_reservation=resolve_output_reservation(
+            api_kwargs, provider=provider, model=model
+        ),
+    )
+
+
+def _set_final_request_output_cap(api_kwargs: dict, cap: int) -> None:
+    """Write ``cap`` into whichever provider-specific output field the FINAL
+    request already carries (mirrors :func:`_final_request_output_cap`, but
+    for the write path).
+
+    Only the field that already holds the authoritative cap is rewritten — a
+    Bedrock request carrying ``inferenceConfig.maxTokens`` is clamped there,
+    an OpenAI-compatible request on ``max_tokens``, etc.  If the request
+    carried no explicit cap (the cap came from the provider implicit /
+    default reservation), the clamp is applied to the most common transport
+    field (``max_tokens``) so the outgoing request carries a concrete value
+    instead of relying on the provider to accept an oversized implicit cap.
+    """
+    existing = _final_request_output_cap(api_kwargs)
+    if existing is not None:
+        if "max_tokens" in api_kwargs:
+            api_kwargs["max_tokens"] = cap
+        elif "max_completion_tokens" in api_kwargs:
+            api_kwargs["max_completion_tokens"] = cap
+        elif "max_output_tokens" in api_kwargs:
+            api_kwargs["max_output_tokens"] = cap
+        elif isinstance(api_kwargs.get("inferenceConfig"), dict) and "maxTokens" in api_kwargs["inferenceConfig"]:
+            api_kwargs["inferenceConfig"]["maxTokens"] = cap
+        elif "maxOutputTokens" in api_kwargs:
+            api_kwargs["maxOutputTokens"] = cap
+    # If no explicit cap was carried, leave the request as-is: the reservation
+    # that triggered the clamp is already bounded by the resolver (explicit →
+    # provider → DEFAULT), and there is no field to clamp.  The budget check
+    # below (budget.total after clamp) is the authoritative invariant; if the
+    # reservation still exceeds the remaining budget, the unshrinkable-input
+    # path will refuse.
+
+
+def enforce_final_context_budget(
+    budget: FinalContextBudget,
+    *,
+    pre_cap: int | None = None,
+    ceiling: int | None = None,
+    reason: str = "",
+    api_kwargs: dict | None = None,
+) -> None:
+    """Shared terminal enforcement primitive — the ONE place every physical
+    dispatch owner (main + auxiliary) calls immediately before provider I/O.
+    No-op when neither ``pre_cap`` nor ``ceiling`` is configured.
+
+    Effective limit = ``min(invocation pre-cap, profile ceiling)``.
+
+    When ``budget.total > limit``, overflow is classified:
+
+    * **Unshrinkable** — the non-output portion (``input + system + tools``,
+      i.e. ``budget.total - budget.output_reservation``) is at or over the
+      effective limit.  No amount of output-cap reduction can help;
+      :class:`ContextCeilingExceeded` is raised before provider I/O (the
+      provider is never called, so its 400-error recovery path is preserved
+      — the provider never returns a 400 for a request it never received).
+
+    * **Shrinkable** — the non-output portion fits under the limit, but
+      ``non_output + output_reservation`` exceeds it.  When ``api_kwargs``
+      is supplied and carries an explicit output cap, the cap is clamped
+      in-place to ``limit - non_output`` (the maximum legal output allowance
+      from the remaining budget) and the call proceeds with the reduced cap.
+      The clamp never raises an existing cap — it only lowers one.  When no
+      explicit cap field is present (the reservation came from the provider
+      implicit / DEFAULT floor), the overflow is treated as unshrinkable and
+      :class:`ContextCeilingExceeded` is raised (conservative refusal).
+
+    A locally refused request is NOT a provider call: no network I/O, no
+    ``api_call_count`` increment, no iteration-budget slot consumed.  The
+    caller catches :class:`ContextCeilingExceeded`, refunds counters, and
+    surfaces a clean local refusal.
+    """
+    # effective limit = min(invocation pre-cap, profile ceiling); no-op if
+    # neither is a valid positive int.
+    limit: int | None = None
+    for v in (pre_cap, ceiling):
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            limit = v if limit is None else min(limit, v)
+    if limit is None:
+        return
+    if budget.total > limit:
+        if (
+            api_kwargs is not None
+            and (budget.total - budget.output_reservation) < limit
+        ):
+            # Shrinkable overflow: the non-output portion (input + system +
+            # tools) fits under the limit, but the output reservation pushes
+            # the total over.  Clamp the outgoing cap to the maximum legal
+            # allowance — the budget's total minus everything except the
+            # output reservation — so that input + system + tools + clamped
+            # cap == limit exactly.
+            allowed = limit - (budget.total - budget.output_reservation)
+            # The clamp must NEVER raise an explicit cap (explicit output caps
+            # are authoritative and may legitimately exceed the rough
+            # remaining budget — the provider's own tokenizer is the final
+            # arbiter, and the provider-400 recovery path remains the
+            # fallback).
+            if _final_request_output_cap(api_kwargs) is not None:
+                _set_final_request_output_cap(api_kwargs, allowed)
+                # After the clamp the resolver's Level-1 (final request cap)
+                # returns exactly `allowed`, so the post-clamp reservation is
+                # `allowed` and the post-clamp total is
+                # input + allowed == limit — the budget now fits exactly and
+                # the provider call proceeds with the reduced cap.
+                return
+            # No explicit cap field to clamp (the reservation came from the
+            # provider implicit / DEFAULT floor).  The input fits but the
+            # resolved reservation does not — the overflow is unshrinkable
+            # (nothing on the wire to lower), so fall through to the raise.
+        raise ContextCeilingExceeded(budget.total, limit, reason=reason)
+
+
+# Context variable carrying the auxiliary owner's effective ceiling into the
+# relay helpers (which are the physical I/O owners).  ``call_llm`` computes
+# the effective ceiling (model context clamped by the profile ceiling) and
+# sets this before dispatching to the relay helpers, which read it to fire
+# the terminal gate.  A contextvar is used (not a function-signature change)
+# so the relay helpers stay backward-compatible and the ceiling travels with
+# the call, not a global.
+import contextvars as _ce_contextvars
+_AUX_CEILING_CONTEXT: _ce_contextvars.ContextVar[Optional[int]] = (
+    _ce_contextvars.ContextVar("_aux_ceiling", default=None)
+)
+
+
+def set_aux_ceiling(ceiling: Optional[int]) -> "_ce_contextvars.Token":
+    """Set the auxiliary effective ceiling for the current dispatch. Returns
+    a token to reset (see :func:`reset_aux_ceiling`)."""
+    return _AUX_CEILING_CONTEXT.set(ceiling)
+
+
+def reset_aux_ceiling(token: "_ce_contextvars.Token") -> None:
+    """Reset the auxiliary effective ceiling (paired with set_aux_ceiling)."""
+    try:
+        _AUX_CEILING_CONTEXT.reset(token)
+    except Exception:
+        pass
+
+
+def clear_aux_ceiling() -> None:
+    """Reset the auxiliary effective ceiling to its default (None).
+
+    Convenience for callers that did not retain the token.  Best-effort:
+    a cross-context reset is a no-op.
+    """
+    try:
+        _AUX_CEILING_CONTEXT.set(None)
+    except Exception:
+        pass
+
+
+def get_aux_ceiling() -> Optional[int]:
+    """The auxiliary effective ceiling for the current dispatch, if any."""
+    return _AUX_CEILING_CONTEXT.get()
+
+
 # Short-lived in-process cache for local-server context probes. Bounds the
 # probe rate when the new local-endpoint live-probe paths (reconcile-on-hit +
 # pre-defaults step 7) resolve the same model several times during one startup
@@ -3592,6 +4155,133 @@ def get_model_context_length(
     return DEFAULT_FALLBACK_CONTEXT
 
 
+def _get_max_context_length() -> Optional[int]:
+    """Read the global context ceiling (``model.max_context_length``) from config.
+
+    This is a runtime/user POLICY, not a model capability. It is read from the
+    profile-scoped config (``load_config_readonly``), so per-profile ceilings
+    coexist in one gateway process and the value is never written to the
+    persistent context cache. Returns a positive int, or ``None`` when unset /
+    malformed / below the 64K floor (no ceiling).
+
+    Validation consistency (Phase 5): uses :func:`validate_context_ceiling`
+    (strict int + 64K floor) so every resolution path — display, compression
+    threshold, tool-search gate, MoA, auxiliary, runtime routing — agrees on
+    the ceiling. A value below the floor is an INVALID ceiling (a
+    mis-configuration), not a usable window, and is treated as "no ceiling"
+    here; the agent-init path surfaces the ceiling-specific diagnostic.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+        model_cfg = cfg.get("model")
+        if not isinstance(model_cfg, dict):
+            return None
+        val = model_cfg.get("max_context_length")
+    except Exception:
+        return None
+    if val is None:
+        return None
+    # Single shared validator: strict int (no bool/float/string/inf/<=0) AND
+    # the 64K configuration floor. Dedupe the warning so the gateway (which
+    # resolves the ceiling on many paths) does not spam the log.
+    ceiling = validate_context_ceiling(val)
+    if ceiling is None and val is not None:
+        # Surface the invalid value once per (profile, value). The dedup key
+        # MUST include the active profile (its resolved Hermes home) as well as
+        # the value: an invalid ceiling in profile A must not suppress the
+        # appropriate warning for the SAME value in profile B (that would be
+        # cross-profile state leakage). Keeping the value in the key means a
+        # changed invalid value within a profile still re-warns (each distinct
+        # bad value is diagnosed once), while the same profile+value does not
+        # spam on every resolution (the gateway resolves the ceiling on many
+        # paths). get_hermes_home() resolves exactly the profile whose config
+        # was just read via load_config_readonly() above, so the key is
+        # consistent with which ceiling is being diagnosed.
+        try:
+            from hermes_constants import get_hermes_home
+            _profile_home = str(get_hermes_home())
+        except Exception:
+            _profile_home = ""
+        key = (_profile_home, type(val).__name__, repr(val))
+        if key not in _CEILING_INVALID_WARNED:
+            _CEILING_INVALID_WARNED.add(key)
+            logger.warning(
+                "model.max_context_length is %r — invalid (must be a positive "
+                "integer >= %s). Ignoring (no ceiling).",
+                val, f"{MINIMUM_CONTEXT_LENGTH:,}",
+            )
+    return ceiling
+
+
+# Dedup for the ceiling-invalid diagnostic (see _get_max_context_length).
+# Keyed on (profile home, type name, repr) so each distinct bad value warns
+# exactly once PER PROFILE — the profile dimension prevents one profile's
+# invalid ceiling from suppressing the appropriate warning in another profile.
+_CEILING_INVALID_WARNED: set = set()
+
+
+def effective_context_length(
+    model: str,
+    base_url: str = "",
+    api_key: str = "",
+    config_context_length: int | None = None,
+    provider: str = "",
+    custom_providers: list | None = None,
+) -> int:
+    """Resolve the EFFECTIVE context window a consumer should use.
+
+    This is the single policy-aware entry point for consumers that size budgets
+    (compression thresholds, UI display, tool-search gate, etc.):
+
+        effective = min(get_model_context_length(...), max_context_length)
+
+    ``get_model_context_length()`` stays the RAW capability resolver (it is what
+    populates ``context_length_cache.yaml``), so the ceiling never pollutes the
+    persistent cache. The ceiling only ever LOWERS a window — it can never
+    raise one — so it composes safely with an explicit ``model.context_length``
+    that is already below it. Callers that need the raw capability (aux-model
+    64K floor checks, capability detection) should keep calling
+    :func:`get_model_context_length` directly.
+    """
+    raw = get_model_context_length(
+        model,
+        base_url=base_url,
+        api_key=api_key,
+        config_context_length=config_context_length,
+        provider=provider,
+        custom_providers=custom_providers,
+    )
+    cap = _get_max_context_length()
+    return min(raw, cap) if cap else raw
+
+
+async def effective_context_length_async(
+    model: str,
+    base_url: str = "",
+    api_key: str = "",
+    config_context_length: int | None = None,
+    provider: str = "",
+    custom_providers: list | None = None,
+) -> int:
+    """Async variant of :func:`effective_context_length`.
+
+    Offloads the synchronous resolution chain to a background thread so it
+    does not freeze the asyncio event loop. Shares all logic with the sync
+    version — no code duplication.
+    """
+    import asyncio
+    return await asyncio.to_thread(
+        effective_context_length,
+        model,
+        base_url=base_url,
+        api_key=api_key,
+        config_context_length=config_context_length,
+        provider=provider,
+        custom_providers=custom_providers,
+    )
+
+
 async def get_model_context_length_async(
     model: str,
     base_url: str = "",
@@ -3694,15 +4384,29 @@ def estimate_tokens_rough(text: str) -> int:
     return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // 4)
 
 
+# Hermes canonical image-token estimate per image part.
+#
+# A flat per-image charge for multimodal content in Hermes's canonical
+# pre-dispatch accounting.  1600 is a realistic ceiling for common
+# provider/detail combinations (GPT-4o high-detail ≈1700, Anthropic ≈1500,
+# Gemini ≈258/tile) and matches the value already used by the context
+# compressor.  This is Hermes canonical accounting — a practical budget
+# figure, NOT a universal provider-token upper bound.  Provider-native
+# image accounting may differ; the provider's context-overflow response
+# remains the final authority.
+_IMAGE_TOKEN_COST = 1600
+
+
 def estimate_messages_tokens_rough(
     messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True,
 ) -> int:
     """Rough token estimate for a message list (pre-flight only).
 
-    Image parts (base64 PNG/JPEG) are counted as a flat ~1500 tokens per
-    image — the Anthropic pricing model — instead of counting raw base64
-    character length. Without this, a single ~1MB screenshot would be
-    estimated at ~250K tokens and trigger premature context compression.
+    Image parts (base64 PNG/JPEG) are counted as a flat
+    ``_IMAGE_TOKEN_COST`` (1600) tokens per image — a realistic ceiling
+    across common provider/detail combinations — instead of counting raw
+    base64 character length.  Without this, a single ~1MB screenshot would
+    be estimated at ~250K tokens and trigger premature context compression.
 
     ``charge_stale_thinking`` mirrors the tail-budget walk's policy
     (``context_compressor._estimate_msg_budget_tokens``, #73624): generic
@@ -3723,7 +4427,6 @@ def estimate_messages_tokens_rough(
     actually changed. The memo is exact: equal fingerprints imply identical
     leaf objects and structure, hence an identical estimate.
     """
-    _IMAGE_TOKEN_COST = 1500
     if not charge_stale_thinking:
         messages = _strip_stale_thinking_for_estimate(messages)
     total = 0
@@ -4099,42 +4802,59 @@ def anchored_context_tokens(
 # NOTE: tool schemas can be large. Avoid repeated `str(tools)` conversions,
 # which are CPU-heavy and can stall GUI event loops under GIL pressure.
 #
-# Keyed by ``id(tools)``. A long-lived gateway/desktop backend builds many
-# transient tool lists over its lifetime, so the cache is bounded and evicts
-# oldest-first (insertion-ordered dict) once it exceeds the cap. The cap is
-# generous relative to how rarely toolsets are rebuilt within a process.
-_TOOLS_TOKENS_CACHE: dict[int, Tuple[int, str, str, int]] = {}
+# Keyed by the tools' CONTENT fingerprint (not ``id(tools)``) so in-place
+# mutation invalidates the entry. A long-lived gateway/desktop backend builds
+# many transient tool lists over its lifetime, so the cache is bounded and
+# evicts oldest-first (insertion-ordered dict) once it exceeds the cap. The cap
+# is generous relative to how rarely toolsets are rebuilt within a process.
+_TOOLS_TOKENS_CACHE: dict[str, int] = {}
 _TOOLS_TOKENS_CACHE_MAX = 256
 
 
-def _tool_name_for_cache(tool: Any) -> str:
-    if not isinstance(tool, dict):
-        return ""
-    fn = tool.get("function")
-    if isinstance(fn, dict):
-        name = fn.get("name")
-        if isinstance(name, str):
-            return name
-    name = tool.get("name")
-    return name if isinstance(name, str) else ""
+def _tools_cache_fingerprint(tools: List[Dict[str, Any]]) -> str:
+    """Content-fingerprint for the tool-estimate cache.
+
+    Keyed by the tools' CONTENT (per-tool name + description length +
+    serialized parameters), not by ``id(tools)``. This is what makes the cache
+    correct under in-place mutation: if a caller grows a tool's description or
+    edits its parameters without replacing the list object, the fingerprint
+    changes, the entry misses, and the estimate is recomputed — so a stale
+    small estimate can never be served for a larger payload.
+    """
+    parts: List[str] = [str(len(tools))]
+    for tool in tools:
+        if not isinstance(tool, dict):
+            parts.append("x")
+            continue
+        fn = tool.get("function")
+        if isinstance(fn, dict):
+            name = fn.get("name") or ""
+            desc = fn.get("description") or ""
+            params = fn.get("parameters") or {}
+        else:
+            name = tool.get("name") or ""
+            desc = tool.get("description") or ""
+            params = tool.get("parameters") or {}
+        # str() is mutation-sensitive (a changed/added key changes the string)
+        # AND cheap — it does NOT call json.dumps, so the cache-key path never
+        # triggers an extra serialization. Only the estimate path below calls
+        # json.dumps (once per cache miss), preserving the "serialize the tool
+        # schema once per estimate" contract the caching test asserts.
+        pj = str(params)
+        parts.append(f"{name}|{len(desc)}|{pj}")
+    return "\x1f".join(parts)
 
 
 def _estimate_tools_tokens_rough(tools: List[Dict[str, Any]]) -> int:
     if not tools:
         return 0
 
-    # Cache by list identity. Tools are rebuilt rarely (toolset changes),
-    # but token estimates are requested frequently (preflight, compaction).
-    key = id(tools)
-    n = len(tools)
-    first = _tool_name_for_cache(tools[0]) if n else ""
-    last = _tool_name_for_cache(tools[-1]) if n else ""
-
+    # Cache by CONTENT fingerprint (not id()): safe under in-place mutation and
+    # bounded to _TOOLS_TOKENS_CACHE_MAX entries.
+    key = _tools_cache_fingerprint(tools)
     cached = _TOOLS_TOKENS_CACHE.get(key)
     if cached is not None:
-        cached_n, cached_first, cached_last, cached_tokens = cached
-        if cached_n == n and cached_first == first and cached_last == last:
-            return cached_tokens
+        return cached
 
     # Fast, stable rough estimate: sum lengths of the major schema fields.
     # This avoids the pathological `str(tools)` path while still scaling with
@@ -4165,9 +4885,8 @@ def _estimate_tools_tokens_rough(tools: List[Dict[str, Any]]) -> int:
 
     tokens = (total_chars + 3) // 4
     # Bound the cache: drop the oldest entry when the cap is exceeded so a
-    # long-running process can't accumulate an unbounded number of stale
-    # ``id(tools)`` entries (id values are recycled after GC anyway).
+    # long-running process can't accumulate an unbounded number of entries.
     if len(_TOOLS_TOKENS_CACHE) >= _TOOLS_TOKENS_CACHE_MAX:
         _TOOLS_TOKENS_CACHE.pop(next(iter(_TOOLS_TOKENS_CACHE)), None)
-    _TOOLS_TOKENS_CACHE[key] = (n, first, last, tokens)
+    _TOOLS_TOKENS_CACHE[key] = tokens
     return tokens

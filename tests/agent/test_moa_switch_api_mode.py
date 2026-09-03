@@ -40,6 +40,23 @@ def _make_fake_agent():
     # this test asserts on.
     agent._reasoning_echo_flag = False
     agent._read_reasoning_echo_from_config = lambda: False
+    # A real AIAgent has these LM Studio phase methods; for a non-lmstudio
+    # provider they are NO-OPS (see run_agent.py: _ensure_lmstudio_runtime_loaded
+    # returns None immediately when provider != "lmstudio"). The moa switch is
+    # non-lmstudio, so mirror the real no-op path — the LM Studio phase must
+    # NOT raise here (a real agent's phase is transactional and only rolls back
+    # on a genuine failure, e.g. an lmstudio network error).
+    agent._ensure_lmstudio_runtime_loaded = lambda *_a, **_k: None
+    agent._lmstudio_load_was_unverified = lambda *_a, **_k: False
+    agent._effective_lmstudio_context_length = lambda *a, **k: None
+    # switch_model (Finding #3) re-evaluates the prompt-cache policy as part
+    # of its rollback-protected post-client transaction. On a real AIAgent
+    # this is a mandatory method (run_agent.py:1644 → anthropic_prompt_cache
+    # _policy); for a moa provider it resolves to (False, False) — no caching,
+    # no native layout — because neither "moa" nor "moa://local" matches any
+    # caching branch. Mirror that no-op so the fixture satisfies the same
+    # production invariant the rollback contract requires.
+    agent._anthropic_prompt_cache_policy = lambda **_k: (False, False)
     return agent
 
 

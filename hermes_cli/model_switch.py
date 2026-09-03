@@ -1556,8 +1556,8 @@ def resolve_display_context_length(
             config_context_length = None
 
     try:
-        from agent.model_metadata import get_model_context_length
-        ctx = get_model_context_length(
+        from agent.model_metadata import effective_context_length
+        ctx = effective_context_length(
             model,
             base_url=base_url or "",
             api_key=api_key or "",
@@ -1566,6 +1566,10 @@ def resolve_display_context_length(
             config_context_length=config_context_length,
         )
         if ctx:
+            # effective_context_length() already applies the global ceiling
+            # (model.max_context_length) — the single source of truth for
+            # "min(resolved, ceiling)" — so the display value matches the
+            # effective window the agent will actually use.
             return int(ctx)
     except Exception:
         pass

@@ -868,10 +868,10 @@ class GatewaySlashCommandsMixin:
 
         if not context_length and model_name:
             try:
-                from agent.model_metadata import get_model_context_length
+                from agent.model_metadata import effective_context_length
 
                 context_length = _int_value(
-                    await asyncio.to_thread(get_model_context_length, model_name)
+                    await asyncio.to_thread(effective_context_length, model_name)
                 )
             except Exception:
                 context_length = 0

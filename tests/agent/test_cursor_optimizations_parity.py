@@ -57,11 +57,15 @@ from agent.model_metadata import (
     _estimate_message_tokens_without_images,
     _count_image_tokens,
     _MSG_TOKENS_CACHE,
+    _IMAGE_TOKEN_COST,
 )
 
 
 def estimate_messages_tokens_rough_OLD(messages):
-    _IMAGE_TOKEN_COST = 1500
+    # Use the canonical per-image cost so this reference tracks the production
+    # constant (the test verifies the memoized impl matches this reference, so
+    # the reference must use the same image cost — a frozen literal would drift
+    # the moment the canonical accounting constant changed).
     text_tokens = 0
     image_tokens = 0
     for msg in messages:

@@ -31,25 +31,38 @@ def _make(ctx: int, pct: float = 0.50) -> ContextCompressor:
 
 class TestSmallContextThresholdFloor:
     def test_sub_512k_floors_to_75_percent(self):
+        # The shared reservation policy reserves DEFAULT_OUTPUT_RESERVATION
+        # (4096) for the unknown provider, so the input budget is
+        # (window - 4096) and the threshold is 75% of that — coherent with
+        # the terminal gate and the wire, never a zero reservation.
+        from agent.model_metadata import DEFAULT_OUTPUT_RESERVATION
         for ctx in (128_000, 200_000, 262_144, 511_999):
             comp = _make(ctx, pct=0.50)
             assert comp.threshold_percent == 0.75, ctx
-            assert comp.threshold_tokens == int(ctx * 0.75), ctx
+            assert comp.threshold_tokens == int(
+                (ctx - DEFAULT_OUTPUT_RESERVATION) * 0.75
+            ), ctx
 
 
 
 
     def test_update_model_rederives_floor_both_directions(self):
+        from agent.model_metadata import DEFAULT_OUTPUT_RESERVATION
         comp = _make(128_000, pct=0.50)
         assert comp.threshold_percent == 0.75
         # small -> large: back to the configured 50%
         comp.update_model("big", 1_000_000)
         assert comp.threshold_percent == 0.50
-        assert comp.threshold_tokens == 500_000
+        # Reserves the shared-policy output allowance (4096, unknown provider).
+        assert comp.threshold_tokens == int(
+            (1_000_000 - DEFAULT_OUTPUT_RESERVATION) * 0.50
+        )
         # large -> small: floor re-applies
         comp.update_model("small", 200_000)
         assert comp.threshold_percent == 0.75
-        assert comp.threshold_tokens == 150_000
+        assert comp.threshold_tokens == int(
+            (200_000 - DEFAULT_OUTPUT_RESERVATION) * 0.75
+        )
 
 
 class TestReasoningExcludedFromSummarizer:

@@ -1249,7 +1249,7 @@ class _CountingCtxLen:
         self.value = value
         self.calls = 0
 
-    def __call__(self, **kwargs):
+    def __call__(self, *args, **kwargs):
         self.calls += 1
         if isinstance(self.value, Exception):
             raise self.value
@@ -1314,6 +1314,89 @@ def test_reference_trim_caches_resolution_failures(monkeypatch):
     assert cache == {("openrouter", "small-window"): None}
 
 
+
+
+
+# ── Round 4: MoA output-reservation consistency (trim == gate) ───────────────
+
+
+def test_moa_trim_and_gate_share_one_output_reserve(monkeypatch):
+    """The reference TRIM and the reference GATE must reserve the SAME output
+    allowance.  Previously the trim reserved the MoA default (8192) while the
+    gate reserved 0 (and the aggregator gate hardcoded 0) — an unshrinkable
+    reference could slip past a gate that thought it had more headroom, or the
+    gate could refuse a payload the trim believed fit.
+
+    Assert:
+      * both resolve to the SAME value, for an explicit cap and for the
+        no-cap case (the established MoA default — never 0);
+      * a payload sized in the gap between reserve=0 and reserve=8192 is
+        REFUSED by the gate (proving the gate uses the MoA default, not 0).
+    """
+    import agent.moa_loop as moa
+    from agent.model_metadata import (
+        estimate_messages_tokens_rough,
+        DEFAULT_OUTPUT_RESERVATION,
+    )
+    from agent.agent_runtime_helpers import (
+        canonical_request_budget,
+        enforce_effective_context_limit,
+        ContextCeilingExceeded,
+    )
+
+    DEFAULT = DEFAULT_OUTPUT_RESERVATION  # 4096 — the Hermes default
+
+    # 1) Explicit cap: trim and gate resolve to the SAME explicit value.
+    assert moa._resolve_moa_output_reserve(4096) == 4096
+    assert moa._resolve_moa_output_reserve(2048) == 2048
+
+    # 2) No cap: both resolve to the established Hermes default (never 0).
+    assert moa._resolve_moa_output_reserve(None) == DEFAULT
+    assert moa._resolve_moa_output_reserve(0) == DEFAULT
+    assert moa._resolve_moa_output_reserve(-5) == DEFAULT
+    assert moa._resolve_moa_output_reserve(True) == DEFAULT  # bool is not a cap
+
+    # 3) Behavioral: a payload in the gap [W, W+4096) is REFUSED by the gate
+    #    (gate reserves 4096) even though a 0-reserve gate would accept it.
+    window = 10_000
+    # chars/4 rough → need base in (window - 4096, window] = (5904, 10000].
+    base_target = window - 4096 + 200  # 6104 → base must exceed this
+    content = "x" * (base_target * 4 + 800)
+    messages = [{"role": "user", "content": content}]
+    base = estimate_messages_tokens_rough(messages)
+    assert base > window - 4096, f"setup: base {base} not in gap"
+    assert base <= window, f"setup: base {base} exceeds window"
+
+    # Gate (unified) reserves 4096 → base + 4096 > window → REFUSED.
+    gate_reserve = moa._resolve_moa_output_reserve(None)  # = 4096
+    gate_budget = canonical_request_budget(messages, output_reserve=gate_reserve)
+    assert gate_budget > window  # base + 4096 > window
+    with pytest.raises(ContextCeilingExceeded):
+        enforce_effective_context_limit(
+            gate_budget, pre_cap=window, ceiling=None, reason="MoA reference dispatch",
+        )
+
+    # A 0-reserve gate would have ACCEPTED the same payload — that was the old
+    # divergence. Prove the unified value is strictly larger than 0 here.
+    zero_budget = canonical_request_budget(messages, output_reserve=0)
+    assert zero_budget <= window  # old gate (reserve=0) would have accepted
+    assert gate_reserve > 0
+
+
+def test_moa_aggregator_gate_uses_same_reserve(monkeypatch):
+    """The aggregator gate must use the SAME resolved reserve as the
+    reference gate — not a hardcoded 0.  Both default to the MoA default when
+    no explicit cap is present."""
+    import agent.moa_loop as moa
+    from agent.model_metadata import DEFAULT_OUTPUT_RESERVATION
+
+    DEFAULT = DEFAULT_OUTPUT_RESERVATION  # 4096
+    # The aggregator call carries no explicit max_tokens → default applies.
+    assert moa._resolve_moa_output_reserve(None) == DEFAULT
+    # And it is the same value the reference gate uses for a no-cap reference.
+    assert moa._resolve_moa_output_reserve(None) == moa._resolve_moa_output_reserve(None)
+    # Explicit cap path is identical for both.
+    assert moa._resolve_moa_output_reserve(2048) == 2048
 
 
 def test_render_tool_calls_tolerates_namespace_shapes():

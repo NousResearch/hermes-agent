@@ -760,21 +760,28 @@ def _resolve_active_context_length() -> int:
         # ~200ms network probe on EVERY CLI startup. When any prior session
         # already learned the window, use it for the gate and let the full
         # resolver (called later on the compression path) do reconciliation.
+        _gate_cap = None
+        try:
+            from agent.model_metadata import _get_max_context_length
+            _gate_cap = _get_max_context_length()
+        except Exception:
+            pass
         if config_ctx is None and base_url:
             try:
                 from agent.model_metadata import get_cached_context_length
                 cached_ctx = get_cached_context_length(model_id, base_url)
                 if isinstance(cached_ctx, int) and cached_ctx > 0:
-                    return cached_ctx
+                    return min(cached_ctx, _gate_cap) if _gate_cap else cached_ctx
             except Exception:
                 pass
-        return int(get_model_context_length(
+        _resolved = int(get_model_context_length(
             model_id,
             base_url=base_url,
             api_key=api_key,
             config_context_length=config_ctx,
             provider=provider,
         ) or 0)
+        return min(_resolved, _gate_cap) if _gate_cap else _resolved
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)
         return 0

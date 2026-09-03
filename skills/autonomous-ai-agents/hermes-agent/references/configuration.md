@@ -7,7 +7,7 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 
 | Section | Key options |
 |---------|-------------|
-| `model` | `default`, `provider`, `base_url`, `api_key`, `context_length`, `aliases` |
+| `model` | `default`, `provider`, `base_url`, `api_key`, `context_length`, `max_context_length`, `aliases` |
 | `agent` | `max_turns` (90), `tool_use_enforcement`, `service_tier`, `verify_on_stop` |
 | `terminal` | `backend` (local/docker/ssh/modal/daytona/singularity), `cwd`, `timeout` (180) |
 | `compression` | `enabled`, `threshold` (0.50), `target_ratio` (0.20) |
@@ -22,6 +22,23 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 | `curator` | `enabled`, `consolidate` (false, opt-in aux-model consolidation), `interval_hours`, `stale_after_days` |
 
 `hermes config check` reports sections missing from an older config.
+
+### Context window: `context_length` vs `max_context_length` vs `max_tokens`
+
+Three distinct knobs, frequently confused. All live under the `model` section.
+
+| Key | Meaning | Scope | Persisted? |
+|-----|---------|-------|------------|
+| `context_length` | **Exact pre-cap override** — the resolved context window for the *active* model, before the ceiling. | Per-model; discarded on `/model` switch (re-resolved for the new model). | No — a runtime override. |
+| `max_context_length` | **Profile-wide hard upper ceiling** on the effective window. `effective = min(resolved_context, max_context_length)`. | Profile-wide; survives `/model` switches; applies to every model in the profile. | No — a runtime policy. |
+| `max_tokens` | **Per-response output cap** — maximum tokens the model may *generate* in one response. | Per-response; unrelated to the input context window. | No. |
+
+`max_context_length` rules:
+- **Minimum is 64000 (64K).** A positive integer below the floor is an *invalid ceiling* (a mis-configuration, reported with a ceiling-specific error — not "the model only has this capability").
+- **Strict positive integer.** `bool`, float, numeric strings, `infinity`, and values `<= 0` are all rejected (malformed → no ceiling).
+- **Never raises a window** — it only lowers one, so it composes safely with an explicit `context_length` already below it.
+- **Cache stays raw.** It is a runtime policy and never contaminates `context_length_cache.yaml`, which retains the model's real (pre-policy) capability.
+- **Hard ceiling, enforced pre-dispatch.** Regardless of whether compression is enabled, a request still above the ceiling when it reaches the provider is refused before dispatch (with compression it has had a chance to shrink first).
 
 ### Toolsets
 

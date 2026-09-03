@@ -184,10 +184,44 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     compressor = getattr(agent, "context_compressor", None)
     if compressor is not None:
         try:
+            # Record the fresh token accounting from this response FIRST.
+            # update_from_response() populates last_*_tokens and
+            # the paired rough/real estimates. We capture the accounting fields
+            # so we can re-apply them AFTER the context-window refresh, because
+            # the refresh (update_model on a generic plugin, and the built-in's
+            # calibration reset) may legitimately zero last_*_tokens. Re-applying
+            # the just-recorded values afterward guarantees the accounting from
+            # this response survives the refresh regardless of engine type.
             compressor.update_from_response(usage_dict)
+            _accounting = {
+                f: getattr(compressor, f, None)
+                for f in (
+                    "last_prompt_tokens",
+                    "last_completion_tokens",
+                    "last_total_tokens",
+                    "last_real_prompt_tokens",
+                    "last_rough_tokens_when_real_prompt_fit",
+                )
+            }
             context_window = getattr(turn, "model_context_window", None)
             if isinstance(context_window, int) and context_window > 0:
-                compressor.context_length = context_window
+                # SAME-MODEL CONTEXT-WINDOW REFRESH: the active
+                # model is unchanged; only its provider-reported window changed.
+                # context_window is the PRE-CAP value. refresh_context_window
+                # recalculates threshold/budget from the (ceiling-clamped)
+                # effective window WITHOUT masquerading as a model transition —
+                # the built-in via the context_length setter, a plugin via
+                # update_model. The host pre-cap becomes the raw reported window.
+                from agent.agent_runtime_helpers import refresh_context_window
+                refresh_context_window(
+                    agent, context_window, model=agent.model,
+                )
+                # Restore the accounting just recorded so a plugin's
+                # update_model() calibration reset (or the built-in's) cannot
+                # erase it. Re-applied only for fields that are genuine ints.
+                for _f, _v in _accounting.items():
+                    if isinstance(_v, int) and not isinstance(_v, bool):
+                        setattr(compressor, _f, _v)
         except Exception:
             logger.debug("codex app-server usage update failed", exc_info=True)
 
@@ -772,6 +806,54 @@ def run_codex_app_server_turn(
     # NOTE: the user message is ALREADY appended to messages by the
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
+
+    # ── Terminal ceiling gate (transport-normalized) — app-server owner ──
+    # run_turn() hands the entire turn to a codex app-server subprocess and
+    # bypasses BOTH _dispatch_nonstreaming_api_request and
+    # interruptible_streaming_api_call.  It is therefore a FIFTH physical
+    # dispatch owner that must carry the same gate.  The gate fires on the
+    # FINAL messages payload (post-compression) immediately before
+    # run_turn() dispatches to the subprocess.  A refusal is NOT a turn —
+    # no subprocess I/O, no event stream, no retry.
+    from agent.model_metadata import (
+        build_final_context_budget as _bfc_app,
+        enforce_final_context_budget as _efc_app,
+    )
+    _pre_cap_app = getattr(agent, "_pre_cap_context_length", None)
+    if not (isinstance(_pre_cap_app, int) and not isinstance(_pre_cap_app, bool) and _pre_cap_app > 0):
+        _eng_app = getattr(agent, "context_compressor", None)
+        if _eng_app is not None:
+            _pre_cap_app = getattr(_eng_app, "pre_cap_context_length", None)
+    _ceiling_app = getattr(agent, "_max_context_length", None)
+    if not (isinstance(_ceiling_app, int) and not isinstance(_ceiling_app, bool) and _ceiling_app > 0):
+        _eng_app2 = getattr(agent, "context_compressor", None)
+        if _eng_app2 is not None:
+            _ceiling_app = getattr(_eng_app2, "max_context_length", None)
+    # Build the budget from the FINAL messages list (system-included).
+    # The codex app-server path uses `messages` as its transport payload.
+    _app_kwargs = {"messages": messages}
+    # Include the system prompt separately if it is a dedicated field on the
+    # agent (some codex paths carry it as agent.system_prompt, not in messages).
+    _app_system = ""
+    try:
+        if not any(
+            isinstance(m, dict) and m.get("role") == "system"
+            for m in (messages if isinstance(messages, list) else [])
+        ):
+            _app_system = getattr(agent, "system_prompt", "") or ""
+    except Exception:
+        _app_system = ""
+    _efc_app(
+        _bfc_app(
+            _app_kwargs,
+            system_prompt=_app_system,
+            provider=getattr(agent, "provider", None),
+            model=getattr(agent, "model", None),
+        ),
+        pre_cap=_pre_cap_app,
+        ceiling=_ceiling_app,
+        reason="codex app-server run_turn (final payload)",
+    )
 
     try:
         turn = agent._codex_session.run_turn(user_input=user_message)

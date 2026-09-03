@@ -918,6 +918,60 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     return None
 
 
+def _enforce_streaming_final_budget(
+    agent,
+    next_api_kwargs: dict[str, Any],
+    *,
+    api_mode: str,
+    reason: str,
+) -> None:
+    """Terminal ceiling gate for the main-path STREAMING physical callbacks.
+
+    The streaming entry gate (``interruptible_streaming_api_call``) fires on
+    the caller's ``api_kwargs`` BEFORE Relay transformation.  Relay (
+    ``relay_llm.stream``) then rebuilds the final provider payload (codec
+    round-trip, tool/message extension restoration, header normalization) and
+    hands it to this stream_factory as ``next_api_kwargs``.  A Relay that
+    enlarges the request past the ceiling would slip the entry gate — so the
+    terminal enforcement belongs here, on the FINAL payload, immediately
+    before the provider I/O (``chat.completions.create`` /
+    ``messages.stream`` / ``converse_stream``).
+
+    Uses the SAME shared FinalContextBudget primitive the non-streaming owner
+    uses (``build_final_context_budget`` + ``enforce_final_context_budget``),
+    so provider-aware reservation (explicit cap → provider implicit cap →
+    default) and Bedrock nested ``inferenceConfig.maxTokens`` are resolved
+    identically.  A refusal is a local error — no provider I/O, no api_call
+    count, no retry, no fallback.
+    """
+    from agent.model_metadata import (
+        build_final_context_budget,
+        enforce_final_context_budget,
+    )
+
+    pre_cap = getattr(agent, "_pre_cap_context_length", None)
+    if not (isinstance(pre_cap, int) and not isinstance(pre_cap, bool) and pre_cap > 0):
+        engine = getattr(agent, "context_compressor", None)
+        if engine is not None:
+            pre_cap = getattr(engine, "pre_cap_context_length", None)
+    ceiling = getattr(agent, "_max_context_length", None)
+    if not (isinstance(ceiling, int) and not isinstance(ceiling, bool) and ceiling > 0):
+        engine = getattr(agent, "context_compressor", None)
+        if engine is not None:
+            ceiling = getattr(engine, "max_context_length", None)
+    budget = build_final_context_budget(
+        next_api_kwargs,
+        provider=getattr(agent, "provider", None),
+        model=getattr(agent, "model", None),
+    )
+    enforce_final_context_budget(
+        budget,
+        pre_cap=pre_cap,
+        ceiling=ceiling,
+        reason=f"main streaming dispatch, {api_mode} (final payload)",
+    )
+
+
 def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     """Run one non-streaming LLM request for the active api_mode and return it.
 
@@ -934,6 +988,39 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     interrupt, abort, cancellation, and close semantics stay in the callers —
     this helper only issues the request.
     """
+    # ── Terminal ceiling gate (transport-normalized) ──────────────────
+    # This is the SINGLE physical I/O owner for all non-streaming main
+    # dispatch (codex / anthropic / bedrock / MoA / OpenAI-compatible).
+    # It fires on the FINAL payload (post-middleware, post-transformation)
+    # immediately before provider I/O.  A refusal is NOT an API call —
+    # no network I/O, no api_call_count, no retry, no fallback.
+    #
+    # Reads the ceiling + pre-cap from the agent host.  Uses the shared
+    # FinalContextBudget primitive (model_metadata) so every semantic
+    # component is counted exactly once and the reservation is resolved
+    # from the payload's explicit cap (never 0, never an invented
+    # provider max).
+    from agent.model_metadata import (
+        build_final_context_budget as _bfc,
+        enforce_final_context_budget as _efc,
+    )
+    _pre_cap = getattr(agent, "_pre_cap_context_length", None)
+    if not (isinstance(_pre_cap, int) and not isinstance(_pre_cap, bool) and _pre_cap > 0):
+        _eng = getattr(agent, "context_compressor", None)
+        if _eng is not None:
+            _pre_cap = getattr(_eng, "pre_cap_context_length", None)
+    _ceiling = getattr(agent, "_max_context_length", None)
+    if not (isinstance(_ceiling, int) and not isinstance(_ceiling, bool) and _ceiling > 0):
+        _eng = getattr(agent, "context_compressor", None)
+        if _eng is not None:
+            _ceiling = getattr(_eng, "max_context_length", None)
+    _budget = _bfc(
+        api_kwargs,
+        provider=getattr(agent, "provider", None),
+        model=getattr(agent, "model", None),
+    )
+    _efc(_budget, pre_cap=_pre_cap, ceiling=_ceiling, api_kwargs=api_kwargs,
+         reason="main non-streaming dispatch (final payload)")
     if agent.api_mode == "codex_responses":
         request_client = make_client("codex_stream_request")
         return agent._run_codex_stream(
@@ -2698,6 +2785,51 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
+    # Lifecycle atomicity: capture the host route
+    # BEFORE any commit region mutates it. Captured at the very top of the
+    # function so it is always in scope (even if an early return or the
+    # client-build try-block raises) and always reflects the true pre-fallback
+    # state. The commit region (model/provider/client/api_key/_anthropic_*/
+    # _client_kwargs/credential pool/etc.) and the engine transition
+    # (transition_model_context) both run inside the try-block below; if any
+    # of them raise, _restore_fb_host_snapshot() in the except-block returns
+    # the agent to this coherent state before the next fallback is attempted.
+    _fb_host_snapshot = {
+        "model": agent.model,
+        "provider": agent.provider,
+        "requested_provider": getattr(agent, "requested_provider", None),
+        "base_url": agent.base_url,
+        "api_mode": agent.api_mode,
+        "api_key": getattr(agent, "api_key", None),
+        "client": getattr(agent, "client", None),
+        "_anthropic_client": getattr(agent, "_anthropic_client", None),
+        "_anthropic_api_key": getattr(agent, "_anthropic_api_key", None),
+        "_anthropic_base_url": getattr(agent, "_anthropic_base_url", None),
+        "_is_anthropic_oauth": getattr(agent, "_is_anthropic_oauth", None),
+        "_client_kwargs": dict(getattr(agent, "_client_kwargs", {}) or {}),
+        "_config_context_length": getattr(agent, "_config_context_length", None),
+        "_reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", None),
+        "_credential_pool": getattr(agent, "_credential_pool", None),
+        "_credential_pool_entry_id": getattr(agent, "_credential_pool_entry_id", None),
+        "_fallback_activated": getattr(agent, "_fallback_activated", None),
+        "_use_prompt_caching": getattr(agent, "_use_prompt_caching", None),
+        "_use_native_cache_layout": getattr(agent, "_use_native_cache_layout", None),
+        "_pre_cap_context_length": getattr(agent, "_pre_cap_context_length", None),
+    }
+
+    def _restore_fb_host_snapshot() -> None:
+        for _name, _val in _fb_host_snapshot.items():
+            try:
+                setattr(agent, _name, _val)
+            except Exception:
+                pass
+        # Restoring the old client invalidates any cached transports.
+        if hasattr(agent, "_transport_cache"):
+            try:
+                agent._transport_cache.clear()
+            except Exception:
+                pass
+
     if reason in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}:
         # Only start cooldown when leaving the primary provider.  If we're
         # already on a fallback and chain-switching, the primary wasn't the
@@ -3042,13 +3174,20 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 config_context_length=getattr(agent, "_config_context_length", None),
                 custom_providers=getattr(agent, "_custom_providers", None),
             )
-            agent.context_compressor.update_model(
-                model=agent.model,
-                context_length=fb_context_length,
-                base_url=agent.base_url,
-                api_key=getattr(agent, "api_key", ""),  # callable preserved → call_llm
-                provider=agent.provider,
-                api_mode=agent.api_mode,
+            # MODEL LIFECYCLE TRANSITION: the fallback is the
+            # ACTIVE model now, so the host pre-cap becomes the FALLBACK's
+            # pre-cap — not the primary's. The primary's pre-cap is preserved
+            # in _primary_runtime (captured at init/switch time) so
+            # restore_primary_runtime can re-derive the primary's effective
+            # window. transition_model_context sets the host pre-cap to the
+            # active model's value on success and propagates any engine
+            # failure to this fallback transaction — the baseline
+            # behavior (a failed update_model did not silently continue).
+            # The fallback's model/provider/base_url/api_key are already
+            # applied to agent above, so they are read from agent here.
+            from agent.agent_runtime_helpers import transition_model_context
+            transition_model_context(
+                agent, fb_context_length, model=agent.model,
             )
 
         # Re-resolve reasoning_config for the new fallback model (Closes #21256).
@@ -3174,6 +3313,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if fb_provider == "nous":
             unavailable.add(fb_key)
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
+        # Lifecycle atomicity: restore the host route to its pre-fallback
+        # state so the next fallback in the chain starts from a coherent
+        # agent (old model/provider/client/api_key + old engine). The engine's
+        # own route was already restored by transition_model_context's
+        # snapshot/restore (if the failure was in the transition) or was never
+        # mutated (if the failure was earlier in the commit region).
+        _restore_fb_host_snapshot()
         return agent._try_activate_fallback(reason)  # try next in chain
 
 
@@ -3344,6 +3490,48 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         if _is_nous:
             from agent.portal_tags import nous_portal_tags as _portal_tags
             summary_extra_body["tags"] = _portal_tags()
+
+        # Hard-ceiling gate for the iteration-limit summary dispatch:
+        # this is a provider-owning path that bypasses the main-loop gate, so
+        # it enforces its own final payload against the effective limit before
+        # any provider I/O.  The summary request typically carries the full
+        # (largest) conversation, so this gate is the one most likely to trip.
+        # A refusal is a local error, not an API call — no api_call_count, no
+        # provider I/O.  We catch the typed exception here and re-raise as a
+        # plain RuntimeError so the caller (run_conversation) treats it as a
+        # normal local failure rather than an unhandled ContextCeilingExceeded.
+        #
+        # Finding #2: migrated OFF the legacy check_ceiling_for_kwargs path (which
+        # reserved agent.max_tokens or 0 — a zero-reservation when the cap is
+        # omitted, and a flat shape that could not see Bedrock's nested
+        # inferenceConfig.maxTokens).  Now uses the SAME shared final-budget
+        # resolver every physical dispatch owner uses (build_final_context_budget
+        # + enforce_final_context_budget), so the output reservation is
+        # provider-aware (omitted cap + known provider implicit 65536 → reserve
+        # 65536) and Bedrock summary requests honor inferenceConfig.maxTokens.
+        from agent.model_metadata import (
+            build_final_context_budget as _build_final_budget,
+            enforce_final_context_budget as _enforce_final_budget,
+            ContextCeilingExceeded as _CEX,
+        )
+        from agent.agent_runtime_helpers import _agent_ceiling as _agent_ceiling_fn
+        _sum_ceiling = _agent_ceiling_fn(agent)
+        try:
+            _sum_budget = _build_final_budget(
+                {"messages": api_messages},
+                system_prompt=effective_system,
+                tools=None,
+                provider=getattr(agent, "provider", None),
+                model=getattr(agent, "model", None),
+            )
+            _enforce_final_budget(
+                _sum_budget,
+                pre_cap=getattr(agent, "_pre_cap_context_length", None),
+                ceiling=_sum_ceiling,
+                reason="iteration-limit summary",
+            )
+        except _CEX as _ce:
+            raise RuntimeError(str(_ce)) from _ce
 
         if agent.api_mode == "codex_responses":
             codex_kwargs = agent._build_api_kwargs(api_messages)
@@ -3640,6 +3828,38 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
 
+    # ── Terminal ceiling gate (transport-normalized) — streaming owner ──
+    # The streaming main path (chat_completions / anthropic_messages)
+    # dispatches its physical I/O here, NOT through
+    # _dispatch_nonstreaming_api_request, so it is a distinct physical owner
+    # that must carry the same gate.  Codex / direct routes delegate to the
+    # non-streaming dispatch (which is already gated) — the gate is idempotent,
+    # so a second pass there is a safe no-op.
+    from agent.model_metadata import (
+        build_final_context_budget as _bfc_s,
+        enforce_final_context_budget as _efc_s,
+    )
+    _pre_cap_s = getattr(agent, "_pre_cap_context_length", None)
+    if not (isinstance(_pre_cap_s, int) and not isinstance(_pre_cap_s, bool) and _pre_cap_s > 0):
+        _eng_s = getattr(agent, "context_compressor", None)
+        if _eng_s is not None:
+            _pre_cap_s = getattr(_eng_s, "pre_cap_context_length", None)
+    _ceiling_s = getattr(agent, "_max_context_length", None)
+    if not (isinstance(_ceiling_s, int) and not isinstance(_ceiling_s, bool) and _ceiling_s > 0):
+        _eng_s = getattr(agent, "context_compressor", None)
+        if _eng_s is not None:
+            _ceiling_s = getattr(_eng_s, "max_context_length", None)
+    _efc_s(
+        _bfc_s(
+            api_kwargs,
+            provider=getattr(agent, "provider", None),
+            model=getattr(agent, "model", None),
+        ),
+        pre_cap=_pre_cap_s,
+        ceiling=_ceiling_s,
+        reason="main streaming dispatch (final payload)",
+    )
+
     def _stream_final_text(response) -> str:
         try:
             choices = getattr(response, "choices", None)
@@ -3750,6 +3970,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 writer_token = {"value": None}
 
                 def _open_bedrock_stream(next_api_kwargs: dict[str, Any]):
+                    # Final-boundary gate (finding #2): judge the FINAL payload
+                    # Relay hands us (supports Bedrock nested
+                    # inferenceConfig.maxTokens via the shared reservation
+                    # resolver), not the pre-Relay `api_kwargs`.
+                    _enforce_streaming_final_budget(
+                        agent, next_api_kwargs,
+                        api_mode="bedrock_converse",
+                        reason="bedrock_converse",
+                    )
                     final_kwargs = dict(next_api_kwargs)
                     region = final_kwargs.pop("__bedrock_region__", "us-east-1")
                     final_kwargs.pop("__bedrock_converse__", None)
@@ -4264,6 +4493,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         attempt_stream_response = {"value": None}
 
         def _open_stream(next_api_kwargs: dict[str, Any]):
+            # Final-boundary gate (finding #2): `next_api_kwargs` is Relay's
+            # transformed FINAL request — the exact payload the provider
+            # receives. Enforce the ceiling against it, not the pre-Relay
+            # `api_kwargs` (Relay may enlarge the request, so the preliminary
+            # entry gate can be bypassed).
+            _enforce_streaming_final_budget(
+                agent, next_api_kwargs,
+                api_mode=getattr(agent, "_relay_api_mode", "openai_compatible"),
+                reason="openai_compatible",
+            )
             stream_kwargs = {
                 **next_api_kwargs,
                 "stream": True,
@@ -4923,6 +5162,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         accumulator = relay_llm.AnthropicStreamAccumulator()
 
         def _open_anthropic_stream(next_api_kwargs: dict[str, Any]):
+            # Final-boundary gate (finding #2): judge the FINAL payload Relay
+            # hands us (Anthropic `max_tokens`), not the pre-Relay `api_kwargs`.
+            _enforce_streaming_final_budget(
+                agent, next_api_kwargs,
+                api_mode="anthropic_messages",
+                reason="anthropic_messages",
+            )
             final_kwargs = dict(next_api_kwargs)
             sanitize_anthropic_kwargs(
                 final_kwargs,

@@ -65,6 +65,12 @@ KNOWN_SAFE = {
     "plugins/security-guidance/patterns.py",  # subprocess mentions are in reminder strings, not calls
 }
 
+
+def portable_relative_path(path: Path, root: Path) -> str:
+    """Return the forward-slash namespace used by path policy tables."""
+
+    return path.relative_to(root).as_posix()
+
 # Inline marker that exempts a single subprocess call from this check.
 # Put it in a comment on (or within) the call when the process MUST inherit
 # stdin — e.g. an interactive login the user explicitly invokes. Travels with
@@ -170,7 +176,7 @@ def main() -> int:
             continue
 
         for py_file in dirpath.rglob("*.py"):
-            rel = str(py_file.relative_to(repo_root))
+            rel = portable_relative_path(py_file, repo_root)
 
             # Skip known-safe files.
             if rel in KNOWN_SAFE:

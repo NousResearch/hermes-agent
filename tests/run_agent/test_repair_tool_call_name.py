@@ -22,6 +22,7 @@ VALID = {
     "browser_click",
     "browser_navigate",
     "web_search",
+    "skills_list",
     "read_file",
     "write_file",
     "terminal",
@@ -63,7 +64,19 @@ class TestClassLikeEmissions:
         assert repair("BrowserClick") == "browser_click"
 
 
+class TestSkillsSearchHallucinations:
+    """The skills catalog is the safe fallback for observed pseudo-tools."""
 
+    @pytest.mark.parametrize("tool_name", ("skill_search", "skills_search"))
+    def test_repairs_to_skills_catalog(self, repair, tool_name):
+        assert repair(tool_name) == "skills_list"
+
+    def test_does_not_enable_skills_catalog_when_unavailable(self):
+        from run_agent import AIAgent
+
+        stub = SimpleNamespace(valid_tool_names=VALID - {"skills_list"})
+        repair = AIAgent._repair_tool_call.__get__(stub, AIAgent)
+        assert repair("skills_search") is None
 
 
 

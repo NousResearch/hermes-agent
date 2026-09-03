@@ -654,11 +654,11 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
     from tui_gateway import server as gateway_server
 
     try:
-        targets: List[Tuple[str, Path]] = [
-            (info.name, info.path) for info in profiles_mod.list_profiles()
-        ]
+        # Only name/path are used; the cheap enumerator skips the per-profile
+        # config/gateway/skills probes list_profiles() performs (#78325).
+        targets: List[Tuple[str, Path]] = profiles_mod.profiles_to_serve(multiplex=True)
     except Exception:
-        _log.exception("GET /api/profiles/projects/tree: list_profiles failed")
+        _log.exception("GET /api/profiles/projects/tree: profile enumeration failed")
         targets = []
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))
@@ -748,9 +748,11 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
         return {"pull_requests": {}, "scanned": []}
 
     try:
-        targets = [(info.name, info.path) for info in profiles_mod.list_profiles()]
+        # Session scan only needs name/path; avoid list_profiles()' skills-tree
+        # walk per profile (#78325).
+        targets = profiles_mod.profiles_to_serve(multiplex=True)
     except Exception:
-        _log.exception("POST /api/profiles/sessions/pull-requests: list_profiles failed")
+        _log.exception("POST /api/profiles/sessions/pull-requests: profile enumeration failed")
         targets = []
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))

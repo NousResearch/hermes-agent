@@ -863,7 +863,9 @@ def _served_by_running_multiplexer(profile_name: str) -> bool:
 # when the dir tree's signature (skills_dir + immediate category dirs mtimes)
 # changes (catches skill add/remove) or after a short TTL (catches deep edits).
 _SKILL_COUNT_CACHE: dict[str, tuple[float, float, int]] = {}
-_SKILL_COUNT_TTL_SECONDS = 30.0
+# TTL must exceed the desktop cron tick (60s): at 30s every tick was a
+# guaranteed miss and an idle backend re-walked every skills tree forever.
+_SKILL_COUNT_TTL_SECONDS = 300.0
 
 
 def _skills_dir_signature(skills_dir: Path) -> float:

@@ -1647,3 +1647,47 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+def test_insert_completion_attachment_infers_content_type(kanban_home):
+    """Completion artifacts must have inferred content_type (not NULL) so dashboard renders them."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="report task")
+        kb._insert_completion_attachment(
+            conn,
+            tid,
+            filename="report.html",
+            stored_path="/tmp/report.html",
+            size=1024,
+            created_at=int(time.time()),
+        )
+        kb._insert_completion_attachment(
+            conn,
+            tid,
+            filename="data.pdf",
+            stored_path="/tmp/data.pdf",
+            size=2048,
+            created_at=int(time.time()),
+        )
+        kb._insert_completion_attachment(
+            conn,
+            tid,
+            filename="unknown_file_type.xyz99",
+            stored_path="/tmp/unknown.xyz99",
+            size=512,
+            created_at=int(time.time()),
+        )
+
+        rows = conn.execute(
+            "SELECT filename, content_type, uploaded_by FROM task_attachments WHERE task_id = ? ORDER BY id ASC",
+            (tid,),
+        ).fetchall()
+
+        assert len(rows) == 3
+        assert tuple(rows[0]) == ("report.html", "text/html", "kanban_complete")
+        assert tuple(rows[1]) == ("data.pdf", "application/pdf", "kanban_complete")
+        assert tuple(rows[2]) == ("unknown_file_type.xyz99", None, "kanban_complete")
+    finally:
+        conn.close()
+

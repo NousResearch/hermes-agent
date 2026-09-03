@@ -5774,11 +5774,14 @@ def _insert_completion_attachment(
     created_at: int,
 ) -> None:
     """Record a worker-produced artifact in the existing attachment table."""
+    import mimetypes
+
+    content_type, _ = mimetypes.guess_type(filename)
     conn.execute(
         "INSERT INTO task_attachments "
         "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-        "VALUES (?, ?, ?, NULL, ?, 'kanban_complete', ?)",
-        (task_id, filename, stored_path, size, created_at),
+        "VALUES (?, ?, ?, ?, ?, 'kanban_complete', ?)",
+        (task_id, filename, stored_path, content_type, size, created_at),
     )
     _append_event(
         conn,

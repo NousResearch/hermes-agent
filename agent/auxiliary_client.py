@@ -1819,14 +1819,24 @@ class _CodexCompletionsAdapter:
             # Auxiliary callers express provider controls through
             # auxiliary.<task>.extra_body, so project service_tier here just as
             # the main Codex transport projects request_overrides. xAI's
-            # Responses endpoint rejects this field; keep the same xAI-only
-            # guard as agent/transports/codex.py.
+            # Responses endpoint rejects this field on most models, but Grok
+            # 4.6 accepts Priority Processing — keep the same xAI guard AND
+            # Grok-4.6 carve-out as agent/transports/codex.py::build_kwargs().
             service_tier = extra_body.get("service_tier")
             client_base_url = str(getattr(self._client, "base_url", "") or "")
             is_xai_responses = (
                 base_url_host_matches(client_base_url, "x.ai")
                 or base_url_host_matches(client_base_url, "api.x.ai")
             )
+            if is_xai_responses:
+                from agent.model_metadata import is_grok_46_family
+
+                _tier_stripped = (
+                    service_tier.strip() if isinstance(service_tier, str) else None
+                )
+                is_xai_responses = not (
+                    is_grok_46_family(model) and _tier_stripped == "priority"
+                )
             if (
                 isinstance(service_tier, str)
                 and service_tier.strip()

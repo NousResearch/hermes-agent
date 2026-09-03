@@ -298,7 +298,7 @@ def decompose_task(
     roster, valid_names = _build_roster()
 
     try:
-        from agent.auxiliary_client import call_llm  # type: ignore
+        from agent.auxiliary_client import call_llm, extract_content_or_reasoning  # type: ignore
     except Exception as exc:
         logger.debug("decompose: auxiliary client import failed: %s", exc)
         return DecomposeOutcome(task_id, False, "auxiliary client unavailable")
@@ -333,7 +333,7 @@ def decompose_task(
         return DecomposeOutcome(task_id, False, f"LLM error: {type(exc).__name__}")
 
     try:
-        raw = resp.choices[0].message.content or ""
+        raw = extract_content_or_reasoning(resp) or ""
     except Exception:
         raw = ""
 

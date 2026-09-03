@@ -3625,6 +3625,39 @@ def _try_resolve_fallback_provider() -> dict | None:
     return None
 
 
+def _event_is_command(event: Any) -> bool:
+    """Probe command identity on canonical and MessageEvent-like ingress."""
+    is_command = getattr(event, "is_command", None)
+    if callable(is_command):
+        return bool(is_command())
+    if not getattr(event, "allow_gateway_control", True):
+        return False
+    text = getattr(event, "text", "") or ""
+    return isinstance(text, str) and text.lstrip().startswith("/")
+
+
+def _event_command(event: Any) -> Optional[str]:
+    """Extract a command without requiring MessageEvent helper methods.
+
+    Platform and test boundaries historically accepted MessageEvent-like
+    objects. Keep canonical ``MessageEvent.get_command`` authoritative when
+    present, while mirroring its parsing for older duck-typed ingress.
+    """
+    get_command = getattr(event, "get_command", None)
+    if callable(get_command):
+        return get_command()
+    if not _event_is_command(event):
+        return None
+    command_text = (getattr(event, "text", "") or "").lstrip()
+    parts = command_text.split(maxsplit=1)
+    raw = parts[0][1:].lower() if parts else None
+    if raw and "@" in raw:
+        raw = raw.split("@", 1)[0]
+    if raw and "/" in raw:
+        return None
+    return raw
+
+
 def _event_media_type_at(event, index: int) -> str:
     """Return the per-attachment MIME for the attachment at *index*.
 
@@ -9104,7 +9137,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if (
             getattr(event, "internal", False)
             or was_slash_command
-            or event.is_command()
+            or _event_is_command(event)
         ):
             return False, None
 
@@ -19521,7 +19554,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # topic-key normalization, and in-memory running state. Raw /topic and
         # root-lobby /new retain their management-lane behavior and therefore
         # remain on the ordinary idle/plugin path.
-        _probe_command = event.get_command()
+        _probe_command = _event_command(event)
         from hermes_cli.commands import resolve_command as _resolve_probe_command
 
         _probe_cmd_def = (
@@ -19541,10 +19574,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._normalize_source_for_session_key,
                 source,
             )
-        _probe_key = self._session_key_for_source(_probe_source)
-        _preboundary_busy = (
-            not _probe_management_lane and self._is_session_running(_probe_key)
-        )
+        if getattr(getattr(_probe_source, "platform", None), "value", None) is None:
+            # Compatibility ingress may be only MessageEvent-like. If it lacks
+            # enough source identity to form a key, it cannot identify a busy
+            # canonical session; retain the ordinary authorized ingress path.
+            _preboundary_busy = False
+        else:
+            _probe_key = self._session_key_for_source(_probe_source)
+            _preboundary_busy = (
+                not _probe_management_lane and self._is_session_running(_probe_key)
+            )
         _idle_ingress_preprocessed = not _preboundary_busy
 
         if _idle_ingress_preprocessed:
@@ -19673,7 +19712,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # plugins or refresh secrets. No hook, command discovery, quick alias
         # expansion, startup queue mutation, or activity-clock write is allowed
         # above this point.
-        _inbound_command = event.get_command()
+        _inbound_command = _event_command(event)
         _raw_inbound_text = event.text or ""
         from hermes_cli.commands import resolve_command as _resolve_inbound_command
 
@@ -19708,8 +19747,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._normalize_source_for_session_key,
                 source,
             )
-        _authoritative_key = self._session_key_for_source(_authoritative_source)
         _recovered_source = _authoritative_source is not source
+        _authoritative_key = (
+            self._session_key_for_source(_authoritative_source)
+            if _recovered_source
+            else None
+        )
 
         # Only the recovered Telegram lane needs this early detour. Correctly
         # keyed ingress must retain the established platform/profile busy path
@@ -19879,9 +19922,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Hooks may rewrite command identity on the idle path. Recompute the
         # values consumed by all later control and command dispatch.
-        _inbound_command = event.get_command()
+        _inbound_command = _event_command(event)
         _raw_inbound_text = event.text or ""
-        _quick_key = self._session_key_for_source(source)
 
         # Global emergency stop (`hermes pause`): give new turns a brief
         # paused notice instead of starting an agent run. Internal events
@@ -19909,7 +19951,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _estop_allow = False
                 _estop_cmd = None
                 try:
-                    _estop_cmd = event.get_command()
+                    _estop_cmd = _event_command(event)
                 except Exception:
                     _estop_cmd = None
                 if _estop_cmd:
@@ -19954,6 +19996,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     return _paused_notice
 
+        _quick_key = self._session_key_for_source(source)
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via
@@ -19971,7 +20015,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ):
             raw = (event.text or "").strip()
             # Accept /approve and /deny as shorthand for yes/no
-            cmd = event.get_command()
+            cmd = _event_command(event)
             if cmd in {"approve", "yes"}:
                 response_text = "y"
             elif cmd in {"deny", "no"}:
@@ -20142,7 +20186,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # `!<known-command>` — `always`/`cancel` are confirm keywords,
             # not registered commands, so the `!` survives to here.
             _norm_reply = _raw_reply.lstrip("!/").lower()
-            _cmd_reply = event.get_command()
+            _cmd_reply = _event_command(event)
             _confirm_choice = None
             if _cmd_reply in {"approve", "yes", "ok", "confirm"}:
                 _confirm_choice = "once"
@@ -20295,7 +20339,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # resolver _dispatch_busy_slash_command below — no per-command
             # if-chain here.
             from hermes_cli.commands import resolve_command as _resolve_cmd_inner
-            _evt_cmd = event.get_command()
+            _evt_cmd = _event_command(event)
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
             # /status and /context are intentionally pre-gate so users
@@ -20367,7 +20411,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             running_agent = _ra_state.turn.agent if _ra_state else None
             if running_agent is _AGENT_PENDING_SENTINEL:
                 # Agent is being set up but not ready yet.
-                if event.get_command() == "stop":
+                if _event_command(event) == "stop":
                     # Force-clean the sentinel so the session is unlocked.
                     self._release_running_agent_state(_quick_key)
                     logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
@@ -20495,7 +20539,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
 
         # Check for commands
-        command = event.get_command()
+        command = _event_command(event)
 
         from hermes_cli.commands import (
             GATEWAY_KNOWN_COMMANDS,
@@ -20609,7 +20653,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         continue
                     new_args = str(hook_result.get("raw_args", "")).strip()
                     event.text = f"/{new_command} {new_args}".strip()
-                    command = event.get_command()
+                    command = _event_command(event)
                     _cmd_def = _resolve_cmd(command) if command else None
                     canonical = _cmd_def.name if _cmd_def else command
                     _busy_command_text = event.text or _raw_inbound_text
@@ -21304,7 +21348,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if (
                 _orphan_adapter is not None
                 and not bool(getattr(event, "internal", False))
-                and not event.get_command()
+                and not _event_command(event)
             ):
                 _rescued = self._rescue_orphaned_overflow(
                     _quick_key, _orphan_adapter

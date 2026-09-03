@@ -467,6 +467,44 @@ async def test_commands_and_internal_messages_bypass_notice(event):
 
 
 @pytest.mark.asyncio
+async def test_message_event_like_slash_without_helpers_bypasses_notice():
+    runner = _runner("confirm")
+    event = SimpleNamespace(
+        text="/status",
+        source=_source(),
+        internal=False,
+        metadata={},
+        allow_gateway_control=True,
+    )
+
+    handled, response = await runner._maybe_handle_stale_override_notice(
+        event, "session-key"
+    )
+
+    assert (handled, response) == (False, None)
+    runner.async_session_store.get_session_metadata.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_message_event_like_control_disabled_slash_remains_ordinary():
+    runner = _runner("confirm")
+    event = SimpleNamespace(
+        text="/status",
+        source=_source(),
+        internal=False,
+        metadata={},
+        allow_gateway_control=False,
+    )
+
+    handled, response = await runner._maybe_handle_stale_override_notice(
+        event, "session-key"
+    )
+
+    assert (handled, response) == (True, None)
+    assert runner._stale_override_pending["session-key"]["event"] is event
+
+
+@pytest.mark.asyncio
 async def test_rewritten_slash_command_bypasses_notice():
     runner = _runner("confirm")
     event = _event("expanded command prompt")

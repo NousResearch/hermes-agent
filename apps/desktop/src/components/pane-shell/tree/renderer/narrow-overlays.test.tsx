@@ -99,7 +99,7 @@ describe('narrow overlay of a stacked zone', () => {
     expect(queryByTestId('sessions-body')).toBeNull()
   })
 
-  it('keeps the stripless form for a zone with a single collapsible', () => {
+  it('keeps live title controls for a zone with a single collapsible', () => {
     // Direct set: declareDefaultTree only ADOPTS into an existing tree — it
     // would keep the beforeEach zone (with bots) instead of replacing it.
     $layoutTree.set(split('row', [group(['sessions']), group(['workspace'])]))
@@ -109,7 +109,18 @@ describe('narrow overlay of a stacked zone', () => {
     revealPane('sessions')
 
     expect(getByTestId('sessions-body')).toBeTruthy()
-    expect(overlayTab('sessions')).toBeNull()
+    expect(overlayTab('sessions')).toBeTruthy()
+    expect(getByTestId('sessions-live-title').textContent).toBe('sessions 2')
+  })
+
+  it('keeps an ordinary single pane stripless', () => {
+    $layoutTree.set(split('row', [group(['bots']), group(['workspace'])]))
+    const { getByTestId } = render(<NarrowOverlays />)
+
+    revealPane('bots')
+
+    expect(getByTestId('bots-body')).toBeTruthy()
+    expect(overlayTab('bots')).toBeNull()
   })
 
   it('renders the pane live tab title and updates its unread count', () => {
@@ -142,12 +153,12 @@ describe('narrow overlay of a stacked zone', () => {
       y: 0
     } as DOMRect)
 
-    render(<NarrowOverlays />)
+    const { container } = render(<NarrowOverlays />)
     revealPane('sessions')
 
     // Controls rect = { x: 0, y: 0, width: 24 + 58, height: 34 }; the
     // reservation is the overlap's bottom edge, so the strip starts below it.
-    const overlay = document.querySelector<HTMLElement>('[data-narrow-overlay="sessions"]')
+    const overlay = container.querySelector<HTMLElement>('[data-narrow-overlay="sessions"]')
     expect(overlay?.style.paddingTop).toBe('34px')
     // The reserved band stays a window-drag target, as in a docked TreeGroup.
     const dragSpacer = overlay?.querySelector<HTMLElement>('[aria-hidden="true"]')

@@ -93,18 +93,21 @@ export function preflightCandidatesForUnreadTarget(
   return candidates.length ? candidates : [{ ownerRoute: null, scope: undefined }]
 }
 
-export type PreflightUnreadTarget = (
-  target: UnreadSessionTarget
-) => Promise<null | SessionProfileRoute>
+export type PreflightUnreadTarget = (target: UnreadSessionTarget) => Promise<null | SessionProfileRoute>
 
 /** Open the first target whose row still resolves on its owning backend. A
  * rejected preflight leaves that candidate unread and advances to the next. */
 export async function openNextValidUnread(
   targets: readonly UnreadSessionTarget[],
   preflight: PreflightUnreadTarget,
-  open: (target: UnreadSessionTarget, ownerRoute: null | SessionProfileRoute) => void
+  open: (target: UnreadSessionTarget, ownerRoute: null | SessionProfileRoute) => boolean | void,
+  isCurrent: () => boolean = () => true
 ): Promise<UnreadSessionTarget | null> {
   for (const target of targets) {
+    if (!isCurrent()) {
+      return null
+    }
+
     let ownerRoute: null | SessionProfileRoute
 
     try {
@@ -114,7 +117,15 @@ export async function openNextValidUnread(
       continue
     }
 
-    open(target, ownerRoute)
+    if (!isCurrent()) {
+      return null
+    }
+
+    // A caller can decline an eligible row when its open surface is ambiguous
+    // or its live read state changed during preflight. Leave it untouched.
+    if (open(target, ownerRoute) === false) {
+      continue
+    }
 
     return target
   }

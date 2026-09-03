@@ -7186,6 +7186,62 @@ class APIServerAdapter(BasePlatformAdapter):
         return full_history
 
     @staticmethod
+    def _response_semantic_message(message: Any) -> Dict[str, Any]:
+        """Project a transcript message onto its semantic fields for comparison.
+
+        Persisted transcript messages carry database-only metadata
+        (``_db_persisted``, ``_row_id``, ``timestamp``) that the request-side
+        ``conversation_history`` never has, so strict dict equality between
+        the two always fails (#101644).  Compare only fields present on the
+        richer side's counterpart that are not known persistence markers —
+        a key a decorated message provably shares with the bare projected
+        form ({'role', 'content', ...}) participates; a key only one side
+        carries (or a marker key) never decides the match.
+        """
+        if not isinstance(message, dict):
+            return {"~non-dict~": message}
+        return {
+            k: v
+            for k, v in message.items()
+            if k not in APIServerAdapter._RESPONSE_PERSISTENCE_MARKERS
+        }
+
+    _RESPONSE_PERSISTENCE_MARKERS = frozenset(
+        {"_db_persisted", "_row_id", "timestamp", "_rowid"}
+    )
+
+    @staticmethod
+    def _response_prefix_match(
+        agent_messages: List[Dict[str, Any]],
+        expected_prefix: List[Dict[str, Any]],
+    ) -> bool:
+        """Semantic prefix compare that ignores persistence-only keys.
+
+        Two messages match when every key available on EITHER side (after
+        dropping marker keys) agrees — so a transcript message decorated
+        with ``_db_persisted`` matches its bare ``{'role', 'content'}``
+        counterpart, while genuinely divergent content still fails (#101644).
+        """
+        if len(agent_messages) < len(expected_prefix):
+            return False
+        for got, want in zip(agent_messages, expected_prefix):
+            if not isinstance(got, dict) or not isinstance(want, dict):
+                if got != want:
+                    return False
+                continue
+            a = APIServerAdapter._response_semantic_message(got)
+            b = APIServerAdapter._response_semantic_message(want)
+            shared = set(a) & set(b)
+            if any(a[k] != b[k] for k in shared):
+                return False
+            # A key that survives masking on both sides must be shared for a
+            # match; if one side is missing the other's non-marker keys the
+            # other side's extra content keys are still authoritative.
+            if set(a) != set(b) and not shared:
+                return False
+        return True
+
+    @staticmethod
     def _response_messages_turn_start_index(
         conversation_history: List[Dict[str, Any]],
         user_message: Any,
@@ -7199,9 +7255,9 @@ class APIServerAdapter(BasePlatformAdapter):
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}
         expected_prefix = prior + [current_user]
-        if agent_messages[:len(expected_prefix)] == expected_prefix:
+        if APIServerAdapter._response_prefix_match(agent_messages, expected_prefix):
             return len(expected_prefix)
-        if prior and agent_messages[:len(prior)] == prior:
+        if APIServerAdapter._response_prefix_match(agent_messages, prior):
             return len(prior)
         return 0
 

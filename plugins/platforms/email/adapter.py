@@ -27,6 +27,7 @@ import os
 import re
 import smtplib
 import socket
+from functools import partial
 
 # Profile-scoped secret reader for multiplexing support (PR #50094)
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -273,6 +274,13 @@ def check_email_requirements() -> bool:
     imap = _get_secret("EMAIL_IMAP_HOST", "").strip()
     smtp = _get_secret("EMAIL_SMTP_HOST", "").strip()
     return all([addr, pwd, imap, smtp])
+
+
+def _is_read_only_email(extra: Any) -> bool:
+    """Return whether config.yaml disables all Email SMTP delivery."""
+    return isinstance(extra, dict) and is_truthy_value(
+        extra.get("read_only"), default=False
+    )
 
 
 _CHARSET_ALIASES = {
@@ -616,6 +624,20 @@ class EmailAdapter(BasePlatformAdapter):
         #       skip_attachments: true
         self._skip_attachments = extra.get("skip_attachments", False)
 
+        # Read-only / no-auto-reply mode — configured via config.yaml:
+        #   platforms:
+        #     email:
+        #       extra:
+        #         read_only: true
+        # When enabled the adapter still polls IMAP and dispatches incoming mail
+        # normally, but every outgoing send is suppressed (no SMTP) so a mailbox
+        # can be used purely as a read feed without ever replying to the sender
+        # (#99876). Suppressed sends return success so the gateway's delivery
+        # ledger treats them as delivered rather than retrying — the failure loop
+        # that disabling the SMTP credential would cause. Default OFF (behaviour
+        # unchanged unless explicitly enabled).
+        self._read_only = _is_read_only_email(extra)
+
         # Require the sender's From: domain to be authenticated (SPF/DKIM/DMARC)
         # before trusting it for authorization. The From: header is
         # attacker-controlled and unauthenticated by IMAP, so an allowlist keyed
@@ -658,6 +680,10 @@ class EmailAdapter(BasePlatformAdapter):
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
         logger.info("[Email] Adapter initialized for %s", self._address)
+
+    def _outbound_is_suppressed(self) -> bool:
+        """Return the outbound policy, including lightweight test adapters."""
+        return bool(getattr(self, "_read_only", False))
 
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
@@ -747,14 +773,16 @@ class EmailAdapter(BasePlatformAdapter):
         # Validate up front so a missing host surfaces as an actionable config
         # error instead of IMAP4_SSL("") raising the cryptic
         # ``[Errno 8] nodename nor servname provided, or not known``.
+        required_settings = [
+            ("EMAIL_ADDRESS", self._address),
+            ("EMAIL_PASSWORD", self._password),
+            ("EMAIL_IMAP_HOST", self._imap_host),
+        ]
+        if not self._read_only:
+            required_settings.append(("EMAIL_SMTP_HOST", self._smtp_host))
         missing = [
             name
-            for name, value in (
-                ("EMAIL_ADDRESS", self._address),
-                ("EMAIL_PASSWORD", self._password),
-                ("EMAIL_IMAP_HOST", self._imap_host),
-                ("EMAIL_SMTP_HOST", self._smtp_host),
-            )
+            for name, value in required_settings
             if not value
         ]
         if missing:
@@ -835,36 +863,38 @@ class EmailAdapter(BasePlatformAdapter):
             )
             return False
 
-        try:
-            # Test SMTP connection
-            smtp = self._connect_smtp()
+        if self._outbound_is_suppressed():
+            logger.info("[Email] Read-only mode: SMTP connection test skipped.")
+        else:
             try:
-                smtp.login(self._address, self._password)
-            finally:
-                smtp.quit()
-            logger.info("[Email] SMTP connection test passed.")
-        except smtplib.SMTPAuthenticationError as e:
-            logger.error("[Email] SMTP authentication failed: %s", e)
-            # Typed auth failure (535 & friends): bad or revoked credentials
-            # can never self-heal, so drop out of the reconnect queue instead
-            # of retrying a dead password forever (OOF-156). Type-based only —
-            # SMTPAuthenticationError is unambiguous, unlike IMAP4.error above.
-            self._set_fatal_error(
-                "email_auth_error",
-                f"SMTP authentication failed for {self._address}: {e}. "
-                "Check EMAIL_PASSWORD (for Gmail/Outlook this must be an "
-                "app password, not the account password).",
-                retryable=False,
-            )
-            return False
-        except Exception as e:
-            logger.error("[Email] SMTP connection failed: %s", e)
-            self._set_fatal_error(
-                "email_smtp_connect_error",
-                f"SMTP connection to {self._smtp_host} failed: {e}",
-                retryable=True,
-            )
-            return False
+                # Test SMTP connection
+                smtp = self._connect_smtp()
+                try:
+                    smtp.login(self._address, self._password)
+                finally:
+                    smtp.quit()
+                logger.info("[Email] SMTP connection test passed.")
+            except smtplib.SMTPAuthenticationError as e:
+                logger.error("[Email] SMTP authentication failed: %s", e)
+                # Typed auth failure (535 & friends): bad or revoked credentials
+                # can never self-heal, so drop out of the reconnect queue instead
+                # of retrying a dead password forever (OOF-156). Type-based only.
+                self._set_fatal_error(
+                    "email_auth_error",
+                    f"SMTP authentication failed for {self._address}: {e}. "
+                    "Check EMAIL_PASSWORD (for Gmail/Outlook this must be an "
+                    "app password, not the account password).",
+                    retryable=False,
+                )
+                return False
+            except Exception as e:
+                logger.error("[Email] SMTP connection failed: %s", e)
+                self._set_fatal_error(
+                    "email_smtp_connect_error",
+                    f"SMTP connection to {self._smtp_host} failed: {e}",
+                    retryable=True,
+                )
+                return False
 
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
@@ -1202,6 +1232,68 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
 
+    def _read_only_suppress(
+        self,
+        target: str,
+        kind: str = "message",
+        *,
+        subject: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Record a read-only suppression without exposing message content."""
+        context = self._thread_context.get(target, {})
+        resolved_subject = subject or context.get("subject", "Hermes Agent")
+        meta = metadata if isinstance(metadata, dict) else {}
+        session_id = (
+            meta.get("session_id")
+            or meta.get("task_id")
+            or meta.get("session_key")
+            or "-"
+        )
+        # This is an operator audit event. Do not log content, attachment paths,
+        # or arbitrary metadata because they can contain private data or secrets.
+        logger.info(
+            "[Email] read-only SMTP suppression recipient=%s subject=%s session=%s kind=%s",
+            target,
+            resolved_subject,
+            session_id,
+            kind,
+        )
+        return SendResult(success=True, message_id="read-only-suppressed")
+
+    def _send_via_smtp(
+        self,
+        msg: MIMEMultipart,
+        *,
+        recipient: str,
+        subject: str,
+        kind: str = "message",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """The central SMTP egress boundary for Email adapter replies.
+
+        Read-only mode is enforced here as well as at public adapter entry
+        points. Therefore, an overlooked future helper cannot reach SMTP merely
+        because it missed a caller-side display or silence convention. The
+        standalone cron/report delivery uses the same config gate in
+        ``_standalone_send``.
+        """
+        if self._outbound_is_suppressed():
+            return self._read_only_suppress(
+                recipient, kind, subject=subject, metadata=metadata
+            ).message_id or "read-only-suppressed"
+
+        smtp = self._connect_smtp()
+        try:
+            smtp.login(self._address, self._password)
+            smtp.send_message(msg)
+        finally:
+            try:
+                smtp.quit()
+            except Exception:
+                smtp.close()
+        return str(msg["Message-ID"])
+
     async def send(
         self,
         chat_id: str,
@@ -1210,10 +1302,12 @@ class EmailAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an email reply to the given address."""
+        if self._outbound_is_suppressed():
+            return self._read_only_suppress(chat_id, metadata=metadata)
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None, self._send_email, chat_id, content, reply_to, metadata
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -1235,8 +1329,9 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Send an email via SMTP. Runs in executor thread."""
+        """Send an email via the central SMTP boundary. Runs in an executor."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
@@ -1257,21 +1352,14 @@ class EmailAdapter(BasePlatformAdapter):
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
         msg["Message-ID"] = msg_id
-
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        smtp = self._connect_smtp()
-        try:
-            smtp.login(self._address, self._password)
-            smtp.send_message(msg)
-        finally:
-            try:
-                smtp.quit()
-            except Exception:
-                smtp.close()
-
-        logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
-        return msg_id
+        sent_id = self._send_via_smtp(
+            msg, recipient=to_addr, subject=subject, metadata=metadata
+        )
+        if sent_id != "read-only-suppressed":
+            logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
+        return sent_id
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Email has no typing indicator — no-op."""
@@ -1291,7 +1379,7 @@ class EmailAdapter(BasePlatformAdapter):
         """
         text = caption or ""
         text += f"\n\nImage: {image_url}"
-        return await self.send(chat_id, text.strip(), reply_to)
+        return await self.send(chat_id, text.strip(), reply_to, metadata)
 
     async def send_multiple_images(
         self,
@@ -1307,6 +1395,9 @@ class EmailAdapter(BasePlatformAdapter):
         images). No hard cap — email clients handle dozens of
         attachments fine, subject to SMTP message size limits.
         """
+        if self._outbound_is_suppressed():
+            self._read_only_suppress(chat_id, "image batch", metadata=metadata)
+            return
         if not images:
             return
 
@@ -1336,10 +1427,13 @@ class EmailAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
-                self._send_email_with_attachments,
-                chat_id,
-                body,
-                local_paths,
+                partial(
+                    self._send_email_with_attachments,
+                    chat_id,
+                    body,
+                    local_paths,
+                    metadata=metadata,
+                ),
             )
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
@@ -1350,6 +1444,7 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         file_paths: List[str],
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
@@ -1386,18 +1481,12 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Email] Failed to attach %s: %s", file_path, e)
 
-        smtp = self._connect_smtp()
-        try:
-            smtp.login(self._address, self._password)
-            smtp.send_message(msg)
-        finally:
-            try:
-                smtp.quit()
-            except Exception:
-                smtp.close()
+        sent_id = self._send_via_smtp(
+            msg, recipient=to_addr, subject=subject, kind="image batch", metadata=metadata
+        )
 
         logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
-        return msg_id
+        return sent_id
 
     async def send_document(
         self,
@@ -1409,6 +1498,9 @@ class EmailAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a file as an email attachment."""
+        metadata = kwargs.get("metadata")
+        if self._outbound_is_suppressed():
+            return self._read_only_suppress(chat_id, "document", metadata=metadata)
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
@@ -1418,6 +1510,7 @@ class EmailAdapter(BasePlatformAdapter):
                 caption or "",
                 file_path,
                 file_name,
+                metadata,
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -1430,6 +1523,7 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         file_path: str,
         file_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
@@ -1464,17 +1558,9 @@ class EmailAdapter(BasePlatformAdapter):
             part.add_header("Content-Disposition", f"attachment; filename={fname}")
             msg.attach(part)
 
-        smtp = self._connect_smtp()
-        try:
-            smtp.login(self._address, self._password)
-            smtp.send_message(msg)
-        finally:
-            try:
-                smtp.quit()
-            except Exception:
-                smtp.close()
-
-        return msg_id
+        return self._send_via_smtp(
+            msg, recipient=to_addr, subject=subject, kind="document", metadata=metadata
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the email chat."""
@@ -1510,11 +1596,26 @@ async def _standalone_send(
 ):
     """Out-of-process Email delivery via SMTP (one-shot). Implements the
     standalone_sender_fn contract; replaces the legacy _send_email helper."""
+    extra = getattr(pconfig, "extra", {}) or {}
+    if _is_read_only_email(extra):
+        # This is the shared cron/report transport boundary. Check before
+        # resolving credentials or creating an SMTP object so no Email route
+        # can escape inbound-only mode.
+        logger.info(
+            "[Email] read-only SMTP suppression recipient=%s kind=standalone",
+            chat_id,
+        )
+        return {
+            "success": True,
+            "platform": "email",
+            "chat_id": chat_id,
+            "message_id": "read-only-suppressed",
+        }
+
     import smtplib
     from email.mime.text import MIMEText
     from email.utils import formatdate
 
-    extra = getattr(pconfig, "extra", {}) or {}
     address = extra.get("address") or _get_secret("EMAIL_ADDRESS", "")
     password = _get_secret("EMAIL_PASSWORD", "")
     smtp_host = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", "")

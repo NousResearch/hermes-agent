@@ -1143,6 +1143,11 @@ def mcp_command(args):
     """Main dispatcher for ``hermes mcp`` subcommands."""
     action = getattr(args, "mcp_action", None)
 
+    if action == "fixtures":
+        from hermes_cli.mcp_fixtures import cmd_mcp_fixtures
+
+        return cmd_mcp_fixtures(args)
+
     if action == "serve":
         from mcp_serve import run_mcp_server
         run_mcp_server(verbose=getattr(args, "verbose", False))

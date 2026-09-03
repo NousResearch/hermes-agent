@@ -39,6 +39,9 @@ mcp_servers:
       exclude: []
       resources: true
       prompts: true
+    health_check:             # optional; only used by `hermes mcp test <name>`
+      tool: "read_status"
+      arguments: {}
 ```
 
 ## Server keys
@@ -64,6 +67,7 @@ mcp_servers:
 | `idle_timeout_seconds` | number | stdio | Optional stdio server recycle after idle time (`0` disables). May also live under a `lifecycle:` mapping |
 | `max_lifetime_seconds` | number | stdio | Optional stdio server recycle after age (`0` disables). May also live under a `lifecycle:` mapping |
 | `tools` | mapping | both | Filtering and utility-tool policy |
+| `health_check` | mapping | both | Optional safe application probe run by `hermes mcp test <name>` after discovery; see [Application health checks](#application-health-checks) |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
@@ -105,6 +109,39 @@ mcp_servers:
 ```
 
 Any other `${...}` reference falls through to the env-var lookup above.
+
+## Application health checks
+
+`hermes mcp test <name>` always verifies that Hermes can connect and discover
+server tools. Those protocol operations can succeed before a server checks the
+credentials used by its application tools. To verify a safe application-level
+request too, opt in with a fixed read-only tool call:
+
+```yaml
+mcp_servers:
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    headers:
+      Authorization: "Bearer ${INTERNAL_API_TOKEN}"
+    health_check:
+      tool: "read_status"
+      arguments:
+        scope: "self"
+```
+
+The `tool` must be a non-empty advertised tool name and `arguments` must be a
+JSON object. Hermes refuses to call the tool unless the server advertises it
+with `annotations.readOnlyHint: true`; it never guesses a tool name or invokes
+one without this explicit configuration. The annotation is a server-supplied
+hint, not a security guarantee, so configure only a known read-only tool on a
+server you trust. An MCP tool error makes the test fail, but its response
+payload is not printed.
+
+Choose a small, non-mutating request that the server authenticates, such as a
+read of the caller's own profile or a deliberately narrow search. Do not place
+credentials in `arguments`; keep them in `env` or `headers` as usual. Without a
+`health_check`, Hermes labels the result as discovery-only rather than claiming
+that application credentials were verified.
 
 ## `tools` policy keys
 

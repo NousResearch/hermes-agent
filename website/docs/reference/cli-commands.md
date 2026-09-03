@@ -1437,7 +1437,7 @@ Manage MCP (Model Context Protocol) server configurations and run Hermes as an M
 | `add <name> [--url URL] [--command CMD] [--auth oauth\|header] [--args ...]` | Add a custom MCP server with automatic tool discovery. `--args` passes the remaining argv to the stdio command, so put it last. |
 | `remove <name>` (alias: `rm`) | Remove an MCP server from config. |
 | `list` (alias: `ls`) | List configured MCP servers. |
-| `test <name>` | Test connection to an MCP server. |
+| `test <name>` | Test connection and discovery, then run the configured safe application health check when present. |
 | `configure <name>` (alias: `config`) | Toggle tool selection for a server. |
 | `login <name>` | Force re-authentication for an OAuth-based MCP server. |
 

@@ -301,6 +301,48 @@ class TestMcpTest:
         out = capsys.readouterr().out
         assert "Connected" in out
         assert "Tools discovered: 2" in out
+        assert "does not verify application credentials" in out
+
+    def test_test_reports_configured_application_health_check(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "lucy": {
+                "url": "https://mcp.example.test",
+                "health_check": {
+                    "tool": "memory_recall",
+                    "arguments": {"query": "__hermes_health_check__"},
+                },
+            },
+        })
+
+        def mock_probe(name, config, *, details=None, **_kw):
+            assert name == "lucy"
+            assert config["health_check"]["tool"] == "memory_recall"
+            assert _kw["run_health_check"] is True
+            assert details is not None
+            details["health_check"] = "memory_recall"
+            return [("memory_recall", "Read approved memory")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="lucy"))
+        out = capsys.readouterr().out
+        assert "Application health check passed: memory_recall" in out
+        assert "does not verify application credentials" not in out
+
+    def test_test_failure_returns_nonzero(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {"lucy": {"url": "https://mcp.example.test"}})
+
+        def mock_probe(*_args, **_kwargs):
+            raise RuntimeError("configured health check returned an error")
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        assert cmd_mcp_test(_make_args(name="lucy")) == 1
+        assert "Connection failed" in capsys.readouterr().out
 
     def test_probe_uses_configured_connect_timeout(self, monkeypatch):
         """OAuth-capable probes must not hard-code a short 30s timeout."""
@@ -529,6 +571,381 @@ class TestProbeEnvResolution:
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
 
+class TestConfiguredApplicationHealthCheck:
+    """An opt-in tool probe proves application auth without guessing a tool."""
+
+    class _Tool:
+        def __init__(self, name: str, read_only: bool):
+            self.name = name
+            self.description = ""
+            self.annotations = {"readOnlyHint": read_only}
+
+    @staticmethod
+    def _server(tools, call_tool):
+        class _Session:
+            async def call_tool(self, name, arguments):
+                return await call_tool(name, arguments)
+
+        class _Server:
+            _tools = tools
+            session = _Session()
+
+            async def shutdown(self):
+                return None
+
+        return _Server()
+
+    def test_probe_calls_configured_read_only_health_tool(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+        from types import SimpleNamespace
+
+        calls = []
+
+        async def call_tool(name, arguments):
+            calls.append((name, arguments))
+            return {"isError": False}
+
+        async def connect(_name, _config):
+            tool = SimpleNamespace(
+                name="memory_recall",
+                description="",
+                annotations=SimpleNamespace(read_only_hint=True),
+            )
+            return self._server([tool], call_tool)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", connect)
+        details = {}
+        tools = mc._probe_single_server(
+            "lucy",
+            {
+                "url": "https://mcp.example.test",
+                "health_check": {
+                    "tool": "memory_recall",
+                    "arguments": {"query": "__hermes_health_check__"},
+                },
+            },
+            details=details,
+            run_health_check=True,
+        )
+
+        assert tools == [("memory_recall", "")]
+        assert calls == [("memory_recall", {"query": "__hermes_health_check__"})]
+        assert details["health_check"] == "memory_recall"
+
+    def test_regular_probe_never_runs_the_configured_health_tool(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+        from types import SimpleNamespace
+
+        calls = []
+
+        async def call_tool(name, arguments):
+            calls.append((name, arguments))
+            return SimpleNamespace(is_error=False)
+
+        async def connect(_name, _config):
+            return self._server([self._Tool("memory_recall", True)], call_tool)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", connect)
+        mc._probe_single_server(
+            "lucy",
+            {
+                "url": "https://mcp.example.test",
+                "health_check": {"tool": "memory_recall", "arguments": {}},
+            },
+        )
+        assert calls == []
+
+    @pytest.mark.parametrize(
+        "health_check",
+        [
+            {"tool": "memory_recall"},
+            {"tool": " memory_recall", "arguments": {}},
+            {"tool": "memory_recall", "arguments": {"nested": {1: "bad"}}},
+            {"tool": "memory_recall", "arguments": {"value": float("nan")}},
+        ],
+    )
+    def test_health_check_rejects_non_exact_json_config(self, health_check):
+        import hermes_cli.mcp_config as mc
+
+        with pytest.raises(ValueError):
+            mc._parse_configured_health_check({"health_check": health_check})
+
+    def test_probe_rejects_non_read_only_health_tool_without_calling_it(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+
+        calls = []
+
+        async def call_tool(name, arguments):
+            calls.append((name, arguments))
+            raise AssertionError("non-read-only health tool must never run")
+
+        async def connect(_name, _config):
+            return self._server([self._Tool("memory_propose", False)], call_tool)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", connect)
+
+        with pytest.raises(RuntimeError, match="readOnlyHint=true"):
+            mc._probe_single_server(
+                "lucy",
+                {
+                    "url": "https://mcp.example.test",
+                    "health_check": {"tool": "memory_propose", "arguments": {}},
+                },
+                run_health_check=True,
+            )
+        assert calls == []
+
+    @pytest.mark.parametrize(
+        "annotations",
+        [
+            None,
+            {"readOnlyHint": False},
+            {"readOnlyHint": "true"},
+            {"read_only_hint": True, "readOnlyHint": False},
+            {"read_only_hint": False, "readOnlyHint": True},
+        ],
+    )
+    def test_probe_rejects_unsafe_health_annotations_without_calling_it(
+        self, monkeypatch, annotations
+    ):
+        import hermes_cli.mcp_config as mc
+        from types import SimpleNamespace
+
+        calls = []
+
+        async def call_tool(name, arguments):
+            calls.append((name, arguments))
+            raise AssertionError("unsafe health tool must never run")
+
+        async def connect(_name, _config):
+            tool = SimpleNamespace(
+                name="memory_recall", description="", annotations=annotations
+            )
+            return self._server([tool], call_tool)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", connect)
+
+        with pytest.raises(RuntimeError, match="readOnlyHint=true"):
+            mc._probe_single_server(
+                "lucy",
+                {
+                    "url": "https://mcp.example.test",
+                    "health_check": {"tool": "memory_recall", "arguments": {}},
+                },
+                run_health_check=True,
+            )
+        assert calls == []
+
+    def test_probe_calls_generic_mapping_advertised_health_tool(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+        from types import MappingProxyType, SimpleNamespace
+
+        calls = []
+
+        async def call_tool(name, arguments):
+            calls.append((name, arguments))
+            return SimpleNamespace(is_error=False)
+
+        async def connect(_name, _config):
+            return self._server(
+                [
+                    MappingProxyType(
+                        {
+                            "name": "memory_recall",
+                            "description": "read only status",
+                            "annotations": MappingProxyType({"readOnlyHint": True}),
+                        }
+                    )
+                ],
+                call_tool,
+            )
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", connect)
+        assert mc._probe_single_server(
+            "lucy",
+            {
+                "url": "https://mcp.example.test",
+                "health_check": {"tool": "memory_recall", "arguments": {}},
+            },
+            run_health_check=True,
+        ) == [("memory_recall", "read only status")]
+        assert calls == [("memory_recall", {})]
+
+    def test_probe_rejects_conflicting_generic_mapping_annotations_without_calling_it(
+        self, monkeypatch
+    ):
+        import hermes_cli.mcp_config as mc
+        from types import MappingProxyType, SimpleNamespace
+
+        calls = []
+
+        async def call_tool(name, arguments):
+            calls.append((name, arguments))
+            raise AssertionError("conflicting health-tool annotations must never run")
+
+        async def connect(_name, _config):
+            tool = SimpleNamespace(
+                name="memory_recall",
+                description="",
+                annotations=MappingProxyType(
+                    {"read_only_hint": True, "readOnlyHint": False}
+                ),
+            )
+            return self._server([tool], call_tool)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", connect)
+
+        with pytest.raises(RuntimeError, match="readOnlyHint=true"):
+            mc._probe_single_server(
+                "lucy",
+                {
+                    "url": "https://mcp.example.test",
+                    "health_check": {"tool": "memory_recall", "arguments": {}},
+                },
+                run_health_check=True,
+            )
+        assert calls == []
+
+    def test_probe_hides_dict_health_tool_error_payload(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+
+        async def call_tool(_name, _arguments):
+            return {"isError": True, "content": ["sensitive server payload"]}
+
+        async def connect(_name, _config):
+            return self._server([self._Tool("memory_recall", True)], call_tool)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", connect)
+
+        with pytest.raises(RuntimeError, match="configured health check returned an error") as excinfo:
+            mc._probe_single_server(
+                "lucy",
+                {
+                    "url": "https://mcp.example.test",
+                    "health_check": {"tool": "memory_recall", "arguments": {}},
+                },
+                run_health_check=True,
+            )
+        assert "sensitive server payload" not in str(excinfo.value)
+
+    def test_probe_hides_generic_mapping_health_tool_error_payload(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+        from types import MappingProxyType
+
+        async def call_tool(_name, _arguments):
+            return MappingProxyType(
+                {"isError": True, "content": ["sensitive server payload"]}
+            )
+
+        async def connect(_name, _config):
+            return self._server([self._Tool("memory_recall", True)], call_tool)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", connect)
+
+        with pytest.raises(RuntimeError, match="configured health check returned an error") as excinfo:
+            mc._probe_single_server(
+                "lucy",
+                {
+                    "url": "https://mcp.example.test",
+                    "health_check": {"tool": "memory_recall", "arguments": {}},
+                },
+                run_health_check=True,
+            )
+        assert "sensitive server payload" not in str(excinfo.value)
+
+    def test_probe_rejects_conflicting_generic_mapping_result_aliases(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+        from types import MappingProxyType
+
+        async def call_tool(_name, _arguments):
+            return MappingProxyType({"is_error": False, "isError": True})
+
+        async def connect(_name, _config):
+            return self._server([self._Tool("memory_recall", True)], call_tool)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", connect)
+
+        with pytest.raises(RuntimeError, match="error"):
+            mc._probe_single_server(
+                "lucy",
+                {
+                    "url": "https://mcp.example.test",
+                    "health_check": {"tool": "memory_recall", "arguments": {}},
+                },
+                run_health_check=True,
+            )
+
+    def test_probe_hides_health_check_rpc_exception_payload(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+
+        async def call_tool(_name, _arguments):
+            raise RuntimeError("sensitive server payload")
+
+        async def connect(_name, _config):
+            return self._server([self._Tool("memory_recall", True)], call_tool)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", connect)
+
+        with pytest.raises(RuntimeError, match="configured health check RPC failed") as excinfo:
+            mc._probe_single_server(
+                "lucy",
+                {
+                    "url": "https://mcp.example.test",
+                    "health_check": {"tool": "memory_recall", "arguments": {}},
+                },
+                run_health_check=True,
+            )
+        assert "sensitive server payload" not in str(excinfo.value)
+
+    def test_probe_rejects_unadvertised_health_tool_without_calling_it(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+
+        calls = []
+
+        async def call_tool(name, arguments):
+            calls.append((name, arguments))
+            raise AssertionError("unadvertised health tool must never run")
+
+        async def connect(_name, _config):
+            return self._server([self._Tool("memory_recall", True)], call_tool)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", connect)
+
+        with pytest.raises(RuntimeError, match="was not advertised"):
+            mc._probe_single_server(
+                "lucy",
+                {
+                    "url": "https://mcp.example.test",
+                    "health_check": {"tool": "memory_proposal_status", "arguments": {}},
+                },
+                run_health_check=True,
+            )
+        assert calls == []
+
+    def test_probe_hides_health_tool_error_payload(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+        from types import SimpleNamespace
+
+        async def call_tool(_name, _arguments):
+            return SimpleNamespace(is_error=True, content=["sensitive server payload"])
+
+        async def connect(_name, _config):
+            return self._server([self._Tool("memory_recall", True)], call_tool)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", connect)
+
+        with pytest.raises(RuntimeError, match="configured health check returned an error") as excinfo:
+            mc._probe_single_server(
+                "lucy",
+                {
+                    "url": "https://mcp.example.test",
+                    "health_check": {"tool": "memory_recall", "arguments": {}},
+                },
+                run_health_check=True,
+            )
+        assert "sensitive server payload" not in str(excinfo.value)
+
+
 class TestProbeCapabilityGating:
     """The ``details`` probe must not fire prompts/list or resources/list at
     servers that either disabled them in config or never advertised them.
@@ -676,6 +1093,21 @@ class TestDispatcher:
         mcp_command(_make_args(mcp_action=None))
         out = capsys.readouterr().out
         assert "Commands:" in out or "No MCP servers" in out
+
+    def test_dispatcher_propagates_mcp_test_failure(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+
+        monkeypatch.setattr(mc, "cmd_mcp_test", lambda _args: 1)
+        assert mc.mcp_command(_make_args(mcp_action="test")) == 1
+
+    def test_main_mcp_wrapper_propagates_failure(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+        from hermes_cli.main import cmd_mcp
+
+        monkeypatch.setattr(mc, "mcp_command", lambda _args: 1)
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_mcp(_make_args(mcp_action="test"))
+        assert exc_info.value.code == 1
 
 
 # ---------------------------------------------------------------------------

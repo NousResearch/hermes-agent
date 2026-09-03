@@ -9,7 +9,9 @@ configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
 """
 
 import asyncio
+from collections.abc import Mapping
 import logging
+import math
 import os
 import re
 import time
@@ -275,8 +277,138 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     return _interpolate_env_vars(config)
 
 
+def _is_json_value(value: Any) -> bool:
+    """Return whether ``value`` is an exact JSON-compatible value.
+
+    ``json.dumps`` would coerce tuple values and non-string mapping keys, which
+    makes a configured health request differ from its YAML declaration. Reject
+    those shapes rather than silently transforming a tool's arguments.
+    """
+    if value is None or isinstance(value, (str, bool, int)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, list):
+        return all(_is_json_value(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
+    return False
+
+
+def _parse_configured_health_check(
+    config: dict,
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """Validate an optional safe application health-check tool declaration.
+
+    MCP connection setup and ``tools/list`` can succeed before a server checks
+    application credentials. A server owner may therefore opt into an
+    application-level test with ``health_check.tool`` and static
+    ``health_check.arguments``. The tool must later advertise
+    ``readOnlyHint=true`` before this probe will call it.
+
+    Hermes deliberately does not guess a tool name or manufacture arguments:
+    tool semantics are server-specific, and an unconfigured test must remain
+    discovery-only rather than risk a mutation.
+    """
+    raw = config.get("health_check")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("health_check must be a mapping")
+    unknown = set(raw) - {"tool", "arguments"}
+    if unknown:
+        raise ValueError("health_check supports only 'tool' and 'arguments'")
+    tool_name = raw.get("tool")
+    if (
+        not isinstance(tool_name, str)
+        or not tool_name
+        or tool_name != tool_name.strip()
+    ):
+        raise ValueError("health_check.tool must be a non-empty string without padding")
+    if "arguments" not in raw:
+        raise ValueError("health_check.arguments must be an exact JSON object")
+    arguments = raw["arguments"]
+    if not isinstance(arguments, dict) or not _is_json_value(arguments):
+        raise ValueError("health_check.arguments must be an exact JSON object")
+    return tool_name, arguments
+
+
+_HEALTH_VALUE_MISSING = object()
+_HEALTH_VALUE_CONFLICT = object()
+
+
+def _health_value(value: Any, field: str, default: Any = _HEALTH_VALUE_MISSING) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(field, default)
+    return getattr(value, field, default)
+
+
+def _health_alias_value(value: Any, snake: str, camel: str) -> Any:
+    """Return an alias value, failing closed when both spellings disagree."""
+    snake_value = _health_value(value, snake)
+    camel_value = _health_value(value, camel)
+    if snake_value is not _HEALTH_VALUE_MISSING and camel_value is not _HEALTH_VALUE_MISSING:
+        if type(snake_value) is not type(camel_value) or snake_value != camel_value:
+            return _HEALTH_VALUE_CONFLICT
+        return snake_value
+    if snake_value is not _HEALTH_VALUE_MISSING:
+        return snake_value
+    return camel_value
+
+
+def _health_tool_is_read_only(tool: Any) -> bool:
+    """Interpret the MCP read-only annotation without importing runtime internals."""
+    annotations = _health_value(tool, "annotations")
+    return _health_alias_value(annotations, "read_only_hint", "readOnlyHint") is True
+
+
+async def _run_configured_health_check(
+    server: Any, health_check: Tuple[str, Dict[str, Any]]
+) -> str:
+    """Run one opt-in, read-only application probe without exposing its result."""
+    tool_name, arguments = health_check
+    advertised_tool = next(
+        (
+            tool
+            for tool in getattr(server, "_tools", [])
+            if _health_value(tool, "name", None) == tool_name
+        ),
+        None,
+    )
+    if advertised_tool is None:
+        raise RuntimeError(
+            f"configured health check tool '{tool_name}' was not advertised by the server"
+        )
+    if not _health_tool_is_read_only(advertised_tool):
+        raise RuntimeError(
+            f"configured health check tool '{tool_name}' must advertise readOnlyHint=true"
+        )
+
+    try:
+        result = await server.session.call_tool(tool_name, arguments=arguments)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # Do not log a remote tool error or its payload: a server may echo
+        # sensitive request/application context in a failed health response.
+        logger.debug("MCP application health check failed for '%s'", tool_name)
+        raise RuntimeError("configured health check RPC failed") from None
+
+    error_state = _health_alias_value(result, "is_error", "isError")
+    if error_state is _HEALTH_VALUE_CONFLICT:
+        raise RuntimeError("configured health check returned an ambiguous error state")
+    if error_state is not _HEALTH_VALUE_MISSING and error_state is not False:
+        raise RuntimeError("configured health check returned an error")
+    return tool_name
+
+
 def _probe_single_server(
-    name: str, config: dict, connect_timeout: Optional[float] = None, *, details: Optional[dict] = None
+    name: str,
+    config: dict,
+    connect_timeout: Optional[float] = None,
+    *,
+    details: Optional[dict] = None,
+    run_health_check: bool = False,
 ) -> List[Tuple[str, str]]:
     """Temporarily connect to one MCP server, list its tools, disconnect.
 
@@ -285,7 +417,8 @@ def _probe_single_server(
 
     ``details``: optional dict the probe fills with extra capability counts
     (``prompts``, ``resources``) — an out-param so the return shape stays
-    stable for existing CLI callers.
+    stable for existing CLI callers. ``run_health_check`` is intentionally
+    false by default: only ``hermes mcp test`` may invoke the opt-in tool.
     """
     issues = validate_mcp_server_entry(name, config)
     if issues:
@@ -300,6 +433,7 @@ def _probe_single_server(
     )
 
     config = _resolve_mcp_server_config(config)
+    health_check = _parse_configured_health_check(config) if run_health_check else None
     if connect_timeout is None:
         raw_timeout = config.get("connect_timeout", 30)
         try:
@@ -316,11 +450,20 @@ def _probe_single_server(
         )
         try:
             for t in server._tools:
-                desc = getattr(t, "description", "") or ""
+                tool_display_name = _health_value(t, "name", None)
+                if not isinstance(tool_display_name, str):
+                    continue
+                desc = _health_value(t, "description", "") or ""
                 # Truncate long descriptions for display
                 if len(desc) > 80:
                     desc = desc[:77] + "..."
-                tools_found.append((t.name, desc))
+                tools_found.append((tool_display_name, desc))
+            if health_check is not None:
+                health_tool_name = await _run_configured_health_check(
+                    server, health_check
+                )
+                if details is not None:
+                    details["health_check"] = health_tool_name
             if details is not None:
                 # Per-tool registry-schema sizes so the desktop can estimate the
                 # per-call token cost a server adds. Uses the SAME converted
@@ -744,7 +887,12 @@ def cmd_mcp_list(args=None):
 # ─── hermes mcp test ──────────────────────────────────────────────────────────
 
 def cmd_mcp_test(args):
-    """Test connection to an MCP server."""
+    """Test connection to an MCP server.
+
+    Exit codes:
+      0 — connection succeeded and at least one tool was discovered
+      1 — connection failed, server not found, or zero tools discovered
+    """
     name = args.name
     servers = _get_mcp_servers()
 
@@ -753,7 +901,7 @@ def cmd_mcp_test(args):
         available = list(servers.keys())
         if available:
             _info(f"Available: {', '.join(available)}")
-        return
+        return 1
 
     cfg = servers[name]
     print()
@@ -786,16 +934,28 @@ def cmd_mcp_test(args):
 
     # Attempt connection
     start = time.monotonic()
+    details: Dict[str, Any] = {}
     try:
-        tools = _probe_single_server(name, cfg)
+        tools = _probe_single_server(name, cfg, details=details, run_health_check=True)
         elapsed_ms = (time.monotonic() - start) * 1000
     except Exception as exc:
         elapsed_ms = (time.monotonic() - start) * 1000
         _error(f"Connection failed ({elapsed_ms:.0f}ms): {exc}")
-        return
+        return 1
+    if not tools:
+        _error("Connected but server reported no tools.")
+        return 1
 
     _success(f"Connected ({elapsed_ms:.0f}ms)")
     _success(f"Tools discovered: {len(tools)}")
+    health_tool_name = details.get("health_check")
+    if health_tool_name:
+        _success(f"Application health check passed: {health_tool_name}")
+    else:
+        _warning(
+            "Discovery-only test: this does not verify application credentials. "
+            "Configure a read-only health_check to probe one."
+        )
 
     if tools:
         print()
@@ -1181,7 +1341,16 @@ def mcp_command(args):
 
     handler = handlers.get(action)
     if handler:
-        handler(args)
+        result = handler(args)
+        # Propagate explicit exit codes from handlers so the CLI surface
+        # matches what callers (CI, orchestrators, watchdogs) need to react
+        # to. Handlers returning None (the historical contract for
+        # success-or-soft-warning) keep the legacy rc=0 default; integer
+        # returns are honored as-is. Non-int truthy returns fall back to
+        # rc=0 to avoid breaking call sites that haven't been audited yet.
+        if isinstance(result, int):
+            return result
+        return 0
     else:
         # No subcommand — drop the user into the catalog picker. This is the
         # "try enabling and it flows you into setup" UX matching `hermes plugin`.

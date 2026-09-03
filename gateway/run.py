@@ -7310,6 +7310,36 @@ class TurnRunner:
             # inbound id (NOT event_message_id, which is the reply anchor).
             if ctx.inbound_message_id is not None:
                 _conversation_kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
+
+            # Keep overrides and lightweight test agents source-compatible with
+            # the additive structured-turn API.  Inspect before invocation so
+            # a TypeError raised *inside* run_conversation is never mistaken for
+            # an unsupported keyword and retried.
+            _structured_context_keys = (
+                "current_user_text",
+                "reply_to_text",
+                "internal_context",
+            )
+            try:
+                _run_parameters = inspect.signature(
+                    agent.run_conversation
+                ).parameters
+                _accepts_arbitrary_kwargs = any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in _run_parameters.values()
+                )
+            except (TypeError, ValueError):
+                _run_parameters = {}
+                _accepts_arbitrary_kwargs = False
+            if not _accepts_arbitrary_kwargs:
+                for _key in _structured_context_keys:
+                    _parameter = _run_parameters.get(_key)
+                    if (
+                        _parameter is None
+                        or _parameter.kind is inspect.Parameter.POSITIONAL_ONLY
+                    ):
+                        _conversation_kwargs.pop(_key, None)
+
             result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
         finally:
             unregister_gateway_notify(_approval_session_key)

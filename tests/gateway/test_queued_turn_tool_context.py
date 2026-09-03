@@ -342,3 +342,49 @@ async def test_standalone_busy_inputs_keep_each_reply_target(adapter_kind, kind,
     finally:
         release.set()
         await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["idle", "queued"])
+@pytest.mark.parametrize("quoted", [False, True])
+async def test_idle_and_queued_intake_report_the_actual_reply_context(route, quoted, caplog):
+    import logging
+    from gateway.turn_context import TurnContext
+
+    runner = GatewayRunner(config=GatewayConfig())
+    try:
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat", user_id="sender", user_name="Sender")
+        event = MessageEvent(text="request\ntext", source=source, message_id="message",
+                             reply_to_message_id="quote" if quoted else None,
+                             reply_to_text="quoted\n" + "x" * 100 if quoted else None)
+        caplog.set_level(logging.INFO, logger="gateway.run")
+        if route == "idle":
+            runner._hmwa_resolve_session = AsyncMock(return_value=None)
+            await runner._handle_message_with_agent(event, source, "key", 1)
+            message = event.text
+        else:
+            opening_source = replace_source(source, user_id="previous", user_name="Previous")
+            turn = TurnContext(source=opening_source, session_key="key", session_id="session", history=[])
+            runner._strict_session_current = AsyncMock(return_value=True)
+            runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="prepared\nrequest")
+            runner._is_goal_continuation_event = lambda _event: False
+            runner._pinned_channel_inputs = lambda _key, prompt, actual_source, **_kwargs: (prompt, actual_source)
+            runner._persist_prompt_pins = AsyncMock()
+            runner._refresh_agent_cache_message_count = AsyncMock()
+            runner._delivery_adapter_for = lambda _source: None
+            runner._intake_adapter_for = lambda _source: None
+            runner._run_agent = AsyncMock(return_value={"final_response": "answer", "messages": []})
+            await runner._run_agent_queued_followup(
+                turn, None, event.text, event, "answer", {"interrupted": True, "messages": []}, None,
+            )
+            message = "prepared\nrequest"
+        records = [(record.name, record.levelno, record.msg, record.args)
+                   for record in caplog.records if record.msg.startswith("inbound message:")]
+        assert records == [("gateway.run", logging.INFO,
+                            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r queued=%s",
+                            ("telegram", "Sender", "chat", message[:80].replace("\n", " "),
+                             event.reply_to_message_id, (event.reply_to_text or "")[:80].replace("\n", " "),
+                             route == "queued"))]
+
+    finally:
+        runner.session_store.close_all_db_handles()

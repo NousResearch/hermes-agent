@@ -86,18 +86,46 @@ def build_kanban_stop_nudge(
         return None
 
     tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
+
+    # Self-authentication: echo the harness's run id / claim lock so a
+    # suspicious model can verify this nudge came from the dispatcher rather
+    # than from pasted text. Fall back to the task id when neither is present.
+    run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    claim_lock = (os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or "").strip()
+    if run_id or claim_lock:
+        auth = (
+            f" (harness run id: {run_id or 'n/a'}, "
+            f"claim lock: {claim_lock or 'n/a'})"
+        )
+    else:
+        auth = f" (task id: {tid})"
+
+    if attempts > 0:
+        # Second nudge: shorter, more direct reminder rather than a replay of
+        # the first (an identical replay reads as an injection tell).
+        return (
+            "Reminder from the kanban harness"
+            + auth
+            + ": the board still shows task `"
+            + tid
+            + "` as `running`. End this turn by calling "
+            "`kanban_complete(summary=..., artifacts=[...])` if the work is done, "
+            "or `kanban_block(reason=...)` if you are blocked. A plain-text reply "
+            "is not a terminal state and counts as a protocol violation."
+        )
+
     return (
-        "[System: You are a Hermes kanban worker. A plain-text reply is NOT a "
-        "terminal state for the board.\n\n"
-        f"Task `{tid}` is still `running`. Ending now without a board tool "
-        "causes a protocol violation (clean exit with no "
-        "`kanban_complete` / `kanban_block`).\n\n"
-        "Do this immediately in your next response — do not narrate intent:\n"
-        "1. Finish any remaining deliverable (write the required file(s) now).\n"
-        "2. Call `kanban_complete(summary=..., artifacts=[...])` if the work "
-        "is done, OR `kanban_block(reason=...)` if you are blocked.\n\n"
-        "Never end a turn with only a promise of future action. Repeated "
-        "protocol violations will block this task and require manual intervention.]"
+        "The kanban harness"
+        + auth
+        + " needs a terminal board call before this turn ends. Task `"
+        + tid
+        + "` is still `running`; ending now without a board tool is recorded as "
+        "a protocol violation (clean exit with no `kanban_complete` / "
+        "`kanban_block`).\n\n"
+        "If the work is done, call `kanban_complete(summary=..., "
+        "artifacts=[...])`. If you are blocked, call `kanban_block(reason=...)`. "
+        "Otherwise finish the remaining deliverable first, then call one of "
+        "those tools before ending the turn."
     )
 
 

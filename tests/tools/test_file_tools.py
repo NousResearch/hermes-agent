@@ -6,6 +6,8 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -282,6 +284,215 @@ class TestPatchSensitivePathExtraction:
 
 
 class TestSearchHandler:
+    @patch("tools.file_tools._get_file_ops")
+    def test_nt_device_namespace_rejected_by_read_and_search_before_backend(self, mock_get):
+        from tools import file_tools
+
+        mock_ops = MagicMock()
+        read_result = MagicMock()
+        read_result.content = "safe"
+        read_result.to_dict.return_value = {"content": "safe", "total_lines": 1}
+        search_result = MagicMock()
+        search_result.matches = []
+        search_result.to_dict.return_value = {"matches": []}
+        mock_ops.read_file.return_value = read_result
+        mock_ops.search.return_value = search_result
+        mock_get.return_value = mock_ops
+
+        device_paths = (r"\\.\PhysicalDrive0", "//./PhysicalDrive0")
+        with (
+            patch.object(file_tools, "_resolve_base_dir", return_value=None),
+            patch.object(file_tools, "get_read_block_error", return_value=None),
+            patch.object(file_tools.os, "readlink", side_effect=OSError("no host I/O")),
+            patch.object(file_tools.os.path, "realpath", side_effect=lambda path: path),
+        ):
+            for index, device_path in enumerate(device_paths):
+                with patch.object(
+                    file_tools,
+                    "_resolve_path_for_task",
+                    return_value=Path("safe.txt"),
+                ):
+                    read = json.loads(file_tools.read_file_tool(
+                        device_path,
+                        task_id=f"nt_device_read_{index}",
+                    ))
+                with patch.object(
+                    file_tools,
+                    "_resolve_path_for_task",
+                    return_value=device_path,
+                ):
+                    search = json.loads(file_tools.search_tool(
+                        pattern="x",
+                        path=device_path,
+                        task_id=f"nt_device_search_{index}",
+                    ))
+
+                assert "error" in read
+                assert "error" in search
+                assert "device file" in read["error"]
+                assert "device file" in search["error"]
+
+        mock_get.assert_not_called()
+        mock_ops.read_file.assert_not_called()
+        mock_ops.search.assert_not_called()
+
+    def test_nt_long_path_drive_spelling_is_not_blocked(self):
+        from tools.file_tools import _is_blocked_device_path
+
+        for device_path in (
+            r"\\?\PhysicalDrive9",
+            "//?/CON",
+            "//?/nul",
+            "//?/Aux",
+            "//?/COM1",
+            "//?/com9",
+            "//?/LPT1",
+            "//?/lpt9",
+            "//?/pipe/hermes",
+            "//./",
+        ):
+            assert _is_blocked_device_path(device_path)
+
+        assert not _is_blocked_device_path("//?/C:/some/file.txt")
+        assert not _is_blocked_device_path(r"\\?\C:\some\file.txt")
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_search_rejects_blocked_device_classes_before_backend(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.matches = []
+        result_obj.to_dict.return_value = {"matches": []}
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import search_tool
+
+        cases = [
+            ("/dev/zero", {}),
+            ("/dev/random", {"target": "files"}),
+            ("/proc/self/mem", {"output_mode": "count"}),
+        ]
+        if os.sep == "\\":
+            cases.extend((
+                (r"\dev\zero", {}),
+                (r"\proc\self\fd\0", {}),
+                (r"\proc\self\mem", {}),
+            ))
+        for index, (device_path, kwargs) in enumerate(cases):
+            result = json.loads(search_tool(
+                pattern="x",
+                path=device_path,
+                task_id=f"blocked_device_{index}",
+                **kwargs,
+            ))
+
+            assert "error" in result
+            assert device_path in result["error"]
+
+        mock_get.assert_not_called()
+        mock_ops.search.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_search_safe_paths_dispatch_unchanged(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.matches = []
+        result_obj.to_dict.return_value = {"matches": []}
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import search_tool
+
+        for index, safe_path in enumerate((".", "tools")):
+            result = json.loads(search_tool(
+                pattern="x",
+                path=safe_path,
+                task_id=f"safe_search_{index}",
+            ))
+            assert result == {"matches": []}
+
+        assert mock_ops.search.call_count == 2
+        assert [call.kwargs["path"] for call in mock_ops.search.call_args_list] == [".", "tools"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_search_device_guard_uses_resolved_path_and_read_base(self, mock_get):
+        from tools import file_tools
+
+        base_dir = Path(r"C:\workspace")
+        resolved_path = base_dir / "device-alias"
+        with (
+            patch.object(file_tools, "_resolve_path_for_task", return_value=resolved_path),
+            patch.object(file_tools, "_resolve_base_dir", return_value=base_dir),
+            patch.object(file_tools, "get_read_block_error", return_value=None),
+            patch.object(file_tools, "_is_blocked_device", return_value=True) as blocked,
+        ):
+            result = json.loads(file_tools.search_tool(
+                pattern="x",
+                path="device-alias",
+                task_id="resolved_device",
+            ))
+
+        assert "error" in result
+        assert "device-alias" in result["error"]
+        blocked.assert_called_once_with(str(resolved_path), base_dir=base_dir)
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_search_device_guard_falls_back_to_raw_path(self, mock_get):
+        from tools import file_tools
+
+        base_dir = Path(r"C:\workspace")
+        with (
+            patch.object(file_tools, "_resolve_path_for_task", side_effect=RuntimeError("resolve failed")),
+            patch.object(file_tools, "_resolve_base_dir", return_value=base_dir),
+            patch.object(file_tools, "get_read_block_error", return_value=None),
+            patch.object(file_tools, "_is_blocked_device", return_value=True) as blocked,
+        ):
+            result = json.loads(file_tools.search_tool(
+                pattern="x",
+                path="device-alias",
+                task_id="raw_device",
+            ))
+
+        assert "error" in result
+        assert "device-alias" in result["error"]
+        blocked.assert_called_once_with("device-alias", base_dir=base_dir)
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_search_negative_cache_skipped_when_resolution_fails(self, mock_get):
+        """RuntimeError during path resolution must not make the
+        negative-result cache key off the raw *unresolved* path -- a
+        stale/unrelated "not found" hit there would return early and skip
+        the device-block check entirely. Resolution failure instead falls
+        through to the device-guard fallback layer (see
+        test_search_device_guard_falls_back_to_raw_path above), with the
+        cache lookup skipped outright rather than substituted with the raw
+        path."""
+        from tools import file_tools
+
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"matches": []}
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        with (
+            patch.object(file_tools, "_resolve_path_for_task", side_effect=RuntimeError("resolve failed")),
+            patch.object(file_tools, "get_read_block_error", return_value=None),
+            patch.object(file_tools, "_check_not_found_cache") as mock_cache,
+            patch.object(file_tools, "_is_blocked_device", return_value=False),
+        ):
+            result = json.loads(file_tools.search_tool(
+                pattern="x",
+                path="unresolvable-path",
+                task_id="cache_skip",
+            ))
+
+        mock_cache.assert_not_called()
+        assert "matches" in result
+        mock_get.assert_called_once()
+
     @patch("tools.file_tools._get_file_ops")
     def test_search_calls_file_ops(self, mock_get):
         mock_ops = MagicMock()

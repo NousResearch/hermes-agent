@@ -43,31 +43,37 @@ REPO=$(echo "$OWNER_REPO" | cut -d/ -f2)
 
 ## 1. Cloning Repositories
 
-Cloning is pure `git` — works identically either way:
+**A clone always names its destination, and that destination lives under the projects
+root (`${HERMES_PROJECTS_ROOT:-$HOME/projects}`).** A clone with no destination lands in
+whatever directory the agent happens to be in — regularly the config store or another
+team's workspace — so an explicit destination is not optional polish, it is the rule.
 
 ```bash
-# Clone via HTTPS (works with credential helper or token-embedded URL)
-git clone https://github.com/owner/repo-name.git
+DEST="${HERMES_PROJECTS_ROOT:-$HOME/projects}/repo-name"
 
-# Clone into a specific directory
-git clone https://github.com/owner/repo-name.git ./my-local-dir
+# Clone via HTTPS (works with credential helper or token-embedded URL)
+git clone https://github.com/owner/repo-name.git "$DEST"
 
 # Shallow clone (faster for large repos)
-git clone --depth 1 https://github.com/owner/repo-name.git
+git clone --depth 1 https://github.com/owner/repo-name.git "$DEST"
 
-# Clone a specific branch
-git clone --branch develop https://github.com/owner/repo-name.git
+# A specific branch
+git clone --branch develop https://github.com/owner/repo-name.git "$DEST"
 
-# Clone via SSH (if SSH is configured)
-git clone git@github.com:owner/repo-name.git
+# Via SSH (if SSH is configured)
+git clone git@github.com:owner/repo-name.git "$DEST"
 ```
 
-**With gh (shorthand):**
+**With gh (shorthand)** — same rule, the destination is the second argument:
 
 ```bash
-gh repo clone owner/repo-name
-gh repo clone owner/repo-name -- --depth 1
+gh repo clone owner/repo-name "${HERMES_PROJECTS_ROOT:-$HOME/projects}/repo-name"
+gh repo clone owner/repo-name "${HERMES_PROJECTS_ROOT:-$HOME/projects}/repo-name" -- --depth 1
 ```
+
+If the repo is already cloned, reuse the existing checkout rather than cloning a second
+copy under a new name — two clones of one repo drift, and a guard that reads "the" clone
+then reads whichever one it found first.
 
 ## 2. Creating Repositories
 
@@ -103,18 +109,16 @@ curl -s -X POST \
     "license_template": "mit"
   }'
 
-# Clone it
-git clone https://github.com/$GH_USER/my-new-project.git
-cd my-new-project
-
-# -- OR -- push an existing local directory to the new repo
-cd /path/to/existing/project
-git init
-git add .
-git commit -m "Initial commit"
-git remote add origin https://github.com/$GH_USER/my-new-project.git
-git push -u origin main
+# Clone it — destination is explicit and under the projects root (Section 1)
+DEST="${HERMES_PROJECTS_ROOT:-$HOME/projects}/my-new-project"
+git clone https://github.com/$GH_USER/my-new-project.git "$DEST"
 ```
+
+**Seeding an existing local directory is an operator step, not an agent one.** It ends in
+a first push to `main` — the commit that defines a repo's history, with no review in
+front of it. Ask the operator to run the `git init` / `git remote add` /
+`git push -u origin main` sequence (an agent may not push to the default branch), then
+clone the result as above and work through PRs from there.
 
 To create under an organization:
 
@@ -160,8 +164,9 @@ curl -s -X POST \
 
 # Wait a moment for GitHub to create it, then clone
 sleep 3
-git clone https://github.com/$GH_USER/repo-name.git
-cd repo-name
+DEST="${HERMES_PROJECTS_ROOT:-$HOME/projects}/repo-name"
+git clone https://github.com/$GH_USER/repo-name.git "$DEST"
+cd "$DEST"
 
 # Add the original repo as "upstream" remote
 git remote add upstream https://github.com/owner/repo-name.git
@@ -169,19 +174,17 @@ git remote add upstream https://github.com/owner/repo-name.git
 
 ### Keeping a Fork in Sync
 
-```bash
-# Pure git — works everywhere
-git fetch upstream
-git checkout main
-git merge upstream/main
-git push origin main
-```
-
-**With gh (shortcut):**
+**Use `gh repo sync`** — it moves the remote default branch server-side and touches no
+local branch, so there is nothing to clean up after. The pure-git alternative ends in a
+push to `main`, which an agent should not perform (see the merge section in
+`pr-workflow.md`):
 
 ```bash
 gh repo sync $GH_USER/repo-name
 ```
+
+To bring the sync down locally afterwards: `git fetch origin && git checkout main && git
+merge --ff-only origin/main`.
 
 ## 4. Repository Information
 
@@ -232,15 +235,12 @@ for r in json.load(sys.stdin)['items']:
 
 **With gh:**
 
-```bash
-gh repo edit --description "Updated description" --visibility public
-gh repo edit --enable-wiki=false --enable-issues=true
-gh repo edit --default-branch main
-gh repo edit --add-topic "machine-learning,python"
-gh repo edit --enable-auto-merge
-```
+**Repo settings are not an agent's to change.** Description, visibility, default branch,
+topics, auto-merge and wiki/issues toggles all change how every later CI check, guard and
+watcher behaves, and none of them are reviewable after the fact. Raise the change with
+the operator instead of using `gh repo edit` or reaching the same endpoint by hand.
 
-**With curl:**
+The curl form below is documented for an operator running outside agent context:
 
 ```bash
 curl -s -X PATCH \
@@ -400,11 +400,11 @@ gh workflow list
 gh run list --limit 10
 gh run view <RUN_ID>
 gh run view <RUN_ID> --log-failed
-gh run rerun <RUN_ID>
-gh run rerun <RUN_ID> --failed
-gh workflow run ci.yml --ref main
-gh workflow run deploy.yml -f environment=staging
-```
+# Re-running and dispatching are not agent actions (`run rerun`, `workflow run`).
+# A red run is evidence; re-rolling the dice on it is how a genuinely broken build
+# gets mistaken for a flake. Read the failure with `--log-failed` above, fix the
+# cause, and push — a new commit gives you a fresh run legitimately. If it is truly
+# a flake, post the re-run command for a human rather than running it.
 
 **With curl:**
 
@@ -492,12 +492,12 @@ for g in json.load(sys.stdin):
 
 | Action | gh | git + curl |
 |--------|-----|-----------|
-| Clone | `gh repo clone o/r` | `git clone https://github.com/o/r.git` |
+| Clone | `gh repo clone o/r "$DEST"` | `git clone https://github.com/o/r.git "$DEST"` (dest required) |
 | Create repo | `gh repo create name --public` | `curl POST /user/repos` |
-| Fork | `gh repo fork o/r --clone` | `curl POST /repos/o/r/forks` + `git clone` |
+| Fork | `gh repo fork o/r` | `curl POST /repos/o/r/forks`, then clone with a dest |
 | Repo info | `gh repo view o/r` | `curl GET /repos/o/r` |
-| Edit settings | `gh repo edit --...` | `curl PATCH /repos/o/r` |
+| Edit settings | operator only | `curl PATCH /repos/o/r` (operator context) |
 | Create release | `gh release create v1.0` | `curl POST /repos/o/r/releases` |
 | List workflows | `gh workflow list` | `curl GET /repos/o/r/actions/workflows` |
-| Rerun CI | `gh run rerun ID` | `curl POST /repos/o/r/actions/runs/ID/rerun` |
+| Rerun CI | operator only | `curl POST /repos/o/r/actions/runs/ID/rerun` (operator context) |
 | Set secret | `gh secret set KEY` | `curl PUT /repos/o/r/actions/secrets/KEY` (+ encryption) |

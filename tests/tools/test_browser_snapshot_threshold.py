@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from hermes_cli import config
 from hermes_cli.config import DEFAULT_CONFIG
 from tools import browser_camofox, browser_tool
 
@@ -69,6 +70,16 @@ def test_cleanup_reloads_updated_profile_config(isolated_snapshot_threshold):
 
     _write_threshold(isolated_snapshot_threshold, 15001)
     assert browser_tool.get_browser_snapshot_threshold() == 12000
+
+    # Evict the isolated path from the raw-config cache explicitly rather
+    # than relying on the filesystem mtime having advanced since the
+    # rewrite above -- read_raw_config() caches on (mtime_ns, size), and
+    # 12000 -> 15001 is a same-byte-size rewrite, so a fast enough or
+    # coarse-enough-mtime write can leave the cache key unchanged and this
+    # assertion would spuriously see the stale value even though
+    # cleanup_all_browsers() correctly reset the browser-local cache below
+    # (issue #100988).
+    config._RAW_CONFIG_CACHE.pop(str(config.get_config_path()), None)
 
     browser_tool.cleanup_all_browsers()
     assert browser_tool.get_browser_snapshot_threshold() == 15001

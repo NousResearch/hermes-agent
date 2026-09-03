@@ -1692,6 +1692,126 @@ class TestFormatToolsForSystemMessage:
 
 
 class TestExecuteToolCalls:
+    @staticmethod
+    def _run_sequential_verbose_result(agent, result, capsys):
+        """Exercise the real sequential result-display path with no network."""
+        agent.quiet_mode = False
+        agent.verbose_logging = True
+        agent.tool_progress_mode = "all"
+        agent._should_emit_quiet_tool_messages = MagicMock(return_value=False)
+        agent._flush_messages_to_session_db = MagicMock(return_value=True)
+        agent._append_guardrail_observation = MagicMock(
+            side_effect=lambda _name, _args, value, **_kwargs: value
+        )
+        agent._record_file_mutation_result = MagicMock()
+        agent._subdirectory_hints.check_tool_call = MagicMock(return_value="")
+
+        def _wire_content(_name, value):
+            if run_agent._is_multimodal_tool_result(value):
+                return value["content"]
+            if isinstance(value, str):
+                return value
+            return run_agent._multimodal_text_summary(value)
+
+        agent._tool_result_content_for_active_model = MagicMock(
+            side_effect=_wire_content
+        )
+        tool_call = _mock_tool_call(
+            name="computer_use",
+            arguments='{"action":"capture","mode":"vision"}',
+            call_id="capture-1",
+        )
+        messages = []
+        with (
+            patch("run_agent.handle_function_call", return_value=result),
+            patch(
+                "agent.tool_executor.maybe_persist_tool_result",
+                side_effect=lambda **kwargs: kwargs["content"],
+            ),
+        ):
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[tool_call]),
+                messages,
+                "task-1",
+            )
+        return messages, capsys.readouterr().out
+
+    def test_sequential_verbose_text_tool_result(self, agent, capsys):
+        messages, output = self._run_sequential_verbose_result(
+            agent, "plain text result", capsys
+        )
+
+        assert "Result: plain text result" in output
+        assert messages[-1]["content"] == "plain text result"
+
+    def test_sequential_verbose_structured_computer_use_result(self, agent, capsys):
+        result = {
+            "_multimodal": True,
+            "content": [{"type": "text", "text": "capture metadata ready"}],
+            "text_summary": "capture metadata ready",
+            "meta": {"mode": "vision", "width": 1280, "height": 720},
+        }
+
+        messages, output = self._run_sequential_verbose_result(agent, result, capsys)
+
+        assert "Result: capture metadata ready" in output
+        assert messages[-1]["content"] == result["content"]
+
+    def test_sequential_verbose_screenshot_result_preserves_image(self, agent, capsys):
+        image_part = {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AAAA"},
+        }
+        result = {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "screenshot captured"},
+                image_part,
+            ],
+            "text_summary": "screenshot captured",
+        }
+
+        messages, output = self._run_sequential_verbose_result(agent, result, capsys)
+
+        assert "Result: screenshot captured" in output
+        assert messages[-1]["content"][1] == image_part
+
+    def test_sequential_verbose_mixed_multimodal_result(self, agent, capsys):
+        parts = [
+            {"type": "text", "text": "first observation"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,BBBB"},
+            },
+            {"type": "text", "text": "second observation"},
+        ]
+        result = {
+            "_multimodal": True,
+            "content": parts,
+            "text_summary": "first observation\nsecond observation",
+        }
+
+        messages, output = self._run_sequential_verbose_result(agent, result, capsys)
+
+        assert "first observation" in output
+        assert "second observation" in output
+        assert messages[-1]["content"] == parts
+
+    def test_sequential_verbose_malformed_envelope_has_readable_fallback(
+        self, agent, capsys
+    ):
+        malformed = {
+            "_multimodal": True,
+            "content": {"unexpected": "not-a-content-list"},
+        }
+
+        messages, output = self._run_sequential_verbose_result(
+            agent, malformed, capsys
+        )
+
+        assert '"unexpected": "not-a-content-list"' in output
+        assert '"unexpected": "not-a-content-list"' in messages[-1]["content"]
+
     def test_single_tool_executed(self, agent):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])

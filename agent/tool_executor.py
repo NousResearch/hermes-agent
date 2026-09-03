@@ -2830,8 +2830,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
             if agent.verbose_logging:
+                _preview_str = _multimodal_text_summary(display_function_result)
                 print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
-                print(agent._wrap_verbose("Result: ", function_result))
+                print(agent._wrap_verbose("Result: ", _preview_str))
             else:
                 _fr_str = function_result if isinstance(function_result, str) else str(function_result)
                 response_preview = _fr_str[:agent.log_prefix_chars] + "..." if len(_fr_str) > agent.log_prefix_chars else _fr_str

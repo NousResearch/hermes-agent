@@ -1,6 +1,8 @@
+import io
 import json
 import logging
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -22261,3 +22263,46 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+def _bare_slash_worker() -> "server._SlashWorker":
+    """Build a _SlashWorker around a fake live proc, bypassing __init__."""
+    w = object.__new__(server._SlashWorker)
+    w._lock = threading.Lock()
+    w._seq = 0
+    w.stderr_tail = []
+    w.stdout_queue = queue.Queue()
+    w.proc = types.SimpleNamespace(poll=lambda: None, stdin=io.StringIO())
+    return w
+
+
+def test_slash_worker_run_treats_heartbeat_as_liveness_not_result():
+    """A heartbeat line must reset the wait window, not end it (#99831).
+
+    Before the fix, run() fell through to ``if not msg.get("ok")`` for a
+    heartbeat (``ok`` is absent) and raised "slash worker failed" — the
+    gateway would have killed live-but-slow commands like /hatch at the
+    first heartbeat instead of at the timeout.
+    """
+    w = _bare_slash_worker()
+    for msg in (
+        {"id": 1, "heartbeat": True},
+        # A stale response from a prior command must still be skipped.
+        {"id": 0, "ok": True, "output": "stale"},
+        {"id": 1, "heartbeat": True},
+        {"id": 1, "ok": True, "output": "hatched!"},
+    ):
+        w.stdout_queue.put(msg)
+
+    assert w.run("/hatch a tiny cyber fox") == "hatched!"
+
+
+def test_slash_worker_run_still_times_out_when_nothing_arrives(monkeypatch):
+    """Heartbeats exempt live commands, but a worker that goes silent (wedged
+    process — even its heartbeat thread is dead) still hits the timeout; the
+    watchdog semantics survive (#99831)."""
+    monkeypatch.setattr(server, "_SLASH_WORKER_TIMEOUT_S", 0.05)
+    w = _bare_slash_worker()
+
+    with pytest.raises(RuntimeError, match="slash worker timed out"):
+        w.run("/hatch a tiny cyber fox")

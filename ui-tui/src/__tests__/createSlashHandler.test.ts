@@ -934,6 +934,36 @@ describe('createSlashHandler', () => {
     }
   })
 
+  it('surfaces a slash worker timeout instead of retrying command.dispatch (#99831)', async () => {
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.reject(new Error('slash worker timed out'))
+            }
+
+            return Promise.resolve({})
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/hatch')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('error: slash worker timed out')
+    })
+
+    // The dispatch retry answers "not a quick/plugin/bundle/skill command",
+    // which masks the real timeout error — it must not fire.
+    const dispatchCalls = ctx.gateway.gw.request.mock.calls.filter(([method]: [string]) => method === 'command.dispatch')
+
+    expect(dispatchCalls).toHaveLength(0)
+  })
+
   it('handles command.dispatch payloads returned directly by slash.exec', async () => {
     patchUiState({ sid: 'sid-abc' })
 

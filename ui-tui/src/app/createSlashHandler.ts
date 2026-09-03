@@ -167,7 +167,18 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
         long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
       })
-      .catch(() => {
+      .catch(err => {
+        // A worker-infrastructure failure ("slash worker timed out", "exited",
+        // "closed pipe", "start failed") means the command genuinely failed or
+        // is still running in the worker; command.dispatch handles a different
+        // command set and would answer "not a quick/plugin/bundle/skill
+        // command", masking the real error (#99831). Route signals
+        // ("use command.dispatch") and unknown-command failures still fall
+        // through to the dispatch retry unchanged.
+        if (/^slash worker (timed out|exited|closed pipe|start failed|failed)/i.test(rpcErrorMessage(err))) {
+          return guardedErr(err)
+        }
+
         gw.request('command.dispatch', { arg: parsed.arg, name: parsed.name, session_id: sid })
           .then((raw: unknown) => {
             if (stale()) {

@@ -583,6 +583,12 @@ class _SlashWorker:
                     break
                 if msg.get("id") != rid:
                     continue
+                if msg.get("heartbeat"):
+                    # The worker heartbeats while a long command (e.g.
+                    # /hatch's image generations) is still making progress;
+                    # treat that as liveness and restart the timeout window
+                    # instead of declaring the worker dead (#99831).
+                    continue
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
                 return str(msg.get("output", "")).rstrip()

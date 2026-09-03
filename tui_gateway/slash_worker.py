@@ -51,6 +51,39 @@ _ORPHAN_GRACE_S = max(0.0, _env_float("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
 _in_flight = threading.Event()  # set while a command is executing
 logger = logging.getLogger(__name__)
 
+# The gateway's _SlashWorker.run() gives up after HERMES_TUI_SLASH_TIMEOUT_S
+# (default 45s) without worker output, which used to kill minutes-long
+# commands (e.g. /hatch's ~10 image-model calls) mid-flight and leave the
+# job running orphaned (#99831). While a command executes, the worker now
+# heartbeats at half the configured timeout (capped at 30s); a gateway-side
+# timeout then only fires when the worker itself is wedged, not merely busy.
+def _resolve_heartbeat_s() -> float:
+    timeout = _env_float("HERMES_TUI_SLASH_TIMEOUT_S", 45.0)
+    return max(0.5, _env_float("HERMES_SLASH_HEARTBEAT_S", min(30.0, timeout / 2.0)))
+
+
+_HEARTBEAT_S = _resolve_heartbeat_s()
+# Heartbeat and result writes share stdout; without this lock two threads
+# could interleave partial lines and corrupt the JSON-line protocol.
+_stdout_lock = threading.Lock()
+
+
+def _emit_heartbeats(rid, done: threading.Event) -> None:
+    """Write ``{"id": rid, "heartbeat": true}`` lines while a command runs.
+
+    The gateway treats a heartbeat as progress and restarts its slash-timeout
+    window, so a live worker executing a long command is never declared timed
+    out. Stops as soon as ``done`` is set; a write failure (broken pipe) just
+    ends the thread — the command loop's own write will surface the error.
+    """
+    while not done.wait(_HEARTBEAT_S):
+        try:
+            with _stdout_lock:
+                sys.stdout.write(json.dumps({"id": rid, "heartbeat": True}) + "\n")
+                sys.stdout.flush()
+        except Exception:
+            return
+
 
 def _is_orphaned(original_ppid, getppid=os.getppid) -> bool:
     """Return whether this worker no longer has its original POSIX parent."""
@@ -164,15 +197,28 @@ def main():
 
         _in_flight.set()
         rid = None
+        hb_done = threading.Event()
+        hb_thread: threading.Thread | None = None
         try:
             req = json.loads(line)
             rid = req.get("id")
+            hb_thread = threading.Thread(
+                target=_emit_heartbeats, args=(rid, hb_done), daemon=True
+            )
+            hb_thread.start()
             out = _run(cli, req.get("command", ""))
-            sys.stdout.write(json.dumps({"id": rid, "ok": True, "output": out}) + "\n")
-            sys.stdout.flush()
+            hb_done.set()
+            hb_thread.join(timeout=_HEARTBEAT_S + 5.0)
+            with _stdout_lock:
+                sys.stdout.write(json.dumps({"id": rid, "ok": True, "output": out}) + "\n")
+                sys.stdout.flush()
         except Exception as e:
-            sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": str(e)}) + "\n")
-            sys.stdout.flush()
+            hb_done.set()
+            if hb_thread is not None:
+                hb_thread.join(timeout=_HEARTBEAT_S + 5.0)
+            with _stdout_lock:
+                sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": str(e)}) + "\n")
+                sys.stdout.flush()
         finally:
             _in_flight.clear()
             # Workers persist for the TUI session, so release allocator pages at

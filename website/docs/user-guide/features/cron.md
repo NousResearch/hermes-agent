@@ -717,6 +717,7 @@ Semantics:
 - **Empty stdout → silent tick**, no delivery. This is the watchdog pattern: "only say something when something is wrong".
 - Non-zero exit or timeout → an error alert is delivered, so a broken watchdog can't fail silently.
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
+- A begin-line of exactly `NO_WORK` (or `NO_WORK: <reason>`) → silent tick. This is the OpenClaw-compatible wake-gate token, so the same check script gates a job on either runtime. The boundary is exact: `NO_WORKING`, `NO_WORK_TODAY`, or `NO_WORK` mid-output are **not** the token and are delivered normally.
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
 
 `.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. Subprocess env is sanitized (`_sanitize_subprocess_env`): provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
@@ -1003,6 +1004,23 @@ print(json.dumps({"wakeAgent": True, "context": {"new_issues": latest - prev}}))
 ```
 
 When `wakeAgent` is omitted, the default is `true` (wake the agent as usual).
+
+#### OpenClaw-compatible `NO_WORK` token
+
+Instead of JSON, a pre-check script can emit a begin-line of exactly `NO_WORK`
+(optionally `NO_WORK: <reason>`) to skip the tick. This is the same wake-gate
+convention OpenClaw's `job.precheck` uses (openclaw#112371 / hermes#68809), so a
+single check script can gate a cron job on either runtime:
+
+```text
+NO_WORK: issue count unchanged
+```
+
+The token boundary is exact — the stripped begin-line must be `NO_WORK` or start
+`NO_WORK:`. Longer identifiers such as `NO_WORKING` or `NO_WORK_TODAY`, or a
+`NO_WORK` appearing later in the output, do **not** gate and wake the agent as
+usual. For `no_agent` jobs the token behaves like empty stdout / `wakeAgent:
+false`: the tick is silent and the token line is not delivered.
 
 #### Recipes: cheap pre-run gates
 

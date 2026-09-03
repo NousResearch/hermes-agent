@@ -1631,6 +1631,86 @@ class TestParseWakeGate:
         from cron.scheduler import _parse_wake_gate
         assert _parse_wake_gate('{"wakeAgent": false}') is False
 
+    def test_wake_gate_true_wakes(self):
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate('{"wakeAgent": true}') is True
+
+    def test_wake_gate_missing_wakes(self):
+        """A JSON dict without a wakeAgent key defaults to waking."""
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate('{"data": {"foo": "bar"}}') is True
+
+    def test_non_boolean_false_still_wakes(self):
+        """Only strict ``False`` skips — truthy/falsy shortcuts are too risky."""
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate('{"wakeAgent": 0}') is True
+        assert _parse_wake_gate('{"wakeAgent": null}') is True
+        assert _parse_wake_gate('{"wakeAgent": ""}') is True
+
+    def test_only_last_non_empty_line_parsed(self):
+        from cron.scheduler import _parse_wake_gate
+        multi = 'some log output\nmore output\n{"wakeAgent": false}'
+        assert _parse_wake_gate(multi) is False
+
+    def test_trailing_blank_lines_ignored(self):
+        from cron.scheduler import _parse_wake_gate
+        multi = '{"wakeAgent": false}\n\n\n'
+        assert _parse_wake_gate(multi) is False
+
+    def test_non_last_json_line_does_not_gate(self):
+        """A JSON gate on an earlier line with plain text after it does NOT trigger."""
+        from cron.scheduler import _parse_wake_gate
+        multi = '{"wakeAgent": false}\nactually this is the real output'
+        assert _parse_wake_gate(multi) is True
+
+    def test_no_work_begin_line_gates(self):
+        """OpenClaw-compatible NO_WORK begin-line skips the agent (hermes#68809)."""
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate("NO_WORK") is False
+        assert _parse_wake_gate("NO_WORK: inbox empty") is False
+        assert _parse_wake_gate("   NO_WORK\n") is False
+
+    def test_no_work_only_at_begin_line(self):
+        """NO_WORK later in the output does not gate; only the begin-line counts."""
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate("work found\nNO_WORK") is True
+
+    def test_work_needed_prefix_wakes(self):
+        """WORK_NEEDED begin-line wakes normally (not a NO_WORK token)."""
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate("WORK_NEEDED: 3 dirty PRs") is True
+
+    def test_no_work_negative_prefixes_wake(self):
+        """NO_WORKING / NO_WORK_TODAY are not the gate token and wake normally."""
+        from cron.scheduler import _parse_wake_gate
+        assert _parse_wake_gate("NO_WORKING") is True
+        assert _parse_wake_gate("NO_WORK_TODAY") is True
+
+
+class TestStdoutSignalsNoWork:
+    """Unit tests for the shared NO_WORK begin-line detector."""
+
+    def test_detects_exact_no_work_token(self):
+        from cron.scheduler import _stdout_signals_no_work
+        assert _stdout_signals_no_work("NO_WORK") is True
+        assert _stdout_signals_no_work("  NO_WORK\n") is True
+        # Optional `NO_WORK: reason` form.
+        assert _stdout_signals_no_work("NO_WORK: inbox empty") is True
+        assert _stdout_signals_no_work("   NO_WORK: nothing to do\nextra") is True
+
+    def test_rejects_negative_prefixes(self):
+        """Longer identifiers sharing the NO_WORK prefix must NOT gate."""
+        from cron.scheduler import _stdout_signals_no_work
+        assert _stdout_signals_no_work("NO_WORKING") is False
+        assert _stdout_signals_no_work("NO_WORK_TODAY") is False
+        assert _stdout_signals_no_work("NO_WORK trailing") is False
+
+    def test_empty_and_other_output(self):
+        from cron.scheduler import _stdout_signals_no_work
+        assert _stdout_signals_no_work("") is False
+        assert _stdout_signals_no_work("all good") is False
+        assert _stdout_signals_no_work("WORK_NEEDED") is False
+
 
 class TestRunJobWakeGate:
     """Integration tests for run_job wake-gate short-circuit."""
@@ -1710,6 +1790,41 @@ class TestRunJobWakeGate:
         assert script_output in prompt_arg
         assert success is True
         assert err is None
+
+    def test_no_agent_no_work_token_is_silent_and_skips_agent(self):
+        """A no_agent job emitting NO_WORK is silent and never constructs AIAgent."""
+        from cron.scheduler import SILENT_MARKER
+        import cron.scheduler as scheduler
+
+        job = self._make_job(name="no-agent-nowork")
+        job["no_agent"] = True
+
+        with patch.object(scheduler, "_run_job_script_with_claim_heartbeat",
+                          return_value=(True, "NO_WORK: nothing to report")), \
+             patch("run_agent.AIAgent") as agent_cls:
+            success, doc, final, err = scheduler.run_job(job)
+
+        assert success is True
+        assert err is None
+        assert final == SILENT_MARKER
+        agent_cls.assert_not_called()
+
+    def test_no_agent_negative_prefix_delivered_verbatim(self):
+        """NO_WORKING is not the gate token, so a no_agent job delivers it."""
+        import cron.scheduler as scheduler
+
+        job = self._make_job(name="no-agent-noworking")
+        job["no_agent"] = True
+
+        with patch.object(scheduler, "_run_job_script_with_claim_heartbeat",
+                          return_value=(True, "NO_WORKING today")), \
+             patch("run_agent.AIAgent") as agent_cls:
+            success, doc, final, err = scheduler.run_job(job)
+
+        assert success is True
+        assert err is None
+        assert "NO_WORKING today" in final
+        agent_cls.assert_not_called()
 
 
 class TestBuildJobPromptMissingSkill:

@@ -9346,11 +9346,20 @@ class TelegramAdapter(BasePlatformAdapter):
                 if _is_bot_handle(command_target):
                     mentioned_bot_usernames.add(command_target)
 
-        # Entity-less fallback for older/client-specific updates. If Telegram
-        # supplied entities for a source, trust them and do not regex-rescue
-        # malformed/URL/code spans that the server did not mark as mentions.
+        # Entity-less fallback for older/client-specific updates. Formatting
+        # entities (bold/italic/etc.) are not routing evidence.  Telegram iOS
+        # can send rich-formatted text with formatting entities but no mention
+        # entity for a plain pasted @bot handle; those unrelated entities must
+        # not suppress the raw-text fallback.  Only routing-capable entities
+        # (mention/text_mention/bot_command) make us trust the server parse.
         for raw_text, entities in _iter_sources():
-            if not raw_text or entities:
+            if not raw_text:
+                continue
+            has_routing_entities = any(
+                cls._telegram_entity_type(entity) in cls._TELEGRAM_ROUTE_ENTITY_TYPES
+                for entity in (entities or [])
+            )
+            if has_routing_entities:
                 continue
             for match in re.finditer(r"(?i)(?<![A-Za-z0-9_`/])@([A-Za-z0-9_]{2,31})\b", raw_text):
                 handle = match.group(1).lower()
@@ -9371,6 +9380,141 @@ class TelegramAdapter(BasePlatformAdapter):
             return raw[start:end].decode("utf-16-le")
         except UnicodeDecodeError:
             return ""
+
+    _TELEGRAM_ROUTE_ENTITY_TYPES = {"mention", "text_mention", "bot_command"}
+    _TELEGRAM_CANONICAL_ENTITY_TYPES = {
+        "bold",
+        "italic",
+        "underline",
+        "strikethrough",
+        "spoiler",
+        "code",
+        "pre",
+        "text_link",
+        "blockquote",
+        "expandable_blockquote",
+        "custom_emoji",
+    }
+
+    @classmethod
+    def _telegram_entity_bounds(cls, source_text: str, offset: int, length: int) -> tuple[int, int] | None:
+        """Convert Telegram UTF-16 entity offsets into Python string indexes."""
+        if offset < 0 or length <= 0:
+            return None
+        try:
+            raw = source_text.encode("utf-16-le")
+            start_b = offset * 2
+            end_b = (offset + length) * 2
+            if start_b < 0 or end_b > len(raw) or start_b >= end_b:
+                return None
+            start = len(raw[:start_b].decode("utf-16-le"))
+            end = len(raw[:end_b].decode("utf-16-le"))
+            return (start, end)
+        except UnicodeDecodeError:
+            return None
+
+    @staticmethod
+    def _telegram_entity_type(entity: Any) -> str:
+        return str(getattr(entity, "type", "")).split(".")[-1].lower()
+
+    @classmethod
+    def _canonical_telegram_entities(cls, source_text: str, entities: Any) -> list[dict[str, Any]]:
+        """Return sanitized Telegram formatting/routing entity metadata."""
+        canonical: list[dict[str, Any]] = []
+        for entity in entities or []:
+            try:
+                offset = int(getattr(entity, "offset", -1))
+                length = int(getattr(entity, "length", 0))
+            except (TypeError, ValueError):
+                continue
+            bounds = cls._telegram_entity_bounds(source_text, offset, length)
+            if bounds is None:
+                continue
+            entity_type = cls._telegram_entity_type(entity)
+            entry: dict[str, Any] = {
+                "type": entity_type,
+                "offset_utf16": offset,
+                "length_utf16": length,
+                "start": bounds[0],
+                "end": bounds[1],
+                "text": source_text[bounds[0]:bounds[1]],
+            }
+            if entity_type == "text_link":
+                entry["url"] = getattr(entity, "url", None)
+            if entity_type == "pre":
+                language = getattr(entity, "language", None)
+                if language:
+                    entry["language"] = language
+            if entity_type == "custom_emoji":
+                custom_emoji_id = getattr(entity, "custom_emoji_id", None)
+                if custom_emoji_id:
+                    entry["custom_emoji_id"] = str(custom_emoji_id)
+            canonical.append(entry)
+        return canonical
+
+    @classmethod
+    def _telegram_entities_to_markdown(cls, source_text: str, entities: Any) -> str:
+        """Render Telegram rich-text entities as canonical internal Markdown.
+
+        Telegram reports offsets in UTF-16 code units.  The agent runtime wants
+        one text string, so supported formatting entities are converted while the
+        raw plain text remains available in event metadata as a fallback.
+        Unsupported or malformed entities are ignored rather than making an
+        otherwise authorized message undispatchable.
+        """
+        if not source_text:
+            return ""
+        spans: list[tuple[int, int, str, str]] = []
+        for entry in cls._canonical_telegram_entities(source_text, entities):
+            entity_type = entry["type"]
+            if entity_type not in cls._TELEGRAM_CANONICAL_ENTITY_TYPES:
+                continue
+            start, end = int(entry["start"]), int(entry["end"])
+            if not (0 <= start < end <= len(source_text)):
+                continue
+            if entity_type == "bold":
+                before, after = "**", "**"
+            elif entity_type == "italic":
+                before, after = "*", "*"
+            elif entity_type == "underline":
+                before, after = "<u>", "</u>"
+            elif entity_type == "strikethrough":
+                before, after = "~~", "~~"
+            elif entity_type == "spoiler":
+                before, after = "||", "||"
+            elif entity_type == "code":
+                before, after = "`", "`"
+            elif entity_type == "pre":
+                lang = str(entry.get("language") or "").strip()
+                before, after = f"```{lang}\n", "\n```"
+            elif entity_type == "text_link":
+                url = entry.get("url") or ""
+                before, after = "[", f"]({url})" if url else "]"
+            elif entity_type in {"blockquote", "expandable_blockquote"}:
+                before, after = "> ", ""
+            elif entity_type == "custom_emoji":
+                before, after = "", ""
+            else:
+                continue
+            spans.append((start, end, before, after))
+        if not spans:
+            return source_text
+        opens: dict[int, list[str]] = {}
+        closes: dict[int, list[str]] = {}
+        for start, end, before, after in spans:
+            if before:
+                opens.setdefault(start, []).append(before)
+            if after:
+                closes.setdefault(end, []).append(after)
+        out: list[str] = []
+        for idx, ch in enumerate(source_text):
+            if idx in opens:
+                out.extend(opens[idx])
+            out.append(ch)
+            end_idx = idx + 1
+            if end_idx in closes:
+                out.extend(reversed(closes[end_idx]))
+        return "".join(out)
 
     def _message_mentions_bot(self, message: Message) -> bool:
         if not self._bot:
@@ -10007,13 +10151,26 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        batch_key = self._text_batch_key(event)
         if not self._should_process_message(msg):
+            # Telegram iOS/Desktop split long rich text into consecutive updates.
+            # Only the first chunk may contain the bot trigger; continuation
+            # chunks are often plain or carry unrelated formatting entities. If
+            # a batch is already open for this chat/user/topic, treat this text
+            # as a continuation and enqueue it exactly once instead of dropping
+            # it at the mention gate.
+            if batch_key in self._pending_text_batches:
+                event.text = self._clean_bot_trigger_text(event.text)
+                await self._cache_replied_media(msg, event)
+                event = self._apply_telegram_group_observe_attribution(event)
+                self._enqueue_text_event(event)
+                return
             if self._should_observe_unmentioned_group_message(msg):
-                self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
+                self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id, event=event)
             return
         await self._ensure_forum_commands(update.message)
 
-        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
@@ -10142,6 +10299,24 @@ class TelegramAdapter(BasePlatformAdapter):
             # Append text from the follow-up chunk
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            existing_meta = getattr(existing, "metadata", None) or {}
+            event_meta = getattr(event, "metadata", None) or {}
+            if event_meta:
+                if event_meta.get("telegram_plain_text"):
+                    existing_meta["telegram_plain_text"] = (
+                        f"{existing_meta.get('telegram_plain_text', '')}\n{event_meta['telegram_plain_text']}"
+                        if existing_meta.get("telegram_plain_text")
+                        else event_meta["telegram_plain_text"]
+                    )
+                if event_meta.get("telegram_canonical_text"):
+                    existing_meta["telegram_canonical_text"] = (
+                        f"{existing_meta.get('telegram_canonical_text', '')}\n{event_meta['telegram_canonical_text']}"
+                        if existing_meta.get("telegram_canonical_text")
+                        else event_meta["telegram_canonical_text"]
+                    )
+                if event_meta.get("telegram_entities"):
+                    existing_meta.setdefault("telegram_entities", []).extend(event_meta["telegram_entities"])
+                existing.metadata = existing_meta
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             # Merge any media that might be attached
             if event.media_urls:
@@ -11013,8 +11188,18 @@ class TelegramAdapter(BasePlatformAdapter):
             _chat_id_str if thread_id_str else None,
         )
 
+        plain_text = message.text or message.caption or ""
+        raw_entities = getattr(message, "entities", None) or getattr(message, "caption_entities", None) or []
+        canonical_entities = self._canonical_telegram_entities(plain_text, raw_entities)
+        canonical_text = self._telegram_entities_to_markdown(plain_text, raw_entities)
+        metadata = {
+            "telegram_plain_text": plain_text,
+            "telegram_canonical_text": canonical_text,
+            "telegram_entities": canonical_entities,
+        }
+
         return MessageEvent(
-            text=message.text or "",
+            text=canonical_text or plain_text,
             message_type=msg_type,
             source=source,
             raw_message=message,
@@ -11024,6 +11209,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            metadata=metadata,
             timestamp=message.date,
         )
 

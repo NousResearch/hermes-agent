@@ -1,0 +1,126 @@
+{
+  "ios_formatted": {
+    "update_type": "message",
+    "effective_message": "message",
+    "message_id": 100,
+    "chat": {
+      "type": "supergroup",
+      "id": "[CHAT_ID]",
+      "message_thread_id": "[THREAD_ID]"
+    },
+    "from_user": {
+      "id": "[USER_ID]"
+    },
+    "text": "@hermes_bot bold italic under strike spoil code pre link quote expand 😎 custom",
+    "caption": null,
+    "entities": [
+      {
+        "type": "bold",
+        "offset": 12,
+        "length": 4
+      },
+      {
+        "type": "italic",
+        "offset": 17,
+        "length": 6
+      },
+      {
+        "type": "underline",
+        "offset": 24,
+        "length": 5
+      },
+      {
+        "type": "strikethrough",
+        "offset": 30,
+        "length": 6
+      },
+      {
+        "type": "spoiler",
+        "offset": 37,
+        "length": 5
+      },
+      {
+        "type": "code",
+        "offset": 43,
+        "length": 4
+      },
+      {
+        "type": "pre",
+        "offset": 48,
+        "length": 3,
+        "language": "python"
+      },
+      {
+        "type": "text_link",
+        "offset": 52,
+        "length": 4,
+        "url": "https://example.com"
+      },
+      {
+        "type": "blockquote",
+        "offset": 57,
+        "length": 5
+      },
+      {
+        "type": "expandable_blockquote",
+        "offset": 63,
+        "length": 6
+      },
+      {
+        "type": "custom_emoji",
+        "offset": 70,
+        "length": 2,
+        "custom_emoji_id": "[CUSTOM_EMOJI_ID]"
+      }
+    ],
+    "caption_entities": [],
+    "routing_expectation": "formatting entities do not suppress raw @bot fallback; dispatch allowed"
+  },
+  "ios_plain": {
+    "update_type": "message",
+    "effective_message": "message",
+    "message_id": 101,
+    "chat": {
+      "type": "supergroup",
+      "id": "[CHAT_ID]",
+      "message_thread_id": "[THREAD_ID]"
+    },
+    "from_user": {
+      "id": "[USER_ID]"
+    },
+    "text": "@hermes_bot plain instruction",
+    "caption": null,
+    "entities": [],
+    "caption_entities": [],
+    "routing_expectation": "raw @bot fallback dispatch allowed"
+  },
+  "macos_formatted": {
+    "update_type": "message",
+    "effective_message": "message",
+    "message_id": 102,
+    "chat": {
+      "type": "supergroup",
+      "id": "[CHAT_ID]",
+      "message_thread_id": "[THREAD_ID]"
+    },
+    "from_user": {
+      "id": "[USER_ID]"
+    },
+    "text": "@hermes_bot bold instruction",
+    "caption": null,
+    "entities": [
+      {
+        "type": "mention",
+        "offset": 0,
+        "length": 11
+      },
+      {
+        "type": "bold",
+        "offset": 12,
+        "length": 4
+      }
+    ],
+    "caption_entities": [],
+    "routing_expectation": "mention entity dispatch allowed; formatting canonicalized"
+  }
+}

@@ -8010,6 +8010,23 @@ class SlackAdapter(BasePlatformAdapter):
                         section_text = (text_obj.get("text") or "").strip()
                         if section_text and section_text not in msg_text and all(section_text not in e for e in extras):
                             extras.append(section_text)
+                # ``section`` blocks can carry their content in ``fields``
+                # (e.g. webhook lead forms) and ``context`` blocks in
+                # ``elements`` — neither exposes a top-level ``text`` object,
+                # so both were silently dropped from thread-parent/context
+                # text. Surface them so the agent sees the full message.
+                sub_blocks = None
+                if block_type == "section":
+                    sub_blocks = block.get("fields")
+                elif block_type == "context":
+                    sub_blocks = block.get("elements")
+                if isinstance(sub_blocks, list):
+                    for sub in sub_blocks:
+                        if not isinstance(sub, dict):
+                            continue
+                        sub_text = (sub.get("text") or "").strip()
+                        if sub_text and sub_text not in msg_text and all(sub_text not in e for e in extras):
+                            extras.append(sub_text)
         # Legacy ``attachments`` (Alertmanager, Grafana, PagerDuty, CI bots):
         # apps often post with an empty ``text`` and the real content in
         # attachment fields or attachment-nested blocks.

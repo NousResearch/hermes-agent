@@ -4742,6 +4742,59 @@ class TestThreadImageContext:
 
         assert adapter._render_message_text(msg) == "run ```echo ok```"
 
+    def test_render_message_text_surfaces_section_fields_and_context_elements(
+        self, adapter
+    ):
+        """Webhook/bot lead forms put data in ``section.fields`` and
+        ``context.elements``, which have no top-level ``text`` object. Those
+        must not be dropped from thread-parent/context text."""
+        msg = {
+            "text": "New contact form submission — Dark Pro Shops",
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "🎾 New Contact Form Submission — Dark Pro Shops",
+                        "emoji": True,
+                    },
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {"type": "mrkdwn", "text": "*Site:*\nDark Pro Shops (darkproshops.com)"},
+                        {"type": "mrkdwn", "text": "*Business:*\nMartin Consulting"},
+                        {"type": "mrkdwn", "text": "*Email:*\nmvandiver@me.com"},
+                    ],
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "💬 *Message:*\nHi! I'd like to subscribe to weekly updates.",
+                    },
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": "🌐 https://darkproshops.com/contact/\n⏰ 01/09/2026, 5:57:01 am  |  IP: 212.30.36.179",
+                        }
+                    ],
+                },
+            ],
+        }
+
+        rendered = adapter._render_message_text(msg)
+
+        assert "*Site:*\nDark Pro Shops (darkproshops.com)" in rendered
+        assert "*Business:*\nMartin Consulting" in rendered
+        assert "*Email:*\nmvandiver@me.com" in rendered
+        assert "💬 *Message:*" in rendered
+        assert "Hi! I'd like to subscribe to weekly updates." in rendered
+        assert "IP: 212.30.36.179" in rendered
+
     # -- integration: cold-start thread hydrate ----------------------------
 
     def _thread_event(self, text="<@U_BOT> what do you think of the chart?"):

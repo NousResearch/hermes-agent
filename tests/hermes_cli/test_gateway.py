@@ -1231,6 +1231,123 @@ def test_find_windows_gateway_services_rejects_shared_service_host_pid(monkeypat
         )
 
 
+def test_find_windows_gateway_services_ignores_shared_host_above_task_launcher(
+    monkeypatch,
+):
+    """A Scheduled-Task gateway below the Task Scheduler host is not service-owned.
+
+    The Task Scheduler's svchost.exe always hosts several SCM services and the
+    task launcher (cmd.exe/wscript.exe) sits between it and the gateway, so
+    the shared host is a plain ancestor rather than a candidate owner: the
+    gateway must fall through to the generic non-service pause path (#99911).
+    """
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
+
+    class FakeService:
+        def __init__(self, name, pid, status="running"):
+            self.name = name
+            self.pid = pid
+            self.status = status
+
+        def as_dict(self):
+            return {"name": self.name, "pid": self.pid, "status": self.status}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            return [FakeProcess(200), FakeProcess(100)]
+
+        def children(self, recursive=False):
+            raise AssertionError(
+                "a non-service gateway must not be attributed to any service"
+            )
+
+        def create_time(self):
+            return float(self.pid)
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [
+            FakeService("ServiceA", 100),
+            FakeService("ServiceB", 100),
+        ],
+        Process=FakeProcess,
+    )
+
+    result = gateway.find_windows_gateway_services(
+        psutil_module=fake_psutil,
+        profile_processes=[profile],
+    )
+
+    assert result == []
+
+
+def test_find_windows_gateway_services_maps_service_below_shared_ancestor(
+    monkeypatch,
+):
+    """A shared SCM host higher in the ancestry must not shadow a verified owner.
+
+    Real service wrappers (WinSW/NSSM/sc.exe create) are single-service
+    processes; a shared host above them is unrelated to ownership and the
+    verified single-service ancestor still wins the attribution.
+    """
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
+
+    class FakeService:
+        def __init__(self, name, pid, status="running"):
+            self.name = name
+            self.pid = pid
+            self.status = status
+
+        def as_dict(self):
+            return {"name": self.name, "pid": self.pid, "status": self.status}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            return [FakeProcess(200), FakeProcess(100)]
+
+        def children(self, recursive=False):
+            assert self.pid == 200
+            assert recursive is True
+            return [FakeProcess(300)]
+
+        def create_time(self):
+            return float(self.pid)
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [
+            FakeService("HermesGateway", 200),
+            FakeService("ServiceA", 100),
+            FakeService("ServiceB", 100),
+        ],
+        Process=FakeProcess,
+    )
+
+    result = gateway.find_windows_gateway_services(
+        psutil_module=fake_psutil,
+        profile_processes=[profile],
+    )
+
+    assert result == [
+        gateway.WindowsGatewayService(
+            name="HermesGateway",
+            profile="default",
+            service_pid=200,
+            gateway_pid=300,
+            descendant_pids=frozenset({300}),
+            descendant_identities=((300, 300.0),),
+            service_create_time=200.0,
+            gateway_create_time=300.0,
+        )
+    ]
+
+
 def test_find_windows_gateway_services_fails_closed_on_service_access_error(
     monkeypatch,
 ):

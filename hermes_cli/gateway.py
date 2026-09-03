@@ -1184,15 +1184,21 @@ def find_windows_gateway_services(
                         f"SCM service {service_name} has indeterminate status: "
                         f"{service_status}"
                     )
-            shared_service_pids = [
-                pid
-                for pid in ancestor_pids
-                if len(service_names_by_pid.get(pid, set())) > 1
-            ]
-            if shared_service_pids:
+            # A shared SCM host is a candidate owner only when it directly
+            # parents the gateway: its child could belong to any of the
+            # hosted services, so ownership stays ambiguous and the update
+            # must fail closed. A shared host merely sitting further up the
+            # ancestry — the Task Scheduler host above a Scheduled-Task
+            # gateway's cmd.exe/wscript.exe launcher — owns nothing there;
+            # attribution then finds no single-service ancestor and the
+            # generic PID pause path handles the gateway instead.
+            direct_parent_pid = ancestor_pids[0] if ancestor_pids else None
+            if direct_parent_pid is not None and len(
+                service_names_by_pid.get(direct_parent_pid, set())
+            ) > 1:
                 raise RuntimeError(
                     "Gateway ownership is ambiguous under shared SCM host PID(s): "
-                    + ", ".join(str(pid) for pid in shared_service_pids)
+                    f"{direct_parent_pid}"
                 )
             service_pid = next(
                 (

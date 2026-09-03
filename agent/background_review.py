@@ -1660,16 +1660,14 @@ def _run_review_in_thread(
             # summary still needs the completed review agent's tool results.
             review_messages = list(getattr(review_agent, "_session_messages", []))
 
-            # Tear down memory providers while stdout is still
-            # redirected so background thread teardown (Honcho flush,
-            # Hindsight sync, etc.) stays silent.  The finally block
-            # below is a safety net for the exception path.
+            # The fork shares the foreground session ID for prompt-cache
+            # parity.  Do not call close() or shutdown_memory_provider():
+            # both are session-bound lifecycle operations, and close() also
+            # kills registered terminal processes and cleans environments for
+            # that ID.  Releasing only this fork's clients leaves the live
+            # session and its child processes untouched.
             try:
-                review_agent.shutdown_memory_provider()
-            except Exception:
-                pass
-            try:
-                review_agent.close()
+                review_agent.release_clients()
             except Exception:
                 pass
             review_agent = None
@@ -1728,11 +1726,10 @@ def _run_review_in_thread(
             _log_review_completion(review_usage, "error")
         agent._emit_auxiliary_failure("background review", e)
     finally:
-        # Safety-net cleanup for the exception path.  Normal completion already
-        # shut down inside the thread-scoped silence above.  Re-enter the
-        # thread-scoped silence here so teardown output (Honcho flush, Hindsight
-        # sync, background thread joins) stays quiet even on the exception path,
-        # without blanking other threads' streams.
+        # Safety-net cleanup for the exception path. Normal completion already
+        # released its clients inside the thread-scoped silence above. Re-enter
+        # the thread-scoped silence here so exception-path cleanup output stays
+        # quiet without blanking other threads' streams.
         # Also a safety-net completion: covers exceptions raised during setup
         # before the request-phase finally. Both tracking cleanup and the
         # per-run completion publication are identity-scoped and idempotent.
@@ -1741,11 +1738,7 @@ def _run_review_in_thread(
             try:
                 with thread_scoped_silence():
                     try:
-                        review_agent.shutdown_memory_provider()
-                    except Exception:
-                        pass
-                    try:
-                        review_agent.close()
+                        review_agent.release_clients()
                     except Exception:
                         pass
             except Exception:

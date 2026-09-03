@@ -69,11 +69,19 @@ afterEach(() => {
 function renderPanel(onSelectModel = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
+  const requestGateway = vi.fn(async (method: string) => {
+    if (method === 'model.options') {
+      return getGlobalModelOptions()
+    }
+
+    throw new Error(`unexpected gateway method: ${method}`)
+  })
+
   const content = render(
     <QueryClientProvider client={client}>
       <DropdownMenu open>
         <DropdownMenuContent>
-          <ModelMenuPanel onSelectModel={onSelectModel} requestGateway={vi.fn() as never} />
+          <ModelMenuPanel onSelectModel={onSelectModel} requestGateway={requestGateway as never} />
         </DropdownMenuContent>
       </DropdownMenu>
     </QueryClientProvider>
@@ -497,14 +505,18 @@ describe('ModelMenuPanel refresh reconcile × guarded-switch confirm handshake',
         providers: [{ models: ['muse-spark-1.2-contributor'], name: 'OpenCode', slug: 'opencode-go' }, MOA_PROVIDER]
       })
 
-    // Method-aware gateway: the panel's catalog reads (`model.options`) fall
-    // back to the REST mock; `config.set` runs the guarded handshake —
+    // Method-aware gateway: the panel's catalog reads (`model.options`) use
+    // the routed catalog mock; `config.set` runs the guarded handshake —
     // confirm_required first, success on the confirmed resend.
     let configSets = 0
 
     const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+      if (method === 'model.options') {
+        return getGlobalModelOptions()
+      }
+
       if (method !== 'config.set') {
-        throw new Error('use REST catalog')
+        throw new Error(`unexpected gateway method: ${method}`)
       }
 
       configSets += 1

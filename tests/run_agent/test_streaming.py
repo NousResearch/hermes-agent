@@ -305,8 +305,171 @@ class TestStreamingAccumulator:
         assert tc[0].function.name == "terminal"
         assert tc[0].function.arguments == '{"command": "ls"}'
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_argument_deltas_are_collected_without_concatenating_each_chunk(
+        self, mock_close, mock_create
+    ):
+        """Large tool arguments must not rebuild the accumulated string per delta."""
+        from run_agent import AIAgent
 
+        class AppendOnlyChunk(str):
+            def __radd__(self, other):
+                raise AssertionError("tool argument delta was concatenated eagerly")
 
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, tc_id="call_123", name="write_file"
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, arguments=AppendOnlyChunk('{"path":"out.txt",')
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, arguments=AppendOnlyChunk('"content":"hello"}')
+                )
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tool_call = response.choices[0].message.tool_calls[0]
+        assert tool_call.function.arguments == (
+            '{"path":"out.txt","content":"hello"}'
+        )
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("agent.relay_llm.stream")
+    def test_relay_finalizer_emits_joined_tool_arguments(
+        self, mock_relay_stream, mock_close, mock_create
+    ):
+        """Relay receives the public string shape, not buffered fragments."""
+        from run_agent import AIAgent
+
+        captured = {}
+        fake_stream = MagicMock()
+        fake_stream.final_response = None
+        fake_stream.__iter__.return_value = iter([
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0,
+                    tc_id="call_123",
+                    name="search",
+                    arguments='{"q":',
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='"hello"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ])
+
+        def relay_stream_impl(*args, **kwargs):
+            captured["finalizer"] = kwargs["finalizer"]
+            return fake_stream
+
+        mock_relay_stream.side_effect = relay_stream_impl
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([])
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        payload = captured["finalizer"]()
+        tool_calls = payload["choices"][0]["message"]["tool_calls"]
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["function"] == {
+            "name": "search",
+            "arguments": '{"q":"hello"}',
+        }
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_argument_assembly_is_chunk_boundary_invariant(
+        self, mock_close, mock_create
+    ):
+        """Argument bytes are identical across ASCII and Unicode fragment sizes."""
+        import json
+
+        from run_agent import AIAgent
+
+        payload = json.dumps(
+            {"path": "/tmp/x", "content": "héllo wörld 日本語 " * 50},
+            ensure_ascii=False,
+        )
+
+        def assemble(fragment_size):
+            fragments = [
+                payload[i : i + fragment_size]
+                for i in range(0, len(payload), fragment_size)
+            ]
+            chunks = [
+                _make_stream_chunk(tool_calls=[
+                    _make_tool_call_delta(
+                        index=0,
+                        tc_id="call_123",
+                        name="write_file",
+                        arguments=fragments[0],
+                    )
+                ])
+            ]
+            chunks.extend(
+                _make_stream_chunk(tool_calls=[
+                    _make_tool_call_delta(index=0, arguments=fragment)
+                ])
+                for fragment in fragments[1:]
+            )
+            chunks.append(_make_stream_chunk(finish_reason="tool_calls"))
+
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = iter(chunks)
+            mock_create.return_value = mock_client
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.api_mode = "chat_completions"
+            agent._interrupt_requested = False
+
+            response = agent._interruptible_streaming_api_call({})
+            return response.choices[0].message.tool_calls[0].function.arguments
+
+        for fragment_size in (len(payload), 64, 7, 3, 1):
+            arguments = assemble(fragment_size)
+            assert arguments.encode("utf-8") == payload.encode("utf-8")
 
 
 # ── Test: Streaming Callbacks ────────────────────────────────────────────

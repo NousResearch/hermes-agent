@@ -256,7 +256,11 @@ def _configured_terminal_cwd() -> str | None:
     relative to, which is exactly the ambiguity that misroutes worktree edits.
     Only an absolute, sentinel-free value is honored.
     """
-    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+    # Scope-aware: under gateway multiplexing the routed profile's cwd lives in
+    # the per-turn terminal scope, not the process env (#68559).
+    from agent.runtime_cwd import scope_terminal_cwd
+
+    return _sentinel_free_abs_cwd(scope_terminal_cwd() or None)
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
@@ -1128,9 +1132,13 @@ _file_ops_cache: dict = {}
 #   "consecutive":  how many times that exact call has been repeated in a row
 #   "read_history": set of (path, offset, limit) tuples for get_read_files_summary
 #   "dedup":        dict mapping (resolved_path, offset, limit) → mtime float
-#                   Used to skip re-reads of unchanged files.  Reset on
-#                   context compression (the original content is summarised
-#                   away so the model needs the full content again).
+#                   Used to skip re-reads of unchanged files.  Survives
+#                   context compression so unchanged files can resume
+#                   returning lightweight stubs after one recovery read.
+#   "dedup_generation_reads": set of dedup keys whose full content has been
+#                   served since the latest compaction boundary. Cleared on
+#                   compression so the first post-compaction read can recover
+#                   exact bytes that the summary may have omitted.
 #   "read_timestamps": dict mapping resolved_path → modification-time float
 #                      recorded when the file was last read (or written) by
 #                      this task.  Used by write_file and patch to detect
@@ -1234,6 +1242,15 @@ def _cap_read_tracker_data(task_data: dict) -> None:
             try:
                 dedup_hits.pop(next(iter(dedup_hits)))
             except (StopIteration, KeyError):
+                break
+
+    generation_reads = task_data.get("dedup_generation_reads")
+    if generation_reads is not None and len(generation_reads) > _DEDUP_CAP:
+        excess = len(generation_reads) - _DEDUP_CAP
+        for _ in range(excess):
+            try:
+                generation_reads.pop()
+            except KeyError:
                 break
 
     ts = task_data.get("read_timestamps")
@@ -1580,12 +1597,29 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
 
 
 def clear_file_ops_cache(task_id: str = None):
-    """Clear the file operations cache."""
+    """Clear file-operation state for a finished task, or all tasks."""
     with _file_ops_lock:
         if task_id:
             _file_ops_cache.pop(task_id, None)
         else:
             _file_ops_cache.clear()
+
+    with _read_tracker_lock:
+        if task_id:
+            _read_tracker.pop(task_id, None)
+        else:
+            _read_tracker.clear()
+
+    with _patch_failure_lock:
+        if task_id:
+            _patch_failure_tracker.pop(task_id, None)
+        else:
+            _patch_failure_tracker.clear()
+
+    if task_id:
+        file_state.get_registry().forget_task(task_id)
+    else:
+        file_state.get_registry().clear()
 
 
 def _special_file_kind(path) -> str | None:
@@ -1795,7 +1829,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
-                "dedup_hits": {}, "read_timestamps": {},
+                "dedup_hits": {}, "dedup_generation_reads": set(),
+                "read_timestamps": {},
             })
             # Backward-compat for pre-existing tracker entries that predate
             # dedup_hits/read_timestamps (long-lived task or crossed an
@@ -1804,12 +1839,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 task_data["dedup_hits"] = {}
             if "read_timestamps" not in task_data:
                 task_data["read_timestamps"] = {}
+            generation_reads = task_data.setdefault("dedup_generation_reads", set())
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
+            content_served_in_generation = dedup_key in generation_reads
 
         if cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
-                if current_mtime == cached_mtime:
+                if current_mtime == cached_mtime and content_served_in_generation:
                     # Count repeated stub returns so weak tool-followers that
                     # ignore the "refer to earlier result" hint don't burn
                     # their iteration budget in an infinite read loop.  After
@@ -1933,6 +1970,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             # reset its hit counter.  (File either changed or stat failed
             # earlier and we fell through.)
             task_data["dedup_hits"].pop(dedup_key, None)
+            task_data.setdefault("dedup_generation_reads", set()).add(dedup_key)
             task_data["read_history"].add((path, offset, limit))
             if task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
@@ -2011,30 +2049,29 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
 
 
 def reset_file_dedup(task_id: str = None):
-    """Clear the deduplication cache for file reads.
+    """Advance the read-dedup generation after context compression.
 
-    Called after context compression — the original read content has been
-    summarised away, so the model needs the full content if it reads the
-    same file again.  Without this, reads after compression would return
-    a "file unchanged" stub pointing at content that no longer exists in
-    context.
+    Called after context compression.  The per-key ``dedup`` mtime map is
+    preserved, but the generation-read set is cleared. The first unchanged
+    read of each key after compaction therefore returns full content that may
+    have been summarized away; later reads in the same generation return the
+    lightweight stub. Stub-hit counters are also cleared so the hard block
+    restarts fresh (issue #84857).
 
-    Call with a task_id to clear just that task, or without to clear all.
+    Call with a task_id to reset just that task, or without to reset all.
     """
     with _read_tracker_lock:
         if task_id:
             task_data = _read_tracker.get(task_id)
             if task_data:
-                if "dedup" in task_data:
-                    task_data["dedup"].clear()
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
+                task_data.setdefault("dedup_generation_reads", set()).clear()
         else:
             for task_data in _read_tracker.values():
-                if "dedup" in task_data:
-                    task_data["dedup"].clear()
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
+                task_data.setdefault("dedup_generation_reads", set()).clear()
 
 
 def notify_other_tool_call(task_id: str = "default"):
@@ -2550,6 +2587,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
+                order: str = "discovery",
                 task_id: str = "default") -> str:
     """Search for content or files."""
     try:
@@ -2566,6 +2604,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             file_glob or "",
             limit,
             offset,
+            order,
         )
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
@@ -2611,7 +2650,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
             pattern=pattern, path=path, target=target, file_glob=file_glob,
-            limit=limit, offset=offset, output_mode=output_mode, context=context
+            limit=limit, offset=offset, output_mode=output_mode, context=context,
+            order=order,
         )
         omitted = _filter_read_blocked_search_results(result, task_id)
         if hasattr(result, 'matches'):
@@ -2803,7 +2843,7 @@ def _is_openai_family_main() -> bool:
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. On macOS, broad searches above the user home automatically skip TCC-protected folders (Desktop, Documents, Downloads, Library, Movies, Music, Pictures); target one directly when access is intentional.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. On macOS, broad searches above the user home automatically skip TCC-protected folders (Desktop, Documents, Downloads, Library, Movies, Music, Pictures); target one directly when access is intentional.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls. Discovery order is the fast bounded default; exact global newest-first order is an explicit opt-in and may scan the full tree.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -2813,6 +2853,7 @@ SEARCH_FILES_SCHEMA = {
             "file_glob": {"type": "string", "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)"},
             "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50)", "default": 50},
             "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
+            "order": {"type": "string", "enum": ["discovery", "modified"], "description": "File-search order: 'discovery' is fast bounded traversal order; 'modified' is exact global newest-first and may scan the full tree; ignored for content", "default": "discovery"},
             "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
             "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
         },
@@ -2872,7 +2913,8 @@ def _handle_search_files(args, **kw):
     return search_tool(
         pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
-        output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
+        output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
+        order=args.get("order", "discovery"), task_id=tid)
 
 
 def _read_file_schema_overrides():

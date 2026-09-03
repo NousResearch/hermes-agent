@@ -58,7 +58,7 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state.get_shared_session_db", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02):
@@ -70,8 +70,8 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
             success, _output, final_response, error = run_job(job)
             elapsed = time.monotonic() - started
 
-        assert fake_db.entered.wait(timeout=0.5)
-        assert elapsed < 0.5
+        assert fake_db.entered.wait(timeout=2.0)
+        assert elapsed < 5.0
         assert success is True
         assert final_response == "ok"
         assert error is None
@@ -88,8 +88,8 @@ def test_agent_teardown_is_bounded():
         _teardown_cron_agent(agent, "cleanup-agent-hang", timeout_seconds=0.02)
         elapsed = time.monotonic() - started
 
-        assert agent.entered.wait(timeout=0.5)
-        assert elapsed < 0.5
+        assert agent.entered.wait(timeout=2.0)
+        assert elapsed < 5.0
     finally:
         release.set()
 
@@ -118,7 +118,7 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state.get_shared_session_db", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02), \

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import ssl
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -17,6 +18,27 @@ def _coerce_insecure(ssl_verify: Any) -> bool:
     if isinstance(ssl_verify, str) and ssl_verify.strip().lower() in {"false", "0", "no", "off"}:
         return True
     return False
+
+
+_CA_CONTEXTS: dict[str, ssl.SSLContext] = {}
+_CA_CONTEXTS_LOCK = threading.Lock()
+
+
+def _context_for_ca_bundle(ca_path: str) -> ssl.SSLContext:
+    """One ``SSLContext`` per CA bundle path, process-wide.
+
+    ``ssl.create_default_context(cafile=...)`` parses the whole bundle each
+    call. Every AIAgent (and every delegated child) resolves verify for its
+    own client, so an env/config CA bundle used to cost one parsed context —
+    and, because sharing keys on context identity, one private connection
+    pool — per agent. An ``SSLContext`` is safe to share across connections.
+    """
+    with _CA_CONTEXTS_LOCK:
+        ctx = _CA_CONTEXTS.get(ca_path)
+        if ctx is None:
+            ctx = ssl.create_default_context(cafile=ca_path)
+            _CA_CONTEXTS[ca_path] = ctx
+        return ctx
 
 
 def resolve_httpx_verify(
@@ -55,7 +77,7 @@ def resolve_httpx_verify(
     if effective_ca:
         ca_path = str(Path(effective_ca).expanduser())
         if os.path.isfile(ca_path):
-            return ssl.create_default_context(cafile=ca_path)
+            return _context_for_ca_bundle(ca_path)
         logger.warning(
             "CA bundle path does not exist: %s — falling back to default certificates",
             effective_ca,

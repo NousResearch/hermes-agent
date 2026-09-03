@@ -103,6 +103,14 @@ def main():
         if msg.get("method") == "workspace/didChangeWatchedFiles":
             continue
 
+        if msg.get("method") == "workspace/didChangeWorkspaceFolders":
+            # Multi-root tests observe attached folders through this log.
+            log_path = os.environ.get("MOCK_LSP_FOLDERS_LOG")
+            if log_path:
+                with open(log_path, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(msg.get("params")) + "\n")
+            continue
+
         if msg.get("method") in {"textDocument/didOpen", "textDocument/didChange"}:
             params = msg.get("params") or {}
             td = params.get("textDocument") or {}

@@ -517,7 +517,7 @@ class TestRestorePrimaryRuntime:
 
         assert result is True
         assert agent._credential_pool is primary_pool
-        load_pool.assert_called_once_with("custom:gemini-display")
+        load_pool.assert_called_once_with("gemini-no-filter")
         agent._swap_credential.assert_called_once_with(primary_pool.select.return_value)
 
     def test_restore_named_custom_pool_wrong_endpoint_fails_closed(self):

@@ -2,7 +2,11 @@
 
 from typing import Any
 
-from agent.portal_tags import get_conversation_context, nous_portal_tags
+from agent.portal_tags import (
+    get_affinity_scope,
+    get_conversation_context,
+    nous_portal_tags,
+)
 from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
@@ -50,14 +54,17 @@ class NousProfile(ProviderProfile):
         # ``conversation=`` tag but NO sticky key at all, and each one routed
         # independently of the conversation it belongs to. Reading the same
         # ambient contextvar the tag already uses fixes that with zero
-        # per-call-site plumbing.
+        # per-call-site plumbing; a host-declared routing scope (#96811) wins
+        # over it when one was published for this turn.
         #
         # For the main loop the two agree anyway under the default
         # ``compression.in_place: true`` (#38763), where compaction keeps the
         # session id; the ambient root additionally keeps the key stable for
         # installs that opt back into rotating compaction, and across
         # delegate-subagent trees.
-        sticky_key = _cache_scope_from_session_id(get_conversation_context() or session_id)
+        sticky_key = _cache_scope_from_session_id(
+            get_affinity_scope() or get_conversation_context() or session_id
+        )
         if sticky_key:
             body["session_id"] = sticky_key
         provider_preferences = context.get("provider_preferences")

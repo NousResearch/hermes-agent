@@ -111,6 +111,41 @@ async def update_skills_hub(
     return {"ok": True, "pid": proc.pid, "name": "skills-update"}
 
 
+@hub_router.get("/api/skills/hub/official")
+async def list_official_skills(profile: Optional[str] = None):
+    """List the ENTIRE built-in optional-skills catalog shipped with the repo.
+
+    Backs the desktop Capabilities → Skills list: every official optional
+    skill appears alongside the installed skills with an install affordance.
+    Local-checkout scan only (no network), plus the per-profile installed
+    map so the UI can mark rows that are already installed.
+    """
+
+    def _run():
+        from tools.skills_hub import OptionalSkillSource
+
+        installed = _installed_hub_identifiers(profile)
+        out = []
+        for m in OptionalSkillSource().list_local():
+            payload = _skill_meta_to_payload(m)
+            ident = payload.get("identifier") or ""
+            # identifier format: official/<category>/<skill> (category dirs
+            # mirror skills/): surface the category for row subtitles.
+            rel = ident.split("/", 1)[-1] if "/" in ident else ident
+            payload["category"] = rel.split("/", 1)[0] if "/" in rel else "general"
+            payload["installed"] = ident in installed
+            out.append(payload)
+        return {"skills": out}
+
+    try:
+        return await asyncio.to_thread(_run)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("official skills catalog listing failed")
+        raise HTTPException(status_code=502, detail=f"Official catalog failed: {exc}")
+
+
 @hub_router.get("/api/skills/hub/sources")
 async def list_skills_hub_sources(profile: Optional[str] = None):
     """List the configured skill-hub sources and installed-skill provenance.

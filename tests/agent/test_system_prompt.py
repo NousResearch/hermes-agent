@@ -66,6 +66,50 @@ class TestContextFileCwd:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
 
+    def test_desktop_launch_artifact_does_not_load_bundled_agents_md(
+        self, monkeypatch, tmp_path
+    ):
+        import agent.runtime_cwd as runtime_cwd
+
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", tmp_path.resolve())
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "AGENTS.md").write_text("bundled contributor instructions")
+
+        agent = _make_agent(
+            platform="desktop",
+            _context_cwd_is_launch_artifact=True,
+        )
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
+        ):
+            context = build_system_prompt_parts(agent)["context"]
+
+        assert "bundled contributor instructions" not in context
+
+    def test_desktop_explicit_install_tree_workspace_still_loads_agents_md(
+        self, monkeypatch, tmp_path
+    ):
+        import agent.runtime_cwd as runtime_cwd
+
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", tmp_path.resolve())
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "AGENTS.md").write_text("chosen workspace instructions")
+
+        agent = _make_agent(
+            platform="desktop",
+            _context_cwd_is_launch_artifact=False,
+        )
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
+        ):
+            context = build_system_prompt_parts(agent)["context"]
+
+        assert "chosen workspace instructions" in context
+
 
 def _stable_prompt(agent):
     with (

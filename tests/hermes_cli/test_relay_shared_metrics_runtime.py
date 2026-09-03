@@ -25,6 +25,12 @@ class _Request:
         self.content = content
 
 
+class _ToolExecutionResult:
+    def __init__(self, result: Any, annotation: Any = None) -> None:
+        self.result = result
+        self.annotation = annotation
+
+
 class _Relay:
     def __init__(self) -> None:
         self.events: list[tuple[Any, ...]] = []
@@ -39,6 +45,7 @@ class _Relay:
             Agent="agent", Function="function", Tool="tool"
         )
         self.LLMRequest = _Request
+        self.ToolExecutionResult = _ToolExecutionResult
         self.scope = SimpleNamespace(
             push=self._scope_push,
             pop=self._scope_pop,
@@ -174,11 +181,13 @@ class _Relay:
     def _tool_call_end(
         self,
         handle: Any,
-        result: dict[str, Any],
+        result: _ToolExecutionResult,
         **kwargs: Any,
     ) -> None:
+        assert isinstance(result, _ToolExecutionResult)
+        payload = result.result
         start = self._tool_starts.pop(handle)
-        self.events.append(("tool.call_end", handle, result, kwargs))
+        self.events.append(("tool.call_end", handle, payload, kwargs))
         event = SimpleNamespace(
             kind="scope",
             category="tool",
@@ -190,7 +199,7 @@ class _Relay:
                 **kwargs["metadata"],
                 "otel.status_code": "OK",
             },
-            data=result,
+            data=payload,
         )
         for callback in list(self._callbacks.values()):
             callback(event)

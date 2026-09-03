@@ -2253,7 +2253,7 @@ class TestConcurrentToolExecution:
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
-            result = agent._invoke_tool("todo", {"todos": []}, "task-1")
+            result = agent._invoke_tool("todo_list", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
 
@@ -2345,7 +2345,7 @@ class TestConcurrentToolExecution:
         """Sequential and concurrent agent-level paths share post-hook ownership."""
         from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
 
-        for tool_name in ("todo", "session_search", "memory", "clarify", "delegate_task"):
+        for tool_name in ("todo_list", "session_search", "memory", "clarify", "delegate_task"):
             assert agent_runtime_owns_post_tool_hook(agent, tool_name) is True
 
         agent._context_engine_tool_names = {"context_query"}
@@ -2491,7 +2491,7 @@ class TestAgentRuntimePostHookOwnershipSync:
     """Exercise post-hook ownership through both agent-runtime tool paths."""
 
     _CASES = (
-        ("todo", {"todos": []}),
+        ("todo_list", {"todos": []}),
         ("session_search", {"query": "needle"}),
         ("memory", {"action": "view", "target": "memory"}),
         ("clarify", {"question": "Continue?"}),
@@ -2501,7 +2501,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("annotate_preview", {"action": "clear"}),
         ("read_window_below", {}),
         ("setup_mcp", {"server": "linear", "action": "install"}),
-        ("tour", {"action": "stop"}),
+        ("gui_tour", {"action": "stop"}),
         ("delegate_task", {"goal": "Check the child path"}),
     )
 
@@ -3513,12 +3513,12 @@ class TestRunConversation:
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
 
-    def test_truly_empty_response_retries_3_times_then_empty(self, agent):
-        """Truly empty response (no content, no reasoning) retries 3 times then falls through to (empty)."""
+    def test_truly_empty_response_stops_after_repeated_empty(self, agent):
+        """Repeated empty responses stop after one retry and return an explanation."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         empty_resp = _mock_response(content=None, finish_reason="stop")
-        # 4 responses: 1 original + 3 nudge retries, all empty
+        # Extra responses prove the guard stops consuming after repetition.
         agent.client.chat.completions.create.side_effect = [
             empty_resp, empty_resp, empty_resp, empty_resp,
         ]
@@ -3532,7 +3532,7 @@ class TestRunConversation:
         # #34452: explanation replaces the bare "(empty)" sentinel.
         assert result["final_response"] != "(empty)"
         assert "No reply:" in result["final_response"]
-        assert result["api_calls"] == 4  # 1 original + 3 retries
+        assert result["api_calls"] == 2  # 1 original + 1 retry
 
     def test_deterministic_empty_stops_retries_early(self, agent):
         """NS-503: consecutive zero-output-token empties with identical
@@ -3588,10 +3588,11 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["api_calls"] == 4  # legacy: 1 original + 3 retries
 
-    def test_empty_without_usage_keeps_full_retry_budget(self, agent):
-        """NS-503 fail-open: no usage data means no evidence of a
-        deterministic empty — legacy 3-retry behaviour must be preserved
-        (this is the flaky-provider case retries exist for)."""
+    def test_empty_without_usage_stops_after_one_retry_and_logs_calls(
+        self, agent, caplog
+    ):
+        """Two complete empty responses are enough evidence to stop even when
+        the provider omits usage; both attempts remain observable."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         empty_resp = _mock_response(content=None, finish_reason="stop")
@@ -3600,10 +3601,13 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
+            caplog.at_level(logging.INFO, logger="agent.conversation_loop"),
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["api_calls"] == 4  # unchanged: 1 original + 3 retries
+        assert result["api_calls"] == 2
+        assert agent.session_api_calls == 2
+        assert caplog.text.count("usage=unavailable") == 2
 
     def test_truly_empty_response_succeeds_on_nudge(self, agent):
         """Model produces content after being nudged for empty response."""
@@ -4340,11 +4344,11 @@ class TestRunConversation:
         assert requested_caps == [65536, 65536]
 
     def test_ollama_glm_stop_after_tools_without_terminal_boundary_requests_continuation(self, agent):
-        """Ollama-hosted GLM responses can misreport truncated output as stop."""
+        """Local Ollama-hosted GLM (no :cloud suffix) misreports truncated output as stop."""
         self._setup_agent(agent)
         agent.base_url = "http://localhost:11434/v1"
         agent._base_url_lower = agent.base_url.lower()
-        agent.model = "glm-5.1:cloud"
+        agent.model = "glm-4-9b"  # local GLM — no :cloud suffix
 
         tool_turn = _mock_response(
             content="",
@@ -4384,11 +4388,18 @@ class TestRunConversation:
         assert third_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in third_call_messages[-1]["content"]
 
-
-
-
-
-
+    @pytest.mark.parametrize("base_url, model", [
+        ("https://ollama.com/v1", "glm-5.3-flash"),      # Ollama Cloud host (#72316)
+        ("http://localhost:11434/v1", "glm-5.1:cloud"),  # :cloud via local proxy (#98406)
+    ])
+    def test_ollama_cloud_glm_stop_is_never_rewritten(self, agent, base_url, model):
+        """Ollama Cloud reports finish_reason faithfully — an unpunctuated stop stays stop."""
+        self._setup_agent(agent)
+        agent.base_url = base_url
+        agent._base_url_lower = base_url.lower()
+        agent.model = model
+        unpunctuated = SimpleNamespace(content="Based on the results the best next step is to update the config", tool_calls=None)
+        assert agent._should_treat_stop_as_truncated("stop", unpunctuated, [{"role": "tool", "content": "r"}]) is False
 
     def test_length_thinking_exhausted_skips_continuation(self, agent):
         """When finish_reason='length' but content is only thinking, skip retries."""
@@ -4414,7 +4425,7 @@ class TestRunConversation:
         # Should have a user-friendly response (not None)
         assert result["final_response"] is not None
         assert "Thinking Budget Exhausted" in result["final_response"]
-        assert "/thinkon" in result["final_response"]
+        assert "/reasoning" in result["final_response"]
 
 
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):

@@ -256,17 +256,13 @@ class TestWebSearchTavily:
             assert result["data"]["web"][0]["title"] == "Result"
 
     def test_search_keyless_dispatch(self):
-        """Keyless Tavily routes through the ring; pinned tavily starts at
-        tavily and the ring searcher sends the keyless headers."""
-        from plugins.web import keyless_mcp
-
+        """Opt-in keyless Tavily hits Tavily's own endpoint, not the ring."""
         mock_response = _ok_response({
             "results": [{"title": "Result", "url": "https://r.com", "content": "desc"}]
         })
 
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
-             patch.object(keyless_mcp, "_vendor_pinned", lambda n: n == "tavily"), \
-             patch("requests.post", return_value=mock_response) as mock_post, \
+             patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response) as mock_post, \
              patch("tools.interrupt.is_interrupted", return_value=False):
             os.environ.pop("TAVILY_API_KEY", None)
             from tools.web_tools import web_search_tool
@@ -275,6 +271,14 @@ class TestWebSearchTavily:
             headers = mock_post.call_args.kwargs["headers"]
             assert headers["X-Tavily-Access-Mode"] == "keyless"
             assert headers["X-Client-Name"] == "hermes-agent"
+            assert "Authorization" not in headers
+            assert "api.tavily.com/search" in mock_post.call_args.args[0]
+
+    def test_tavily_is_not_in_keyless_ring(self):
+        from plugins.web.keyless_mcp import _KEYLESS_RING, _KEYLESS_SEARCHERS, _KEYLESS_EXTRACTORS
+        assert "tavily" not in _KEYLESS_RING
+        assert "tavily" not in _KEYLESS_SEARCHERS
+        assert "tavily" not in _KEYLESS_EXTRACTORS
 
 
 # ─── web_extract_tool (Tavily dispatch) ───────────────────────────────────────

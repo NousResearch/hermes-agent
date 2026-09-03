@@ -185,10 +185,11 @@ def _read_allowlist_env(env_var: str) -> str:
     borrowing the process value.  Unscoped callers (single-profile CLI /
     admin endpoints) keep the legacy ``os.getenv`` read.
 
-    TODO(profile-secrets): the grant mirror below still WRITES through
-    ``hermes_cli.config.save_env_value`` / ``remove_env_value``, which target
-    the root ``.env`` — those writes need a profile-aware counterpart before
-    pairing grants can be mirrored correctly under multiplexing.
+    The grant mirror below writes through ``hermes_cli.config.save_env_value``
+    / ``remove_env_value``: the file target is the active profile's ``.env``
+    (``get_env_path()`` honors the profile-home override) and, under
+    multiplexing, the in-process publish updates the installed scope mapping
+    rather than the shared ``os.environ`` (#88441).
     """
     try:
         from agent.secret_scope import UnscopedSecretError, get_secret

@@ -142,6 +142,66 @@ def flush_pending_to_file(
     return flushed
 
 
+def flush_overflow_to_file(
+    overflow_by_session: Dict[str, Any],
+    *,
+    reason: str = "shutdown",
+) -> int:
+    """Serialise the FIFO overflow tails (``queued_events``) to disk.
+
+    Sibling of :func:`flush_pending_to_file` for the second half of the
+    gateway FIFO (#99882): the adapter slot holds the queue head, and the
+    per-session ``SessionState.conversation.queued_events`` list holds the
+    tail.  Shutdown flushed only the slot, so every follow-up parked in
+    overflow at restart time vanished with the process.  Each overflow
+    event is written as its own payload in the same shape as a slot flush
+    so ``recover_pending_to_db`` replays them unchanged; a ``seq`` field
+    preserves arrival order within a session.
+
+    Returns the number of events flushed.
+    """
+    if not overflow_by_session:
+        return 0
+
+    flush_dir = _get_flush_dir()
+    ts = int(time.time())
+    flushed = 0
+
+    for session_key, events in list(overflow_by_session.items()):
+        if not session_key or not events:
+            continue
+        for seq, value in enumerate(list(events)):
+            if value is None:
+                continue
+            try:
+                serialised = _serialise_value(value)
+                if serialised is None:
+                    continue
+                _write_payload(
+                    flush_dir,
+                    {
+                        "session_key": session_key,
+                        "reason": reason,
+                        "ts": ts,
+                        "seq": seq,
+                        "data": serialised,
+                    },
+                )
+                flushed += 1
+            except Exception as exc:
+                logger.debug(
+                    "Failed to flush overflow message for %s: %s",
+                    session_key, exc,
+                )
+
+    if flushed:
+        logger.info(
+            "Flushed %d queued overflow message(s) to %s (reason=%s)",
+            flushed, flush_dir, reason,
+        )
+    return flushed
+
+
 # Reason tag for transcript messages dropped by the in-memory pending cap
 # during live operation (#78182). These payloads carry the full transcript
 # message dict so they can be replayed verbatim once the DB recovers.
@@ -312,15 +372,16 @@ def recover_pending_to_db(
     # Use the provided SessionDB or open one on the default path.
     own_db = False
     if session_db is None:
-        from hermes_state import SessionDB
-        session_db = SessionDB()
+        from hermes_state import get_shared_session_db
+        session_db = get_shared_session_db()
         own_db = True
 
     def _close_owned_db() -> None:
         if not own_db:
             return
         try:
-            session_db.close()
+            from hermes_state import release_or_close
+            release_or_close(session_db)
         except Exception:
             pass
 

@@ -1102,6 +1102,11 @@ class _AsyncGeminiChatNamespace:
 class GeminiNativeClient:
     """Minimal OpenAI-SDK-compatible facade over Gemini's native REST API."""
 
+    # Declared for agent/auxiliary_client.py: already a complete client, so it
+    # is never re-dispatched through a wire adapter. (No HERMES_SKIP_ASYNC_WRAP
+    # — the async path has a real conversion, AsyncGeminiNativeClient.)
+    HERMES_SKIP_TRANSPORT_WRAP = True
+
     def __init__(
         self,
         *,

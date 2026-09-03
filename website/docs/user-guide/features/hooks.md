@@ -1876,11 +1876,12 @@ Secrets: prefer `secret_env` (the name of an environment variable, typically set
 
 ### Wire format
 
-Each firing POSTs a JSON body with the same top-level shape as shell hooks' stdin, plus delivery metadata:
+Each firing POSTs a JSON body with the same top-level shape as shell hooks' stdin, plus delivery metadata. `profile` names the Hermes profile that emitted the event (`"default"` outside profiles), so receivers behind a multiplexed gateway can tell profiles apart:
 
 ```json
 {
   "hook_event_name": "on_session_end",
+  "profile": "default",
   "tool_name": null,
   "tool_input": null,
   "session_id": "sess_abc123",

@@ -348,6 +348,85 @@ class TestNormalizeConverseResponse:
         assert tool_calls[0].function.name == "read_file"
         assert json.loads(tool_calls[0].function.arguments) == {"path": "/tmp/test.txt"}
 
+    def test_redacted_reasoning_is_preserved_for_replay(self):
+        from agent.bedrock_adapter import normalize_converse_response
+
+        response = {
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"reasoningContent": {"redactedContent": b"opaque-bedrock-bytes"}},
+                        {"toolUse": {"toolUseId": "call_1", "name": "read_file", "input": {}}},
+                    ],
+                },
+            },
+            "stopReason": "tool_use",
+            "usage": {"inputTokens": 1, "outputTokens": 2},
+        }
+
+        result = normalize_converse_response(response)
+        details = result.choices[0].message.reasoning_details
+        assert details == [{
+            "type": "redacted_thinking",
+            "data": "b3BhcXVlLWJlZHJvY2stYnl0ZXM=",
+        }]
+
+
+    def test_redacted_reasoning_replays_as_bedrock_content_block(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        _system, messages = convert_messages_to_converse([
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_details": [{
+                    "type": "redacted_thinking",
+                    "data": "b3BhcXVlLWJlZHJvY2stYnl0ZXM=",
+                }],
+                "tool_calls": [{
+                    "id": "call_1",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ])
+        assistant = next(m for m in messages if m["role"] == "assistant")
+        assert assistant["content"][0] == {
+            "reasoningContent": {"redactedContent": b"opaque-bedrock-bytes"}
+        }
+
+    def test_interleaved_reasoning_and_tools_keep_exact_order(self):
+        from agent.bedrock_adapter import convert_messages_to_converse, normalize_converse_response
+
+        normalized = normalize_converse_response({
+            "output": {"message": {"role": "assistant", "content": [
+                {"reasoningContent": {"redactedContent": b"r1"}},
+                {"toolUse": {"toolUseId": "t1", "name": "one", "input": {"n": 1}}},
+                {"reasoningContent": {"redactedContent": b"r2"}},
+                {"toolUse": {"toolUseId": "t2", "name": "two", "input": {"n": 2}}},
+            ]}},
+            "stopReason": "tool_use",
+        })
+        msg = normalized.choices[0].message
+        _system, replay = convert_messages_to_converse([{
+            "role": "user", "content": "go",
+        }, {
+            "role": "assistant", "content": msg.content,
+            "tool_calls": [{
+                "id": tc.id, "type": "function",
+                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+            } for tc in msg.tool_calls],
+            "reasoning_details": msg.reasoning_details,
+            "bedrock_content_blocks": msg.bedrock_content_blocks,
+        }])
+        blocks = replay[1]["content"]
+        assert [next(iter(block)) for block in blocks] == [
+            "reasoningContent", "toolUse", "reasoningContent", "toolUse"
+        ]
+        assert blocks[0]["reasoningContent"]["redactedContent"] == b"r1"
+        assert blocks[2]["reasoningContent"]["redactedContent"] == b"r2"
+
 
 
 
@@ -376,6 +455,27 @@ class TestNormalizeConverseStreamEvents:
         assert result.choices[0].finish_reason == "stop"
         assert result.usage.prompt_tokens == 5
         assert result.usage.completion_tokens == 3
+
+    def test_redacted_reasoning_stream_is_preserved(self):
+        from agent.bedrock_adapter import normalize_converse_stream_events
+
+        events = {"stream": [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}},
+            {"contentBlockDelta": {
+                "contentBlockIndex": 0,
+                "delta": {"reasoningContent": {"redactedContent": b"stream-secret"}},
+            }},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": {"inputTokens": 2, "outputTokens": 3}}},
+        ]}
+
+        result = normalize_converse_stream_events(events)
+        assert result.choices[0].message.reasoning_details == [{
+            "type": "redacted_thinking",
+            "data": "c3RyZWFtLXNlY3JldA==",
+        }]
 
     def test_tool_use_stream(self):
         from agent.bedrock_adapter import normalize_converse_stream_events

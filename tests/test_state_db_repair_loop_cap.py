@@ -82,6 +82,13 @@ class TestPersistentAttemptCap:
         assert report["repaired"] is False
         assert "Manual recovery required" in report["error"]
         assert ".recover" in report["error"]
+        assert "sessions recover" in report["error"]
+        assert "sqlite3" in report["error"]
+        # The terminal error must not direct a raw sqlite3 shell at the
+        # live database: a WAL-reset-vulnerable CLI (Debian/Ubuntu 3.45.x/
+        # 3.46.x, pre-#100368 forensics) unlinks the live WAL/SHM pair
+        # and splits the store into two generations.
+        assert 'sqlite3 state.db ".recover"' not in report["error"]
         assert len(_existing_malformed_backups(db)) == backups_before
 
     def test_changed_file_resets_the_budget(self, tmp_path):

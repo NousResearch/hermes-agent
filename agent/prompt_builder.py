@@ -7,6 +7,7 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
+import queue
 import sys
 import threading
 import contextvars
@@ -56,6 +57,56 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
+
+
+# Default read deadline for context files (SOUL.md, AGENTS.md, .cursorrules,
+# ...); overridable via ``context_file_read_timeout`` in config.yaml.
+# Intentionally short: network-backed filesystems (iCloud Drive, OneDrive,
+# NFS) can fault-in an evicted file and block a cold read indefinitely, which
+# stalls system-prompt assembly before the first turn.
+_CONTEXT_FILE_READ_TIMEOUT_SECS = 5.0
+
+
+def _get_context_file_read_timeout() -> float:
+    """``context_file_read_timeout`` from config.yaml, else the 5s default."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        val = load_config_readonly().get("context_file_read_timeout")
+        if isinstance(val, (int, float)) and val > 0:
+            return float(val)
+    except Exception as e:
+        logger.debug("Could not read context_file_read_timeout from config: %s", e)
+    return _CONTEXT_FILE_READ_TIMEOUT_SECS
+
+
+def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Optional[str]:
+    """``path.read_text()`` on a daemon thread so a slow file can't stall startup.
+
+    Returns the text, or ``None`` after *timeout* seconds (logged at WARNING;
+    the orphaned reader thread finishes on its own). Read errors propagate to
+    the caller exactly as a direct ``read_text`` would, so existing
+    ``try/except`` handling at each site is unchanged.
+    """
+    if timeout is None:
+        timeout = _get_context_file_read_timeout()
+    result: "queue.Queue[tuple[bool, object]]" = queue.Queue(maxsize=1)
+
+    def _reader() -> None:
+        try:
+            result.put((True, path.read_text(encoding="utf-8")))
+        except Exception as exc:  # re-raised on the caller thread
+            result.put((False, exc))
+
+    threading.Thread(target=_reader, daemon=True, name=f"context-read:{path.name}").start()
+    try:
+        ok, value = result.get(timeout=timeout)
+    except queue.Empty:
+        logger.warning("Context file %s read timed out after %.1fs; skipping", path, timeout)
+        return None
+    if ok:
+        return value  # type: ignore[return-value]
+    raise value  # type: ignore[misc]
 
 
 def _scan_context_content(content: str, filename: str) -> str:
@@ -230,14 +281,20 @@ def build_memory_guidance(memory_enabled: bool = True, profile_enabled: bool = T
             "disabled, so never target='memory'. "
         )
     return frame + (
-        "Save proactively — storage has a hard character budget, and when "
-        "it fills, replace or consolidate stale entries in the same batch "
+        "Skills come first: when you learn something while doing a task — a "
+        "procedure, a pitfall, and the user's preferences and corrections "
+        "for that kind of work — record it in the skill you used or built "
+        "for the task (skill_manage), where it loads only when relevant. "
+        "Memory is the narrow exception for facts that apply to EVERY "
+        "session regardless of task (who the user is, environment facts, "
+        "standing conventions with no task home); it has a hard character "
+        "budget, so when it fills, replace or consolidate stale entries "
         "rather than skipping the save. Write entries as declarative facts, "
         "not instructions to yourself: 'User prefers concise responses' ✓ — "
         "'Always respond concisely' ✗ (imperative phrasing gets re-read as "
         "a directive in later sessions and can override the user's current "
-        "request). Route by longevity: a fact stale within a week belongs "
-        "in session history; procedures and workflows belong in skills."
+        "request). A fact stale within a week belongs in session history; "
+        "procedures and workflows belong in skills."
     )
 
 
@@ -416,7 +473,9 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
+# "muse" = Meta Muse Spark: on defaults it answers in prose with 0 tool calls
+# and the turn closes on finish_reason=stop (#96550).
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek", "muse")
 
 # Model name substrings whose sessions receive OPENAI_MODEL_EXECUTION_GUIDANCE
 # (execution discipline: tool persistence, mandatory tool use for arithmetic,
@@ -428,13 +487,14 @@ TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm",
 # failure modes on those families (financial math in prose, no read-back after
 # external writes, identifier "repair", completeness claims despite count
 # mismatches). GLM's tool-calls-as-plain-text stall (#53847) and MiMo (#41874)
-# are covered here too. Gemini/Gemma are excluded — they get the more specific
+# are covered here too. Muse Spark (#96550) stops after a chat-only turn on
+# defaults. Gemini/Gemma are excluded — they get the more specific
 # GOOGLE_MODEL_OPERATIONAL_GUIDANCE block instead. Claude is excluded because
 # it does not exhibit these failure modes; users can opt any model in via
 # config.yaml `agent.execution_guidance: true` or a substring list.
 EXECUTION_GUIDANCE_MODELS = (
     "gpt", "codex", "grok",
-    "deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral",
+    "deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral", "muse",
 )
 
 # Universal "finish the job" guidance — applied to ALL models, not gated
@@ -1173,6 +1233,24 @@ _WINDOWS_BASH_SHELL_HINT = (
 )
 
 
+def _tenv_read(name: str, default: str = "") -> str:
+    """Scope-aware TERMINAL_* read (tools.terminal_scope.terminal_env).
+
+    The per-turn terminal scope installed by the multiplexing gateway carries
+    the active profile's terminal settings; a raw os.getenv would read a value
+    a previous profile's turn pinned into the process env.
+
+    Only an import failure falls back: an active refusal scope must raise —
+    swapping it for the ambient process value would defeat the fail-closed
+    boundary.
+    """
+    try:
+        from tools.terminal_scope import terminal_env
+    except ImportError:
+        return os.getenv(name, default)
+    return terminal_env(name, default)
+
+
 def _probe_remote_backend(env_type: str) -> str | None:
     """Run a tiny introspection command inside the active terminal backend.
 
@@ -1181,7 +1259,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     per process. Used only for non-local backends where the agent's tools
     operate on a different machine than the host Hermes runs on.
     """
-    cwd_hint = os.getenv("TERMINAL_CWD", "")
+    cwd_hint = _tenv_read("TERMINAL_CWD", "")
     cache_key = (env_type, cwd_hint)
     cached = _BACKEND_PROBE_CACHE.get(cache_key)
     if cached is not None:
@@ -1196,6 +1274,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
         _BACKEND_PROBE_CACHE[cache_key] = ""
         return None
 
+    env = None
     try:
         config = _get_env_config()
         # Build the environment the same way tools/terminal_tool.py does for a
@@ -1276,6 +1355,20 @@ def _probe_remote_backend(env_type: str) -> str | None:
         logger.debug("Backend probe failed: %s", e)
         _BACKEND_PROBE_CACHE[cache_key] = ""
         return None
+    finally:
+        # The probe only needs a one-shot `uname`; without teardown the
+        # backend leaves a second idle sandbox (task_id="prompt-backend-probe")
+        # running for the whole process lifetime next to the agent's own one.
+        # ssh is left alone: it has no task-scoped sandbox and its cleanup()
+        # closes a ControlMaster socket (keyed by user@host:port) shared with
+        # the agent's real environment; ControlPersist expires it anyway.
+        if env is not None and env_type != "ssh":
+            try:
+                from tools.terminal_tool import _cleanup_env
+
+                _cleanup_env(env, force_remove=True)
+            except Exception:
+                logger.debug("Backend probe cleanup failed", exc_info=True)
 
     # Parse key=value lines back into a tidy summary.
     parsed: dict[str, str] = {}
@@ -1330,7 +1423,7 @@ def build_environment_hints() -> str:
 
     hints: list[str] = []
 
-    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    backend = (_tenv_read("TERMINAL_ENV") or "local").strip().lower()
     is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend)
 
     if not is_remote_backend:
@@ -1778,7 +1871,8 @@ def build_skills_system_prompt(
     External skill directories (``skills.external_dirs`` in config.yaml) are
     scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
     are read-only — they appear in the index but new skills are always created
-    in the local dir.  Local skills take precedence when names collide.
+    in the local dir (or ``skills.create_dir`` when configured).  Local skills
+    take precedence when names collide.
 
     ``compact_categories`` (e.g. from the coding posture — see
     agent/coding_context.py) demotes whole categories to a names-only line in
@@ -2216,7 +2310,7 @@ def load_soul_md(
     if not soul_path.exists():
         return None
     try:
-        content = soul_path.read_text(encoding="utf-8").strip()
+        content = (_read_text_with_timeout(soul_path) or "").strip()
         if not content:
             return None
         content = _scan_context_content(content, "SOUL.md")
@@ -2236,7 +2330,7 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     if not hermes_md_path:
         return ""
     try:
-        content = hermes_md_path.read_text(encoding="utf-8").strip()
+        content = (_read_text_with_timeout(hermes_md_path) or "").strip()
         if not content:
             return ""
         content = _strip_yaml_frontmatter(content)
@@ -2306,7 +2400,7 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
             if not candidate.exists():
                 continue
             try:
-                content = candidate.read_text(encoding="utf-8").strip()
+                content = (_read_text_with_timeout(candidate) or "").strip()
             except Exception as e:
                 logger.debug("Could not read %s: %s", candidate, e)
                 continue
@@ -2347,7 +2441,7 @@ def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str
         candidate = cwd_path / name
         if candidate.exists():
             try:
-                content = candidate.read_text(encoding="utf-8").strip()
+                content = (_read_text_with_timeout(candidate) or "").strip()
                 if content:
                     content = _scan_context_content(content, name)
                     result = f"## {name}\n\n{content}"
@@ -2366,7 +2460,7 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
     cursorrules_file = cwd_path / ".cursorrules"
     if cursorrules_file.exists():
         try:
-            content = cursorrules_file.read_text(encoding="utf-8").strip()
+            content = (_read_text_with_timeout(cursorrules_file) or "").strip()
             if content:
                 content = _scan_context_content(content, ".cursorrules")
                 cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
@@ -2378,7 +2472,7 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
         mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
         for mdc_file in mdc_files:
             try:
-                content = mdc_file.read_text(encoding="utf-8").strip()
+                content = (_read_text_with_timeout(mdc_file) or "").strip()
                 if content:
                     content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
                     cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"

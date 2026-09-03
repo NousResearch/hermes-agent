@@ -19,7 +19,7 @@ import threading
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,32 @@ async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=N
     if result.timed_out:
         raise asyncio.TimeoutError()
     return result.value
+
+
+def _iter_exception_graph(error: BaseException) -> "Iterator[BaseException]":
+    """Yield ``error`` and every ``__cause__``/``__context__`` ancestor.
+
+    PTB wraps httpx exceptions (``TimedOut`` wrapping ``httpx.PoolTimeout``
+    wrapping …), and re-raised errors accumulate ``__context__`` chains, so a
+    classifier must inspect the whole graph, not just the top frame. DFS with
+    an identity-based ``seen`` set guards the cycles malformed chains can
+    contain. Shared by the connect-timeout and pool-timeout classifiers.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException] = [error]
+    while stack:
+        cur = stack.pop()
+        ident = id(cur)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        yield cur
+        cause = getattr(cur, "__cause__", None)
+        context = getattr(cur, "__context__", None)
+        if cause is not None:
+            stack.append(cause)
+        if context is not None:
+            stack.append(context)
 
 
 async def _first_completed(*futures: "asyncio.Future") -> None:
@@ -197,9 +223,9 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     classify_send_error,
-    cache_image_from_bytes,
-    cache_audio_from_bytes,
-    cache_video_from_bytes,
+    cache_image_from_bytes_async,
+    cache_audio_from_bytes_async,
+    cache_video_from_bytes_async,
     cache_document_from_bytes,
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
@@ -216,6 +242,7 @@ from plugins.platforms.telegram.telegram_network import (
     TelegramFallbackTransport,
     discover_fallback_ips,
     parse_fallback_ip_env,
+    tcp_keepalive_socket_options,
 )
 from utils import atomic_replace, env_float, env_int
 
@@ -873,6 +900,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # blow the gateway's connect timeout (#46298).
         self._post_connect_task: Optional[asyncio.Task] = None
 
+    @property
+    def send_path_degraded(self) -> bool:
+        # True from polling-generation start until the first getUpdates
+        # round-trip is proven (_record_polling_progress), and again at every
+        # polling-death site. getattr: tests build adapters via object.__new__().
+        return bool(getattr(self, "_send_path_degraded", False))
+
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
         super()._mark_connected()
@@ -1186,17 +1220,39 @@ class TelegramAdapter(BasePlatformAdapter):
         if not normalized_user_id:
             return False
 
+        normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
+        if normalized_chat_type == "private":
+            normalized_chat_type = "dm"
+        elif normalized_chat_type == "supergroup":
+            normalized_chat_type = "forum" if thread_id is not None else "group"
+
+        # Preferred path: the auth callback GatewayRunner injects at
+        # connection time (set_authorization_check), which delegates to the
+        # full _is_user_authorized chain -- env allowlists, group allowlists,
+        # pairing store, allow-all flags. Unlike the __self__ introspection
+        # below, this also works for a secondary multiplexed adapter, whose
+        # _message_handler is a profile closure with no __self__ (the same
+        # gap the admin-tier check had -- resolved the same way). The getattr
+        # tolerates partially-constructed adapters (object.__new__ in tests)
+        # that never ran BasePlatformAdapter.__init__.
+        if getattr(self, "_authorization_check", None) is not None:
+            injected = self._is_sender_authorized(
+                normalized_user_id,
+                chat_type=normalized_chat_type,
+                chat_id=str(chat_id or normalized_user_id),
+                thread_id=str(thread_id) if thread_id is not None else None,
+            )
+            if injected is not None:
+                return injected
+
+        # Legacy path: resolve the runner off the bound message handler.
+        # Still reachable for adapters wired without set_authorization_check
+        # (bare-adapter tests, direct embedding).
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         auth_fn = getattr(runner, "_is_user_authorized", None)
         if callable(auth_fn):
             try:
                 from gateway.session import SessionSource
-
-                normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
-                if normalized_chat_type == "private":
-                    normalized_chat_type = "dm"
-                elif normalized_chat_type == "supergroup":
-                    normalized_chat_type = "forum" if thread_id is not None else "group"
 
                 source = SessionSource(
                     platform=Platform.TELEGRAM,
@@ -1237,6 +1293,9 @@ class TelegramAdapter(BasePlatformAdapter):
         user = getattr(message, "from_user", None)
         chat = getattr(message, "chat", None)
         user_id = str(getattr(user, "id", "")).strip() or None
+        # Carry the bot flag so the runner's ``*_ALLOW_BOTS`` policy branch is
+        # reachable from this prefilter, exactly as it is for ``build_source``.
+        is_bot = bool(getattr(user, "is_bot", False)) if user is not None else False
         user_name = (
             str(getattr(user, "username", "") or getattr(user, "full_name", "") or "").strip()
             or None
@@ -1282,6 +1341,7 @@ class TelegramAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_id,
+            is_bot=is_bot,
         )
 
     def _source_from_reaction_for_auth(self, update):
@@ -1363,14 +1423,20 @@ class TelegramAdapter(BasePlatformAdapter):
         if source.chat_type != "dm":
             return False
 
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        # The bound-handler ``__self__`` is None under multiplex (the handler is
+        # a profile closure); ``gateway_runner`` is injected on every adapter
+        # by ``GatewayRunner._create_adapter`` and survives that wrapping.
+        runner = getattr(
+            getattr(self, "_message_handler", None), "__self__", None
+        ) or getattr(self, "gateway_runner", None)
         behavior_fn = getattr(runner, "_get_unauthorized_dm_behavior", None)
         if callable(behavior_fn):
             try:
                 return (
                     behavior_fn(
                         Platform.TELEGRAM,
-                        profile=getattr(source, "profile", None),
+                        profile=getattr(source, "profile", None)
+                        or getattr(self, "_owner_profile", None),
                     )
                     == "pair"
                 )
@@ -1463,6 +1529,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         user_id,
                         chat_type=source.chat_type,
                         chat_id=source.chat_id,
+                        is_bot=source.is_bot,
+                        thread_id=source.thread_id,
                     )
                     if has_callback
                     else None
@@ -1659,7 +1727,11 @@ class TelegramAdapter(BasePlatformAdapter):
         return "thread not found" in str(error).lower()
 
     def _prune_stale_dm_topic_binding(
-        self, chat_id: Any, thread_id: Any,
+        self,
+        chat_id: Any,
+        thread_id: Any,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Drop the stale ``telegram_dm_topic_bindings`` row for a
         topic Telegram has confirmed deleted.
@@ -1672,6 +1744,12 @@ class TelegramAdapter(BasePlatformAdapter):
         on to a fresh topic).  Best-effort: we never raise from a
         send-fallback path — a failed cleanup must not turn into a
         failed user-facing send.
+
+        Rows are namespaced by profile (#76423). Under
+        ``gateway.profile_routes`` the transport adapter may not be the
+        profile that wrote the binding, so the send's ``hermes_profile``
+        metadata wins over the adapter's own profile stamp; single-profile
+        bots fall back to ``"default"``.
         """
         if chat_id is None or thread_id is None:
             return
@@ -1682,8 +1760,15 @@ class TelegramAdapter(BasePlatformAdapter):
         if db is None or not hasattr(db, "delete_telegram_topic_binding"):
             return
         try:
+            profile_name = (
+                (metadata or {}).get("hermes_profile")
+                or getattr(self, "_hermes_profile_name", None)
+                or "default"
+            )
             removed = db.delete_telegram_topic_binding(
-                chat_id=str(chat_id), thread_id=str(thread_id),
+                chat_id=str(chat_id),
+                thread_id=str(thread_id),
+                profile_name=profile_name,
             )
         except Exception:
             logger.debug(
@@ -1857,24 +1942,11 @@ class TelegramAdapter(BasePlatformAdapter):
         should not be re-sent. A ConnectTimeout means the TCP connection was
         never established, so retrying is safe and prevents silent drops.
         """
-        seen: set[int] = set()
-        stack: list[BaseException] = [error]
-        while stack:
-            cur = stack.pop()
-            ident = id(cur)
-            if ident in seen:
-                continue
-            seen.add(ident)
+        for cur in _iter_exception_graph(error):
             name = cur.__class__.__name__.lower()
             text = str(cur).lower()
             if "connecttimeout" in name or "connect timeout" in text or "connect timed out" in text:
                 return True
-            cause = getattr(cur, "__cause__", None)
-            context = getattr(cur, "__context__", None)
-            if cause is not None:
-                stack.append(cause)
-            if context is not None:
-                stack.append(context)
         return False
 
     @staticmethod
@@ -1890,26 +1962,13 @@ class TelegramAdapter(BasePlatformAdapter):
         wrapped ``httpx.PoolTimeout`` class as well as the message string so the
         check survives PTB message-wording changes.
         """
-        seen: set[int] = set()
-        stack: list[BaseException] = [error]
-        while stack:
-            cur = stack.pop()
-            ident = id(cur)
-            if ident in seen:
-                continue
-            seen.add(ident)
+        for cur in _iter_exception_graph(error):
             name = cur.__class__.__name__.lower()
             text = str(cur).lower()
             if "pooltimeout" in name or "pool timeout" in text or (
                 "connection pool" in text and "occupied" in text
             ):
                 return True
-            cause = getattr(cur, "__cause__", None)
-            context = getattr(cur, "__context__", None)
-            if cause is not None:
-                stack.append(cause)
-            if context is not None:
-                stack.append(context)
         return False
 
     def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
@@ -2494,17 +2553,34 @@ class TelegramAdapter(BasePlatformAdapter):
             polling_req = self._app.bot._request[0]  # noqa: SLF001
         except Exception:
             return
+        shutdown_ok = False
         try:
             # Bounded: a wedged CLOSE-WAIT socket can make this close hang
-            # forever and freeze the reconnect ladder (#66377).
-            await asyncio.wait_for(polling_req.shutdown(), timeout=_DRAIN_TIMEOUT)
+            # forever and freeze the reconnect ladder (#66377). The wall-clock
+            # deadline helper — not asyncio.wait_for — because httpcore's pool
+            # close runs under AsyncShieldCancellation and a cancellation-
+            # resistant close wedges wait_for itself forever (#58236/#63309);
+            # same primitive as the general-pool drain (#98094).
+            await _await_with_thread_deadline(
+                polling_req.shutdown(), timeout=_DRAIN_TIMEOUT
+            )
+            shutdown_ok = True
         except Exception:
             logger.debug(
                 "[%s] Polling request shutdown failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
+        if not shutdown_ok:
+            # HTTPXRequest.initialize() rebuilds the client only when
+            # ``client.is_closed``. An abandoned aclose() leaves that flag
+            # false, so initialize() is a no-op and start_polling reuses the
+            # CLOSE-WAIT getUpdates socket — the gateway stays alive but
+            # deaf (#87057). Swap in a fresh client before initialize().
+            self._orphan_and_rebuild_polling_client(polling_req)
         try:
-            await asyncio.wait_for(polling_req.initialize(), timeout=_DRAIN_TIMEOUT)
+            await _await_with_thread_deadline(
+                polling_req.initialize(), timeout=_DRAIN_TIMEOUT
+            )
             logger.debug(
                 "[%s] Polling request pool drained before reconnect", self.name
             )
@@ -2513,6 +2589,64 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Polling request re-initialize failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
+            self._orphan_and_rebuild_polling_client(polling_req)
+
+    def _orphan_and_rebuild_polling_client(self, polling_req) -> None:
+        """Replace a wedged HTTPXRequest client after a hung aclose().
+
+        PTB's ``HTTPXRequest.initialize()`` only calls ``_build_client()``
+        when the current client reports ``is_closed``. If ``shutdown()`` was
+        abandoned on a CLOSE-WAIT socket, that flag stays false and the next
+        ``start_polling()`` reuses the dead getUpdates connection (#87057).
+        Swap in a fresh client and close the old one in a detached, bounded
+        background task so it cannot block the reconnect ladder.
+        """
+        old = getattr(polling_req, "_client", None)
+        build = getattr(polling_req, "_build_client", None)
+        if old is None or not callable(build):
+            return
+        if getattr(old, "is_closed", True):
+            return
+        try:
+            polling_req._client = build()  # noqa: SLF001
+        except Exception:
+            logger.debug(
+                "[%s] Failed to rebuild polling HTTP client after hung drain",
+                self.name, exc_info=True,
+            )
+            return
+        logger.warning(
+            "[%s] Replaced wedged getUpdates HTTP client after drain timeout "
+            "(likely CLOSE-WAIT socket)",
+            self.name,
+        )
+
+        async def _orphan_aclose() -> None:
+            try:
+                aclose = getattr(old, "aclose", None)
+                if not callable(aclose):
+                    return
+                # The stale client can be wedged in the same cancellation-
+                # swallowing httpcore scope as shutdown(). Use the wall-clock
+                # thread deadline — not asyncio.wait_for — so this cleanup
+                # task cannot itself hang forever and accumulate one leaked
+                # task per reconnect attempt (#87265 review).
+                await _await_with_thread_deadline(
+                    aclose(), timeout=_DRAIN_TIMEOUT
+                )
+            except Exception:
+                logger.debug(
+                    "[%s] Orphan polling client aclose failed (non-fatal)",
+                    self.name, exc_info=True,
+                )
+
+        try:
+            task = asyncio.ensure_future(_orphan_aclose())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            task.add_done_callback(_consume_abandoned_task)
+        except Exception:
+            pass
 
     def _begin_polling_generation(self) -> tuple[int, asyncio.Event]:
         """Start accepting progress for a new getUpdates polling generation."""
@@ -2567,6 +2701,13 @@ class TelegramAdapter(BasePlatformAdapter):
             self._polling_conflict_recovery_generation = None
         else:
             self._polling_conflict_count = 0
+        # First proof getUpdates is flowing for this generation: flip a
+        # published "retrying" (degraded connect, reconnect stamp, or the
+        # mid-session recovery below) back to "connected" (#101391).
+        if self._send_path_degraded and getattr(self, "_running", False) and not self.has_fatal_error:
+            self._write_runtime_status_safe(
+                "connected", platform_state="connected", error_code=None, error_message=None,
+            )
         self._send_path_degraded = False
 
     def _observe_polling_request_result(self, request, generation, result):
@@ -2785,6 +2926,11 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
         self._send_path_degraded = True
+        # Polling died mid-session on an adapter that published "connected"
+        # at connect time. Without this, gateway_state.json keeps saying
+        # connected for as long as the recovery ladder runs (#101391: 11 h).
+        if getattr(self, "_running", False):
+            self._mark_degraded()
         logger.warning(
             "[%s] Telegram polling degraded (%s); gateway stays alive and will retry. Error: %s",
             self.name, reason, _redact_telegram_error_text(error),
@@ -4518,8 +4664,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     max_keepalive_connections=_base_limits.max_keepalive_connections,
                     keepalive_expiry=_base_limits.keepalive_expiry,
                 )
+                # A long-poll request is continuously active, so keepalive
+                # expiry cannot protect it from a server-side connection close.
+                # Never hand getUpdates a pooled socket from a previous poll;
+                # ordinary Bot API requests retain the shared reusable pool.
+                _updates_limits = _httpx.Limits(
+                    max_connections=request_kwargs["connection_pool_size"],
+                    max_keepalive_connections=0,
+                    keepalive_expiry=_base_limits.keepalive_expiry,
+                )
             else:  # pragma: no cover — httpx always present alongside PTB
                 _pool_limits = None
+                _updates_limits = None
 
             def _with_limits(httpx_kwargs: Optional[dict] = None) -> dict:
                 """Merge tuned keepalive limits into httpx client kwargs.
@@ -4596,6 +4752,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 _transport_kwargs: dict = {}
                 if _pool_limits is not None:
                     _transport_kwargs["limits"] = _pool_limits
+                _transport_kwargs["socket_options"] = tcp_keepalive_socket_options()
+                _updates_transport_kwargs = dict(_transport_kwargs)
+                if _updates_limits is not None:
+                    _updates_transport_kwargs["limits"] = _updates_limits
                 request = HTTPXRequest(
                     **request_kwargs,
                     httpx_kwargs={
@@ -4608,7 +4768,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     **request_kwargs,
                     httpx_kwargs={
                         "transport": TelegramFallbackTransport(
-                            fallback_ips, **_transport_kwargs
+                            fallback_ips,
+                            **_updates_transport_kwargs,
                         )
                     },
                 )
@@ -4618,14 +4779,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
                 )
                 get_updates_request = HTTPXRequest(
-                    **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
+                    **request_kwargs,
+                    proxy=proxy_url,
+                    httpx_kwargs={"limits": _updates_limits},
                 )
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
                 request = HTTPXRequest(**request_kwargs, httpx_kwargs=_with_limits())
                 get_updates_request = HTTPXRequest(
-                    **request_kwargs, httpx_kwargs=_with_limits()
+                    **request_kwargs, httpx_kwargs={"limits": _updates_limits}
                 )
 
             get_updates_request = self._instrument_polling_request(get_updates_request)
@@ -4904,7 +5067,15 @@ class TelegramAdapter(BasePlatformAdapter):
             
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"
-            logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
+            # WARNING, not INFO: the "Connecting to Telegram (attempt N/8)…"
+            # line above is emitted at WARNING and reaches the terminal (the
+            # gateway's default stderr handler is WARNING-only), but this
+            # success line was INFO and went to the log file only. A healthy
+            # startup therefore looked permanently stalled at "attempt 1/8"
+            # on the console — the logging illusion in #90835. Both sides of
+            # the connect transition must share a terminal-visible level so a
+            # real hang is the *absence* of this line, not ambiguity.
+            logger.warning("[%s] Connected to Telegram (%s mode)", self.name, mode)
 
             # Start the persistent heartbeat loop in polling mode. Webhook mode
             # receives updates via incoming pushes — there is no long-poll
@@ -5489,7 +5660,9 @@ class TelegramAdapter(BasePlatformAdapter):
                                     self.name, effective_thread_id,
                                 )
                                 self._prune_stale_dm_topic_binding(
-                                    chat_id, effective_thread_id,
+                                    chat_id,
+                                    effective_thread_id,
+                                    metadata=metadata,
                                 )
                                 used_thread_fallback = True
                                 effective_thread_id = None
@@ -6279,7 +6452,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Same prune as the streaming send path — the
                 # control-message retry tells us the topic is gone,
                 # so the binding row in state.db must go too
-                # (#31501).
+                # (#31501). Control sends carry no gateway metadata, so
+                # the prune namespaces by this adapter's profile stamp.
                 self._prune_stale_dm_topic_binding(
                     kwargs.get("chat_id"), message_thread_id,
                 )
@@ -9468,7 +9642,7 @@ class TelegramAdapter(BasePlatformAdapter):
         ``_max_doc_bytes`` limit as the addressed document path. Oversized or
         unsupported attachments are noted in the transcript without downloading.
         """
-        from gateway.platforms.base import cache_media_bytes
+        from gateway.platforms.base import cache_media_bytes_async
 
         source, filename, mime, kind = self._observed_media_source(msg)
         if source is None:
@@ -9494,7 +9668,7 @@ class TelegramAdapter(BasePlatformAdapter):
             data = bytes(await file_obj.download_as_bytearray())
             if not filename:
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
-            cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
+            cached = await cache_media_bytes_async(data, filename=filename, mime_type=mime, default_kind=kind)
         except Exception as exc:
             logger.warning("[Telegram] Failed to cache observed group media: %s", _redact_telegram_error_text(exc), exc_info=True)
             return
@@ -9521,7 +9695,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _cache_replied_media(self, msg: Any, event: MessageEvent) -> None:
         """Cache media from the message this turn replies to, if any."""
-        from gateway.platforms.base import cache_media_bytes
+        from gateway.platforms.base import cache_media_bytes_async
 
         reply_msg = getattr(msg, "reply_to_message", None)
         if reply_msg is None:
@@ -9544,7 +9718,7 @@ class TelegramAdapter(BasePlatformAdapter):
             data = bytes(await file_obj.download_as_bytearray())
             if not filename:
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
-            cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
+            cached = await cache_media_bytes_async(data, filename=filename, mime_type=mime, default_kind=kind)
         except Exception as exc:
             logger.warning("[Telegram] Failed to cache replied-to media: %s", _redact_telegram_error_text(exc), exc_info=True)
             return
@@ -10162,7 +10336,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             ext = candidate
                             break
                 # Save to local cache (for vision tool access)
-                cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
+                cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=ext)
                 event.media_urls = [cached_path]
                 event.media_types = [f"image/{ext.lstrip('.')}" ]
                 logger.info("[Telegram] Cached user photo at %s", cached_path)
@@ -10189,7 +10363,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 file_obj = await msg.voice.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
+                cached_path = await cache_audio_from_bytes_async(bytes(audio_bytes), ext=".ogg")
                 event.media_urls = [cached_path]
                 event.media_types = ["audio/ogg"]
                 logger.info("[Telegram] Cached user voice at %s", cached_path)
@@ -10206,7 +10380,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 file_obj = await msg.audio.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
+                cached_path = await cache_audio_from_bytes_async(bytes(audio_bytes), ext=".mp3")
                 event.media_urls = [cached_path]
                 event.media_types = ["audio/mp3"]
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
@@ -10230,7 +10404,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         if file_obj.file_path.lower().endswith(candidate):
                             ext = candidate
                             break
-                cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
+                cached_path = await cache_video_from_bytes_async(bytes(video_bytes), ext=ext)
                 event.media_urls = [cached_path]
                 event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
                 logger.info("[Telegram] Cached user video at %s", cached_path)
@@ -10280,7 +10454,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     image_bytes = await file_obj.download_as_bytearray()
                     image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
                     try:
-                        cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
+                        cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=image_ext)
                     except ValueError as e:
                         logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
                         event.text = (
@@ -10318,7 +10492,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if ext in SUPPORTED_VIDEO_TYPES:
                     file_obj = await doc.get_file()
                     video_bytes = await file_obj.download_as_bytearray()
-                    cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
+                    cached_path = await cache_video_from_bytes_async(bytes(video_bytes), ext=ext)
                     event.media_urls = [cached_path]
                     event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
                     event.message_type = MessageType.VIDEO
@@ -10339,9 +10513,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 file_obj = await doc.get_file()
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
-                from gateway.platforms.base import cache_media_bytes
+                from gateway.platforms.base import cache_media_bytes_async
 
-                cached = cache_media_bytes(
+                cached = await cache_media_bytes_async(
                     raw_bytes,
                     filename=original_filename or f"document{ext or '.bin'}",
                     mime_type=doc_mime,
@@ -10490,7 +10664,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             file_obj = await sticker.get_file()
             image_bytes = await file_obj.download_as_bytearray()
-            cached_path = cache_image_from_bytes(bytes(image_bytes), ext=".webp")
+            cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=".webp")
             logger.info("[Telegram] Analyzing sticker at %s", cached_path)
 
             from tools.vision_tools import vision_analyze_tool

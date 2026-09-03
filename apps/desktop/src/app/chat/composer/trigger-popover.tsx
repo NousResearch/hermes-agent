@@ -5,12 +5,14 @@ import { referenceKind, referenceStyle } from '@/components/assistant-ui/referen
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
+import { desktopSlashDescription, desktopSlashGroupLabel } from '@/lib/desktop-slash-commands'
 import { cn } from '@/lib/utils'
 
 import { COMPLETION_DRAWER_BELOW_CLASS, COMPLETION_DRAWER_CLASS, CompletionDrawerEmpty } from './completion-drawer'
 import type { DirectiveScope } from './text-utils'
 
 interface RowMeta {
+  command?: string
   display?: string
   group?: string
   meta?: string
@@ -89,6 +91,7 @@ export function ComposerTriggerPopover({
 }: ComposerTriggerPopoverProps) {
   const { t } = useI18n()
   const copy = t.composer
+  const slashCopy = t.desktop?.slashCommands
   const isSlash = kind === '/'
   const isEmoji = kind === ':'
   const listRef = useRef<HTMLDivElement>(null)
@@ -188,8 +191,16 @@ export function ComposerTriggerPopover({
         items.map((item, index) => {
           const meta = item.metadata as RowMeta | undefined
           const display = meta?.display ?? (isSlash ? `/${item.label}` : item.label)
-          const description = meta?.meta || item.description
           const group = meta?.group?.trim()
+          const rawDescription = meta?.meta || item.description || ''
+          const preservesRuntimeDescription = group === 'Options' || group === 'Sessions' || group === 'Themes'
+
+          const description =
+            isSlash && !preservesRuntimeDescription
+              ? desktopSlashDescription(meta?.command ?? display, rawDescription, slashCopy)
+              : rawDescription
+
+          const groupLabel = group ? desktopSlashGroupLabel(group, slashCopy) : group
           const showHeader = isSlash && Boolean(group) && group !== lastGroup
           const isFirstHeader = lastGroup === undefined
           lastGroup = group || lastGroup
@@ -198,7 +209,9 @@ export function ComposerTriggerPopover({
 
           return (
             <Fragment key={item.id}>
-              {showHeader && <div className={cn(GROUP_HEADER_CLASS, isFirstHeader ? 'pt-0.5' : 'pt-2')}>{group}</div>}
+              {showHeader && (
+                <div className={cn(GROUP_HEADER_CLASS, isFirstHeader ? 'pt-0.5' : 'pt-2')}>{groupLabel}</div>
+              )}
               <button
                 className={ROW_CLASS}
                 data-highlighted={active ? '' : undefined}

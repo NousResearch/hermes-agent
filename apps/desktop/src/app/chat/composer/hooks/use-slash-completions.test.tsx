@@ -3,6 +3,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
+import { I18nProvider, useI18n } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 
@@ -41,23 +42,35 @@ const RANKED_CATALOG = {
 const commandsOf = (items: readonly Unstable_TriggerItem[]) =>
   items.map(item => (item.metadata as { command?: string })?.command)
 
-function harness(gateway: HermesGateway) {
-  const api: { search?: (query: string) => readonly Unstable_TriggerItem[] } = {}
+type HarnessApi = {
+  search: (query: string) => readonly Unstable_TriggerItem[]
+  setLocale: ReturnType<typeof useI18n>['setLocale']
+}
+
+function harness(gateway: HermesGateway, initialLocale: 'en' | 'zh-hant' = 'en') {
+  const api: Partial<HarnessApi> = {}
 
   function Probe() {
+    const { setLocale } = useI18n()
     const { adapter } = useSlashCompletions({ gateway })
+
     api.search = adapter.search
+    api.setLocale = setLocale
 
     return null
   }
 
-  render(<Probe />)
+  render(
+    <I18nProvider configClient={null} initialLocale={initialLocale}>
+      <Probe />
+    </I18nProvider>
+  )
 
-  return api as { search: (query: string) => readonly Unstable_TriggerItem[] }
+  return api as HarnessApi
 }
 
 /** Drive the adapter until its async fetch has settled into `search`'s result. */
-async function completions(api: { search: (query: string) => readonly Unstable_TriggerItem[] }, query: string) {
+async function completions(api: Pick<HarnessApi, 'search'>, query: string) {
   await act(async () => {
     api.search(query)
     await Promise.resolve()
@@ -103,6 +116,59 @@ describe('useSlashCompletions', () => {
     const work = items.find(item => (item.metadata as { command?: string })?.command === '/work')
 
     expect((work?.metadata as { group?: string })?.group).toBe('Skills')
+  })
+
+  it('keeps catalog ids and descriptions raw until the render boundary', async () => {
+    const request = vi.fn().mockResolvedValue(CATALOG)
+    const api = harness({ request } as unknown as HermesGateway, 'zh-hant')
+
+    const items = await completions(api, '')
+
+    const itemFor = (command: string) =>
+      items.find(item => (item.metadata as { command?: string })?.command === command)?.metadata as
+        { group?: string; meta?: string } | undefined
+
+    expect(itemFor('/new')).toMatchObject({ group: 'Session', meta: 'Start a new desktop chat' })
+    expect(itemFor('/work')).toMatchObject({ group: 'Skills', meta: 'Kick off a task in a fresh worktree' })
+  })
+
+  it('localizes the Desktop-owned /resume action without changing its group id', async () => {
+    const request = vi.fn().mockResolvedValue(CATALOG)
+    const api = harness({ request } as unknown as HermesGateway, 'zh-hant')
+
+    const items = await completions(api, 'resume ')
+    const browse = items.find(item => (item.metadata as { action?: string })?.action === 'session-picker')
+
+    expect(browse?.metadata).toMatchObject({
+      command: '/resume',
+      display: '瀏覽所有工作階段…',
+      group: 'Sessions',
+      meta: ''
+    })
+  })
+
+  it('refreshes Desktop-owned completion copy after the locale changes', async () => {
+    const request = vi.fn().mockResolvedValue(CATALOG)
+    const api = harness({ request } as unknown as HermesGateway)
+
+    const browseMeta = (items: readonly Unstable_TriggerItem[]) =>
+      items.find(item => (item.metadata as { action?: string })?.action === 'session-picker')?.metadata as
+        { display?: string; group?: string } | undefined
+
+    expect(browseMeta(await completions(api, 'resume '))).toMatchObject({
+      display: 'Browse all sessions…',
+      group: 'Sessions'
+    })
+
+    await act(async () => {
+      await api.setLocale('zh-hant')
+      await Promise.resolve()
+    })
+
+    expect(browseMeta(await completions(api, 'resume '))).toMatchObject({
+      display: '瀏覽所有工作階段…',
+      group: 'Sessions'
+    })
   })
 
   // A `/` typed mid-message is a reference dropped into prose, so the trigger
@@ -155,6 +221,34 @@ describe('useSlashCompletions', () => {
     const api = harness({ request } as unknown as HermesGateway)
 
     expect(commandsOf(await completions(api, 'research'))).toEqual(['/research-paper-writing', '/research'])
+  })
+
+  it('keeps typed command usage in English metadata until the render boundary', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : {
+              items: [
+                {
+                  text: '/save',
+                  display: '/save',
+                  kind: 'command',
+                  meta: 'Save the current transcript (usage: /save <json|md|html> [filename] [redact])'
+                }
+              ]
+            }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway, 'zh-hant')
+    const [save] = await completions(api, 'sav')
+
+    expect(save.metadata).toMatchObject({
+      command: '/save',
+      group: 'Commands',
+      meta: 'Save the current transcript to JSON (usage: /save <json|md|html> [filename] [redact])'
+    })
   })
 
   it('keeps a registry command in Commands even when the desktop table has no row', async () => {

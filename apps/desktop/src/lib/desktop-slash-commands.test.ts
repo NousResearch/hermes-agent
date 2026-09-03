@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { zh } from '@/i18n/zh'
+import { zhHant } from '@/i18n/zh-hant'
+
 import {
   type CommandCatalogMeta,
   type CommandsCatalogLike,
@@ -7,6 +10,7 @@ import {
   type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
   desktopSlashDescription,
+  desktopSlashGroupLabel,
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
   isDesktopSlashCommand,
@@ -64,6 +68,84 @@ const REGISTRY_CATALOG = registryCatalog(
   },
   { '/tasks': '/agents', '/background': '/bg', '/q': '/queue', '/proactive': '/loop' }
 )
+
+const ZH_HANT_SLASH_COPY = {
+  categories: {
+    Session: '工作階段',
+    'User commands': '使用者指令'
+  },
+  descriptions: {
+    '/context': '顯示目前的上下文使用狀況',
+    '/new': '開始新的桌面聊天',
+    '/review': '檢查目前的對話並提出改進建議'
+  },
+  usage: (syntax: string) => `（用法：${syntax}）`
+}
+
+const TRANSLATED_BUILT_IN_COMMANDS = [
+  '/new',
+  '/save',
+  '/retry',
+  '/prompt',
+  '/undo',
+  '/title',
+  '/handoff',
+  '/branch',
+  '/worktree',
+  '/compress',
+  '/rollback',
+  '/export',
+  '/import',
+  '/stop',
+  '/bg',
+  '/btw',
+  '/agents',
+  '/journey',
+  '/queue',
+  '/steer',
+  '/goal',
+  '/heartbeat',
+  '/refine',
+  '/review',
+  '/loop',
+  '/plan',
+  '/moa',
+  '/subgoal',
+  '/status',
+  '/egress',
+  '/context',
+  '/whoami',
+  '/profile',
+  '/resume',
+  '/model',
+  '/codex-runtime',
+  '/personality',
+  '/battery',
+  '/timestamps',
+  '/diff',
+  '/focus',
+  '/yolo',
+  '/approvals',
+  '/skin',
+  '/wake',
+  '/tools',
+  '/memory',
+  '/bundles',
+  '/pet',
+  '/hatch',
+  '/learn',
+  '/init',
+  '/suggestions',
+  '/blueprint',
+  '/browser',
+  '/help',
+  '/palette',
+  '/usage',
+  '/subscription',
+  '/topup',
+  '/version',
+  '/debug'
+] as const
 
 describe('desktop slash command curation', () => {
   beforeEach(() => {
@@ -328,6 +410,52 @@ describe('desktop slash command curation', () => {
     expect(filtered.skill_count).toBe(1)
   })
 
+  it('localizes built-in catalog copy while preserving command syntax and extension copy', () => {
+    const filtered = filterDesktopCommandsCatalog(
+      {
+        categories: [
+          {
+            name: 'Session',
+            pairs: [
+              ['/new', 'Start a new session'],
+              ['/context', 'Show current context usage (usage: /context [all])']
+            ]
+          },
+          {
+            name: 'User commands',
+            pairs: [['/ship-it', 'Run release checklist']]
+          }
+        ],
+        commands: {
+          '/context': { argument_mode: 'options', desktop: null },
+          '/new': { argument_mode: null, desktop: null }
+        },
+        pairs: [
+          ['/new', 'Start a new session'],
+          ['/context', 'Show current context usage (usage: /context [all])'],
+          ['/ship-it', 'Run release checklist']
+        ]
+      },
+      ZH_HANT_SLASH_COPY
+    )
+
+    expect(filtered.categories).toEqual([
+      {
+        name: 'Session',
+        pairs: [
+          ['/new', '開始新的桌面聊天'],
+          ['/context', '顯示目前的上下文使用狀況（用法：/context [all]）']
+        ]
+      },
+      { name: 'User commands', pairs: [['/ship-it', 'Run release checklist']] }
+    ])
+    expect(filtered.pairs).toEqual([
+      ['/new', '開始新的桌面聊天'],
+      ['/context', '顯示目前的上下文使用狀況（用法：/context [all]）'],
+      ['/ship-it', 'Run release checklist']
+    ])
+  })
+
   it('recomputes skill_count to reflect only extensions surfaced on desktop', () => {
     const filtered = filterDesktopCommandsCatalog({
       pairs: [
@@ -352,6 +480,36 @@ describe('desktop slash command curation', () => {
     )
   })
 
+  it('localizes typed built-in command descriptions without translating placeholders', () => {
+    expect(
+      desktopSlashDescription('/review', 'Review this conversation (usage: /review [instructions])', ZH_HANT_SLASH_COPY)
+    ).toBe('檢查目前的對話並提出改進建議（用法：/review [instructions]）')
+  })
+
+  it('preserves backend-owned usage when Desktop supplies different prose', () => {
+    expect(
+      desktopSlashDescription(
+        '/save',
+        'Save the current transcript (usage: /save <json|md|html> [filename] [redact])',
+        zhHant.desktop.slashCommands
+      )
+    ).toBe('將目前對話記錄儲存為 JSON（用法：/save <json|md|html> [filename] [redact]）')
+  })
+
+  it('translates category and completion-group labels only at the render boundary', () => {
+    expect(desktopSlashGroupLabel('Session', zhHant.desktop.slashCommands)).toBe('工作階段')
+    expect(desktopSlashGroupLabel('Skills', zhHant.desktop.slashCommands)).toBe('技能')
+    expect(desktopSlashGroupLabel('Third-party group', zhHant.desktop.slashCommands)).toBe('Third-party group')
+  })
+
+  it('keeps both Chinese built-in command catalogs in sync', () => {
+    for (const locale of [zh, zhHant]) {
+      expect(Object.keys(locale.desktop.slashCommands.descriptions).sort()).toEqual(
+        [...TRANSLATED_BUILT_IN_COMMANDS].sort()
+      )
+    }
+  })
+
   it('builds /skin completions from desktop themes', () => {
     const completions = desktopSkinSlashCompletions(
       [
@@ -374,6 +532,21 @@ describe('desktop slash command curation', () => {
         display: '/skin midnight',
         meta: 'Midnight - Deep blue'
       }
+    ])
+  })
+
+  it('localizes Desktop-owned /skin copy without translating dynamic theme metadata', () => {
+    const completions = desktopSkinSlashCompletions(
+      [{ name: 'mono', label: 'Mono', description: 'Clean grayscale' }],
+      'mono',
+      '',
+      zhHant.desktop.slashCommands
+    )
+
+    expect(completions).toEqual([
+      { text: '/skin list', display: '/skin list', meta: '顯示可用的桌面主題' },
+      { text: '/skin next', display: '/skin next', meta: '切換至下一個桌面主題' },
+      { text: '/skin mono', display: '/skin mono', meta: 'Mono (目前) - Clean grayscale' }
     ])
   })
 

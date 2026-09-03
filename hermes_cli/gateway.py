@@ -4265,13 +4265,32 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
     invoking shell so user-installed tools remain reachable under launchd.
     That makes raw text comparison unstable across shells, so ignore the PATH
     payload when deciding whether the installed plist is stale.
+
+    The interpreter in ``ProgramArguments`` and the ``VIRTUAL_ENV`` value
+    resolve from whichever venv's ``hermes`` invoked the CLI (a git install can
+    carry both ``venv`` and ``.venv``), so canonicalize them too — otherwise a
+    plist written by ``gateway start`` is perpetually stale under
+    ``gateway status`` and no restart can ever clear the warning (#101498).
     """
     import re
 
     normalized = _normalize_service_definition(text)
-    return re.sub(
+    normalized = re.sub(
         r"(<key>PATH</key>\s*<string>)(.*?)(</string>)",
         r"\1__HERMES_PATH__\3",
+        normalized,
+        flags=re.S,
+    )
+    # Both the stderr wrapper and the inner ``gateway run`` command are spelled
+    # "<string>…/bin/python</string>" followed by "<string>-m</string>".
+    normalized = re.sub(
+        r"(<string>)([^<]*python[^<]*)(</string>\s*<string>-m</string>)",
+        r"\1__HERMES_PYTHON__\3",
+        normalized,
+    )
+    return re.sub(
+        r"(<key>VIRTUAL_ENV</key>\s*<string>)(.*?)(</string>)",
+        r"\1__HERMES_VENV__\3",
         normalized,
         flags=re.S,
     )

@@ -343,6 +343,53 @@ class TestGeneratedSystemdUnits:
 
         assert "SoftResourceLimits" not in plist
 
+    def test_launchd_plist_is_current_across_invoking_venvs(self, tmp_path, monkeypatch):
+        """The staleness answer must not depend on which venv's hermes runs the
+        CLI (#101498).
+
+        A git install can carry both ``venv`` (what ``hermes`` on PATH resolves
+        to) and ``.venv`` (the canonical runtime): ``gateway start`` writes the
+        plist from one venv, then ``gateway status`` compares from the other.
+        Before the fix the interpreter in ProgramArguments and the VIRTUAL_ENV
+        payload leaked the invoking venv, so `start` could never clear what
+        `status` reported."""
+        canonical_venv = tmp_path / ".venv"
+        launcher_venv = tmp_path / "venv"
+        for venv in (canonical_venv, launcher_venv):
+            bin_dir = venv / "bin"
+            bin_dir.mkdir(parents=True)
+            (bin_dir / "python").write_text("#!/bin/sh\n")
+
+        # `gateway start` writes the plist while the canonical runtime is active.
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: canonical_venv)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        # `gateway status` later compares in-process under the PATH-launcher venv.
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: launcher_venv)
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_plist_staleness_survives_venv_canonicalization(self, tmp_path, monkeypatch):
+        """Canonicalizing the invoking venv out of the comparison must not mask
+        real drift: a plist whose ThrottleInterval differs from the generated
+        one is still stale."""
+        monkeypatch.setattr(
+            gateway_cli, "_detect_venv_dir", lambda: tmp_path / ".venv"
+        )
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(
+            gateway_cli.generate_launchd_plist().replace(
+                "<key>ThrottleInterval</key>\n    <integer>30</integer>",
+                "<key>ThrottleInterval</key>\n    <integer>10</integer>",
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        assert gateway_cli.launchd_plist_is_current() is False
+
 
 
 class TestGatewayStopCleanup:

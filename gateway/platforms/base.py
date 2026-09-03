@@ -1026,19 +1026,33 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                 raise
 
 
-def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int) -> int:
+def _cleanup_cache_dir(
+    cache_dir: Path,
+    max_age_hours: int,
+    sticky_prefixes: tuple = (),
+) -> int:
     """
     Delete files in *cache_dir* older than *max_age_hours*.
 
-    Shared implementation behind every ``cleanup_*_cache`` helper — one loop,
+    Shared implementation behind every ``cleanup_*_cache`` helper - one loop,
     not N copies.  Returns the number of files removed.
+
+    *sticky_prefixes* names file prefixes that must NEVER be swept regardless
+    of age: TTS-generated voice memos share the audio cache with inbound
+    platform voice notes, but a memo is a user artifact promised persistence
+    by the text_to_speech contract - silently deleting it 24h later is data
+    loss, not cache management (#100075).
     """
     import time
 
     cutoff = time.time() - (max_age_hours * 3600)
     removed = 0
     for f in cache_dir.iterdir():
-        if f.is_file() and f.stat().st_mtime < cutoff:
+        if not f.is_file():
+            continue
+        if sticky_prefixes and f.name.startswith(sticky_prefixes):
+            continue
+        if f.stat().st_mtime < cutoff:
             try:
                 f.unlink()
                 removed += 1
@@ -1177,9 +1191,15 @@ def cleanup_audio_cache(max_age_hours: int = 24) -> int:
     """
     Delete cached audio files older than *max_age_hours*.
 
-    Returns the number of files removed.
+    Returns the number of files removed. TTS-generated voice memos
+    (``tts_*`` prefix, written by tools/tts_tool.py) are excluded: they
+    share this cache with inbound platform voice notes but are user
+    artifacts the text_to_speech contract promises persistent, so the
+    hourly housekeeping sweep must never delete them (#100075).
     """
-    return _cleanup_cache_dir(get_audio_cache_dir(), max_age_hours)
+    return _cleanup_cache_dir(
+        get_audio_cache_dir(), max_age_hours, sticky_prefixes=("tts_",)
+    )
 
 
 # ---------------------------------------------------------------------------

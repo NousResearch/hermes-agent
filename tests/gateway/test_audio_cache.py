@@ -81,6 +81,22 @@ class TestCleanupAudioCache:
         assert removed == 0
         assert recent.exists()
 
+    def test_tts_voice_memos_survive_the_sweep(self):
+        """#100075: TTS-generated files (tts_* prefix) share the audio
+        cache with inbound voice notes, but they are user artifacts the
+        text_to_speech contract promises persistent — the hourly sweep
+        must never delete them, regardless of age."""
+        cache_dir = get_audio_cache_dir()
+        memo = cache_dir / "tts_20260901_120000_000000.mp3"
+        memo.write_text("voice memo")
+        memo_mtime = time.time() - 48 * 3600  # two days old — past cutoff
+        os.utime(memo, (memo_mtime, memo_mtime))
+
+        removed = cleanup_audio_cache(max_age_hours=24)
+
+        assert memo.exists(), "TTS memo must survive the cache sweep"
+        assert removed == 0
+
 
 # ---------------------------------------------------------------------------
 # TestUnifiedMediaCacheCleanup — video + screenshot ride the same shared loop

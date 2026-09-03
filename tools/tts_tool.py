@@ -3786,7 +3786,10 @@ def text_to_speech_tool(
 
     On messaging platforms, the returned MEDIA:<path> tag is intercepted
     by the send pipeline and delivered as a native voice message.
-    In CLI mode, the file is saved to ~/voice-memos/.
+    On every surface (CLI included) the default output directory is the
+    gateway audio cache (``~/.hermes/cache/audio``); TTS-generated files
+    (``tts_*``) are excluded from the hourly cache sweep and persist until
+    the user deletes them (#100075).
 
     Args:
         text: The text to convert to speech. Provider-specific per-request
@@ -4772,7 +4775,7 @@ from tools.registry import registry, tool_error
 
 TTS_SCHEMA = {
     "name": "text_to_speech",
-    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
+    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. Default output directory is the gateway audio cache (~/.hermes/cache/audio); tts_* files are exempt from the hourly cache sweep. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
     "parameters": {
         "type": "object",
         "properties": {

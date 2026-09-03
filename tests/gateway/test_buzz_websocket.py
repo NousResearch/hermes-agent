@@ -116,10 +116,12 @@ class _ScriptedWebSocket(_FakeWebSocket):
     a clean close.
     """
 
-    def __init__(self, anext_behavior):
+    def __init__(self, anext_behavior, ping_behavior):
         super().__init__()
         self._anext_behavior = anext_behavior
+        self._ping_behavior = ping_behavior
         self.exited = False
+        self.ping_count = 0
 
     async def __aenter__(self):
         return self
@@ -128,40 +130,182 @@ class _ScriptedWebSocket(_FakeWebSocket):
         self.exited = True
 
     def __aiter__(self):
+        # Match websockets 15.x: the frame iterator is distinct from the
+        # connection and does not expose ping().
+        return _ScriptedFrameIterator(self._anext_behavior)
+
+    async def ping(self):
+        self.ping_count += 1
+        return await self._ping_behavior()
+
+
+class _ScriptedFrameIterator:
+    def __init__(self, anext_behavior):
+        self._anext_behavior = anext_behavior
+
+    def __aiter__(self):
         return self
 
     async def __anext__(self):
         return await self._anext_behavior()
 
 
+async def _resolved_pong():
+    waiter = asyncio.get_running_loop().create_future()
+    waiter.set_result(0.0)
+    return waiter
+
+
+async def _unresolved_pong():
+    return asyncio.get_running_loop().create_future()
+
+
 @pytest.mark.asyncio
-async def test_websocket_loop_reconnects_when_read_goes_silent(monkeypatch, caplog):
-    """A relay close the transport never surfaces must not park the loop.
+async def test_frame_wins_over_pending_liveness_probe(monkeypatch):
+    monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_INTERVAL", 0.01)
+    monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_TIMEOUT", 1)
+    frame_ready = asyncio.Event()
+    pong_started = asyncio.Event()
+    pong_waiter = None
 
-    Reproduces the #98097 shape: a socket stuck in CLOSE_WAIT yields no
-    frame and no error, so without a read-side bound the loop would wait
-    forever while the gateway keeps reporting "connected".
-    """
-    import logging
+    async def anext_behavior():
+        await frame_ready.wait()
+        return "frame"
 
+    async def ping_behavior():
+        nonlocal pong_waiter
+        pong_waiter = asyncio.get_running_loop().create_future()
+        pong_started.set()
+        return pong_waiter
+
+    websocket = _ScriptedWebSocket(anext_behavior, ping_behavior)
+    frame_task = asyncio.create_task(
+        BuzzAdapter._read_frame_or_probe(_make_adapter(), websocket.__aiter__(), websocket)
+    )
+    await asyncio.wait_for(pong_started.wait(), 1)
+    frame_ready.set()
+
+    assert await asyncio.wait_for(frame_task, 1) == "frame"
+    assert pong_waiter.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_failed_probe_wins_simultaneous_frame_completion(monkeypatch):
+    monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_INTERVAL", 0.01)
+    monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_TIMEOUT", 1)
+    frame_ready = asyncio.Event()
+    probe_started = asyncio.Event()
+    probe_failed = asyncio.Event()
+
+    async def anext_behavior():
+        await frame_ready.wait()
+        return "frame"
+
+    async def ping_behavior():
+        probe_started.set()
+        await asyncio.sleep(0)
+        probe_failed.set()
+        raise ConnectionError("transport failed")
+
+    websocket = _ScriptedWebSocket(anext_behavior, ping_behavior)
+    frame_task = asyncio.create_task(
+        BuzzAdapter._read_frame_or_probe(_make_adapter(), websocket.__aiter__(), websocket)
+    )
+    await asyncio.wait_for(probe_started.wait(), 1)
+    frame_ready.set()
+    await asyncio.wait_for(probe_failed.wait(), 1)
+    await asyncio.sleep(0)
+
+    with pytest.raises(ConnectionError, match="transport failed"):
+        await asyncio.wait_for(frame_task, 1)
+
+
+@pytest.mark.asyncio
+async def test_liveness_race_cancellation_settles_pending_tasks(monkeypatch):
+    monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_INTERVAL", 0.01)
+    monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_TIMEOUT", 1)
+    pong_waiter = None
+    probe_started = asyncio.Event()
+
+    async def anext_behavior():
+        await asyncio.Event().wait()
+
+    async def ping_behavior():
+        nonlocal pong_waiter
+        pong_waiter = asyncio.get_running_loop().create_future()
+        probe_started.set()
+        return pong_waiter
+
+    websocket = _ScriptedWebSocket(anext_behavior, ping_behavior)
+    task = asyncio.create_task(
+        BuzzAdapter._read_frame_or_probe(_make_adapter(), websocket.__aiter__(), websocket)
+    )
+    await asyncio.wait_for(probe_started.wait(), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 1)
+    assert pong_waiter.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_websocket_loop_keeps_a_quiet_healthy_connection(monkeypatch):
     adapter = _make_adapter()
-    monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", 0.05)
-    caplog.set_level(logging.WARNING)
+    monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_INTERVAL", 0.02)
+    monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_TIMEOUT", 0.02)
 
     sockets = []
 
-    async def dead_anext():
-        await asyncio.Event().wait()  # never yields, never raises
+    async def quiet_anext():
+        await asyncio.Event().wait()
 
     def fake_connect(*args, **kwargs):
-        ws = _ScriptedWebSocket(dead_anext)
+        ws = _ScriptedWebSocket(quiet_anext, _resolved_pong)
         sockets.append(ws)
         return ws
 
     import websockets as _ws_mod
 
     monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+    task = asyncio.create_task(adapter._websocket_loop())
+    # Event-driven wait for two liveness probes on the quiet connection: a
+    # fixed sleep window assumes a quiet runner, but the connect path signs
+    # the AUTH event (and presence publish) in the executor before the read
+    # loop starts — under parallel load that can consume a fixed window and
+    # starve the probe count.
+    deadline = time.monotonic() + 5.0
+    while (not sockets or sockets[0].ping_count < 2) and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5.0)
 
+    assert len(sockets) == 1
+    assert sockets[0].ping_count >= 2
+    assert sockets[0].exited
+
+
+@pytest.mark.asyncio
+async def test_websocket_loop_reconnects_when_liveness_ping_goes_silent(monkeypatch, caplog):
+    import logging
+
+    adapter = _make_adapter()
+    monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_INTERVAL", 0.02)
+    monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_TIMEOUT", 0.02)
+    caplog.set_level(logging.WARNING)
+
+    sockets = []
+
+    async def dead_anext():
+        await asyncio.Event().wait()
+
+    def fake_connect(*args, **kwargs):
+        ws = _ScriptedWebSocket(dead_anext, _unresolved_pong)
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
     task = asyncio.create_task(adapter._websocket_loop())
     try:
         deadline = time.monotonic() + 5.0
@@ -174,9 +318,52 @@ async def test_websocket_loop_reconnects_when_read_goes_silent(monkeypatch, capl
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
 
-    assert len(sockets) >= 2, "idle read watchdog did not force a reconnect"
-    assert sockets[0].exited, "the silent connection was not closed before reconnecting"
+    assert len(sockets) >= 2
+    assert sockets[0].exited
     assert any("went silent" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_websocket_loop_clean_close_during_liveness_ping_is_quiet(
+    monkeypatch, caplog
+):
+    import logging
+
+    from websockets.exceptions import ConnectionClosedOK
+    from websockets.frames import Close
+
+    adapter = _make_adapter()
+    monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_INTERVAL", 0.01)
+    monkeypatch.setattr(_buzz_mod, "_WS_LIVENESS_TIMEOUT", 0.01)
+    caplog.set_level(logging.WARNING)
+
+    async def quiet_anext():
+        await asyncio.Event().wait()
+
+    async def clean_ping_close():
+        raise ConnectionClosedOK(Close(1000, "normal closure"), None)
+
+    sockets = []
+    connects = []
+
+    def fake_connect(*args, **kwargs):
+        connects.append(1)
+        if len(connects) == 2:
+            raise asyncio.CancelledError()
+        ws = _ScriptedWebSocket(quiet_anext, clean_ping_close)
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+    task = asyncio.create_task(adapter._websocket_loop())
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5.0)
+
+    assert len(connects) == 2
+    assert sockets[0].exited
+    assert not any("WebSocket disconnected" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -215,7 +402,7 @@ async def test_websocket_loop_dispatches_frames_and_closes_cleanly(monkeypatch):
         # loop's except-order, unlike a regular Exception which would retry.
         if len(sockets) == 1:
             raise asyncio.CancelledError()
-        ws = _ScriptedWebSocket(scripted_anext)
+        ws = _ScriptedWebSocket(scripted_anext, _resolved_pong)
         sockets.append(ws)
         return ws
 
@@ -320,7 +507,12 @@ async def test_websocket_loop_drops_restricted_channel_without_reconnect():
         adapter._ws_ready.set()
         adapter._ws_active = True
         task = asyncio.create_task(adapter._websocket_loop())
-        await asyncio.sleep(0.1)
+        # Bounded poll, not a fixed settle: under full-suite load the inline
+        # presence publish (executor + ~50ms schnorr) precedes the first frame
+        # read, so the CLOSED frame can land after an arbitrary 0.1s.
+        deadline = time.monotonic() + 5.0
+        while CHANNEL not in adapter._restricted_channels and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
 
     assert CHANNEL in adapter._restricted_channels, (
         "restricted channel should be recorded in _restricted_channels"
@@ -393,7 +585,14 @@ async def test_websocket_loop_reconnects_on_non_restricted_closed():
         adapter._ws_ready.set()
         adapter._ws_active = True
         task = asyncio.create_task(adapter._websocket_loop())
-        await asyncio.sleep(0.1)
+        # Wait for the CLOSED frame to be consumed (idx advances past it),
+        # then confirm it did NOT restrict the channel — a negative assert
+        # needs a positive observation point first.
+        deadline = time.monotonic() + 5.0
+        while idx < len(messages) and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        # Give the handler a turn to (wrongly) restrict, if it were going to.
+        await asyncio.sleep(0.05)
 
     assert CHANNEL not in adapter._restricted_channels, (
         "non-restricted CLOSED must not add channel to _restricted_channels"
@@ -553,7 +752,11 @@ async def test_closed_membership_phrases_prune_without_reconnect(detail):
         adapter._ws_ready = asyncio.Event()
         adapter._ws_ready.set()
         task = asyncio.create_task(adapter._websocket_loop())
-        await asyncio.sleep(0.1)
+        # Bounded poll (see drops_restricted test): the CLOSED frame is only
+        # observed after the inline presence publish completes.
+        deadline = time.monotonic() + 5.0
+        while CHANNEL not in adapter._restricted_channels and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
 
     assert CHANNEL in adapter._restricted_channels
     assert CHANNEL not in adapter._channel_state
@@ -666,7 +869,7 @@ async def test_ws_discovery_task_cancelled_when_connection_exits(monkeypatch):
     def fake_connect(*args, **kwargs):
         if sockets:
             raise asyncio.CancelledError()
-        ws = _ScriptedWebSocket(closed_anext)
+        ws = _ScriptedWebSocket(closed_anext, _resolved_pong)
         sockets.append(ws)
         return ws
 
@@ -680,3 +883,405 @@ async def test_ws_discovery_task_cancelled_when_connection_exits(monkeypatch):
 
     assert started, "discovery task was never started with the connection"
     assert all(t.done() for t in started), "discovery task outlived its connection"
+
+
+# ── Presence heartbeat on the persistent socket ───────────────────────────
+
+
+def test_build_presence_event_shape():
+    event = nostr_auth.build_presence_event(
+        private_key=TEST_PRIVATE_KEY,
+        status="online",
+        created_at=1_700_000_000,
+        auxiliary_randomness=bytes(32),
+    )
+    assert event["kind"] == 20001
+    assert event["content"] == "online"
+    assert event["tags"] == [["status", "online"]]
+    assert event["pubkey"] == nostr_auth.public_key_hex(TEST_PRIVATE_KEY)
+    assert len(bytes.fromhex(event["sig"])) == 64
+    # No p-tags — the Desktop's live path trusts author = subject.
+    assert not any(tag[0] == "p" for tag in event["tags"])
+
+
+def test_build_presence_event_rejects_bad_status():
+    with pytest.raises(ValueError):
+        nostr_auth.build_presence_event(private_key=TEST_PRIVATE_KEY, status="brb")
+
+
+async def fail_cli(args, *, input_text=None):
+    raise AssertionError(f"presence must not shell out to buzz, got {args}")
+
+
+class _PresenceWebSocket(_ScriptedWebSocket):
+    """Authenticating WS whose outbound presence events are observable.
+
+    ``ping_behavior`` defaults to an always-answered pong: the liveness
+    probe (from the websocket-liveness series) also rides this socket, and
+    a healthy presence socket must survive its periodic probes.
+    """
+
+    def __init__(self, ping_behavior=None):
+        self.stream = asyncio.Queue()
+
+        async def behavior():
+            frame = await self.stream.get()
+            if frame is None:
+                raise StopAsyncIteration from None
+            return frame
+
+        if ping_behavior is None:
+            ping_behavior = _resolved_pong
+        super().__init__(behavior, ping_behavior)
+
+    @property
+    def presence_events(self):
+        return [
+            message[1]
+            for message in self.sent
+            if isinstance(message, list)
+            and message
+            and message[0] == "EVENT"
+            and isinstance(message[1], dict)
+            and message[1].get("kind") == 20001
+        ]
+
+
+def _heartbeat_tasks():
+    return [
+        task
+        for task in asyncio.all_tasks()
+        if task.get_coro().__qualname__ == "BuzzAdapter._presence_heartbeat"
+    ]
+
+
+async def _force_close(*sockets):
+    """Push a CLOSED frame so the adapter's reconnect loop parks in its
+    backoff sleep — a cancellation point that settles cleanly on every
+    code path (a cancel delivered inside the read-loop's cleanup during
+    an immediate reconnect can be swallowed and resurrect the loop)."""
+    for websocket in sockets:
+        websocket.stream.put_nowait(
+            json.dumps(["CLOSED", "hermes-buzz-membership", "error: connection reset"])
+        )
+    await asyncio.sleep(0.05)
+
+
+async def _settle(*tasks):
+    """Cancel tasks and await them so nothing leaks past a test."""
+    for task in tasks:
+        task.cancel()
+    await asyncio.wait_for(
+        asyncio.gather(*tasks, return_exceptions=True), timeout=5
+    )
+
+
+@pytest.mark.asyncio
+async def test_presence_heartbeat_runs_on_same_socket_without_cli(monkeypatch):
+    """Presence rides the authenticated inbound connection: no second
+    WebSocket, no ``buzz users set-presence`` subprocess."""
+    adapter = _make_adapter()
+    monkeypatch.setattr(_buzz_mod, "_PRESENCE_INTERVAL", 0.02)
+    adapter._presence_interval = 0.02
+
+    adapter._run_cli = fail_cli
+
+    sockets = []
+
+    def fake_connect(*args, **kwargs):
+        ws = _PresenceWebSocket()
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    task = asyncio.create_task(adapter._websocket_loop())
+    try:
+        deadline = time.monotonic() + 5.0
+        while not sockets and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        while sockets and len(sockets[0].presence_events) < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert len(sockets) == 1
+    finally:
+        await _settle(task)
+
+    assert len(sockets) == 1, "presence spawned a second WebSocket"
+    events = sockets[0].presence_events
+    assert len(events) >= 2, "presence did not repeat on the persistent socket"
+    online_events = [event for event in events if event["content"] == "online"]
+    assert len(online_events) >= 2
+    expected_pubkey = nostr_auth.public_key_hex(TEST_PRIVATE_KEY)
+    assert all(event["pubkey"] == expected_pubkey for event in online_events)
+    assert all(["status", "online"] in event["tags"] for event in online_events)
+
+
+@pytest.mark.asyncio
+async def test_presence_heartbeat_reconnect_replaces_task_exactly_once(monkeypatch):
+    """A reconnect retires the old heartbeat with the old socket and keeps
+    exactly one live heartbeat for the new connection."""
+    adapter = _make_adapter()
+    monkeypatch.setattr(_buzz_mod, "_PRESENCE_INTERVAL", 0.02)
+    adapter._presence_interval = 0.02
+    adapter._run_cli = fail_cli
+
+    sockets = []
+
+    def fake_connect(*args, **kwargs):
+        ws = _PresenceWebSocket()
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    task = asyncio.create_task(adapter._websocket_loop())
+    try:
+        deadline = time.monotonic() + 5.0
+        while not sockets and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        while (
+            sockets
+            and len(sockets[0].presence_events) < 1
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.01)
+        assert sockets and sockets[0].presence_events, "first connection never heartbeated"
+        assert len(_heartbeat_tasks()) == 1, "duplicate heartbeats on one connection"
+
+        # Force a reconnect: CLOSED makes the read loop raise and back off.
+        await _force_close(sockets[0])
+        while len(sockets) < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert len(sockets) == 2, "relay CLOSED did not trigger a reconnect"
+        assert sockets[0].exited, "old socket was not closed before reconnecting"
+        # The retired heartbeat must not publish after its socket exited.
+        retired_count = len(sockets[0].presence_events)
+        await asyncio.sleep(0.1)
+        assert len(sockets[0].presence_events) == retired_count, (
+            "retired heartbeat kept publishing after its socket closed"
+        )
+        while (
+            len(sockets[1].presence_events) < 1
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.01)
+        assert len(_heartbeat_tasks()) == 1, "reconnect duplicated the heartbeat"
+    finally:
+        await _settle(task)
+
+    assert sockets[1].presence_events, "reconnected connection never heartbeated"
+    assert not _heartbeat_tasks(), "heartbeat task outlived its reconnect loop"
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_first_presence_does_not_leak_heartbeat(monkeypatch):
+    """Cancelling the loop while the first online publish is still in flight
+    must not strand the heartbeat task (or any task) past shutdown."""
+    adapter = _make_adapter()
+    adapter._presence_interval = 0.02
+    adapter._run_cli = fail_cli
+
+    release = asyncio.Event()
+    original_publish = adapter._publish_presence
+
+    async def gated_publish(websocket, status):
+        if status == "online" and not release.is_set():
+            await release.wait()
+        return await original_publish(websocket, status)
+
+    monkeypatch.setattr(adapter, "_publish_presence", gated_publish)
+
+    sockets = []
+
+    def fake_connect(*args, **kwargs):
+        ws = _PresenceWebSocket()
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    task = asyncio.create_task(adapter._websocket_loop())
+    try:
+        deadline = time.monotonic() + 5.0
+        while not sockets and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert sockets, "connection never opened"
+        # The loop is now parked waiting for the first online publish.
+        # Cancel, then release the gate: the cancellation consumed at the
+        # executor boundary must be honored before child tasks spawn, so
+        # the loop settles promptly with no orphan heartbeat.
+        task.cancel()
+        release.set()
+        # (asyncio.wait, not wait_for: on Python 3.11 wait_for converts a
+        # completed-with-CancelledError gather into TimeoutError.)
+        await asyncio.wait([task], timeout=2)
+        assert task.done(), "websocket loop did not settle after cancel"
+    finally:
+        release.set()
+
+    await asyncio.sleep(0.05)
+    heartbeat = getattr(adapter, "_presence_task", None)
+    assert heartbeat is None or heartbeat.done(), "heartbeat task leaked past shutdown"
+    strays = [
+        t
+        for t in asyncio.all_tasks()
+        if t is not asyncio.current_task() and not t.done()
+    ]
+    assert not strays, f"leaked tasks: {[t.get_coro() for t in strays]}"
+
+
+@pytest.mark.asyncio
+async def test_presence_heartbeat_coexists_with_inbound_dispatch(monkeypatch):
+    """Heartbeats keep flowing while inbound frames dispatch to handlers."""
+    adapter = _make_adapter()
+    monkeypatch.setattr(_buzz_mod, "_PRESENCE_INTERVAL", 0.02)
+    adapter._presence_interval = 0.02
+    adapter._run_cli = fail_cli
+    adapter._channel_state = {CHANNEL: {"chat_type": "group", "last_ts": 1, "seen": {}}}
+
+    handled = []
+
+    async def record_handle_event(channel_id, state, event):
+        handled.append(event["id"])
+
+    monkeypatch.setattr(adapter, "_handle_event", record_handle_event)
+
+    ws_refs = []
+
+    def fake_connect(*args, **kwargs):
+        ws = _PresenceWebSocket()
+        ws_refs.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    # Feed inbound frames continuously while heartbeats tick.
+    async def feed():
+        for index in range(20):
+            await asyncio.sleep(0.01)
+            for ws in list(ws_refs):
+                ws.stream.put_nowait(
+                    json.dumps(
+                        ["EVENT", "hermes-buzz-0", {"id": f"in-{index}", "kind": 9, "created_at": 2, "content": "hi"}]
+                    )
+                )
+
+    feeder = asyncio.create_task(feed())
+    task = asyncio.create_task(adapter._websocket_loop())
+    try:
+        deadline = time.monotonic() + 5.0
+        while not ws_refs and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        while (
+            ws_refs
+            and len(ws_refs[0].presence_events) < 3
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.01)
+    finally:
+        feeder.cancel()
+        await _force_close(*ws_refs)
+        await _settle(task, feeder)
+
+    assert len(ws_refs) == 1
+    assert len(ws_refs[0].presence_events) >= 3, "heartbeats stopped under inbound load"
+    assert handled, "inbound frames were not dispatched alongside heartbeats"
+
+
+@pytest.mark.asyncio
+async def test_presence_heartbeat_survives_failed_send_and_retries(monkeypatch):
+    """A failed sign/send is logged and retried on the next cadence; it must
+    not kill the heartbeat."""
+    adapter = _make_adapter()
+    adapter._presence_interval = 0.02
+    adapter._run_cli = fail_cli
+
+    attempts = []
+    sent = []
+    ready = asyncio.Event()
+
+    class FlakySend:
+        async def send(self, raw):
+            message = json.loads(raw)
+            if message[0] == "EVENT" and message[1].get("kind") == 20001:
+                attempts.append(message)
+                if len(attempts) == 1:
+                    raise ConnectionError("send failed")
+                sent.append(message)
+                ready.set()
+
+    websocket = FlakySend()
+    task = asyncio.create_task(adapter._presence_heartbeat(websocket))
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=5)
+    finally:
+        await _settle(task)
+
+    assert len(attempts) >= 2, "heartbeat died after the first failed send"
+    assert len(sent) >= 1, "heartbeat never retried after the failed send"
+
+
+@pytest.mark.asyncio
+async def test_graceful_shutdown_publishes_offline_before_socket_close(monkeypatch):
+    """Adapter shutdown must push a final ``offline`` on the live socket
+    before the connection exits."""
+    adapter = _make_adapter()
+    adapter._presence_interval = 0.02
+    adapter._run_cli = fail_cli
+
+    sent_before_exit = {}
+
+    class OfflineWebSocket(_PresenceWebSocket):
+        async def __aexit__(self, *exc_info):
+            sent_before_exit["offline"] = any(
+                isinstance(message, list)
+                and message
+                and message[0] == "EVENT"
+                and isinstance(message[1], dict)
+                and message[1].get("content") == "offline"
+                for message in self.sent
+            )
+            return await _ScriptedWebSocket.__aexit__(self, *exc_info)
+
+    sockets = []
+
+    def fake_connect(*args, **kwargs):
+        ws = OfflineWebSocket()
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    task = asyncio.create_task(adapter._websocket_loop())
+    try:
+        deadline = time.monotonic() + 5.0
+        while not sockets and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        while (
+            sockets
+            and len(sockets[0].presence_events) < 1
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.01)
+        assert sockets and sockets[0].presence_events, "online heartbeat never landed"
+        # Graceful shutdown through the adapter's own disconnect() — the same
+        # path the gateway runs — so offline lands while the socket is open.
+        await asyncio.wait_for(adapter.disconnect(), timeout=5)
+    finally:
+        await _settle(task)
+
+    assert sent_before_exit.get("offline") is True, (
+        "offline was not published before the socket exited"
+    )
+    heartbeat = getattr(adapter, "_presence_task", None)
+    assert heartbeat is None or heartbeat.done(), "heartbeat leaked past disconnect()"

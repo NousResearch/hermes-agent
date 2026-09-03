@@ -126,6 +126,19 @@ async def test_astral_cjk_rich_content_skips_rich_send_to_avoid_tdesktop_garble(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content", [CJK_RICH_CONTENT, ASTRAL_CJK_RICH_CONTENT])
+async def test_cjk_rich_content_can_be_opted_in(content):
+    adapter = _make_adapter(extra={"allow_cjk_rich_messages": True})
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == content
+    adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_plain_markdown_stays_on_legacy_path():
     """Ordinary replies (no table/task-list/details/math) stay on the legacy
     MarkdownV2 path for consistent client rendering, even with rich enabled."""
@@ -374,6 +387,24 @@ async def test_cjk_rich_content_skips_rich_draft_to_avoid_tdesktop_garble():
     assert result.success is True
     adapter._bot.do_api_request.assert_not_called()
     adapter._bot.send_message_draft.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cjk_rich_draft_can_be_opted_in():
+    adapter = _make_adapter(
+        extra={"rich_drafts": True, "allow_cjk_rich_messages": True}
+    )
+    adapter._bot.do_api_request = AsyncMock(return_value=True)
+
+    result = await adapter.send_draft("12345", draft_id=7, content=CJK_RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_awaited_once()
+    call = adapter._bot.do_api_request.call_args
+    assert call.args[0] == "sendRichMessageDraft"
+    api_kwargs = call.kwargs["api_kwargs"]
+    assert api_kwargs["rich_message"]["markdown"] == CJK_RICH_CONTENT
+    adapter._bot.send_message_draft.assert_not_called()
 
 
 # ----------------------------------------------------------------------
@@ -709,6 +740,22 @@ async def test_finalize_edit_dm_topic_omits_send_only_routing_fields():
     assert "message_thread_id" not in api_kwargs
     assert "direct_messages_topic_id" not in api_kwargs
     assert "| F1 |" in api_kwargs["rich_message"]["markdown"]
+    adapter._bot.edit_message_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_cjk_rich_content_can_be_opted_in():
+    adapter = _make_adapter(extra={"allow_cjk_rich_messages": True})
+
+    result = await adapter.edit_message(
+        "12345", "555", CJK_RICH_CONTENT, finalize=True,
+    )
+
+    assert result.success is True
+    assert result.message_id == "555"
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["message_id"] == 555
+    assert api_kwargs["rich_message"]["markdown"] == CJK_RICH_CONTENT
     adapter._bot.edit_message_text.assert_not_called()
 
 

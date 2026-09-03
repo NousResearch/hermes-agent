@@ -67,6 +67,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.redact import redact_cdp_url
+from agent.secret_scope import get_secret
 from hermes_constants import (
     agent_browser_runnable,
     get_hermes_home,
@@ -3018,6 +3019,24 @@ BROWSER_TOOL_SCHEMAS = [
             "required": []
         }
     },
+    {
+        "name": "browser_import_cookies",
+        "description": "Import cookies from a Netscape-format cookies.txt file into the current browser session. Use to authenticate to sites (LinkedIn, Amazon, etc.) without interactive login. Only available when Camofox is the selected browser backend. Files must live under browser.camofox.cookies_dir (default ~/.camofox/cookies/). Requires CAMOFOX_API_KEY for bearer-token authentication.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "cookies_path": {
+                    "type": "string",
+                    "description": "Path to the Netscape cookies.txt file, relative to browser.camofox.cookies_dir (e.g., 'linkedin.txt')"
+                },
+                "domain_suffix": {
+                    "type": "string",
+                    "description": "Optional. Only import cookies whose domain ends with this suffix (e.g., '.linkedin.com')"
+                }
+            },
+            "required": ["cookies_path"]
+        }
+    },
 ]
 
 
@@ -5430,6 +5449,27 @@ def _maybe_stop_recording(task_id: str):
             _recording_sessions.discard(task_id)
 
 
+def browser_import_cookies(
+    cookies_path: str,
+    domain_suffix: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Import Netscape-format cookies into the active browser session.
+
+    Camofox-only. Delegates to ``tools.browser_camofox.camofox_import_cookies``
+    after verifying the Camofox backend is active, so the tool does not mislead
+    agents running against Browserbase / agent-browser / Firecrawl.
+    """
+    if not _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "browser_import_cookies requires the Camofox backend "
+                     "(select Camofox in `hermes tools`).",
+        })
+    from tools.browser_camofox import camofox_import_cookies
+    return camofox_import_cookies(cookies_path, domain_suffix, task_id)
+
+
 def browser_get_images(task_id: Optional[str] = None) -> str:
     """
     Get all images on the current page.
@@ -6630,4 +6670,24 @@ registry.register(
     ),
     check_fn=check_browser_requirements,
     emoji="🖥️",
+)
+
+
+def _check_import_cookies_requirements() -> bool:
+    """Cookie import requires Camofox and its bearer-token secret."""
+    api_key = (get_secret("CAMOFOX_API_KEY", "") or "").strip()
+    return _is_camofox_mode() and bool(api_key)
+
+
+registry.register(
+    name="browser_import_cookies",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_import_cookies"],
+    handler=lambda args, **kw: browser_import_cookies(
+        cookies_path=args.get("cookies_path", ""),
+        domain_suffix=args.get("domain_suffix"),
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=_check_import_cookies_requirements,
+    emoji="🍪",
 )

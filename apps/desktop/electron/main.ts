@@ -1421,6 +1421,15 @@ const profileDeletionGate = new ProfileDeletionGate()
 // for scripted/headless setups; after launch the stored preference wins.
 const POOL_LIMITS_PATH = path.join(app.getPath('userData'), 'pool-limits.json')
 
+// Logging buffers must be initialized BEFORE readPersistedPoolLimits() runs
+// at module top level (it calls rememberLog, which pushes into hermesLog).
+// Declaring them after the pool read crashed every launch with
+// "Cannot read properties of undefined (reading 'push')".
+const hermesLog: string[] = []
+let desktopLogBuffer = ''
+let desktopLogFlushTimer: ReturnType<typeof setTimeout> | null = null
+let desktopLogFlushPromise: Promise<void> = Promise.resolve()
+
 function readPersistedPoolLimits() {
   try {
     const limits = parsePoolLimits(fs.readFileSync(POOL_LIMITS_PATH, 'utf8'))
@@ -1574,12 +1583,8 @@ let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
 let remoteHeaderRulesInstalled = false
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
-const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
-let desktopLogBuffer = ''
-let desktopLogFlushTimer = null
-let desktopLogFlushPromise = Promise.resolve()
 let nativeThemeListenerInstalled = false
 
 let bootProgressState = {

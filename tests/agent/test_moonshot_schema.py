@@ -158,6 +158,82 @@ class TestAnyOfParentType:
         assert db_type["enum"] == ["mysql", "postgresql"]  # "" stripped by enum cleanup
 
 
+class TestRootLevelAnyOf:
+    """Rule 2 at the ROOT: a tool whose parameters are themselves a union
+    (Pydantic ``Union`` models / MCP inputSchema anyOf) must not get
+    ``type`` forced back onto the root. The repair walk strips the parent
+    type correctly; re-adding ``type: object`` afterwards recreated
+    Moonshot's "At path 'root': when using anyOf, type should be defined
+    in anyOf items instead of the parent schema" rejection (#100688)."""
+
+    def test_root_type_plus_anyof_stays_typeless(self):
+        params = {
+            "type": "object",
+            "anyOf": [
+                {"type": "object", "properties": {"a": {"type": "string"}}},
+                {"type": "object", "properties": {"b": {"type": "integer"}}},
+            ],
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert "type" not in out  # root stays typeless beside anyOf
+        assert "anyOf" in out  # multi-branch union preserved
+        for branch in out["anyOf"]:
+            assert branch["type"] == "object"
+            assert branch["required"] == []
+
+    def test_root_anyof_only_union(self):
+        """Pydantic v2 union models emit a bare root anyOf with no type."""
+        params = {
+            "anyOf": [
+                {"type": "object", "properties": {"a": {"type": "string"}}},
+                {"type": "object", "properties": {"b": {"type": "integer"}}},
+            ]
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert "type" not in out
+        assert len(out["anyOf"]) == 2
+
+    def test_root_single_non_null_branch_still_promotes(self):
+        """Single non-null root branch collapses away the anyOf wrapper —
+        the promoted root keeps the normal ``type: object`` guarantee."""
+        params = {
+            "type": "object",
+            "anyOf": [
+                {"type": "object", "properties": {"a": {"type": "string"}}},
+                {"type": "null"},
+            ],
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert "anyOf" not in out
+        assert out["type"] == "object"
+        assert out["properties"]["a"]["type"] == "string"
+
+    def test_root_without_anyof_still_forced_object(self):
+        params = {"properties": {"q": {"type": "string"}}}
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["type"] == "object"
+
+    def test_tool_entry_root_anyof_survives_full_pipeline(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "union params",
+                    "parameters": {
+                        "anyOf": [
+                            {"type": "object", "properties": {"a": {"type": "string"}}},
+                            {"type": "object", "properties": {"b": {"type": "integer"}}},
+                        ]
+                    },
+                },
+            }
+        ]
+        out = sanitize_moonshot_tools(tools)
+        assert "type" not in out[0]["function"]["parameters"]
+        assert "anyOf" in out[0]["function"]["parameters"]
+
+
 class TestTopLevelGuarantees:
     """The returned top-level schema is always a well-formed object."""
 

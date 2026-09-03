@@ -206,8 +206,13 @@ def sanitize_moonshot_tool_parameters(parameters: Any) -> Dict[str, Any]:
     if not isinstance(repaired, dict):
         return {"type": "object", "properties": {}, "required": []}
 
-    # Top-level must be an object schema
-    if repaired.get("type") != "object":
+    # Top-level must be an object schema — unless the repaired root itself
+    # carries ``anyOf``: Rule 2 puts type on the anyOf children and forbids
+    # it on the parent, so forcing ``type: object`` back here recreates the
+    # exact "At path 'root': when using anyOf, type should be defined in
+    # anyOf items instead of the parent schema" rejection the sanitizer
+    # exists to prevent (#100688).
+    if "anyOf" not in repaired and repaired.get("type") != "object":
         repaired["type"] = "object"
     if "properties" not in repaired:
         repaired["properties"] = {}

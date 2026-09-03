@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -32,6 +39,29 @@ def test_execution_owner_moves_to_external_worker_before_running(
     assert adopted["status"] == "running"
     assert execution_ledger.adopt_claimed_execution(record["id"]) is None
     assert execution_ledger.mark_execution_running(record["id"]) is None
+
+
+def test_genuine_external_worker_crash_is_recovered_unknown(
+    execution_ledger, monkeypatch
+):
+    record = execution_ledger.create_execution("job-crash", source="builtin")
+    script = (
+        "import os\n"
+        "from pathlib import Path\n"
+        "import cron.executions as executions\n"
+        f"executions.EXECUTIONS_FILE = Path({str(execution_ledger.EXECUTIONS_FILE)!r})\n"
+        f"assert executions.adopt_claimed_execution({record['id']!r}) is not None\n"
+        "os._exit(9)\n"
+    )
+
+    crashed = subprocess.run([sys.executable, "-c", script], check=False)
+    assert crashed.returncode == 9
+
+    monkeypatch.setattr(execution_ledger, "_PROCESS_ID", "replacement-scheduler")
+    assert execution_ledger.recover_interrupted_executions() == 1
+    recovered = execution_ledger.latest_execution("job-crash")
+    assert recovered["status"] == "unknown"
+    assert "whether side effects ran is unknown" in recovered["error"]
 
 
 def test_restart_safe_gateway_child_fails_closed_without_scope(monkeypatch):
@@ -159,7 +189,17 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
         )
         return FakeProcess()
 
+    handoff = Mock(return_value={"id": "exec-1", "handoff_pending": 1})
+    monkeypatch.setattr(scheduler, "mark_execution_handoff_pending", handoff)
     monkeypatch.setattr(scheduler.subprocess, "Popen", popen)
+    observed_statuses = iter(
+        [
+            {"id": "exec-1", "status": "running"},
+            {"id": "exec-1", "status": "completed"},
+        ]
+    )
+    get = Mock(side_effect=lambda _execution_id: next(observed_statuses))
+    monkeypatch.setattr(scheduler, "get_execution", get)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "should-not-cross-profile")
     from agent.secret_scope import set_multiplex_active
 
@@ -172,8 +212,56 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     assert spawned[0][0][0:2] == ["scope", "--"]
     assert spawned[0][1]["start_new_session"] is True
     assert "ANTHROPIC_API_KEY" not in spawned[0][1]["env"]
+    handoff.assert_called_once_with("exec-1")
+    assert get.call_count == 2
     payload = json.loads((tmp_path / "cron/external-workers/exec-1.json").read_text())
     assert payload["multiplex_active"] is True
+
+
+def test_external_worker_exit_rechecks_exact_execution_before_failure(monkeypatch):
+    import cron.scheduler as scheduler
+
+    statuses = iter(
+        [
+            {"id": "exec-1", "status": "running"},
+            {"id": "exec-1", "status": "completed"},
+        ]
+    )
+    get = Mock(side_effect=lambda _execution_id: next(statuses))
+    monkeypatch.setattr(scheduler, "get_execution", get, raising=False)
+    process = Mock()
+    process.poll.return_value = 0
+
+    assert scheduler._wait_for_external_cron_worker(
+        process, execution_id="exec-1"
+    ) is True
+    assert get.call_count == 2
+
+
+def test_external_worker_crash_recovers_uncertain_attempt(monkeypatch):
+    import cron.scheduler as scheduler
+
+    statuses = iter(
+        [
+            {"id": "exec-1", "status": "running"},
+            {"id": "exec-1", "status": "running"},
+            {"id": "exec-1", "status": "unknown"},
+        ]
+    )
+    get = Mock(side_effect=lambda _execution_id: next(statuses))
+    recover = Mock(return_value=1)
+    monkeypatch.setattr(scheduler, "get_execution", get)
+    monkeypatch.setattr(
+        scheduler, "recover_interrupted_executions", recover, raising=False
+    )
+    process = Mock()
+    process.poll.return_value = 9
+
+    assert scheduler._wait_for_external_cron_worker(
+        process, execution_id="exec-1"
+    ) is True
+    recover.assert_called_once_with()
+    assert get.call_count == 3
 
 
 def test_launch_external_worker_stays_in_process_outside_managed_gateway(
@@ -215,6 +303,40 @@ def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     run.assert_not_called()
 
 
+def test_shutdown_does_not_interrupt_restart_safe_waiter():
+    import cron.scheduler as scheduler
+
+    job_id = "external-waiter"
+    scheduler._running_job_ids.add(job_id)
+    scheduler._restart_safe_waiter_job_ids.add(job_id)
+    try:
+        assert scheduler.mark_running_jobs_interrupted("gateway restart") == []
+        assert job_id not in scheduler._interrupted_job_ids
+    finally:
+        scheduler._restart_safe_waiter_job_ids.discard(job_id)
+        scheduler._running_job_ids.discard(job_id)
+        scheduler._interrupted_job_ids.discard(job_id)
+
+
+def test_gateway_tool_run_without_adapter_objects_hands_off(monkeypatch):
+    import cron.scheduler as scheduler
+
+    created = Mock(return_value={"id": "exec-tool"})
+    launch = Mock(return_value=True)
+    run = Mock(side_effect=AssertionError("agent ran inside gateway"))
+    monkeypatch.setattr(scheduler, "create_execution", created)
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", launch)
+    monkeypatch.setattr(scheduler, "run_job", run)
+    job = {"id": "tool-job"}
+
+    assert scheduler.run_one_job(job, adapters=None) is True
+
+    created.assert_called_once_with("tool-job", source="direct")
+    assert job["execution_id"] == "exec-tool"
+    launch.assert_called_once_with(job)
+    run.assert_not_called()
+
+
 def test_shared_run_path_creates_execution_before_managed_handoff(monkeypatch):
     import cron.scheduler as scheduler
 
@@ -243,3 +365,150 @@ def test_lost_execution_start_cas_prevents_side_effects(monkeypatch):
         {"id": "job-1", "execution_id": "exec-1"}, adapters=None
     ) is True
     run.assert_not_called()
+
+
+@pytest.mark.linux_only
+@pytest.mark.live_system_guard_bypass
+def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
+    tmp_path, monkeypatch
+):
+    import cron.delivery_queue as delivery_queue
+    import cron.executions as executions
+    import cron.scheduler as scheduler
+    from cron.jobs import create_job, use_cron_store
+    from gateway.config import Platform, PlatformConfig
+    from gateway.status import _pid_exists
+    from tools import process_registry
+
+    if not process_registry._systemd_run_user_scope_available():
+        pytest.skip("systemd-run --user --scope is unavailable on this host")
+
+    home = tmp_path / "profile"
+    scripts_dir = home / "scripts"
+    scripts_dir.mkdir(parents=True)
+    started = tmp_path / "started"
+    release = tmp_path / "release"
+    side_effect = tmp_path / "side-effect"
+    probe = scripts_dir / "restart_probe.py"
+    probe.write_text(
+        "import pathlib, time\n"
+        f"started = pathlib.Path({str(started)!r})\n"
+        f"release = pathlib.Path({str(release)!r})\n"
+        f"side_effect = pathlib.Path({str(side_effect)!r})\n"
+        "started.write_text('started')\n"
+        "deadline = time.monotonic() + 15\n"
+        "while not release.exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(0.05)\n"
+        "if not release.exists():\n"
+        "    raise SystemExit('release timeout')\n"
+        "with side_effect.open('a') as handle:\n"
+        "    handle.write('once\\n')\n"
+        "print('completed')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with use_cron_store(home):
+        job = create_job(
+            prompt=None,
+            schedule="every 1h",
+            name="restart probe",
+            script=probe.name,
+            no_agent=True,
+            deliver="telegram:123",
+        )
+    payload = tmp_path / "job.json"
+    launched = tmp_path / "launched.json"
+    payload.write_text(json.dumps(job), encoding="utf-8")
+
+    sent = []
+    adapter = Mock()
+
+    async def send(_chat_id, content, metadata=None):
+        sent.append((content, metadata))
+        return {"success": True, "message_id": "restart-delivery-1"}
+
+    adapter.send = send
+    gateway_config = Mock()
+    gateway_config.platforms = {
+        Platform.TELEGRAM: PlatformConfig(enabled=True),
+    }
+    gateway_config.get_home_channel = lambda _platform: None
+    monkeypatch.setattr(
+        "gateway.config.load_gateway_config", lambda: gateway_config
+    )
+    monkeypatch.setattr(
+        scheduler, "load_config", lambda: {"cron": {"wrap_response": False}}
+    )
+    replacement_loop = asyncio.new_event_loop()
+    replacement_thread = threading.Thread(
+        target=replacement_loop.run_forever,
+        daemon=True,
+    )
+    replacement_thread.start()
+    deadline = time.monotonic() + 2
+    while not replacement_loop.is_running() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert replacement_loop.is_running()
+
+    harness = (
+        "import json, os, pathlib, time\n"
+        f"os.environ['HERMES_HOME'] = {str(home)!r}\n"
+        "os.environ['INVOCATION_ID'] = 'restart-fixture'\n"
+        "from cron import scheduler\n"
+        "from tools import process_registry\n"
+        "process_registry._is_supervised_gateway_process = lambda: True\n"
+        f"job = json.loads(pathlib.Path({str(payload)!r}).read_text())\n"
+        "if not scheduler.run_one_job(job, adapters=None, loop=None):\n"
+        "    raise SystemExit('worker was not isolated')\n"
+        f"pathlib.Path({str(launched)!r}).write_text('returned')\n"
+    )
+    parent = subprocess.Popen([sys.executable, "-c", harness])
+    worker_pid = None
+    try:
+        deadline = time.monotonic() + 10
+        current = None
+        while time.monotonic() < deadline:
+            if parent.poll() is not None:
+                pytest.fail(f"gateway fixture exited early with {parent.returncode}")
+            current = executions.latest_execution(job["id"])
+            if started.exists() and current and current.get("pid") != os.getpid():
+                break
+            time.sleep(0.05)
+        assert started.exists()
+        assert current is not None
+        execution = current
+        worker_pid = int(current["pid"])
+        assert not launched.exists(), "handoff returned before execution completed"
+
+        # Replacing a managed gateway kills its old process tree. The active
+        # cron owner must remain in its transient scope and keep the same PID.
+        parent.terminate()
+        parent.wait(timeout=5)
+        assert _pid_exists(worker_pid)
+
+        release.write_text("go", encoding="utf-8")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            row = delivery_queue.get_status(execution["id"])
+            if row and row["status"] == "pending":
+                scheduler.drain_delivery_queue(
+                    {Platform.TELEGRAM: adapter}, replacement_loop
+                )
+            current = executions.latest_execution(job["id"])
+            if current and current["status"] == "completed":
+                break
+            time.sleep(0.05)
+        assert executions.latest_execution(job["id"])["status"] == "completed"
+        assert side_effect.read_text(encoding="utf-8").splitlines() == ["once"]
+        assert delivery_queue.get_status(execution["id"])["status"] == "delivered"
+        assert len(sent) == 1
+        assert "completed" in sent[0][0]
+    finally:
+        replacement_loop.call_soon_threadsafe(replacement_loop.stop)
+        replacement_thread.join(timeout=2)
+        replacement_loop.close()
+        if parent.poll() is None:
+            parent.terminate()
+            parent.wait(timeout=5)
+        if worker_pid is not None and _pid_exists(worker_pid):
+            os.kill(worker_pid, signal.SIGKILL)

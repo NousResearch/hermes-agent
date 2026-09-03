@@ -39,6 +39,54 @@ def test_execution_transitions_are_durable(monkeypatch, tmp_path):
     assert persisted == [completed]
 
 
+def test_execution_can_be_loaded_by_exact_attempt_id(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    first = executions.create_execution("same-job", source="builtin")
+    second = executions.create_execution("same-job", source="builtin")
+
+    assert executions.get_execution(first["id"]) == first
+    assert executions.get_execution(second["id"]) == second
+    assert executions.get_execution("missing") is None
+
+
+def test_fresh_external_handoff_is_not_recovered_before_worker_adopts(
+    monkeypatch, tmp_path
+):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("handoff-job", source="builtin")
+    assert executions.mark_execution_handoff_pending(record["id"]) is not None
+
+    monkeypatch.setattr(executions, "_PROCESS_ID", "replacement-gateway")
+    monkeypatch.setattr(executions, "_owner_is_live", lambda _pid, _started: False)
+
+    assert executions.recover_interrupted_executions() == 0
+    assert executions.get_execution(record["id"])["status"] == "claimed"
+    adopted = executions.adopt_claimed_execution(record["id"])
+    assert adopted["status"] == "running"
+    assert adopted["handoff_pending"] == 0
+
+
+def test_stale_external_handoff_is_recovered_unknown(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("handoff-job", source="builtin")
+    pending = executions.mark_execution_handoff_pending(record["id"])
+
+    monkeypatch.setattr(executions, "_PROCESS_ID", "replacement-gateway")
+    monkeypatch.setattr(executions, "_owner_is_live", lambda _pid, _started: False)
+    monkeypatch.setattr(
+        executions.time,
+        "time",
+        lambda: pending["handoff_started_at"]
+        + executions.HANDOFF_ADOPTION_GRACE_SECONDS
+        + 1,
+    )
+
+    assert executions.recover_interrupted_executions() == 1
+    recovered = executions.get_execution(record["id"])
+    assert recovered["status"] == "unknown"
+    assert recovered["handoff_pending"] == 0
+
+
 def test_execution_ledger_follows_the_current_profile_home(monkeypatch, tmp_path):
     import cron.executions as executions
 

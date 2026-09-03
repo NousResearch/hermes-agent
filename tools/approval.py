@@ -407,6 +407,20 @@ _HERMES_CONFIG_PATH = (
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'config\.yaml\b'
 )
+# Hermes-root credential stores. `agent/file_safety` already denies these to
+# write_file/patch — classifying mcp-tokens/ and pairing/ as "credential" — but
+# the terminal side had no rule, so `echo x >> ~/.hermes/mcp-tokens/x.json` was
+# auto-approved: the unpaired theater _HERMES_CONFIG_PATH names above, over live
+# MCP OAuth bearer tokens, device-pairing material, and the Anthropic PKCE
+# refresh store. Directory forms are PREFIX matches. sessions/ and state.db are
+# excluded — application-owned transcript state denied to stop history
+# falsification, not credentials, and the media denylist skips them too (#41071).
+_HERMES_CREDENTIAL_PATH = (
+    r'(?:~\/\.hermes/|'
+    r'(?:\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'(?:mcp-tokens(?:/|$)|pairing(?:/|$)|\.anthropic_oauth\.json\b)'
+)
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = (
@@ -433,12 +447,14 @@ _SENSITIVE_WRITE_TARGET = (
     rf'{_SSH_SENSITIVE_PATH}|'
     rf'{_HERMES_ENV_PATH}|'
     rf'{_HERMES_CONFIG_PATH}|'
+    rf'{_HERMES_CREDENTIAL_PATH}|'
     rf'{_SHELL_RC_FILES}|'
     rf'{_CREDENTIAL_FILES})'
 )
 _USER_SENSITIVE_WRITE_TARGET = (
     rf'(?:{_SSH_SENSITIVE_PATH}|'
     rf'{_SHELL_RC_FILES}|'
+    rf'{_HERMES_CREDENTIAL_PATH}|'
     rf'{_CREDENTIAL_FILES})'
 )
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'

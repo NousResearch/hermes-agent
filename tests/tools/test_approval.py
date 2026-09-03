@@ -323,6 +323,93 @@ class TestTeePattern:
             assert key is None
 
 
+class TestHermesCredentialStoreWriteProtection:
+    """Terminal-side pairing for the Hermes-root credential stores.
+
+    ``agent/file_safety`` already denies these to write_file/patch and
+    classifies ``mcp-tokens/`` and ``pairing/`` as ``"credential"``, but the
+    terminal path had no matching rule — so ``echo x >>
+    ~/.hermes/mcp-tokens/github.json`` was auto-approved. Same unpaired-theater
+    shape as ``TestHermesConfigWriteProtection`` above, and the same
+    live-bearer-token class the media denylist already pairs.
+    """
+
+    CREDENTIAL_PATHS = (
+        "~/.hermes/mcp-tokens/github.json",
+        "~/.hermes/mcp-tokens/github.client.json",
+        "~/.hermes/pairing/device.json",
+        "~/.hermes/.anthropic_oauth.json",
+        "$HERMES_HOME/mcp-tokens/github.json",
+        "$HOME/.hermes/pairing/device.json",
+    )
+
+    def test_every_write_vector_is_gated(self):
+        for path in self.CREDENTIAL_PATHS:
+            for vector in (
+                "echo x >> {p}",
+                "echo x > {p}",
+                "echo x | tee -a {p}",
+                "cp /tmp/evil {p}",
+                "mv /tmp/evil {p}",
+                "install -m600 /tmp/c {p}",
+                "sed -i 's/a/b/' {p}",
+            ):
+                command = vector.format(p=path)
+                dangerous, key, _ = detect_dangerous_command(command)
+                assert dangerous is True, command
+                assert key is not None, command
+
+    def test_session_state_is_not_gated_here(self):
+        """``sessions/`` and ``state.db`` are application-owned transcript state
+        denied to stop history falsification, NOT credentials. The media
+        denylist keeps them out for the same reason (#41071), so this rule must
+        not claim them."""
+        for command in (
+            "echo x >> ~/.hermes/sessions/state.db",
+            "sed -i 's/a/b/' ~/.hermes/state.db",
+        ):
+            dangerous, key, _ = detect_dangerous_command(command)
+            assert dangerous is False, command
+            assert key is None, command
+
+    def test_ordinary_hermes_root_writes_stay_safe(self):
+        """Only the credential stores are gated — logs, skills, and generated
+        cache artifacts under ~/.hermes must remain writable."""
+        for command in (
+            "echo x >> ~/.hermes/logs/agent.log",
+            "cp new.md ~/.hermes/skills/mine/SKILL.md",
+            "echo x > ~/.hermes/notes.txt",
+            "install -m644 /tmp/f ~/.hermes/cache/images/out.png",
+        ):
+            dangerous, key, _ = detect_dangerous_command(command)
+            assert dangerous is False, command
+            assert key is None, command
+
+    def test_near_miss_and_non_hermes_paths_stay_safe(self):
+        """Prefix matching must not catch similarly-named siblings, and the
+        rule is anchored to the Hermes root rather than the bare directory
+        name."""
+        for command in (
+            "echo x >> ~/.hermes/mcp-tokens-backup.json",
+            "echo x >> ~/.hermes/pairing-notes.md",
+            "echo x >> ~/mcp-tokens/github.json",
+            "echo x >> /opt/app/pairing/device.json",
+        ):
+            dangerous, key, _ = detect_dangerous_command(command)
+            assert dangerous is False, command
+
+    def test_reads_out_of_credential_stores_stay_safe(self):
+        """Only the write DESTINATION is gated. Reading out is covered by the
+        read guard and the media denylist, mirroring ~/.ssh behaviour."""
+        for command in (
+            "cat ~/.hermes/mcp-tokens/github.json",
+            "cp ~/.hermes/pairing/device.json /tmp/x",
+            "grep -r tok ~/.hermes/mcp-tokens/",
+        ):
+            dangerous, key, _ = detect_dangerous_command(command)
+            assert dangerous is False, command
+
+
 class TestHermesConfigWriteProtection:
     """Terminal-side pairing for the file_tools write_file/patch deny on
     ~/.hermes/config.yaml (#14639). config.yaml IS the security policy

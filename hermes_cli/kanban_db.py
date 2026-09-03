@@ -5360,6 +5360,33 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class HallucinatedResultError(ValueError):
+    """Raised by ``complete_task`` when ``expected_result_pattern`` is supplied
+    but does NOT match the ``result``/``summary`` the worker provided.
+
+    Mirrors ``HallucinatedCardsError``'s fail-closed semantics: the task
+    status is never flipped to ``done`` and an auditable event is emitted.
+    The error carries structured fields for callers that need them:
+
+    - ``.task_id``: the task whose completion was rejected.
+    - ``.pattern``: the regex/string pattern that was required.
+    - ``.actual``: the result text that failed to match.
+
+    Kept as ``ValueError`` subclass so existing tool-error handlers treat
+    it as a recoverable user error.
+    """
+
+    def __init__(self, *, task_id: str, pattern: str, actual: Optional[str]):
+        self.task_id = task_id
+        self.pattern = pattern
+        self.actual = actual
+        super().__init__(
+            f"completion blocked for task {task_id!r}: result does not match "
+            f"expected_result_pattern {pattern!r} "
+            f"(got: {(actual or '').strip()[:200]!r})"
+        )
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5369,6 +5396,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    expected_result_pattern: Optional[str] = None,
     fire_lifecycle_hook: bool = True,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
@@ -5435,6 +5463,36 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    # Gate: verify expected_result_pattern BEFORE the main write txn.
+    # When the caller supplies a pattern, it acts as a mechanical
+    # completeness contract: if the result/summary field does not match,
+    # we block completion with an auditable event (mirrors
+    # HallucinatedCardsError's fail-closed style). When omitted (the
+    # default), behavior is byte-identical to the existing path.
+    if expected_result_pattern is not None:
+        import re as _re
+        _actual = summary if summary is not None else result
+        _matched = bool(
+            _re.search(expected_result_pattern, _actual or "")
+        )
+        if not _matched:
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "completion_blocked_hallucination",
+                    {
+                        "reason": "expected_result_pattern_mismatch",
+                        "expected_result_pattern": expected_result_pattern,
+                        "actual_preview": (
+                            (_actual or "").strip()[:200]
+                        ),
+                    },
+                )
+            raise HallucinatedResultError(
+                task_id=task_id,
+                pattern=expected_result_pattern,
+                actual=_actual,
+            )
 
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,

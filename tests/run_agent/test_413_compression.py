@@ -328,6 +328,46 @@ class TestHTTP413Compression:
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after compression"
 
+    def test_copilot_invalid_request_body_overflow_compresses_and_retries(self, agent):
+        """Copilot's generic code must not turn explicit overflow into an abort."""
+        message = (
+            "Your input exceeds the context window of this model. "
+            "Please adjust your input and try again."
+        )
+        err_400 = Exception(f"Error code: 400 - {message}")
+        err_400.status_code = 400
+        err_400.body = {
+            "error": {
+                "message": message,
+                "code": "invalid_request_body",
+            }
+        }
+        ok_resp = _mock_response(
+            content="Recovered from Copilot overflow", finish_reason="stop"
+        )
+        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
+
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "compressed summary"}],
+                "compressed prompt",
+            )
+            result = agent.run_conversation("continue", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        assert result.get("failed") is not True
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered from Copilot overflow"
 
     def test_provider_context_limit_is_cached_before_retry_succeeds(self, agent):
         """A confirmed limit survives when the recovery response omits usage."""

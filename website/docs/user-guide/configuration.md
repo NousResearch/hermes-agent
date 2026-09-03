@@ -2119,7 +2119,18 @@ Signal is listed as a valid platform key because the setting can be saved per pl
 
 ```yaml
 privacy:
-  redact_pii: false  # Strip PII from LLM context (gateway only)
+  redact_pii: false
+  anonymize_documents: false
+```
+
+`redact_pii` hashes gateway transport identifiers and removes phone-like identifiers from session context. It does not anonymize document content.
+
+Set `anonymize_documents: true` to extract supported document attachments locally and replace detected personal data with stable `personN` tokens and monetary values with `SUMN` before document text enters the model request. This applies to gateway document attachments, Desktop/TUI `@file:` document references, OpenAI-compatible inline `file`/`input_file` parts, and OpenWebUI `<source>...</source>` document blocks. Ordinary chat messages and source-code files are not rewritten. Extraction is fail-closed: corrupt, encrypted, unsupported, or incompletely extracted documents are withheld rather than sent unchanged. PDF vision rendering is disabled in this mode because raster pages cannot be safely text-redacted.
+
+Enable it with:
+
+```bash
+hermes config set privacy.anonymize_documents true
 ```
 
 When `redact_pii` is `true`, the gateway redacts personally identifiable information from the system prompt before sending it to the LLM on supported platforms:

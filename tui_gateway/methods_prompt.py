@@ -6,6 +6,7 @@ are rebound onto server.py's globals at install time — see method_ctx.py.
 
 from .method_ctx import HandlerRegistry
 
+import hashlib
 import types
 
 _registry = HandlerRegistry()
@@ -1241,6 +1242,15 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
 
+    from agent.document_anonymizer import document_anonymization_enabled
+
+    if document_anonymization_enabled():
+        return _err(
+            rid,
+            4019,
+            "PDF vision rendering is disabled while document anonymization is enabled; attach the PDF as a file instead",
+        )
+
     if shutil.which("pdftoppm") is None:
         return _err(rid, 5028, "pdftoppm not installed (poppler-utils package required)")
 
@@ -1378,6 +1388,23 @@ def _(rid, params: dict) -> dict:
         stored_path, uploaded = _stage_session_file_attachment(
             session, raw_path=raw, data_url=data_url, name=name
         )
+        from agent.document_anonymizer import (
+            document_anonymization_enabled,
+            is_document_path,
+            sanitized_document_text,
+        )
+
+        if document_anonymization_enabled() and is_document_path(stored_path):
+            clean = sanitized_document_text(stored_path)
+            digest = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:16]
+            sanitized_path = Path(stored_path).with_name(f"anonymized_{digest}.txt")
+            sanitized_path.write_text(clean, encoding="utf-8")
+            if uploaded and Path(stored_path) != sanitized_path:
+                try:
+                    Path(stored_path).unlink()
+                except OSError:
+                    pass
+            stored_path = sanitized_path
         ref_path = _attachment_ref_path(session, stored_path)
         return _ok(
             rid,

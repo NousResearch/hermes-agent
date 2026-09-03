@@ -41,6 +41,7 @@ Requires:
 """
 
 import asyncio
+import base64
 import concurrent.futures
 import errno
 import hashlib
@@ -681,6 +682,39 @@ _IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
 _FILE_PART_TYPES = frozenset({"file", "input_file"})
 
 
+def _anonymize_inline_document_part(part: Dict[str, Any]) -> Dict[str, str]:
+    """Turn an OpenAI file/input_file part into local anonymized text."""
+    from agent.document_anonymizer import (
+        document_anonymization_enabled,
+        sanitized_document_bytes,
+    )
+
+    if not document_anonymization_enabled():
+        raise ValueError(
+            "unsupported_content_type:Document inputs require privacy.anonymize_documents=true."
+        )
+    payload = part.get("file") if isinstance(part.get("file"), dict) else part
+    filename = str(payload.get("filename") or payload.get("name") or "").strip()
+    file_data = payload.get("file_data") or payload.get("data")
+    if not filename or not isinstance(file_data, str):
+        raise ValueError(
+            "invalid_content_part:Document parts require filename and inline file_data. "
+            "Remote file_id/file_url inputs are not accepted."
+        )
+    encoded = file_data.split(",", 1)[1] if file_data.lower().startswith("data:") and "," in file_data else file_data
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise ValueError("invalid_content_part:Document file_data is not valid base64.") from exc
+    try:
+        clean = sanitized_document_bytes(raw, filename)
+    except Exception as exc:
+        raise ValueError(
+            f"document_anonymization_failed:Document was withheld because local anonymization failed ({type(exc).__name__})."
+        ) from exc
+    return {"type": "text", "text": f"[Анонимизированное содержимое документа]\n{clean}"}
+
+
 def _normalize_multimodal_content(content: Any) -> Any:
     """Validate and normalize multimodal content for the API server.
 
@@ -775,10 +809,10 @@ def _normalize_multimodal_content(content: Any) -> Any:
             continue
 
         if part_type in _FILE_PART_TYPES:
-            raise ValueError(
-                "unsupported_content_type:Inline image inputs are supported, "
-                "but uploaded files and document inputs are not supported on this endpoint."
-            )
+            document_part = _anonymize_inline_document_part(part)
+            normalized_parts.append(document_part)
+            text_accum_len += len(document_part["text"])
+            continue
 
         # Unknown part type — reject explicitly so clients get a clear error
         # instead of a silently dropped turn.
@@ -809,7 +843,7 @@ def _content_has_visible_payload(content: Any) -> bool:
                 ptype = str(part.get("type") or "").strip().lower()
                 if ptype in _TEXT_PART_TYPES and str(part.get("text") or "").strip():
                     return True
-                if ptype in _IMAGE_PART_TYPES:
+                if ptype in _IMAGE_PART_TYPES or ptype in _FILE_PART_TYPES:
                     return True
     return False
 
@@ -5190,9 +5224,26 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = None
         conversation_messages: List[Dict[str, str]] = []
 
+        from agent.document_anonymizer import anonymize_openwebui_source_blocks
+
         for idx, msg in enumerate(messages):
             role = msg.get("role", "")
             raw_content = msg.get("content", "")
+            # OpenWebUI's file/RAG middleware wraps extracted document bytes in
+            # <source ...>...</source>. Redact only those bodies; ordinary text
+            # messages, including surrounding user prose, remain unchanged.
+            if isinstance(raw_content, str):
+                raw_content = anonymize_openwebui_source_blocks(raw_content)
+            elif isinstance(raw_content, list):
+                raw_content = [
+                    {
+                        **part,
+                        "text": anonymize_openwebui_source_blocks(str(part.get("text") or "")),
+                    }
+                    if isinstance(part, dict) and str(part.get("type") or "").lower() in _TEXT_PART_TYPES
+                    else part
+                    for part in raw_content
+                ]
             if role == "system":
                 # System messages don't support images (Anthropic rejects, OpenAI
                 # text-model systems don't render them).  Flatten to text.
@@ -6369,7 +6420,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if raw_input is None:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
-        instructions = body.get("instructions")
+        from agent.document_anonymizer import anonymize_openwebui_content
+
+        instructions = anonymize_openwebui_content(body.get("instructions"))
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
@@ -6386,15 +6439,17 @@ class APIServerAdapter(BasePlatformAdapter):
         # Normalize input to message list
         input_messages: List[Dict[str, Any]] = []
         if isinstance(raw_input, str):
-            input_messages = [{"role": "user", "content": raw_input}]
+            input_messages = [{"role": "user", "content": anonymize_openwebui_content(raw_input)}]
         elif isinstance(raw_input, list):
             for idx, item in enumerate(raw_input):
                 if isinstance(item, str):
-                    input_messages.append({"role": "user", "content": item})
+                    input_messages.append({"role": "user", "content": anonymize_openwebui_content(item)})
                 elif isinstance(item, dict):
                     role = item.get("role", "user")
                     try:
-                        content = _normalize_multimodal_content(item.get("content", ""))
+                        content = _normalize_multimodal_content(
+                            anonymize_openwebui_content(item.get("content", ""))
+                        )
                     except ValueError as exc:
                         return _multimodal_validation_error(exc, param=f"input[{idx}].content")
                     input_messages.append({"role": role, "content": content})
@@ -6420,7 +6475,9 @@ class APIServerAdapter(BasePlatformAdapter):
                         status=400,
                     )
                 try:
-                    entry_content = _normalize_multimodal_content(entry["content"])
+                    entry_content = _normalize_multimodal_content(
+                        anonymize_openwebui_content(entry["content"])
+                    )
                 except ValueError as exc:
                     return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
                 conversation_history.append({"role": str(entry["role"]), "content": entry_content})

@@ -851,6 +851,133 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://docs.fireworks.ai/serverless/pricing",
         pricing_version="fireworks-pricing-2026-07",
     ),
+    # ── Z.AI direct (pay-as-you-go api.z.ai/api/paas/v4) ─────────────────
+    # https://docs.z.ai/guides/overview/pricing (USD / 1M tokens; cached-
+    # input storage is limited-time free, omitted). Coding-plan endpoints
+    # (/api/coding/...) never hit this table — they route to
+    # billing_mode="subscription_included" in resolve_billing_route.
+    (
+        "zai",
+        "glm-5.2",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.40"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.26"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-08",
+    ),
+    (
+        "zai",
+        "glm-5.1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.40"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.26"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-08",
+    ),
+    (
+        "zai",
+        "glm-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("3.20"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-08",
+    ),
+    (
+        "zai",
+        "glm-5-turbo",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.20"),
+        output_cost_per_million=Decimal("4.00"),
+        cache_read_cost_per_million=Decimal("0.24"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-08",
+    ),
+    (
+        "zai",
+        "glm-4.7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.60"),
+        output_cost_per_million=Decimal("2.20"),
+        cache_read_cost_per_million=Decimal("0.11"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-08",
+    ),
+    (
+        "zai",
+        "glm-4.7-flashx",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.07"),
+        output_cost_per_million=Decimal("0.40"),
+        cache_read_cost_per_million=Decimal("0.01"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-08",
+    ),
+    (
+        "zai",
+        "glm-4.6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.60"),
+        output_cost_per_million=Decimal("2.20"),
+        cache_read_cost_per_million=Decimal("0.11"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-08",
+    ),
+    (
+        "zai",
+        "glm-4.5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.60"),
+        output_cost_per_million=Decimal("2.20"),
+        cache_read_cost_per_million=Decimal("0.11"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-08",
+    ),
+    (
+        "zai",
+        "glm-4.5-x",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.20"),
+        output_cost_per_million=Decimal("8.90"),
+        cache_read_cost_per_million=Decimal("0.45"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-08",
+    ),
+    (
+        "zai",
+        "glm-4.5-air",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.20"),
+        output_cost_per_million=Decimal("1.10"),
+        cache_read_cost_per_million=Decimal("0.03"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-08",
+    ),
+    (
+        "zai",
+        "glm-4.5-airx",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.10"),
+        output_cost_per_million=Decimal("4.50"),
+        cache_read_cost_per_million=Decimal("0.22"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-08",
+    ),
+
     (
         "fireworks",
         "glm-5p2",
@@ -1091,6 +1218,26 @@ def resolve_billing_route(
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=base_url or "", billing_mode="subscription_included")
+    # Z.AI Coding Plan and Ollama Cloud bill by subscription quota, not
+    # per-token: usage eats plan allowance (Ollama publishes usage levels
+    # per model, Z.AI's coding plan is a fixed monthly seat) — there is no
+    # per-token charge to meter, so cost is $0 for spend-tracking purposes,
+    # exactly like openai-codex. Detection is by base_url host/path so the
+    # route holds even when the provider entry in config.yaml is renamed.
+    # Z.AI is split by endpoint (https://docs.z.ai/devpack/overview):
+    #   subscription — https://api.z.ai/api/coding/paas/v4 (Chat)
+    #                  https://api.z.ai/api/v1            (Responses)
+    #                  https://api.z.ai/api/anthropic      (Messages)
+    #   pay-as-you-go — https://api.z.ai/api/paas/v4 (per-token, resolves
+    #                   through the official-docs pricing table below).
+    if base_url_host_matches(base_url or "", "api.z.ai") and (
+        "/coding/" in base
+        or base.rstrip("/").endswith("/api/v1")
+        or base.rstrip("/").endswith("/api/anthropic")
+    ):
+        return BillingRoute(provider="zai", model=model, base_url=base_url or "", billing_mode="subscription_included")
+    if provider_name == "ollama-cloud" or base_url_host_matches(base_url or "", "ollama.com"):
+        return BillingRoute(provider="ollama-cloud", model=model, base_url=base_url or "", billing_mode="subscription_included")
     if provider_name == "openrouter" or base_url_host_matches(base_url or "", "openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
     if provider_name == "nous" or base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):

@@ -1761,9 +1761,11 @@ export const ja = defineLocale({
     nameLabel: '名前',
     cloneFrom: '複製元',
     cloneFromNone: 'なし（空）',
-    cloneFromDesc: '選択したプロファイルから設定、スキル、SOUL.md をコピーします。',
+    cloneFromDesc:
+      '選択したプロファイルから設定、.env 認証情報、SOUL.md、整理済みメモリ、スキルをコピーします。セッション履歴は新規のままです。',
     cloneFromDefault: 'デフォルトプロファイルから設定を複製',
-    cloneFromDefaultDesc: 'デフォルトプロファイルから設定、スキル、SOUL.md をコピーします。',
+    cloneFromDefaultDesc:
+      'デフォルトプロファイルから設定、.env 認証情報、SOUL.md、整理済みメモリ、スキルをコピーします。セッション履歴は新規のままです。',
     invalidName: hint => `無効なプロファイル名。${hint}`,
     nameRequired: '名前は必須です',
     creating: '作成中...',

@@ -79,9 +79,9 @@ hermes profile create <name> [options]
 | 参数 / 选项 | 描述 |
 |-------------------|-------------|
 | `<name>` | 新 profile 的名称。必须是合法的目录名（字母数字、连字符、下划线）。 |
-| `--clone` | 从当前 profile 复制 `config.yaml`、`.env`、`SOUL.md` 和 skills。 |
+| `--clone` | 从当前 profile 复制 `config.yaml`、`.env` 凭据、`SOUL.md`、整理后的记忆（`MEMORY.md` 和 `USER.md`）以及 skills。会话历史保持为空。 |
 | `--clone-all` | 从当前 profile 复制所有内容（config、memories、skills、cron、plugins）。会排除每个 profile 自己的历史数据：sessions、`state.db`、backups、state-snapshots、checkpoints。 |
-| `--clone-from <profile>` | 从指定 profile 克隆 config/skills/SOUL，而非当前 profile。除非与 `--clone-all` 配合使用，否则会隐含 `--clone`。 |
+| `--clone-from <profile>` | 从指定 profile 克隆 config、`.env` 凭据、SOUL、整理后的记忆和 skills，而非当前 profile。除非与 `--clone-all` 配合使用，否则会隐含 `--clone`。 |
 | `--no-alias` | 跳过 wrapper 脚本创建。 |
 | `--description "<text>"` | 一到两句话描述该 profile 的用途。供 kanban 编排器根据角色而非仅凭 profile 名称来路由任务。可跳过，稍后通过 `hermes profile describe` 添加。持久化保存在 `<profile_dir>/profile.yaml` 中。 |
 | `--no-skills` | 创建一个**空** profile，不启用任何内置 skill。会在 profile 目录中写入 `.no-bundled-skills` 标记，使后续 `hermes update` 不再重新植入内置 skill 集，且拒绝与 `--clone`、`--clone-from` 或 `--clone-all` 组合使用（因为这些选项会复制 skill）。适用于不应继承完整 skill 目录的窄化编排器 profile 或沙箱 profile。 |
@@ -94,13 +94,13 @@ hermes profile create <name> [options]
 # 空白 profile — 需要完整配置
 hermes profile create mybot
 
-# 仅从当前 profile 克隆 config
+# 从当前 profile 克隆设置与整理后的记忆
 hermes profile create work --clone
 
 # 从当前 profile 克隆所有内容
 hermes profile create backup --clone-all
 
-# 从指定 profile 克隆 config
+# 从指定 profile 克隆设置与整理后的记忆
 hermes profile create work2 --clone-from work
 
 # 从指定 profile 克隆所有内容

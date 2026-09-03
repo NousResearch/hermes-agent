@@ -626,7 +626,7 @@ Profiles 是构建在 `HERMES_HOME` 之上的托管层。您*可以*在每次命
 
 ### Profiles 共享记忆或会话吗？
 
-不共享。每个 profile 都有自己独立的记忆存储、会话数据库和技能目录，完全隔离。如果您想用现有的记忆和会话创建新 profile，请使用 `hermes profile create newname --clone-all` 从当前 profile 复制所有内容，或添加 `--clone-from <profile>` 从指定源 profile 复制。
+不共享。每个 profile 都有自己独立的记忆存储、会话数据库和技能目录，创建后完全隔离。`hermes profile create newname --clone` 会复制源 profile 的 config、`.env` 凭据、`SOUL.md`、整理后的 `MEMORY.md`/`USER.md` 和技能，同时保留全新的会话历史。添加 `--clone-from <profile>` 可选择其他源 profile。`--clone-all` 还会复制源 profile 的其余状态，但仍排除会话历史、备份、快照和检查点。
 
 ### 运行 `hermes update` 时会发生什么？
 

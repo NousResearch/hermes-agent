@@ -48,13 +48,13 @@ hermes profile create researcher --description "Reads source code and external d
 
 You can also set or auto-generate the description later with `hermes profile describe` — see the [Kanban guide](./features/kanban#auto-vs-manual-orchestration) for the full routing model.
 
-### Clone config only (`--clone`)
+### Clone setup and curated memory (`--clone`)
 
 ```bash
 hermes profile create work --clone
 ```
 
-Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, and skills into the new profile. Same API keys, model, and capabilities, but fresh sessions and memory. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
+Copies your current profile's `config.yaml`, `.env` credentials, `SOUL.md`, curated memory (`memories/MEMORY.md` and `memories/USER.md`), and skills into the new profile. The clone keeps the same API keys, model, capabilities, personality, and curated identity context, but starts with fresh session history. Because `.env` may contain API keys and tokens, edit `~/.hermes/profiles/work/.env` if the new profile should use different credentials; edit `~/.hermes/profiles/work/SOUL.md` for a different personality.
 
 ### Clone everything (`--clone-all`)
 
@@ -74,7 +74,7 @@ Anthropic (Claude Pro/Max), OpenAI Codex, and xAI OAuth logins use **single-use 
 hermes profile create work --clone-from coder
 ```
 
-`--clone-from <source>` selects the source profile directly and implies a config/skills/SOUL clone. Combine it with `--clone-all` when you want a full copy of that source profile:
+`--clone-from <source>` selects the source profile directly and implies the same config, `.env` credentials, SOUL, curated memory, and skills clone as `--clone`. Combine it with `--clone-all` when you want a full copy of that source profile:
 
 ```bash
 hermes profile create work-backup --clone-from coder --clone-all

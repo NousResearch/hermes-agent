@@ -632,7 +632,7 @@ No. Each messaging platform (Telegram, Discord, etc.) requires exclusive access 
 
 ### Do profiles share memory or sessions?
 
-No. Each profile has its own memory store, session database, and skills directory. They are completely isolated. If you want to start a new profile with existing memories and sessions, use `hermes profile create newname --clone-all` to copy everything from the current profile, or add `--clone-from <profile>` to copy from a specific source profile.
+No. Each profile has its own memory store, session database, and skills directory. They are completely isolated after creation. `hermes profile create newname --clone` starts a profile with the source's config, `.env` credentials, `SOUL.md`, curated `MEMORY.md`/`USER.md`, and skills, but with fresh session history. Add `--clone-from <profile>` to choose a different source. `--clone-all` copies the source's remaining profile state too, except session history, backups, snapshots, and checkpoints.
 
 This isolation is also the reason to never run two agents against the *same* profile or Hermes home: both write memory automatically and each loads the other's writes at session start, so their stored state degrades with every session. One agent per profile; for genuinely shared memory across agents, use an [external memory provider](/user-guide/features/memory-providers).
 

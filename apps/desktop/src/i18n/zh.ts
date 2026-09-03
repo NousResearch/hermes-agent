@@ -2252,9 +2252,11 @@ export const zh: Translations = {
     nameLabel: '名称',
     cloneFrom: '克隆来源',
     cloneFromNone: '无（空白）',
-    cloneFromDesc: '从选中的来源配置档案复制配置、技能和 SOUL.md。',
+    cloneFromDesc:
+      '从选中的来源配置档案复制配置、.env 凭据、SOUL.md、整理后的记忆和技能。会话历史保持全新。',
     cloneFromDefault: '从默认档案克隆',
-    cloneFromDefaultDesc: '从你的默认配置档案复制配置、技能和 SOUL.md。',
+    cloneFromDefaultDesc:
+      '从你的默认配置档案复制配置、.env 凭据、SOUL.md、整理后的记忆和技能。会话历史保持全新。',
     invalidName: hint => `名称无效。${hint}`,
     nameRequired: '名称为必填项。',
     creating: '创建中…',

@@ -1489,9 +1489,11 @@ export const ar = defineLocale({
     nameLabel: 'الاسم',
     cloneFrom: 'استنساخ من',
     cloneFromNone: 'لا شيء (فارغ)',
-    cloneFromDesc: 'ينسخ الإعدادات والمهارات وSOUL.md من الملف الشخصي المصدر المحدد.',
+    cloneFromDesc:
+      'ينسخ الإعدادات وبيانات اعتماد .env وSOUL.md والذاكرة المنسّقة والمهارات من الملف الشخصي المصدر المحدد. يبقى سجل الجلسات جديدًا.',
     cloneFromDefault: 'نسخ إعداد الافتراضي',
-    cloneFromDefaultDesc: 'ابدأ من إعدادات الملف الافتراضي.',
+    cloneFromDefaultDesc:
+      'انسخ الإعدادات وبيانات اعتماد .env وSOUL.md والذاكرة المنسّقة والمهارات من ملفك الشخصي الافتراضي. يبقى سجل الجلسات جديدًا.',
     invalidName: hint => `اسم غير صالح: ${hint}`,
     nameRequired: 'الاسم مطلوب',
     creating: 'جار الإنشاء...',

@@ -2084,9 +2084,11 @@ export const en: Translations = {
     nameLabel: 'Name',
     cloneFrom: 'Clone from',
     cloneFromNone: 'None (blank)',
-    cloneFromDesc: 'Copies config, skills, and SOUL.md from the selected source profile.',
+    cloneFromDesc:
+      'Copies config, .env credentials, SOUL.md, curated memory, and skills. Session history stays fresh.',
     cloneFromDefault: 'Clone from default',
-    cloneFromDefaultDesc: 'Copy config, skills, and SOUL.md from your default profile.',
+    cloneFromDefaultDesc:
+      'Copy config, .env credentials, SOUL.md, curated memory, and skills from your default profile. Session history stays fresh.',
     invalidName: hint => `Invalid name. ${hint}`,
     nameRequired: 'Name is required.',
     creating: 'Creating...',

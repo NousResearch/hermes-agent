@@ -11391,12 +11391,14 @@ def cmd_profile(args):
                 )
                 if clone_all:
                     print(
-                        f"Full copy from {source_label} "
-                        "(excluding session history, backups, and snapshots)."
+                        f"Full copy from {source_label}, including .env credentials "
+                        "and memory (excluding session history, backups, snapshots, "
+                        "and checkpoints)."
                     )
                 else:
                     print(
-                        f"Cloned config, .env, SOUL.md, and skills from {source_label}."
+                        f"Cloned config, .env credentials, SOUL.md, curated memory, "
+                        f"and skills from {source_label}; sessions remain fresh."
                     )
 
             # Auto-clone Honcho config for the new profile (only with clone operations)
@@ -11460,7 +11462,7 @@ def cmd_profile(args):
             print(f"  {name} setup              Configure API keys and model")
             print(f"  {name} chat               Start chatting")
             print(f"  {name} gateway start      Start the messaging gateway")
-            if clone or clone_all:
+            if clone_config or clone_all:
                 print(f"\n  Edit {profile_dir_display}/.env for different API keys")
                 print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
             else:

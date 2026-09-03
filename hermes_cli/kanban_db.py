@@ -481,6 +481,7 @@ _CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
 _CTX_MAX_FIELD_BYTES    = 4 * 1024   # 4 KB per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # 8 KB per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
+_CTX_MAX_WORKER_QUERY_CHARS = 64 * 1024  # total first-turn text incl. kickoff
 
 
 def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
@@ -11026,9 +11027,11 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
          ``run.summary`` / ``run.metadata`` when the parent was executed
          via a run; falls back to ``task.result`` for older data. Same
          per-field cap.
-      5. Cross-task role history for the assignee (most recent 5
+      5. Attachments uploaded to this task, after parent handoffs so optional
+         file metadata is truncated before decision-critical upstream results.
+      6. Cross-task role history for the assignee (most recent 5
          completed runs on other tasks).
-      6. Comment thread (most recent ``_CTX_MAX_COMMENTS`` shown, older
+      7. Comment thread (most recent ``_CTX_MAX_COMMENTS`` shown, older
          collapsed).
 
     All caps exist so worker prompts stay bounded even on pathological
@@ -11054,7 +11057,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         return s[:limit] + f"… [truncated, {len(s) - limit} chars omitted]"
 
     lines: list[str] = []
-    lines.append(f"# Kanban task {task.id}: {task.title}")
+    lines.append(f"# Kanban task {task.id}: {_cap(task.title)}")
     lines.append("")
     lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
     lines.append(f"Status:   {task.status}")
@@ -11077,25 +11080,6 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if task.body and task.body.strip():
         lines.append("## Body")
         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
-        lines.append("")
-
-    # Attachments — files uploaded to this task (PDFs, source docs,
-    # images). Surface the absolute on-disk path so the worker, which has
-    # full file-tool access, can read them directly (read_file, terminal
-    # `pdftotext`, etc.). On the local terminal backend the path resolves
-    # as-is; remote backends need the kanban attachments dir mounted.
-    attachments = list_attachments(conn, task_id)
-    if attachments:
-        lines.append("## Attachments")
-        lines.append(
-            "Files attached to this task. Read them with the file/terminal "
-            "tools at the absolute paths below:"
-        )
-        for att in attachments:
-            size_kb = max(1, (att.size + 1023) // 1024) if att.size else 0
-            size_str = f", {size_kb} KB" if size_kb else ""
-            ctype = f", {att.content_type}" if att.content_type else ""
-            lines.append(f"- `{att.filename}`{ctype}{size_str} → `{att.stored_path}`")
         lines.append("")
 
     # Prior attempts — show closed runs so a retrying worker sees the
@@ -11197,6 +11181,27 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             lines.extend(body_lines)
             lines.append("")
 
+    # Attachments — files uploaded to this task (PDFs, source docs,
+    # images). Keep them after parent handoffs so the aggregate worker-query
+    # cap preserves upstream results before optional file metadata. Surface
+    # the absolute on-disk path so the worker, which has full file-tool access,
+    # can read them directly (read_file, terminal `pdftotext`, etc.). On the
+    # local terminal backend the path resolves as-is; remote backends need the
+    # kanban attachments dir mounted.
+    attachments = list_attachments(conn, task_id)
+    if attachments:
+        lines.append("## Attachments")
+        lines.append(
+            "Files attached to this task. Read them with the file/terminal "
+            "tools at the absolute paths below:"
+        )
+        for att in attachments:
+            size_kb = max(1, (att.size + 1023) // 1024) if att.size else 0
+            size_str = f", {size_kb} KB" if size_kb else ""
+            ctype = f", {att.content_type}" if att.content_type else ""
+            lines.append(f"- `{att.filename}`{ctype}{size_str} → `{att.stored_path}`")
+        lines.append("")
+
     # Cross-task role history: what else has THIS assignee completed
     # recently? Gives the worker implicit continuity — "I'm the reviewer
     # and my last three reviews focused on security" — without forcing
@@ -11258,6 +11263,41 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def build_worker_query(
+    conn: sqlite3.Connection,
+    task_id: str,
+    kickoff: str,
+) -> str:
+    """Combine the dispatcher kickoff with authoritative task context.
+
+    Dispatcher workers receive this as their first user turn. Loading the
+    context before the agent starts keeps task orientation off the tool-result
+    transport, where oversized ``kanban_show`` results may be replaced by an
+    opaque provider-side content reference. ``build_worker_context`` owns the
+    existing size bounds and raises for an unknown task, so callers can fail
+    worker startup instead of running without an authoritative assignment.
+    """
+    context = build_worker_context(conn, task_id)
+    prefix = str(kickoff or "").rstrip()
+    query = context if not prefix else f"{prefix}\n\n{context}"
+    if len(query) <= _CTX_MAX_WORKER_QUERY_CHARS:
+        return query
+
+    # Individual fields are capped by build_worker_context(), but collection
+    # cardinality is intentionally flexible: fan-in tasks can have many parents
+    # and cards can have many attachments. Keep the authoritative task/body at
+    # the front while imposing a hard bound before this text becomes the latest
+    # actionable user turn (which conversation compression must preserve).
+    omitted = len(query) - _CTX_MAX_WORKER_QUERY_CHARS
+    while True:
+        marker = f"\n… [worker context truncated, {omitted} chars omitted]\n"
+        keep = max(0, _CTX_MAX_WORKER_QUERY_CHARS - len(marker))
+        actual_omitted = len(query) - keep
+        if actual_omitted == omitted:
+            return query[:keep] + marker
+        omitted = actual_omitted
 
 
 # ---------------------------------------------------------------------------

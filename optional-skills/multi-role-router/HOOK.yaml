@@ -1,0 +1,6 @@
+name: multi-role-router
+description: Automatically routes messages to the appropriate worker profile using a lightweight classifier. Fires on message:pre_route.
+events:
+  - message:pre_route
+version: "1.0.0"
+author: "community"

@@ -177,6 +177,28 @@ class TestSttGate:
         )
         assert _event_media_is_stt_input(ev, 0) is False
 
+    def test_merged_voice_event_does_not_transcribe_sibling_pdf_or_video(self):
+        from gateway.run import _event_media_is_stt_input
+
+        ev = _event_from_wire(
+            _wire_event(
+                "voice",
+                media=[
+                    {"url": "https://gw/voice.ogg", "kind": "voice", "mime": "audio/ogg"},
+                    {"url": "https://gw/report.pdf", "kind": "document", "mime": "application/pdf"},
+                    {"url": "https://gw/clip.mp4", "kind": "video", "mime": "video/mp4"},
+                ],
+                media_urls=[
+                    "https://gw/voice.ogg",
+                    "https://gw/report.pdf",
+                    "https://gw/clip.mp4",
+                ],
+            )
+        )
+        assert _event_media_is_stt_input(ev, 0) is True
+        assert _event_media_is_stt_input(ev, 1) is False
+        assert _event_media_is_stt_input(ev, 2) is False
+
 class TestUrlMimePairingThroughLocalization:
     """The end-to-end invariant my unit tests originally missed.
 

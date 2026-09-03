@@ -3786,6 +3786,64 @@ class TestNormaliseThemeDefinition:
         assert result["palette"]["foreground"]["hex"] == "#ffffff"
         assert result["palette"]["foreground"]["alpha"] == 0.0
 
+    def test_passthrough_terminal_series_swatch(self):
+        """terminalBackground/Foreground, seriesColors, swatchColors survive
+        normalisation — the frontend needs them to color the embedded
+        terminal pane and token charts (falls back to #000000 otherwise)."""
+        from hermes_cli.web_server import _normalise_theme_definition
+        result = _normalise_theme_definition({
+            "name": "pastel",
+            "terminalBackground": "#1e1e2e",
+            "terminalForeground": "#cdd6f4",
+            "seriesColors": {
+                "inputTokenAccent": "#89b4fa",
+                "outputTokenAccent": "#a6e3a1",
+                "bogusKey": "ignored",
+            },
+            "swatchColors": ["#1e1e2e", "#cdd6f4", "#a6e3a1"],
+        })
+        assert result is not None
+        assert result["terminalBackground"] == "#1e1e2e"
+        assert result["terminalForeground"] == "#cdd6f4"
+        assert result["seriesColors"] == {
+            "inputTokenAccent": "#89b4fa",
+            "outputTokenAccent": "#a6e3a1",
+        }
+        assert result["swatchColors"] == ["#1e1e2e", "#cdd6f4", "#a6e3a1"]
+
+    def test_passthrough_drops_garbage(self):
+        """Non-string / wrong-length values don't leak into the wire format."""
+        from hermes_cli.web_server import _normalise_theme_definition
+        result = _normalise_theme_definition({
+            "name": "messy",
+            "terminalBackground": 42,
+            "terminalForeground": "   ",
+            "seriesColors": "not-a-dict",
+            "swatchColors": ["#111111", "#222222"],
+        })
+        assert result is not None
+        assert "terminalBackground" not in result
+        assert "terminalForeground" not in result
+        assert "seriesColors" not in result
+        assert "swatchColors" not in result
+
+    def test_passthrough_trims_and_clamps(self):
+        """Whitespace-padded values are trimmed; 4+ swatch entries clamp to 3."""
+        from hermes_cli.web_server import _normalise_theme_definition
+
+        result = _normalise_theme_definition({
+            "name": "padded",
+            "label": "Padded",
+            "palette": {"background": {"hex": "#101010", "alpha": 1.0}},
+            "terminalBackground": "  #1e1e2e  ",
+            "terminalForeground": "#cdd6f4",
+            "seriesColors": {"inputTokenAccent": " #ff0000 "},
+            "swatchColors": ["#1e1e2e", "#cdd6f4", "#a6e3a1", "#f38ba8", "#94e2d5"],
+        })
+        assert result["terminalBackground"] == "#1e1e2e"
+        assert result["seriesColors"]["inputTokenAccent"] == "#ff0000"
+        assert result["swatchColors"] == ["#1e1e2e", "#cdd6f4", "#a6e3a1"]
+
 
 
 

@@ -53,6 +53,28 @@ def _make_empty_chunk(model=None, usage=None):
     return SimpleNamespace(choices=[], model=model, usage=usage)
 
 
+def _run_nous_text_stream(mock_create, chunks):
+    """Run a mocked Nous chat stream and capture visible text deltas."""
+    from run_agent import AIAgent
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = iter(chunks)
+    mock_create.return_value = mock_client
+    delivered = []
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://portal.nousresearch.com/v1",
+        model="zai-org/GLM-4.5-Air",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        stream_delta_callback=delivered.append,
+    )
+    agent.api_mode = "chat_completions"
+    agent._interrupt_requested = False
+    return agent._interruptible_streaming_api_call({}), delivered
+
+
 # ── Test: Streaming Accumulator ──────────────────────────────────────────
 
 
@@ -95,6 +117,82 @@ class TestStreamingAccumulator:
         assert response.choices[0].finish_reason == "stop"
         assert response.usage is not None
         assert response.usage.completion_tokens == 3
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_stop_with_unterminated_tool_markup_uses_partial_stream_recovery(
+        self, mock_close, mock_create
+    ):
+        """A provider ``stop`` cannot bless a cut text-channel tool call."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        fragments = [
+            "<tool_call><arg_key>action</arg_key><arg_value>wa</arg_value>",
+            "wa</arg_value><arg_key>timeout</arg_key><arg_value>59",
+            "<function_call>{\"name\": \"process_manage\"",
+        ]
+        for leaked in fragments:
+            response, delivered = _run_nous_text_stream(mock_create, [
+                _make_stream_chunk(leaked, finish_reason="stop", model="test-model")
+            ])
+            assert response.id == PARTIAL_STREAM_STUB_ID
+            assert response.choices[0].finish_reason == "length"
+            assert response.choices[0].message.content is None
+            assert response.choices[0].message.tool_calls is None
+            assert delivered == []
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_split_tool_markup_prefix_never_reaches_stream_callback(
+        self, mock_close, mock_create
+    ):
+        """Tool markup detection is invariant to provider chunk boundaries."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        response, delivered = _run_nous_text_stream(mock_create, [
+            _make_stream_chunk(content="<"),
+            _make_stream_chunk(
+                content="tool_call><arg_key>action</arg_key><arg_value>wa</arg_value>",
+                finish_reason="stop",
+            ),
+        ])
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert delivered == []
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_complete_text_tool_block_is_hidden_without_marking_stream_partial(
+        self, mock_close, mock_create
+    ):
+        """A complete leaked block stays on the existing sanitizer path."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        leaked = (
+            "<tool_call><arg_key>action</arg_key>"
+            "<arg_value>wait</arg_value></tool_call>Done."
+        )
+        response, delivered = _run_nous_text_stream(mock_create, [
+            _make_stream_chunk(leaked, finish_reason="stop", model="test-model")
+        ])
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].message.content == leaked
+        assert delivered == ["Done."]
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_inline_named_function_prose_is_not_treated_as_partial_tool_markup(
+        self, mock_close, mock_create
+    ):
+        """The named-function detector keeps the stripper's boundary guard."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        prose = 'Use <function name="demo"> in the documentation.'
+        response, delivered = _run_nous_text_stream(mock_create, [
+            _make_stream_chunk(prose, finish_reason="stop", model="test-model")
+        ])
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].message.content == prose
+        assert delivered == [prose]
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

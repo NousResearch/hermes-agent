@@ -393,6 +393,82 @@ def _provider_stream_text_may_be_sse(text: str) -> bool:
     return saw_sse_field
 
 
+_TEXT_TOOL_CALL_OPEN_RE = re.compile(
+    r'<(?P<tag>tool_call|tool_calls|function_call|function_calls)\b[^>]*>',
+    re.IGNORECASE,
+)
+_TEXT_NAMED_FUNCTION_OPEN_RE = re.compile(
+    r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
+    r'<(?P<named>function)\b[^>]*\bname\s*=[^>]*>',
+    re.IGNORECASE,
+)
+_TEXT_TOOL_ARG_TAG_RE = re.compile(r'</?arg_(?:key|value)\b[^>]*>', re.IGNORECASE)
+_TEXT_TOOL_TAG_PARTIAL_RE = re.compile(
+    r'</?(?:tool(?:_calls?)?|function_calls?|arg_(?:key|value))[^>]*$',
+    re.IGNORECASE,
+)
+_TEXT_NAMED_FUNCTION_PARTIAL_RE = re.compile(
+    r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*<function\b[^>]*$',
+    re.IGNORECASE,
+)
+
+
+def _unterminated_text_tool_call_start(text: str) -> Optional[int]:
+    """Return where an incomplete text-channel tool serialization starts.
+
+    Some OpenAI-compatible models serialize a tool call as XML in ``content``
+    and can report ``finish_reason=stop`` after the stream cuts inside that
+    serialization. A provider terminal flag is not sufficient proof that an
+    unclosed tool envelope is safe assistant prose.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+
+    complete_spans: list[tuple[int, int]] = []
+    open_matches = sorted(
+        [
+            *_TEXT_TOOL_CALL_OPEN_RE.finditer(text),
+            *_TEXT_NAMED_FUNCTION_OPEN_RE.finditer(text),
+        ],
+        key=lambda item: item.start(),
+    )
+    for match in open_matches:
+        tag = (match.group("tag") or match.group("named") or "").lower()
+        close = f"</{tag}>"
+        close_at = text.lower().find(close, match.end())
+        if close_at == -1:
+            return match.start()
+        complete_spans.append((match.start(), close_at + len(close)))
+
+    for match in _TEXT_TOOL_ARG_TAG_RE.finditer(text):
+        if not any(start <= match.start() < end for start, end in complete_spans):
+            # A leading argument value may precede the first surviving close
+            # tag after a stream cut. Drop that whole line, not merely the tag.
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            return line_start
+
+    partial = (
+        _TEXT_TOOL_TAG_PARTIAL_RE.search(text)
+        or _TEXT_NAMED_FUNCTION_PARTIAL_RE.search(text)
+    )
+    if partial:
+        return partial.start()
+    return None
+
+
+def _provider_stream_text_may_be_tool_markup(text: str) -> bool:
+    """Hold text that may be model-serialized tool markup out of live UI."""
+    if not isinstance(text, str) or not text:
+        return False
+    return bool(
+        _TEXT_TOOL_CALL_OPEN_RE.search(text)
+        or _TEXT_NAMED_FUNCTION_OPEN_RE.search(text)
+        or _TEXT_TOOL_ARG_TAG_RE.search(text)
+        or _TEXT_TOOL_TAG_PARTIAL_RE.search(text)
+        or _TEXT_NAMED_FUNCTION_PARTIAL_RE.search(text)
+    )
+
+
 def _provider_stream_error_from_text(
     text: str,
     finish_reason: Optional[str],
@@ -4412,6 +4488,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 return
             pending_parts = list(pending_text_parts)
             pending_text_parts.clear()
+            pending_text = "".join(pending_parts)
+            if _provider_stream_text_may_be_tool_markup(pending_text):
+                visible_text = agent._strip_think_blocks(pending_text)
+                pending_parts = [visible_text] if visible_text else []
             if not tool_calls_acc:
                 for text in pending_parts:
                     _fire_first_delta()
@@ -4562,10 +4642,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if delta_content:
                 content_parts.append(delta_content)
                 if not tool_calls_acc:
-                    if pending_text_parts or _provider_stream_text_may_be_sse(delta_content):
+                    if (
+                        pending_text_parts
+                        or _provider_stream_text_may_be_sse(delta_content)
+                        or _provider_stream_text_may_be_tool_markup(delta_content)
+                    ):
                         pending_text_parts.append(delta_content)
                         pending_text = "".join(pending_text_parts)
-                        if _provider_stream_text_may_be_sse(pending_text):
+                        if (
+                            _provider_stream_text_may_be_sse(pending_text)
+                            or _provider_stream_text_may_be_tool_markup(pending_text)
+                        ):
                             continue
                         _flush_pending_stream_text()
                         continue
@@ -4850,6 +4937,29 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 role, full_content,
                 "".join(reasoning_parts) or None,
                 model_name, usage_obj,
+            )
+
+        # A provider ``stop`` is not authoritative when the text channel ends
+        # inside model-serialized tool XML. The missing bytes cannot be
+        # reconstructed, so discard the markup tail and use the existing
+        # bounded partial-stream continuation path instead of persisting it as
+        # ordinary assistant prose (#101899).
+        _text_tool_cut_at = _unterminated_text_tool_call_start(full_content or "")
+        if _text_tool_cut_at is not None:
+            _visible_prefix = agent._strip_think_blocks(
+                (full_content or "")[:_text_tool_cut_at]
+            ).strip() or None
+            logger.warning(
+                "Stream ended inside text-channel tool-call markup despite "
+                "finish_reason=%r; discarding the incomplete serialization.",
+                finish_reason,
+            )
+            return _build_partial_stream_stub(
+                role,
+                _visible_prefix,
+                "".join(reasoning_parts) or None,
+                model_name,
+                usage_obj,
             )
 
         effective_finish_reason = finish_reason or "stop"

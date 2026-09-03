@@ -171,7 +171,14 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             task_json TEXT,
             delivery_claim TEXT,
             delivery_claimed_at REAL,
-            origin_session_id TEXT NOT NULL DEFAULT ''
+            origin_session_id TEXT NOT NULL DEFAULT '',
+            origin_turn_generation INTEGER
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS async_delegation_generations (
+            session_root_id TEXT PRIMARY KEY,
+            generation INTEGER NOT NULL
         )"""
     )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
@@ -186,6 +193,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         # completions recovered after a process restart are unroutable on
         # api_server (the in-memory record that carried it is gone).
         ("origin_session_id", "TEXT"),
+        ("origin_turn_generation", "INTEGER"),
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
@@ -265,13 +273,15 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
-                owner_started_at, task_json, origin_session_id)
-               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+                owner_started_at, task_json, origin_session_id,
+                origin_turn_generation)
+               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
             (record["delegation_id"], record.get("session_key", ""),
              record.get("origin_ui_session_id", ""), record.get("parent_session_id"),
              record["dispatched_at"], now, __import__("os").getpid(),
              owner_started_at, json.dumps(task_payload),
-             record.get("origin_session_id", "")),
+             record.get("origin_session_id", ""),
+             record.get("origin_turn_generation")),
         )
     _prune_durable_records()
 
@@ -340,6 +350,79 @@ def _note_delivery_attempt(delegation_id: str) -> None:
         )
 
 
+def ensure_async_turn_generation(session_root_id: str) -> Optional[int]:
+    """Start or read generation tracking for a conversation with async work."""
+    key = str(session_root_id or "").strip()
+    if not key:
+        return None
+    with _DB_LOCK, _transaction() as conn:
+        conn.execute(
+            """INSERT INTO async_delegation_generations
+               (session_root_id, generation) VALUES (?, 1)
+               ON CONFLICT(session_root_id) DO NOTHING""",
+            (key,),
+        )
+        row = conn.execute(
+            "SELECT generation FROM async_delegation_generations WHERE session_root_id=?",
+            (key,),
+        ).fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def advance_async_turn_generation(session_root_id: str) -> Optional[int]:
+    """Advance a tracked conversation for a new real user turn."""
+    key = str(session_root_id or "").strip()
+    if not key:
+        return None
+    with _DB_LOCK, _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE async_delegation_generations
+               SET generation=generation+1 WHERE session_root_id=?""",
+            (key,),
+        )
+        if cur.rowcount != 1:
+            return None
+        row = conn.execute(
+            "SELECT generation FROM async_delegation_generations WHERE session_root_id=?",
+            (key,),
+        ).fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def get_async_turn_generation(session_root_id: str) -> Optional[int]:
+    """Return the tracked generation, or ``None`` for a legacy conversation."""
+    key = str(session_root_id or "").strip()
+    if not key:
+        return None
+    with _DB_LOCK, _transaction() as conn:
+        row = conn.execute(
+            "SELECT generation FROM async_delegation_generations WHERE session_root_id=?",
+            (key,),
+        ).fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def annotate_generation_disposition(
+    evt: Dict[str, Any], current_generation: Optional[int]
+) -> bool:
+    """Mark a cross-generation result advisory while preserving its payload."""
+    try:
+        origin = int(evt.get("origin_turn_generation"))
+        current = int(current_generation) if current_generation is not None else None
+    except (TypeError, ValueError):
+        return False
+    if current is None or current <= origin:
+        return False
+    if (
+        evt.get("generation_disposition") == "stale_advisory"
+        and evt.get("current_turn_generation") == current
+    ):
+        return False
+    evt["generation_disposition"] = "stale_advisory"
+    evt["current_turn_generation"] = current
+    return True
+
+
 def recover_abandoned_delegations() -> int:
     """Classify records whose owning process disappeared as outcome unknown."""
     try:
@@ -352,12 +435,14 @@ def recover_abandoned_delegations() -> int:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id
+                      owner_started_at, task_json, origin_session_id,
+                      origin_turn_generation
                FROM async_delegations WHERE state IN ('running','finalizing')"""
         ).fetchall()
         for row in rows:
             (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
-             pid, started, task_json, origin_session_id) = row
+             pid, started, task_json, origin_session_id,
+             origin_turn_generation) = row
             live = False
             if pid:
                 live = _pid_exists(int(pid))
@@ -372,6 +457,7 @@ def recover_abandoned_delegations() -> int:
                 # Restore the durable wake target so completions recovered
                 # after a restart remain routable to api_server sessions.
                 "origin_session_id": origin_session_id or "",
+                "origin_turn_generation": origin_turn_generation,
                 "parent_session_id": parent_id, "goal": task.get("goal", ""),
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
@@ -583,7 +669,7 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
         row = conn.execute(
             """SELECT origin_session, state, dispatched_at, completed_at,
                       result_json, delivery_state, delivery_attempts,
-                      origin_session_id
+                      origin_session_id, origin_turn_generation
                FROM async_delegations WHERE delegation_id=?""", (delegation_id,),
         ).fetchone()
     if row is None:
@@ -594,6 +680,7 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
         "result": json.loads(row[4]) if row[4] else None,
         "delivery_state": row[5], "delivery_attempts": row[6],
         "origin_session_id": row[7] or "",
+        "origin_turn_generation": row[8],
     }
 
 
@@ -770,6 +857,7 @@ def dispatch_async_delegation(
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
     origin_session_id: str = "",
+    origin_turn_generation: Optional[int] = None,
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     progress_fn: Optional[Callable[[], tuple]] = None,
@@ -829,6 +917,7 @@ def dispatch_async_delegation(
         "origin_ui_session_id": origin_ui_session_id,
         "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
+        "origin_turn_generation": origin_turn_generation,
         **_capture_routing_origin(),
         "status": "running",
         "dispatched_at": dispatched_at,
@@ -977,6 +1066,7 @@ def _push_completion_event(
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "origin_session_id": record.get("origin_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
+        "origin_turn_generation": record.get("origin_turn_generation"),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
@@ -1032,6 +1122,7 @@ def dispatch_async_delegation_batch(
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
     origin_session_id: str = "",
+    origin_turn_generation: Optional[int] = None,
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     delegation_id: Optional[str] = None,
@@ -1076,6 +1167,7 @@ def dispatch_async_delegation_batch(
         "origin_ui_session_id": origin_ui_session_id,
         "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
+        "origin_turn_generation": origin_turn_generation,
         **_capture_routing_origin(),
         "status": "running",
         "dispatched_at": dispatched_at,
@@ -1189,6 +1281,7 @@ def _push_batch_completion_event(
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "origin_session_id": event_record.get("origin_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
+        "origin_turn_generation": event_record.get("origin_turn_generation"),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),

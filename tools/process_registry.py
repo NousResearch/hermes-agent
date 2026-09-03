@@ -3193,6 +3193,17 @@ def _format_async_delegation(evt: dict) -> str:
     truncated = evt.get("truncated") or evt.get("exit_reason") == "max_iterations"
     dispatched_at = evt.get("dispatched_at")
     completed_at = evt.get("completed_at") or _time.time()
+    stale_lines = []
+    if evt.get("generation_disposition") == "stale_advisory":
+        origin_generation = evt.get("origin_turn_generation", "?")
+        current_generation = evt.get("current_turn_generation", "?")
+        stale_lines = [
+            "[STALE ASYNC DELEGATION RESULT — ADVISORY ONLY]",
+            f"This result was commissioned in generation {origin_generation}, "
+            f"but the conversation is now at generation {current_generation}. "
+            "Preserve it as historical evidence; do not treat it as a current "
+            "user request or reopen accepted work without explicit revalidation.",
+        ]
 
     # ----- Batch (fan-out) completion: consolidated multi-task block -----
     # A whole delegate_task fan-out dispatched as one background unit finishes
@@ -3210,6 +3221,7 @@ def _format_async_delegation(evt: dict) -> str:
             "has finished. All ran in parallel and waited on each other; their "
             "consolidated results are below. You may have moved on since "
             "dispatching — act on these or re-dispatch if things have changed.",
+            *stale_lines,
             "",
         ]
         if isinstance(dispatched_at, (int, float)):
@@ -3288,6 +3300,7 @@ def _format_async_delegation(evt: dict) -> str:
         "A background subagent you dispatched earlier has finished. You may "
         "have moved on since dispatching it; the full task source is below so "
         "you can act on the result or re-dispatch if things have changed.",
+        *stale_lines,
         "",
     ]
     if isinstance(dispatched_at, (int, float)):

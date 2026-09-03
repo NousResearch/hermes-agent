@@ -12606,6 +12606,32 @@ def _collect_kanban_notifications(session: dict) -> list:
     return texts
 
 
+def _annotate_async_delegation_generation(session: dict, evt: dict) -> None:
+    """Mark a completion advisory when this TUI conversation has advanced."""
+    if evt.get("type") != "async_delegation":
+        return
+    try:
+        from tools.async_delegation import (
+            annotate_generation_disposition,
+            get_async_turn_generation,
+        )
+
+        agent = session.get("agent")
+        generation_root = (
+            agent._conversation_root_id()
+            if callable(getattr(agent, "_conversation_root_id", None))
+            else str(evt.get("parent_session_id") or "")
+        )
+        annotate_generation_disposition(
+            evt, get_async_turn_generation(generation_root)
+        )
+    except Exception:
+        logger.debug(
+            "Could not classify TUI async delegation generation",
+            exc_info=True,
+        )
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -12724,6 +12750,7 @@ def _notification_poller_loop(
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
             continue
 
+        _annotate_async_delegation_generation(session, evt)
         text = format_process_notification(evt)
         if not text:
             continue
@@ -12814,6 +12841,7 @@ def _notification_poller_loop(
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
             continue
+        _annotate_async_delegation_generation(session, evt)
         text = format_process_notification(evt)
         if not text:
             continue
@@ -12889,6 +12917,14 @@ def _async_delegation_display_metadata(evt: dict) -> dict:
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
     if isinstance(duration, (int, float)):
         metadata["duration_seconds"] = duration
+    if evt.get("generation_disposition") == "stale_advisory":
+        metadata.update(
+            {
+                "generation_disposition": "stale_advisory",
+                "origin_turn_generation": evt.get("origin_turn_generation"),
+                "current_turn_generation": evt.get("current_turn_generation"),
+            }
+        )
     return metadata
 
 

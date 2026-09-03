@@ -133,6 +133,14 @@ def _delegation_display_metadata(evt: dict) -> dict:
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
     if isinstance(duration, (int, float)):
         metadata["duration_seconds"] = duration
+    if evt.get("generation_disposition") == "stale_advisory":
+        metadata.update(
+            {
+                "generation_disposition": "stale_advisory",
+                "origin_turn_generation": evt.get("origin_turn_generation"),
+                "current_turn_generation": evt.get("current_turn_generation"),
+            }
+        )
     return metadata
 
 

@@ -9814,6 +9814,24 @@ class AIAgent:
                             durable_turn_timer_handles.append(
                                 durable_turn_liveness_watchdog.schedule()
                             )
+                    # Async delegation generations begin lazily when a child is
+                    # dispatched. Advance only on later real user turns; typed
+                    # timeline rows (including delegation completions) preserve
+                    # the generation whose evidence they are advising on.
+                    if not persist_user_display_kind:
+                        try:
+                            from tools.async_delegation import (
+                                advance_async_turn_generation,
+                            )
+
+                            advance_async_turn_generation(
+                                self._conversation_root_id()
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Could not advance async delegation turn generation",
+                                exc_info=True,
+                            )
                     result = run_conversation(
                         self,
                         user_message,

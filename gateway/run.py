@@ -28482,6 +28482,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "retry"
         return "deliver"
 
+    async def _annotate_async_delegation_generation(self, evt: dict) -> bool:
+        """Qualify a late delegation result against its current conversation."""
+        if evt.get("type") != "async_delegation" or not evt.get(
+            "origin_turn_generation"
+        ):
+            return False
+        parent_session_id = str(evt.get("parent_session_id") or "").strip()
+        session_db = getattr(self, "_session_db", None)
+        if not parent_session_id or session_db is None:
+            return False
+        try:
+            generation_root = (
+                await session_db.get_conversation_root(parent_session_id)
+                or parent_session_id
+            )
+            from tools.async_delegation import (
+                annotate_generation_disposition,
+                get_async_turn_generation,
+            )
+
+            current = await asyncio.to_thread(
+                get_async_turn_generation, generation_root
+            )
+            return annotate_generation_disposition(evt, current)
+        except Exception:
+            logger.debug(
+                "Could not classify async delegation turn generation",
+                exc_info=True,
+            )
+            return False
+
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict,
     ) -> Optional[bool]:
@@ -28493,6 +28524,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event or the event has no gateway route. No cross-process exactly-once
         guarantee is claimed.
         """
+        if await self._annotate_async_delegation_generation(evt):
+            synth_text = _format_gateway_process_notification(evt) or synth_text
         identity = self._completion_delivery_identity(evt)
         durable_claim_id = ""
         durable_delegation_id = ""
@@ -28905,6 +28938,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         deliverable: list[tuple[dict, str]] = []
         for evt in group:
+            await self._annotate_async_delegation_generation(evt)
             synth_text = _format_gateway_process_notification(evt)
             if not synth_text:
                 continue

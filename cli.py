@@ -5150,6 +5150,18 @@ class _VoiceInputMessage:
         return self.text
 
 
+class _AsyncDelegationInputMessage:
+    """Typed pending-input wrapper for a delegation completion timeline row."""
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: str):
+        self.text = text
+
+    def __str__(self) -> str:
+        return self.text
+
+
 class _SeededQueryMessage:
     """Sentinel wrapper for a ``-q/--query`` prompt seeded into an
     interactive session.
@@ -13601,10 +13613,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         session identity when draining so another window cannot claim and mark
         delivered a completion that belongs to this one.
         """
-        from tools.process_registry import process_registry
+        from tools.process_registry import (
+            format_process_notification,
+            process_registry,
+        )
         from tools.async_delegation import (
+            annotate_generation_disposition,
             claim_event_delivery,
             complete_event_delivery,
+            get_async_turn_generation,
         )
 
         session_key = getattr(self, "session_id", "") or ""
@@ -13612,10 +13629,34 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             session_key=session_key,
             owns_event=self._owns_process_notification,
         ):
+            if event.get("type") == "async_delegation":
+                generation_root = session_key
+                try:
+                    session_db = getattr(self, "_session_db", None)
+                    if session_db is not None:
+                        generation_root = (
+                            session_db.get_conversation_root(session_key)
+                            or session_key
+                        )
+                    if annotate_generation_disposition(
+                        event, get_async_turn_generation(generation_root)
+                    ):
+                        synthetic_message = (
+                            format_process_notification(event) or synthetic_message
+                        )
+                except Exception:
+                    logger.debug(
+                        "Could not classify CLI async delegation generation",
+                        exc_info=True,
+                    )
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
-            self._pending_input.put(synthetic_message)
+            self._pending_input.put(
+                _AsyncDelegationInputMessage(synthetic_message)
+                if event.get("type") == "async_delegation"
+                else synthetic_message
+            )
             complete_event_delivery(event, claim)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
@@ -16951,7 +16992,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 pass
 
-    def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
+    def chat(
+        self,
+        message,
+        images: list = None,
+        voice_input: bool = False,
+        display_kind: Optional[str] = None,
+    ) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -16968,6 +17015,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             images: Optional list of Path objects for attached images
             voice_input: True when the message came from voice transcription
                 (gates the concise voice-response prefix, #65827)
+            display_kind: Optional durable timeline-row classification.
             
         Returns:
             The agent's response, or None on error
@@ -17122,6 +17170,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             staged_user_message = stamp_message_timestamp(
                 {"role": "user", "content": message}
             )
+            if display_kind:
+                staged_user_message["display_kind"] = display_kind
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)
 
@@ -17312,6 +17362,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         stream_callback=stream_callback,
                         task_id=self.session_id,
                         persist_user_message=_persist_clean_user_message,
+                        persist_user_display_kind=display_kind,
                         moa_config=_moa_cfg,
                     )
                     if getattr(self, "_pending_moa_disable_after_turn", False):
@@ -21071,6 +21122,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 pass
                         continue
 
+                    is_async_delegation_input = isinstance(
+                        user_input, _AsyncDelegationInputMessage
+                    )
+                    if is_async_delegation_input:
+                        user_input = user_input.text
+
                     # Voice-transcribed messages arrive wrapped in a sentinel
                     # so only genuine STT output gets the voice prefix (#65827).
                     is_voice_input = isinstance(user_input, _VoiceInputMessage)
@@ -21215,7 +21272,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None, voice_input=is_voice_input)
+                        self.chat(
+                            user_input,
+                            images=submit_images or None,
+                            voice_input=is_voice_input,
+                            display_kind=(
+                                "async_delegation_complete"
+                                if is_async_delegation_input
+                                else None
+                            ),
+                        )
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""

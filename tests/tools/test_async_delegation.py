@@ -739,6 +739,7 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     assert evt["type"] == "async_delegation"
     assert evt["session_key"] == "post-compress-tip"
     assert evt["origin_ui_session_id"] == "origin-tab"
+    assert evt["origin_turn_generation"] == 1
 
 
 def test_concurrent_dispatch_respects_capacity():
@@ -771,6 +772,76 @@ def test_concurrent_dispatch_respects_capacity():
     statuses = sorted(r["status"] for r in results)
     assert statuses == ["dispatched", "rejected"]
     gate.set()
+
+
+def test_async_turn_generation_advances_only_after_tracking_starts(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    assert ad.advance_async_turn_generation("session-root") is None
+    assert ad.ensure_async_turn_generation("session-root") == 1
+    assert ad.get_async_turn_generation("session-root") == 1
+    assert ad.advance_async_turn_generation("session-root") == 2
+    assert ad.get_async_turn_generation("session-root") == 2
+
+
+def test_completion_event_preserves_origin_turn_generation():
+    res = ad.dispatch_async_delegation(
+        goal="generation-aware task",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="session-root",
+        parent_session_id="session-root",
+        origin_turn_generation=7,
+        runner=lambda: {"status": "completed", "summary": "done"},
+    )
+
+    evt = _drain_for(res["delegation_id"])
+
+    assert evt is not None
+    assert evt["origin_turn_generation"] == 7
+    durable = ad.get_durable_delegation(res["delegation_id"])
+    assert durable is not None
+    assert durable["origin_turn_generation"] == 7
+    restored_queue = queue.Queue()
+    assert ad.restore_undelivered_completions(restored_queue) == 1
+    assert restored_queue.get_nowait()["origin_turn_generation"] == 7
+
+
+def test_generation_disposition_marks_only_cross_generation_results():
+    same = {"origin_turn_generation": 3}
+    stale = {"origin_turn_generation": 3}
+
+    assert ad.annotate_generation_disposition(same, 3) is False
+    assert "generation_disposition" not in same
+
+    assert ad.annotate_generation_disposition(stale, 4) is True
+    assert stale["generation_disposition"] == "stale_advisory"
+    assert stale["current_turn_generation"] == 4
+
+
+@pytest.mark.asyncio
+async def test_gateway_compares_completion_with_current_generation(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._session_db = MagicMock()
+    runner._session_db.get_conversation_root = AsyncMock(return_value="root")
+    monkeypatch.setattr(ad, "get_async_turn_generation", lambda _root: 8)
+    evt = {
+        "type": "async_delegation",
+        "parent_session_id": "compressed-tip",
+        "origin_turn_generation": 7,
+    }
+
+    changed = await runner._annotate_async_delegation_generation(evt)
+
+    assert changed is True
+    assert evt["generation_disposition"] == "stale_advisory"
+    assert evt["current_turn_generation"] == 8
 
 
 # ---------------------------------------------------------------------------
@@ -806,6 +877,23 @@ def test_gateway_formatter_renders_async_block():
     assert "ASYNC DELEGATION COMPLETE" in txt
     assert "Found the bug in test_foo" in txt
     assert "Investigate flaky test" in txt
+
+
+def test_gateway_formatter_makes_stale_generation_advisory_explicit():
+    from gateway.run import _format_gateway_process_notification
+
+    evt = _make_async_evt(
+        origin_turn_generation=4,
+        current_turn_generation=5,
+        generation_disposition="stale_advisory",
+    )
+    txt = _format_gateway_process_notification(evt)
+
+    assert txt is not None
+    assert "STALE ASYNC DELEGATION RESULT" in txt
+    assert "generation 4" in txt
+    assert "generation 5" in txt
+    assert "advisory" in txt.lower()
 
 
 def test_gateway_cli_origin_event_left_unrouted():

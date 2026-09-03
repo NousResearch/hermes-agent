@@ -4542,6 +4542,23 @@ def delegate_task(
             if _agent_session_id:
                 _session_key = _agent_session_id
         _parent_session_id = getattr(parent_agent, "session_id", None)
+        _origin_turn_generation = None
+        try:
+            from tools.async_delegation import ensure_async_turn_generation
+
+            _generation_root = (
+                parent_agent._conversation_root_id()
+                if callable(getattr(parent_agent, "_conversation_root_id", None))
+                else _parent_session_id
+            )
+            _origin_turn_generation = ensure_async_turn_generation(
+                str(_generation_root or _parent_session_id or "")
+            )
+        except Exception:
+            logger.debug(
+                "delegate_task: could not stamp origin turn generation",
+                exc_info=True,
+            )
         _child_agents = [c for (_, _, c) in children]
 
         # Detach every child from the parent's interrupt-propagation list — the
@@ -4618,6 +4635,7 @@ def delegate_task(
             origin_ui_session_id=_origin_ui_session_id,
             origin_session_id=_wake_sid,
             parent_session_id=_parent_session_id,
+            origin_turn_generation=_origin_turn_generation,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),

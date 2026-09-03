@@ -54,6 +54,9 @@ surfaces:
 - surface: content-strategist
   tier: LUNA
   main_model: deepseek-v4-flash
+  primary_model_migration:
+    expected_old_main: minimax/minimax-m3-free
+    primary_slot: slot-dsflash-2
   slots:
   - slot-dsflash-1
   - slot-dsflash-2

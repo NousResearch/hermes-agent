@@ -287,7 +287,8 @@ def validate_registry(reg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return by_id
 
 
-def validate_surfaces(surfaces: list[dict[str, Any]], by_id: dict[str, dict[str, Any]]) -> None:
+def validate_surfaces(surfaces: list[dict[str, Any]], by_id: dict[str, dict[str, Any]],
+                      registry: dict[str, Any] | None = None) -> None:
     errors: list[str] = []
     seen = set()
     for surf in surfaces:
@@ -313,6 +314,36 @@ def validate_surfaces(surfaces: list[dict[str, Any]], by_id: dict[str, dict[str,
                     )
         if len(surf.get("slots", [])) > 5:
             errors.append(f"surface {name}: {len(surf['slots'])} routes > max 5")
+        migration = surf.get("primary_model_migration")
+        if migration is not None:
+            if not isinstance(migration, dict):
+                errors.append(f"surface {name}: primary_model_migration must be a mapping")
+                continue
+            expected = migration.get("expected_old_main")
+            primary_sid = migration.get("primary_slot")
+            if not isinstance(expected, str) or not expected:
+                errors.append(
+                    f"surface {name}: primary_model_migration.expected_old_main is required")
+            if primary_sid not in surf.get("slots", []):
+                errors.append(
+                    f"surface {name}: migration primary_slot {primary_sid!r} is not an approved route slot")
+                continue
+            slot = by_id.get(primary_sid)
+            if slot is None:
+                continue
+            reason = slot_exclusion_reason(slot, name)
+            if reason is not None:
+                errors.append(
+                    f"surface {name}: migration primary_slot {primary_sid} is not enabled: {reason}")
+            if slot.get("model_id") != surf.get("main_model"):
+                errors.append(
+                    f"surface {name}: migration primary_slot {primary_sid} serves wrong model "
+                    f"{slot.get('model_id')!r}")
+            h = slot.get("hermes") or {}
+            matrix = (registry or {}).get("model_capability_matrix") or {}
+            if h.get("model") not in (matrix.get(str(h.get("provider"))) or []):
+                errors.append(
+                    f"surface {name}: migration primary_slot {primary_sid} provider capability is unverified")
     if errors:
         raise ValidationError("; ".join(errors))
 
@@ -399,6 +430,11 @@ def build_chain(surf: dict[str, Any], by_id: dict[str, dict[str, Any]],
         h["pool_accounts"] = [s["provider_account"]]
         chain.append(h)
     chain = dedupe_deployments(chain)
+    migration = surf.get("primary_model_migration")
+    if migration:
+        primary = by_id[migration["primary_slot"]]["hermes"]
+        primary_key = _deployment_key(primary)
+        chain = [entry for entry in chain if _deployment_key(entry) != primary_key]
     # annotate pool metadata for multi-account groups (traceability only)
     for entry in chain:
         accounts = entry.get("pool_accounts", [])
@@ -421,10 +457,42 @@ def build_chain(surf: dict[str, Any], by_id: dict[str, dict[str, Any]],
     return chain
 
 
-def emitted_config(doc: dict[str, Any], chain: list[dict[str, Any]]) -> dict[str, Any]:
-    """New config doc with fallback_providers replaced by the generated chain."""
+def _migrated_model(doc: dict[str, Any], surf: dict[str, Any],
+                    by_id: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the migrated model block, refusing stale or ambiguous live state."""
+    migration = surf.get("primary_model_migration")
+    if not migration:
+        return None
+    current = doc.get("model")
+    if not isinstance(current, dict):
+        raise ValidationError(
+            f"surface {surf['surface']}: primary migration requires a model mapping")
+    actual = current.get("default")
+    expected = migration["expected_old_main"]
+    if actual != expected:
+        raise ValidationError(
+            f"surface {surf['surface']}: expected old main {expected!r}, found {actual!r}; refusing migration")
+    primary = by_id[migration["primary_slot"]]["hermes"]
+    out = copy.deepcopy(current)
+    out["default"] = primary["model"]
+    for key in ("provider", "base_url", "reasoning_effort"):
+        if key in primary:
+            out[key] = primary[key]
+        else:
+            out.pop(key, None)
+    return out
+
+
+def emitted_config(doc: dict[str, Any], chain: list[dict[str, Any]],
+                   surf: dict[str, Any] | None = None,
+                   by_id: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """New config doc with governed fallback and optional primary migration."""
     out = copy.deepcopy(doc)
     out["fallback_providers"] = chain
+    if surf is not None and by_id is not None:
+        model = _migrated_model(doc, surf, by_id)
+        if model is not None:
+            out["model"] = model
     return out
 
 
@@ -435,24 +503,22 @@ def _deployment_key(e: dict[str, Any]) -> tuple[str, str, str]:
 
 
 def config_diff(old: dict[str, Any], new: dict[str, Any]) -> list[dict[str, Any]]:
-    """Deterministic structural diff: only fallback_providers (and keys we own)."""
+    """Deterministic structural diff for governed fallback and model fields."""
     changes = []
     old_fp = old.get("fallback_providers")
     new_fp = new.get("fallback_providers")
-    if old_fp == new_fp:
-        return changes
-    if old_fp is None:
+    if old_fp is None and old_fp != new_fp:
         changes.append({"surface": None, "op": "add", "field": "fallback_providers",
                         "old": None, "new_count": len(new_fp)})
-        return changes
-    changes.append({
-        "op": "replace",
-        "field": "fallback_providers",
-        "old": old_fp,
-        "old_count": len(old_fp) if isinstance(old_fp, list) else None,
-        "new": new_fp,
-        "new_count": len(new_fp) if isinstance(new_fp, list) else None,
-    })
+    elif old_fp != new_fp:
+        changes.append({
+            "op": "replace", "field": "fallback_providers", "old": old_fp,
+            "old_count": len(old_fp) if isinstance(old_fp, list) else None,
+            "new": new_fp, "new_count": len(new_fp) if isinstance(new_fp, list) else None,
+        })
+    if old.get("model") != new.get("model"):
+        changes.append({"op": "replace", "field": "model",
+                        "old": old.get("model"), "new": new.get("model")})
     return changes
 
 
@@ -492,7 +558,7 @@ def build_plan(tmp_home: Path, registry_path: Path, surfaces_path: Path) -> dict
     reg = load_registry(registry_path)
     by_id = validate_registry(reg)
     surfaces = load_surfaces(surfaces_path)
-    validate_surfaces(surfaces, by_id)
+    validate_surfaces(surfaces, by_id, reg)
 
     root_config = tmp_home / "config.yaml"
     profiles_dir = tmp_home / "profiles"
@@ -516,7 +582,7 @@ def build_plan(tmp_home: Path, registry_path: Path, surfaces_path: Path) -> dict
             })
         else:
             chain = build_chain(surf, by_id, reg)
-            new_doc = emitted_config(doc, chain)
+            new_doc = emitted_config(doc, chain, surf, by_id)
             plan_entries.append({
                 "surface": "default (root config.yaml)",
                 "path": str(root_config),
@@ -552,7 +618,7 @@ def build_plan(tmp_home: Path, registry_path: Path, surfaces_path: Path) -> dict
         chain = build_chain(surf, by_id, reg)
         for s in effective_slots(surf, by_id):
             emitted_groups.setdefault(str(s["hermes"].get("provider") or ""), []).append(s["provider_account"])
-        new_doc = emitted_config(doc, chain)
+        new_doc = emitted_config(doc, chain, surf, by_id)
         plan_entries.append({
             "surface": surf_name,
             "path": str(cfg),
@@ -569,7 +635,11 @@ def build_plan(tmp_home: Path, registry_path: Path, surfaces_path: Path) -> dict
     for entry in plan_entries:
         if not entry["changes"]:
             continue
-        old_fp = entry["changes"][0].get("old")
+        fallback_change = next(
+            (change for change in entry["changes"] if change.get("field") == "fallback_providers"), None)
+        if fallback_change is None:
+            continue
+        old_fp = fallback_change.get("old")
         chain = build_chain(
             surfaces_by_name.get(
                 "default" if entry["surface"].startswith("default") else entry["surface"],
@@ -756,6 +826,7 @@ def apply_plan(plan: dict[str, Any], backup_dir: Path) -> list[dict[str, str]]:
     reg = load_registry(plan["registry"])
     by_id = validate_registry(reg)
     surfaces = load_surfaces(plan["surfaces"])
+    validate_surfaces(surfaces, by_id, reg)
     surfaces_by_name = {s["surface"]: s for s in surfaces}
 
     # ---- phase 0: snapshot every target original (bytes) before any write ----
@@ -793,7 +864,7 @@ def apply_plan(plan: dict[str, Any], backup_dir: Path) -> list[dict[str, str]]:
             else:
                 surf = surfaces_by_name[entry["surface"]]
             chain = build_chain(surf, by_id, reg)
-            doc["fallback_providers"] = chain
+            doc = emitted_config(doc, chain, surf, by_id)
             src.write_text(yaml_dump_stable(doc), encoding="utf-8")
             written.append(src)
             out.append({

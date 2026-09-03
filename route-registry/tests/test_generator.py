@@ -502,8 +502,9 @@ class TestPlan:
         for cfg, data in before.items():
             assert Path(cfg).read_bytes() == data, f"dry-run modified {cfg}"
 
-    def test_main_model_preserved_except_approved_content_migration(self, tmp_hermes_home, by_id, surfaces):
-        """Registry preserves live mains except the approved content migration."""
+    def test_main_model_migration_is_planned_and_other_mains_are_invariant(
+            self, tmp_hermes_home, by_id, surfaces):
+        """The declared migration changes its whole model route and nothing else."""
         def extract_main(doc):
             m = doc.get("model")
             if isinstance(m, dict) and m.get("default"):
@@ -526,6 +527,16 @@ class TestPlan:
             if entry["surface"] == "content-strategist":
                 assert main == "minimax/minimax-m3-free"
                 assert entry["main_model"] == "deepseek-v4-flash"
+                model_change = next(c for c in entry["changes"] if c["field"] == "model")
+                primary = by_id["slot-dsflash-2"]["hermes"]
+                assert model_change["old"]["default"] == main
+                assert model_change["new"] == {
+                    **model_change["old"],
+                    "default": primary["model"],
+                    "provider": primary["provider"],
+                    "base_url": primary["base_url"],
+                    "reasoning_effort": primary["reasoning_effort"],
+                }
                 checked += 1
                 continue
             assert entry["main_model"] == main, (
@@ -533,6 +544,40 @@ class TestPlan:
             )
             checked += 1
         assert checked == 63
+
+    def test_content_primary_is_excluded_and_fallback_order_is_preserved(
+            self, tmp_hermes_home, by_id, surfaces, registry):
+        plan = generator.build_plan(tmp_hermes_home, REGISTRY, SURFACES)
+        chain = _chain_entries(plan, "content-strategist")
+        primary = by_id["slot-dsflash-2"]["hermes"]
+        assert generator._deployment_key(primary) not in {
+            generator._deployment_key(entry) for entry in chain
+        }
+        assert [entry["route_slot"] for entry in chain] == [
+            "slot-dsflash-1", "slot-dsflash-4", "codex-fallback", "local-final"
+        ]
+
+    def test_content_migration_refuses_unexpected_live_main(self, tmp_hermes_home):
+        cfg = tmp_hermes_home / "profiles" / "content-strategist" / "config.yaml"
+        doc = yaml.safe_load(cfg.read_text())
+        doc["model"]["default"] = "operator-changed/model"
+        cfg.write_text(yaml.safe_dump(doc, sort_keys=False))
+        with pytest.raises(generator.ValidationError, match="expected old main.*operator-changed/model"):
+            generator.build_plan(tmp_hermes_home, REGISTRY, SURFACES)
+
+    def test_content_migration_preserves_unrelated_model_fields(self, tmp_hermes_home):
+        cfg = tmp_hermes_home / "profiles" / "content-strategist" / "config.yaml"
+        doc = yaml.safe_load(cfg.read_text())
+        doc["model"]["context_length"] = 131072
+        doc["model"]["operator_note"] = "preserve-me"
+        cfg.write_text(yaml.safe_dump(doc, sort_keys=False))
+        plan = generator.build_plan(tmp_hermes_home, REGISTRY, SURFACES)
+        change = next(
+            c for e in plan["entries"] if e["surface"] == "content-strategist"
+            for c in e["changes"] if c["field"] == "model"
+        )
+        assert change["new"]["context_length"] == 131072
+        assert change["new"]["operator_note"] == "preserve-me"
 
     def test_content_strategist_uses_approved_same_model_slots(self, by_id, surfaces):
         surface = next(s for s in surfaces if s["surface"] == "content-strategist")

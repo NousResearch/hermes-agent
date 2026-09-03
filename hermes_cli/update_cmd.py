@@ -5605,7 +5605,8 @@ def _take_windows_gateway_resume_handoff() -> dict | None:
         pass
     except psutil.TimeoutExpired as exc:
         raise RuntimeError(
-            "Windows update shim did not exit before the dependency handoff"
+            f"Windows update shim PID {parent_pid} did not exit before the "
+            "dependency handoff"
         ) from exc
     except Exception as exc:
         raise RuntimeError(

@@ -312,6 +312,30 @@ def test_handoff_child_waits_for_parent_and_adopts_gateway_resume(monkeypatch):
     assert cli_main._UPDATE_REEXEC_GATEWAY_RESUME_ENV not in os.environ
 
 
+def test_handoff_parent_timeout_names_the_blocking_pid(monkeypatch):
+    """A stuck shim identifies the process the user must investigate."""
+    from hermes_cli import update_cmd
+
+    monkeypatch.setenv(cli_main._UPDATE_REEXEC_PARENT_PID_ENV, "4321")
+
+    class _Parent:
+        def wait(self, timeout):
+            raise TimeoutError
+
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        types.SimpleNamespace(
+            Process=lambda pid: _Parent(),
+            NoSuchProcess=ProcessLookupError,
+            TimeoutExpired=TimeoutError,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match=r"shim PID 4321 did not exit"):
+        update_cmd._take_windows_gateway_resume_handoff()
+
+
 def test_handoff_resume_token_skips_second_gateway_pause(monkeypatch):
     """Transferred state is authoritative; rediscovery would lose stopped profiles."""
     from hermes_cli import update_cmd

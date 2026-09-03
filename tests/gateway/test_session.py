@@ -156,8 +156,14 @@ class TestBuildSessionContextPrompt:
         # Static pointer tells the agent where the volatile id actually lives.
         assert "provided per-turn in the incoming user message" in p1
 
-    def test_slack_prompt_no_tools_shows_disclaimer(self):
-        """Without slack toolset loaded, prompt must show the stale-API disclaimer."""
+    def test_slack_prompt_without_dedicated_tools_is_non_promissory(self):
+        """No dedicated tool must not be misreported as no scoped API route.
+
+        Deployments can expose governed Slack operations through skills, CLIs,
+        plugins, or helpers that are intentionally absent from the core model
+        schema. The platform note must neither promise broad access nor block
+        the agent from discovering such a documented route.
+        """
         from unittest.mock import patch
         config = GatewayConfig(
             platforms={
@@ -175,11 +181,13 @@ class TestBuildSessionContextPrompt:
         with patch("gateway.session._slack_tools_loaded", return_value=False):
             prompt = build_session_context_prompt(ctx)
 
-        assert "Slack" in prompt
-        assert "cannot search" in prompt.lower()
-        assert "pin" in prompt.lower()
-        assert "current message's slack block/attachment payload" in prompt.lower()
-        assert "you can" not in prompt.lower() or "you cannot" in prompt.lower()
+        normalized = prompt.lower()
+        assert "no dedicated native or mcp slack tool is loaded" in normalized
+        assert "inspect the loaded capabilities" in normalized
+        assert "may provide scoped slack operations" in normalized
+        assert "do not assume broad slack api access" in normalized
+        assert "you do not have access to slack-specific apis" not in normalized
+        assert "you still cannot call slack apis yourself" not in normalized
 
 
     def test_slack_tools_loaded_detects_real_mcp_registration(self):

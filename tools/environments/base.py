@@ -597,6 +597,32 @@ def _export_dump_excluding_session_vars(
         # session-var leak this dump already guards against.
         "AI_AGENT HERMES_AGENT "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
+        # 2026-08-14 security fix: credential env vars must never land in
+        # the /tmp snapshot (HINDSIGHT_API_LLM_API_KEY was leaked to
+        # /tmp/hermes-snap-*.sh). Name-prefix unset cannot express this, so
+        # iterate: any var whose NAME contains KEY/TOKEN/SECRET/PASSWORD/
+        # PASSWD/CREDENTIAL as a word (underscore-delimited; camelCase
+        # suffixes like ApiKey also match via the *KEY_ tail) is dropped
+        # from the dump, same principle as the session vars above.  Uses
+        # ``shopt -s nocasematch`` (bash 3.1+) for case-insensitive matching
+        # instead of ``${__v^^}`` (bash 4.0+ only, breaks macOS bash 3.2),
+        # and ``export -n`` instead of ``unset`` so readonly exported vars
+        # are also scrubbed.  Word-boundary matching means
+        # TOKENIZERS_PARALLELISM (a benign huggingface knob) is NOT
+        # mistaken for a credential; a mid-name camelCase marker that is
+        # neither underscore- nor suffix-delimited (``apiKeyValue``) is
+        # accepted bleed — no known credential env var is named that way.
+        # The list is consumed with a ``while read`` loop, NOT a ``for``
+        # over ``$(compgen -e)``: under a non-whitespace IFS (e.g. ``IFS=:``
+        # set by some rc files) the whole name list is ONE word, the case
+        # match silently fails, and ``export -n`` errors are swallowed by
+        # 2>/dev/null — every credential would leak.  ``IFS= read`` pins
+        # splitting for the read itself.
+        "shopt -s nocasematch; "
+        "while IFS= read -r __v; do "
+        "case \"_${__v}_\" in "
+        "*_key_*|*_token_*|*_secret_*|*_password_*|*_passwd_*|*_credential_*|*key_|*token_|*secret_|*password_|*passwd_|*credential_) export -n \"$__v\" 2>/dev/null;; "
+        "esac; done <<< \"$(compgen -e)\"; "
         "export -p; "
         ") || true; } "
         f"> {tmp_path}"

@@ -27,6 +27,10 @@ from tools.environments.base import (
 )
 
 
+def _bash() -> str:
+    return "/bin/bash" if os.path.exists("/bin/bash") else "bash"
+
+
 # ---------------------------------------------------------------------------
 # Unit: the exclusion regex matches exactly the bridged vars, nothing else.
 # ---------------------------------------------------------------------------
@@ -62,6 +66,163 @@ def test_export_snippet_shape():
     assert snippet.lstrip().startswith("{ ")
     assert "|| true; }" in snippet
     assert snippet.rstrip().endswith('> "$__hermes_snap_tmp"')
+
+
+# ---------------------------------------------------------------------------
+# Credential scrub: env vars whose NAME contains credential markers
+# (KEY/TOKEN/SECRET/PASSWORD/PASSWD/CREDENTIAL, any case) must not land in
+# the snapshot dump.
+# ---------------------------------------------------------------------------
+
+def test_export_snippet_contains_case_insensitive_credential_scrub():
+    snippet = _export_dump_excluding_session_vars('"$__hermes_snap_tmp"')
+    # bash 3.2-compatible case-insensitive matching: nocasematch (3.1+) +
+    # word-boundary globs, NOT ${__v^^} (bash 4.0+ only).
+    assert "shopt -s nocasematch" in snippet
+    assert "compgen -e" in snippet
+    assert 'case "_${__v}_" in' in snippet
+    for marker in (
+        "*_key_*",
+        "*_token_*",
+        "*_secret_*",
+        "*_password_*",
+        "*_passwd_*",
+        "*_credential_*",
+    ):
+        assert marker in snippet, f"{marker} should be in the scrub pattern"
+    # camelCase suffixes (ApiKey) match via the *key_ tail.
+    for tail in ("*key_", "*token_", "*secret_", "*password_", "*passwd_", "*credential_"):
+        assert tail in snippet, f"{tail} should be in the scrub pattern"
+    # export -n (not unset) so readonly exported vars are scrubbed too.
+    assert "export -n" in snippet
+    # bash-4-only case fold must NOT be present (macOS bash 3.2 compat).
+    assert "${__v^^}" not in snippet
+    # Lowercase-only patterns are gone: nocasematch covers case.
+    assert "*key*" not in snippet
+    assert "*password*" not in snippet
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
+def test_export_snapshot_scrubs_credential_names_any_case(tmp_path):
+    import shlex
+    import subprocess
+
+    snap = tmp_path / "snap.sh"
+    dump = _export_dump_excluding_session_vars(shlex.quote(str(snap)))
+    q_snap = shlex.quote(str(snap))
+    script = "set -e\n"
+    script += "export db_password=leak1\n"
+    script += "export ApiKey=leak2\n"
+    script += "export MY_SECRET=leak3\n"
+    script += "export ACCESS_TOKEN=leak4\n"
+    script += "export normal_var=keepme\n"
+    script += "export APPLE=keepme\n"
+    script += dump + "\n"
+    script += "if grep -qE 'db_password|ApiKey|MY_SECRET|ACCESS_TOKEN' " + q_snap + "; then echo 'LEAKED_INTO_SNAPSHOT' >&2; exit 2; fi\n"
+    script += "source " + q_snap + "\n"
+    script += "if grep -qE 'db_password|ApiKey|MY_SECRET|ACCESS_TOKEN' " + q_snap + "; then echo 'LEAKED_INTO_SNAPSHOT' >&2; exit 2; fi\n"
+    script += "if ! grep -qE '^declare -x normal_var=' " + q_snap + "; then echo 'NORMAL_VAR_MISSING' >&2; exit 3; fi\n"
+    script += "if ! grep -qE '^declare -x APPLE=' " + q_snap + "; then echo 'APPLE_MISSING' >&2; exit 4; fi\n"
+    result = subprocess.run(
+        [_bash(), "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": os.environ.get("PATH", "")},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
+def test_export_snapshot_keeps_tokenizers_var(tmp_path):
+    """TOKENIZERS_PARALLELISM (benign huggingface knob) must NOT be scrubbed.
+
+    Regression for the earlier substring match (*TOKEN*) which also deleted
+    TOKENIZERS_* vars. Word-boundary matching keeps it.
+    """
+    import shlex
+    import subprocess
+
+    snap = tmp_path / "snap.sh"
+    dump = _export_dump_excluding_session_vars(shlex.quote(str(snap)))
+    q_snap = shlex.quote(str(snap))
+    script = "set -e\n"
+    script += "export TOKENIZERS_PARALLELISM=true\n"
+    script += "export ACCESS_TOKEN=leak\n"
+    script += dump + "\n"
+    script += "if ! grep -qE '^declare -x TOKENIZERS_PARALLELISM=' " + q_snap + "; then echo 'TOKENIZERS_SCRUBBED' >&2; exit 2; fi\n"
+    script += "if grep -qE 'ACCESS_TOKEN' " + q_snap + "; then echo 'LEAKED_INTO_SNAPSHOT' >&2; exit 3; fi\n"
+    result = subprocess.run(
+        [_bash(), "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": os.environ.get("PATH", "")},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
+def test_export_snapshot_scrubs_readonly_exported_creds(tmp_path):
+    """readonly exported credential vars are scrubbed via export -n."""
+    import shlex
+    import subprocess
+
+    snap = tmp_path / "snap.sh"
+    dump = _export_dump_excluding_session_vars(shlex.quote(str(snap)))
+    q_snap = shlex.quote(str(snap))
+    script = "set -e\n"
+    script += "readonly RO_API_KEY=leakro\n"
+    script += "export RO_API_KEY\n"
+    script += "export normal_ro_var=keepme\n"
+    script += dump + "\n"
+    script += "if grep -qE 'RO_API_KEY' " + q_snap + "; then echo 'READONLY_LEAKED' >&2; exit 2; fi\n"
+    script += "if ! grep -qE '^declare -x normal_ro_var=' " + q_snap + "; then echo 'NORMAL_VAR_MISSING' >&2; exit 3; fi\n"
+    result = subprocess.run(
+        [_bash(), "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": os.environ.get("PATH", "")},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
+def test_export_snapshot_scrubs_credentials_under_nonwhitespace_ifs(tmp_path):
+    """The scrub must survive a non-whitespace IFS (e.g. ``IFS=:``).
+
+    Regression: ``for __v in $(compgen -e)`` splits on IFS; under ``IFS=:``
+    the whole name list is one word, the case match never fires, and the
+    swallowed ``export -n`` error hides the failure — every credential
+    leaks.  A ``while IFS= read -r`` loop is IFS-independent.
+    """
+    import shlex
+    import subprocess
+
+    snap = tmp_path / "snap.sh"
+    dump = _export_dump_excluding_session_vars(shlex.quote(str(snap)))
+    q_snap = shlex.quote(str(snap))
+    script = "set -e\n"
+    script += "IFS=:\n"
+    script += "export API_KEY=leak1\n"
+    script += "export db_password=leak2\n"
+    script += "export normal_var=keepme\n"
+    script += dump + "\n"
+    script += "if grep -qE 'API_KEY|db_password' " + q_snap + "; then echo 'LEAKED_UNDER_IFS' >&2; exit 2; fi\n"
+    script += "if ! grep -qE '^declare -x normal_var=' " + q_snap + "; then echo 'NORMAL_VAR_MISSING' >&2; exit 3; fi\n"
+    result = subprocess.run(
+        [_bash(), "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": os.environ.get("PATH", "")},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
 
 
 # ---------------------------------------------------------------------------

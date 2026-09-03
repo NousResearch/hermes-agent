@@ -360,6 +360,132 @@ async def test_payload_less_split_does_not_suppress_complete_response(
     )
 
 
+class TransformedAgent:
+    """Streams a prefix; the completed response is plugin-transformed.
+
+    Models a transform_llm_output hook rewriting the response after
+    streaming finished (e.g. translation, citation-adding) — the
+    ``response_transformed`` flag this sets is read verbatim from the
+    agent's returned dict (gateway/run.py forwards ``result.get(
+    "response_transformed", False)``), so no real plugin is needed to
+    exercise the gateway-boundary branch that reacts to it.
+    """
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback(STREAMED_PREFIX)
+        return {
+            "final_response": FULL_RESPONSE,
+            "response_previewed": False,
+            "response_transformed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class _TransformedSplitConsumer(GatewayStreamConsumer):
+    """Force the split-delivery shape onto an otherwise normal stream.
+
+    Sibling of ``_PayloadLessSplitConsumer`` above, but exercising the
+    ``_transformed`` branch (plugin-transformed response) rather than the
+    stale-finalize branch: both read the streamed message's
+    ``_turn_split_delivery`` flag before deciding whether an in-place edit
+    is safe.
+    """
+
+    async def run(self):
+        await super().run()
+        self._turn_split_delivery = True
+
+
+@pytest.mark.asyncio
+async def test_transformed_response_on_split_delivery_does_not_repeat_head_chunks(
+    monkeypatch, tmp_path
+):
+    """The _transformed branch must skip its edit on a multi-message split,
+    exactly like the sibling stale-finalize branch already does (#78541).
+
+    Editing ``_sc.message_id`` (only the LAST chunk on a split turn) with the
+    complete transformed text would repeat every sealed head chunk's content
+    inside the tail message. The complete response must instead reach the
+    platform through the normal final send (or, if the gateway does choose to
+    edit, the edited content must not re-embed the streamed prefix that was
+    already sealed into an earlier chunk)."""
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump(
+            {
+                "display": {"tool_progress": "off", "interim_assistant_messages": False},
+                "streaming": {
+                    "enabled": True,
+                    "edit_interval": 0.01,
+                    "buffer_threshold": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TransformedAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    stream_consumer_mod = importlib.import_module("gateway.stream_consumer")
+    monkeypatch.setattr(
+        stream_consumer_mod, "GatewayStreamConsumer", _TransformedSplitConsumer
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    adapter = FinalizeCaptureAdapter()
+    runner = _make_runner(adapter)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1005",
+        chat_type="group",
+    )
+    result = await runner._run_agent(
+        message="describe this photo",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-transformed-split",
+        session_key="agent:main:telegram:group:-1005",
+    )
+
+    assert result["final_response"] == FULL_RESPONSE
+    # The bug: the pre-fix branch unconditionally edits _sc.message_id with
+    # the complete text and claims already_sent, regardless of split state.
+    # On a split turn that message is only the tail — sent as a SEPARATE
+    # platform message from the already-sealed head chunk(s) — so an edit
+    # carrying the complete (head+tail) text duplicates the head's content
+    # once the two messages are read together, even though the edit's own
+    # content string only contains the prefix once. The fix must skip that
+    # edit and leave delivery to the normal final send instead, exactly like
+    # the sibling stale-finalize branch already does for this flag.
+    full_text_edits = [e for e in adapter.edits if e["content"] == FULL_RESPONSE]
+    assert full_text_edits == [], (
+        "the transformed-response branch must not edit a split-delivery tail "
+        f"message with the complete text: {full_text_edits!r}"
+    )
+    assert not result.get("already_sent"), (
+        "must not claim delivery on a split turn — declining lets the "
+        "caller's normal final send deliver the complete response instead"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Consumer unit coverage: delivered_final_matches tri-state
 # ---------------------------------------------------------------------------

@@ -207,10 +207,9 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
           {/* Resizable viewport: height comes from the top-edge drag sash
               above (persisted; double-click resets). flex-basis instead of a
               hard height so a short window shrinks the hub viewport rather
-              than letting it spill over the list. The iframe is rendered
-              oversized and scaled DOWN (133% × 0.75) so the hub page starts
-              zoomed out — the cross-origin page itself can't be styled, but
-              scaling the frame is ours. */}
+              than letting it spill over the list. Keep the cross-origin page
+              at its natural scale: shrinking it made the hub choose a wider
+              desktop layout, leaving a large empty strip on the right. */}
           <div
             style={{
               border: '1px solid var(--ui-stroke-secondary)',
@@ -230,13 +229,11 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
               style={{
                 background: 'transparent',
                 border: 'none',
-                height: '133.34%',
+                height: '100%',
                 // While the sash drags, the cross-origin iframe must not eat
                 // the pointermove stream.
                 pointerEvents: dragging ? 'none' : 'auto',
-                transform: 'scale(0.75)',
-                transformOrigin: 'top left',
-                width: '133.34%'
+                width: '100%'
               }}
               title={h.pickerTitle}
             />

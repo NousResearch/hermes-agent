@@ -47,6 +47,7 @@ const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfi
 
 const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
 const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
+const LOG_TAIL_LINES = 100
 
 const USAGE_PERIODS = [7, 30, 90] as const
 type UsagePeriod = (typeof USAGE_PERIODS)[number]
@@ -150,7 +151,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [logFile, setLogFile] = useState<(typeof LOG_FILES)[number]>('agent')
-  const [logLevel, setLogLevel] = useState<(typeof LOG_LEVELS)[number]>('ALL')
+  const [logLevel, setLogLevel] = useState<(typeof LOG_LEVELS)[number]>('WARNING')
   const [logQuery, setLogQuery] = useState('')
   const [systemLoading, setSystemLoading] = useState(false)
   const [systemError, setSystemError] = useState('')
@@ -184,7 +185,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     })
   }, [debouncedQuery, sessions])
 
-  const refreshSystem = useCallback(async () => {
+  const refreshSystem = useCallback(async (): Promise<StatusResponse | null> => {
     setSystemLoading(true)
     setSystemError('')
 
@@ -194,14 +195,18 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
         getLogs({
           file: logFile,
           level: logLevel,
-          lines: 200
+            lines: LOG_TAIL_LINES
         })
       ])
 
       setStatus(nextStatus)
       setLogs(nextLogs.lines)
+
+      return nextStatus
     } catch (error) {
       setSystemError(error instanceof Error ? error.message : String(error))
+
+      return null
     } finally {
       setSystemLoading(false)
     }
@@ -268,6 +273,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const runSystemAction = useCallback(
     async (kind: 'restart' | 'update') => {
       setSystemError('')
+      let actionSucceeded = false
 
       // A profile served by the shared multiplexer restarts every bot on this device: ask first.
       const shared = kind === 'restart' ? await confirmSharedGatewayRestart() : null
@@ -288,6 +294,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           upsertDesktopActionTask(polled)
 
           if (!polled.running) {
+            actionSucceeded = polled.exit_code === 0
             break
           }
         }
@@ -311,7 +318,23 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       } catch (error) {
         setSystemError(error instanceof Error ? error.message : String(error))
       } finally {
-        void refreshSystem()
+        if (kind === 'restart' && actionSucceeded) {
+          // Gateway startup can finish after the action process exits. Keep
+          // the status card in sync instead of leaving a stale "stopped" pill.
+          for (let attempt = 0; attempt < 16; attempt += 1) {
+            const refreshed = await refreshSystem()
+
+            if (refreshed?.gateway_running) {
+              break
+            }
+
+            if (attempt < 15) {
+              await new Promise(resolve => window.setTimeout(resolve, 1200))
+            }
+          }
+        } else {
+          await refreshSystem()
+        }
       }
     },
     [cc, refreshSystem]

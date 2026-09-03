@@ -308,11 +308,52 @@ export function spawnUpdaterProcess(
   deps: SpawnUpdaterProcessDeps = {}
 ): UpdaterChild {
   const isWindows = deps.isWindows ?? process.platform === 'win32'
-  const spawnOptions = hiddenWindowsChildOptions(options, isWindows) as SpawnOptions
 
-  const child = deps.spawnProcess
-    ? deps.spawnProcess(updater, updaterArgs, spawnOptions)
-    : spawn(updater, updaterArgs, spawnOptions)
+  let child: UpdaterChild
+  if (isWindows) {
+    // Windows hand-off: neither spawn() shape survives the Electron main
+    // process exiting. A plain child is reaped when the Chromium Job Object
+    // closes (kill-on-close — verified 2026-08-13: the ps1's first log line
+    // appears, then the child dies with the parent). `detached: true` is
+    // fatal for Windows PowerShell 5.1: DETACHED_PROCESS with no console
+    // makes it exit(0) immediately WITHOUT ever running -File (verified in
+    // plain node AND inside Electron). `cmd /c start /min` creates a
+    // brand-new console process OUTSIDE the Job that outlives the parent;
+    // /min keeps the console window minimized. The pre-written update
+    // marker carries cmd's pid, which dies instantly — that is safe:
+    // hermes_cli/update_lock.py treats a dead-pid marker as stale and
+    // deletes it, so `hermes update` acquires cleanly.
+    const quoteIfSpaced = (s: string) => (/\s/.test(s) ? `"${s}"` : s)
+    const startArgs = [
+      '/c',
+      'start',
+      '/min',
+      '',
+      quoteIfSpaced(updater),
+      ...updaterArgs.map(quoteIfSpaced)
+    ]
+    // Keep cwd/env (PATH with the managed node shim matters for hermes
+    // update); drop detached/windowsHide — they are meaningless to cmd.
+    const { detached: _dropDetached, ...baseOptions } = options
+    const startOptions = { ...baseOptions, stdio: 'ignore' } as SpawnOptions
+    child = deps.spawnProcess
+      ? deps.spawnProcess('cmd.exe', startArgs, startOptions)
+      : spawn('cmd.exe', startArgs, startOptions)
+  } else {
+    const spawnOptions = hiddenWindowsChildOptions(options, isWindows) as SpawnOptions
+    child = deps.spawnProcess
+      ? deps.spawnProcess(updater, updaterArgs, spawnOptions)
+      : spawn(updater, updaterArgs, spawnOptions)
+  }
+
+  // A failed spawn emits 'error' asynchronously; with no listener it becomes
+  // an uncaught exception and takes the whole app down with no trace (most
+  // call sites use stdio: 'ignore'). Log it instead so an update surfaces as
+  // a logged failure, not a silent quit. Optional-chained for test mocks
+  // that may not be EventEmitters.
+  child.on?.('error', err => {
+    console.error(`[updates] updater spawn failed: ${err.message}`)
+  })
 
   child.unref()
 

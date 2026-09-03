@@ -70,7 +70,7 @@ test('resolveStagedUpdaterBinary still returns a stale staged updater on Windows
   )
 })
 
-test('spawnUpdaterProcess hides the updater console and detaches the child on Windows', () => {
+test('spawnUpdaterProcess hands off via cmd /c start on Windows so the child outlives the Job', () => {
   const calls: Array<{ args: string[]; command: string; options: SpawnOptions }> = []
   let unrefCalls = 0
 
@@ -99,9 +99,9 @@ test('spawnUpdaterProcess hides the updater console and detaches the child on Wi
   assert.equal(unrefCalls, 1)
   assert.deepEqual(calls, [
     {
-      args: ['--update', '--branch', 'main'],
-      command: 'hermes-setup.exe',
-      options: { cwd: 'C:\\Hermes', detached: true, stdio: 'ignore', windowsHide: true }
+      args: ['/c', 'start', '/min', '', 'hermes-setup.exe', '--update', '--branch', 'main'],
+      command: 'cmd.exe',
+      options: { cwd: 'C:\\Hermes', stdio: 'ignore' }
     }
   ])
 })

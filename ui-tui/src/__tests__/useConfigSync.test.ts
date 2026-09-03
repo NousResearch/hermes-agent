@@ -11,10 +11,12 @@ import {
   normalizeStatusBar,
   syncMcpReload
 } from '../app/useConfigSync.js'
+import { formatToolCall, setToolContextPreviewMax } from '../lib/text.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {
     resetUiState()
+    setToolContextPreviewMax(null)
   })
 
   it('fans every display flag out to $uiState and the bell callback', () => {
@@ -189,6 +191,25 @@ describe('applyDisplay', () => {
     )
 
     expect($uiState.get().sections).toEqual({ activity: 'hidden' })
+  })
+
+  it('threads display.tool_preview_length through to tool trail previews', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { tool_preview_length: 100 } } }, setBell)
+    expect(formatToolCall('terminal', 'x'.repeat(200))).toBe(`Terminal("${'x'.repeat(99)}…")`)
+
+    applyDisplay({ config: { display: { tool_preview_length: 0 } } }, setBell)
+    expect(formatToolCall('terminal', 'x'.repeat(200))).toBe(`Terminal("${'x'.repeat(200)}")`)
+
+    // A transient RPC failure (null cfg) must not clobber the configured
+    // value — same guard as the voice record key.
+    applyDisplay(null, setBell)
+    expect(formatToolCall('terminal', 'x'.repeat(200))).toBe(`Terminal("${'x'.repeat(200)}")`)
+
+    // Removing the key from config restores the built-in cap on next sync.
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect(formatToolCall('terminal', 'x'.repeat(100))).toBe(`Terminal("${'x'.repeat(63)}…")`)
   })
 
   it('treats a null config like an empty display block', () => {

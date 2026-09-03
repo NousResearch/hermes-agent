@@ -275,6 +275,22 @@ global `details_mode`. To reshape the layout:
 Anything set explicitly in `display.sections` wins over the defaults, so
 existing configs keep working unchanged.
 
+**Tool preview length**
+
+Tool rows show a one-line preview of the call's primary argument (the
+terminal command, file path, search pattern). By default the preview is
+capped, so long commands are elided. Set `display.tool_preview_length` to
+change this; `0` means no limit and long previews wrap across lines:
+
+```yaml
+display:
+  tool_preview_length: 0   # show full terminal commands in tool rows
+```
+
+The same key governs the classic CLI spinner's previews (where the default
+is already unlimited). Full command text is always available regardless via
+`/verbose` and in approval prompts.
+
 ## Sessions
 
 Sessions are shared between the TUI and the classic CLI — both write to the same `~/.hermes/state.db`. You can start a session in one, resume in the other. The session picker surfaces sessions from both sources, with a source tag.

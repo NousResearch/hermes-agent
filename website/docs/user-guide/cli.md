@@ -433,6 +433,8 @@ display:
 
 This is useful on narrow terminals or when tool arguments contain very long file paths.
 
+The key also applies to the tool rows in the full-screen TUI (`hermes --tui`). There the built-in preview cap is kept when the key is unset; set it explicitly (e.g. `tool_preview_length: 0`) to see full terminal commands in the transcript. Long previews wrap across lines instead of being clipped.
+
 ## Session Management
 
 ### Resuming Sessions

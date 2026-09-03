@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   boundedLiveRenderText,
@@ -8,6 +8,7 @@ import {
   estimateRows,
   estimateTokensRough,
   fmtK,
+  formatToolCall,
   hasAnsi,
   isToolTrailResultLine,
   lastCotTrailIndex,
@@ -15,6 +16,7 @@ import {
   pasteTokenLabel,
   sameToolTrailGroup,
   sanitizeAnsiForRender,
+  setToolContextPreviewMax,
   splitToolDuration,
   stripAnsi,
   thinkingPreview
@@ -35,6 +37,34 @@ describe('buildToolTrailLine', () => {
     expect(line).toBe('Read File("x") (0.9s) ✓')
     expect(parseToolTrailResultLine(line)).toEqual({ call: 'Read File("x") (0.9s)', detail: '', mark: '✓' })
     expect(splitToolDuration('Read File("x") (0.9s)')).toEqual({ label: 'Read File("x")', duration: ' (0.9s)' })
+  })
+})
+
+describe('formatToolCall preview length', () => {
+  afterEach(() => setToolContextPreviewMax(null))
+
+  it('caps context at 64 chars when no length is configured', () => {
+    expect(formatToolCall('terminal', 'x'.repeat(100))).toBe(`Terminal("${'x'.repeat(63)}…")`)
+  })
+
+  it('honours a configured cap', () => {
+    setToolContextPreviewMax(80)
+
+    expect(formatToolCall('terminal', 'x'.repeat(100))).toBe(`Terminal("${'x'.repeat(79)}…")`)
+  })
+
+  it('treats 0 as unlimited, matching the CLI spinner semantics', () => {
+    setToolContextPreviewMax(0)
+    const cmd = 'x'.repeat(400)
+
+    expect(formatToolCall('terminal', cmd)).toBe(`Terminal("${cmd}")`)
+  })
+
+  it('restores the built-in cap on null', () => {
+    setToolContextPreviewMax(0)
+    setToolContextPreviewMax(null)
+
+    expect(formatToolCall('terminal', 'x'.repeat(100))).toBe(`Terminal("${'x'.repeat(63)}…")`)
   })
 })
 

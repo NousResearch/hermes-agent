@@ -77,7 +77,7 @@ const renderEstimateLine = (line: string) => {
 export const compactPreview = (s: string, max: number) => {
   const one = s.replace(WS_RE, ' ').trim()
 
-  return !one ? '' : one.length > max ? one.slice(0, max - 1) + '…' : one
+  return !one ? '' : max > 0 && one.length > max ? one.slice(0, max - 1) + '…' : one
 }
 
 export const estimateTokensRough = (text: string) => (!text ? 0 : (text.length + 3) >> 2)
@@ -204,9 +204,22 @@ export const toolTrailLabel = (name: string) =>
     .map(p => p[0]!.toUpperCase() + p.slice(1))
     .join(' ') || name
 
+// Cap for tool-call context previews when display.tool_preview_length is
+// unset (the pre-config-plumbing behaviour, so default rows look the same).
+const DEFAULT_TOOL_CONTEXT_CHARS = 64
+
+let toolContextChars = DEFAULT_TOOL_CONTEXT_CHARS
+
+// Synced from config by applyDisplay (useConfigSync) on hydrate and on every
+// config.yaml change; 0 means unlimited, matching the CLI spinner's handling
+// of the same key. null/undefined restores the built-in cap.
+export const setToolContextPreviewMax = (n: null | number | undefined) => {
+  toolContextChars = typeof n === 'number' && Number.isFinite(n) ? Math.max(0, Math.round(n)) : DEFAULT_TOOL_CONTEXT_CHARS
+}
+
 export const formatToolCall = (name: string, context = '') => {
   const label = toolTrailLabel(name)
-  const preview = compactPreview(context, 64)
+  const preview = compactPreview(context, toolContextChars)
 
   return preview ? `${label}("${preview}")` : label
 }

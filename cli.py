@@ -13608,6 +13608,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 continue
             self._pending_input.put(synthetic_message)
             complete_event_delivery(event, claim)
+            process_registry.mark_notification_delivered(event)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.

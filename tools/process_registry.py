@@ -34,8 +34,11 @@ import json
 import logging
 import os
 import platform
+import re
 import shlex
 import signal
+import socket
+import sqlite3
 import subprocess
 import threading
 import time
@@ -61,6 +64,8 @@ logger = logging.getLogger(__name__)
 
 # Checkpoint file for crash recovery (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
+NOTIFICATION_STATE_PATH = get_hermes_home() / "process_notification_state.sqlite3"
+NOTIFICATION_STATE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 # Limits
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
@@ -495,6 +500,14 @@ class ProcessRegistry:
         # consults this set; the gateway/tui watchers deliberately do NOT.
         self._poll_observed: set = set()
 
+        # Durable lifecycle state for process notifications.  The queue itself
+        # is intentionally in-memory, but a delayed/replayed event can outlive
+        # the process that produced it (or even this registry instance).  SQLite
+        # gives independent gateway/cron processes one atomic reconciliation
+        # source without turning processes.json into a mixed live/history file.
+        self._notification_state_path = Path(NOTIFICATION_STATE_PATH)
+        self._init_notification_state()
+
         # Global watch-match circuit breaker — across all sessions.
         # Prevents sibling processes from collectively flooding the user even
         # when each stays under its own per-session cap.
@@ -520,6 +533,285 @@ class ProcessRegistry:
         while lines and any(noise in lines[0] for noise in ProcessRegistry._SHELL_NOISE_SUBSTRINGS):
             lines.pop(0)
         return "\n".join(lines)
+
+    # ----- Durable process-notification lifecycle -----
+
+    @staticmethod
+    def _notification_run_identity(value: Any) -> str:
+        """Return the stable process-incarnation identity carried by an event/session."""
+        if isinstance(value, dict):
+            session_id = str(value.get("session_id") or "")
+            started_at = value.get("started_at")
+        else:
+            session_id = str(getattr(value, "id", "") or "")
+            started_at = getattr(value, "started_at", None)
+        if not session_id or started_at is None:
+            return ""
+        try:
+            spawn_epoch_us = int(float(started_at) * 1_000_000)
+        except (TypeError, ValueError, OverflowError):
+            return ""
+        return f"{session_id}:{spawn_epoch_us}"
+
+    @staticmethod
+    def _notification_event_identity(event: dict) -> str:
+        """Return producer-stable event identity; legacy watch events fail open."""
+        event_id = str(event.get("event_id") or "")
+        if event_id:
+            return event_id
+        if event.get("type") == "completion":
+            run_id = ProcessRegistry._notification_run_identity(event)
+            return f"completion:{run_id}" if run_id else ""
+        return ""
+
+    def _notification_db(self):
+        self._notification_state_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self._notification_state_path), timeout=5.0)
+        conn.execute("PRAGMA busy_timeout = 5000")
+        return conn
+
+    def _init_notification_state(self) -> None:
+        """Create and prune the small cross-process lifecycle ledger."""
+        try:
+            with self._notification_db() as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS process_notification_runs (
+                        run_id TEXT PRIMARY KEY,
+                        status TEXT NOT NULL,
+                        reason TEXT NOT NULL DEFAULT '',
+                        updated_at REAL NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS process_notification_events (
+                        event_id TEXT PRIMARY KEY,
+                        run_id TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        readiness INTEGER NOT NULL DEFAULT 0,
+                        reason TEXT NOT NULL DEFAULT '',
+                        updated_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_process_notification_events_run
+                    ON process_notification_events(run_id);
+                    """
+                )
+                event_columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(process_notification_events)")
+                }
+                if "readiness" not in event_columns:
+                    conn.execute(
+                        "ALTER TABLE process_notification_events "
+                        "ADD COLUMN readiness INTEGER NOT NULL DEFAULT 0"
+                    )
+                cutoff = time.time() - NOTIFICATION_STATE_TTL_SECONDS
+                conn.execute(
+                    "DELETE FROM process_notification_events WHERE updated_at < ?",
+                    (cutoff,),
+                )
+                conn.execute(
+                    "DELETE FROM process_notification_runs WHERE updated_at < ?",
+                    (cutoff,),
+                )
+        except Exception as exc:
+            logger.warning("Could not initialize process notification state: %s", exc)
+
+    def observe_notification(self, event: dict) -> None:
+        """Persist an observation without reviving terminal/delivered state."""
+        event_id = self._notification_event_identity(event)
+        run_id = self._notification_run_identity(event)
+        if not event_id or not run_id:
+            return
+        readiness = int(bool(self._loopback_endpoints(str(event.get("output") or ""))))
+        try:
+            with self._notification_db() as conn:
+                conn.execute(
+                    """INSERT OR IGNORE INTO process_notification_events
+                       (event_id, run_id, status, readiness, reason, updated_at)
+                       VALUES (?, ?, 'observed', ?, '', ?)""",
+                    (event_id, run_id, readiness, time.time()),
+                )
+        except Exception as exc:
+            logger.warning("Could not persist observed process notification: %s", exc)
+
+    @staticmethod
+    def _intentional_termination(session: ProcessSession) -> bool:
+        return session.completion_reason == "killed" and session.termination_source in {
+            "process.kill",
+            "kill_all",
+            "gateway_turn_timeout",
+            "gateway_turn_interrupted",
+            "session_reset",
+        }
+
+    @staticmethod
+    def _loopback_endpoints(text: str) -> List[tuple[str, int]]:
+        """Extract declared HTTP(S) loopback endpoints from readiness output."""
+        from urllib.parse import urlsplit
+
+        endpoints: List[tuple[str, int]] = []
+        for raw in re.findall(r"https?://[^\s(){}<>]+", text or "", flags=re.I):
+            try:
+                parsed = urlsplit(raw.rstrip(".,;"))
+                host = (parsed.hostname or "").lower()
+                if host not in {"localhost", "127.0.0.1", "::1"}:
+                    continue
+                port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+                endpoints.append((host, int(port)))
+            except (TypeError, ValueError):
+                continue
+        return list(dict.fromkeys(endpoints))
+
+    def _open_loopback_ports(
+        self, event: dict, session: Optional[ProcessSession] = None
+    ) -> List[int]:
+        """Return readiness-declared loopback ports still accepting connections."""
+        text = "\n".join(
+            str(part or "")
+            for part in (
+                event.get("output"),
+                event.get("command"),
+                getattr(session, "output_buffer", ""),
+            )
+        )
+        open_ports: List[int] = []
+        for host, port in self._loopback_endpoints(text):
+            try:
+                with socket.create_connection((host, port), timeout=0.15):
+                    open_ports.append(port)
+            except OSError:
+                pass
+        return sorted(set(open_ports))
+
+    def _readiness_endpoints(self, event: dict) -> List[tuple[str, int]]:
+        """Return endpoints declared by this watch observation, not sibling output."""
+        return self._loopback_endpoints(str(event.get("output") or ""))
+
+    def reconcile_process_notifications(self, session: ProcessSession) -> bool:
+        """Persist terminal state after verified intentional cleanup."""
+        if not session.exited or not self._intentional_termination(session):
+            return False
+        # A localhost URL emitted inside Docker/SSH/Modal/Daytona names that
+        # backend's network namespace, not the Hermes host.  A host socket probe
+        # cannot certify remote cleanup, so leave those events actionable.
+        if session.pid_scope != "host":
+            return False
+        probe = {
+            "session_id": session.id,
+            "started_at": session.started_at,
+            "command": session.command,
+            "output": session.output_buffer,
+        }
+        if not self._loopback_endpoints(
+            "\n".join((str(session.command or ""), str(session.output_buffer or "")))
+        ):
+            return False
+        if self._open_loopback_ports(probe, session):
+            return False
+        run_id = self._notification_run_identity(session)
+        if not run_id:
+            return False
+        now = time.time()
+        try:
+            with self._notification_db() as conn:
+                conn.execute(
+                    """INSERT INTO process_notification_runs
+                       (run_id, status, reason, updated_at)
+                       VALUES (?, 'terminal', 'intentional_cleanup', ?)
+                       ON CONFLICT(run_id) DO UPDATE SET
+                         status='terminal', reason='intentional_cleanup', updated_at=excluded.updated_at""",
+                    (run_id, now),
+                )
+                conn.execute(
+                    """UPDATE process_notification_events
+                       SET status='terminal', reason='intentional_cleanup', updated_at=?
+                       WHERE run_id=? AND event_id LIKE 'watch:%' AND readiness=1
+                         AND status != 'delivered'""",
+                    (now, run_id),
+                )
+            return True
+        except Exception as exc:
+            logger.warning("Could not reconcile process notification state: %s", exc)
+            return False
+
+    def is_notification_actionable(self, event: dict) -> bool:
+        """Revalidate a queued event against durable and current process state."""
+        if event.get("type") not in {"watch_match", "completion"}:
+            return True
+        event_id = self._notification_event_identity(event)
+        run_id = self._notification_run_identity(event)
+        readiness_endpoints = self._readiness_endpoints(event)
+        if event_id or run_id:
+            try:
+                with self._notification_db() as conn:
+                    if event_id:
+                        row = conn.execute(
+                            "SELECT status FROM process_notification_events WHERE event_id=?",
+                            (event_id,),
+                        ).fetchone()
+                        if row and row[0] in {"terminal", "delivered"}:
+                            return False
+                    if (
+                        run_id
+                        and event.get("type") == "watch_match"
+                        and readiness_endpoints
+                    ):
+                        row = conn.execute(
+                            "SELECT status FROM process_notification_runs WHERE run_id=?",
+                            (run_id,),
+                        ).fetchone()
+                        if row and row[0] == "terminal":
+                            return False
+            except Exception as exc:
+                logger.warning("Could not read process notification state: %s", exc)
+
+        # Intentional-cleanup reconciliation applies to historical readiness
+        # matches. Completion events retain their existing consumed/delivery
+        # contract (notably kill_all(..., consume_output=False)).
+        if event.get("type") == "completion":
+            return True
+
+        session_id = str(event.get("session_id") or "")
+        with self._lock:
+            session = self._running.get(session_id) or self._finished.get(session_id)
+        if session is None or not session.exited:
+            return True
+        if run_id and run_id != self._notification_run_identity(session):
+            return True
+        if not self._intentional_termination(session):
+            return True
+        if session.pid_scope != "host" or not readiness_endpoints:
+            return True
+        open_ports = self._open_loopback_ports(event, session)
+        if open_ports:
+            # Listener ownership cannot be proven after the original process
+            # exits: this may be a leaked descendant, an unexpected restart, or
+            # another process that rebound the port.  Report the disagreement
+            # without falsely attributing the listener to the old process.
+            event["lifecycle_alert"] = "post_cleanup_listener"
+            event["cleanup_open_ports"] = open_ports
+            return True
+        # Fail open when reconciliation cannot prove cleanup (unsupported
+        # namespace, state-store failure, or any other contradictory evidence).
+        return not self.reconcile_process_notifications(session)
+
+    def mark_notification_delivered(self, event: dict) -> None:
+        """Durably mark adapter-accepted delivery to prevent later replay."""
+        event_id = self._notification_event_identity(event)
+        run_id = self._notification_run_identity(event)
+        if not event_id or not run_id:
+            return
+        try:
+            with self._notification_db() as conn:
+                conn.execute(
+                    """INSERT INTO process_notification_events
+                       (event_id, run_id, status, reason, updated_at)
+                       VALUES (?, ?, 'delivered', 'accepted', ?)
+                       ON CONFLICT(event_id) DO UPDATE SET
+                         status='delivered', reason='accepted', updated_at=excluded.updated_at""",
+                    (event_id, run_id, time.time()),
+                )
+        except Exception as exc:
+            logger.warning("Could not persist delivered process notification: %s", exc)
 
     def _emit_output(self, session: ProcessSession, chunk: str) -> None:
         """Forward a freshly-read chunk to the live-output sink, if one is set.
@@ -667,7 +959,12 @@ class ProcessRegistry:
             return
 
         notification = {
+            "event_id": (
+                f"watch:{session.id}:{int(session.started_at * 1_000_000)}:"
+                f"{session._watch_hits}"
+            ),
             "session_id": session.id,
+            "started_at": session.started_at,
             "session_key": session.session_key,
             "task_id": session.task_id,
             "owner_task_id": session.owner_task_id or session.task_id,
@@ -684,6 +981,7 @@ class ProcessRegistry:
             "message_id": session.watcher_message_id,
         }
         _redact_process_result(notification)
+        self.observe_notification(notification)
         self.completion_queue.put(notification)
 
         if lifetime_exhausted:
@@ -1732,6 +2030,7 @@ class ProcessRegistry:
                 "started_at": session.started_at,
             }
             _redact_process_result(notification)
+            self.observe_notification(notification)
             self.completion_queue.put(notification)
 
     # ----- Query Methods -----
@@ -2027,6 +2326,8 @@ class ProcessRegistry:
             if evt.get("type") == "completion" and self._drain_should_skip(
                 _evt_sid, skip_poll_observed=skip_poll_observed
             ):
+                continue
+            if not self.is_notification_actionable(evt):
                 continue
 
             # Subagent-owned process notifications are suppressed from the
@@ -2508,6 +2809,7 @@ class ProcessRegistry:
                 session.completion_reason = "killed"
                 session.termination_source = source
             self._move_to_finished(session)
+            self.reconcile_process_notifications(session)
             self._write_checkpoint()
             return {
                 "status": "killed",
@@ -3368,10 +3670,19 @@ def format_process_notification(evt: dict) -> "str | None":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
-        text = (
-            f"[IMPORTANT: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
-        )
+        if evt.get("lifecycle_alert") == "post_cleanup_listener":
+            ports = ", ".join(str(p) for p in evt.get("cleanup_open_ports", []))
+            text = (
+                f"[IMPORTANT: Background process {_sid} was intentionally terminated, "
+                f"but its declared loopback port(s) {ports or '?'} remain open or were "
+                f"rebound; cleanup/restart state requires attention.\n"
+                f"Historical watch pattern: \"{_pat}\".\n"
+            )
+        else:
+            text = (
+                f"[IMPORTANT: Background process {_sid} matched "
+                f"watch pattern \"{_pat}\".\n"
+            )
         if _attribution:
             text += f"{_attribution}\n"
         text += (

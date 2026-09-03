@@ -4486,12 +4486,22 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
-        text = (
-            f"[IMPORTANT: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
-            f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
-        )
+        if evt.get("lifecycle_alert") == "post_cleanup_listener":
+            ports = ", ".join(str(p) for p in evt.get("cleanup_open_ports", []))
+            text = (
+                f"[IMPORTANT: Background process {_sid} was intentionally terminated, "
+                f"but its declared loopback port(s) {ports or '?'} remain open or were "
+                f"rebound; cleanup/restart state requires attention.\n"
+                f"Historical watch pattern: \"{_pat}\".\n"
+                f"Command: {_cmd}\nMatched output:\n{_out}"
+            )
+        else:
+            text = (
+                f"[IMPORTANT: Background process {_sid} matched "
+                f"watch pattern \"{_pat}\".\n"
+                f"Command: {_cmd}\n"
+                f"Matched output:\n{_out}"
+            )
         if _sup:
             text += f"\n({_sup} earlier matches were suppressed by rate limit)"
         text += "]"
@@ -4529,7 +4539,9 @@ def _drain_gateway_watch_events(completion_queue) -> "list[dict]":
             "watch_overflow_tripped",
             "watch_overflow_released",
         }:
-            watch_events.append(evt)
+            from tools.process_registry import process_registry
+            if process_registry.is_notification_actionable(evt):
+                watch_events.append(evt)
         elif evt_type == "async_delegation":
             requeue.append(evt)
         # else: process completion events are handled by the watcher task
@@ -28179,7 +28191,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not synth_text:
                 continue
             try:
-                await self._inject_watch_notification(synth_text, evt)
+                accepted = await self._inject_watch_notification(synth_text, evt)
+                if accepted is True:
+                    from tools.process_registry import process_registry
+                    process_registry.mark_notification_delivered(evt)
             except Exception as exc:
                 logger.error("Watch notification injection error: %s", exc)
 

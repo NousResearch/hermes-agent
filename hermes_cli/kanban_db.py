@@ -6597,6 +6597,25 @@ def request_review(
                     )
                 reviewer = prior_reviewer
         reviewer = _canonical_assignee(reviewer) if reviewer is not None else None
+        # Four-eyes guard: refuse first-review self-review unless opted in
+        # via ``kanban.allow_self_review``.  When ``reviewer`` is omitted on a
+        # first review the assignee stays as the implementer, silently routing
+        # the card back to the same profile that just built it (#97910).
+        effective_reviewer = reviewer if reviewer is not None else implementer
+        if (
+            effective_reviewer is not None
+            and effective_reviewer == implementer
+            and not self_review_allowed()
+        ):
+            return _ret(
+                False,
+                "review would be assigned to the implementer "
+                f"({implementer}); pass reviewer= explicitly or set "
+                "kanban.allow_self_review: true to opt in",
+            )
+        self_review_warning = (
+            effective_reviewer == implementer and self_review_allowed()
+        )
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
         params: tuple[Any, ...]
         if expected_run_id is None:
@@ -6654,6 +6673,7 @@ def request_review(
                 "summary": event_summary or None,
                 "implementer": implementer,
                 "reviewer": reviewer,
+                "self_review": True if self_review_warning else None,
             },
             run_id=run_id,
         )
@@ -9619,6 +9639,24 @@ def review_dispatch_enabled() -> bool:
         )
     except Exception:
         return True
+
+
+def self_review_allowed() -> bool:
+    """Return whether a profile may review its own implementation work.
+
+    The default is **False** because the review lane exists to enforce a
+    four-eyes separation: when ``reviewer`` is omitted on a first review the
+    assignee stays as the implementer, silently routing the card back to the
+    same profile that just built it.  Single-profile boards that legitimately
+    want self-review can opt in with ``kanban.allow_self_review: true``.
+    """
+    try:
+        from hermes_cli.config import load_config
+        return bool(
+            (load_config() or {}).get("kanban", {}).get("allow_self_review", False)
+        )
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------

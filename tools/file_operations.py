@@ -639,8 +639,15 @@ class FileOperations(ABC):
     """Abstract interface for file operations across terminal backends."""
     
     @abstractmethod
-    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
-        """Read a file with pagination support."""
+    def read_file(
+        self,
+        path: str,
+        offset: int = 1,
+        limit: int = 2000,
+        *,
+        line_numbers: bool = True,
+    ) -> ReadResult:
+        """Read a file with pagination; ``line_numbers=False`` skips the gutter."""
         ...
 
     @abstractmethod
@@ -1709,7 +1716,28 @@ class ShellFileOperations(FileOperations):
             hint=" ".join(hint_parts),
         )
 
-    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
+    def _clamp_read_file_lines(self, content: str) -> str:
+        """Apply the same per-line truncation as ``_add_line_numbers`` but
+        without the ``LINE|`` gutter — used by ``read_file(line_numbers=False)``
+        so both construction paths produce identical raw content.
+        """
+        from tools.tool_output_limits import get_max_line_length
+        max_line_length = get_max_line_length()
+        return "\n".join(
+            line[:max_line_length] + "... [truncated]"
+            if len(line) > max_line_length
+            else line
+            for line in content.split("\n")
+        )
+
+    def read_file(
+        self,
+        path: str,
+        offset: int = 1,
+        limit: int = 2000,
+        *,
+        line_numbers: bool = True,
+    ) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
 
@@ -1735,13 +1763,13 @@ class ShellFileOperations(FileOperations):
         offset, limit = normalize_read_pagination(offset, limit)
 
         if self._native_read_enabled():
-            return self._read_file_native(path, offset, limit)
+            return self._read_file_native(path, offset, limit, line_numbers=line_numbers)
 
         # Images and known-binary extensions never inline content; the
         # sequential path stops at the probes for them, so nothing is gained
         # by streaming their bytes through the page pipeline.
         if self._is_image(path) or os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS:
-            return self._read_file_sequential(path, offset, limit)
+            return self._read_file_sequential(path, offset, limit, line_numbers=line_numbers)
 
         from tools.tool_output_limits import get_max_line_length
         line_clamp_bytes = 4 * get_max_line_length() + 1
@@ -1764,7 +1792,7 @@ class ShellFileOperations(FileOperations):
                 "(exit %s, %d chars); falling back to sequential probes",
                 path, probe.exit_code, len(output),
             )
-            return self._read_file_sequential(path, offset, limit)
+            return self._read_file_sequential(path, offset, limit, line_numbers=line_numbers)
 
         segments = _split_segments(output, sentinel)
         if probe.exit_code != 0 or len(segments) != 6:
@@ -1773,7 +1801,7 @@ class ShellFileOperations(FileOperations):
                 "segments (want 6); falling back to sequential probes",
                 path, probe.exit_code, len(segments),
             )
-            return self._read_file_sequential(path, offset, limit)
+            return self._read_file_sequential(path, offset, limit, line_numbers=line_numbers)
         size_seg, sample_seg, page_seg, wc_seg, tail_seg, status_seg = segments
 
         status = _strip_terminal_fence_leaks(status_seg).split()
@@ -1785,7 +1813,7 @@ class ShellFileOperations(FileOperations):
                 "falling back to sequential probes",
                 path, status_seg[-40:],
             )
-            return self._read_file_sequential(path, offset, limit)
+            return self._read_file_sequential(path, offset, limit, line_numbers=line_numbers)
 
         try:
             file_size = int(_strip_terminal_fence_leaks(size_seg).strip())
@@ -1832,6 +1860,7 @@ class ShellFileOperations(FileOperations):
             total_lines=total_lines,
             file_size=file_size,
             file_ends_with_newline=file_ends_with_newline,
+            line_numbers=line_numbers,
         )
 
     def _native_read_enabled(self) -> bool:
@@ -1850,7 +1879,7 @@ class ShellFileOperations(FileOperations):
         # isinstance check is microseconds, so there is nothing to memoize.
         return sys.platform != "win32" and self._lsp_local_only()
 
-    def _read_file_native(self, path: str, offset: int, limit: int) -> ReadResult:
+    def _read_file_native(self, path: str, offset: int, limit: int, *, line_numbers: bool = True) -> ReadResult:
         """``read_file`` without a shell: the file lives on this host.
 
         Same contract as the shell path, byte for byte. ``os.stat`` is the
@@ -1876,7 +1905,7 @@ class ShellFileOperations(FileOperations):
         except (FileNotFoundError, NotADirectoryError):
             return self._read_file_missing(path, offset, limit)
         except OSError:
-            return self._read_file_sequential(path, offset, limit)
+            return self._read_file_sequential(path, offset, limit, line_numbers=line_numbers)
         if not _stat.S_ISREG(st.st_mode):
             return self._not_regular_error(path)
         file_size = st.st_size
@@ -1933,7 +1962,7 @@ class ShellFileOperations(FileOperations):
                         lineno += 1
                         pos = nl + 1
         except OSError:
-            return self._read_file_sequential(path, offset, limit)
+            return self._read_file_sequential(path, offset, limit, line_numbers=line_numbers)
         if have_partial and offset <= lineno <= end_line:
             # ``sed`` prints a final line that lacks a newline; ``cut`` adds one.
             page.append(bytes(kept) + b"\n")
@@ -1948,6 +1977,7 @@ class ShellFileOperations(FileOperations):
             total_lines=total_lines,
             file_size=file_size,
             file_ends_with_newline=(last_byte == b"\n") if file_size else None,
+            line_numbers=line_numbers,
         )
 
     @staticmethod
@@ -2037,7 +2067,7 @@ class ShellFileOperations(FileOperations):
             error=describe_binary_file(sample_bytes, file_size),
         )
 
-    def _read_file_sequential(self, path: str, offset: int, limit: int) -> ReadResult:
+    def _read_file_sequential(self, path: str, offset: int, limit: int, *, line_numbers: bool = True) -> ReadResult:
         """One-probe-per-call read: the pre-compound form, kept as fallback.
 
         ``read_file`` lands here for image / known-binary extensions (only
@@ -2146,6 +2176,7 @@ class ShellFileOperations(FileOperations):
             total_lines=total_lines,
             file_size=file_size,
             file_ends_with_newline=file_ends_with_newline,
+            line_numbers=line_numbers,
         )
 
     def _assemble_read_result(
@@ -2157,6 +2188,7 @@ class ShellFileOperations(FileOperations):
         total_lines: int,
         file_size: int,
         file_ends_with_newline: Optional[bool],
+        line_numbers: bool = True,
     ) -> ReadResult:
         """Turn a raw ``sed | cut`` page into the final ``ReadResult``.
 
@@ -2212,7 +2244,11 @@ class ShellFileOperations(FileOperations):
             )
 
         return ReadResult(
-            content=self._add_line_numbers(read_output, offset),
+            content=(
+                self._add_line_numbers(read_output, offset)
+                if line_numbers
+                else self._clamp_read_file_lines(read_output)
+            ),
             total_lines=total_lines,
             file_size=file_size,
             truncated=truncated,

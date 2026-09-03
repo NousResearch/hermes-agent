@@ -9,6 +9,8 @@ import os
 import posixpath
 import sys
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
 
 from agent.file_safety import get_read_block_error
@@ -29,6 +31,17 @@ logger = logging.getLogger(__name__)
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
+_programmatic_read = ContextVar("programmatic_read", default=False)
+
+
+@contextmanager
+def programmatic_read_context():
+    """Select stable raw read results for one standard dispatcher call."""
+    token = _programmatic_read.set(True)
+    try:
+        yield
+    finally:
+        _programmatic_read.reset(token)
 
 
 def _expand_tilde(path: str) -> str:
@@ -1654,7 +1667,15 @@ def _special_file_kind(path) -> str | None:
     return "a special (non-regular) file"
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
+def read_file_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = 2000,
+    task_id: str = "default",
+    *,
+    line_numbers: bool = True,
+    deduplicate: bool = True,
+) -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
@@ -1743,9 +1764,21 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 lines = extracted_text.splitlines()
                 total_lines = len(lines)
                 end_line = offset + limit - 1
+                # Terminate the raw page with a newline, matching the
+                # native file_ops read path (sed/cut always newline-
+                # terminate their output). With line_numbers=True the
+                # gutter join reproduces that shape anyway; with
+                # line_numbers=False the raw page must be byte-identical
+                # to the same window served through file_ops.
                 page_text = "\n".join(lines[offset - 1:end_line])
+                if lines[offset - 1:end_line] and not page_text.endswith("\n"):
+                    page_text += "\n"
                 result_dict = {
-                    "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
+                    "content": (
+                        file_ops._add_line_numbers(page_text.rstrip("\n"), offset)
+                        if page_text and line_numbers
+                        else page_text
+                    ),
                     "total_lines": total_lines,
                     "file_size": binary.file_size,
                     "truncated": total_lines > end_line,
@@ -1843,7 +1876,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
             content_served_in_generation = dedup_key in generation_reads
 
-        if cached_mtime is not None:
+        if deduplicate and cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime and content_served_in_generation:
@@ -1882,7 +1915,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        result = file_ops.read_file(path, offset, limit, line_numbers=line_numbers)
         result_dict = result.to_dict()
 
         # ── Populate negative-result cache on not-found ───────────────
@@ -1958,41 +1991,53 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             ))
 
         # ── Track for consecutive-loop detection ──────────────────────
-        read_key = ("read", path, offset, limit)
-        with _read_tracker_lock:
-            # Ensure "dedup" / "dedup_hits" keys exist (backward compat with
-            # old tracker state from pre-dedup-guard sessions).
-            if "dedup" not in task_data:
-                task_data["dedup"] = {}
-            if "dedup_hits" not in task_data:
-                task_data["dedup_hits"] = {}
-            # Real read succeeded — this key is no longer in a stub-loop, so
-            # reset its hit counter.  (File either changed or stat failed
-            # earlier and we fell through.)
-            task_data["dedup_hits"].pop(dedup_key, None)
-            task_data.setdefault("dedup_generation_reads", set()).add(dedup_key)
-            task_data["read_history"].add((path, offset, limit))
-            if task_data["last_key"] == read_key:
-                task_data["consecutive"] += 1
-            else:
-                task_data["last_key"] = read_key
-                task_data["consecutive"] = 1
-            count = task_data["consecutive"]
+        # Programmatic sandbox reads are ordinary function calls: repeated
+        # calls must return the same data and must not consume or seed the
+        # chat-facing dedup/loop budget.
+        #
+        # With deduplicate=False (the read_file_programmatic_tool path)
+        # nothing is recorded in read_history/consecutive, so this loop
+        # breaker does NOT apply to sandbox RPC callers. That is safe by
+        # contract: the RPC layer bounds runaway scripts via its own call
+        # limit and per-script timeout — the consecutive-loop guard here
+        # only protects the chat-facing model loop.
+        count = 0
+        if deduplicate:
+            read_key = ("read", path, offset, limit)
+            with _read_tracker_lock:
+                # Ensure "dedup" / "dedup_hits" keys exist (backward compat with
+                # old tracker state from pre-dedup-guard sessions).
+                if "dedup" not in task_data:
+                    task_data["dedup"] = {}
+                if "dedup_hits" not in task_data:
+                    task_data["dedup_hits"] = {}
+                # Real read succeeded — this key is no longer in a stub-loop, so
+                # reset its hit counter.  (File either changed or stat failed
+                # earlier and we fell through.)
+                task_data["dedup_hits"].pop(dedup_key, None)
+                task_data.setdefault("dedup_generation_reads", set()).add(dedup_key)
+                task_data["read_history"].add((path, offset, limit))
+                if task_data["last_key"] == read_key:
+                    task_data["consecutive"] += 1
+                else:
+                    task_data["last_key"] = read_key
+                    task_data["consecutive"] = 1
+                count = task_data["consecutive"]
 
-            # Store mtime at read time for two purposes:
-            # 1. Dedup: skip identical re-reads of unchanged files.
-            # 2. Staleness: warn on write/patch if the file changed since
-            #    the agent last read it (external edit, concurrent agent, etc.).
-            try:
-                _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
-                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
-            except OSError:
-                pass  # Can't stat — skip tracking for this entry
+                # Store mtime at read time for two purposes:
+                # 1. Dedup: skip identical re-reads of unchanged files.
+                # 2. Staleness: warn on write/patch if the file changed since
+                #    the agent last read it (external edit, concurrent agent, etc.).
+                try:
+                    _mtime_now = os.path.getmtime(resolved_str)
+                    task_data["dedup"][dedup_key] = _mtime_now
+                    task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+                except OSError:
+                    pass  # Can't stat — skip tracking for this entry
 
-            # Bound the per-task containers so a long CLI session doesn't
-            # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
-            _cap_read_tracker_data(task_data)
+                # Bound the per-task containers so a long CLI session doesn't
+                # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
+                _cap_read_tracker_data(task_data)
 
         # Cross-agent file-state registry (separate from per-task read
         # tracker above): records that THIS agent has read this path so
@@ -2044,6 +2089,32 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
+
+
+def read_file_programmatic_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = 2000,
+    task_id: str = "default",
+) -> str:
+    """Return stable raw ``read_file`` data for execute_code RPC callers."""
+    result = read_file_tool(
+        path=path,
+        offset=offset,
+        limit=limit,
+        task_id=task_id,
+        line_numbers=False,
+        deduplicate=False,
+    )
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return tool_error("read_file returned an invalid programmatic result")
+    if not isinstance(payload, dict):
+        return tool_error("read_file returned an invalid programmatic result")
+    payload.setdefault("content", "")
+    payload.setdefault("success", not bool(payload.get("error")))
+    return json.dumps(payload, ensure_ascii=False)
 
 
 
@@ -2864,7 +2935,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    read = read_file_programmatic_tool if _programmatic_read.get() else read_file_tool
+    return read(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", 500),
+        task_id=tid,
+    )
 
 
 def _handle_write_file(args, **kw):

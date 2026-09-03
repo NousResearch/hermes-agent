@@ -323,6 +323,17 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
+            # Session kernels run handle_function_call inside ctx.run(), which
+            # copies the cell Context and drops RPC-thread ContextVars. Apply
+            # the programmatic read_file contract here so sandbox reads stay
+            # raw/stable (#93749) instead of inheriting chat gutters/dedup.
+            if tool_name == "read_file":
+                from tools.file_tools import programmatic_read_context
+
+                with programmatic_read_context():
+                    return handle_function_call(
+                        tool_name, tool_args, task_id=self.task_id
+                    )
             return handle_function_call(tool_name, tool_args, task_id=self.task_id)
         finally:
             if previous is not None and self._callback_setters is not None:

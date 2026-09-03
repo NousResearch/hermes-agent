@@ -828,7 +828,9 @@ def _rpc_server_loop(
                 # their status prints don't leak into the CLI spinner.
                 try:
                     with thread_scoped_silence():
-                        result = dispatch(tool_name, tool_args)
+                        result = _dispatch_sandbox_tool_call(
+                            tool_name, tool_args, task_id=task_id, dispatch=dispatch
+                        )
                 except Exception as exc:
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
                     result = tool_error(str(exc))
@@ -968,6 +970,34 @@ def _get_or_create_env(task_id: str):
         return env, env_type
 
 
+def _dispatch_sandbox_tool_call(
+    tool_name: str,
+    tool_args: dict,
+    *,
+    task_id: str,
+    dispatch=None,
+) -> str:
+    """Dispatch one sandbox RPC while preserving programmatic result contracts.
+
+    Session kernels pass *dispatch* so each call rebinds to the current cell's
+    authority. Per-call sandboxes omit it and use ``handle_function_call``.
+    Programmatic ``read_file`` wrapping applies in both cases.
+    """
+    from model_tools import handle_function_call
+
+    def _run() -> str:
+        if dispatch is not None:
+            return dispatch(tool_name, tool_args)
+        return handle_function_call(tool_name, tool_args, task_id=task_id)
+
+    if tool_name == "read_file":
+        from tools.file_tools import programmatic_read_context
+
+        with programmatic_read_context():
+            return _run()
+    return _run()
+
+
 def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
     """Write *content* to *remote_path* on the remote environment.
 
@@ -1018,8 +1048,6 @@ def _rpc_poll_loop(
     independent process, so these calls run safely concurrent with the
     script-execution thread.
     """
-    from model_tools import handle_function_call
-
     poll_interval = 0.1  # 100 ms
 
     quoted_rpc_dir = shlex.quote(rpc_dir)
@@ -1103,7 +1131,7 @@ def _rpc_poll_loop(
                     # Dispatch through the standard tool handler
                     try:
                         with thread_scoped_silence():
-                            tool_result = handle_function_call(
+                            tool_result = _dispatch_sandbox_tool_call(
                                 tool_name, tool_args, task_id=task_id
                             )
                     except Exception as exc:

@@ -48,7 +48,7 @@ class _FakeReadResult:
 
 def _make_fake_ops(content="hello\n", total_lines=1, file_size=6):
     fake = MagicMock()
-    fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+    fake.read_file = lambda path, offset=1, limit=500, **kwargs: _FakeReadResult(
         content=content, total_lines=total_lines, file_size=file_size,
     )
     return fake
@@ -692,8 +692,8 @@ class TestLargeFileHint(unittest.TestCase):
         fake = _make_fake_ops(content=content, total_lines=10000, file_size=600_000)
         # Make to_dict return truncated=True
         orig_read = fake.read_file
-        def patched_read(path, offset=1, limit=500):
-            r = orig_read(path, offset, limit)
+        def patched_read(path, offset=1, limit=500, **kwargs):
+            r = orig_read(path, offset, limit, **kwargs)
             orig_to_dict = r.to_dict
             def new_to_dict():
                 d = orig_to_dict()
@@ -790,7 +790,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         stub because the mtime comparison saw no change.
         """
         fake = MagicMock()
-        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+        fake.read_file = lambda path, offset=1, limit=500, **kwargs: _FakeReadResult(
             content="original content\n", total_lines=1, file_size=18,
         )
         fake.write_file = lambda path, content: MagicMock(
@@ -807,7 +807,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         write_file_tool(self._tmpfile, "new content\n", task_id="wr")
 
         # 3. Read again — should get full content, NOT dedup stub.
-        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+        fake.read_file = lambda path, offset=1, limit=500, **kwargs: _FakeReadResult(
             content="new content\n", total_lines=1, file_size=13,
         )
         r2 = json.loads(read_file_tool(self._tmpfile, task_id="wr"))
@@ -819,7 +819,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
     def test_write_invalidates_all_offsets(self, mock_ops):
         """A write invalidates dedup entries for ALL offset/limit combos."""
         fake = MagicMock()
-        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+        fake.read_file = lambda path, offset=1, limit=500, **kwargs: _FakeReadResult(
             content="line1\nline2\nline3\n", total_lines=3, file_size=20,
         )
         fake.write_file = lambda path, content: MagicMock(

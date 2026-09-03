@@ -62,7 +62,7 @@ class _FakePatchResult:
 
 def _make_fake_ops(read_content="hello\n", file_size=6):
     fake = MagicMock()
-    fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+    fake.read_file = lambda path, offset=1, limit=500, **kwargs: _FakeReadResult(
         content=read_content, total_lines=1, file_size=file_size,
     )
     fake.write_file = lambda path, content: _FakeWriteResult()

@@ -37,7 +37,7 @@ class _FakeReadResult:
         return {"content": self.content, "total_lines": self._total_lines}
 
 
-def _fake_read_file(path, offset=1, limit=500):
+def _fake_read_file(path, offset=1, limit=500, **kwargs):
     return _FakeReadResult(content=f"content of {path}", total_lines=10)
 
 

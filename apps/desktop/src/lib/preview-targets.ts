@@ -3,7 +3,14 @@ const PREVIEW_MARKDOWN_RE = /\[Preview:[^\]]+\]\((?<href>#preview[:/][^)]+)\)/gi
 export function stripPreviewTargets(text: string): string {
   return text
     .replace(PREVIEW_MARKDOWN_RE, '')
-    .replace(/[ \t]+\n/g, '\n')
+    // Trailing-whitespace cleanup, Markdown-aware: two or more spaces
+    // directly before a newline are a CommonMark hard break and must reach
+    // Streamdown byte-identical or two lines fuse into one paragraph. A
+    // lone space, any tab, or junk ahead of a hard-break run is incidental
+    // trailing whitespace and still collapses as this pass always did.
+    .replace(/[ \t]*(  +)\n|[ \t]+\n/g, (_match: string, hardBreak: string | undefined) =>
+      hardBreak ? `${hardBreak}\n` : '\n'
+    )
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 }

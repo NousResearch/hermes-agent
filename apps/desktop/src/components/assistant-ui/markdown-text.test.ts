@@ -102,6 +102,29 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('`items[0]`')
   })
 
+  it('preserves two-space hard breaks through preprocessing', () => {
+    // Two trailing spaces before a newline are a CommonMark hard break —
+    // Streamdown renders them as <br>. Preprocessing must be byte-identical
+    // here or the break silently disappears and both lines fuse into one.
+    const input = 'First line  \nSecond line'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('keeps hard breaks between source-list entries', () => {
+    const input = ['[1] First source  ', '[2] Second source  ', '[3] Third source'].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('First source  \n[2]')
+  })
+
+  it('still strips a single trailing space before a newline', () => {
+    // Incidental trailing whitespace is not a hard break — the cleanup
+    // this pass was written for must keep working.
+    expect(preprocessMarkdown('First line \nSecond line')).toBe('First line\nSecond line')
+  })
+
   it('demotes title/url blocks wrapped in malformed inline fences', () => {
     const input = [
       '**🚢 TOMORROW (Fajardo, crystal clear cays, pickup avail):**',

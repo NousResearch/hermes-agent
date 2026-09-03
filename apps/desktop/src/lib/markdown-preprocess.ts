@@ -664,7 +664,17 @@ export function preprocessMarkdown(text: string): string {
       return leading + transformed + trailing
     })
     .join('')
-    .replace(/[ \t]+\n/g, '\n')
+    // Trailing-whitespace cleanup, Markdown-aware: two or more spaces
+    // directly before a newline are a CommonMark hard break — Streamdown
+    // renders them as <br>, so that run must reach it byte-identical or
+    // two lines fuse into one paragraph. Everything else at end-of-line
+    // (a lone space, any tab, or junk ahead of a hard-break run) is
+    // incidental trailing whitespace and still collapses exactly as this
+    // pass always did. A newline with no trailing whitespace never matches,
+    // so single newlines keep their soft-break meaning.
+    .replace(/[ \t]*(  +)\n|[ \t]+\n/g, (_match: string, hardBreak: string | undefined) =>
+      hardBreak ? `${hardBreak}\n` : '\n'
+    )
 }
 
 /**

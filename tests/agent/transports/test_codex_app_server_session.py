@@ -7,6 +7,7 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
+import threading
 import time
 from unittest.mock import patch
 from typing import Any, Optional
@@ -186,6 +187,71 @@ class TestLifecycle:
 # ---- turn loop ----
 
 class TestRunTurn:
+    def test_exhausted_turn_budget_does_not_start_client(self):
+        created = []
+
+        def client_factory(**kwargs):
+            created.append(kwargs)
+            return FakeClient(**kwargs)
+
+        result = CodexAppServerSession(
+            cwd="/tmp",
+            client_factory=client_factory,
+        ).run_turn("hi", turn_timeout=0.0)
+
+        assert created == []
+        assert result.interrupted is True
+        assert result.error and "timed out" in result.error
+        assert result.should_retire is False
+
+    def test_turn_budget_includes_startup_and_turn_start(self, monkeypatch):
+        client = FakeClient()
+        clock = {"now": 0.0}
+        request_timeouts = []
+        original_initialize = client.initialize
+        original_request = client.request
+
+        def initialize(**kwargs):
+            request_timeouts.append(("initialize", kwargs.get("timeout")))
+            clock["now"] += 3.0
+            return original_initialize(**kwargs)
+
+        def request(method, params=None, timeout=30.0):
+            request_timeouts.append((method, timeout))
+            clock["now"] += 3.0
+            return original_request(method, params, timeout)
+
+        monkeypatch.setattr(client, "initialize", initialize)
+        monkeypatch.setattr(client, "request", request)
+        monkeypatch.setattr(session_mod.time, "monotonic", lambda: clock["now"])
+
+        result = make_session(client).run_turn(
+            "hi",
+            turn_timeout=7.0,
+            notification_poll_timeout=0.0,
+        )
+
+        assert request_timeouts[:3] == [
+            ("initialize", pytest.approx(7.0)),
+            ("thread/start", pytest.approx(4.0)),
+            ("turn/start", pytest.approx(1.0)),
+        ]
+        assert request_timeouts[3:] == [("turn/interrupt", 5)]
+        assert result.interrupted is True
+        assert result.error and "timed out" in result.error
+
+    def test_explicit_interrupt_remains_terminal_without_a_deadline(self):
+        client = FakeClient()
+        session = make_session(client)
+        session.request_interrupt()
+
+        result = session.run_turn("hi")
+
+        assert result.interrupted is True
+        assert result.error is None
+        assert result.should_retire is False
+        assert not any(method == "turn/start" for method, _ in client.requests)
+
     def test_simple_text_turn_returns_final_message(self):
         client = FakeClient()
         client.queue_notification("turn/started", threadId="t", turn={"id": "tu1"})
@@ -208,6 +274,141 @@ class TestRunTurn:
                    for m in r.projected_messages)
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
+
+    @pytest.mark.parametrize(
+        "status, expected_interrupted, expected_error",
+        [
+            ("interrupted", True, None),
+            ("failed", False, "status=failed"),
+        ],
+    )
+    def test_non_success_completion_status_is_not_success(
+        self, status, expected_interrupted, expected_error
+    ):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": status, "error": None},
+        )
+
+        result = make_session(client).run_turn("hi", turn_timeout=2.0)
+
+        assert result.interrupted is expected_interrupted
+        if expected_error is None:
+            assert result.error is None
+        else:
+            assert result.error and expected_error in result.error
+
+    @pytest.mark.parametrize(
+        "status, expected_interrupted, expected_error",
+        [
+            ("completed", False, None),
+            ("interrupted", True, None),
+            ("failed", False, "status=failed"),
+        ],
+    )
+    def test_completion_in_approval_predrain_is_terminal(
+        self, status, expected_interrupted, expected_error
+    ):
+        """Every scoped notification takes the same terminal-status path."""
+        client = FakeClient()
+        approval_calls = []
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="approval-1",
+            command="pwd",
+            cwd="/tmp",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": status, "error": None},
+        )
+
+        result = make_session(
+            client,
+            approval_callback=lambda *args, **kwargs: (
+                approval_calls.append((args, kwargs)) or "once"
+            ),
+        ).run_turn("hi", turn_timeout=0.05, notification_poll_timeout=0.0)
+
+        assert approval_calls == []
+        assert client.responses == [("approval-1", {"decision": "decline"})]
+        assert result.interrupted is expected_interrupted
+        assert result.should_retire is False
+        if expected_error is None:
+            assert result.error is None
+        else:
+            assert result.error and expected_error in result.error
+        assert not any(method == "turn/interrupt" for method, _ in client.requests)
+
+    def test_completion_in_approval_predrain_terminates_without_budget(
+        self, monkeypatch
+    ):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="approval-1",
+            command="pwd",
+            cwd="/tmp",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        empty_polls = {"count": 0}
+        original_take = client.take_notification
+
+        def take_notification(timeout=0.0):
+            note = original_take(timeout)
+            if note is None:
+                empty_polls["count"] += 1
+                if empty_polls["count"] > 3:
+                    raise AssertionError("pre-drained completion did not terminate turn")
+            return note
+
+        monkeypatch.setattr(client, "take_notification", take_notification)
+
+        result = make_session(
+            client,
+            request_routing=_ServerRequestRouting(auto_approve_exec=True),
+        ).run_turn("hi", notification_poll_timeout=0.0)
+
+        assert result.interrupted is False
+        assert result.error is None
+        assert result.should_retire is False
+
+    def test_late_completion_after_deadline_is_rejected(self, monkeypatch):
+        client = FakeClient()
+        clock = {"now": 0.0}
+
+        def take_notification(timeout=0.0):
+            clock["now"] = 0.03
+            return {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-fake-001",
+                    "turn": {
+                        "id": "turn-fake-001",
+                        "status": "completed",
+                        "error": None,
+                    },
+                },
+            }
+
+        monkeypatch.setattr(client, "take_notification", take_notification)
+        monkeypatch.setattr(session_mod.time, "monotonic", lambda: clock["now"])
+
+        result = make_session(client).run_turn(
+            "hi", turn_timeout=0.01, notification_poll_timeout=1.0
+        )
+
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert result.error and "timed out" in result.error
+        assert any(method == "turn/interrupt" for method, _ in client.requests)
 
 
 
@@ -582,19 +783,208 @@ class TestServerRequestRouting:
 
 
 
-    def test_routing_auto_approve_bypass(self):
+    def test_routing_auto_approve_bypass(self, monkeypatch):
         client = FakeClient()
         client.queue_server_request("item/commandExecution/requestApproval", request_id="r1",
                                     command="ls", cwd="/")
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
+        original_respond = client.respond
+
+        def respond(request_id, result):
+            original_respond(request_id, result)
+            client.queue_notification(
+                "turn/completed", threadId="t",
+                turn={"id": "tu1", "status": "completed", "error": None},
+            )
+
+        monkeypatch.setattr(client, "respond", respond)
         # No callback, but routing says auto-approve. Should approve.
         s = make_session(client, request_routing=_ServerRequestRouting(
             auto_approve_exec=True))
         s.run_turn("hi", turn_timeout=1.0)
         assert ("r1", {"decision": "accept"}) in client.responses
+
+    def test_approval_callback_cannot_cross_turn_deadline(self, monkeypatch):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="approval-1",
+            command="sleep 300",
+            cwd="/tmp",
+        )
+        clock = {"now": 0.0}
+        entered = threading.Event()
+        exited = threading.Event()
+
+        def callback(
+            command,
+            description,
+            *,
+            allow_permanent=True,
+            deadline=None,
+            cancel_event=None,
+        ):
+            entered.set()
+            clock["now"] = 0.03
+            assert deadline == pytest.approx(0.02)
+            if cancel_event is not None:
+                cancel_event.wait(0.1)
+            exited.set()
+            return "once"
+
+        monkeypatch.setattr(session_mod.time, "monotonic", lambda: clock["now"])
+
+        result = make_session(client, approval_callback=callback).run_turn(
+            "hi", turn_timeout=0.02, notification_poll_timeout=0.0
+        )
+
+        assert entered.is_set()
+        assert exited.wait(0.1)
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert result.error and "timed out" in result.error
+        assert client.responses == [("approval-1", {"decision": "decline"})]
+
+    def test_explicit_interrupt_unblocks_pending_approval(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="approval-1",
+            command="sleep 300",
+            cwd="/tmp",
+        )
+        entered = threading.Event()
+        exited = threading.Event()
+
+        def callback(
+            command,
+            description,
+            *,
+            allow_permanent=True,
+            deadline=None,
+            cancel_event=None,
+        ):
+            entered.set()
+            assert cancel_event is not None
+            cancel_event.wait(1.0)
+            exited.set()
+            return "deny"
+
+        session = make_session(client, approval_callback=callback)
+        holder = {}
+        run_thread = threading.Thread(
+            target=lambda: holder.setdefault(
+                "result", session.run_turn("hi", notification_poll_timeout=0.0)
+            )
+        )
+        run_thread.start()
+        assert entered.wait(0.5)
+
+        session.request_interrupt()
+        run_thread.join(0.5)
+
+        assert not run_thread.is_alive()
+        assert exited.is_set()
+        result = holder["result"]
+        assert result.interrupted is True
+        assert result.should_retire is False
+        assert client.responses == [("approval-1", {"decision": "decline"})]
+
+    def test_process_death_unblocks_pending_approval(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="approval-1",
+            command="sleep 300",
+            cwd="/tmp",
+        )
+        entered = threading.Event()
+        exited = threading.Event()
+
+        def callback(
+            command,
+            description,
+            *,
+            allow_permanent=True,
+            deadline=None,
+            cancel_event=None,
+        ):
+            entered.set()
+            assert cancel_event is not None
+            cancel_event.wait(1.0)
+            exited.set()
+            return "deny"
+
+        holder = {}
+        run_thread = threading.Thread(
+            target=lambda: holder.setdefault(
+                "result",
+                make_session(client, approval_callback=callback).run_turn(
+                    "hi", notification_poll_timeout=0.0
+                ),
+            )
+        )
+        run_thread.start()
+        assert entered.wait(0.5)
+
+        client._closed = True
+        run_thread.join(0.5)
+
+        assert not run_thread.is_alive()
+        assert exited.is_set()
+        result = holder["result"]
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert result.error and "exited unexpectedly" in result.error
+        assert client.responses == [("approval-1", {"decision": "decline"})]
+
+    def test_process_death_joins_real_cli_approval_and_clears_modal(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from cli import HermesCLI
+
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="approval-1",
+            command="sleep 300",
+            cwd="/tmp",
+        )
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._approval_state = None
+        cli._approval_deadline = 0
+        cli._approval_lock = threading.Lock()
+        cli._paint_now = MagicMock()
+        cli._persist_prompt_summary = MagicMock()
+        cli._app = SimpleNamespace(invalidate=MagicMock())
+
+        holder = {}
+        session = make_session(client, approval_callback=cli._approval_callback)
+        run_thread = threading.Thread(
+            target=lambda: holder.setdefault(
+                "result",
+                session.run_turn("hi", notification_poll_timeout=0.0),
+            )
+        )
+        run_thread.start()
+        deadline = time.monotonic() + 0.5
+        while cli._approval_state is None and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert cli._approval_state is not None
+
+        client._closed = True
+        run_thread.join(0.75)
+
+        assert not run_thread.is_alive()
+        assert cli._approval_state is None
+        assert not any(
+            thread.is_alive() and thread.name == "codex-approval-callback"
+            for thread in threading.enumerate()
+        )
+        result = holder["result"]
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert client.responses == [("approval-1", {"decision": "decline"})]
 
 
 
@@ -612,13 +1002,13 @@ class TestApprovalPromptEnrichment:
             "item/commandExecution/requestApproval", request_id="r1",
             command="ls",  # no cwd
         )
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
         captured = {}
         def cb(command, description, *, allow_permanent=True):
             captured["description"] = description
+            client.queue_notification(
+                "turn/completed", threadId="t",
+                turn={"id": "tu1", "status": "completed", "error": None},
+            )
             return "once"
         s = make_session(client, approval_callback=cb)
         s.run_turn("hi", turn_timeout=1.0)
@@ -646,14 +1036,14 @@ class TestApprovalPromptEnrichment:
             startedAtMs=1234567890,
             reason="add and update files",
         )
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
         captured = {}
         def cb(command, description, *, allow_permanent=True):
             captured["command"] = command
             captured["description"] = description
+            client.queue_notification(
+                "turn/completed", threadId="t",
+                turn={"id": "tu1", "status": "completed", "error": None},
+            )
             return "once"
         s = make_session(client, approval_callback=cb)
         s.run_turn("hi", turn_timeout=1.0)
@@ -674,13 +1064,13 @@ class TestApprovalPromptEnrichment:
             startedAtMs=1234567890,
             reason="apply some changes",
         )
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
         captured = {}
         def cb(command, description, *, allow_permanent=True):
             captured["command"] = command
+            client.queue_notification(
+                "turn/completed", threadId="t",
+                turn={"id": "tu1", "status": "completed", "error": None},
+            )
             return "once"
         s = make_session(client, approval_callback=cb)
         s.run_turn("hi", turn_timeout=1.0)
@@ -704,14 +1094,22 @@ class TestSessionRetirement:
 
 
 
-    def test_final_agent_message_without_turn_completed_is_recovered(self):
-        """A completed assistant item is still a usable terminal response when
-        codex omits turn/completed and then goes quiet.
+    @pytest.mark.parametrize("phase", [None, "commentary"])
+    def test_nonfinal_agent_message_without_turn_completed_times_out(self, phase):
+        """An agentMessage item is not proof that the whole turn completed.
+
+        Codex may emit several completed agentMessage items as interim progress
+        while it continues working.  Without ``turn/completed`` the adapter
+        must interrupt and retire instead of promoting the latest text to a
+        successful terminal response.
         """
         client = FakeClient()
+        item = {"type": "agentMessage", "id": "m1", "text": "done"}
+        if phase is not None:
+            item["phase"] = phase
         client.queue_notification(
             "item/completed",
-            item={"type": "agentMessage", "id": "m1", "text": "done"},
+            item=item,
             threadId="t",
             turnId="tu1",
         )
@@ -722,13 +1120,187 @@ class TestSessionRetirement:
             notification_poll_timeout=0.01,
         )
         assert r.final_text == "done"
-        assert r.interrupted is False
-        assert r.error is None
-        assert r.should_retire is False
+        assert r.interrupted is True
+        assert r.error and "timed out" in r.error
+        assert r.should_retire is True
         assert any(
             msg["role"] == "assistant" and msg.get("content") == "done"
             for msg in r.projected_messages
         )
+        assert any(method == "turn/interrupt" for method, _ in client.requests)
+
+    def test_protocol_final_answer_without_turn_completed_is_recovered(self):
+        """The explicit final_answer phase preserves the legacy fallback."""
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "agentMessage",
+                "id": "m1",
+                "text": "done",
+                "phase": "final_answer",
+            },
+            threadId="t",
+            turnId="tu1",
+        )
+
+        r = make_session(client).run_turn(
+            "hi",
+            turn_timeout=0.05,
+            notification_poll_timeout=0.01,
+        )
+
+        assert r.final_text == "done"
+        assert r.interrupted is False
+        assert r.error is None
+        assert r.should_retire is False
+        assert not any(method == "turn/interrupt" for method, _ in client.requests)
+
+    def test_protocol_final_answer_without_completion_recovers_without_budget(
+        self, monkeypatch
+    ):
+        """No-budget turns still recover a protocol-marked final answer."""
+        client = FakeClient()
+        clock = {"now": 0.0, "final_sent": False}
+
+        def take_notification(timeout: float = 0.0):
+            clock["now"] += 1.0
+            if not clock["final_sent"]:
+                clock["final_sent"] = True
+                return {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "agentMessage",
+                            "id": "m1",
+                            "text": "done",
+                            "phase": "final_answer",
+                        },
+                        "threadId": "thread-fake-001",
+                        "turnId": "turn-fake-001",
+                    },
+                }
+            if clock["now"] > 30.0:
+                raise AssertionError("no-budget final answer waited forever")
+            return None
+
+        monkeypatch.setattr(client, "take_notification", take_notification)
+        monkeypatch.setattr(session_mod.time, "monotonic", lambda: clock["now"])
+
+        r = make_session(client).run_turn(
+            "hi",
+            notification_poll_timeout=0.0,
+        )
+
+        assert r.final_text == "done"
+        assert r.interrupted is False
+        assert r.error is None
+        assert r.should_retire is False
+        assert not any(method == "turn/interrupt" for method, _ in client.requests)
+
+    def test_protocol_final_answer_is_not_replaced_by_later_commentary(
+        self, monkeypatch
+    ):
+        client = FakeClient()
+        clock = {"now": 0.0}
+        notifications = [
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "agentMessage",
+                        "id": "final-1",
+                        "text": "actual final",
+                        "phase": "final_answer",
+                    },
+                    "threadId": "thread-fake-001",
+                    "turnId": "turn-fake-001",
+                },
+            },
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "agentMessage",
+                        "id": "commentary-1",
+                        "text": "late commentary",
+                        "phase": "commentary",
+                    },
+                    "threadId": "thread-fake-001",
+                    "turnId": "turn-fake-001",
+                },
+            },
+        ]
+
+        def take_notification(timeout: float = 0.0):
+            clock["now"] += 1.0
+            return notifications.pop(0) if notifications else None
+
+        monkeypatch.setattr(client, "take_notification", take_notification)
+        monkeypatch.setattr(session_mod.time, "monotonic", lambda: clock["now"])
+
+        result = make_session(client).run_turn(
+            "hi",
+            notification_poll_timeout=0.0,
+        )
+
+        assert result.final_text == "actual final"
+        assert result.interrupted is False
+        assert result.error is None
+
+    def test_progress_messages_can_continue_past_ten_minutes_before_completion(
+        self, monkeypatch
+    ):
+        """A caller-granted long deadline must not retain the old 600s cutoff."""
+        client = FakeClient()
+        clock = {"now": 0.0, "progress_sent": False, "complete_sent": False}
+
+        def take_notification(timeout: float = 0.0):
+            clock["now"] += 100.0
+            if not clock["progress_sent"]:
+                clock["progress_sent"] = True
+                return {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "agentMessage",
+                            "id": "progress-1",
+                            "text": "Still working",
+                            "phase": "commentary",
+                        },
+                        "threadId": "thread-fake-001",
+                        "turnId": "turn-fake-001",
+                    },
+                }
+            if clock["now"] >= 700.0 and not clock["complete_sent"]:
+                clock["complete_sent"] = True
+                return {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "thread-fake-001",
+                        "turn": {
+                            "id": "turn-fake-001",
+                            "status": "completed",
+                            "error": None,
+                        },
+                    },
+                }
+            return None
+
+        monkeypatch.setattr(client, "take_notification", take_notification)
+        monkeypatch.setattr(session_mod.time, "monotonic", lambda: clock["now"])
+
+        r = make_session(client).run_turn(
+            "long task",
+            turn_timeout=1200.0,
+            notification_poll_timeout=0.0,
+        )
+
+        assert clock["now"] >= 700.0
+        assert r.final_text == "Still working"
+        assert r.interrupted is False
+        assert r.error is None
+        assert r.should_retire is False
         assert not any(method == "turn/interrupt" for method, _ in client.requests)
 
 
@@ -753,7 +1325,6 @@ class TestSessionRetirement:
         ):
             r = s.run_turn(
                 "tool then silence",
-                turn_timeout=5.0,
                 notification_poll_timeout=0.0,
                 post_tool_quiet_timeout=0.15,
             )
@@ -797,6 +1368,118 @@ class TestSessionRetirement:
         assert r.final_text == "tool finished"
         assert r.should_retire is False
         assert r.interrupted is False
+
+    @pytest.mark.parametrize("turn_timeout", [None, 1.0])
+    def test_approval_does_not_disarm_post_tool_watchdog(
+        self, monkeypatch, turn_timeout
+    ):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="approval-1",
+            command="echo hi",
+            cwd="/tmp",
+        )
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "commandExecution",
+                "id": "ex1",
+                "command": "echo hi",
+                "cwd": "/tmp",
+                "status": "completed",
+                "aggregatedOutput": "hi",
+                "exitCode": 0,
+                "commandActions": [],
+            },
+            threadId="t",
+            turnId="tu1",
+        )
+        clock = {"now": 0.0, "empty_polls": 0}
+        original_take = client.take_notification
+
+        def take_notification(timeout=0.0):
+            note = original_take(timeout)
+            if note is None:
+                clock["now"] += 0.05
+                clock["empty_polls"] += 1
+                if clock["empty_polls"] > 30:
+                    raise AssertionError("approval permanently disarmed watchdog")
+            return note
+
+        monkeypatch.setattr(client, "take_notification", take_notification)
+        monkeypatch.setattr(session_mod.time, "monotonic", lambda: clock["now"])
+
+        result = make_session(
+            client,
+            request_routing=_ServerRequestRouting(auto_approve_exec=True),
+        ).run_turn(
+            "tool, approval, silence",
+            turn_timeout=turn_timeout,
+            notification_poll_timeout=0.0,
+            post_tool_quiet_timeout=0.1,
+        )
+
+        assert result.tool_iterations == 1
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert result.error and "silent" in result.error
+        assert client.responses == [("approval-1", {"decision": "accept"})]
+
+    def test_post_tool_watchdog_can_expire_during_approval(self, monkeypatch):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="approval-1",
+            command="echo hi",
+            cwd="/tmp",
+        )
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "commandExecution",
+                "id": "ex1",
+                "command": "echo hi",
+                "cwd": "/tmp",
+                "status": "completed",
+                "aggregatedOutput": "hi",
+                "exitCode": 0,
+                "commandActions": [],
+            },
+            threadId="t",
+            turnId="tu1",
+        )
+        clock = {"now": 0.0}
+        exited = threading.Event()
+
+        def callback(
+            command,
+            description,
+            *,
+            allow_permanent=True,
+            deadline=None,
+            cancel_event=None,
+        ):
+            assert deadline == pytest.approx(0.1)
+            assert cancel_event is not None
+            clock["now"] = 0.11
+            cancel_event.wait(0.1)
+            exited.set()
+            return "once"
+
+        monkeypatch.setattr(session_mod.time, "monotonic", lambda: clock["now"])
+
+        result = make_session(client, approval_callback=callback).run_turn(
+            "tool, approval, silence",
+            notification_poll_timeout=0.0,
+            post_tool_quiet_timeout=0.1,
+        )
+
+        assert exited.wait(0.1)
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert result.error and "silent" in result.error
+        assert client.responses == [("approval-1", {"decision": "decline"})]
 
 
 
@@ -895,4 +1578,3 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure() is None
         assert _classify_oauth_failure("") is None
         assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
-

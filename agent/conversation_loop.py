@@ -208,15 +208,15 @@ def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) 
     Dormant unless ``agent.run_budget_seconds`` is set AND the turn stamped
     ``_run_budget_started_at`` (see ``turn_context.prepare_conversation_turn``).
     """
+    from agent.run_budget import elapsed_run_budget_seconds
+
     budget = getattr(agent, "run_budget_seconds", None)
-    if not budget:
-        return False
     if getattr(agent, "_run_budget_wrapup_injected", False):
         return False
-    started = getattr(agent, "_run_budget_started_at", None)
-    if not started:
+    elapsed = elapsed_run_budget_seconds(agent)
+    if elapsed is None:
         return False
-    if (time.time() - started) < 0.8 * float(budget):
+    if elapsed < 0.8 * float(budget):
         return False
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
@@ -236,7 +236,7 @@ def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) 
             logger.info(
                 "Run budget wrap-up notice injected (budget=%.0fs, elapsed=%.0fs)",
                 float(budget),
-                time.time() - started,
+                elapsed,
             )
             return True
     return False

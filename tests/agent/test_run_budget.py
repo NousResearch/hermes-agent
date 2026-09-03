@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -74,6 +75,13 @@ def _make_agent(tmp_path, monkeypatch, config_body: str = "", **overrides):
 def test_normalize_run_budget_seconds(raw, expected):
     from agent.agent_init import _normalize_run_budget_seconds
     assert _normalize_run_budget_seconds(raw) == expected
+
+
+def test_remaining_budget_ignores_duck_typed_mock_attributes():
+    """Unconfigured mock agents must not enter numeric budget arithmetic."""
+    from agent.run_budget import remaining_run_budget_seconds
+
+    assert remaining_run_budget_seconds(MagicMock()) is None
 
 
 # ── constructor / config plumbing ─────────────────────────────────────────
@@ -135,7 +143,7 @@ def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):
     base, implicit = agent._resolved_api_call_stale_timeout_base()
     assert base == 600.0 and implicit is False
 
-    agent._run_budget_started_at = time.time() - 800
+    agent._run_budget_started_at = time.monotonic() - 800
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 60.0
 
 
@@ -148,7 +156,7 @@ def test_active_budget_cap_half_remaining(monkeypatch, tmp_path):
         model="deepseek/deepseek-v4-pro",
         run_budget_seconds=900,
     )
-    agent._run_budget_started_at = time.time() - 100  # remaining ~800 -> cap ~400
+    agent._run_budget_started_at = time.monotonic() - 100  # remaining ~800 -> cap ~400
     timeout = agent._compute_non_stream_stale_timeout({"input": "hi"})
     assert 395.0 <= timeout <= 400.0
 
@@ -161,7 +169,7 @@ def test_active_budget_never_raises_timeout(monkeypatch, tmp_path):
     import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
-    agent._run_budget_started_at = time.time() - 10
+    agent._run_budget_started_at = time.monotonic() - 10
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 90.0
 
 
@@ -170,7 +178,7 @@ def test_explicit_provider_config_wins_over_budget_cap(monkeypatch, tmp_path):
     import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: 1800.0)
     agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
-    agent._run_budget_started_at = time.time() - 800
+    agent._run_budget_started_at = time.monotonic() - 800
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 1800.0
 
 
@@ -180,7 +188,7 @@ def test_explicit_env_var_wins_over_budget_cap(monkeypatch, tmp_path):
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
     monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "1200")
-    agent._run_budget_started_at = time.time() - 800
+    agent._run_budget_started_at = time.monotonic() - 800
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 1200.0
 
 
@@ -219,7 +227,7 @@ def _tool_messages():
 
 def test_wrapup_not_injected_when_unset():
     from agent.conversation_loop import _maybe_inject_run_budget_wrapup
-    agent = _StubAgent(budget=None, started=time.time() - 10_000)
+    agent = _StubAgent(budget=None, started=time.monotonic() - 10_000)
     messages = _tool_messages()
     assert _maybe_inject_run_budget_wrapup(agent, messages) is False
     assert messages == _tool_messages()
@@ -227,18 +235,21 @@ def test_wrapup_not_injected_when_unset():
 
 def test_wrapup_not_injected_before_threshold():
     from agent.conversation_loop import _maybe_inject_run_budget_wrapup
-    agent = _StubAgent(budget=900, started=time.time() - 100)  # 11% elapsed
+    agent = _StubAgent(budget=900, started=time.monotonic() - 100)  # 11% elapsed
     messages = _tool_messages()
     assert _maybe_inject_run_budget_wrapup(agent, messages) is False
     assert agent._run_budget_wrapup_injected is False
 
 
-def test_wrapup_injected_once_after_threshold():
+def test_wrapup_injected_once_after_threshold(monkeypatch):
     from agent.conversation_loop import (
         RUN_BUDGET_WRAPUP_NOTICE,
         _maybe_inject_run_budget_wrapup,
     )
-    agent = _StubAgent(budget=900, started=time.time() - 800)  # 89% elapsed
+    now = time.monotonic()
+    agent = _StubAgent(budget=900, started=now - 800)  # 89% elapsed
+    # Simulate an unrelated wall-clock correction; budget accounting is monotonic.
+    monkeypatch.setattr("agent.conversation_loop.time.time", lambda: -1_000_000.0)
     messages = _tool_messages()
     assert _maybe_inject_run_budget_wrapup(agent, messages) is True
     assert agent._run_budget_wrapup_injected is True
@@ -265,7 +276,7 @@ def test_wrapup_retries_when_no_tool_message_yet():
         RUN_BUDGET_WRAPUP_NOTICE,
         _maybe_inject_run_budget_wrapup,
     )
-    agent = _StubAgent(budget=900, started=time.time() - 800)
+    agent = _StubAgent(budget=900, started=time.monotonic() - 800)
     messages = [{"role": "user", "content": "do the task"}]
     assert _maybe_inject_run_budget_wrapup(agent, messages) is False
     assert agent._run_budget_wrapup_injected is False
@@ -291,7 +302,7 @@ def test_wrapup_multimodal_tool_content():
         RUN_BUDGET_WRAPUP_NOTICE,
         _maybe_inject_run_budget_wrapup,
     )
-    agent = _StubAgent(budget=900, started=time.time() - 800)
+    agent = _StubAgent(budget=900, started=time.monotonic() - 800)
     messages = [
         {"role": "user", "content": "task"},
         {"role": "assistant", "content": "", "tool_calls": [{"id": "t1"}]},
@@ -315,7 +326,7 @@ def test_turn_clock_stamped_only_with_budget(monkeypatch, tmp_path):
     # Mirror the turn_context.prepare block (unit-level: run the same logic).
     for agent in (agent_with,):
         if getattr(agent, "run_budget_seconds", None):
-            agent._run_budget_started_at = time.time()
+            agent._run_budget_started_at = time.monotonic()
         else:
             agent._run_budget_started_at = None
         agent._run_budget_wrapup_injected = False

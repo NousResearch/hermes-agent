@@ -73,6 +73,115 @@ class TestApiModeAccepted:
 
 
 class TestRunConversationCodexPath:
+    @pytest.mark.parametrize(
+        "budget,expected_timeout",
+        [(None, None), (10800.0, 10800.0)],
+    )
+    def test_run_budget_controls_app_server_turn_deadline(
+        self, monkeypatch, budget, expected_timeout
+    ):
+        """Native turns are unbounded by default and use the run's hard cap."""
+        captured = {}
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured.update(kwargs)
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-budget-1",
+                thread_id="thread-budget-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "ensure_started",
+            lambda self: "thread-budget-1",
+        )
+        agent = _make_codex_agent(run_budget_seconds=budget)
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("long task")
+
+        assert result["completed"] is True
+        if expected_timeout is None:
+            assert captured["turn_timeout"] is None
+        else:
+            assert expected_timeout - 1.0 <= captured["turn_timeout"] <= expected_timeout
+
+    def test_provider_request_timeout_is_not_a_whole_native_turn_cap(
+        self, monkeypatch
+    ):
+        """Provider HTTP timeouts and native multi-request turns have different scope."""
+        captured = {}
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured.update(kwargs)
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-provider-timeout-1",
+                thread_id="thread-provider-timeout-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "ensure_started",
+            lambda self: "thread-provider-timeout-1",
+        )
+        agent = _make_codex_agent()
+        monkeypatch.setattr(agent, "_resolved_api_call_timeout", lambda: 5.0)
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("multi-step task")
+
+        assert result["completed"] is True
+        assert captured["turn_timeout"] is None
+
+    def test_app_server_receives_remaining_run_budget(self, monkeypatch):
+        """Turn setup time is deducted from the caller's hard run budget."""
+        import agent.codex_runtime as codex_runtime
+        import agent.conversation_loop as conversation_loop
+
+        captured = {}
+        original_build_turn_context = conversation_loop.build_turn_context
+
+        def build_turn_context_with_elapsed_budget(agent, *args, **kwargs):
+            context = original_build_turn_context(agent, *args, **kwargs)
+            agent._run_budget_started_at = 100.0
+            return context
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured.update(kwargs)
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-effective-budget-1",
+                thread_id="thread-effective-budget-1",
+            )
+
+        monkeypatch.setattr(
+            conversation_loop,
+            "build_turn_context",
+            build_turn_context_with_elapsed_budget,
+        )
+        monkeypatch.setattr(codex_runtime.time, "monotonic", lambda: 107.5)
+        # A wall-clock correction must not alter the run's remaining budget.
+        monkeypatch.setattr(codex_runtime.time, "time", lambda: 10_000.0)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "ensure_started",
+            lambda self: "thread-effective-budget-1",
+        )
+        agent = _make_codex_agent(run_budget_seconds=30.0)
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("bounded task")
+
+        assert result["completed"] is True
+        assert captured["turn_timeout"] == pytest.approx(22.5)
+
     def test_run_conversation_returns_codex_shape(self, fake_session):
         agent = _make_codex_agent()
         # No background review fork during tests
@@ -629,8 +738,10 @@ class TestSessionRetirementOnRunAgent:
 
         def fake_run_turn(self, user_input, **kwargs):
             return TurnResult(
-                final_text="",
-                projected_messages=[],
+                final_text="Still working",
+                projected_messages=[
+                    {"role": "assistant", "content": "Still working"}
+                ],
                 tool_iterations=0,
                 interrupted=True,
                 error="turn timed out after 600.0s",
@@ -655,7 +766,9 @@ class TestSessionRetirementOnRunAgent:
         assert closes["count"] == 1
         assert getattr(agent, "_codex_session", "MISSING") is None
         # Partial result was still returned (caller still sees the error)
+        assert result["completed"] is False
         assert result["partial"] is True
+        assert result["final_response"] == "Still working"
         assert result["error"] == "turn timed out after 600.0s"
 
     def test_normal_turn_keeps_session(self, fake_session):

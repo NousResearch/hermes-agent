@@ -1027,7 +1027,7 @@ def init_agent(
     # (agent.run_budget_seconds) further below. None = feature fully off:
     # no clock reads, no injection, no stale-timeout capping.
     agent.run_budget_seconds = _normalize_run_budget_seconds(run_budget_seconds)
-    # Wall-clock start of the CURRENT run_conversation turn. Set by
+    # Monotonic start of the CURRENT run_conversation turn. Set by
     # turn_context.prepare_turn when a run budget is active; None otherwise.
     agent._run_budget_started_at = None
     # One-shot latch for the 80% wrap-up notice (reset each turn).

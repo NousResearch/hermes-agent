@@ -16543,7 +16543,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _approval_callback(self, command: str, description: str,
                            *, allow_permanent: bool = True,
                            allow_session: bool = True,
-                           smart_denied: bool = False) -> str:
+                           smart_denied: bool = False,
+                           deadline: Optional[float] = None,
+                           cancel_event: Optional[threading.Event] = None) -> str:
         """
         Prompt for dangerous command approval through the prompt_toolkit UI.
 
@@ -16561,9 +16563,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         import time as _time
 
-        with self._approval_lock:
-            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
+        timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
+
+        # A Codex app-server turn can expire or die while this prompt is open.
+        # Acquire the shared modal lock cooperatively so cancellation is not
+        # hidden behind another approval prompt.  Ordinary (non-Codex) callers
+        # retain the legacy behavior where their own timeout starts only after
+        # the preceding prompt releases the lock.
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                return "deny"
+            lock_wait = 0.05
+            if deadline is not None:
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    return "timeout"
+                lock_wait = min(lock_wait, remaining)
+            if self._approval_lock.acquire(timeout=lock_wait):
+                break
+
+        try:
+            prompt_deadline = _time.monotonic() + timeout
+            if deadline is not None:
+                prompt_deadline = min(prompt_deadline, deadline)
             response_queue = queue.Queue()
+
+            if cancel_event is not None:
+                add_waker = getattr(cancel_event, "add_waker", None)
+                if add_waker is not None:
+                    add_waker(lambda: response_queue.put_nowait("deny"))
 
             self._approval_state = {
                 "command": command,
@@ -16577,7 +16605,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 "selected": 0,
                 "response_queue": response_queue,
             }
-            self._approval_deadline = _time.monotonic() + timeout
+            self._approval_deadline = prompt_deadline
 
             self._ring_bell(prompt=True, context="approval", detail=command)
             # Modal prompt — paint immediately, bypassing the throttle/resize
@@ -16589,8 +16617,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             _last_countdown_refresh = _time.monotonic()
             while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    self._approval_state = None
+                    self._approval_deadline = 0
+                    self._paint_now()
+                    return "deny"
+                remaining = self._approval_deadline - _time.monotonic()
+                if remaining <= 0:
+                    break
                 try:
-                    result = response_queue.get(timeout=1)
+                    result = response_queue.get(timeout=min(1.0, remaining))
+                    if cancel_event is not None and cancel_event.is_set():
+                        self._approval_state = None
+                        self._approval_deadline = 0
+                        self._paint_now()
+                        return "deny"
                     self._approval_state = None
                     self._approval_deadline = 0
                     self._paint_now()
@@ -16622,6 +16663,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 "⚠", "Approval", command, "timed out (no response)",
             )
             return "timeout"
+        finally:
+            self._approval_lock.release()
+
+    setattr(_approval_callback, "_codex_cooperative_cancel", True)
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True,
                           allow_session: bool = True,

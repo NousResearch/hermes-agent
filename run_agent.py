@@ -1611,9 +1611,10 @@ class AIAgent:
         # (or env var) still wins untouched.
         run_budget = getattr(self, "run_budget_seconds", None)
         if run_budget and not self._stale_timeout_is_explicit():
-            started = getattr(self, "_run_budget_started_at", None)
-            if started:
-                remaining = float(run_budget) - (time.time() - started)
+            from agent.run_budget import remaining_run_budget_seconds
+
+            remaining = remaining_run_budget_seconds(self)
+            if remaining is not None:
                 deadline_cap = max(60.0, remaining * 0.5)
                 if deadline_cap < timeout:
                     timeout = deadline_cap

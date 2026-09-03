@@ -47,6 +47,31 @@ class TestExtractLevel:
     def test_info(self):
         assert _extract_level("2026-01-01 00:00:00 INFO gateway.run: msg") == "INFO"
 
+    def test_colon_delimited_level(self):
+        assert (
+            _extract_level("2026-08-15 01:02:03 ERROR: connection failed"),
+            _extract_logger_name(
+                "2026-08-15 01:02:03 ERROR: gateway.run: connection failed"
+            ),
+        ) == ("ERROR", "gateway.run")
+
+    def test_structured_session_tag_forms(self):
+        spaced = "2026-08-15 01:02:03,123 WARNING [sess_abc] gateway.run: failed"
+        colon = "2026-08-15 01:02:03 ERROR: [sess_abc] gateway.run: failed"
+
+        assert (_extract_level(spaced), _extract_logger_name(spaced)) == (
+            "WARNING",
+            "gateway.run",
+        )
+        assert (_extract_level(colon), _extract_logger_name(colon)) == (
+            "ERROR",
+            "gateway.run",
+        )
+
+    def test_ignores_level_like_message_text(self):
+        line = "2026-08-15 01:02:03 connection failed at ERROR gateway.run: details"
+        assert (_extract_level(line), _extract_logger_name(line)) == (None, None)
+
 
 # ---------------------------------------------------------------------------
 # Logger name extraction (new for component filtering)

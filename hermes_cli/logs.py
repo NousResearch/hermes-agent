@@ -45,15 +45,19 @@ LOG_FILES = {
 _TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})")
 
 # Level extraction — matches " INFO ", " WARNING ", " ERROR ", " DEBUG ", " CRITICAL "
-_LEVEL_RE = re.compile(r"\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s")
+_LEVEL_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[ \t]+\d{2}:\d{2}:\d{2}(?:,\d+)?[ \t]+"
+    r"(DEBUG|INFO|WARNING|ERROR|CRITICAL)(?=[: \t])"
+)
 
 # Logger name extraction — after level and optional session tag, the next
 # non-space token before ":" is the logger name.
 # Matches: "INFO gateway.run:" or "INFO [sess_abc] tools.terminal_tool:"
 _LOGGER_NAME_RE = re.compile(
-    r"\s(?:DEBUG|INFO|WARNING|ERROR|CRITICAL)"  # level
-    r"(?:\s+\[.*?\])?"                           # optional session tag
-    r"\s+(\S+):"                                 # logger name
+    r"^\d{4}-\d{2}-\d{2}[ \t]+\d{2}:\d{2}:\d{2}(?:,\d+)?[ \t]+"
+    r"(?:DEBUG|INFO|WARNING|ERROR|CRITICAL):?"  # level
+    r"(?:[ \t]+\[[^\]\r\n]*\])?"             # optional session tag
+    r"[ \t]+([^ \t\r\n]+):"                   # logger name
 )
 
 # Level ordering for >= filtering

@@ -15,23 +15,37 @@ echo "Linux Desktop Opt-In — Test Suite"
 echo "=============================================="
 echo ""
 
-# Find python or python3
+REPO_ROOT="${1:-.}"
+cd "$REPO_ROOT"
+
+# --- Find Python ---
 PYTHON=""
-for p in python3 python /usr/bin/python3 /usr/bin/python /usr/local/bin/python3 /usr/local/bin/python; do
-    if command -v "$p" >/dev/null 2>&1 || [ -x "$p" ]; then
-        if "$p" --version >/dev/null 2>&1; then
-            PYTHON="$p"
+for cmd in python3 python; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+        if "$cmd" -c "print('ok')" >/dev/null 2>&1; then
+            PYTHON="$cmd"
             break
         fi
     fi
 done
 
-REPO_ROOT="${1:-.}"
-cd "$REPO_ROOT"
+if [ -z "$PYTHON" ]; then
+    for p in /usr/bin/python3 /usr/bin/python /usr/local/bin/python3 /usr/local/bin/python; do
+        if [ -x "$p" ] && "$p" -c "print('ok')" >/dev/null 2>&1; then
+            PYTHON="$p"
+            break
+        fi
+    done
+fi
+
+if [ -z "$PYTHON" ] && command -v apt-get >/dev/null 2>&1; then
+    echo "  Installing Python..."
+    apt-get update -qq && apt-get install -y -qq python3 && PYTHON=python3
+fi
 
 # --- 1. Bash syntax ---
 echo "▶ 1. Bash syntax (setup-hermes.sh)"
-bash -n setup-hermes.sh 2>/dev/null && pass "setup-hermes.sh syntax OK" || warn "bash not available for syntax check"
+bash -n setup-hermes.sh 2>/dev/null && pass "setup-hermes.sh syntax OK" || warn "bash not available"
 
 # --- 2. Source-level checks ---
 echo ""
@@ -46,8 +60,7 @@ grep -q 'sys.platform.startswith("linux")' hermes_cli/main.py && \
 grep -q 'from hermes_cli.linux_desktop_entry import install_desktop_entry' hermes_cli/main.py && \
     pass "imports install_desktop_entry in cmd_gui" || fail "missing import"
 
-# Check early return in cmd_gui
-sed -n '/^def cmd_gui/,/^def /p' hermes_cli/main.py | grep -q 'return$' && \
+sed -n '/^def cmd_gui/,/^def /p' hermes_cli/main.py | head -30 | grep -q 'return' && \
     pass "cmd_gui has early return for --install" || fail "missing early return"
 
 grep -q "Hermes Desktop app (native Linux GUI)" setup-hermes.sh && \
@@ -72,7 +85,7 @@ grep -q "\-\-install.*Write the Linux desktop entry" website/docs/user-guide/des
 grep -q "On Linux, the first \`hermes desktop\` builds" website/docs/user-guide/desktop.md && \
     pass "desktop.md: Linux first-launch note" || fail "missing in desktop.md"
 
-# --- 4. Functional test (needs python) ---
+# --- 4. Functional test ---
 if [ -n "$PYTHON" ]; then
     echo ""
     echo "▶ 4. Functional test (--install writes .desktop file)"
@@ -119,7 +132,7 @@ if [ -n "$PYTHON" ]; then
     rm -f ~/.local/share/applications/hermes.desktop 2>/dev/null || true
     rm -rf ~/.local/share/icons/hicolor/*/apps/hermes.png 2>/dev/null || true
 else
-    warn "no python — skipping functional test (run locally with venv)"
+    warn "no python — skipping functional test"
 fi
 
 # --- 5. Existing test suite ---

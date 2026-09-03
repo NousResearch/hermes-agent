@@ -47,7 +47,12 @@ _IS_WINDOWS = platform.system() == "Windows"
 # on this constant (not merely "not Windows") so macOS and other POSIX
 # platforms provably never touch systemd code (#70716 cross-platform audit).
 _IS_LINUX = platform.system() == "Linux"
-from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from tools.environments.local import (
+    _find_shell,
+    _quote_bash_path,
+    _resolve_safe_cwd,
+    _sanitize_subprocess_env,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -404,6 +409,22 @@ def format_uptime_short(seconds: int) -> str:
         return f"{mins}m {secs}s"
     hours, mins = divmod(mins, 60)
     return f"{hours}h {mins}m"
+
+
+def _bg_shell_command(cwd: "str | None", safe_command: str) -> str:
+    """Build the ``bash -lic`` command string for a background spawn.
+
+    The spawner passes ``cwd`` to ``Popen``/``PtyProcess``, which ``chdir(2)``s
+    before ``exec`` — but a login-interactive shell then sources rc files
+    (``~/.bash_profile``, ``~/.bashrc`` …) and any ``cd`` there silently wins,
+    redirecting the background process away from the requested directory
+    (observed with an rc ``cd /a0`` hijacking background builds). Re-pin the
+    cwd as the first command so rc-file ``cd`` statements cannot hijack the
+    process. ``exit 126`` refuses to run the command in the wrong directory
+    if the cwd became unreachable between spawn and shell startup.
+    """
+    target = cwd or os.getcwd()
+    return f"command cd -- {_quote_bash_path(target)} || exit 126; set +m; {safe_command}"
 
 
 @dataclass
@@ -1125,7 +1146,11 @@ class ProcessRegistry:
                 # cat, honoring any pager the user already exported.
                 pty_env.setdefault("GIT_PAGER", "cat")
                 pty_env.setdefault("PAGER", "cat")
-                pty_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+                pty_argv = [
+                    user_shell,
+                    "-lic",
+                    _bg_shell_command(session.cwd, safe_command),
+                ]
 
                 # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
                 # Wrap the PTY command in a systemd scope so interactive
@@ -1208,7 +1233,11 @@ class ProcessRegistry:
         # kills only the worker instead of taking down the whole gateway
         # cgroup (and the messaging control plane with it). This applies to
         # both pipe mode and the PTY path above.
-        shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+        shell_argv = [
+            user_shell,
+            "-lic",
+            _bg_shell_command(session.cwd, safe_command),
+        ]
         in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
         use_systemd_scope = (
             in_supervised_gateway and _systemd_run_user_scope_available()

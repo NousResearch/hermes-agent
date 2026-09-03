@@ -6804,6 +6804,189 @@ def test_prompt_submit_row_id_not_found(monkeypatch):
         server._sessions.pop("missing-row-sid", None)
 
 
+def _mk_merge_fake_db(verbatim, repaired, replaced):
+    """SessionDB stand-in answering exactly like the real store: the repaired
+    view (what `_load_durable_truncation_history` historically loaded) has the
+    user;user run merged away, the un-repaired view keeps every physical row.
+    """
+
+    class _FakeDB:
+        def get_messages_as_conversation(
+            self,
+            key,
+            include_ancestors=False,
+            repair_alternation=False,
+            include_row_ids=False,
+            **_kwargs,
+        ):
+            import copy as _copy
+
+            assert key == "session-key"
+            assert include_row_ids is True
+            return _copy.deepcopy(repaired if repair_alternation else verbatim)
+
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False, **_kwargs
+        ):
+            replaced.append((key, list(messages)))
+
+    return _FakeDB()
+
+
+def test_prompt_submit_resolves_row_id_swallowed_by_marker_merge(monkeypatch):
+    """#94486 (live-session shape): model-switch markers persist as role=user
+    (#48338), so the just-sent prompt forms a user;user run that
+    repair_message_sequence merges into the FIRST row — the target's _row_id
+    vanishes from the repaired view and truncate_before_row_id fails closed
+    (4018) even though the row is physically present. Identity resolution must
+    read the un-repaired durable transcript, the same discipline the rebind
+    path already applies ('repair can merge a physical user;user pair while
+    preserving only the first row id').
+    """
+    import contextlib
+    import copy
+
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    verbatim = [
+        {"_row_id": 201, "role": "user", "content": "first"},
+        {"_row_id": 202, "role": "assistant", "content": "reply 1"},
+        {
+            "_row_id": 203,
+            "role": "user",
+            "display_kind": "model_switch",
+            "content": "[System: The active model for this chat has changed to ds4.]",
+        },
+        {
+            "_row_id": 204,
+            "role": "user",
+            "display_kind": "model_switch",
+            "content": "[System: The active model for this chat has changed to kk3.]",
+        },
+        {"_row_id": 205, "role": "user", "content": "the interrupted prompt"},
+    ]
+    repaired = copy.deepcopy(verbatim)
+    assert repair_message_sequence(None, repaired) == 2  # 3-row run, two merges
+    # On current main the merge buries the plain row's id inside the marker.
+    assert len(repaired) == 3
+
+    replaced = []
+    fake_db = _mk_merge_fake_db(verbatim, repaired, replaced)
+
+    @contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield fake_db
+
+    # Live history as a running session holds it after a turn rewrite: every
+    # physical row present, row-id stamps lost (provider-format rewrite), so
+    # resolution must go through the durable fallback.
+    live = [
+        {k: v for k, v in message.items() if k != "_row_id"} for message in verbatim
+    ]
+    server._sessions["marker-merge-sid"] = _session(history=list(live))
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+    monkeypatch.setattr(server, "_get_db", lambda: fake_db)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "marker-merge-sid",
+                    "text": "edited prompt",
+                    "truncate_before_row_id": 205,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert isinstance(resp, dict)
+        err = resp.get("error")
+        assert err is None, err
+        # The cut lands before row 205: the markers and everything earlier
+        # survive (durable rows healed their stamps onto the live list).
+        assert len(replaced) == 1
+        assert replaced[0][0] == "session-key"
+        assert [m["content"] for m in replaced[0][1]] == [
+            "first",
+            "reply 1",
+            verbatim[2]["content"],
+            verbatim[3]["content"],
+        ]
+        assert len(server._sessions["marker-merge-sid"]["history"]) == 4
+    finally:
+        server._sessions.pop("marker-merge-sid", None)
+
+
+def test_prompt_submit_resolves_row_id_swallowed_by_plain_user_merge(monkeypatch):
+    """Same swallowed-id class with NO display marker: an interrupted turn
+    persists no assistant row, the user's resend lands as a second consecutive
+    plain user row, and repair merges it into the earlier one — the resend's
+    row id is unresolvable on every later rewind/edit. Repair-side address
+    preservation keyed on display_kind cannot reach this shape; reading the
+    un-repaired transcript for identity can.
+    """
+    import contextlib
+    import copy
+
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    verbatim = [
+        {"_row_id": 301, "role": "user", "content": "first"},
+        {"_row_id": 302, "role": "assistant", "content": "reply 1"},
+        {"_row_id": 303, "role": "user", "content": "prompt whose turn was cut off"},
+        {"_row_id": 304, "role": "user", "content": "the resent prompt"},
+    ]
+    repaired = copy.deepcopy(verbatim)
+    assert repair_message_sequence(None, repaired) == 1
+    assert len(repaired) == 3
+    assert repaired[2]["_row_id"] == 303  # merge keeps only the FIRST row id
+
+    replaced = []
+    fake_db = _mk_merge_fake_db(verbatim, repaired, replaced)
+
+    @contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield fake_db
+
+    live = [
+        {k: v for k, v in message.items() if k != "_row_id"} for message in verbatim
+    ]
+    server._sessions["plain-merge-sid"] = _session(history=list(live))
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+    monkeypatch.setattr(server, "_get_db", lambda: fake_db)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "plain-merge-sid",
+                    "text": "edited resend",
+                    "truncate_before_row_id": 304,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert isinstance(resp, dict)
+        err = resp.get("error")
+        assert err is None, err
+        assert len(replaced) == 1
+        assert [m["content"] for m in replaced[0][1]] == [
+            "first",
+            "reply 1",
+            "prompt whose turn was cut off",
+        ]
+        assert len(server._sessions["plain-merge-sid"]["history"]) == 3
+    finally:
+        server._sessions.pop("plain-merge-sid", None)
+
+
 def test_prompt_submit_row_id_ignores_platform_id_fallback(monkeypatch):
     """truncate_before_row_id must not match string platform IDs."""
     history = [

@@ -127,19 +127,26 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
     if hit is not None:
         return hit
 
-    db_history = _load_durable_truncation_history(session)
+    # Identity lookups read the UN-REPAIRED transcript: repair merges any
+    # user;user run into its first row (a model-switch marker run, or an
+    # interrupted turn that persisted no assistant row followed by a resend),
+    # and the merged row keeps only the first row's _row_id — the absorbed
+    # rows' ids vanish from the repaired view, so resolving against it fails
+    # closed on rows that are physically present (#94486's live-session
+    # shape). The rebind path below already reads the un-repaired active-id
+    # set for exactly this reason; resolution must too.
+    db_history = _load_durable_truncation_history(session, repair_alternation=False)
     if db_history is None:
         return None
 
     # Heal missing in-memory stamps when the live list still lines up 1:1 with
     # the durable transcript (common after turn-completion rewrites). Equal
-    # length alone is NOT proof of alignment: the durable copy above is loaded
-    # with repair_alternation=True (which can merge/drop rows) while the live
-    # list is unrepaired, and memory can carry optimistic/marker rows — so the
-    # two can coincide in length while position-shifted. A positional stamp on
-    # a misaligned pair is sticky and re-aims every later rewind at the wrong
-    # durable row. Stamp only when EVERY pair agrees (all-or-nothing): roles
-    # must match on every pair, and addressable user turns must match content.
+    # length alone is NOT proof of alignment: memory can carry
+    # optimistic/marker rows — the two can coincide in length while
+    # position-shifted. A positional stamp on a misaligned pair is sticky and
+    # re-aims every later rewind at the wrong durable row. Stamp only when
+    # EVERY pair agrees (all-or-nothing): roles must match on every pair, and
+    # addressable user turns must match content.
     if len(db_history) == len(history) and all(
         _mem_db_pair_agrees(mem, db_msg)
         for mem, db_msg in zip(history, db_history)
@@ -160,9 +167,10 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
     if db_ord < 0 or db_ord >= len(mem_user_indices):
         return None
     mem_idx = mem_user_indices[db_ord]
-    # Same-ordinal mapping across two lists that can diverge (the repaired
-    # durable copy may have merged a user;user pair, shifting every later
-    # user ordinal). Trust the mapping only when the mapped live turn shows
+    # Same-ordinal mapping across two lists that can still diverge (the live
+    # list itself may have been materialized from a repaired, merged view on
+    # resume, shifting every later user ordinal relative to the physical
+    # rows). Trust the mapping only when the mapped live turn shows
     # the same content as the durable target — otherwise refuse (the caller
     # returns fail-closed 4018) rather than cut the wrong turn (#82959).
     if not _mem_db_pair_agrees(history[mem_idx], db_history[db_idx]):

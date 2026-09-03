@@ -31,10 +31,19 @@ def test_session_store_default_db_uses_runtime_hermes_home(tmp_path, monkeypatch
     hermes_state before a fixture redirected HERMES_HOME used to pin every
     default SessionDB() at the developer's real ~/.hermes/state.db.
     """
+    import hermes_state
+
     config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))
     fake_home = tmp_path / "alt_hermes_home"
     fake_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_home))
+    # The hermetic conftest re-points DEFAULT_DB_PATH at its own sandbox, and a
+    # re-pointed constant takes precedence over the runtime lookup in
+    # _default_db_path(). Put the import-time value back for this test so the
+    # HERMES_HOME fallback is the branch actually under test.
+    monkeypatch.setattr(
+        hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH
+    )
 
     with patch("gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)

@@ -46,6 +46,11 @@ class TestPollingHealthConfirmation:
         must not spam one INFO per getUpdates poll."""
         a = _bare_adapter()
         a._record_polling_progress(1)  # first — logs
+        # caplog collects for the whole test, not just the at_level block, so
+        # the first call lands in caplog.records as soon as some earlier test
+        # leaves this logger at INFO. Drop what came before to assert only on
+        # the calls under test.
+        caplog.clear()
         with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
             a._record_polling_progress(1)  # second — silent
             a._record_polling_progress(1)  # third — silent

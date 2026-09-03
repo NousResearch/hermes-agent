@@ -356,6 +356,77 @@ def auth_adapter():
 
 
 class TestAgentExecution:
+    @pytest.mark.parametrize("workspace_source", ["header", "recorded"])
+    def test_bind_workspace_does_not_mutate_shared_terminal_env(
+        self, adapter, tmp_path, monkeypatch, workspace_source
+    ):
+        """API workspace binding must not move another session's shared env."""
+        from gateway.session_context import clear_session_vars
+        from tools import terminal_tool
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        session_id = "workspace-session"
+        shared_env = types.SimpleNamespace(cwd=str(tmp_path / "other-session"))
+        monkeypatch.setattr(terminal_tool, "_active_environments", {"default": shared_env})
+        monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+        monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+
+        if workspace_source == "recorded":
+            terminal_tool.record_session_cwd(session_id, str(workspace))
+
+        tokens = adapter._bind_api_server_session(
+            session_id=session_id,
+            cwd=str(workspace) if workspace_source == "header" else "",
+        )
+        try:
+            assert terminal_tool.get_session_cwd(session_id) == str(workspace)
+            assert shared_env.cwd == str(tmp_path / "other-session")
+        finally:
+            clear_session_vars(tokens)
+
+    @pytest.mark.asyncio
+    async def test_run_agent_binds_workspace_for_context_and_tools(self, adapter, tmp_path):
+        """An API workspace must reach prompt, file, and terminal resolution."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        session_id = "workspace-session"
+        captured = {}
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def _capture_workspace(*, task_id, **_kwargs):
+            from agent.runtime_cwd import resolve_agent_cwd
+            from tools.file_tools import _resolve_path_for_task
+            from tools.terminal_tool import get_session_cwd
+
+            captured["context"] = resolve_agent_cwd()
+            captured["file"] = _resolve_path_for_task("src/main.py", task_id)
+            captured["terminal"] = get_session_cwd(task_id)
+            return {"final_response": "ok"}
+
+        mock_agent.run_conversation.side_effect = _capture_workspace
+        try:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                await adapter._run_agent(
+                    user_message="hello",
+                    conversation_history=[],
+                    session_id=session_id,
+                    workspace_cwd=str(workspace),
+                )
+        finally:
+            from tools.terminal_tool import clear_task_env_overrides
+
+            clear_task_env_overrides(session_id)
+
+        assert captured == {
+            "context": workspace,
+            "file": workspace / "src" / "main.py",
+            "terminal": str(workspace),
+        }
+
     @pytest.mark.asyncio
     async def test_run_agent_uses_session_id_as_task_id(self, adapter):
         mock_agent = MagicMock()
@@ -882,6 +953,7 @@ class TestCapabilitiesEndpoint:
             }
             assert data["features"]["model_options"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
+            assert data["features"]["workspace_header"] == "X-Hermes-Workspace"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
@@ -2461,6 +2533,61 @@ class TestSessionKeyHeader:
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
 
 
+class TestWorkspaceHeader:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("path", "payload"),
+        [
+            (
+                "/v1/chat/completions",
+                {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+            ),
+            (
+                "/v1/responses",
+                {"model": "hermes-agent", "input": "hi", "store": False},
+            ),
+        ],
+    )
+    async def test_workspace_header_reaches_openai_endpoints(
+        self, adapter, tmp_path, path, payload
+    ):
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        request = MagicMock()
+        request.headers = {"X-Hermes-Workspace": str(workspace)}
+        request.json = AsyncMock(return_value=payload)
+        handler = (
+            adapter._handle_chat_completions
+            if path == "/v1/chat/completions"
+            else adapter._handle_responses
+        )
+
+        with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (
+                mock_result,
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+            resp = await handler(request)
+
+        assert resp.status == 200
+        assert mock_run.call_args.kwargs["workspace_cwd"] == str(workspace.resolve())
+
+    @pytest.mark.asyncio
+    async def test_workspace_header_rejects_relative_directory(self, adapter):
+        request = MagicMock()
+        request.headers = {"X-Hermes-Workspace": "relative-project"}
+        request.json = AsyncMock(
+            return_value={"messages": [{"role": "user", "content": "hi"}]}
+        )
+        with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            resp = await adapter._handle_chat_completions(request)
+
+        assert resp.status == 400
+        assert json.loads(resp.body)["error"]["code"] == "invalid_workspace"
+        mock_run.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Per-client model routing (model_routes)
 # ---------------------------------------------------------------------------
@@ -2992,7 +3119,6 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
-
     # ── Recovery-net alias guards (PR for #79101) ──────────────────────
 
     def test_create_agent_does_not_cache_virtual_alias(self, monkeypatch):

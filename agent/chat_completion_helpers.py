@@ -571,6 +571,16 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
         preferences["require_parameters"] = True
     if agent.provider_data_collection:
         preferences["data_collection"] = agent.provider_data_collection
+    # Typed keys win over passthrough values; unknown keys warn to surface typos.
+    if getattr(agent, "provider_extra", None):
+        for _extra_key, _extra_val in (agent.provider_extra or {}).items():
+            if _extra_key in preferences:
+                logger.debug(
+                    "provider_routing passthrough: typed key %r wins over config passthrough value",
+                    _extra_key,
+                )
+                continue
+            preferences[_extra_key] = _extra_val
     return preferences
 
 

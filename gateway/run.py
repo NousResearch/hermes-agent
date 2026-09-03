@@ -3202,6 +3202,33 @@ from gateway.whatsapp_identity import (
 
 logger = logging.getLogger(__name__)
 
+# provider_routing keys consumed as typed agent attributes. Anything else in
+# the config block is passed through verbatim into the OpenRouter provider
+# object (see _provider_routing_extra).
+_TYPED_PROVIDER_ROUTING_KEYS = frozenset({
+    "sort", "only", "ignore", "order",
+    "require_parameters", "data_collection",
+})
+
+
+def _provider_routing_extra(pr: dict) -> dict:
+    """Extract unrecognized provider_routing keys for OpenRouter passthrough (typed keys win; warn per key)."""
+    extra: dict = {}
+    for key, val in (pr or {}).items():
+        if key in _TYPED_PROVIDER_ROUTING_KEYS:
+            continue
+        if not isinstance(key, str) or not key:
+            logger.warning(
+                "provider_routing: skipping non-string/empty key %r", key
+            )
+            continue
+        logger.warning(
+            "provider_routing: forwarding unrecognized key %r to the "
+            "provider routing object (OpenRouter passthrough)", key
+        )
+        extra[key] = val
+    return extra
+
 
 # Ceiling for the shutdown quiesce of the gateway-owned thread pool. Drain has
 # already waited for the agents, so what is left here is short blocking work
@@ -6355,6 +6382,7 @@ class TurnRunner:
                 provider_sort=pr.get("sort"),
                 provider_require_parameters=pr.get("require_parameters", False),
                 provider_data_collection=pr.get("data_collection"),
+                provider_extra=_provider_routing_extra(pr),
                 session_id=ctx.session_id,
                 platform=platform_key,
                 user_id=ctx.source.user_id,
@@ -10897,7 +10925,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
         return {}
-
     @staticmethod
     def _load_fallback_model() -> list | None:
         """Load fallback provider chain from config.yaml.
@@ -25577,6 +25604,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     provider_sort=pr.get("sort"),
                     provider_require_parameters=pr.get("require_parameters", False),
                     provider_data_collection=pr.get("data_collection"),
+                    provider_extra=_provider_routing_extra(pr),
                     session_id=task_id,
                     platform=platform_key,
                     user_id=source.user_id,

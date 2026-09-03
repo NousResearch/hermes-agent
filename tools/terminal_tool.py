@@ -1573,8 +1573,12 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
     creation site (terminal tool, file tools, execute_code, lazy bring-up):
 
     * Shared-container mode (the default): the process-global
-      ``TERMINAL_CWD``-derived ``config["host_cwd"]`` — unchanged legacy
-      behavior, ONE container whose mount tracks the configured workspace.
+      ``TERMINAL_CWD``-derived ``config["host_cwd"]`` when set — unchanged
+      legacy behavior, ONE container whose mount tracks the configured
+      workspace. When that's empty (e.g. the Desktop app / ACP track the
+      session's workspace only via a per-task cwd override, never through
+      the process-wide env var), fall back to the task's own registered
+      workspace instead of leaving the container unmounted (#94454).
     * Per-session isolation mode (docker + ``container_persistent: false``):
       only the SESSION's own registered workspace may mount.  The process
       env var is a launch artifact — the TUI/desktop workspace picker writes
@@ -1591,10 +1595,29 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
     if not config.get("docker_mount_cwd_to_workspace"):
         return None
     if not _docker_session_isolation_enabled():
-        return config.get("host_cwd")
+        host_cwd = config.get("host_cwd")
+        if host_cwd:
+            return host_cwd
+        override_cwd = _resolve_override_host_cwd(task_id)
+        if override_cwd:
+            logger.info(
+                "Shared-container mount: host_cwd unset, using task %s override %s",
+                task_id, override_cwd,
+            )
+        return override_cwd
     if _resolve_container_task_id(task_id) == "default":
         # Top-level CLI parent — single-session process, legacy behavior.
         return config.get("host_cwd")
+    return _resolve_override_host_cwd(task_id)
+
+
+def _resolve_override_host_cwd(task_id: Optional[str]) -> Optional[str]:
+    """A task's own registered cwd override, if it's a mountable host dir.
+
+    Refuses ``cwd_source: "process"`` (gateway fallback to the process-global
+    env var, not a workspace the user actually attached) and anything that
+    isn't an existing host directory outside the container's own namespace.
+    """
     overrides = resolve_task_overrides(task_id)
     if overrides.get("cwd_source") == "process":
         return None
@@ -1605,7 +1628,10 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
     if not os.path.isdir(candidate):
         return None
     if candidate.startswith(("/workspace", "/root")):
-        # Already an in-container path, not a host workspace.
+        # Already an in-container path, not a host workspace. Prefix check,
+        # not segment-exact, so it also rejects unrelated host dirs sharing
+        # the prefix (e.g. /workspacefiles, /rootfs-data) — acceptable for
+        # now since real host paths rarely collide with these prefixes.
         return None
     return candidate
 

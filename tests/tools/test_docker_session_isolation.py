@@ -211,6 +211,50 @@ class TestSessionScopedMountResolution:
             == "/Users/prev/dev/oldrepo"
         )
 
+    def test_shared_mode_falls_back_to_task_cwd_override(self, monkeypatch, tmp_path):
+        """#94454: Desktop/ACP sessions track cwd via a per-task override, not
+        the process-global TERMINAL_CWD env var. In shared (container_persistent:
+        true) mode, with no process-global host_cwd, the mount must still pick
+        up the session's attached workspace instead of silently no-opping."""
+        _disable_isolation(monkeypatch)
+        ws = tmp_path / "vault"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides("acp:sess-1", {"cwd": str(ws)})
+        try:
+            cfg = self._config(host_cwd=None)
+            assert terminal_tool._resolve_task_host_cwd(cfg, "acp:sess-1") == str(ws)
+        finally:
+            terminal_tool.clear_task_env_overrides("acp:sess-1")
+
+    def test_shared_mode_ignores_process_tagged_override(self, monkeypatch, tmp_path):
+        """A cwd_source='process' override is a launch artifact, not an
+        attached workspace, even in shared mode."""
+        _disable_isolation(monkeypatch)
+        terminal_tool.register_task_env_overrides(
+            "acp:sess-1", {"cwd": str(tmp_path), "cwd_source": "process"}
+        )
+        try:
+            cfg = self._config(host_cwd=None)
+            assert terminal_tool._resolve_task_host_cwd(cfg, "acp:sess-1") is None
+        finally:
+            terminal_tool.clear_task_env_overrides("acp:sess-1")
+
+    def test_shared_mode_explicit_host_cwd_beats_task_override(self, monkeypatch, tmp_path):
+        """A process-global host_cwd still wins over a registered task
+        override in shared mode — the fallback only fires when it's empty."""
+        _disable_isolation(monkeypatch)
+        ws = tmp_path / "vault"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides("acp:sess-1", {"cwd": str(ws)})
+        try:
+            cfg = self._config(host_cwd="/Users/prev/dev/oldrepo")
+            assert (
+                terminal_tool._resolve_task_host_cwd(cfg, "acp:sess-1")
+                == "/Users/prev/dev/oldrepo"
+            )
+        finally:
+            terminal_tool.clear_task_env_overrides("acp:sess-1")
+
     def test_non_docker_backend_never_mounts(self, monkeypatch):
         _disable_isolation(monkeypatch)
         cfg = self._config()

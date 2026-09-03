@@ -4127,10 +4127,16 @@ def store_attachment_bytes(
 ) -> int:
     """Validate, size-check, persist a blob, and record its metadata row.
 
-    This is the single write path shared by the dashboard endpoint, the
-    agent toolset (``kanban_attach`` / ``kanban_attach_url``), and the CLI
-    (``hermes kanban attach``) so name-sanitisation, the size cap, and the
-    collision-resolution all behave identically everywhere.
+    This is the write path shared by the agent toolset (``kanban_attach`` /
+    ``kanban_attach_url``) and the CLI (``hermes kanban attach``) so
+    name-sanitisation, the size cap, and the collision-resolution behave
+    identically across both. The dashboard upload endpoint
+    (``plugins/kanban/dashboard/plugin_api.py::upload_task_attachment``) does
+    **not** route through here — it streams the upload to disk with its own
+    cap and then calls :func:`add_attachment` directly, reusing
+    :func:`_safe_attachment_name` and :func:`_collision_free_path` but not
+    this function. Keep the two in step by hand; a change here does not
+    reach the dashboard.
 
     Steps: enforce ``max_bytes``, sanitise ``filename`` to a safe basename,
     write the bytes under :func:`task_attachments_dir` with a

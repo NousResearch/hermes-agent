@@ -1135,14 +1135,296 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
-def _handle_attach(args: dict, **kw) -> str:
-    """Attach an inline (base64) file to a task.
+def _decode_inline_attachment(content_b64: Any, expected_bytes: Any,
+                              expected_sha256: Any):
+    """Decode ``content_base64`` and verify it against the caller's declaration.
 
-    Mirrors the dashboard's upload endpoint for the agent surface: decode
-    the payload, enforce the shared size cap, write it under the per-task
-    attachments dir, and record the metadata row — all via
-    ``kanban_db.store_attachment_bytes`` so the three surfaces stay in lockstep.
+    Returns ``(data, None)`` on success or ``(None, tool_error_str)``.
+
+    Two defects live on this path and both are closed here:
+
+    * **F-18** — ``b64decode(validate=True)`` rejects whitespace, so ordinary
+      line-wrapped (MIME) base64 failed outright. All whitespace is stripped
+      first; wrapping is a transport artefact, not content.
+    * **F-17** — base64 is *prefix-decodable*: a payload cut off by the
+      model's output cap still decodes cleanly, so a short write used to be
+      stored silently. ``validate=True`` cannot see incompleteness — only a
+      declared expectation can. ``expected_bytes`` and ``expected_sha256``
+      are therefore both mandatory, and both are checked *before* the caller
+      returns, so nothing reaches storage on a mismatch.
+
+    The length check alone is not enough: a corruption that preserves length
+    passes it. The hash alone would do, but the length check produces the far
+    more actionable error for the common truncation case.
     """
+    import base64
+    import binascii
+    import hashlib
+    import re
+
+    from hermes_cli import kanban_db as kb
+
+    if not isinstance(content_b64, str):
+        return None, tool_error(
+            f"content_base64 must be a string, got {type(content_b64).__name__}. "
+            "Nothing was stored."
+        )
+    raw = "".join(content_b64.split())  # F-18
+    if raw.startswith("data:"):
+        return None, tool_error(
+            "content_base64 must be raw base64, not a 'data:' URI. Strip the "
+            "'data:<mime>;base64,' prefix and pass only the payload. "
+            "Nothing was stored."
+        )
+    if expected_bytes is None or expected_sha256 is None or not str(expected_sha256).strip():
+        return None, tool_error(
+            "content_base64 requires expected_bytes and expected_sha256 — "
+            "base64 truncated mid-stream still decodes cleanly, so without a "
+            "declared size and digest a short write cannot be detected. "
+            "Compute both over the exact bytes you are sending, or use path= "
+            "to attach from disk instead. Nothing was stored."
+        )
+    try:
+        expected_len = int(expected_bytes)
+    except (TypeError, ValueError):
+        return None, tool_error(
+            f"expected_bytes must be an integer, got {expected_bytes!r}. "
+            "Nothing was stored."
+        )
+    # A malformed digest is a caller contract error, not a content mismatch —
+    # saying so plainly beats reporting "hash mismatch" for a typo.
+    expected_digest = str(expected_sha256).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+        return None, tool_error(
+            f"expected_sha256 must be 64 hex characters, got {expected_sha256!r}. "
+            "Nothing was stored."
+        )
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError) as e:
+        return None, tool_error(f"content_base64 is not valid base64: {e}")
+
+    if len(data) != expected_len:
+        return None, tool_error(
+            f"attachment truncated or corrupted: decoded {len(data)} bytes, "
+            f"caller declared {expected_len}. Nothing was stored."
+        )
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != expected_digest:
+        return None, tool_error(
+            "attachment content hash mismatch: decoded bytes hash to "
+            f"{digest}, caller declared {expected_digest}. Nothing was stored."
+        )
+    if len(data) > kb.KANBAN_ATTACHMENT_MAX_BYTES:
+        return None, tool_error(
+            f"attachment exceeds the "
+            f"{kb.KANBAN_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit "
+            f"({len(data)} bytes). Nothing was stored."
+        )
+    return data, None
+
+
+def _read_attachment_from_path(tid: str, raw_path: str, *, board=None):
+    """Read attachment bytes off disk, confined to the task's own workspace.
+
+    Returns ``(data, resolved_path, None)`` or ``(None, None, tool_error_str)``.
+
+    This is the branch that *removes* the F-17 failure class rather than
+    detecting it: the bytes never enter the model's output stream, so there
+    is no cap to truncate them and no incentive to shrink a deliverable to
+    fit one.
+
+    Containment: the path is resolved (which also collapses symlinks) and
+    must land inside ``tasks.workspace_path``. A task with no resolved
+    workspace fails closed — guessing a root would be how a
+    ``../../.hermes/.env`` becomes an attachment.
+
+    Reading is fd-based on purpose. ``stat()`` then ``open()`` is TOCTOU-
+    exposed: the file can be swapped in between, so the bytes stored would
+    not be the bytes measured. Here the fd is opened once, ``fstat``-ed, read
+    from, and the byte count is re-checked against that same measurement.
+    """
+    import stat as _stat
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+
+    try:
+        _, conn = _connect(board=board)
+        try:
+            task = kb.get_task(conn, tid)
+        finally:
+            conn.close()
+    except Exception as e:  # pragma: no cover - connection failures
+        logger.exception("kanban_attach: task lookup failed")
+        return None, None, tool_error(f"kanban_attach: {e}")
+    if task is None:
+        return None, None, tool_error(f"kanban_attach: unknown task {tid}")
+
+    if not task.workspace_path:
+        return None, None, tool_error(
+            "kanban_attach: path= needs a resolved task workspace and this "
+            "task has none yet (workspace_path is unset — the dispatcher "
+            "assigns it when it spawns the worker). Use content_base64 with "
+            "expected_bytes and expected_sha256 instead. Nothing was stored."
+        )
+    try:
+        ws_root = Path(task.workspace_path).expanduser().resolve()
+        target = Path(str(raw_path)).expanduser().resolve()
+    except (OSError, RuntimeError) as e:
+        return None, None, tool_error(f"kanban_attach: cannot resolve path: {e}")
+
+    if target != ws_root and ws_root not in target.parents:
+        return None, None, tool_error(
+            f"kanban_attach: refused — {target} is outside this task's "
+            f"workspace ({ws_root}). Only files inside the task workspace can "
+            "be attached by path. Nothing was stored."
+        )
+
+    # ``resolve()`` proved containment for the path *as it was a moment ago*.
+    # Opening ``target`` directly would trust that snapshot: O_NOFOLLOW only
+    # guards the final component, so swapping a parent directory for a symlink
+    # in between would still escape the workspace. Instead, walk down from an
+    # fd on the workspace root, one component at a time, with O_NOFOLLOW on
+    # every hop. ``resolve()`` already collapsed every legitimate symlink, so
+    # anything that is a symlink *now* appeared after the check — which is
+    # exactly the race we refuse.
+    #
+    # O_NONBLOCK is on the open so a FIFO cannot park the worker until some
+    # writer turns up; it is cleared again below once the file is known to be
+    # regular, so the read path is plain blocking I/O.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        rel_parts = target.relative_to(ws_root).parts
+    except ValueError:  # pragma: no cover - containment checked above
+        return None, None, tool_error(
+            f"kanban_attach: refused — {target} is outside this task's "
+            f"workspace ({ws_root}). Nothing was stored."
+        )
+    if not rel_parts:
+        return None, None, tool_error(
+            f"kanban_attach: {target} is not a regular file. Nothing was stored."
+        )
+
+    if os.open not in getattr(os, "supports_dir_fd", set()):
+        # Without dir_fd there is no way to pin the descent to the workspace:
+        # resolve() plus O_NOFOLLOW guards only the leaf, so a swapped parent
+        # directory would still escape. Rather than ship containment we cannot
+        # actually enforce, path= is refused here — content_base64 with
+        # expected_bytes and expected_sha256 is fully safe on every platform.
+        return None, None, tool_error(
+            "kanban_attach: path= is unavailable on this platform (no "
+            "directory-fd support), because the workspace boundary cannot be "
+            "enforced against a concurrently swapped parent directory. Use "
+            "content_base64 with expected_bytes and expected_sha256 instead. "
+            "Nothing was stored."
+        )
+
+    fd = None
+    dir_fd = None
+    try:
+        dir_fd = os.open(str(ws_root), dir_flags)
+        for part in rel_parts[:-1]:
+            nxt = os.open(part, dir_flags, dir_fd=dir_fd)
+            # Reassign unconditionally: if the close of the previous fd were
+            # allowed to fail here, ``nxt`` would be orphaned for the life of
+            # the process. A failing close means the fd is already gone.
+            try:
+                os.close(dir_fd)
+            except OSError:  # pragma: no cover - EBADF only
+                pass
+            dir_fd = nxt
+        fd = os.open(rel_parts[-1], flags, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None, None, tool_error(f"kanban_attach: no such file: {target}")
+    except OSError as e:
+        return None, None, tool_error(
+            f"kanban_attach: cannot open {target} inside the task "
+            f"workspace: {e}. A component that became a symlink after the "
+            "path was checked is refused. Nothing was stored."
+        )
+    finally:
+        if dir_fd is not None:
+            try:
+                os.close(dir_fd)
+            except OSError:  # pragma: no cover - EBADF only
+                pass
+
+    max_bytes = kb.KANBAN_ATTACHMENT_MAX_BYTES
+    try:
+        st = os.fstat(fd)
+        if not _stat.S_ISREG(st.st_mode):
+            return None, None, tool_error(
+                f"kanban_attach: {target} is not a regular file. "
+                "Nothing was stored."
+            )
+        # Regular file confirmed — drop O_NONBLOCK so the reads below are
+        # ordinary blocking reads and cannot come back short with EAGAIN.
+        try:
+            import fcntl
+
+            cur = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, cur & ~os.O_NONBLOCK)
+        except (ImportError, AttributeError):  # pragma: no cover - non-POSIX
+            pass
+        except OSError as e:  # pragma: no cover - would be surprising on a live fd
+            # Not fatal: the reads below still work, they just stay
+            # non-blocking. But it should not vanish silently either.
+            logger.debug("kanban_attach: could not clear O_NONBLOCK on %s: %s",
+                         target, e)
+        if st.st_size > max_bytes:
+            return None, None, tool_error(
+                f"kanban_attach: {target} is {st.st_size} bytes and exceeds "
+                f"the {max_bytes // (1024 * 1024)} MB limit. Nothing was "
+                "stored and nothing was read."
+            )
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                return None, None, tool_error(
+                    f"kanban_attach: {target} grew past the "
+                    f"{max_bytes // (1024 * 1024)} MB limit while being read. "
+                    "Nothing was stored."
+                )
+            chunks.append(chunk)
+    except OSError as e:
+        return None, None, tool_error(f"kanban_attach: cannot read {target}: {e}")
+    finally:
+        os.close(fd)
+
+    data = b"".join(chunks)
+    if len(data) != st.st_size:
+        # Either direction is a change under our feet: grown, shrunk, or
+        # rewritten. What was measured is not what was read, so it is refused.
+        return None, None, tool_error(
+            f"kanban_attach: {target} changed while it was being read "
+            f"(measured {st.st_size} bytes at open, read {len(data)}). "
+            "Nothing was stored."
+        )
+    return data, target, None
+
+
+def _handle_attach(args: dict, **kw) -> str:
+    """Attach a file to a task, from disk (``path``) or inline (base64).
+
+    ``path`` is the safe branch and the preferred one: the bytes are read
+    inside the task's own workspace and never travel through the model.
+    ``content_base64`` stays available for content the model generated in
+    this turn, but only with a declared ``expected_bytes`` and
+    ``expected_sha256`` that this handler verifies first — see F-17/F-18 in
+    :func:`_decode_inline_attachment`.
+
+    Every verification runs *before* ``kanban_db.store_attachment_bytes``, so
+    a refusal leaves no blob, no metadata row and no ``attached`` event.
+    """
+    import hashlib
+
     from hermes_cli import kanban_db as kb
 
     delegated_err = _reject_delegated_child_mutation("kanban_attach")
@@ -1156,20 +1438,48 @@ def _handle_attach(args: dict, **kw) -> str:
     ownership_err = _enforce_worker_task_ownership(tid)
     if ownership_err:
         return ownership_err
-    filename = args.get("filename")
-    if not filename or not str(filename).strip():
-        return tool_error("filename is required")
-    content_b64 = args.get("content_base64")
-    if not content_b64 or not str(content_b64).strip():
-        return tool_error("content_base64 is required")
-    import base64
-    import binascii
-    try:
-        data = base64.b64decode(str(content_b64), validate=True)
-    except (binascii.Error, ValueError) as e:
-        return tool_error(f"content_base64 is not valid base64: {e}")
-    content_type = args.get("content_type")
+
     board = args.get("board")
+    filename = args.get("filename")
+    content_type = args.get("content_type")
+
+    raw_path = args.get("path")
+    content_b64 = args.get("content_base64")
+    has_path = bool(raw_path and str(raw_path).strip())
+    has_inline = bool(content_b64 and str(content_b64).strip())
+
+    if has_path and has_inline:
+        return tool_error(
+            "kanban_attach: pass exactly one of path or content_base64, not "
+            "both. Nothing was stored."
+        )
+    if not has_path and not has_inline:
+        return tool_error(
+            "kanban_attach: one of path or content_base64 is required. Prefer "
+            "path — the file is read from disk and never passes through your "
+            "output, so it cannot be truncated."
+        )
+
+    if has_path:
+        data, resolved, err = _read_attachment_from_path(
+            tid, str(raw_path), board=board
+        )
+        if err:
+            return err
+        if not filename or not str(filename).strip():
+            filename = resolved.name
+        if not content_type:
+            import mimetypes
+            content_type = mimetypes.guess_type(str(filename))[0]
+    else:
+        if not filename or not str(filename).strip():
+            return tool_error("filename is required")
+        data, err = _decode_inline_attachment(
+            content_b64, args.get("expected_bytes"), args.get("expected_sha256")
+        )
+        if err:
+            return err
+
     try:
         _, conn = _connect(board=board)
         try:
@@ -1182,7 +1492,12 @@ def _handle_attach(args: dict, **kw) -> str:
                 uploaded_by="agent",
                 board=board,
             )
-            return _ok(task_id=tid, attachment_id=att_id, size=len(data))
+            return _ok(
+                task_id=tid,
+                attachment_id=att_id,
+                size=len(data),
+                sha256=hashlib.sha256(data).hexdigest(),
+            )
         finally:
             conn.close()
     except kb.AttachmentTooLarge as e:
@@ -2056,11 +2371,20 @@ KANBAN_COMMENT_SCHEMA = {
 KANBAN_ATTACH_SCHEMA = {
     "name": "kanban_attach",
     "description": (
-        "Attach a file to a task by passing its bytes inline (base64). "
-        "Use for genuine file artifacts the next worker or a human should "
-        "be able to download — generated reports, images, exports. The "
-        "file is stored as a real attachment (not a comment link) under "
-        "the task's attachments dir, capped at 25 MB. Prefer "
+        "Attach a file to a task. Use for genuine file artifacts the next "
+        "worker or a human should be able to download — generated reports, "
+        "images, exports. Stored as a real attachment (not a comment link) "
+        "under the task's attachments dir, capped at 25 MB.\n"
+        "PREFER path: write the file into your task workspace first, then "
+        "pass path. The bytes are read from disk and never pass through "
+        "your output, so they cannot be truncated — and you never need to "
+        "shrink a deliverable to fit an output budget.\n"
+        "Use content_base64 only for content you generated in this turn and "
+        "did not write to disk. It then REQUIRES expected_bytes and "
+        "expected_sha256 of the exact bytes you are sending: truncated "
+        "base64 still decodes cleanly, so without them a short write is "
+        "undetectable. Whitespace and line wrapping in the base64 are fine.\n"
+        "Pass exactly one of path or content_base64. Prefer "
         "kanban_attach_url when you only have a URL."
     ),
     "parameters": {
@@ -2070,24 +2394,57 @@ KANBAN_ATTACH_SCHEMA = {
                 "type": "string",
                 "description": _DESC_TASK_ID_DEFAULT,
             },
+            "path": {
+                "type": "string",
+                "description": (
+                    "Absolute path to a file inside this task's own "
+                    "workspace. Paths outside it are refused, and so is a "
+                    "symlink pointing out of it. Available only once the "
+                    "task has a resolved workspace."
+                ),
+            },
             "filename": {
                 "type": "string",
                 "description": (
                     "File name to store it under (e.g. 'report.pdf'). "
-                    "Directory components are stripped; only the leaf is kept."
+                    "Directory components are stripped; only the leaf is "
+                    "kept. Optional with path (defaults to the source "
+                    "file's name); required with content_base64."
                 ),
             },
             "content_base64": {
                 "type": "string",
-                "description": "The file contents, base64-encoded. Max 25 MB decoded.",
+                "description": (
+                    "The file contents, base64-encoded. Max 25 MB decoded. "
+                    "Requires expected_bytes and expected_sha256."
+                ),
+            },
+            "expected_bytes": {
+                "type": "integer",
+                "description": (
+                    "Decoded size in bytes of the content you are sending. "
+                    "Required with content_base64; a mismatch is refused and "
+                    "nothing is stored."
+                ),
+            },
+            "expected_sha256": {
+                "type": "string",
+                "description": (
+                    "Hex SHA-256 of the decoded content. Required with "
+                    "content_base64; a mismatch is refused and nothing is "
+                    "stored."
+                ),
             },
             "content_type": {
                 "type": "string",
-                "description": "Optional MIME type (e.g. 'application/pdf').",
+                "description": (
+                    "Optional MIME type (e.g. 'application/pdf'). Guessed "
+                    "from the filename when omitted."
+                ),
             },
             "board": _board_schema_prop(),
         },
-        "required": ["filename", "content_base64"],
+        "required": [],
     },
 }
 

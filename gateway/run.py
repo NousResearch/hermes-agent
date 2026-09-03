@@ -21278,9 +21278,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         strict_session = bool(event_metadata.get("gateway_session_strict"))
         pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
         if strict_session:
-            session_entry = await self.async_session_store.lookup_by_session_key(
-                expected_session_key
-            )
+            _strict_home = self._resolve_profile_home_for_source(source)
+            with _profile_runtime_scope(_strict_home):
+                session_entry = await self.async_session_store.lookup_by_session_key(
+                    expected_session_key
+                )
             if (
                 session_entry is None
                 or not pinned_session_id
@@ -21298,10 +21300,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # activity themselves. Otherwise periodic Kanban/process
             # notifications keep the stable routing key alive across every
             # daily/idle boundary.
-            session_entry = await self.async_session_store.get_or_create_session(
-                source,
-                touch_activity=not bool(getattr(event, "internal", False)),
-            )
+            # Multiplex fix: resolve the profile from the source and scope
+            # the SessionDB access to that profile's home. The outer
+            # _make_default_profile_message_handler scopes to HERMES_HOME
+            # (root) on the shared WhatsApp transport, so an unscoped
+            # get_or_create here created/duplicated the session in the
+            # root DB (history=0) instead of the profile-scoped DB computed here.
+            _profile_home = self._resolve_profile_home_for_source(source)
+            with _profile_runtime_scope(_profile_home):
+                session_entry = await self.async_session_store.get_or_create_session(
+                    source,
+                    touch_activity=not bool(getattr(event, "internal", False)),
+                )
         session_key = session_entry.session_key
         if not strict_session and pinned_session_id:
             resolved_entry = await self._resolve_async_delegation_session(
@@ -21614,25 +21624,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # explicitly degraded past) the per-session lease.  Marking before the
         # await above would falsely recover an alias-routed message that never
         # began processing if the gateway died while it was still waiting.
-        await self._mark_durable_active_turn(event, session_entry.session_key)
+        # Multiplex fix: mark + load must read the profile-scoped DB, same
+        # home resolved for get_or_create above.
+        _history_home = self._resolve_profile_home_for_source(source)
+        with _profile_runtime_scope(_history_home):
+            await self._mark_durable_active_turn(event, session_entry.session_key)
 
-        # Load conversation history from transcript. An unreadable canonical
-        # store is not an empty conversation: stop before the agent can invent
-        # continuity from a plausible-looking []. This return happens before
-        # the broad cleanup finally below, so restore task-local context here;
-        # the outer dispatch still clears the durable marker and turn lease.
-        try:
-            history = await self.async_session_store.load_transcript(
-                session_entry.session_id
-            )
-        except TranscriptReadError:
-            self._clear_session_env(_session_env_tokens)
-            return (
-                "⚠️ This session's history is temporarily unavailable, so "
-                "this message was not processed. Ask the operator to inspect "
-                "state.db, then resend after it is healthy. Use /reset only "
-                "if you intentionally want to start a new conversation."
-            )
+            # Load conversation history from transcript. An unreadable canonical
+            # store is not an empty conversation: stop before the agent can invent
+            # continuity from a plausible-looking []. This return happens before
+            # the broad cleanup finally below, so restore task-local context here;
+            # the outer dispatch still clears the durable marker and turn lease.
+            try:
+                history = await self.async_session_store.load_transcript(
+                    session_entry.session_id
+                )
+            except TranscriptReadError:
+                self._clear_session_env(_session_env_tokens)
+                return (
+                    "⚠️ This session's history is temporarily unavailable, so "
+                    "this message was not processed. Ask the operator to inspect "
+                    "state.db, then resend after it is healthy. Use /reset only "
+                    "if you intentionally want to start a new conversation."
+                )
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts

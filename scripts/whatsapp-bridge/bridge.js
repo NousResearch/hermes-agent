@@ -113,10 +113,30 @@ const PAIR_JSON = args.includes('--pair-json');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
-const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
-const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
-  ? DEFAULT_REPLY_PREFIX
-  : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
+// Per-chat banner map (JID → prefix). Config-driven: the Python adapter injects
+// WHATSAPP_REPLY_PREFIXES (JSON) from config.yaml `platforms.whatsapp.extra.reply_prefixes`.
+// Falls back to the legacy hardcoded map only when no config is provided, so a
+// fresh install still shows sensible banners before the user configures them.
+const ENV_REPLY_PREFIXES = (() => {
+  try {
+    const parsed = JSON.parse(process.env.WHATSAPP_REPLY_PREFIXES || '{}');
+    return (parsed && typeof parsed === 'object') ? parsed : {};
+  } catch {
+    return {};
+  }
+})();
+const GROUP_PREFIXES = ENV_REPLY_PREFIXES;
+const DEFAULT_CHAT_PREFIX = ' *◈ Hermes Agent* \n────────────\n';
+const ENV_REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX;
+const DEFAULT_REPLY_PREFIX = ENV_REPLY_PREFIX === undefined
+  ? DEFAULT_CHAT_PREFIX
+  : ENV_REPLY_PREFIX.replace(/\\n/g, '\n');
+function getReplyPrefixForChat(chatId) {
+  if (chatId && GROUP_PREFIXES[chatId]) return GROUP_PREFIXES[chatId];
+  if (ENV_REPLY_PREFIX !== undefined) return ENV_REPLY_PREFIX.replace(/\\n/g, '\n');
+  return DEFAULT_CHAT_PREFIX;
+}
+const REPLY_PREFIX = DEFAULT_REPLY_PREFIX;
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
 // Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
@@ -156,12 +176,15 @@ function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT
   );
 }
 
-function formatOutgoingMessage(message) {
-  // In bot mode, messages come from a different number so the prefix is
-  // redundant — the sender identity is already clear.  Only prepend in
-  // self-chat mode where bot and user share the same number.
-  if (WHATSAPP_MODE !== 'self-chat') return message;
-  return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
+function formatOutgoingMessage(message, chatId) {
+  const REPLY_PREFIX = getReplyPrefixForChat(chatId);
+  if (!REPLY_PREFIX) return message;
+  const stripped = message.trimStart();
+  if (stripped.startsWith(REPLY_PREFIX)) return message;
+  if (stripped.startsWith(REPLY_PREFIX.trimStart())) return message;
+  const head = stripped.slice(0, 100);
+  if (head.includes('◈') && head.includes('────')) return message;
+  return `${REPLY_PREFIX}${message}`;
 }
 
 function splitLongMessage(message, maxLength = MAX_MESSAGE_LENGTH) {
@@ -375,6 +398,29 @@ function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
     botIds: [],
     timestamp: Math.floor(Date.now() / 1000),
   };
+  // Mark a vote from the account owner (same-account / linked-device scheme) as
+  // `fromOwner: true` so the gateway routes it back to the blocked turn as the
+  // owner's answer. Without this the owner's vote arrives as a non-owner
+  // participant and the pending clarify is never resolved (the poll option text
+  // is treated as unrelated traffic).
+  // We compare the numeric base of the voter's JID against BOTH numbers the
+  // logged-in account owns (the classic phone number and the LID). Comparing the
+  // bare digits (dropping the `:<device>@<domain>` tail) makes this robust to the
+  // LID vs phone vs @s.whatsapp.net vs device-suffix shapes WhatsApp may present
+  // them under. Votes from ANY other participant — another member in a group or
+  // a third party in a DM — deliberately stay `fromOwner: false`: they still
+  // resolve the clarify as a normal participant reply, but are never mistaken for
+  // the account owner's own answer.
+  {
+    let isOwnerVote = false;
+    if (sock) {
+      const bareNumber = (jid) => String(jid || '').split('@')[0].split(':')[0];
+      const ownerNumbers = [bareNumber(sock.user?.id), bareNumber(sock.user?.lid)]
+        .filter(Boolean);
+      isOwnerVote = ownerNumbers.includes(bareNumber(senderId));
+    }
+    if (isOwnerVote) event.fromOwner = true;
+  }
   messageQueue.push(event);
   if (messageQueue.length > MAX_QUEUE_SIZE) {
     messageQueue.shift();
@@ -558,16 +604,29 @@ async function startSocket() {
       // Handle fromMe messages based on mode
       let fromOwner = false;
       if (msg.key.fromMe) {
-        if (isGroup || chatId.includes('status')) {
+        if (chatId.includes('status')) {
           emitDebugEvent({
             stage: 'ignored',
-            reason: isGroup ? 'from_me_group' : 'from_me_status',
+            reason: 'from_me_status',
             chatId: redactWhatsAppId(chatId),
           });
           continue;
         }
-
-        if (WHATSAPP_MODE === 'bot') {
+        if (isGroup) {
+          // In bot mode, the owner's own group messages only continue when FORWARD
+          // is enabled. This lets an operator speak in a group and have their bot
+          // answer, while avoiding a loop when the message is the bot's own echo.
+          if (WHATSAPP_MODE !== 'bot' || !FORWARD_OWNER_MESSAGES) {
+            emitDebugEvent({
+              stage: 'ignored',
+              reason: 'from_me_group',
+              chatId: redactWhatsAppId(chatId),
+            });
+            continue;
+          }
+          if (recentlySentIds.has(msg.key.id)) continue;
+          fromOwner = true;
+        } else if (WHATSAPP_MODE === 'bot') {
           // Bot mode: separate bot number. fromMe inbound is either
           //   (a) an echo of our own /send (recentlySentIds will catch it), or
           //   (b) a message the owner typed from their own phone using the
@@ -646,7 +705,10 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        // DM allowlist must NOT block group messages — groups are gated by
+        // Python's group_policy/group_allow_from. Without this, adding every
+        // group participant to ALLOWED_USERS would leak their private DMs.
+        if (!isGroup && WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',
@@ -736,7 +798,7 @@ async function startSocket() {
       event.fromOwner = fromOwner;
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
-      if (msg.key.fromMe && ((REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
+      if (msg.key.fromMe && ((event.body.includes('◈') && event.body.includes('────')) || recentlySentIds.has(msg.key.id) || (REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)))) {
         if (WHATSAPP_DEBUG) {
           emitDebugEvent({
             stage: 'ignored',
@@ -831,7 +893,7 @@ app.post('/send', async (req, res) => {
   }
 
   try {
-    const chunks = splitLongMessage(formatOutgoingMessage(message));
+    const chunks = splitLongMessage(formatOutgoingMessage(message, chatId));
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
       const { content: payload, options } = buildTextSendPayload(chunks[i], {
@@ -871,7 +933,7 @@ app.post('/edit', async (req, res) => {
 
   try {
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
-    const chunks = splitLongMessage(formatOutgoingMessage(message));
+    const chunks = splitLongMessage(formatOutgoingMessage(message, chatId));
     const messageIds = [];
 
     await sendWithTimeout(chatId, { text: chunks[0], edit: key });

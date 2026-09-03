@@ -2605,16 +2605,32 @@ class MessageEvent:
     # remains conversational input.
     allow_gateway_control: bool = True
     
+    def _command_text(self) -> str:
+        """Return the text with any owner-reply marker stripped, for command
+        detection. The WhatsApp adapter prefixes owner-typed inbound text with
+        ``[owner reply] `` (adapter.py _OWNER_REPLY_PREFIX) so transcripts stay
+        disambiguated; without stripping it here, an owner's ``/approve`` /
+        ``/deny`` arrives as ``[owner reply] /approve`` and is never recognized
+        as a command, so the pending approval/clarify never resolves and the
+        blocked turn hangs. Strip the marker (and surrounding whitespace) before
+        command parsing so slash commands from the owner work like any other
+        platform's commands."""
+        text = (self.text or "").lstrip()
+        marker = "[owner reply] "
+        if text.startswith(marker):
+            text = text[len(marker):].lstrip()
+        return text
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")
-    
+        return self.allow_gateway_control and self._command_text().startswith("/")
+
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
             return None
         # Split on space and get first word, strip the /
-        command_text = (self.text or "").lstrip()
+        command_text = self._command_text()
         parts = command_text.split(maxsplit=1)
         raw = parts[0][1:].lower() if parts else None
         if raw and "@" in raw:
@@ -2623,12 +2639,12 @@ class MessageEvent:
         if raw and "/" in raw:
             return None
         return raw
-    
+
     def get_command_args(self) -> str:
         """Get the arguments after a command."""
         if not self.is_command():
             return self.text
-        command_text = (self.text or "").lstrip()
+        command_text = self._command_text()
         parts = command_text.split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)

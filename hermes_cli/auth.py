@@ -809,6 +809,21 @@ def _resolve_api_key_provider_secret(
     except Exception:
         pass
 
+    # Last resort for the Meta family only: reuse the local `muse login`
+    # session (subscription billing) when no explicit API key is configured.
+    # Explicit env/pool credentials above keep priority, mirroring
+    # `muse login --help` ("META_API_KEY always takes priority over the
+    # account login").  See hermes_cli/muse_auth.py.
+    try:
+        from hermes_cli import muse_auth
+
+        if provider_id in muse_auth.MUSE_LOGIN_PROVIDER_IDS:
+            key, source = muse_auth.read_muse_login_key()
+            if key:
+                return key, source
+    except Exception:
+        pass
+
     return "", ""
 
 

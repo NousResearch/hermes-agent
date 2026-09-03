@@ -162,7 +162,7 @@ _preset_cache_lock = threading.Lock()
 _preset_cache: dict[tuple, Any] = {}
 
 _runtime_cache_lock = threading.Lock()
-_runtime_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_runtime_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
 
 # Runtime entries go stale when providers/credentials change (key rotation,
 # base_url edits). Deliberately short-lived: 300s collapses the per-iteration
@@ -346,16 +346,22 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     provider/model on any resolution error so a misconfigured slot still
     attempts the call rather than aborting the whole MoA turn.
 
-    The resolved runtime is cached per (provider, model) with a short TTL
-    (``_RUNTIME_CACHE_TTL_SECONDS``): the resolution does real I/O (catalog
-    query + config read) that used to run serially per create() call before
-    the parallel fan-out could start — the dominant source of MoA cold-start
-    latency (#66793). The TTL bounds credential staleness (key rotation,
-    base_url edits) instead of caching for the process lifetime.
+    The resolved runtime is cached per (hermes_home, provider, model) with a
+    short TTL (``_RUNTIME_CACHE_TTL_SECONDS``): the resolution does real I/O
+    (catalog query + config read) that used to run serially per create() call
+    before the parallel fan-out could start — the dominant source of MoA
+    cold-start latency (#66793). The TTL bounds credential staleness (key
+    rotation, base_url edits) instead of caching for the process lifetime.
+    ``hermes_home`` is part of the key because a multiplex gateway resolves
+    multiple profiles' agents in the same process — without it, one
+    profile's resolved api_key/base_url for a (provider, model) pair would
+    be served to a different profile requesting the same pair.
     """
+    from hermes_constants import get_hermes_home
+
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
-    cache_key = (provider, model)
+    cache_key = (str(get_hermes_home()), provider, model)
     now = time.monotonic()
     with _runtime_cache_lock:
         entry = _runtime_cache.get(cache_key)

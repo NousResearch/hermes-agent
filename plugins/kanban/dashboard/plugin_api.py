@@ -232,6 +232,7 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
         "summary": r.summary,
         "metadata": r.metadata,
         "error": r.error,
+        "resolved_base_sha": r.resolved_base_sha,
     }
 
 

@@ -1838,6 +1838,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
                     "summary": r.summary,
                     "error": r.error,
                     "metadata": r.metadata,
+                    "resolved_base_sha": r.resolved_base_sha,
                     "worker_pid": r.worker_pid,
                     "started_at": r.started_at,
                     "ended_at": r.ended_at,
@@ -3146,6 +3147,7 @@ def _cmd_runs(args: argparse.Namespace) -> int:
                 "outcome": r.outcome, "started_at": r.started_at,
                 "ended_at": r.ended_at, "summary": r.summary,
                 "error": r.error, "metadata": r.metadata,
+                "resolved_base_sha": r.resolved_base_sha,
                 "worker_pid": r.worker_pid, "step_key": r.step_key,
             } for r in runs
         ], indent=2, ensure_ascii=False))

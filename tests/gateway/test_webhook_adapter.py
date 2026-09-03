@@ -1069,7 +1069,12 @@ class TestMultiplexProfileWebhookAuthentication:
         assert "Body of worker-only." in seen[0].text
 
 
-def test_route_profile_validation_fails_closed():
+def test_route_profile_validation_fails_closed(monkeypatch):
+    # A bare-path request resolves to the gateway's serving profile. Pin the
+    # serving profile to "default" so the test is independent of HERMES_HOME.
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+    )
     assert WebhookAdapter._route_allows_profile({}, None) is True
     assert WebhookAdapter._route_allows_profile(
         {"profile": "worker"}, "worker"
@@ -1081,3 +1086,75 @@ def test_route_profile_validation_fails_closed():
         assert WebhookAdapter._route_allows_profile(
             {"profile": malformed}, "worker"
         ) is False
+
+
+def test_route_profile_bare_path_resolves_serving_profile(monkeypatch):
+    # Regression for the single-profile gateway 404: a bare-path request
+    # (request_profile=None) must resolve to the gateway's serving profile
+    # (get_active_profile_name()), not the literal "default" — otherwise a
+    # route bound to a named profile (e.g. "boole") never matches its own
+    # gateway's bare path.
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "boole"
+    )
+    # Route bound to the serving profile accepts the bare path.
+    assert WebhookAdapter._route_allows_profile(
+        {"profile": "boole"}, None
+    ) is True
+    # A profile-less route (=> "default") does not match a named-profile
+    # gateway's bare path.
+    assert WebhookAdapter._route_allows_profile({}, None) is False
+    assert WebhookAdapter._route_allows_profile(
+        {"profile": "default"}, None
+    ) is False
+
+    # On the default gateway, the profile-less route does match its bare path.
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+    )
+    assert WebhookAdapter._route_allows_profile({}, None) is True
+    assert WebhookAdapter._route_allows_profile(
+        {"profile": "default"}, None
+    ) is True
+    assert WebhookAdapter._route_allows_profile(
+        {"profile": "boole"}, None
+    ) is False
+
+
+def test_serving_profile_name_resolution(monkeypatch):
+    # Resolves the active profile name when available.
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "boole"
+    )
+    assert WebhookAdapter._serving_profile_name() == "boole"
+
+    # Degrades to "default" if resolution raises, so a bare-path request
+    # never 500s on a profile-resolution failure.
+    def _boom():
+        raise RuntimeError("symlink loop")
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", _boom
+    )
+    assert WebhookAdapter._serving_profile_name() == "default"
+
+
+def test_bare_path_profile_resolution_is_multiplex_aware(monkeypatch):
+    # A bare-path request resolves to the serving profile on a single-profile
+    # gateway, but to "default" on a multiplexed gateway — a multiplexed gateway
+    # has no single serving identity, and guessing the active profile would
+    # route a bare path to an arbitrary profile.
+    adapter = _make_adapter()
+
+    # Single-profile: resolves to the serving profile.
+    runner = MagicMock()
+    runner.config.multiplex_profiles = False
+    adapter.gateway_runner = runner
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "boole"
+    )
+    assert adapter._resolve_bare_path_profile() == "boole"
+
+    # Multiplexed: a bare path is ambiguous, so keep the pre-fix "default".
+    runner.config.multiplex_profiles = True
+    assert adapter._resolve_bare_path_profile() == "default"

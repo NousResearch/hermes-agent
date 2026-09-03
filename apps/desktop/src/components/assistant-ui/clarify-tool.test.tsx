@@ -545,8 +545,7 @@ function batchArgs(): { questions: { question: string; choices?: string[] }[] } 
   }
 }
 
-function liveBatchProps(): ToolCallMessagePartProps {
-  const args = batchArgs()
+function liveBatchProps(args = batchArgs()): ToolCallMessagePartProps {
 
   return {
     addResult: vi.fn(),
@@ -581,6 +580,36 @@ function renderLiveBatch(lockedAnswers?: Record<string, string>, multiSelect = f
     sessionId: 'session-1'
   })
   renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+  return request
+}
+
+function renderAllChoiceBatch() {
+  const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+
+  const questions = [
+    { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
+    { choices: ['Coffee', 'Tea'], multiSelect: false, qid: 'q1', question: 'Drink?' },
+    { choices: ['Morning', 'Evening'], multiSelect: false, qid: 'q2', question: 'Time?' }
+  ]
+
+  $activeSessionId.set('session-1')
+  $gateway.set({ request } as never)
+  setClarifyRequest({
+    choices: null,
+    multiSelect: false,
+    question: '',
+    questions,
+    requestId: 'request-batch',
+    sessionId: 'session-1'
+  })
+  renderClarify(
+    <ClarifyTool
+      {...liveBatchProps({
+        questions: questions.map(({ choices, question }) => ({ choices, question }))
+      })}
+    />
+  )
 
   return request
 }
@@ -666,6 +695,54 @@ describe('ClarifyTool batch card', () => {
       question_id: 'q1',
       request_id: 'request-batch'
     })
+  })
+
+  it('Enter on the last focused choice submits every staged answer in order and completes the batch', async () => {
+    const request = renderAllChoiceBatch()
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Coffee/ }))
+    const lastChoice = screen.getByRole('button', { name: /Morning/ })
+    fireEvent.click(lastChoice)
+    lastChoice.focus()
+    const batchForm = lastChoice.closest('form')
+
+    expect(lastChoice.ownerDocument.activeElement).toBe(lastChoice)
+    expect(fireEvent.keyDown(lastChoice, { key: 'Enter' })).toBe(false)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(3)
+    })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.respond', {
+      answer: 'red',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+    expect(request).toHaveBeenNthCalledWith(2, 'clarify.respond', {
+      answer: 'Coffee',
+      question_id: 'q1',
+      request_id: 'request-batch'
+    })
+    expect(request).toHaveBeenNthCalledWith(3, 'clarify.respond', {
+      answer: 'Morning',
+      question_id: 'q2',
+      request_id: 'request-batch'
+    })
+    await waitFor(() => {
+      expect(batchForm?.isConnected).toBe(false)
+    })
+  })
+
+  it('Enter on a focused choice emits nothing while the batch is incomplete', () => {
+    const request = renderAllChoiceBatch()
+    const firstChoice = screen.getByRole('button', { name: /red/ })
+
+    fireEvent.click(firstChoice)
+    firstChoice.focus()
+
+    fireEvent.keyDown(firstChoice, { key: 'Enter' })
+
+    expect(request).not.toHaveBeenCalled()
   })
 
   it('a staged answer stays editable before confirm', async () => {

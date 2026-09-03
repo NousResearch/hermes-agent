@@ -9,6 +9,8 @@ resident local models.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from tools import tts_tool
@@ -231,3 +233,73 @@ def test_every_local_warmer_has_a_registered_cache():
     assert set(warmers) == set(tts_tool._LOCAL_TTS_MODEL_CACHES)
     assert tts_tool._LOCAL_TTS_MODEL_CACHES["piper"] is tts_tool._piper_voice_cache
     assert tts_tool._LOCAL_TTS_MODEL_CACHES["kittentts"] is tts_tool._kittentts_model_cache
+
+
+# --------------------------------------------------------------------------
+# User-declared providers get the same signal (plugin warm()/release(),
+# command warm_command/release_command) so a local TTS server can preload
+# and unload on the speech toggles.
+# --------------------------------------------------------------------------
+
+
+def test_plugin_provider_warm_and_release_follow_the_lease(monkeypatch):
+    from agent import tts_provider, tts_registry
+
+    calls: list = []
+
+    class _ServerBacked(tts_provider.TTSProvider):
+        @property
+        def name(self):
+            return "my-server"
+
+        def synthesize(self, text, output_path, **kw):
+            return output_path
+
+        def warm(self):
+            calls.append("warm")
+
+        def release(self):
+            calls.append("release")
+
+    tts_registry._reset_for_tests()
+    tts_registry.register_provider(_ServerBacked())
+    cfg = {"provider": "my-server"}
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda force=False: None)
+    try:
+        assert tts_tool.acquire_tts_lease("desktop:read-aloud", cfg)["action"] == "warmed"
+        tts_tool.acquire_tts_lease("tui:voice-tts", cfg)
+        tts_tool.release_tts_lease("desktop:read-aloud")
+        assert calls == ["warm", "warm"]  # still one holder — no release yet
+        tts_tool.release_tts_lease("tui:voice-tts")
+        assert calls == ["warm", "warm", "release"]
+    finally:
+        tts_registry._reset_for_tests()
+
+
+def test_command_provider_runs_warm_and_release_commands(monkeypatch):
+    ran: list = []
+    done = threading.Event()
+
+    def _fake_run(command, timeout, env_passthrough=None):
+        ran.append(command)
+        done.set()
+
+    monkeypatch.setattr(tts_tool, "_run_command_tts", _fake_run)
+    cfg = {
+        "provider": "srv",
+        "providers": {"srv": {
+            "command": "srv say {input_path} {output_path}",
+            "warm_command": "curl -s localhost:5002/load?model={model}",
+            "release_command": "curl -s localhost:5002/unload",
+            "model": "kokoro v1",
+        }},
+    }
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
+
+    assert tts_tool.acquire_tts_lease("desktop:read-aloud", cfg)["action"] == "warmed"
+    assert done.wait(5)
+    done.clear()
+    tts_tool.release_tts_lease("desktop:read-aloud")
+    assert done.wait(5)
+    assert ran == ["curl -s localhost:5002/load?model='kokoro v1'", "curl -s localhost:5002/unload"]

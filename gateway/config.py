@@ -444,6 +444,7 @@ PORT_BINDING_PLATFORM_VALUES = frozenset({
     "sms",
     "whatsapp_cloud",
     "line",
+    "teams",
 })
 
 # Platforms whose port-binding status depends on connection mode. Feishu in
@@ -2406,7 +2407,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if webhook_enabled:
         if Platform.WEBHOOK not in config.platforms:
             config.platforms[Platform.WEBHOOK] = PlatformConfig()
-        config.platforms[Platform.WEBHOOK].enabled = True
+        # Honor an explicit ``enabled: false`` in config.yaml (flagged by
+        # ``_enabled_explicit``). In multiplex mode a secondary profile's
+        # config.yaml pins ``platforms.webhook.enabled: false`` so it shares
+        # the default profile's listener instead of binding its own port. That
+        # profile may still carry ``WEBHOOK_ENABLED`` in its own .env (or the
+        # process env, single-profile); without this guard the env var would
+        # force-enable the listener and trip the MultiplexConfigError check.
+        # Pop (don't read) the marker — the webhook branch is terminal (no
+        # later registry pass re-enables it), matching the api_server branch
+        # above.
+        webhook_explicit = config.platforms[Platform.WEBHOOK].extra.pop(
+            "_enabled_explicit", False
+        )
+        if not webhook_explicit or config.platforms[Platform.WEBHOOK].enabled:
+            config.platforms[Platform.WEBHOOK].enabled = True
         if webhook_port:
             try:
                 config.platforms[Platform.WEBHOOK].extra["port"] = int(webhook_port)
@@ -2434,7 +2449,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.MSGRAPH_WEBHOOK not in config.platforms:
             config.platforms[Platform.MSGRAPH_WEBHOOK] = PlatformConfig()
         if msgraph_webhook_enabled:
-            config.platforms[Platform.MSGRAPH_WEBHOOK].enabled = True
+            # Same explicit-disable guard as the webhook branch above (#85637).
+            # READ (don't pop) the marker here: the relay-exclusive pass below
+            # still consults it, and the end-of-function scrub removes it for
+            # every platform.
+            msgraph_cfg = config.platforms[Platform.MSGRAPH_WEBHOOK]
+            if not msgraph_cfg.extra.get("_enabled_explicit", False) or msgraph_cfg.enabled:
+                msgraph_cfg.enabled = True
         if msgraph_webhook_port:
             try:
                 config.platforms[Platform.MSGRAPH_WEBHOOK].extra["port"] = int(

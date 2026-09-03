@@ -33,6 +33,7 @@ import time
 from typing import Any
 
 from tui_gateway import server
+from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
 
 _log = logging.getLogger(__name__)
@@ -60,6 +61,18 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
         touch_dashboard_client_heartbeat()
     except Exception:  # noqa: BLE001 - liveness garnish must never break the WS
         _log.debug("dashboard client heartbeat touch failed", exc_info=True)
+
+
+def _sanitize_ws_text(text: str) -> str:
+    """Return *text* that can be UTF-8 encoded for a WebSocket frame.
+
+    ``json.dumps(..., ensure_ascii=False)`` happily emits lone UTF-16
+    surrogates; Starlette's ``send_text`` then raises ``UnicodeEncodeError``,
+    which used to latch the whole connection closed (#97288). Same U+FFFD
+    replacement every other Hermes transport applies.
+    """
+    return _sanitize_surrogates(text) if text else text
+
 
 # Max seconds a pool-dispatched handler will block waiting for the event loop
 # to flush a WS frame before we mark the transport dead. Protects handler
@@ -277,20 +290,30 @@ class WSTransport:
         async with self._send_lock:
             if self._closed:
                 return
-            try:
-                for line in lines:
-                    if self._closed:
-                        return
-                    await self._ws.send_text(line)
-            except Exception as exc:
-                # Latch while still holding the writer lock so queued batches
-                # observe the failure before they get a chance to touch the
-                # socket.
-                self._closed = True
-                _log.warning(
-                    "ws send failed peer=%s error_type=%s error=%s",
-                    self._peer, type(exc).__name__, exc,
-                )
+            for line in lines:
+                if self._closed:
+                    return
+                payload = _sanitize_ws_text(line)
+                try:
+                    await self._ws.send_text(payload)
+                except UnicodeEncodeError as exc:
+                    # A single illegal UTF-8 frame (lone surrogate in a
+                    # status/ready payload) must not tear down the socket.
+                    # Fresh Desktop installs looped on this (#97288).
+                    _log.warning(
+                        "ws send skipped invalid utf-8 frame peer=%s error=%s",
+                        self._peer, exc,
+                    )
+                    continue
+                except Exception as exc:
+                    # Latch while still holding the writer lock so queued
+                    # batches observe the failure before they touch the socket.
+                    self._closed = True
+                    _log.warning(
+                        "ws send failed peer=%s error_type=%s error=%s",
+                        self._peer, type(exc).__name__, exc,
+                    )
+                    return
 
     def close(self) -> None:
         self._closed = True

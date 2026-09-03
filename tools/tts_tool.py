@@ -266,6 +266,26 @@ def _get_default_output_dir() -> str:
     return str(get_hermes_dir("cache/audio", "audio_cache"))
 
 DEFAULT_OUTPUT_DIR = _get_default_output_dir()
+_DEFAULT_OUTPUT_DIR_AT_IMPORT = DEFAULT_OUTPUT_DIR
+
+def _default_output_dir() -> str:
+    """Return the active profile's audio output dir at call time.
+
+    Same bug class as skills_tool (f8723c478) and skills_sync (#65828):
+    long-lived multi-profile runtimes (dashboard console, TUI/Desktop backend,
+    cron, kanban workers) import this module once under the launch
+    HERMES_HOME and later scope requests to a different profile via
+    ``hermes_constants.set_hermes_home_override()`` — a frozen module
+    constant keeps writing synthesized audio into the launch profile's
+    cache instead of the active profile's (#98749). Keep the legacy
+    ``DEFAULT_OUTPUT_DIR`` module attribute for tests and external patchers;
+    when it has not been patched, re-resolve from the live profile-scoped
+    HERMES_HOME on every call.
+    """
+    configured = DEFAULT_OUTPUT_DIR
+    if configured != _DEFAULT_OUTPUT_DIR_AT_IMPORT:
+        return configured
+    return _get_default_output_dir()
 
 # ---------------------------------------------------------------------------
 # Per-provider input-character limits (from official provider docs).
@@ -2944,6 +2964,52 @@ _tts_lease_lock = threading.Lock()
 _tts_leases: set = set()
 
 
+def _signal_user_tts_provider(name: str, tts_config: Dict[str, Any], hook: str) -> Optional[str]:
+    """Forward a lease ``hook`` (``"warm"`` / ``"release"``) to a user-declared provider.
+
+    Command providers run their optional ``warm_command`` / ``release_command``
+    (same template/env/timeout rules as ``command``; output discarded) on a
+    background thread so a toggle never waits on a model server. Plugin
+    providers get :meth:`TTSProvider.warm` / :meth:`TTSProvider.release`.
+    Best-effort: failures are logged at debug. Returns the action taken.
+    """
+    if not name or name in BUILTIN_TTS_PROVIDERS:
+        return None
+    cfg = _get_named_provider_config(tts_config, name)
+    try:
+        if _is_command_provider_config(cfg):
+            template = str(cfg.get(f"{hook}_command") or "").strip()
+            if not template:
+                return None
+            command = _render_command_tts_template(template, {
+                "voice": str(cfg.get("voice", "")),
+                "model": str(cfg.get("model", "")),
+                "speed": str(cfg.get("speed", tts_config.get("speed", ""))),
+            })
+
+            def _run() -> None:
+                try:
+                    _run_command_tts(command, _get_command_tts_timeout(cfg),
+                                     env_passthrough=_command_provider_env_passthrough(cfg))
+                except Exception as exc:  # noqa: BLE001 — best-effort hook
+                    logger.debug("[TTS] %s_command for %s failed: %s", hook, name, exc)
+
+            threading.Thread(target=_run, name=f"tts-{hook}-{name}", daemon=True).start()
+            return hook
+        from agent.tts_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        plugin_provider = get_provider(name)
+        if plugin_provider is None:
+            return None
+        getattr(plugin_provider, hook)()
+        return hook
+    except Exception as exc:  # noqa: BLE001 — best-effort hook
+        logger.debug("[TTS] %s hook for %s failed: %s", hook, name, exc)
+        return "error"
+
+
 def warm_tts_provider(
     tts_config: Optional[Dict[str, Any]] = None,
     provider: Optional[str] = None,
@@ -2955,6 +3021,8 @@ def warm_tts_provider(
       load it into the same LRU cache slot synthesis reads.
     * Lazily-installed cloud SDKs (edge-tts, ElevenLabs, Mistral): make sure
       the SDK is importable, installing it if lazy installs are allowed.
+    * User-declared providers: command providers run ``warm_command`` when
+      set; plugin providers get :meth:`TTSProvider.warm`.
     * Everything else: nothing to warm — reported as ``action: "noop"``.
 
     Never raises; the result dict carries ``warmed`` / ``action`` / ``error``
@@ -2986,6 +3054,11 @@ def warm_tts_provider(
         logger.info("[TTS] warm-up %s: %s in %dms", name, result["action"], result["elapsed_ms"])
         return result
 
+    signalled = _signal_user_tts_provider(name, tts_config, "warm")
+    if signalled is not None:
+        result.update(warmed=signalled != "error", action="warmed" if signalled != "error" else "error")
+        return result
+
     feature = _lazy_sdk_feature_for_provider(name)
     if feature is not None:
         try:
@@ -3006,11 +3079,16 @@ def release_tts_provider(provider: Optional[str] = None) -> Dict[str, Any]:
     """Drop resident local TTS models so their memory is returned.
 
     With ``provider`` given, only that engine's cache is cleared; otherwise
-    every local engine cache is. Cloud providers hold nothing to release.
+    every local engine cache is and the configured user-declared provider
+    (plugin ``release()`` / command ``release_command``) is signalled.
+    Cloud providers hold nothing to release.
     Returns ``{"released": <number of model instances dropped>}``. The next
     synthesis simply reloads (or a warm-up does it ahead of time).
     """
     name = (provider or "").lower().strip()
+    if not name:
+        tts_config = _load_tts_config()
+        _signal_user_tts_provider(_get_provider(tts_config), tts_config, "release")
     released = 0
     for cache_name, cache in _LOCAL_TTS_MODEL_CACHES.items():
         if name and cache_name != name:
@@ -3440,7 +3518,7 @@ def _text_to_speech_single(
             }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        out_dir = Path(DEFAULT_OUTPUT_DIR)
+        out_dir = Path(_default_output_dir())
         out_dir.mkdir(parents=True, exist_ok=True)
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
@@ -3798,7 +3876,7 @@ def text_to_speech_tool(
             }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        out_dir = Path(DEFAULT_OUTPUT_DIR)
+        out_dir = Path(_default_output_dir())
         out_dir.mkdir(parents=True, exist_ok=True)
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
@@ -4681,7 +4759,7 @@ if __name__ == "__main__":
     print(f"  MiniMax:    {minimax_status}")
     print(f"  Piper:      {'installed' if _check_piper_available() else 'not installed (pip install piper-tts)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
-    print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
+    print(f"\n  Output dir: {_default_output_dir()}")
 
     provider = _get_provider(config)
     print(f"  Configured provider: {provider}")

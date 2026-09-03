@@ -1113,8 +1113,23 @@ export const $botChatSessionIds = atom<ReadonlySet<string>>(
   new Set((readJson<unknown>(BOT_CHAT_SCOPE_KEY) as unknown[] | null)?.filter(id => typeof id === 'string') ?? [])
 )
 
-function rememberBotChatScope(storedSessionId: string, isBotChat: boolean): void {
+/** The bot-mode scope each stored id was last opened under, for the main tab
+ *  (which has no tile to carry one). Window-local: the caption falls back to
+ *  the stored title until the chat is opened again. */
+export const $botChatScopes = atom<Readonly<Record<string, SessionTileWorkspaceScope>>>({})
+
+function rememberBotChatScope(storedSessionId: string, scope: SessionTileWorkspaceScope): void {
+  const isBotChat = scope.workspaceMode === 'bots'
   const current = $botChatSessionIds.get()
+  const { [storedSessionId]: previous, ...rest } = $botChatScopes.get()
+
+  const changed = isBotChat
+    ? previous?.workspaceOwnerKey !== scope.workspaceOwnerKey || previous?.workspaceTabTitle !== scope.workspaceTabTitle
+    : Boolean(previous)
+
+  if (changed) {
+    $botChatScopes.set(isBotChat ? { ...rest, [storedSessionId]: scope } : rest)
+  }
 
   if (current.has(storedSessionId) === isBotChat) {
     return
@@ -1232,10 +1247,23 @@ function reconcileSessionTileLineage(
 
   if (hadBotScope) {
     const nextBotScopes = new Set([...botScopes].filter(id => !relatedIds.has(id)))
+    const rememberedScopes = $botChatScopes.get()
+
+    const rememberedScope =
+      rememberedScopes[canonicalId] ??
+      rememberedScopes[preferred.storedSessionId] ??
+      [...relatedIds].map(id => rememberedScopes[id]).find(scope => scope !== undefined)
+
+    const nextRememberedScopes = Object.fromEntries(
+      Object.entries(rememberedScopes).filter(([id]) => !relatedIds.has(id))
+    )
 
     nextBotScopes.add(canonicalId)
 
     $botChatSessionIds.set(nextBotScopes)
+    $botChatScopes.set(
+      rememberedScope ? { ...nextRememberedScopes, [canonicalId]: rememberedScope } : nextRememberedScopes
+    )
     writeJson(BOT_CHAT_SCOPE_KEY, nextBotScopes.size ? [...nextBotScopes] : null)
   }
 
@@ -1288,7 +1316,7 @@ export function isBotChatSession(sessionId: null | string | undefined): boolean 
 export function setSessionTileWorkspaceScope(storedSessionId: string, scope: SessionTileWorkspaceScope): boolean {
   // Before the tile lookup: openSession routes every open through here, and a
   // bot chat usually has no tile to record the scope on.
-  rememberBotChatScope(storedSessionId, scope.workspaceMode === 'bots')
+  rememberBotChatScope(storedSessionId, scope)
 
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
   const workspaceOwnerKey = scope.workspaceMode === 'bots' ? scope.workspaceOwnerKey : undefined
@@ -1541,7 +1569,7 @@ export function openSessionTile(
   dir: TileDock = 'right',
   anchor?: string,
   before?: null | string,
-  workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
+  explicitScope?: SessionTileWorkspaceScope
 ) {
   // Opening a session in a tab/tile is "reading" it — clear its unread dot
   // exactly like main-thread resume does. Previously only
@@ -1554,6 +1582,15 @@ export function openSessionTile(
   const sessions = $sessions.get()
   const canonicalId = reconcileSessionTileId(storedSessionId, sessions)
   const tiles = $sessionTiles.get()
+  const existing = tiles.find(tile => sameSessionLineage(tile.storedSessionId, canonicalId, sessions))
+
+  // No scope on an already-open tile is a MOVE (a split drag re-docking a tab),
+  // not a re-scope: keep the workspace it lives in instead of re-bucketing it
+  // into Sessions — a Bot tab used to vanish from the Bot workspace on drop.
+  const workspaceScope: SessionTileWorkspaceScope = explicitScope ?? {
+    workspaceMode: existing?.workspaceMode ?? 'sessions'
+  }
+
   const selectedStoredSessionId = $selectedStoredSessionId.get()
 
   if (
@@ -1596,7 +1633,9 @@ export function openSessionTile(
     return
   }
 
-  setSessionTileWorkspaceScope(canonicalId, workspaceScope)
+  if (explicitScope) {
+    setSessionTileWorkspaceScope(canonicalId, explicitScope)
+  }
 
   // Already open: relocate the existing pane to the drop target (pane-mirror
   // only docks on first adoption, so a re-drag must move the tree pane itself).
@@ -1724,7 +1763,8 @@ export function focusOpenSession(
  *  falls through to its authoritative open. No probe = the old behavior. */
 export function focusWorkspaceOwnerSessionTile(
   workspaceOwnerKey: string,
-  isStaleTile?: (tile: SessionTile) => boolean
+  isStaleTile?: (tile: SessionTile) => boolean,
+  onlyStoredIds?: readonly string[]
 ): null | string {
   const allOwned = $sessionTiles
     .get()
@@ -1747,6 +1787,13 @@ export function focusWorkspaceOwnerSessionTile(
     }
 
     owned = allOwned.filter(tile => !stale.includes(tile))
+  }
+
+  // `onlyStoredIds`: the sessions this call may front (Bot Mode passes the
+  // canonical chat's registry id + lineage tip). Other tabs in the owner's
+  // zone stay open; they are simply not what the caller asked for.
+  if (onlyStoredIds) {
+    owned = owned.filter(tile => onlyStoredIds.includes(tile.storedSessionId))
   }
 
   if (owned.length === 0) {

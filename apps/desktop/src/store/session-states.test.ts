@@ -337,6 +337,22 @@ describe('SessionTile workspace scope', () => {
     expect(focusOpenSession('bot-chat', scope)).toBe('tile')
   })
 
+  it('fronts the existing tab when compaction rotated the tip id — never a duplicate', () => {
+    // The tile was opened when seg-2 was the tip; the conversation has since
+    // rotated to seg-3 (projected row carries the full chain). Opening the
+    // new tip must front that tile, not open the same chat twice.
+    setSessions([{ _lineage_ids: ['seg-1', 'seg-2', 'seg-3'], _lineage_root_id: 'seg-1', id: 'seg-3' } as never])
+    openSessionTile('seg-2')
+
+    expect(focusOpenSession('seg-3')).toBe('tile')
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['seg-1'])
+
+    // The open path dedupes through the same lineage test.
+    openSessionTile('seg-3')
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['seg-1'])
+    setSessions([])
+  })
+
   it('keeps Bot tabs while a profile publication swaps the Sessions bucket', () => {
     const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'connection-a::writer' }
 
@@ -368,6 +384,45 @@ describe('SessionTile workspace scope', () => {
       workspaceMode: 'bots',
       workspaceOwnerKey: 'connection-b::default'
     })
+  })
+
+  it('preserves an existing Bot tile scope when moving it without an explicit scope', () => {
+    const scope = {
+      ownerRoute: {
+        connectionId: 'connection-a',
+        mode: 'remote' as const,
+        profile: 'default',
+        targetProfile: 'default'
+      },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:connection-a::default',
+      workspaceTabTitle: 'Bot chat'
+    }
+
+    openSessionTile('bot-chat', 'right', undefined, undefined, scope)
+    $layoutTree.set(group(['workspace', 'session-tile:bot-chat'], { id: 'workspace-group' }))
+    // A split drag re-docks the tab with no scope (session-drag onCommit).
+    openSessionTile('bot-chat', 'left', 'workspace')
+
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({
+        anchor: 'workspace',
+        dir: 'left',
+        ownerRoute: scope.ownerRoute,
+        storedSessionId: 'bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: scope.workspaceOwnerKey,
+        workspaceTabTitle: 'Bot chat'
+      })
+    ])
+
+    // An explicit scope from the caller still wins over the tile's current one.
+    openSessionTile('bot-chat', 'right', 'workspace', undefined, { workspaceMode: 'sessions' })
+
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({ dir: 'right', storedSessionId: 'bot-chat', workspaceMode: 'sessions' })
+    ])
+    expect($sessionTiles.get()[0]).not.toHaveProperty('workspaceOwnerKey', scope.workspaceOwnerKey)
   })
 
   it('preserves workspace scope while dropping a stale runtime binding', () => {
@@ -441,6 +496,41 @@ describe('SessionTile compression-lineage identity', () => {
     )
     expect($activeTreeGroup.get()).toBe('grp-main')
     expect($hiddenTreePanes.get()).toEqual(new Set())
+  })
+
+  it('keeps Bot workspace scope when a rotated alias is moved without an explicit scope', () => {
+    const root = 'lineage-root'
+    const previousTip = 'lineage-tip-before-compression'
+    const nextTip = 'lineage-tip-after-compression'
+
+    const scope = {
+      ownerRoute: {
+        connectionId: 'connection-a',
+        mode: 'remote' as const,
+        profile: 'writer',
+        targetProfile: 'writer'
+      },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:connection-a::writer',
+      workspaceTabTitle: 'Writer'
+    }
+
+    setSessions([{ _lineage_ids: [root, previousTip, nextTip], _lineage_root_id: root, id: nextTip } as never])
+    openSessionTile(previousTip, 'right', undefined, undefined, scope)
+    $layoutTree.set(group(['workspace', tilePane(root)], { id: 'workspace-group' }))
+
+    openSessionTile(nextTip, 'left', 'workspace')
+
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({
+        dir: 'left',
+        ownerRoute: scope.ownerRoute,
+        storedSessionId: root,
+        workspaceMode: 'bots',
+        workspaceOwnerKey: scope.workspaceOwnerKey,
+        workspaceTabTitle: 'Writer'
+      })
+    ])
   })
 
   it('coalesces already-present previous and next tips at the focused occurrence', () => {

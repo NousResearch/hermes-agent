@@ -863,6 +863,28 @@ def _migrate_to_39(results: Dict[str, Any], quiet: bool) -> None:
             )
 
 
+def _migrate_to_40(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 39 → 40: model_catalog.ttl_hours → ttl_minutes (default 20) ──
+    # The picker catalogs now refresh every 20 minutes (and the gateway
+    # refreshes them in the background on that cadence). Only the OLD default
+    # (ttl_hours: 1, written by the v25 migration) is dropped so the new
+    # default applies; any other explicit ttl_hours is a deliberate choice
+    # and stays honoured by the loader.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    raw_mc = config.get("model_catalog")
+    if isinstance(raw_mc, dict) and raw_mc.get("ttl_hours") == 1 and "ttl_minutes" not in raw_mc:
+        del raw_mc["ttl_hours"]
+        config["model_catalog"] = raw_mc
+        _persist_migration(config)
+        results["config_added"].append("model_catalog.ttl_hours 1 → ttl_minutes 20 (default)")
+        if not quiet:
+            print("  ✓ Model catalog now refreshes every 20 minutes (model_catalog.ttl_minutes)")
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
@@ -890,6 +912,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (37, _migrate_to_37),
     (38, _migrate_to_38),
     (39, _migrate_to_39),
+    (40, _migrate_to_40),
 )
 
 

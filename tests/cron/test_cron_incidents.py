@@ -46,7 +46,7 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated"):
     harness so the incident gating is exercised through the real scheduler."""
     fake_db = MagicMock()
 
-    def fake_deliver(jb, content, adapters=None, loop=None):
+    def fake_deliver(jb, content, adapters=None, loop=None, **kwargs):
         deliveries.append(content)
         return None
 

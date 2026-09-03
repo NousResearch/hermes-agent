@@ -5,6 +5,8 @@ import importlib
 import logging
 import os
 import sys
+import time
+from pathlib import Path
 
 import pytest
 
@@ -820,6 +822,126 @@ class TestEnvironmentHints:
         assert "Linux 6.8.0" in line
         assert "root" in line
 
+    def test_probe_remote_backend_tears_down_its_sandbox(self, monkeypatch):
+        """THE BUG: the probe leaked a second, permanently idle sandbox.
+
+        ``_probe_remote_backend`` spins up an environment with
+        ``task_id="prompt-backend-probe"`` purely to run one ``uname``. Container
+        backends default to ``container_persistent`` /
+        ``docker_persist_across_processes``, so that throwaway sandbox stayed up
+        for the whole process lifetime *next to* the agent's own ``default``
+        sandbox — one wasted idle container per profile, forever. The probe owns
+        that environment, so it must tear it down.
+        """
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        _pb._clear_backend_probe_cache()
+
+        cleaned = {}
+
+        class _FakeEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/root\n"
+                        "cwd=/workspace\nuser=root\n"
+                    ),
+                }
+
+            def cleanup(self, *, force_remove=False):
+                cleaned["force_remove"] = force_remove
+
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _FakeEnv())
+
+        assert _pb._probe_remote_backend("docker") is not None
+        # force_remove=True: persist mode would otherwise leave it running.
+        assert cleaned == {"force_remove": True}
+
+    def test_probe_remote_backend_tears_down_sandbox_on_failure(self, monkeypatch):
+        """Teardown must also run when the probe command blows up — a flaky
+        backend would otherwise leak the container the probe just created."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        _pb._clear_backend_probe_cache()
+
+        cleaned = []
+
+        class _ExplodingEnv:
+            def execute(self, cmd, timeout=None):
+                raise RuntimeError("backend went away")
+
+            def cleanup(self, *, force_remove=False):
+                cleaned.append(force_remove)
+
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _ExplodingEnv())
+
+        assert _pb._probe_remote_backend("docker") is None
+        assert cleaned == [True]
+
+    def test_probe_remote_backend_tolerates_kwargless_cleanup(self, monkeypatch):
+        """Backends that inherit the base ``cleanup(self)`` take no kwargs; the
+        probe must use the bare call instead of dying on TypeError."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "singularity")
+        _pb._clear_backend_probe_cache()
+
+        calls = []
+
+        class _LegacyEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/home/u\n"
+                        "cwd=/home/u\nuser=u\n"
+                    ),
+                }
+
+            def cleanup(self):
+                calls.append("bare")
+
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _LegacyEnv())
+
+        assert _pb._probe_remote_backend("singularity") is not None
+        assert calls == ["bare"]
+
+    def test_probe_remote_backend_does_not_tear_down_ssh(self, monkeypatch):
+        """SSH has no task-scoped sandbox: its cleanup() closes a ControlMaster
+        socket shared with the agent's real environment, so the probe must
+        leave it alone (nothing leaks — ControlPersist expires the master)."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        _pb._clear_backend_probe_cache()
+
+        calls = []
+
+        class _SharedSshEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/home/u\n"
+                        "cwd=/home/u\nuser=u\n"
+                    ),
+                }
+
+            def cleanup(self):
+                calls.append("cleanup")
+
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _SharedSshEnv())
+
+        assert _pb._probe_remote_backend("ssh") is not None
+        assert calls == []
+
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
@@ -1020,3 +1142,40 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 
 
+
+
+class TestContextFileReadTimeout:
+    def test_slow_hermes_md_is_skipped_and_agents_md_still_loads(self, tmp_path, monkeypatch, caplog):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".hermes.md").write_text("Hermes project rules.")
+        (tmp_path / "AGENTS.md").write_text("Agent fallback rules.")
+        # Patch the module object build_context_files_prompt actually closes
+        # over: an earlier test re-imports agent.prompt_builder, so the
+        # sys.modules entry can be a different module object.
+        pb_mod = sys.modules[build_context_files_prompt.__module__]
+        monkeypatch.setattr(pb_mod, "_get_context_file_read_timeout", lambda: 0.05)
+
+        original_read_text = Path.read_text
+
+        def slow_read_text(self, *args, **kwargs):
+            if self.name == ".hermes.md":
+                time.sleep(0.6)
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", slow_read_text)
+
+        start = time.monotonic()
+        with caplog.at_level(logging.WARNING, logger=pb_mod.__name__):
+            result = build_context_files_prompt(cwd=str(tmp_path))
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 0.4, f"context load blocked for {elapsed:.2f}s"
+        assert "Agent fallback rules" in result
+        assert "Hermes project rules" not in result
+        assert "timed out" in caplog.text.lower()
+
+    def test_read_errors_still_propagate_to_caller(self, tmp_path):
+        from agent.prompt_builder import _read_text_with_timeout
+
+        with pytest.raises(FileNotFoundError):
+            _read_text_with_timeout(tmp_path / "missing.md", timeout=1.0)

@@ -2219,14 +2219,17 @@ def _gateway_list() -> None:
             label += " (current)"
         parts = [f"  {marker} {label:<24s}"]
         if prof.gateway_running:
+            pid = None
             try:
                 from gateway.status import get_running_pid
 
                 pid = get_running_pid(prof.path / "gateway.pid", cleanup_stale=False)
-                if pid:
-                    parts.append(f"PID {pid}")
             except Exception:
                 pass
+            if pid:
+                parts.append(f"PID {pid}")
+            elif named_profile_served_by_running_multiplexer(prof.name):
+                parts.append("served by the default multiplexer")
         else:
             parts.append("not running")
         print(" — ".join(parts))
@@ -6276,18 +6279,20 @@ def _running_under_gateway_supervisor() -> bool:
     return is_gateway_supervisor_process()
 
 
-def named_profile_served_by_running_multiplexer() -> bool:
+def named_profile_served_by_running_multiplexer(profile_name: str | None = None) -> bool:
     """True when a live default multiplexer already ticks this named profile.
 
-    Shared by the named-profile start guard and cron liveness: a satellite
-    profile has no gateway.pid of its own, but the default multiplexer's
-    ticker still fires its jobs (#97120).
+    Shared by the named-profile start guard, cron liveness, and the
+    ``gateway status`` / ``gateway list`` / ``profile list`` reports: a
+    satellite profile has no gateway.pid of its own, but the default
+    multiplexer's ticker still fires its jobs (#97120) and serves its
+    platforms. ``profile_name`` defaults to the current HERMES_HOME profile.
     """
     try:
-        suffix = _profile_suffix()
+        suffix = profile_name if profile_name is not None else _profile_suffix()
     except Exception:
         return False
-    if not suffix:
+    if not suffix or suffix == "default":
         return False
 
     try:
@@ -9071,7 +9076,12 @@ def _gateway_command_inner(args):
             from hermes_cli import gateway_windows
 
             _windows_service_installed = gateway_windows.is_installed()
-        if supports_systemd_services() and (
+        if not snapshot.running and named_profile_served_by_running_multiplexer():
+            # Satellite profile: no gateway.pid / service of its own, but the
+            # default multiplexer is the live inbound process for it.
+            print("✓ Gateway is running via the default-profile multiplexer")
+            print("  Manage it from the default profile: hermes gateway status")
+        elif supports_systemd_services() and (
             get_systemd_unit_path(system=False).exists()
             or get_systemd_unit_path(system=True).exists()
         ):

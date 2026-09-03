@@ -73,7 +73,7 @@ test('local bot replaces an open group main workspace', async () => {
   await expect(groupTab).toHaveCount(0)
   await expect(groupComposer).toHaveCount(0)
   // No "Waking up…" assertion: the mock backend can keep a bot's wake notice
-  // around indefinitely (see bot-mode-closed-chat-stays-closed's settle()),
+  // around indefinitely (see bot-mode-row-click-mirrors-registry's settle()),
   // so its presence no longer distinguishes a stranded handoff. The splash
   // and composer above are the proof the bot's chat took the workspace.
   await expect(page.locator('[data-slot="composer-root"] [contenteditable="true"]').filter({ visible: true }).first()).toBeVisible()

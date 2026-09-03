@@ -35,6 +35,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_state_common import FTS_STORAGE_VERSION
 from utils import base_url_host_matches
 
 
@@ -405,6 +406,28 @@ def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
+def _doctor_memory_config(hermes_home: Path | None = None) -> dict:
+    """Return the effective memory section used by doctor diagnostics."""
+    home = hermes_home if hermes_home is not None else HERMES_HOME
+    try:
+        from hermes_cli.config import _expand_env_vars, read_user_config_raw
+
+        config_path = home / "config.yaml"
+        if not config_path.exists():
+            return {}
+        config = _expand_env_vars(read_user_config_raw(config_path))
+        try:
+            from hermes_cli import managed_scope
+
+            config = managed_scope.apply_managed_overlay(config)
+        except Exception:
+            pass
+        section = config.get("memory") if isinstance(config, dict) else None
+        return section if isinstance(section, dict) else {}
+    except Exception:
+        return {}
+
+
 # ── state.db health/stats thresholds (advisory only — module constants,
 # deliberately NOT config: doctor warnings are guidance, not policy) ──
 STATE_DB_SIZE_WARN_BYTES = 1 * 1024 * 1024 * 1024   # 1 GiB logical size
@@ -474,21 +497,20 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
             "optimize-storage' with the gateway stopped)",
         ))
 
-    # Advisory: oversized database. Suggest auto_prune, and — when the v23
-    # FTS rebuild is pending OR the DB still carries the legacy inline
-    # trigram layout (fts_storage_version marker absent) — the offline
+    # Advisory: oversized database. Suggest auto_prune, and — when the FTS
+    # rebuild is pending OR the DB predates the current trigram layout — the offline
     # optimize-storage pass that migrates/compacts the FTS indexes.
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
         detail = (
             "consider enabling sessions.auto_prune in config.yaml "
             "to bound growth"
         )
-        legacy_trigram = (
+        stale_trigram = (
             fts is not None
             and fts.get("messages_fts_trigram")
-            and stats.get("fts_storage_version") is None
+            and (stats.get("fts_storage_version") or 0) < FTS_STORAGE_VERSION
         )
-        if stats.get("fts_rebuild_pending") or legacy_trigram:
+        if stats.get("fts_rebuild_pending") or stale_trigram:
             detail += (
                 "; run 'hermes sessions optimize-storage' offline "
                 "(with the gateway stopped) to compact FTS storage"
@@ -1980,8 +2002,19 @@ def run_doctor(args):
     else:
         check_warn(f"{_DHH} not found", "(will be created on first use)")
     
-    # Check expected subdirectories
-    expected_subdirs = ["cron", "sessions", "logs", "skills", "memories"]
+    from tools.memory_tool import get_builtin_memory_store_flags
+
+    _memory_config = _doctor_memory_config(hermes_home)
+    _memory_enabled, _user_profile_enabled = get_builtin_memory_store_flags(
+        {"memory": _memory_config}
+    )
+
+    # Check expected subdirectories. The built-in file store does not create or
+    # consume memories/ when both targets are disabled, so stale migration files
+    # are not an active diagnostic surface.
+    expected_subdirs = ["cron", "sessions", "logs", "skills"]
+    if _memory_enabled or _user_profile_enabled:
+        expected_subdirs.append("memories")
     for subdir_name in expected_subdirs:
         subdir_path = hermes_home / subdir_name
         if subdir_path.exists():
@@ -2016,22 +2049,28 @@ def run_doctor(args):
             check_ok(f"Created {_DHH}/SOUL.md with basic template")
             fixed_count += 1
     
-    # Check memory directory
+    # Check only enabled built-in stores. External providers are additive, but
+    # users can explicitly disable either legacy file target; stale files left
+    # by a migration must not be presented as active memory usage.
     memories_dir = hermes_home / "memories"
-    if memories_dir.exists():
+    if not (_memory_enabled or _user_profile_enabled):
+        check_info("Built-in memory files disabled by config")
+    elif memories_dir.exists():
         check_ok(f"{_DHH}/memories/ directory exists")
         memory_file = memories_dir / "MEMORY.md"
         user_file = memories_dir / "USER.md"
-        if memory_file.exists():
-            size = len(memory_file.read_text(encoding="utf-8").strip())
-            check_ok(f"MEMORY.md exists ({size} chars)")
-        else:
-            check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
-        if user_file.exists():
-            size = len(user_file.read_text(encoding="utf-8").strip())
-            check_ok(f"USER.md exists ({size} chars)")
-        else:
-            check_info("USER.md not created yet (will be created when the agent first writes a memory)")
+        if _memory_enabled:
+            if memory_file.exists():
+                size = len(memory_file.read_text(encoding="utf-8").strip())
+                check_ok(f"MEMORY.md exists ({size} chars)")
+            else:
+                check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
+        if _user_profile_enabled:
+            if user_file.exists():
+                size = len(user_file.read_text(encoding="utf-8").strip())
+                check_ok(f"USER.md exists ({size} chars)")
+            else:
+                check_info("USER.md not created yet (will be created when the agent first writes a memory)")
     else:
         check_warn(f"{_DHH}/memories/ not found", "(will be created on first use)")
         if should_fix:
@@ -3243,21 +3282,7 @@ def run_doctor(args):
         check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
 
     _section("Memory Provider")
-    _active_memory_provider = ""
-    try:
-        from hermes_cli.config import read_user_config_raw as _read_raw_mem
-        _mem_cfg_path = HERMES_HOME / "config.yaml"
-        if _mem_cfg_path.exists():
-            # Raw-file diagnostic (+ managed overlay below, unchanged).
-            _raw_cfg = _read_raw_mem(_mem_cfg_path)
-            try:
-                from hermes_cli import managed_scope
-                _raw_cfg = managed_scope.apply_managed_overlay(_raw_cfg)
-            except Exception:
-                pass
-            _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
-    except Exception:
-        pass
+    _active_memory_provider = _memory_config.get("provider", "")
 
     if not _active_memory_provider:
         check_ok("Built-in memory active", "(no external provider configured — this is fine)")

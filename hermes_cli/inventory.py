@@ -798,9 +798,33 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             # just accepted those same credentials when building it.
             kept.append(row)
             continue
+        if _external_process_signed_in(slug):
+            # External-process providers (copilot-acp) authenticate through
+            # their own CLI (`copilot login`), which — like the Anthropic
+            # OAuth case above — leaves no trace in active_provider,
+            # model.provider, or env vars. Verified CLI credentials are a
+            # deliberate sign-in; without this the desktop picker drops the
+            # row the picker-discovery side just accepted.
+            kept.append(row)
+            continue
         if is_provider_explicitly_configured(slug):
             kept.append(row)
     return kept
+
+
+def _external_process_signed_in(slug: str) -> bool:
+    """True when an external-process provider has verified CLI credentials."""
+    try:
+        from hermes_cli.auth import (
+            PROVIDER_REGISTRY,
+            get_external_process_provider_status,
+        )
+        pconfig = PROVIDER_REGISTRY.get(slug)
+        if not pconfig or pconfig.auth_type != "external_process":
+            return False
+        return bool(get_external_process_provider_status(slug).get("auth_verified"))
+    except Exception:
+        return False
 
 
 def _provider_is_keyless(slug: str) -> bool:

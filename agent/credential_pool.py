@@ -1962,11 +1962,19 @@ class CredentialPool:
                     last_refresh=refreshed.get("last_refresh"),
                 )
             elif self.provider == "nous":
+                stale_key = entry.runtime_api_key or entry.agent_key or entry.access_token
                 synced = self._sync_nous_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
+                    # A peer already rotated and persisted a usable key while
+                    # this process was still holding the failed one: adopt it
+                    # without consuming the (single-use) refresh token again.
+                    if force and entry.runtime_api_key and entry.runtime_api_key != stale_key:
+                        logger.debug("Nous entry %s: adopting peer-rotated token, skipping refresh", entry.id)
+                        return entry
                 auth_mod.resolve_nous_runtime_credentials(
                     force_refresh=force,
+                    stale_access_token=stale_key or None,
                 )
                 updated = self._sync_nous_entry_from_auth_store(entry)
             else:
@@ -2217,6 +2225,15 @@ class CredentialPool:
                     self._persist()
                     self._sync_device_code_entry_to_auth_store(updated)
                     return updated
+                if isinstance(exc, TimeoutError):
+                    # Lost the auth-store lock race under heavy fan-out. That
+                    # says nothing about the credential — benching it here is
+                    # what emptied the pool for ~120 sessions on Sep 2 2026
+                    # ("matched no nous entry ... pool size 0"). Leave the
+                    # entry untouched; the caller's retry re-syncs once the
+                    # winner has persisted.
+                    logger.debug("Nous refresh skipped: auth store lock busy; not benching entry")
+                    return entry
                 if auth_mod._is_terminal_nous_refresh_error(exc):
                     logger.debug("Nous refresh token is terminally invalid; clearing local token state")
                     try:

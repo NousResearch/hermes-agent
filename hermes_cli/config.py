@@ -1457,7 +1457,7 @@ def _is_env_config_key(key: str) -> bool:
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
         'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
         'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
-        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
+        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY', 'API_SERVER_KEY',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
@@ -2985,13 +2985,36 @@ def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     return cfg, stripped
 
 
+def _env_ref_lookup(name: str) -> Optional[str]:
+    """Resolve the env var behind a ``${VAR}`` / ``${env:VAR}`` config ref.
+
+    Outside a profile secret scope this is a plain ``os.environ`` read — the
+    default profile and every single-profile caller keep their legacy
+    behavior.  Inside a scope (a multiplexed gateway turn, a secondary
+    profile's config load, a cron job) the read goes through
+    ``agent.secret_scope.get_secret`` so the ref resolves against *that*
+    profile's ``.env``: under multiplexing a miss is a miss, never another
+    profile's ``os.environ`` value (#84079 — every profile "had" the default
+    profile's ``${MATRIX_ACCESS_TOKEN}`` and fanned out).  Same policy as
+    ``gateway.config._getenv`` and ``get_env_value``.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+    except Exception:
+        return os.environ.get(name)
+    if current_secret_scope() is None:
+        return os.environ.get(name)
+    return _get_secret(name)
+
+
 def _env_expand_match(m: re.Match) -> str:
     """Expand one ``${...}`` config reference.
 
     Two accepted shapes, matching what MCP server config already resolves
     (``tools/mcp_tool.py::_env_ref_name``):
 
-    * ``${VAR}`` — legacy bare name, resolved via ``os.environ``.
+    * ``${VAR}`` — legacy bare name, resolved via ``_env_ref_lookup``
+      (``os.environ``, or the active profile secret scope).
     * ``${env:VAR}`` — Cursor-style SecretRef, same resolution after the
       ``env:`` prefix is stripped.  Before this, the prefixed form worked in
       MCP config but stayed a literal string in config.yaml — a confusing
@@ -3009,7 +3032,7 @@ def _env_expand_match(m: re.Match) -> str:
         name = inner[len("env:"):].strip()
         if not name:
             return raw
-        val = os.environ.get(name)
+        val = _env_ref_lookup(name)
         if val is not None:
             return val
         logger.warning(
@@ -3030,7 +3053,8 @@ def _env_expand_match(m: re.Match) -> str:
         )
         return raw
     # Legacy ``${VAR}`` — bare name.
-    return os.environ.get(inner, raw)
+    val = _env_ref_lookup(inner)
+    return val if val is not None else raw
 
 
 def _env_ref_var_name(ref: str) -> Optional[str]:
@@ -3083,7 +3107,7 @@ def _env_ref_snapshot(obj, snapshot=None):
         for raw in re.findall(r"\${([^}]+)}", obj):
             name = _env_ref_var_name(raw)
             if name is not None:
-                snapshot[name] = os.environ.get(name)
+                snapshot[name] = _env_ref_lookup(name)
     elif isinstance(obj, dict):
         for value in obj.values():
             _env_ref_snapshot(value, snapshot)
@@ -4097,7 +4121,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # pins unexpanded literals (e.g. auxiliary.<task>.api_key) for the
             # life of the process (#58514).
             env_snapshot = cached[5] if len(cached) > 5 else {}
-            if all(os.environ.get(k) == v for k, v in env_snapshot.items()):
+            if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
                 return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
@@ -4658,6 +4682,38 @@ def _env_line_defines_key(
     ) == _env_var_policy_name(key, is_windows=is_windows)
 
 
+def _publish_env_value(key: str, value: Optional[str]) -> None:
+    """Publish a just-persisted ``.env`` change to the live process.
+
+    ``save_env_value`` / ``remove_env_value`` already target the right file
+    (``get_env_path()`` honors the profile-home override), but the in-process
+    mirror historically went straight to ``os.environ``. Under a multiplexed
+    gateway a routed profile's write (e.g. a ``/pair`` grant mirrored into
+    ``DISCORD_ALLOWED_USERS``) would then land in the SHARED process env and
+    be visible to every other profile (#88441, #77490). In that case update
+    the installed scope mapping instead so same-turn reads see the change,
+    and leave ``os.environ`` alone. Every other caller keeps the legacy
+    ``os.environ`` publish.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        scope = current_secret_scope() if is_multiplex_active() else None
+    except Exception:
+        scope = None
+    if scope is not None:
+        if isinstance(scope, dict):
+            if value is None:
+                scope.pop(key, None)
+            else:
+                scope[key] = value
+        return
+    if value is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = value
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
     if is_managed():
@@ -4746,7 +4802,7 @@ def save_env_value(key: str, value: str):
             pass
         raise
 
-    os.environ[key] = value
+    _publish_env_value(key, value)
     invalidate_env_cache()
 
 
@@ -4793,7 +4849,7 @@ def remove_env_value(key: str) -> bool:
         raise ValueError(f"Invalid environment variable name: {key!r}")
     env_path = get_env_path()
     if not env_path.exists():
-        os.environ.pop(key, None)
+        _publish_env_value(key, None)
         return False
 
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
@@ -4837,7 +4893,7 @@ def remove_env_value(key: str) -> bool:
                 pass
             raise
 
-    os.environ.pop(key, None)
+    _publish_env_value(key, None)
     invalidate_env_cache()
     return found
 
@@ -5136,7 +5192,10 @@ def show_config():
         _active_personality = display.get('personality') or 'none'
     print(f"  Personality:  {_active_personality}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', True) else 'off'}")
-    print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
+    print(
+        f"  Bell:         complete={'on' if display.get('bell_on_complete', False) else 'off'}, "
+        f"prompt={'on' if display.get('bell_on_prompt', False) else 'off'}"
+    )
     ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}
     ump_first = ump.get('first_lines', 2)
     ump_last = ump.get('last_lines', 2)

@@ -1952,6 +1952,33 @@ def _resolve_explicit_runtime(
     return None
 
 
+def _is_external_process_provider(provider: str) -> bool:
+    """Whether ``provider`` is declared as an external-process (CLI) provider.
+
+    Reads the CLI provider registry first (which now absorbs registered
+    ProviderProfiles, in-tree and out), then falls back to the profile registry
+    directly so the check works before the CLI registry has been extended.
+    """
+    name = (provider or "").strip().lower()
+    if not name:
+        return False
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        pconfig = PROVIDER_REGISTRY.get(name)
+        if pconfig is not None:
+            return pconfig.auth_type == "external_process"
+    except Exception:
+        pass
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(name)
+    except Exception:
+        return False
+    return profile is not None and getattr(profile, "auth_type", "") == "external_process"
+
+
 def resolve_runtime_provider(
     *,
     requested: Optional[str] = None,
@@ -2337,10 +2364,13 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
 
-    if provider == "copilot-acp":
+    # External-process providers (an agent CLI driven over stdio, e.g. ACP).
+    # Keyed on the registered provider's auth_type rather than on one name, so a
+    # provider shipped outside this tree lands on the same credential path.
+    if _is_external_process_provider(provider):
         creds = resolve_external_process_provider_credentials(provider)
         return {
-            "provider": "copilot-acp",
+            "provider": provider,
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),

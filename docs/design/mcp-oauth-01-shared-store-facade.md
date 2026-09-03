@@ -1,8 +1,10 @@
 # MCP OAuth Chunk 1 — Shared Credential Store Facade
 
-Status: design proposal (not yet implemented)
+Status: design proposal (not yet implemented; design-review updates applied 2026-09-03)
 Depends on: Chunk 0 behavioral harness
 Delivery plan: [`../plans/2026-09-01-mcp-oauth-credential-store-delivery-plan.md`](../plans/2026-09-01-mcp-oauth-credential-store-delivery-plan.md)
+Architecture: [`../architecture/mcp-oauth-credential-store-architecture.md`](../architecture/mcp-oauth-credential-store-architecture.md) §4.1
+Design-review updates: [`../requirements/mcp-oauth-design-review-approaches.md`](../requirements/mcp-oauth-design-review-approaches.md) (F-0, F-3; forward notes F-4, F-5)
 
 ## Purpose
 
@@ -48,6 +50,8 @@ class LegacyOAuthState:
 
 This transitional model must not become the final bundle schema.
 
+`profile_home` is canonicalized by a single shared function with the semantics of `hermes_constants.hermes_home_key()` — `os.path.normcase(str(Path(home).expanduser().resolve(strict=False)))` — so the OAuth identity and the existing plugin/registry/config scope key cannot drift. Resolution collapses symlinks and `..` because the profile directory exists by the time any OAuth operation runs. Two spellings of one profile home (`~/.hermes`, an absolute path, a trailing slash, a symlinked parent, macOS `/var` vs `/private/var`) therefore produce one identity and hit one legacy file set. The digest-keyed filename (`<identity-digest>.json`) does not arrive until Chunk 5; in Chunk 1 the canonical `profile_home` alone provides this guarantee. See architecture §4.1 for the full rule and its known limits (case-insensitive-filesystem case drift; cross-namespace mounts).
+
 ## Store interface for this chunk
 
 ```python
@@ -62,11 +66,13 @@ class OAuthCredentialStore(Protocol):
     def delete(self, identity: OAuthIdentity) -> bool: ...
 ```
 
-The interface temporarily permits independent record writes to maintain compatibility. These methods are removed or made private when Chunk 5 introduces coherent bundles.
+The interface temporarily permits independent record writes to maintain compatibility. These methods are removed or made private when Chunk 5 introduces coherent bundles. Chunk 1 guarantees only that each individual record is replaced atomically (`os.replace`); ordering the three writes to bound reader incoherence is Chunk 3's responsibility (architecture §18, Phase 2), and a coherent multi-record read is not guaranteed until Chunk 5.
 
 ## Legacy backend
 
 `LegacyFileOAuthCredentialStore` ports the current safe filename, JSON validation, absolute-expiry compatibility, permissions, atomic writes, and CIMD marker behavior from `HermesTokenStorage`.
+
+It preserves the provider's raw `expires_in` in the on-disk record (current `set_tokens` behavior — the SDK payload dump plus an added `expires_at`). Chunk 1 does not add the never-rewritten `original_expires_in` field or the wall-clock plausibility guard; those are Chunk 4 (architecture §4.2, §4.3). Not stripping the raw value now lets Chunk 4 adopt it without a format migration.
 
 Paths remain:
 
@@ -104,6 +110,8 @@ Replace direct durable operations in:
 
 During this chunk, `HermesTokenStorage` may remain as an MCP SDK adapter, but it delegates every durable operation to the store. It no longer constructs paths itself.
 
+Profile-home canonicalization is centralized in the same pass. `MCPOAuthManager._key()` and `hermes_cli/profiles.py::profile_matches_home()` both currently do `expanduser().resolve(strict=False)` without `normcase`; they move onto the shared `hermes_home_key()` helper so the manager cache key, the profile-match check, and the OAuth identity agree on which profile a request belongs to.
+
 ## Typed errors
 
 Introduce stable safe codes:
@@ -126,6 +134,7 @@ Parameterize tests over the store factory:
 - CIMD marker round trip.
 - Explicit deletion removes every legacy artifact.
 - Profile isolation.
+- Identity stability across path spellings: `{tilde, trailing slash, embedded ``..``, symlinked parent, ``/var`` vs ``/private/var``}` of one profile home produce one `OAuthIdentity` and resolve `load_state` / `set_*` to the same legacy file set.
 - Server-name path traversal resistance.
 - POSIX directory and file permissions.
 - Corrupt record reporting without automatic deletion.
@@ -141,10 +150,11 @@ Parameterize tests over the store factory:
 
 ## Non-goals
 
-- Do not add staged reauthorization.
+- Do not add staged reauthorization, the probe-outcome classifier, or the `authorization_endpoint_unavailable` error (F-2, Chunk 3).
 - Do not fix destructive rollback by adding new rollback rules.
-- Do not introduce bundle revisions or CAS.
-- Do not add Keychain.
+- Do not introduce bundle revisions, CAS, or the identity digest (Chunk 4/5).
+- Do not add the `original_expires_in` field or the wall-clock plausibility guard (F-5, Chunk 4).
+- Do not add Keychain or the `credential_ambiguous` error (Chunk 6).
 - Do not migrate user files.
 
 ## Completion criteria

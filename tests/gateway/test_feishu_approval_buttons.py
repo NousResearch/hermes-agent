@@ -152,6 +152,8 @@ class TestFeishuExecApproval:
         assert state["session_key"] == "my-session-key"
         assert state["message_id"] == "msg_002"
         assert state["chat_id"] == "oc_12345"
+        # Original request body is stored so the resolved card can keep it.
+        assert "echo test" in state["body"]
 
 
 # ===========================================================================
@@ -314,6 +316,7 @@ class TestCardActionCallbackResponse:
             "session_key": "sess-1",
             "message_id": "msg-1",
             "chat_id": "oc_12345",
+            "body": "```\nrm -rf /important\n```\n**Reason:** dangerous deletion",
         }
         data = _make_card_action_data(
             {"hermes_action": "approve_once", "approval_id": 1},
@@ -330,7 +333,10 @@ class TestCardActionCallbackResponse:
         card = response.card.data
         assert card["header"]["template"] == "green"
         assert "Approved once" in card["header"]["title"]["content"]
-        assert "Bob" in card["elements"][0]["content"]
+        # Resolved card keeps the original request body (audit trail),
+        # followed by the decision + actor.
+        assert "rm -rf /important" in card["elements"][0]["content"]
+        assert "Bob" in card["elements"][-1]["content"]
 
 
     def test_ignores_expired_cached_name(self, _patch_callback_card_types):

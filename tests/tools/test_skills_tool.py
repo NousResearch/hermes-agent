@@ -969,3 +969,70 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is False
         assert "Ambiguous" in result["error"]
         assert len(result["matches"]) == 2
+
+    def test_identical_duplicates_dedupe_instead_of_refuse(self, tmp_path):
+        """Byte-identical copies across tiers are one skill, not a collision.
+
+        Real-world regression (#100715): builtin skills seeded into the
+        profile's own tree ALSO live in a shared external_dir the profile
+        registers (``skills.external_dirs``). Both copies are byte-identical,
+        yet skill_view refused the bare name — and, worse, also refused the
+        categorized form, so the refusal hint's own recovery was unusable.
+        ``skills_list`` dedupes first-win and shows the skill as enabled, so
+        lookup refusing what enumeration advertises is the inconsistency:
+        identical candidates are not ambiguity — any of them serves the
+        same bytes, so serve one (first, matching _find_all_skills'
+        project > local > external order) instead of guessing.
+        """
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        body = "---\nname: dup-skill\ndescription: A duplicated builtin.\n---\n\n# dup-skill\n\nSame bytes twice.\n"
+        for root in (local_dir, external_dir):
+            skill_dir = root / "devops" / "dup-skill"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(body)
+
+        # Bare name resolves.
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("dup-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert "Same bytes twice." in result["content"]
+        # First-win: the local (profile) copy wins, matching _find_all_skills.
+        assert str(local_dir) in str(Path(result["skill_dir"]))
+
+        # The categorized form resolves too — the duplicate must not make
+        # the documented recovery path ("use the categorized path") a lie.
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("devops/dup-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert "Same bytes twice." in result["content"]
+
+    def test_identical_duplicates_with_divergent_frontmatter_still_refuse(self, tmp_path):
+        """The dedupe gate must compare actual bytes, not paths — two
+        copies with the same name but different content stay a refused
+        collision (59da8ec4ec's protection is untouched)."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(local_dir, "divergent", body="LOCAL VERSION")
+        _make_skill(external_dir, "divergent", body="EXTERNAL VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("divergent")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Ambiguous" in result["error"]
+        assert len(result["matches"]) == 2

@@ -70,6 +70,7 @@ import json
 import logging
 import time
 import threading
+import hashlib
 
 from hermes_constants import get_hermes_home, display_hermes_home
 import os
@@ -1365,6 +1366,28 @@ def skill_view(
             ]
             if project_candidates:
                 candidates = project_candidates
+
+        if len(candidates) > 1:
+            # Identical duplicates are not ambiguity. A builtin skill can
+            # exist byte-identically in several tiers — e.g. seeded into the
+            # active profile's own tree while the shared default tree is
+            # also registered as an external_dir (#100715). Refusing those
+            # names made skills that skills_list advertises as enabled
+            # (first-win dedupe, see _find_all_skills) un-loadable by bare
+            # name — and the refusal hit the categorized form too, so the
+            # hint's own recovery path was unusable. Serving any copy
+            # serves the same bytes, so collapse identical candidates to
+            # the first (matching _find_all_skills' project > local >
+            # external first-win order). Divergent content still refuses
+            # below.
+            hashes: List[Optional[str]] = []
+            for _, smd in candidates:
+                try:
+                    hashes.append(hashlib.md5(smd.read_bytes()).hexdigest())
+                except OSError:
+                    hashes.append(None)
+            if all(h is not None for h in hashes) and len(set(hashes)) == 1:
+                candidates = candidates[:1]
 
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]

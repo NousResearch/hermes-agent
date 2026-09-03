@@ -3,6 +3,7 @@
 import asyncio
 import json
 import socket
+import os
 import sys
 from pathlib import Path
 
@@ -51,7 +52,7 @@ def test_short_home_binds_in_home(tmp_path: Path):
     import tempfile
 
     try:
-        short_root = Path(tempfile.mkdtemp(prefix="hgw-", dir="/tmp"))
+        short_root = Path(tempfile.mkdtemp(prefix="hgw-", dir=tempfile.gettempdir()))
     except OSError:
         pytest.skip("/tmp not writable on this host")
     try:
@@ -76,17 +77,48 @@ def test_long_home_uses_pointer_fallback(tmp_path: Path):
     assert pointer == deep / "gateway.sock.path"
 
 
-def test_client_resolution_prefers_direct_then_pointer(home: Path, tmp_path: Path):
-    assert resolve_client_socket_path(home) is None
-    # pointer file to an existing socket-ish file
-    target = tmp_path / "elsewhere.sock"
-    target.touch()
-    (home / "gateway.sock.path").write_text(str(target))
-    assert resolve_client_socket_path(home) == target
-    # direct file wins over pointer
-    direct = home / "gateway.sock"
-    direct.touch()
-    assert resolve_client_socket_path(home) == direct
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="AF_UNIX; Windows uses a named pipe"
+)
+def test_client_resolution_prefers_direct_then_pointer():
+    """Precedence: the in-home socket wins over the pointer's target.
+
+    Real sockets rather than ``touch()``-ed files: the client now verifies
+    a candidate is a socket this user owns with no group/other access, so a
+    placeholder regular file is (correctly) treated as absent. The home is
+    built short on purpose — pytest's tmp_path already exceeds ``sun_path``,
+    which is the very condition that makes production use the pointer.
+    """
+    import shutil
+    import socket as _socket
+    import tempfile
+
+    scratch = Path(tempfile.mkdtemp(prefix="hgw-", dir=tempfile.gettempdir()))
+    home = scratch / "h"
+    home.mkdir()
+    opened = []
+
+    def _bind(path: Path) -> Path:
+        srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        srv.bind(str(path))
+        srv.listen(1)
+        os.chmod(path, 0o600)
+        opened.append(srv)
+        return path
+
+    try:
+        assert resolve_client_socket_path(home) is None
+
+        target = _bind(scratch / "elsewhere.sock")
+        (home / "gateway.sock.path").write_text(str(target), encoding="utf-8")
+        assert resolve_client_socket_path(home) == target
+
+        direct = _bind(home / "gateway.sock")
+        assert resolve_client_socket_path(home) == direct
+    finally:
+        for srv in opened:
+            srv.close()
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def test_windows_pipe_name_is_stable_and_home_scoped(tmp_path: Path):

@@ -52,6 +52,8 @@ import json
 import logging
 import os
 import socket
+import stat
+import struct
 import sys
 import tempfile
 import time
@@ -131,10 +133,99 @@ def resolve_server_socket_path(home: Path) -> tuple[Path, Optional[Path]]:
     return _fallback_socket_path(home), _pointer_path(home)
 
 
+def _current_euid() -> Optional[int]:
+    """The effective uid, or None where the platform has no such concept.
+
+    ``os.geteuid`` is absent on Windows, so it is resolved through
+    ``getattr`` rather than referenced directly — the Windows-footgun lint
+    flags a bare call even inside a platform-gated branch, and looking it up
+    removes the hazard instead of annotating it.
+    """
+    getter = getattr(os, "geteuid", None)
+    return getter() if getter is not None else None
+
+
+def _peer_euid(sock: "socket.socket") -> Optional[int]:
+    """The connected peer's euid, where the platform reports it.
+
+    The path check is a filter, not a guarantee: a socket can be swapped
+    between the ``stat`` and the ``connect``. ``SO_PEERCRED`` answers for the
+    process actually on the other end, which closes that race regardless of
+    filesystem timing.
+
+    Linux-only in practice — and that is precisely the platform carrying the
+    exposure, because a shared ``/tmp`` is what makes the fallback path
+    reachable by another account at all (macOS hands each user a private
+    ``gettempdir()``). BSD/macOS report peer credentials through
+    ``LOCAL_PEERCRED`` with a different structure; returning None there
+    leaves the path check as the sole filter rather than guessing at a
+    layout.
+    """
+    opt = getattr(socket, "SO_PEERCRED", None)
+    if opt is None:
+        return None
+    try:
+        raw = sock.getsockopt(socket.SOL_SOCKET, opt, struct.calcsize("3i"))
+        _pid, uid, _gid = struct.unpack("3i", raw)
+        return uid
+    except (OSError, struct.error):
+        return None
+
+
+def _is_trustworthy_socket(candidate: Path) -> bool:
+    """True when *candidate* is a socket this user owns, with no group/other access.
+
+    The module's trust model is that filesystem ACLs are the auth boundary.
+    That holds for ``$HERMES_HOME/gateway.sock`` — the home directory is the
+    user's. It does NOT hold for the temp-dir fallback: on Linux
+    ``tempfile.gettempdir()`` is usually the shared, world-writable ``/tmp``,
+    and the filename is ``hermes-gw-<sha256(home)[:16]>.sock`` — unsalted, so
+    anyone who can guess the home path can compute it and bind there first.
+    A client that connects to whatever exists would then take its answers
+    from that process, and ``identify``/``status`` are exactly the answers
+    the updater and the fleet-version matrix act on.
+
+    The server already binds under ``umask(0o177)`` and chmods 0600, so a
+    genuine socket always passes. This is the client half of the same
+    property: refuse anything we do not own, or that anyone else can reach.
+
+    Windows named pipes live in a per-user namespace and carry no st_uid;
+    this check is POSIX-only by design.
+    """
+    if _IS_WINDOWS:
+        return True
+    try:
+        info = os.stat(candidate)
+    except OSError:
+        return False
+    if not stat.S_ISSOCK(info.st_mode):
+        logger.debug("Control socket %s is not a socket; ignoring", candidate)
+        return False
+    euid = _current_euid()
+    if euid is not None and info.st_uid != euid:
+        logger.warning(
+            "Ignoring control socket %s: owned by uid %d, not %d",
+            candidate, info.st_uid, euid,
+        )
+        return False
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        logger.warning(
+            "Ignoring control socket %s: mode %o allows group/other access",
+            candidate, stat.S_IMODE(info.st_mode),
+        )
+        return False
+    return True
+
+
 def resolve_client_socket_path(home: Path) -> Optional[Path]:
-    """Where a client should connect for ``home``, or None when nothing exists."""
+    """Where a client should connect for ``home``, or None when nothing exists.
+
+    A candidate that fails :func:`_is_trustworthy_socket` is treated as
+    absent, which drops the caller onto the existing state-file/scan
+    fallback — the same path taken when no gateway is running.
+    """
     direct = _default_socket_path(home)
-    if direct.exists():
+    if _is_trustworthy_socket(direct):
         return direct
     pointer = _pointer_path(home)
     try:
@@ -142,7 +233,7 @@ def resolve_client_socket_path(home: Path) -> Optional[Path]:
             target = pointer.read_text(encoding="utf-8").strip()
             if target:
                 candidate = Path(target)
-                if candidate.exists():
+                if _is_trustworthy_socket(candidate):
                     return candidate
     except OSError:
         pass
@@ -483,6 +574,13 @@ def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[b
         try:
             sock.connect(str(path))
         except (ConnectionRefusedError, FileNotFoundError, OSError):
+            return None
+        peer, euid = _peer_euid(sock), _current_euid()
+        if peer is not None and euid is not None and peer != euid:
+            logger.warning(
+                "Refusing control socket %s: peer runs as uid %d, not %d",
+                path, peer, euid,
+            )
             return None
         sock.sendall(request)
         chunks: list[bytes] = []

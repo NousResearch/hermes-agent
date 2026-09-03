@@ -7640,6 +7640,33 @@ def _electron_pkg_staged_missing_dist(project_root: Path) -> bool:
     )
 
 
+def _linux_native_build_toolchain_hint() -> Optional[str]:
+    """Missing C++ toolchain hint for native module builds on Linux (#102081).
+
+    node-pty ships prebuilds for Windows and macOS only, so on Linux its
+    install script always falls back to a local node-gyp build, which needs
+    ``make`` and a C++ compiler on PATH. When either is missing the install
+    dies deep inside a long npm log whose only actionable line is
+    ``make: g++: No such file or directory``, and the generic "run npm ci
+    manually" advice cannot help — the manual run fails the same way.
+    """
+    if sys.platform != "linux":
+        return None
+    missing = [tool for tool in ("make", "g++") if shutil.which(tool) is None]
+    if not missing:
+        return None
+    listed = ", ".join(missing)
+    return (
+        "  ⚠ Native modules such as node-pty ship no Linux prebuilds and must\n"
+        f"    be compiled locally, but these are missing from PATH: {listed}.\n"
+        "    Install a C++ toolchain (or your distro's equivalent), e.g.:\n"
+        "      Debian/Ubuntu:  sudo apt install -y build-essential\n"
+        "      Fedora:         sudo dnf install -y gcc-c++ make\n"
+        "      Arch:           sudo pacman -S --needed base-devel\n"
+        "    then run this command again."
+    )
+
+
 def _redownload_electron_dist(
     project_root: Path,
     env: dict,
@@ -8643,6 +8670,9 @@ def cmd_gui(args: argparse.Namespace):
                 if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
                     print("✗ Desktop dependency install failed")
                     print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
+                    toolchain_hint = _linux_native_build_toolchain_hint()
+                    if toolchain_hint:
+                        print(toolchain_hint)
                     sys.exit(install_result.returncode or 1)
                 repaired = _try_redownload_electron_dist(PROJECT_ROOT, env)
                 if repaired:

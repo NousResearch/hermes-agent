@@ -509,6 +509,119 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 # Respawn guard (check_respawn_guard + dispatch_once integration)
 # ---------------------------------------------------------------------------
 
+OPEN_PR = "https://github.com/example/repo/pull/42"
+CLOSED_PR = "https://github.com/example/repo/pull/41"
+
+
+def _pr_states(**states):
+    """Return a ``_is_open_github_pr`` stub answering from a URL->open map."""
+    return lambda url: states[url]
+
+
+def test_respawn_guard_open_pr_in_comment(kanban_home, monkeypatch):
+    """Only a currently open GitHub PR in a recent comment triggers active_pr."""
+    monkeypatch.setattr(kb, "_is_open_github_pr", lambda _url: True)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="has-pr", assignee="alice")
+        kb.add_comment(conn, t, "worker", f"PR: {OPEN_PR}")
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+
+@pytest.mark.parametrize("state", ["closed", "merged"])
+def test_respawn_guard_ignores_terminal_pr_in_comment(kanban_home, monkeypatch, state):
+    """A merged or closed PR URL must not strand a ready task for 24 hours."""
+    monkeypatch.setattr(kb, "_is_open_github_pr", lambda _url: False)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title=f"{state}-pr", assignee="alice")
+        kb.add_comment(conn, t, "worker", f"PR: {CLOSED_PR}")
+        assert kb.check_respawn_guard(conn, t) is None
+
+
+def test_respawn_guard_scans_every_url_in_one_comment(kanban_home, monkeypatch):
+    """A closed URL must not hide an open one written later in the same comment."""
+    monkeypatch.setattr(
+        kb, "_is_open_github_pr", _pr_states(**{CLOSED_PR: False, OPEN_PR: True})
+    )
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="superseded-then-live", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            f"Closed {CLOSED_PR} as stale, reopened the work as {OPEN_PR}.",
+        )
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+
+def test_respawn_guard_checks_each_distinct_pr_url_once(kanban_home, monkeypatch):
+    """Repeating a URL must not multiply the per-tick GitHub lookups."""
+    looked_up = []
+
+    def fake_state(url):
+        looked_up.append(url)
+        return False
+
+    monkeypatch.setattr(kb, "_is_open_github_pr", fake_state)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="chatty", assignee="alice")
+        kb.add_comment(conn, t, "worker", f"Opened {CLOSED_PR}")
+        kb.add_comment(conn, t, "worker", f"Still waiting on {CLOSED_PR}")
+        assert kb.check_respawn_guard(conn, t) is None
+    assert looked_up == [CLOSED_PR]
+
+
+def test_respawn_guard_ignores_pr_when_status_cannot_be_checked(
+    kanban_home, monkeypatch
+):
+    """A GitHub lookup failure fails open rather than parking work on a URL."""
+    monkeypatch.setattr(kb.subprocess, "run", _unavailable_gh)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="unavailable-pr", assignee="alice")
+        kb.add_comment(conn, t, "worker", f"PR: {OPEN_PR}")
+        assert kb.check_respawn_guard(conn, t) is None
+
+
+def _unavailable_gh(command, **kwargs):
+    raise FileNotFoundError("gh")
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "expected"),
+    [
+        (0, "OPEN\n", True),
+        (0, "CLOSED\n", False),
+        (0, "MERGED\n", False),
+        (1, "", False),
+    ],
+)
+def test_is_open_github_pr_queries_gh_state(monkeypatch, returncode, stdout, expected):
+    """The PR guard treats only a `gh`-reported OPEN state as active."""
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout)
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+
+    assert kb._is_open_github_pr(OPEN_PR) is expected
+    assert calls == [
+        (
+            ["gh", "pr", "view", OPEN_PR, "--json", "state", "--jq", ".state"],
+            {"capture_output": True, "text": True, "timeout": 10},
+        )
+    ]
+
+
+@pytest.mark.parametrize("failure", [OSError("gh"), subprocess.TimeoutExpired("gh", 10)])
+def test_is_open_github_pr_fails_open_when_gh_is_unusable(monkeypatch, failure):
+    """No `gh`, no network, no answer — the URL must not guard the task."""
+
+    def fake_run(command, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+    assert kb._is_open_github_pr(OPEN_PR) is False
+
+
 
 
 

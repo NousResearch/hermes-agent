@@ -8014,7 +8014,7 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # for operators who want a tighter/looser probe cadence.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
-# Within this window a GitHub PR URL in a comment blocks re-spawn.
+# Within this window an open GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
 # Pattern matching a GitHub PR URL in task comments.
@@ -8022,6 +8022,26 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+
+
+def _is_open_github_pr(pr_url: str) -> bool:
+    """Return whether GitHub currently reports ``pr_url`` as open.
+
+    The respawn guard must never infer PR status from a URL alone: merged and
+    closed PRs are terminal and must not leave ready work parked for a day.
+    If GitHub cannot be queried (offline dispatcher, missing ``gh``, timeout,
+    or authentication error), fail open so a stale URL cannot block execution.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "state", "--jq", ".state"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and result.stdout.strip().upper() == "OPEN"
 
 
 @dataclass
@@ -9446,9 +9466,10 @@ def check_respawn_guard(
         arrives AFTER that completion — that's a deliberate re-run request.
 
     ``"active_pr"``
-        A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        An open GitHub PR URL appears in a recent task comment (within
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds). A prior worker already opened
+        an active PR; re-spawning risks a duplicate PR on the same task.
+        Closed, merged, and unresolvable PR URLs do not guard the task.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -9536,14 +9557,24 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. Open GitHub PR URL in a recent comment — a prior worker already
+    #    opened work that is still pending review. URL presence alone is not
+    #    enough: merged/closed PRs must release the task immediately. Every
+    #    URL in every recent comment is considered, because a comment that
+    #    links a superseded PR before the live one must still guard.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    checked: set[str] = set()
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        for match in _RESPAWN_GUARD_PR_URL_RE.finditer(c["body"] or ""):
+            url = match.group(0)
+            if url in checked:
+                continue
+            checked.add(url)
+            if _is_open_github_pr(url):
+                return "active_pr"
 
     return None
 

@@ -434,6 +434,9 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         lambda *a, **k: {"kanban": {"review_dispatch": True}},
     )
     pr_comment = "Opened https://github.com/example/repo/pull/123 for review."
+    # The guard resolves PR state through GitHub; this test is about lanes,
+    # so pin the linked PR as open instead of reaching for the network.
+    monkeypatch.setattr(kb, "_is_open_github_pr", lambda _url: True)
 
     with kb.connect() as conn:
         # Review-lane task with a fresh PR comment.

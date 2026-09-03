@@ -12680,7 +12680,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy",
         "prompt-size",
         "resume",
-        "send", "sessions", "setup",
+        "send", "sessions", "setup", "task",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
@@ -14180,6 +14180,29 @@ def main():
         _register_curator_cli(curator_parser)
     except Exception as _exc:
         logging.getLogger(__name__).debug("curator CLI wiring failed: %s", _exc)
+
+    # =========================================================================
+    # task command — task-ownership controller (durable local task state)
+    # =========================================================================
+    task_parser = subparsers.add_parser(
+        "task",
+        help="Task-ownership controller — durable local task state with verified completion",
+        description=(
+            "Tracks tasks an agent or operator owns end to end: state, next "
+            "action, blockers/decisions, bounded retries with fallback "
+            "recording, idempotent external receipts, and aging. A task "
+            "can only be marked DONE with verification evidence on file. "
+            "Feature-flagged off by default (task_ownership.enabled); "
+            "explicit commands always work, only the unattended `age-check` "
+            "is gated."
+        ),
+    )
+    try:
+        from hermes_cli.task_ownership import register_cli as _register_task_cli
+
+        _register_task_cli(task_parser)
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("task CLI wiring failed: %s", _exc)
 
     # =========================================================================
     # pets command — petdex animated mascots (CLI / TUI / desktop display)

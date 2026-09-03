@@ -12517,21 +12517,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print("  Messaging Platform Configuration:")
             print("  " + "-" * 55)
             
+            # Bot-token platforms stay listed even when unconfigured so the
+            # panel keeps guiding setup; every other platform present in the
+            # loaded config (Signal, A2A, plugin adapters, ...) joins the
+            # listing from the config instead of a hardcoded subset (#99788).
             platform_status = {
                 Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
                 Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),
                 Platform.SLACK: ("Slack", "SLACK_BOT_TOKEN"),
                 Platform.WHATSAPP: ("WhatsApp", "WHATSAPP_ENABLED"),
             }
-            
+            for platform in config.platforms:
+                if platform is not Platform.LOCAL and platform not in platform_status:
+                    platform_status[platform] = (platform.value.title(), None)
+
             for platform, (name, env_var) in platform_status.items():
                 pconfig = config.platforms.get(platform)
                 if pconfig and pconfig.enabled:
                     home = config.get_home_channel(platform)
                     home_str = f" → {home.name}" if home else ""
                     print(f"    ✓ {name:<12} Enabled{home_str}")
-                else:
+                elif env_var:
                     print(f"    ○ {name:<12} Not configured ({env_var})")
+                else:
+                    print(f"    ○ {name:<12} Disabled")
             
             print()
             print("  Session Reset Policy:")

@@ -1464,11 +1464,6 @@ function persistPoolLimits(limits) {
   }
 }
 
-let poolLimits = readPersistedPoolLimits()
-// Hard cap on local backends that are starting OR running (the LRU eviction
-// above is soft — it spares keepalive-fresh entries). Follows the live
-// preference: setPoolLimits() pushes a new max into the coordinator.
-const localBackendSpawnCoordinator = new LocalBackendSpawnCoordinator(poolLimits.maxBackends)
 // How long a spawn may wait for a free local slot. Must stay under the
 // renderer's BACKEND_BOOT_WAIT_TIMEOUT_MS (45s, src/lib/with-timeout.ts) so
 // the queued ticket fails before the renderer does and the user sees why.
@@ -1749,6 +1744,16 @@ function rememberLog(chunk) {
 }
 
 installCrashForensics({ flush: flushDesktopLogBufferSync, log: rememberLog })
+
+// Read here, not next to readPersistedPoolLimits(): that read logs through
+// rememberLog(), which needs hermesLog/desktopLogBuffer to already exist.
+// Placed above them, this module-eval read kills the main process on launch
+// with "Cannot read properties of undefined (reading 'push')".
+let poolLimits = readPersistedPoolLimits()
+// Hard cap on local backends that are starting OR running (the LRU eviction
+// is soft — it spares keepalive-fresh entries). Follows the live preference:
+// setPoolLimits() pushes a new max into the coordinator.
+const localBackendSpawnCoordinator = new LocalBackendSpawnCoordinator(poolLimits.maxBackends)
 
 // A rejected loadURL leaves a blank window and, unhandled, no trace anywhere
 // the user can send us. `label` names the surface so the log says which one.

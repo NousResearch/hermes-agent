@@ -1596,7 +1596,19 @@ class BaseEnvironment(ABC):
             pass
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
-        """Transform sudo commands if SUDO_PASSWORD is available."""
-        from tools.terminal_tool import _transform_sudo_command
+        """Transform sudo commands if SUDO_PASSWORD is available.
 
+        Also applies the macOS ``open`` frontmost raise-ladder (a pure string
+        rewrite, no-op on non-Darwin) so files opened via tool calls are brought
+        to the front instead of landing behind the Hermes window.
+        """
+        from tools.terminal_tool import (
+            _transform_macos_open_command,
+            _transform_sudo_command,
+        )
+
+        command = _transform_macos_open_command(command)
+        # The open transform only returns None for a None input; here command is
+        # always a str, so it is guaranteed non-None.
+        assert command is not None
         return _transform_sudo_command(command)

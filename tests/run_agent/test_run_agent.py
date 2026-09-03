@@ -6,6 +6,7 @@ are made.
 """
 
 import ast
+from hashlib import sha256
 import inspect
 import io
 import json
@@ -1451,6 +1452,120 @@ class TestBuildApiKwargs:
         assert kwargs["model"] == agent.model
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 1800.0
+
+    def test_source_provenance_survives_build_and_rebinds_next_tool_loop(
+        self, agent, tmp_path, monkeypatch
+    ):
+        from agent.chat_completion_helpers import _dispatch_provider_request
+        from agent.source_provenance_tools import (
+            attach_trusted_source_provenance_metadata,
+            source_provenance_activation,
+        )
+        from agent.tool_dispatch_helpers import make_tool_result_message
+        from tools.file_tools import read_file_tool
+
+        monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+        source = tmp_path / "source.py"
+        source.write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+        agent.provider = "nous"
+        agent.base_url = "https://inference-api.nousresearch.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.api_mode = "chat_completions"
+        agent.session_id = "session-1"
+        agent._current_turn_id = "turn-1"
+        agent._current_api_request_id = "turn-1:api:1"
+        agent._llm_egress_policy_digest = sha256(b"policy").hexdigest()
+        agent._llm_egress_state_dir = tmp_path / "egress"
+
+        with source_provenance_activation(agent, "read_file"):
+            result = read_file_tool(str(source), task_id="build-wire-read")
+        metadata = attach_trusted_source_provenance_metadata(
+            agent, "read_file", content=result
+        )
+        assert metadata is not None
+        tool_message = make_tool_result_message(
+            "read_file",
+            result,
+            "call_read_1",
+            source_provenance=metadata,
+        )
+        history = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_read_1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            tool_message,
+        ]
+
+        captured = []
+        agent._current_api_request_id = "turn-1:api:2"
+        first_kwargs = agent._build_api_kwargs(history, tools_for_api=[])
+        assert "_hermes_source_provenance" in first_kwargs
+        assert "_source_provenance" not in first_kwargs["messages"][1]
+        _dispatch_provider_request(agent, first_kwargs, captured.append)
+
+        agent._current_api_request_id = "turn-1:api:3"
+        second_kwargs = agent._build_api_kwargs(history, tools_for_api=[])
+        _dispatch_provider_request(agent, second_kwargs, captured.append)
+
+        assert len(captured) == 2
+        for request in captured:
+            assert "_hermes_source_provenance" not in request
+            assert "_source_provenance" not in request["messages"][1]
+            assert request["messages"][1]["content"] == result
+        receipts = [
+            json.loads(line)
+            for line in (tmp_path / "egress" / "llm-egress-receipts.jsonl")
+            .read_text()
+            .splitlines()
+        ]
+        assert [receipt["source_grant_count"] for receipt in receipts] == [1, 1]
+        assert [receipt["source_segment_count"] for receipt in receipts] == [1, 1]
+
+    def test_forged_build_sidecar_fails_closed(self, agent, tmp_path, monkeypatch):
+        from agent.chat_completion_helpers import _dispatch_provider_request
+        from agent.llm_egress_firewall import EgressBlocked
+        from agent.source_provenance_tools import (
+            attach_trusted_source_provenance_metadata,
+            source_provenance_activation,
+        )
+        from agent.tool_dispatch_helpers import make_tool_result_message
+        from tools.file_tools import read_file_tool
+
+        monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+        source = tmp_path / "source.py"
+        source.write_text("safe = True\n", encoding="utf-8")
+        agent.provider = "nous"
+        agent.base_url = "https://inference-api.nousresearch.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.api_mode = "chat_completions"
+        agent.session_id = "session-1"
+        agent._current_turn_id = "turn-1"
+        agent._current_api_request_id = "turn-1:api:1"
+        agent._llm_egress_policy_digest = sha256(b"policy").hexdigest()
+        agent._llm_egress_state_dir = tmp_path / "egress"
+        with source_provenance_activation(agent, "read_file"):
+            result = read_file_tool(str(source), task_id="build-wire-forged")
+        metadata = attach_trusted_source_provenance_metadata(
+            agent, "read_file", content=result
+        )
+        assert metadata is not None
+        message = make_tool_result_message(
+            "read_file", result, "call_read_1", source_provenance=metadata
+        )
+        agent._current_api_request_id = "turn-1:api:2"
+        kwargs = agent._build_api_kwargs([message], tools_for_api=[])
+        kwargs["_hermes_source_provenance"][0]["content_sha256"] = "0" * 64
+
+        with pytest.raises(EgressBlocked) as exc_info:
+            _dispatch_provider_request(agent, kwargs, lambda _: None)
+        assert "untrusted_provenance" in exc_info.value.decision.reason_codes
 
     def test_explicit_request_local_tools_reach_native_transport(self, agent, monkeypatch):
         from agent.prompt_caching import build_prompt_cache_plan
@@ -6614,7 +6729,7 @@ class TestAnthropicInterruptHandler:
     """_interruptible_api_call must handle Anthropic mode when interrupted."""
 
 
-    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self):
+    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self, tmp_path):
         """#67142: a non-streaming Anthropic interrupt must abort the
         request-local client from the poll thread, never close/rebuild the
         shared _anthropic_client (which raced a live SSL BIO and corrupted an
@@ -6639,6 +6754,10 @@ class TestAnthropicInterruptHandler:
             skip_memory=True,
         )
         agent.api_mode = "anthropic_messages"
+        agent.session_id = "interrupt-session"
+        agent._current_turn_id = "interrupt-turn"
+        agent._current_api_request_id = "interrupt-turn:api:1"
+        agent._llm_egress_state_dir = tmp_path / "egress"
         agent._interrupt_requested = False
         agent._anthropic_client = MagicMock()
         agent._rebuild_anthropic_client = MagicMock()

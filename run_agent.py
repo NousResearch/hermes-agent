@@ -9311,9 +9311,10 @@ class AIAgent:
             "task_id": effective_task_id,
             "platform": getattr(self, "platform", None) or "",
         }
-        relay_turn_id = (
-            f"{session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
-        )
+        relay_turn_id = str(
+            getattr(self, "_source_provenance_pending_turn_id", "") or ""
+        ) or f"{session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
+        self._source_provenance_pending_turn_id = None
         self._relay_pending_turn_id = relay_turn_id
         relay_parent_session_id = (
             str(getattr(self, "_parent_session_id", None) or "")
@@ -9909,6 +9910,17 @@ class AIAgent:
                             self._active_session_turn_lease_ttl_seconds = None
                     # Always clear mid-turn labels when the turn exits — including
                     # interrupted early returns that skip finalize_turn. Keep ts.
+                    try:
+                        from agent.source_provenance import SourceProvenanceRegistry
+
+                        provenance_registry = getattr(self, "_source_provenance_registry", None)
+                        if isinstance(provenance_registry, SourceProvenanceRegistry):
+                            provenance_registry.clear_turn(relay_turn_id)
+                            provenance_registry.clear_turn(
+                                str(getattr(self, "_current_turn_id", "") or "")
+                            )
+                    except Exception:
+                        logger.debug("source provenance cleanup failed", exc_info=True)
                     try:
                         self._reset_activity_labels_after_turn()
                     except Exception:

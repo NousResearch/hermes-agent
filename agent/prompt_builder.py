@@ -343,7 +343,7 @@ SKILLS_GUIDANCE = (
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "
-    "the shared board at `~/.hermes/kanban.db`. Your task id is in "
+    "the shared board database. Your task id is in "
     "`$HERMES_KANBAN_TASK`; your workspace is `$HERMES_KANBAN_WORKSPACE`. "
     "The `kanban_*` tools in your schema are your primary coordination surface — "
     "they write directly to the shared SQLite DB and work regardless of terminal "
@@ -356,8 +356,10 @@ KANBAN_GUIDANCE = (
     "metadata), any prior attempts on this task if you're a retry, the full "
     "comment thread, and a pre-formatted `worker_context` you can treat as "
     "ground truth.\n"
-    "2. **Work inside the workspace.** `cd $HERMES_KANBAN_WORKSPACE` before "
-    "any file operations. The workspace is yours for this run. Don't modify "
+    "2. **Work inside the workspace.** The dispatcher starts terminal and file "
+    "tools in the task workspace. Confirm with `pwd` or `git status`. Do not pass "
+    "the literal environment-variable token `$HERMES_KANBAN_WORKSPACE` as a "
+    "workdir or command argument. The workspace is yours for this run. Don't modify "
     "files outside it unless the task explicitly asks.\n"
     "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` "
     "every few minutes during long subprocesses (training, encoding, crawling). "
@@ -371,6 +373,12 @@ KANBAN_GUIDANCE = (
     "infer (missing credentials, UX choice, paywalled source, peer output you "
     "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
     "The user will unblock with context and the dispatcher will respawn you.\n"
+    "Prior `manual_reclaim`, `crashed`, `protocol_violation`, timeout, fallback, "
+    "and retry records are attempt-management evidence, not task blockers. Never "
+    "block because an earlier worker crashed or was reclaimed, and never infer that "
+    "the assigned work is outside your capacity from those records. Re-read the "
+    "current task and canonical external state, then work it. A block reason must "
+    "name a current concrete external blocker you directly reproduced.\n"
     "5. **Finish with the review model encoded by the task graph.** Always "
     "include the structured handoff (`summary`, `metadata`) on the lifecycle "
     "transition itself; never put secrets, tokens, or raw PII in these durable "
@@ -417,7 +425,7 @@ KANBAN_GUIDANCE = (
     "\n"
     "## Reference details that change outcomes\n"
     "\n"
-    "- **Workspace.** `cd $HERMES_KANBAN_WORKSPACE` first. For a `worktree` kind "
+    "- **Workspace.** Use the dispatcher-selected current directory. For a `worktree` kind "
     "with no `.git`, `git worktree add <path> "
     "${HERMES_KANBAN_BRANCH:-wt/$HERMES_KANBAN_TASK}` from the main repo, then "
     "cd there. For a project-linked task the workspace is a fresh "
@@ -1857,6 +1865,7 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    compact_all_categories: bool = False,
     skills_dir_override: "Path | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
@@ -1877,8 +1886,8 @@ def build_skills_system_prompt(
     ``compact_categories`` (e.g. from the coding posture — see
     agent/coding_context.py) demotes whole categories to a names-only line in
     the rendered index. Nothing is ever hidden: every skill name stays
-    visible and loadable via ``skill_view`` / ``skills_list``; only the
-    descriptions are dropped, and a footer note explains the demotion.
+    visible and loadable via ``skill_view`` / ``skills_list``. The guarded
+    profile may set ``compact_all_categories`` to demote every category.
     """
     # Home resolution is EXPLICIT when a caller passes skills_dir_override
     # (the agent knows its own profile home from its session_db path). This
@@ -1911,6 +1920,7 @@ def build_skills_system_prompt(
             available_tools,
             available_toolsets,
             compact_categories,
+            compact_all_categories,
             project_dirs=project_dirs,
         )
     finally:
@@ -1924,6 +1934,7 @@ def _build_skills_system_prompt_inner(
     available_tools: "set[str] | None",
     available_toolsets: "set[str] | None",
     compact_categories: "frozenset[str] | None",
+    compact_all_categories: bool = False,
     project_dirs: "list[Path] | None" = None,
 ) -> str:
     # Include the resolved platform so per-platform disabled-skill lists
@@ -1940,6 +1951,7 @@ def _build_skills_system_prompt_inner(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        bool(compact_all_categories),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -2161,7 +2173,7 @@ def _build_skills_system_prompt_inner(
     # what the index stops showing them. Match on the top-level category
     # segment so nested categories ("social-media/twitter") are demoted with
     # their parent.
-    demoted = frozenset(
+    demoted = frozenset(skills_by_category) if compact_all_categories else frozenset(
         cat for cat in skills_by_category
         if cat.split("/", 1)[0] in (compact_categories or frozenset())
     )
@@ -2169,8 +2181,8 @@ def _build_skills_system_prompt_inner(
     hidden_note = ""
     if demoted:
         hidden_note = (
-            "\n(Categories marked [names only] are outside the current coding "
-            "context, so their descriptions are omitted — the skills work "
+            "\n(Categories marked [names only] omit descriptions to keep the "
+            "current prompt compact — the skills work "
             "normally and load with skill_view(name) as usual.)"
         )
 

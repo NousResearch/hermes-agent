@@ -221,6 +221,11 @@ def preprocess_context_references(
     context_length: int,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
     allowed_root: str | Path | None = None,
+    source_provenance_registry=None,
+    session_id: str | None = None,
+    turn_id: str | None = None,
+    request_id: str | None = None,
+    policy_digest: str | None = None,
 ) -> ContextReferenceResult:
     coro = preprocess_context_references_async(
         message,
@@ -228,6 +233,11 @@ def preprocess_context_references(
         context_length=context_length,
         url_fetcher=url_fetcher,
         allowed_root=allowed_root,
+        source_provenance_registry=source_provenance_registry,
+        session_id=session_id,
+        turn_id=turn_id,
+        request_id=request_id,
+        policy_digest=policy_digest,
     )
     # Safe for both CLI (no loop) and gateway (loop already running).
     try:
@@ -248,6 +258,11 @@ async def preprocess_context_references_async(
     context_length: int,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
     allowed_root: str | Path | None = None,
+    source_provenance_registry=None,
+    session_id: str | None = None,
+    turn_id: str | None = None,
+    request_id: str | None = None,
+    policy_digest: str | None = None,
 ) -> ContextReferenceResult:
     refs = parse_context_references(message)
     if not refs:
@@ -262,6 +277,13 @@ async def preprocess_context_references_async(
     warnings: list[str] = []
     blocks: list[str] = []
     injected_tokens = 0
+    provenance_context = _build_source_provenance_context(
+        source_provenance_registry,
+        session_id=session_id,
+        turn_id=turn_id,
+        request_id=request_id,
+        policy_digest=policy_digest,
+    )
 
     # Expand all references concurrently. Each _expand_reference is independent
     # (no shared state during expansion) — a message with several @url: refs
@@ -276,6 +298,7 @@ async def preprocess_context_references_async(
                 cwd_path,
                 url_fetcher=url_fetcher,
                 allowed_root=allowed_root_path,
+                provenance_context=provenance_context,
             )
             for ref in refs
         )
@@ -336,10 +359,16 @@ async def _expand_reference(
     *,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
     allowed_root: Path | None = None,
+    provenance_context=None,
 ) -> tuple[str | None, str | None]:
     try:
         if ref.kind == "file":
-            return _expand_file_reference(ref, cwd, allowed_root=allowed_root)
+            return _expand_file_reference(
+                ref,
+                cwd,
+                allowed_root=allowed_root,
+                provenance_context=provenance_context,
+            )
         if ref.kind == "folder":
             return _expand_folder_reference(ref, cwd, allowed_root=allowed_root)
         if ref.kind == "diff":
@@ -375,7 +404,11 @@ def _expand_file_reference(
     cwd: Path,
     *,
     allowed_root: Path | None = None,
+    provenance_context=None,
 ) -> tuple[str | None, str | None]:
+    source_path = Path(os.path.expanduser(ref.target))
+    if not source_path.is_absolute():
+        source_path = cwd / source_path
     path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
     _ensure_reference_path_allowed(path)
     if not path.exists():
@@ -392,16 +425,85 @@ def _expand_file_reference(
         # so it can read/convert/view the file itself.
         return None, _binary_reference_block(ref, path)
 
-    text = path.read_text(encoding="utf-8")
     if ref.line_start is not None:
-        lines = text.splitlines()
-        start_idx = max(ref.line_start - 1, 0)
-        end_idx = min(ref.line_end or ref.line_start, len(lines))
-        text = "\n".join(lines[start_idx:end_idx])
+        raw_bytes = _read_bounded_reference_slice(
+            path,
+            ref.line_start,
+            ref.line_end or ref.line_start,
+        )
+        text = raw_bytes.decode("utf-8")
+        if provenance_context is not None:
+            provenance_context.registry.issue_file_slice(
+                # Preserve the caller's original path chain. Passing the
+                # resolved path here would erase a symlinked leaf or ancestor
+                # before SourceProvenanceRegistry can reject it.
+                path=source_path,
+                line_start=ref.line_start,
+                line_end=ref.line_end or ref.line_start,
+                content=raw_bytes,
+                session_id=provenance_context.session_id,
+                turn_id=provenance_context.turn_id,
+                request_id=provenance_context.request_id,
+                policy_digest=provenance_context.policy_digest,
+            )
+    else:
+        text = path.read_text(encoding="utf-8")
 
     lang = _code_fence_language(path)
     label = ref.raw
     return None, f"📄 {label} ({estimate_tokens_rough(text)} tokens)\n```{lang}\n{text}\n```"
+
+
+def _build_source_provenance_context(
+    registry,
+    *,
+    session_id: str | None,
+    turn_id: str | None,
+    request_id: str | None,
+    policy_digest: str | None,
+):
+    """Return a trusted grant context only when the whole identity is present."""
+
+    if registry is None or not all(
+        isinstance(value, str) and value
+        for value in (session_id, turn_id, request_id, policy_digest)
+    ):
+        return None
+    from agent.source_provenance import SourceProvenanceContext, SourceProvenanceRegistry
+
+    if not isinstance(registry, SourceProvenanceRegistry):
+        return None
+    return SourceProvenanceContext(
+        registry,
+        session_id,
+        turn_id,
+        request_id,
+        policy_digest,
+    )
+
+
+def _read_bounded_reference_slice(path: Path, line_start: int, line_end: int) -> bytes:
+    """Read only the requested exact line interval for a provenance candidate."""
+
+    from agent.source_provenance import MAX_SOURCE_SLICE_BYTES, MAX_SOURCE_SLICE_LINES
+
+    if line_start < 1 or line_end < line_start or line_end - line_start + 1 > MAX_SOURCE_SLICE_LINES:
+        raise ValueError("file reference line range is not bounded")
+    selected: list[bytes] = []
+    byte_count = 0
+    with path.open("rb") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            if line_number < line_start:
+                continue
+            if line_number > line_end:
+                break
+            byte_count += len(raw_line)
+            if byte_count > MAX_SOURCE_SLICE_BYTES:
+                raise ValueError("file reference slice exceeds the byte limit")
+            selected.append(raw_line)
+    if len(selected) != line_end - line_start + 1:
+        raise ValueError("file reference line range is unavailable")
+    return b"".join(selected)
 
 
 def _expand_folder_reference(

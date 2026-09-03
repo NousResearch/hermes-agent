@@ -24,6 +24,7 @@ from tools.file_operations import (
 )
 from tools import file_state
 from agent.redact import redact_sensitive_text
+from agent.source_provenance_tools import issue_active_read_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -1669,6 +1670,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 "block or produce infinite output."
             )
 
+        _source_path = None
+        if not _uses_container_paths(task_id):
+            _source_path = Path(_expand_tilde(path))
+            if not _source_path.is_absolute():
+                _source_path = Path(_resolve_base_dir(task_id)) / _source_path
         _resolved = _resolve_path_for_task(path, task_id)
 
         # ── Special-file type guard (stat-based) ──────────────────────
@@ -1942,6 +1948,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             content_len = len(trimmed)
 
         # ── Redact secrets (after guard check to skip oversized content) ──
+        content_before_redaction = result.content or ""
         if result.content:
             result.content = redact_sensitive_text(result.content, file_read=True)
             result_dict["content"] = result.content
@@ -2039,6 +2046,17 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 f"You have read this exact file region {count} times consecutively. "
                 "The content has not changed since your last read. Use the information you already have. "
                 "If you are stuck in a loop, stop reading and proceed with writing or responding."
+            )
+
+        if result.content == content_before_redaction:
+            issue_active_read_provenance(
+                resolved=_resolved,
+                source_path=_source_path,
+                offset=offset,
+                limit=limit,
+                returned_content=result.content,
+                result_dict=result_dict,
+                file_ops=file_ops,
             )
 
         return json.dumps(result_dict, ensure_ascii=False)
@@ -2718,7 +2736,7 @@ READ_FILE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
+            "path": {"type": "string", "description": "Path to the file to read (absolute or relative)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
             "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": 2000, "maximum": 2000}
         },

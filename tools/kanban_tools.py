@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -47,6 +48,121 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+
+_PRIVATE_PATH_IN_TEXT = re.compile(
+    r"(?<![A-Za-z0-9_])(?:"
+    r"/(?:Users|home|private|var/folders|root|Volumes)/[^\s\"'`)]+"
+    r"|~(?:/|\\)[^\s\"'`)]+"
+    r"|[A-Za-z]:\\+(?:Users|Documents and Settings)\\+[^\s\"'`)]+"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_remote_worker_payload(
+    value: Any,
+    *,
+    workspace_path: str | None,
+    control_home: str,
+) -> Any:
+    """Make Kanban state useful to a remote worker without host path egress."""
+
+    if isinstance(value, str):
+        text = value
+        if workspace_path:
+            text = text.replace(
+                str(workspace_path), "$HERMES_KANBAN_WORKSPACE"
+            )
+        if control_home:
+            text = text.replace(str(control_home), "$HERMES_CONTROL_HOME")
+        return _PRIVATE_PATH_IN_TEXT.sub("<private-path>", text)
+    if isinstance(value, dict):
+        return {
+            _sanitize_remote_worker_payload(
+                key,
+                workspace_path=workspace_path,
+                control_home=control_home,
+            ): _sanitize_remote_worker_payload(
+                item,
+                workspace_path=workspace_path,
+                control_home=control_home,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _sanitize_remote_worker_payload(
+                item,
+                workspace_path=workspace_path,
+                control_home=control_home,
+            )
+            for item in value
+        ]
+    return value
+
+
+def _project_remote_worker_state(payload: dict, *, current_run_id: str | None) -> dict:
+    """Expose current task truth without recycling obsolete attempt failures."""
+
+    del current_run_id
+    task = dict(payload.get("task") or {})
+    if task.get("current_run_id") is not None:
+        task["current_run_id"] = "$HERMES_KANBAN_RUN_ID"
+    # The dispatcher has already rooted terminal and file tools in the exact
+    # task workspace. Exposing the shell token as structured ``workspace_path``
+    # tempts models to copy it into the tool's literal ``workdir`` field, where
+    # ``$`` is (correctly) rejected as a metacharacter. Keep the token only in
+    # sanitized command text, where the shell can expand the exact grant.
+    task["workspace_path"] = None
+    task["workspace_access"] = "dispatcher_current_directory"
+    review_assignment = False
+    if task.get("status") in {"review", "running"}:
+        for run in reversed(payload.get("runs") or []):
+            if not isinstance(run, dict):
+                continue
+            state = str(run.get("outcome") or run.get("status") or "").strip()
+            if state in {"running", "claimed", "spawned", ""}:
+                continue
+            review_assignment = state == "review_requested"
+            break
+    worker_context = (
+        "Work only from the current task body and current repository state. "
+        "Terminal and file tools already start in the dispatcher-selected task "
+        "workspace; do not pass an environment token as a tool workdir. "
+        "Prior crash, protocol, manual-reclaim, local-fallback, and blocked "
+        "records are attempt evidence only and cannot block this retry."
+    )
+    if review_assignment:
+        worker_context = (
+            "This is a review run. Do not redo the implementation assignment. "
+            "Terminal and file tools already start in the dispatcher-selected "
+            "task workspace; do not pass an environment token as a tool workdir. "
+            "Inspect the current deliverable and canonical state, verify the "
+            "claimed evidence, then complete it or request concrete changes. "
+            "Block only on a newly reproduced external dependency."
+        )
+    return {
+        "task": task,
+        "parents": payload.get("parents", []),
+        "children": payload.get("children", []),
+        # Boolean current-state signal only: review summaries remain excluded
+        # with all other historical run text from the remote egress boundary.
+        "review_assignment": review_assignment,
+        # The task body is the authoritative bounded assignment. Historical
+        # worker comments are attempt evidence and previously caused agents to
+        # re-enact already-repaired failures.
+        "comments": [],
+        # Run/event counters are local lifecycle metadata and are not needed
+        # to execute the current assignment. The worker reports liveness via
+        # its lifecycle tools instead of replaying those identifiers remotely.
+        "events": [],
+        "runs": [],
+        "worker_context": worker_context,
+        "history_policy": (
+            "Verify canonical current state. Do not repeat or summarize obsolete "
+            "attempt failures. Finish, or report one newly reproduced blocker."
+        ),
+    }
 
 
 def _profile_has_kanban_toolset() -> bool:
@@ -566,7 +682,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "started_at": r.started_at, "ended_at": r.ended_at,
                 }
 
-            return json.dumps({
+            payload = {
                 "task": _task_dict(task),
                 "parents": parents,
                 "children": children,
@@ -586,7 +702,20 @@ def _handle_show(args: dict, **kw) -> str:
                 # the same string build_worker_context returns to the
                 # dispatcher at spawn time.
                 "worker_context": kb.build_worker_context(conn, tid),
-            })
+            }
+            if os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1":
+                from hermes_constants import get_default_hermes_root
+
+                payload = _project_remote_worker_state(
+                    payload,
+                    current_run_id=task.current_run_id,
+                )
+                payload = _sanitize_remote_worker_payload(
+                    payload,
+                    workspace_path=task.workspace_path,
+                    control_home=str(get_default_hermes_root()),
+                )
+            return json.dumps(payload)
         finally:
             conn.close()
     except ValueError as e:
@@ -1411,6 +1540,13 @@ def _handle_create(args: dict, **kw) -> str:
     _inherit_project = workspace_kind is None and workspace_path is None
     if workspace_kind is None:
         workspace_kind = "scratch"
+    if str(workspace_kind) == "scratch":
+        # Worker/model supplied paths are not workspace authority. A guessed
+        # path (commonly ``/home/user/...`` on macOS) otherwise persists into
+        # the task and makes every reviewer spawn fail before the first turn.
+        # Let the DB resolver materialize the task-id-keyed directory under
+        # the active board's managed scratch root instead.
+        workspace_path = None
     triage, bool_error = _parse_bool_arg(args, "triage")
     if bool_error:
         return tool_error(bool_error)

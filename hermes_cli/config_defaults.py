@@ -43,6 +43,11 @@ DEFAULT_CONFIG = {
         "terminal_continue": True,
     },
     "agent": {
+        # Canonical per-profile reasoning depth. Runtime construction, gateway
+        # /reasoning persistence, and Kanban overrides all read this path.
+        # Keeping it in DEFAULT_CONFIG also makes `hermes config set` validate
+        # the key instead of incorrectly warning that the setting may be inert.
+        "reasoning_effort": "none",
         # Unlimited by default. The agent turn cap caused more problems than
         # it solved (silent mid-task truncation). null = unlimited; set a
         # positive integer to cap, or use "none"/"unlimited"/"inf"/0/-1 —
@@ -237,6 +242,16 @@ DEFAULT_CONFIG = {
         #   "on"             — force the prompt posture everywhere.
         #   "off"            — disable entirely.
         "coding_context": "auto",
+        # Guarded prompt profile — opt-in, exact provider/model route pairs
+        # only. It replaces redundant long-form coaching with a compact
+        # worktree/tool/verification contract and renders skills names-only.
+        # Requires coding_context: focus and a coding workspace. It is safe to
+        # list local Ollama and Copilot routes together because matching is by
+        # pair, not independent provider/model allowlists.
+        "guarded_prompt_mode": {
+            "enabled": False,
+            "routes": [],
+        },
         # Standing operator instructions for the coding posture. A string (or
         # list of strings) appended to the coding brief as an extra stable
         # system block — pin project-wide workflow rules here instead of editing
@@ -2911,6 +2926,11 @@ DEFAULT_CONFIG = {
         # the assigned profile with the bundled sdlc-review skill. Disable for
         # boards where every review is performed manually from the dashboard.
         "review_dispatch": True,
+        # Installed independent profile used when the stop guard has useful
+        # evidence but a worker exhausts its terminal-transition nudges. Empty
+        # keeps the handoff disabled rather than creating reviewerless review
+        # cards that route back to the implementer and wait for a human verdict.
+        "reviewer_profile": "",
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,

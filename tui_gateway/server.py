@@ -13388,13 +13388,19 @@ def _run_prompt_submit(
                         agent, "_config_context_length", None
                     ),
                 )
+                from agent.source_provenance import (
+                    clear_agent_source_provenance,
+                    provenance_kwargs_for_agent,
+                )
                 ctx = preprocess_context_references(
                     prompt,
                     cwd=cwd,
                     allowed_root=cwd,
                     context_length=ctx_len,
+                    **provenance_kwargs_for_agent(agent, establish_turn=True),
                 )
                 if ctx.blocked:
+                    clear_agent_source_provenance(agent)
                     _emit(
                         "error",
                         sid,

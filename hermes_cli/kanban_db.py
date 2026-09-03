@@ -10806,6 +10806,12 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Stable local token for protected-remote worker prompts. Tool output can
+    # refer to $HERMES_CONTROL_HOME without disclosing the operator's absolute
+    # home path; the shell expands it only inside this worker process.
+    from hermes_constants import get_default_hermes_root
+
+    env["HERMES_CONTROL_HOME"] = str(get_default_hermes_root())
     # Tag the worker's session so it lands in state.db as `kanban`, not as an
     # untitled `cli` row. A worker is a dispatcher-owned run whose transcript is
     # read on the board and in `hermes kanban log` — it is not a conversation

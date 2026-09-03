@@ -168,6 +168,7 @@ def aux_probe_mode():
         _aux_probe_state.active = prev
 
 from agent.credential_pool import load_pool
+from agent.llm_egress_firewall import EgressBlocked
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
@@ -3726,6 +3727,112 @@ _RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
     contextvars.ContextVar("auxiliary_relay_call", default=None)
 )
 
+_AUX_EGRESS_PROVIDERS = frozenset({"anthropic", "openai-codex", "nous"})
+
+
+def _auxiliary_egress_binding(
+    client: Any,
+    *,
+    provider: str | None,
+    model: str | None,
+    api_mode: str | None,
+) -> tuple[Any, Any] | None:
+    """Build the complete identity and route for protected auxiliary calls."""
+    normalized_provider = _normalize_aux_provider(provider)
+    if normalized_provider not in _AUX_EGRESS_PROVIDERS:
+        return None
+    from agent.source_provenance import DEFAULT_POLICY_DIGEST
+
+    runtime = _normalize_main_runtime(None)
+    raw_runtime = _RUNTIME_MAIN_CONTEXT.get() or {}
+    relay = _RELAY_AUX_CALL_CONTEXT.get() or {}
+    request_id = str(relay.get("request_id") or f"aux-{uuid.uuid4().hex}")
+    session_id = str(
+        runtime.get("session_id")
+        or raw_runtime.get("session_id")
+        or f"aux-session:{request_id}"
+    )
+    turn_id = str(
+        raw_runtime.get("turn_id")
+        or f"{session_id}:aux:{str(relay.get('task') or 'call')}"
+    )
+    policy_digest = str(
+        raw_runtime.get("policy_digest")
+        or raw_runtime.get("llm_egress_policy_digest")
+        or DEFAULT_POLICY_DIGEST
+    )
+    candidate_base_url = getattr(client, "base_url", "")
+    if not isinstance(candidate_base_url, str) or not candidate_base_url.startswith(
+        ("http://", "https://")
+    ):
+        candidate_base_url = raw_runtime.get("base_url")
+    if not isinstance(candidate_base_url, str) or not candidate_base_url.startswith(
+        ("http://", "https://")
+    ):
+        if normalized_provider == "openai-codex":
+            candidate_base_url = "https://chatgpt.com/backend-api/codex"
+        elif normalized_provider == "anthropic":
+            candidate_base_url = "https://api.anthropic.com/v1"
+        else:
+            candidate_base_url = _NOUS_DEFAULT_BASE_URL
+    base_url = candidate_base_url
+    resolved_api_mode = str(
+        api_mode
+        or (
+            "codex_responses"
+            if normalized_provider == "openai-codex"
+            else "chat_completions"
+        )
+    )
+    agent_attrs = {
+        "provider": normalized_provider,
+        "model": str(model or ""),
+        "base_url": base_url,
+        "api_mode": resolved_api_mode,
+        "session_id": session_id,
+        "_current_turn_id": turn_id,
+        "_current_api_request_id": request_id,
+        "_llm_egress_policy_digest": policy_digest,
+        "_llm_egress_state_dir": Path(get_hermes_home()) / "egress",
+    }
+    if str(relay.get("task") or "") == "compression":
+        agent_attrs.update(
+            _llm_egress_max_serialized_bytes=2_000_000,
+            _llm_egress_max_conservative_tokens=666_667,
+            _llm_egress_max_sanitized_bytes=2_000_000,
+            _llm_egress_max_sanitized_segment_bytes=32_768,
+            _llm_egress_max_granted_serialized_bytes=2_000_000,
+            _llm_egress_max_granted_conservative_tokens=666_667,
+        )
+    agent = SimpleNamespace(**agent_attrs)
+    route = SimpleNamespace(
+        provider=normalized_provider,
+        model=str(model or ""),
+        base_url=base_url,
+        api_mode=resolved_api_mode,
+    )
+    return agent, route
+
+
+def _dispatch_auxiliary_request(
+    client: Any,
+    request: dict[str, Any],
+    callback: Callable[[dict[str, Any]], Any],
+    *,
+    provider: str | None,
+    model: str | None,
+    api_mode: str | None,
+) -> Any:
+    binding = _auxiliary_egress_binding(
+        client, provider=provider, model=model or request.get("model"), api_mode=api_mode
+    )
+    if binding is None:
+        return callback(request)
+    from agent.llm_egress_runtime import dispatch_authorized_agent_request
+
+    agent, route = binding
+    return dispatch_authorized_agent_request(agent, request, callback, route=route)
+
 
 def _relay_auxiliary_call(callback):
     """Give every physical retry in one auxiliary call a shared Relay identity."""
@@ -3834,6 +3941,15 @@ def _relay_sync_completion(
     create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
     callback = create or (lambda request: client.chat.completions.create(**request))
+    raw_callback = callback
+    callback = lambda request: _dispatch_auxiliary_request(
+        client,
+        request,
+        raw_callback,
+        provider=provider,
+        model=request.get("model"),
+        api_mode=api_mode,
+    )
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Protected compression calls isolate only the provider callback and stream
     # aggregation.  The owning thread remains free to unwind its lease/DB
@@ -3862,6 +3978,29 @@ async def _relay_async_completion(
     create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
     callback = create or (lambda request: client.chat.completions.create(**request))
+    raw_callback = callback
+
+    async def _authorized_callback(request: dict[str, Any]) -> Any:
+        binding = _auxiliary_egress_binding(
+            client,
+            provider=provider,
+            model=request.get("model"),
+            api_mode=api_mode,
+        )
+        if binding is None:
+            return await raw_callback(request)
+        from agent.llm_egress_runtime import dispatch_authorized_agent_request
+
+        agent, route = binding
+        result = dispatch_authorized_agent_request(
+            agent,
+            request,
+            raw_callback,
+            route=route,
+        )
+        return await result if inspect.isawaitable(result) else result
+
+    callback = _authorized_callback
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return await callback(kwargs)
@@ -3885,15 +4024,23 @@ def _relay_sync_stream(
     provider: str | None = None,
     api_mode: str | None = None,
 ) -> Any:
+    callback = lambda request: _dispatch_auxiliary_request(
+        client,
+        request,
+        lambda authorized: client.chat.completions.create(**authorized),
+        provider=provider,
+        model=kwargs.get("model"),
+        api_mode=api_mode,
+    )
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return client.chat.completions.create(**kwargs)
+        return callback(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
 
     return relay_llm.stream_current(
         kwargs,
-        lambda request: client.chat.completions.create(**request),
+        callback,
         name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model),
         finalizer=dict,
@@ -4451,7 +4598,13 @@ _AUTO_PROVIDER_LABELS = {
 }
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
+    "requested_provider",
+    "session_id",
+    "turn_id",
+    "policy_digest",
+    "llm_egress_policy_digest",
+)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -4784,6 +4937,20 @@ def _is_transient_transport_error(exc: Exception) -> bool:
         getattr(exc, "response", None), "status_code", None
     )
     return isinstance(status, int) and (status == 408 or 500 <= status < 600)
+
+
+def _is_safe_egress_fallback_candidate(client: Any, provider: str, model: str) -> bool:
+    """Permit a blocked remote request to fall back only to local execution.
+
+    A blocked payload must never be retried against another remote provider;
+    only an explicitly local/loopback fallback is eligible, and its callback
+    still receives a fresh request copy at the local boundary.
+    """
+    from agent.llm_egress_firewall import DestinationClass, classify_destination
+
+    base_url = str(getattr(client, "base_url", "") or "")
+    destination = classify_destination(provider, base_url, "chat_completions")
+    return destination in {DestinationClass.LOCAL_PROCESS, DestinationClass.LOOPBACK}
 
 
 _DEFAULT_TRANSIENT_RETRIES = 2
@@ -10340,7 +10507,7 @@ def call_llm(
             )
 
     try:
-        with (
+        with scoped_runtime_main(main_runtime), (
             aux_progress_hook(
                 prior_progress_hook
                 if callable(prior_progress_hook)
@@ -10629,7 +10796,14 @@ def _call_llm_impl(
             # Return the provider call directly; the MoA facade converts a
             # completed response into a one-chunk delta iterator at its
             # boundary.
-            return client.chat.completions.create(**kwargs)
+            return _dispatch_auxiliary_request(
+                client,
+                kwargs,
+                lambda authorized: client.chat.completions.create(**authorized),
+                provider=request_provider,
+                model=final_model,
+                api_mode=resolved_api_mode,
+            )
         return _relay_sync_stream(
             client,
             kwargs,
@@ -11044,6 +11218,40 @@ def _call_llm_impl(
         # auxiliary task on the floor (silent compression failure /
         # message loss). Auth is NOT a capacity error: it only bypasses
         # the explicit-provider gate when the user is in auto mode.
+        # A blocked remote payload is terminal for every remote destination.
+        # Give only a configured/local fallback one immediate chance, without
+        # entering retry/backoff or the general remote provider chain.
+        if isinstance(first_err, EgressBlocked):
+            local_candidates = (
+                _try_configured_fallback_chain(
+                    task, resolved_provider or "auto", reason="egress blocked",
+                    failed_model=final_model,
+                ),
+                _try_main_agent_model_fallback(
+                    resolved_provider, task, reason="egress blocked",
+                    failed_model=final_model,
+                ),
+            )
+            for fb_client, fb_model, fb_label in local_candidates:
+                if fb_client is None or not _is_safe_egress_fallback_candidate(
+                    fb_client, _fallback_provider_from_label(fb_label), str(fb_model or "")
+                ):
+                    continue
+                _record_route_info(
+                    route_info, _fallback_provider_from_label(fb_label), fb_model
+                )
+                fb_resp = _call_fallback_candidate_sync(
+                    fb_client, fb_model, fb_label,
+                    task=task, messages=messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools, effective_timeout=effective_timeout,
+                    effective_extra_body=effective_extra_body,
+                    reasoning_config=reasoning_config,
+                )
+                if fb_resp is not None:
+                    return fb_resp
+            raise
+
         should_fallback = (
             _is_auth_error(first_err)
             or _is_payment_error(first_err)
@@ -11315,22 +11523,23 @@ async def async_call_llm(
     if semaphore is not None:
         await semaphore.acquire()
     try:
-        return await _async_call_llm_impl(
-            task=task,
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
-            main_runtime=main_runtime,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            tools=tools,
-            timeout=timeout,
-            extra_body=extra_body,
-            reasoning_config=reasoning_config,
-            route_info=route_info,
-        )
+        with scoped_runtime_main(main_runtime):
+            return await _async_call_llm_impl(
+                task=task,
+                provider=provider,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                main_runtime=main_runtime,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                timeout=timeout,
+                extra_body=extra_body,
+                reasoning_config=reasoning_config,
+                route_info=route_info,
+            )
     finally:
         if semaphore is not None:
             semaphore.release()

@@ -240,6 +240,7 @@ def _config_overrides(config: dict) -> dict[str, str]:
         ("agent", "sanitizer_heal_escalation_threshold"),
         ("agent", "tool_use_enforcement"),
         ("agent", "execution_guidance"),
+        ("agent", "guarded_prompt_mode"),
         ("terminal", "backend"),
         ("terminal", "docker_image"),
         ("terminal", "persistent_shell"),

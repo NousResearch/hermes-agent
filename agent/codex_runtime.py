@@ -1659,7 +1659,13 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             )
             stream_kwargs["stream"] = True
             stream_kwargs = _bypass_sdk_request_transform(stream_kwargs)
-            return active_client.responses.create(**stream_kwargs)
+            from agent.llm_egress_runtime import dispatch_authorized_agent_request
+
+            return dispatch_authorized_agent_request(
+                agent,
+                stream_kwargs,
+                lambda request: active_client.responses.create(**request),
+            )
 
         def _codex_stream_created(_raw_stream: Any) -> None:
             # Claim the delta sink for THIS physical attempt. A newer attempt

@@ -125,3 +125,64 @@ class TestVolcEngineXmlPollution:
         # rest of the pipeline (fuzzy match at 0.7 cutoff) can still
         # recover the obvious target.
         assert repair('"terminal"') == "terminal"
+
+
+# Claude Code tool-name aliasing — regression guard for #84222.
+#
+# Under an Anthropic OAuth token the request carries the Claude Code system
+# identity, and Claude models trained on that identity reach for Claude Code's
+# own tools (Glob/Grep/Read). Those are real tools, just not ours, and none of
+# them survive the existing pipeline: `read` vs `read_file` scores 0.61 against
+# difflib's 0.7 cutoff, and `glob`/`grep` have no near neighbour at all. Every
+# such call burned one of the 3 agent-correction strikes.
+
+CLAUDE_CODE_VALID = VALID | {"search_files"}
+
+
+@pytest.fixture
+def repair_cc():
+    """``repair`` bound to a tool set that includes ``search_files``."""
+    from run_agent import AIAgent
+    stub = SimpleNamespace(valid_tool_names=CLAUDE_CODE_VALID)
+    return AIAgent._repair_tool_call.__get__(stub, AIAgent)
+
+
+class TestClaudeCodeToolAliases:
+    @pytest.mark.parametrize(
+        ("emitted", "expected"),
+        [
+            ("Glob", "search_files"),
+            ("Grep", "search_files"),
+            ("Read", "read_file"),
+            # Case is the model's choice, not a contract.
+            ("glob", "search_files"),
+            ("GREP", "search_files"),
+        ],
+    )
+    def test_read_only_claude_code_names_are_aliased(self, repair_cc, emitted, expected):
+        assert repair_cc(emitted) == expected
+
+    def test_alias_does_not_fire_when_target_is_not_registered(self):
+        """An alias must never invent a tool the agent does not have."""
+        from run_agent import AIAgent
+        stub = SimpleNamespace(valid_tool_names={"terminal"})
+        repair = AIAgent._repair_tool_call.__get__(stub, AIAgent)
+
+        assert repair("Glob") is None
+
+    def test_destructive_claude_code_names_are_not_aliased(self, repair_cc):
+        """Write/Edit/Bash are deliberately excluded.
+
+        Aliasing a read-only name turns a failed call into a successful one.
+        Aliasing a destructive name turns a failed call into an *executed*
+        one, under argument schemas the model did not write for. Those stay
+        unknown-tool errors until someone maps the arguments too.
+        """
+        assert repair_cc("Write") is None
+        assert repair_cc("Edit") is None
+        assert repair_cc("Bash") is None
+
+    def test_real_tool_name_still_wins_over_alias(self, repair_cc):
+        """The alias table must not shadow a genuinely registered tool."""
+        assert repair_cc("read_file") == "read_file"
+        assert repair_cc("search_files") == "search_files"

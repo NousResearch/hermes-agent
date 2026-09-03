@@ -240,7 +240,8 @@ def is_compaction_progress_status(text: str | None) -> bool:
     if "compaction complete" in lowered:
         return False
     # Failure-class overflow warning mentions compression but is a blocked
-    # notice, not progress — keep it lifecycle so chat gateways stay loud.
+    # notice, not progress — keep it lifecycle so DM/raw surfaces stay loud;
+    # the gateway may suppress the exact template for multi-user destinations.
     if "compression is currently blocked" in lowered:
         return False
     return (

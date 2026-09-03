@@ -1086,6 +1086,24 @@ def _classify_review_result(actions: List[str]) -> str:
     return "none"
 
 
+def clear_memory() -> None:
+    """Run garbage collection and trim malloc memory arena on Linux."""
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import sys
+        if sys.platform == "linux":
+            import ctypes
+            libc = ctypes.CDLL(None)
+            if hasattr(libc, "malloc_trim"):
+                libc.malloc_trim(0)
+    except Exception:
+        pass
+
+
 def _log_review_completion(usage: Dict[str, Any], result: str) -> None:
     """Emit a per-fork completion line so cost is visible where it is incurred."""
     logger.info(
@@ -1702,6 +1720,14 @@ def _run_review_in_thread(
             )
             actions = []
 
+        # Explicitly release large captured objects (conversation snapshot, prompt,
+        # review history, and review messages) once summarization is complete,
+        # ensuring they are freed before constructing/pushing the final review summary.
+        messages_snapshot = None  # type: ignore
+        prompt = None  # type: ignore
+        _review_history = None  # type: ignore
+        review_messages = None  # type: ignore
+
         _log_review_completion(
             review_usage, _classify_review_result(actions)
         )
@@ -1749,6 +1775,8 @@ def _run_review_in_thread(
             _set_approval_callback(None)
         except Exception:
             pass
+        # Clear garbage collection and trim memory arena on Linux
+        clear_memory()
 
 
 def spawn_background_review_thread(

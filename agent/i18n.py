@@ -26,7 +26,7 @@ Language resolution order:
     4. ``"en"`` (baseline)
 
 Supported languages: en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga,
-pt, ru, hu, ar.  Unknown values fall back to en.
+pt, pt-br, ru, hu, ar.  Unknown values fall back to en.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
     "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
+    "af", "ko", "it", "ga", "pt", "pt-br", "ru", "hu", "ar",
 )
 DEFAULT_LANGUAGE = "en"
 
@@ -71,10 +71,12 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "italian": "it", "italiano": "it", "it-it": "it", "it-ch": "it",
     # Irish (Gaeilge) — ga is the BCP-47 code
     "irish": "ga", "gaeilge": "ga", "ga-ie": "ga",
-    # Portuguese — bare "portuguese" routes to European Portuguese; pt-br
-    # is in the same family but rendered identically here (no separate br catalog).
+    # Portuguese — bare "portuguese" routes to European Portuguese; Brazilian
+    # Portuguese is a distinct catalog, so pt-br / "brazilian" route there.
     "portuguese": "pt", "português": "pt", "portugues": "pt",
-    "pt-pt": "pt", "pt-br": "pt", "brazilian": "pt", "brasileiro": "pt",
+    "pt-pt": "pt",
+    "pt-br": "pt-br", "brazilian": "pt-br", "brasileiro": "pt-br",
+    "português-brasileiro": "pt-br", "portugues-brasileiro": "pt-br",
     # Russian
     "russian": "ru", "русский": "ru", "ru-ru": "ru",
     # Hungarian

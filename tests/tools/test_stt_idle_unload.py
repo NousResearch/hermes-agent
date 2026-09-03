@@ -24,6 +24,7 @@ Contract under test:
 """
 
 import struct
+import threading
 import time
 import wave
 from unittest.mock import MagicMock, patch
@@ -281,3 +282,137 @@ class TestUnloadDuringTranscriptionRace:
 
         assert result["success"] is True, result.get("error")
         assert result["transcript"] == "hello"
+
+
+# ============================================================================
+# Watcher lifecycle: the slot must always be reclaimable, and a resident model
+# must always end up watched.
+# ============================================================================
+
+
+class TestIdleUnloadWatcherLifecycle:
+
+    @staticmethod
+    def _silent_wav(tmp_path):
+        wav_path = tmp_path / "a.wav"
+        n = 16000
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(struct.pack(f"<{n}h", *([0] * n)))
+        return wav_path
+
+    def test_stop_idle_unload_watcher_stops_a_running_watcher(self):
+        """``_idle_unload_stop`` needs a setter — nothing in the codebase set it.
+
+        The event was waited on and cleared on start, but never set, so a live
+        watcher could not be shut down by any code path.
+        """
+        mock_model = MagicMock(name="whisper_model")
+        try:
+            with patch.object(tt, "_local_model", mock_model), \
+                 patch.object(tt, "_local_model_name", "base"), \
+                 patch.object(tt, "_IDLE_UNLOAD_CHECK_INTERVAL", 0.5), \
+                 patch.object(tt, "_load_stt_config",
+                              return_value={"local": {"unload_after_idle_seconds": 100}}), \
+                 patch.object(tt, "_last_transcription_time", time.monotonic()):
+                _start_idle_unload_watcher(timeout_seconds=100)
+                thread = tt._idle_unload_thread
+                assert thread is not None and thread.is_alive()
+
+                tt._stop_idle_unload_watcher(timeout=5)
+
+                assert not thread.is_alive(), "watcher ignored the stop signal"
+                assert tt._idle_unload_running is False
+                # Stopped, not unloaded — stopping is not an eviction.
+                assert tt._local_model is mock_model
+        finally:
+            tt._idle_unload_stop.clear()
+
+    def test_stale_alive_thread_does_not_block_a_new_watcher(self):
+        """A watcher past its loop but not yet torn down must not wedge the slot.
+
+        Guarding on ``Thread.is_alive()`` dropped the start request during that
+        teardown window, leaving the model resident with nothing watching it.
+        """
+        parked = threading.Event()
+        stale = threading.Thread(target=parked.wait, name="stale-watcher", daemon=True)
+        stale.start()
+        mock_model = MagicMock(name="whisper_model")
+        original_thread = tt._idle_unload_thread
+        original_running = tt._idle_unload_running
+        try:
+            # The previous watcher's thread object is still alive, but the
+            # watcher body has already released its slot.
+            tt._idle_unload_thread = stale
+            tt._idle_unload_running = False
+            with patch.object(tt, "_local_model", mock_model), \
+                 patch.object(tt, "_local_model_name", "base"), \
+                 patch.object(tt, "_IDLE_UNLOAD_CHECK_INTERVAL", 0.5), \
+                 patch.object(tt, "_load_stt_config",
+                              return_value={"local": {"unload_after_idle_seconds": 100}}), \
+                 patch.object(tt, "_last_transcription_time", time.monotonic()):
+                _start_idle_unload_watcher(timeout_seconds=100)
+
+                assert tt._idle_unload_thread is not stale, \
+                    "a stale-but-alive thread blocked a new watcher"
+                assert tt._idle_unload_thread.is_alive()
+                tt._stop_idle_unload_watcher(timeout=5)
+        finally:
+            parked.set()
+            stale.join(timeout=2)
+            tt._idle_unload_thread = original_thread
+            tt._idle_unload_running = original_running
+            tt._idle_unload_stop.clear()
+
+    def test_watcher_is_armed_when_transcription_fails(self, tmp_path):
+        """A model that loaded and then failed must still end up watched.
+
+        Arming only on the success path left a loaded model resident with no
+        watcher until the next *successful* voice message — which, for a model
+        that keeps failing, never arrives.
+        """
+        wav_path = self._silent_wav(tmp_path)
+        mock_model = MagicMock(name="whisper_model")
+        mock_model.transcribe.side_effect = RuntimeError("decoder exploded")
+        try:
+            with patch.object(tt, "_HAS_FASTER_WHISPER", True), \
+                 patch.object(tt, "_IDLE_UNLOAD_CHECK_INTERVAL", 0.5), \
+                 patch.object(tt, "_load_stt_config",
+                              return_value={"local": {"unload_after_idle_seconds": 100}}), \
+                 patch.object(tt, "_local_model", mock_model), \
+                 patch.object(tt, "_local_model_name", "base"):
+                from tools.transcription_tools import _transcribe_local
+
+                result = _transcribe_local(str(wav_path), "base")
+
+                assert result["success"] is False
+                assert tt._idle_unload_running is True, \
+                    "failed transcription left the model resident with no watcher"
+                assert tt._idle_unload_thread is not None
+                assert tt._idle_unload_thread.is_alive()
+        finally:
+            tt._stop_idle_unload_watcher(timeout=5)
+            tt._idle_unload_stop.clear()
+
+    def test_watcher_not_armed_when_no_model_is_resident(self, tmp_path):
+        """No model loaded → nothing to watch → no thread spawned."""
+        wav_path = self._silent_wav(tmp_path)
+        original_running = tt._idle_unload_running
+        try:
+            with patch.object(tt, "_HAS_FASTER_WHISPER", True), \
+                 patch.object(tt, "_load_stt_config",
+                              return_value={"local": {"unload_after_idle_seconds": 100}}), \
+                 patch.object(tt, "_local_model", None), \
+                 patch.object(tt, "_local_model_name", None), \
+                 patch.object(tt, "_load_local_whisper_model", return_value=None):
+                from tools.transcription_tools import _transcribe_local
+
+                result = _transcribe_local(str(wav_path), "base")
+
+                assert result["success"] is False
+                assert tt._idle_unload_running is False
+        finally:
+            tt._idle_unload_running = original_running
+            tt._idle_unload_stop.clear()

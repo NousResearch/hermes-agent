@@ -149,8 +149,14 @@ _local_model_lock = threading.Lock()
 _last_transcription_time: float = 0.0
 _idle_unload_thread: Optional[threading.Thread] = None
 _idle_unload_stop = threading.Event()
+# True from the moment a watcher is registered until that watcher's own
+# ``finally`` clears it. ``Thread.is_alive()`` is not a usable substitute: a
+# watcher that has already broken out of its loop keeps reporting alive while
+# the interpreter tears it down, and a start request landing in that window
+# would be dropped — leaving the model resident with nothing watching it.
+_idle_unload_running = False
 # Serializes watcher start checks so two concurrent transcriptions can't
-# both observe "no watcher alive" and spawn duplicates.
+# both observe "no watcher running" and spawn duplicates.
 _idle_unload_mgmt_lock = threading.Lock()
 
 _IDLE_UNLOAD_CHECK_INTERVAL = 30  # seconds between idle checks
@@ -1718,38 +1724,88 @@ def _start_idle_unload_watcher(timeout_seconds: int) -> None:
     ``timeout_seconds`` seeds the first cycle so a just-written config is
     honored even if a concurrent config read would race.
     """
-    global _idle_unload_thread
+    global _idle_unload_thread, _idle_unload_running
     with _idle_unload_mgmt_lock:
-        if _idle_unload_thread is not None and _idle_unload_thread.is_alive():
+        if _idle_unload_running:
             return
 
         def _watch(initial_timeout=timeout_seconds):
+            global _idle_unload_running
             timeout = initial_timeout
-            while not _idle_unload_stop.is_set():
-                if _idle_unload_stop.wait(_IDLE_UNLOAD_CHECK_INTERVAL):
-                    break
-                if _local_model is None:
-                    break
-                # Re-read the timeout each cycle: config edits apply without
-                # waiting for the next voice message.
-                try:
-                    timeout = _get_idle_unload_seconds(
-                        _load_stt_config().get("local") or {}
-                    )
-                except Exception:  # noqa: BLE001 - keep the seed value
-                    timeout = initial_timeout
-                if timeout <= 0:
-                    break  # unload disabled mid-flight — stand down
-                idle_for = time.monotonic() - _last_transcription_time
-                if idle_for >= timeout:
-                    _unload_local_model()
-                    break
+            try:
+                while not _idle_unload_stop.is_set():
+                    if _idle_unload_stop.wait(_IDLE_UNLOAD_CHECK_INTERVAL):
+                        break
+                    if _local_model is None:
+                        break
+                    # Re-read the timeout each cycle: config edits apply without
+                    # waiting for the next voice message.
+                    try:
+                        timeout = _get_idle_unload_seconds(
+                            _load_stt_config().get("local") or {}
+                        )
+                    except Exception:  # noqa: BLE001 - keep the seed value
+                        timeout = initial_timeout
+                    if timeout <= 0:
+                        break  # unload disabled mid-flight — stand down
+                    idle_for = time.monotonic() - _last_transcription_time
+                    if idle_for >= timeout:
+                        _unload_local_model()
+                        break
+            finally:
+                # Release the slot from inside the thread, so the next
+                # transcription can always arm a fresh watcher no matter how
+                # this one exited (unload, stand-down, stop, or exception).
+                with _idle_unload_mgmt_lock:
+                    _idle_unload_running = False
 
         _idle_unload_stop.clear()
+        _idle_unload_running = True
         _idle_unload_thread = threading.Thread(
             target=_watch, name="hermes-stt-idle-unload", daemon=True
         )
         _idle_unload_thread.start()
+
+
+def _stop_idle_unload_watcher(timeout: float = 5.0) -> None:
+    """Signal the idle-unload watcher to exit and wait for it.
+
+    ``_idle_unload_stop`` previously had no setter anywhere in the codebase:
+    the event was waited on and cleared on start, but nothing ever set it, so a
+    running watcher could not be shut down. This is that missing half — used by
+    orderly shutdown paths and by tests that must not leak a live thread into
+    the next test.
+
+    Safe to call from the watcher thread itself (skips the self-join) and safe
+    to call when no watcher is running.
+    """
+    _idle_unload_stop.set()
+    with _idle_unload_mgmt_lock:
+        thread = _idle_unload_thread
+    if (
+        thread is not None
+        and thread.is_alive()
+        and thread is not threading.current_thread()
+    ):
+        thread.join(timeout=timeout)
+
+
+def _arm_idle_unload_watcher() -> None:
+    """Start the idle-unload watcher if a model is resident and unload is on.
+
+    Called on *every* exit path of :func:`_transcribe_local`. Arming only on
+    success left a model that loaded and then failed to transcribe sitting in
+    RAM/VRAM with nothing watching it until the next *successful* voice
+    message — which, for a persistently failing model, never comes.
+    """
+    if _local_model is None:
+        return
+    try:
+        idle_timeout = _get_idle_unload_seconds(_load_stt_config().get("local") or {})
+    except Exception:  # noqa: BLE001 - never let cleanup mask the real result
+        return
+    if idle_timeout > 0:
+        _start_idle_unload_watcher(idle_timeout)
 
 
 def _touch_transcription_time() -> None:
@@ -2018,15 +2074,17 @@ def _transcribe_local(
         )
 
         _touch_transcription_time()
-        idle_timeout = _get_idle_unload_seconds(local_cfg)
-        if idle_timeout > 0:
-            _start_idle_unload_watcher(idle_timeout)
 
         return {"success": True, "transcript": transcript, "provider": "local"}
 
     except Exception as e:
         logger.error("Local transcription failed: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
+    finally:
+        # Arm on every exit path, not just success: the early "model failed to
+        # load" return and any mid-transcribe exception both leave a loaded
+        # model behind that still needs watching.
+        _arm_idle_unload_watcher()
 
 
 def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:

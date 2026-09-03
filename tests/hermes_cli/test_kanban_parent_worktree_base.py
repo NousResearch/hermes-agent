@@ -77,6 +77,65 @@ def test_single_parent_worktree_starts_at_completed_parent_commit(tmp_path: Path
         db.close()
 
 
+def test_manual_claim_starts_worktree_at_completed_parent_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argparse import Namespace
+    from contextlib import closing
+
+    from hermes_cli import kanban
+
+    repo, stale_head = _repo(tmp_path)
+    db_path = tmp_path / "kanban.db"
+    db = kb.connect(db_path)
+
+    parent_id = kb.create_task(db, title="parent", assignee="builder")
+    parent = kb.claim_task(db, parent_id)
+    assert parent is not None
+    (repo / "parent.txt").write_text("reviewed parent work\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "parent work")
+    parent_sha = _git(repo, "rev-parse", "HEAD")
+    assert kb.complete_task(
+        db,
+        parent_id,
+        metadata={"commit": parent_sha},
+        expected_run_id=parent.current_run_id,
+    )
+
+    _git(repo, "reset", "--hard", stale_head)
+    child_id = kb.create_task(
+        db,
+        title="child",
+        assignee="builder",
+        parents=[parent_id],
+        workspace_kind="worktree",
+        workspace_path=str(repo),
+        branch_name="fix/manual-child",
+    )
+    monkeypatch.setattr(kanban.kb, "connect_closing", lambda: closing(db))
+
+    assert kanban._cmd_claim(Namespace(task_id=child_id, ttl=900)) == 0
+
+    verify = kb.connect(db_path)
+    try:
+        child = kb.get_task(verify, child_id)
+        assert child is not None
+        assert child.workspace_path is not None
+        assert _git(Path(child.workspace_path), "rev-parse", "HEAD") == parent_sha
+        run = kb.get_run(verify, child.current_run_id)
+        assert run is not None
+        assert run.resolved_base_sha == parent_sha
+        claimed = [
+            event
+            for event in kb.list_events(verify, child_id)
+            if event.kind == "claimed"
+        ][-1]
+        assert claimed.payload["resolved_base_sha"] == parent_sha
+    finally:
+        verify.close()
+
+
 @pytest.mark.parametrize("commit", [None, "abc123", "f" * 40])
 def test_single_parent_worktree_rejects_unusable_parent_commit(
     tmp_path: Path, commit: str | None

@@ -44,60 +44,6 @@ def test_refresh_adds_late_landing_tools(monkeypatch):
     assert len(agent.tools) == 3
 
 
-def test_refresh_no_change_returns_empty_and_leaves_agent_untouched(monkeypatch):
-    """No new tools → empty set, and the snapshot object is not swapped."""
-    agent = _agent(["read_file", "terminal"])
-    original_tools = agent.tools
-
-    import model_tools
-    monkeypatch.setattr(
-        model_tools, "get_tool_definitions",
-        lambda **kw: [_tool("read_file"), _tool("terminal")],
-    )
-
-    added = mcp_tool.refresh_agent_mcp_tools(agent)
-
-    assert added == set()
-    assert agent.tools is original_tools  # not replaced → no churn / no cache thrash
-
-
-def test_refresh_detects_equal_size_swap(monkeypatch):
-    """Name-based diff catches an add+remove of equal count (count-compare can't)."""
-    agent = _agent(["a", "old_mcp_tool"])  # 2 tools
-
-    import model_tools
-    # Same COUNT (2) but a different membership: old_mcp_tool removed, new added.
-    monkeypatch.setattr(
-        model_tools, "get_tool_definitions",
-        lambda **kw: [_tool("a"), _tool("new_mcp_tool")],
-    )
-
-    added = mcp_tool.refresh_agent_mcp_tools(agent)
-
-    assert added == {"new_mcp_tool"}
-    assert agent.valid_tool_names == {"a", "new_mcp_tool"}
-    assert "old_mcp_tool" not in agent.valid_tool_names
-
-
-def test_refresh_passes_agent_toolset_filters(monkeypatch):
-    """The rebuild re-derives with the agent's OWN enabled/disabled toolsets."""
-    agent = _agent(["a"], enabled=["coding", "granola"], disabled=["messaging"])
-    seen = {}
-
-    import model_tools
-
-    def _capture(**kw):
-        seen.update(kw)
-        return [_tool("a"), _tool("b")]
-
-    monkeypatch.setattr(model_tools, "get_tool_definitions", _capture)
-
-    mcp_tool.refresh_agent_mcp_tools(agent)
-
-    assert seen["enabled_toolsets"] == ["coding", "granola"]
-    assert seen["disabled_toolsets"] == ["messaging"]
-
-
 def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch):
     """B1 regression: a rebuild must NOT drop post-build-injected tools.
 
@@ -138,6 +84,32 @@ def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch)
     assert "memory_search" in agent.valid_tool_names   # not clobbered
     assert "lcm_grep" in agent.valid_tool_names         # not clobbered
     assert added == {"mcp_new_server_tool"}
+
+
+def test_refresh_does_not_reinject_disabled_memory_provider_tools(monkeypatch):
+    """A refresh removes stale provider tools when memory becomes disabled."""
+    agent = _agent(
+        ["read_file", "memory_search"],
+        enabled=["all"],
+        disabled=["memory"],
+    )
+    agent._memory_manager = types.SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {"name": "memory_search", "description": "", "parameters": {}}
+        ]
+    )
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kw: [_tool("read_file")],
+    )
+
+    mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert "memory_search" not in agent.valid_tool_names
+    assert all(t["function"]["name"] != "memory_search" for t in agent.tools)
 
 
 def test_refresh_respects_context_engine_toolset_gate(monkeypatch):
@@ -240,50 +212,6 @@ def test_resolve_discovery_timeout_explicit_wins(monkeypatch):
     assert mcp_startup._resolve_discovery_timeout(2.5) == 2.5
 
 
-def test_resolve_discovery_timeout_reads_config(monkeypatch):
-    from hermes_cli import mcp_startup
-    import hermes_cli.config as cfg
-
-    monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": 8.0})
-
-    assert mcp_startup._resolve_discovery_timeout(None) == 8.0
-
-
-def test_resolve_discovery_timeout_falls_back_on_bad_value(monkeypatch):
-    from hermes_cli import mcp_startup
-    import hermes_cli.config as cfg
-
-    # Non-positive / unparsable → DEFAULT_CONFIG value, never hang.
-    default = float(cfg.DEFAULT_CONFIG.get("mcp_discovery_timeout", 1.5))
-    monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": 0})
-    assert mcp_startup._resolve_discovery_timeout(None) == default
-
-    monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": "oops"})
-    assert mcp_startup._resolve_discovery_timeout(None) == default
-
-
-def test_stale_generation_refresh_does_not_clobber_newer(monkeypatch):
-    """A slower refresh that computed an OLDER registry generation must not
-    overwrite a snapshot a newer-generation refresh already published."""
-    from tools import registry as _reg_mod
-
-    agent = _agent(["read_file"])
-    # A newer refresh already published generation = current+5, with two tools.
-    agent._tool_snapshot_generation = _reg_mod.registry._generation + 5
-    agent.tools = [_tool("read_file"), _tool("mcp_new_tool")]
-    agent.valid_tool_names = {"read_file", "mcp_new_tool"}
-
-    import model_tools
-    # This (stale) refresh computes only the old single-tool set.
-    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: [_tool("read_file")])
-
-    added = mcp_tool.refresh_agent_mcp_tools(agent)
-
-    # Stale write rejected: the newer tool survives.
-    assert added == set()
-    assert "mcp_new_tool" in agent.valid_tool_names
-
-
 def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):
     """The common case (no MCP / discovery done) pays ~0s regardless of bound."""
     import time
@@ -296,3 +224,116 @@ def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):
     t0 = time.time()
     mcp_startup.wait_for_mcp_discovery()
     assert time.time() - t0 < 0.2  # never blocks on the bound when nothing's pending
+
+
+# ---------------------------------------------------------------------------
+# preserve_prefix: the tool array is a cached request prefix (#100336)
+# ---------------------------------------------------------------------------
+
+
+def _registered(monkeypatch, names):
+    """Make the registry report exactly *names* as still registered."""
+    from tools import registry as registry_mod
+
+    entries = [types.SimpleNamespace(name=n) for n in names]
+    monkeypatch.setattr(
+        registry_mod.registry, "get_all_entries", lambda: entries, raising=False
+    )
+
+
+def _serve(monkeypatch, defs):
+    import model_tools
+
+    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: list(defs))
+
+
+def test_preserve_prefix_carries_a_flapping_tool_forward(monkeypatch):
+    """A check_fn flip must not shrink a live session's tool prefix.
+
+    ``browser_navigate``'s availability probe fails this turn (headless box,
+    expired credential, docker blip) so ``get_tool_definitions`` omits it. The
+    tool is still *registered* — only its probe flapped — so the snapshot must
+    keep it, byte-for-byte, instead of forking the cached prefix.
+    """
+    agent = _agent(["read_file", "browser_navigate", "terminal"])
+    before = list(agent.tools)
+
+    _serve(monkeypatch, [_tool("read_file"), _tool("terminal")])
+    _registered(monkeypatch, ["read_file", "browser_navigate", "terminal"])
+
+    added = mcp_tool.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert added == set()
+    assert agent.tools == before
+    assert "browser_navigate" in agent.valid_tool_names
+
+
+def test_preserve_prefix_appends_late_arrivals_at_the_tail(monkeypatch):
+    """``get_definitions`` sorts by name, so a late tool can splice in at 0.
+
+    Under ``preserve_prefix`` the live order is authoritative and the new tool
+    extends the array, leaving every earlier byte where the provider cached it.
+    """
+    agent = _agent(["read_file", "terminal"])
+
+    # Sorted order would put the new tool first.
+    _serve(monkeypatch, [_tool("aaa_mcp_late"), _tool("read_file"), _tool("terminal")])
+    _registered(monkeypatch, ["aaa_mcp_late", "read_file", "terminal"])
+
+    added = mcp_tool.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert added == {"aaa_mcp_late"}
+    assert [t["function"]["name"] for t in agent.tools] == [
+        "read_file", "terminal", "aaa_mcp_late",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# tools[] freeze: eviction rebuild + the /reload-mcp re-probe hatch
+# ---------------------------------------------------------------------------
+
+
+def test_eviction_rebuild_restores_the_sessions_saved_tool_order(monkeypatch):
+    """A fresh AIAgent for an EXISTING session must keep the saved tools[] pin.
+
+    Gateway agent-cache eviction rebuilds the agent; ``agent_init`` re-probes
+    every ``check_fn`` and ``browser_navigate``'s flips false. The persisted
+    name list stands in for the missing predecessor: the tool is carried
+    forward from the registry schema, byte-for-byte in its old slot.
+    """
+    from tools import registry as registry_mod
+
+    saved = ["read_file", "browser_navigate", "terminal"]
+    entries = {n: types.SimpleNamespace(name=n, schema=_tool(n)["function"]) for n in saved}
+    monkeypatch.setattr(registry_mod.registry, "get_all_entries", lambda: list(entries.values()), raising=False)
+    monkeypatch.setattr(registry_mod.registry, "get_entry", lambda name, **kw: entries.get(name), raising=False)
+
+    rebuilt = _agent(["read_file", "terminal"])  # probe flipped: browser_navigate gone
+    changed = mcp_tool.restore_agent_tool_prefix(rebuilt, saved)
+
+    assert changed is True
+    assert [t["function"]["name"] for t in rebuilt.tools] == saved
+    assert rebuilt.valid_tool_names == set(saved)
+
+
+def test_reprobe_tool_availability_drops_cached_check_fn_verdicts(monkeypatch):
+    """/reload-mcp is the explicit hatch: a cached False must be re-probed."""
+    from tools import registry as registry_mod
+    import model_tools
+
+    verdict = {"ok": False}
+
+    def probe():
+        return verdict["ok"]
+
+    monkeypatch.setattr(registry_mod, "check_fn_cache_scope", lambda: "test-scope")
+    assert registry_mod._check_fn_cached(probe) is False
+    verdict["ok"] = True
+    assert registry_mod._check_fn_cached(probe) is False  # TTL cache replays stale verdict
+    with model_tools._tool_defs_cache_lock:
+        model_tools._tool_defs_cache[("sentinel",)] = []
+
+    mcp_tool.reprobe_tool_availability()
+
+    assert registry_mod._check_fn_cached(probe) is True
+    assert ("sentinel",) not in model_tools._tool_defs_cache

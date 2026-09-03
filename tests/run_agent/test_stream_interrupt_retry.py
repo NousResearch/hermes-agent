@@ -160,3 +160,166 @@ class TestStreamInterruptBeforeRetry:
         result = agent._interruptible_streaming_api_call({})
         assert result is not None
         assert attempts[0] == 3
+
+    @pytest.mark.filterwarnings(
+        "ignore::pytest.PytestUnhandledThreadExceptionWarning"
+    )
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    @patch("run_agent.AIAgent._abort_request_openai_client")
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_stale_stream_attempt_cannot_emit_late_chunks_after_retry(
+        self,
+        mock_close,
+        mock_create,
+        mock_abort,
+        mock_replace,
+        monkeypatch,
+    ):
+        """A stale attempt must not keep writing deltas after it is killed.
+
+        This reproduces the race where the outer stale detector aborts an SSE
+        connection, but the old iterator still yields one more chunk before
+        surfacing the connection error that triggers the retry.
+        """
+        import httpx
+        import time
+
+        from tests.run_agent.test_streaming import (
+            _make_stream_chunk,
+            _make_tool_call_delta,
+        )
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.05")
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+
+        class LateChunkAfterStaleStream:
+            response = SimpleNamespace(headers={})
+
+            def __iter__(self):
+                yield _make_stream_chunk(content="old start ")
+                yield _make_stream_chunk(
+                    tool_calls=[
+                        _make_tool_call_delta(
+                            index=0,
+                            tc_id="call_1",
+                            name="terminal",
+                        )
+                    ]
+                )
+                time.sleep(0.45)
+                yield _make_stream_chunk(content="old late ")
+                raise httpx.RemoteProtocolError("peer closed connection")
+
+        retry_chunks = [
+            _make_stream_chunk(content="new final"),
+            _make_stream_chunk(finish_reason="stop", model="test/model"),
+        ]
+        class RetryStream:
+            response = SimpleNamespace(headers={})
+
+            def __iter__(self):
+                return iter(retry_chunks)
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [
+            LateChunkAfterStaleStream(),
+            RetryStream(),
+        ]
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._interrupt_requested = False
+        deltas = []
+        agent.stream_delta_callback = deltas.append
+
+        response = agent._interruptible_streaming_api_call({})
+
+        delivered = "".join(deltas)
+        assert "old late" not in delivered
+        assert "new final" in delivered
+        assert response.choices[0].message.content == "new final"
+        assert mock_abort.called
+
+
+class TestStreamInterruptJoinsWorkerBeforeRaise:
+    """#81521: interrupt must join the stream worker before raising.
+
+    Raising InterruptedError immediately lets Relay turn teardown race a
+    still-open physical LLM scope ("scope handle is not at the top of the
+    stack") and cascade into the CLI EIO / redraw storm.
+    """
+
+    @pytest.mark.filterwarnings(
+        "ignore::pytest.PytestUnhandledThreadExceptionWarning"
+    )
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_interrupt_joins_worker_before_raising(
+        self, mock_close, mock_create, monkeypatch
+    ):
+        import threading
+
+        import httpx
+
+        join_timeouts: list[float | None] = []
+        original_join = threading.Thread.join
+
+        def spy_join(self, *args, **kwargs):
+            timeout = kwargs.get("timeout", args[0] if args else None)
+            join_timeouts.append(timeout)
+            return original_join(self, *args, **kwargs)
+
+        monkeypatch.setattr(threading.Thread, "join", spy_join)
+
+        # The join is gated on Relay managed execution being live (it is
+        # pointless — and delays interrupt detection — when no Relay
+        # consumers are registered). Simulate a live runtime.
+        from agent import relay_runtime as rr
+
+        monkeypatch.setattr(
+            rr,
+            "get_runtime",
+            lambda *a, **k: SimpleNamespace(
+                managed_execution_enabled=lambda: True,
+                get_session=lambda *a2, **k2: None,
+                ensure_session=lambda *a2, **k2: None,
+            ),
+        )
+
+        class HangUntilClosedStream:
+            response = SimpleNamespace(headers={})
+
+            def __iter__(self):
+                # Block until the poll loop force-closes / cancels; then
+                # surface a transport error like a real aborted SSE body.
+                import time
+
+                deadline = time.time() + 5.0
+                while time.time() < deadline:
+                    time.sleep(0.05)
+                raise httpx.RemoteProtocolError("connection closed by interrupt")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = HangUntilClosedStream()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._interrupt_requested = False
+
+        def fire_interrupt():
+            import time
+
+            time.sleep(0.2)
+            agent._interrupt_requested = True
+
+        threading.Thread(target=fire_interrupt, daemon=True).start()
+
+        with pytest.raises(InterruptedError, match="interrupted"):
+            agent._interruptible_streaming_api_call({})
+
+        assert 2.0 in join_timeouts, (
+            f"Expected a 2.0s worker join before InterruptedError; "
+            f"saw join timeouts {join_timeouts!r}. Without the join, Relay "
+            f"scope teardown races the stream worker (#81521)."
+        )

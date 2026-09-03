@@ -85,13 +85,6 @@ class TestCreateJobWorkdir:
         stored = get_job(job["id"])
         assert stored["workdir"] == str(tmp_cron_dir.resolve())
 
-    def test_workdir_none_preserves_old_behaviour(self, tmp_cron_dir):
-        from cron.jobs import create_job, get_job
-        job = create_job(prompt="hello", schedule="every 1h")
-        stored = get_job(job["id"])
-        # Field is present on the dict but None — downstream code checks
-        # truthiness to decide whether the feature is active.
-        assert stored.get("workdir") is None
 
     def test_create_rejects_invalid_workdir(self, tmp_cron_dir):
         from cron.jobs import create_job
@@ -118,13 +111,6 @@ class TestUpdateJobWorkdir:
         update_job(job["id"], {"workdir": None})
         assert get_job(job["id"])["workdir"] is None
 
-    def test_clear_workdir_with_empty_string(self, tmp_cron_dir):
-        from cron.jobs import create_job, get_job, update_job
-        job = create_job(
-            prompt="x", schedule="every 1h", workdir=str(tmp_cron_dir)
-        )
-        update_job(job["id"], {"workdir": ""})
-        assert get_job(job["id"])["workdir"] is None
 
     def test_update_rejects_invalid_workdir(self, tmp_cron_dir):
         from cron.jobs import create_job, update_job
@@ -138,52 +124,7 @@ class TestUpdateJobWorkdir:
 # ---------------------------------------------------------------------------
 
 class TestCronjobToolWorkdir:
-    def test_create_with_workdir_json_roundtrip(self, tmp_cron_dir):
-        from tools.cronjob_tools import cronjob
 
-        result = json.loads(
-            cronjob(
-                action="create",
-                prompt="hi",
-                schedule="every 1h",
-                workdir=str(tmp_cron_dir),
-            )
-        )
-        assert result["success"] is True
-        assert result["job"]["workdir"] == str(tmp_cron_dir.resolve())
-
-    def test_create_without_workdir_hides_field_in_format(self, tmp_cron_dir):
-        from tools.cronjob_tools import cronjob
-
-        result = json.loads(
-            cronjob(
-                action="create",
-                prompt="hi",
-                schedule="every 1h",
-            )
-        )
-        assert result["success"] is True
-        # _format_job omits the field when unset — reduces noise in agent output.
-        assert "workdir" not in result["job"]
-
-    def test_update_clears_workdir_with_empty_string(self, tmp_cron_dir):
-        from tools.cronjob_tools import cronjob
-
-        created = json.loads(
-            cronjob(
-                action="create",
-                prompt="hi",
-                schedule="every 1h",
-                workdir=str(tmp_cron_dir),
-            )
-        )
-        job_id = created["job_id"]
-
-        updated = json.loads(
-            cronjob(action="update", job_id=job_id, workdir="")
-        )
-        assert updated["success"] is True
-        assert "workdir" not in updated["job"]
 
     def test_schema_advertises_workdir(self):
         from tools.cronjob_tools import CRONJOB_SCHEMA
@@ -193,74 +134,56 @@ class TestCronjobToolWorkdir:
 
 
 # ---------------------------------------------------------------------------
-# scheduler.tick(): workdir partition
+# scheduler.tick(): workdir jobs use the parallel execution lane
 # ---------------------------------------------------------------------------
 
 class TestTickWorkdirPartition:
-    """
-    tick() must run workdir jobs sequentially (outside the ThreadPoolExecutor)
-    because run_job mutates os.environ["TERMINAL_CWD"], which is process-global.
-    We verify the partition without booting the real scheduler by patching the
-    pieces tick() calls.
-    """
+    """Workdir is per execution, so it must not force a global serial lane."""
 
-    def test_workdir_jobs_run_sequentially(self, tmp_path, monkeypatch):
+    def test_workdir_jobs_overlap_on_parallel_pool(self, tmp_path, monkeypatch):
         import cron.scheduler as sched
-
-        # Two workdir jobs (both sequential) + one parallel job.
-        workdir_a = {"id": "a", "name": "A", "workdir": str(tmp_path)}
-        workdir_b = {"id": "b", "name": "B", "workdir": str(tmp_path)}
-        parallel_job = {"id": "c", "name": "C", "workdir": None}
-
-        monkeypatch.setattr(sched, "get_due_jobs", lambda: [workdir_a, workdir_b, parallel_job])
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
-
-        # Record call order / thread context.
         import threading
-        calls: list[tuple[str, str]] = []
-        order_lock = threading.Lock()
 
-        def fake_run_job(job, *, defer_agent_teardown=None):
-            # Return a minimal tuple matching run_job's signature.
-            with order_lock:
+        workdir_a = tmp_path / "a"
+        workdir_b = tmp_path / "b"
+        workdir_a.mkdir()
+        workdir_b.mkdir()
+        jobs = [
+            {"id": "a", "name": "A", "workdir": str(workdir_a)},
+            {"id": "b", "name": "B", "workdir": str(workdir_b)},
+        ]
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
+        monkeypatch.setattr(sched, "claim_job_for_fire", lambda *_a, **_kw: True)
+
+        barrier = threading.Barrier(2, timeout=5)
+        calls: list[tuple[str, str]] = []
+        calls_lock = threading.Lock()
+
+        def fake_run_job(job, *, defer_agent_teardown=None, **_kw):
+            with calls_lock:
                 calls.append((job["id"], threading.current_thread().name))
+            barrier.wait()
             return True, "output", "response", None
 
         monkeypatch.setattr(sched, "run_job", fake_run_job)
         monkeypatch.setattr(sched, "save_job_output", lambda _jid, _o: None)
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
-        monkeypatch.setattr(
-            sched, "_deliver_result", lambda *_a, **_kw: None
-        )
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
 
-        n = sched.tick(verbose=False)
-        assert n == 3
-
-        ids = [c[0] for c in calls]
-        # Sequential workdir jobs preserve submission order relative to each
-        # other (single-thread pool).
-        assert ids.index("a") < ids.index("b")
-
-        # Workdir jobs run on the persistent single-thread cron-seq pool —
-        # NOT the main thread — so a long workdir job never blocks the ticker.
-        main_thread_name = threading.current_thread().name
-        for jid in ("a", "b"):
-            workdir_thread_name = next(t for j, t in calls if j == jid)
-            assert workdir_thread_name != main_thread_name
-            assert workdir_thread_name.startswith("cron-seq"), workdir_thread_name
-        par_thread_name = next(t for j, t in calls if j == "c")
-        assert par_thread_name.startswith("cron-parallel"), par_thread_name
+        assert sched.tick(verbose=False, sync=True) == 2
+        assert {job_id for job_id, _thread in calls} == {"a", "b"}
+        assert all(thread.startswith("cron-parallel") for _job, thread in calls)
 
 
 # ---------------------------------------------------------------------------
-# scheduler.run_job: TERMINAL_CWD + skip_context_files wiring
+# scheduler.run_job: per-task cwd + skip_context_files wiring
 # ---------------------------------------------------------------------------
 
 class TestRunJobTerminalCwd:
     """
-    run_job sets TERMINAL_CWD + flips skip_context_files=False when workdir
-    is set, and restores the prior TERMINAL_CWD in finally — even on error.
-    We stub AIAgent so no real API call happens.
+    run_job binds workdir to its unique task CWD without mutating ambient
+    TERMINAL_CWD, and clears the task record in finally — even on error.
+    AIAgent is stubbed so no real API call happens.
     """
 
     @staticmethod
@@ -278,7 +201,11 @@ class TestRunJobTerminalCwd:
                     "TERMINAL_CWD", "_UNSET_"
                 )
 
-            def run_conversation(self, *_a, **_kw):
+            def run_conversation(self, *_a, task_id=None, **_kw):
+                from tools.terminal_tool import get_session_cwd
+
+                observed["task_id"] = task_id
+                observed["task_cwd_during_run"] = get_session_cwd(task_id)
                 observed["terminal_cwd_during_run"] = os.environ.get(
                     "TERMINAL_CWD", "_UNSET_"
                 )
@@ -305,7 +232,7 @@ class TestRunJobTerminalCwd:
         )
 
         # Stub scheduler helpers that would otherwise hit the filesystem / config.
-        monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None: "hi")
+        monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None, **kw: "hi")
         monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)
@@ -318,39 +245,6 @@ class TestRunJobTerminalCwd:
         import dotenv
         monkeypatch.setattr(dotenv, "load_dotenv", lambda *_a, **_kw: True)
 
-    def test_workdir_sets_and_restores_terminal_cwd(
-        self, tmp_path, monkeypatch
-    ):
-        import os
-        import cron.scheduler as sched
-
-        # Make sure the test's TERMINAL_CWD starts at a known non-workdir value.
-        # Use monkeypatch.setenv so it's restored on teardown regardless of
-        # whatever other tests in this xdist worker have left behind.
-        monkeypatch.setenv("TERMINAL_CWD", "/original/cwd")
-
-        observed: dict = {}
-        self._install_stubs(monkeypatch, observed)
-
-        job = {
-            "id": "abc",
-            "name": "wd-job",
-            "workdir": str(tmp_path),
-            "schedule_display": "manual",
-        }
-
-        success, _output, response, error = sched.run_job(job)
-        assert success is True, f"run_job failed: error={error!r} response={response!r}"
-
-        # AIAgent was built with skip_context_files=False (feature ON).
-        assert observed["skip_context_files"] is False
-        assert observed["load_soul_identity"] is True
-        # TERMINAL_CWD was pointing at the job workdir while the agent ran.
-        assert observed["terminal_cwd_during_init"] == str(tmp_path.resolve())
-        assert observed["terminal_cwd_during_run"] == str(tmp_path.resolve())
-
-        # And it was restored to the original value in finally.
-        assert os.environ["TERMINAL_CWD"] == "/original/cwd"
 
     def test_no_workdir_leaves_terminal_cwd_untouched(self, monkeypatch):
         """When workdir is absent, run_job must not touch TERMINAL_CWD at all —
@@ -390,3 +284,35 @@ class TestRunJobTerminalCwd:
         # And after run_job completes, it's still the sentinel (nothing
         # overwrote or cleared it).
         assert os.environ["TERMINAL_CWD"] == before
+
+    def test_workdir_is_bound_to_unique_task_without_mutating_process_env(
+        self, monkeypatch, tmp_path
+    ):
+        import os
+        import cron.scheduler as sched
+        from tools.terminal_tool import get_session_cwd
+
+        baseline = str(tmp_path / "baseline")
+        workdir = tmp_path / "project"
+        (tmp_path / "baseline").mkdir()
+        workdir.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", baseline)
+
+        observed: dict = {}
+        self._install_stubs(monkeypatch, observed)
+        success, *_ = sched.run_job(
+            {
+                "id": "cwd-bound",
+                "name": "cwd-bound",
+                "workdir": str(workdir),
+                "schedule_display": "manual",
+            }
+        )
+
+        assert success is True
+        assert observed["skip_context_files"] is False
+        assert observed["task_id"].startswith("cron:cwd-bound:")
+        assert observed["task_cwd_during_run"] == str(workdir)
+        assert observed["terminal_cwd_during_run"] == baseline
+        assert os.environ["TERMINAL_CWD"] == baseline
+        assert get_session_cwd(observed["task_id"]) is None

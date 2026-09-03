@@ -1,21 +1,21 @@
 ---
-title: "Duckduckgo Search — Free web search via DuckDuckGo — text, news, images, videos"
+title: "Duckduckgo Search — Free keyless web, news, and image search via ddgs"
 sidebar_label: "Duckduckgo Search"
-description: "Free web search via DuckDuckGo — text, news, images, videos"
+description: "Free keyless web, news, and image search via ddgs"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Duckduckgo Search
 
-Free web search via DuckDuckGo — text, news, images, videos. No API key needed. Prefer the `ddgs` CLI when installed; use the Python DDGS library only after verifying that `ddgs` is available in the current runtime.
+Free keyless web, news, and image search via ddgs.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/duckduckgo-search` |
-| Path | `optional-skills/research/duckduckgo-search` |
+| Path | `optional-skills/research\duckduckgo-search` |
 | Version | `1.3.0` |
 | Author | gamedevCloudy |
 | License | MIT |

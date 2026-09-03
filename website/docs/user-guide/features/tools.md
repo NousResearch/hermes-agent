@@ -53,6 +53,13 @@ Common toolsets include `web`, `search`, `terminal`, `file`, `browser`, `vision`
 
 See [Toolsets Reference](/reference/toolsets-reference) for the full set, including platform presets such as `hermes-cli`, `hermes-telegram`, and dynamic MCP toolsets like `mcp-<server>`.
 
+## Tool result annotations
+
+A few tool behaviors are worth knowing when you read agent transcripts:
+
+- **Signal deaths are explained.** When a terminal command is killed by a signal, the result carries a human-readable note instead of a bare numeric code — e.g. exit `-9`/`137` becomes "terminated by signal 9: SIGKILL — often the kernel OOM killer on memory exhaustion, or an explicit kill -9", and segfaults, aborts, SIGTERM, broken pipes, and CPU/file-size limits are labeled the same way. Negative codes (subprocess semantics) are stated definitively; the shell's `128+signum` convention is hedged with "usually" since an application can legitimately exit with those codes.
+- **UTF-16 text files are transcoded, not refused.** `read_file` detects UTF-16 (BOM or byte-pattern heuristic, either endianness — common for Windows Notepad files and PowerShell `>` redirects) and transcodes it to UTF-8 for display instead of flagging the file as binary. The result includes a hint disclosing the conversion; edits via `patch`/`write_file` re-encode as UTF-8. Files over 10 MB and genuinely binary files still get the binary-file refusal.
+
 ## Terminal Backends
 
 The terminal tool can execute commands in different environments:
@@ -65,16 +72,43 @@ The terminal tool can execute commands in different environments:
 | `singularity` | HPC containers | Cluster computing, rootless |
 | `modal` | Cloud execution | Serverless, scale |
 | `daytona` | Cloud sandbox workspace | Persistent remote dev environments |
+| `vercel_sandbox` | Vercel Sandbox cloud microVM | Cloud execution with snapshot-backed filesystem persistence |
 
 ### Configuration
 
 ```yaml
 # In ~/.hermes/config.yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal, daytona
+  backend: local    # or: docker, ssh, singularity, modal, daytona, vercel_sandbox
   cwd: "."          # Working directory
   timeout: 180      # Command timeout in seconds
 ```
+
+### Shell startup files and non-interactive commands
+
+Agent terminal calls run your shell **non-interactively** — there is no TTY and no human at the prompt. Heavy or interactive shell initialisation that you never notice in a normal terminal can break or badly slow every command the agent runs:
+
+- **Slow init (`nvm`, version managers, network-touching prompts):** the classic `nvm.sh` sourcing adds noticeable latency to *every* shell start, and the agent starts many shells. Multi-second rc files turn a quick `git status` into a timeout risk.
+- **TTY-expecting blocks:** anything in `.bashrc`/`.zshrc` that prompts, runs `tmux`/`screen` attach, calls `read`, or prints a menu will hang a non-interactive shell — the command appears to run forever and then times out.
+- **Unconditional output:** rc files that `echo` banners pollute every command's output the agent has to parse.
+
+The fix is the standard guard most distros already ship at the top of `.bashrc` — return early when the shell is non-interactive, and keep anything heavy or interactive below it:
+
+```bash
+# ~/.bashrc — keep this guard near the top
+case $- in
+  *i*) ;;      # interactive: continue
+  *) return;;  # non-interactive: stop here
+esac
+
+# heavy/interactive init goes BELOW the guard
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+```
+
+Zsh users: put login-only setup in `.zprofile` and interactive-only setup in `.zshrc`; keep `.zshenv` minimal, since it runs for every shell including non-interactive ones. If the agent genuinely needs a tool that only your rc file puts on `PATH`, export the `PATH` change *above* the guard (path exports are cheap) or symlink the binary into `~/.local/bin`.
+
+If agent terminal commands hang or time out immediately after working in your own terminal, your shell init is the first suspect.
 
 ### Docker Backend
 
@@ -84,7 +118,7 @@ terminal:
   docker_image: python:3.11-slim
 ```
 
-**One persistent container, shared across the whole process.** Hermes starts a single long-lived container on first use (`docker run -d ... sleep 2h`) and routes every terminal, file, and `execute_code` call through `docker exec` into that same container. Working-directory changes, installed packages, environment tweaks, and files written to `/workspace` all carry over from one tool call to the next, across `/new`, `/reset`, and `delegate_task` subagents, for the lifetime of the Hermes process. The container is stopped and removed on shutdown.
+**One persistent container, shared across the whole process.** Hermes starts a single long-lived container on first use (`docker run -d ... sleep infinity`) and routes every terminal, file, and `execute_code` call through `docker exec` into that same container. Working-directory changes, installed packages, environment tweaks, and files written to `/workspace` all carry over from one tool call to the next, across `/new`, `/reset`, and `delegate_task` subagents, for the lifetime of the Hermes process. The container is stopped and removed on shutdown.
 
 This means the Docker backend behaves like a persistent sandbox VM, not a fresh container per command. If you `pip install foo` once, it's there for the rest of the session. If you `cd /workspace/project`, subsequent `ls` calls see that directory. See [Configuration → Docker Backend](../configuration.md#docker-backend) for the full lifecycle details and the `container_persistent` flag that controls whether `/workspace` and `/root` survive across Hermes restarts.
 
@@ -122,13 +156,41 @@ modal setup
 hermes config set terminal.backend modal
 ```
 
+### Vercel Sandbox
+
+```bash
+pip install 'hermes-agent[vercel]'
+hermes config set terminal.backend vercel_sandbox
+hermes config set terminal.vercel_runtime node24
+```
+
+Authenticate with all three of `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, and `VERCEL_TEAM_ID`. This access-token setup is the supported path for deployments and normal long-running Hermes processes on Render, Railway, Docker, and similar hosts. Supported runtimes are `node24`, `node22`, and `python3.13`; Hermes defaults to `/vercel/sandbox` as the remote workspace root.
+
+For one-off local development, Hermes also accepts short-lived Vercel OIDC tokens:
+
+```bash
+VERCEL_OIDC_TOKEN="$(vc project token <project-name>)" hermes chat
+```
+
+From a linked Vercel project directory:
+
+```bash
+VERCEL_OIDC_TOKEN="$(vc project token)" hermes chat
+```
+
+With `container_persistent: true`, Hermes uses Vercel snapshots to preserve filesystem state across sandbox recreation for the same task. This can include Hermes-synced credentials, skills, and cache files inside the sandbox. Snapshots do not preserve live processes, PID space, or the same live sandbox identity.
+
+Background terminal commands use Hermes' generic non-local process flow: spawn, poll, wait, log, and kill work through the normal process tool while the sandbox is alive, but Hermes does not provide native Vercel detached-process recovery after cleanup or restart.
+
+Leave `container_disk` unset or at the shared default `51200`; custom disk sizing is unsupported for Vercel Sandbox and will fail diagnostics/backend creation.
+
 ### Container Resources
 
 Configure CPU, memory, disk, and persistence for all container backends:
 
 ```yaml
 terminal:
-  backend: docker  # or singularity, modal, daytona
+  backend: docker  # or singularity, modal, daytona, vercel_sandbox
   container_cpu: 1              # CPU cores (default: 1)
   container_memory: 5120        # Memory in MB (default: 5GB)
   container_disk: 51200         # Disk in MB (default: 50GB)

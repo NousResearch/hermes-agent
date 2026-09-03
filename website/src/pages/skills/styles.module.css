@@ -969,3 +969,40 @@
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   }
 }
+
+/* ── Picker embed mode (?embed=picker) ──────────────────────────────────────
+   The page is iframed by a host app as a skill picker: hide the docs site
+   chrome (navbar/footer render outside .page, so target them via :global)
+   and the hero, tighten spacing, and style the "+ Add to this Agent" CTA. */
+.pickerMode .hero {
+  display: none;
+}
+
+.pickerMode {
+  padding-top: 0.5rem;
+}
+
+:global(html):has(.pickerMode) :global(.navbar),
+:global(html):has(.pickerMode) :global(footer) {
+  display: none;
+}
+
+.pickBtn {
+  display: block;
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--ifm-color-primary);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ifm-color-primary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.pickBtn:hover {
+  background: var(--ifm-color-primary);
+  color: var(--ifm-background-color, #0b0b0e);
+}

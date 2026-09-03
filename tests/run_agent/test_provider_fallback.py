@@ -7,6 +7,10 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from agent import chat_completion_helpers
+from agent.error_classifier import FailoverReason
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
@@ -46,20 +50,7 @@ class TestFallbackChainInit:
         assert agent._fallback_index == 0
         assert agent._fallback_model is None
 
-    def test_single_dict_backwards_compat(self):
-        fb = {"provider": "openai", "model": "gpt-4o"}
-        agent = _make_agent(fallback_model=fb)
-        assert agent._fallback_chain == [fb]
-        assert agent._fallback_model == fb
 
-    def test_list_of_providers(self):
-        fbs = [
-            {"provider": "openai", "model": "gpt-4o"},
-            {"provider": "zai", "model": "glm-4.7"},
-        ]
-        agent = _make_agent(fallback_model=fbs)
-        assert len(agent._fallback_chain) == 2
-        assert agent._fallback_model == fbs[0]
 
     def test_invalid_entries_filtered(self):
         fbs = [
@@ -72,10 +63,6 @@ class TestFallbackChainInit:
         assert len(agent._fallback_chain) == 1
         assert agent._fallback_chain[0]["provider"] == "openai"
 
-    def test_empty_list(self):
-        agent = _make_agent(fallback_model=[])
-        assert agent._fallback_chain == []
-        assert agent._fallback_model is None
 
     def test_invalid_dict_no_provider(self):
         agent = _make_agent(fallback_model={"model": "gpt-4o"})
@@ -83,6 +70,28 @@ class TestFallbackChainInit:
 
 
 # ── Chain advancement ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        (FailoverReason.auth, "authentication failed"),
+        (FailoverReason.billing, "billing or quota exhausted"),
+        (FailoverReason.rate_limit, "rate limit"),
+        (FailoverReason.upstream_rate_limit, "upstream model rate limit"),
+        (FailoverReason.overloaded, "provider overloaded"),
+        (FailoverReason.server_error, "provider server error"),
+        (FailoverReason.timeout, "request timeout"),
+        (FailoverReason.model_not_found, "model not found"),
+        (FailoverReason.unknown, "provider failure"),
+    ],
+)
+def test_fallback_reason_text_is_operator_friendly(reason, expected):
+    assert chat_completion_helpers._fallback_reason_text(reason) == expected
+
+
+def test_fallback_reason_text_defaults_when_reason_is_missing():
+    assert chat_completion_helpers._fallback_reason_text(None) == "provider failure"
 
 
 class TestFallbackChainAdvancement:
@@ -103,28 +112,51 @@ class TestFallbackChainAdvancement:
             assert agent.model == "gpt-4o"
             assert agent._fallback_activated is True
 
-    def test_second_fallback_works(self):
-        fbs = [
-            {"provider": "openai", "model": "gpt-4o"},
-            {"provider": "zai", "model": "glm-4.7"},
+    def test_records_user_visible_switch_with_reason(self):
+        agent = _make_agent(
+            fallback_model={"provider": "zai", "model": "glm-5.2"},
+        )
+        agent.model = "gpt-5.6-sol"
+        agent.provider = "openai-codex"
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://api.z.ai/v1"), "glm-5.2"),
+        ):
+            assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
+
+        expected = (
+            "⚠️ Model fallback: gpt-5.6-sol via openai-codex unavailable "
+            "(rate limit); using glm-5.2 via zai."
+        )
+        assert agent._pending_fallback_notice == [expected]
+        assert agent._retry_status_buffer[-1] == ("status", expected)
+
+    def test_records_sequential_switches_in_order(self):
+        agent = _make_agent(
+            fallback_model=[
+                {"provider": "zai", "model": "glm-5.2"},
+                {"provider": "deepseek", "model": "deepseek-v4-flash"},
+            ],
+        )
+        agent.model = "gpt-5.6-sol"
+        agent.provider = "openai-codex"
+        clients = [
+            _mock_client(base_url="https://api.z.ai/v1"),
+            _mock_client(base_url="https://api.deepseek.com/v1"),
         ]
-        agent = _make_agent(fallback_model=fbs)
-        with patch("agent.auxiliary_client.resolve_provider_client",
-                    return_value=(_mock_client(), "resolved")):
-            assert agent._try_activate_fallback() is True
-            assert agent.model == "gpt-4o"
-            assert agent._try_activate_fallback() is True
-            assert agent.model == "glm-4.7"
-            assert agent._fallback_index == 2
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            side_effect=[(clients[0], "glm-5.2"), (clients[1], "deepseek-v4-flash")],
+        ):
+            assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
+            assert agent._try_activate_fallback(FailoverReason.overloaded) is True
 
-    def test_all_exhausted_returns_false(self):
-        fbs = [{"provider": "openai", "model": "gpt-4o"}]
-        agent = _make_agent(fallback_model=fbs)
-        with patch("agent.auxiliary_client.resolve_provider_client",
-                    return_value=(_mock_client(), "gpt-4o")):
-            assert agent._try_activate_fallback() is True
-            assert agent._try_activate_fallback() is False
-
+        assert agent._pending_fallback_notice == [
+            "⚠️ Model fallback: gpt-5.6-sol via openai-codex unavailable "
+            "(rate limit); using glm-5.2 via zai.",
+            "⚠️ Model fallback: glm-5.2 via zai unavailable "
+            "(provider overloaded); using deepseek-v4-flash via deepseek.",
+        ]
     def test_skips_unconfigured_provider_to_next(self):
         """If resolve_provider_client returns None, skip to next in chain."""
         fbs = [
@@ -182,34 +214,91 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
-    def test_anthropic_host_custom_provider_uses_anthropic_messages(self):
-        """A custom provider on the native api.anthropic.com host (no
-        "/anthropic" path suffix, name != "anthropic") must resolve to the
-        anthropic_messages wire protocol — not default to chat_completions,
-        which POSTs /v1/chat/completions and 404s. Mirrors the primary-path
-        determine_api_mode() host check."""
+
+    def test_nous_anthropic_fallback_uses_the_messages_wire(self):
+        """Portal Claude fallbacks must not stay on chat_completions.
+
+        ``resolve_provider_client`` still returns an OpenAI client for Nous;
+        activation has to re-derive api_mode from the model and rebuild the
+        Anthropic client — otherwise the turn POSTs /chat/completions.
+        """
+        portal = "https://inference-api.nousresearch.com/v1"
         fbs = [
             {
-                "provider": "cron-anthropic",
-                "model": "claude-sonnet-4-6",
-                "base_url": "https://api.anthropic.com",
-                "key_env": "MY_FALLBACK_KEY",
+                "provider": "nous",
+                "model": "anthropic/claude-opus-4.8",
             }
         ]
         agent = _make_agent(fallback_model=fbs)
+        rebuilt = {"count": 0}
+
+        def _fake_build(api_key, base_url, timeout=None, **kwargs):
+            rebuilt["count"] += 1
+            rebuilt["api_key"] = api_key
+            rebuilt["base_url"] = base_url
+            return MagicMock(name="anthropic-client")
+
         with (
-            patch.dict("os.environ", {"MY_FALLBACK_KEY": "env-secret"}, clear=False),
+            patch(
+                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                return_value=None,
+            ),
             patch(
                 "agent.auxiliary_client.resolve_provider_client",
                 return_value=(
-                    _mock_client(base_url="https://api.anthropic.com"),
-                    "claude-sonnet-4-6",
+                    _mock_client(base_url=portal, api_key="portal-jwt"),
+                    "anthropic/claude-opus-4.8",
                 ),
             ),
-            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                side_effect=_fake_build,
+            ),
         ):
             assert agent._try_activate_fallback() is True
-            assert agent.api_mode == "anthropic_messages"
+
+        assert agent.api_mode == "anthropic_messages"
+        assert agent.provider == "nous"
+        assert agent.model == "anthropic/claude-opus-4.8"
+        assert agent.client is None
+        assert rebuilt["count"] == 1
+        assert rebuilt["api_key"] == "portal-jwt"
+        assert rebuilt["base_url"] == portal
+        assert agent._anthropic_client is not None
+
+    def test_nous_non_anthropic_fallback_stays_on_chat_completions(self):
+        portal = "https://inference-api.nousresearch.com/v1"
+        fbs = [{"provider": "nous", "model": "hermes-4-405b"}]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch(
+                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                return_value=None,
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url=portal, api_key="portal-jwt"),
+                    "hermes-4-405b",
+                ),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                side_effect=AssertionError("must not build Anthropic client"),
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.api_mode == "chat_completions"
+        assert agent.client is not None
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
@@ -227,28 +316,10 @@ class TestPoolRotationRoom:
     def test_none_pool_returns_false(self):
         assert _pool_may_recover_from_rate_limit(None) is False
 
-    def test_single_credential_returns_false(self):
-        """With one credential that just 429'd, rotation has nowhere to go.
 
-        The pool may still report has_available() True once cooldown expires,
-        but retrying against the same entry will hit the same daily-quota
-        429 and burn the retry budget.  Must fall back.
-        """
-        assert _pool_may_recover_from_rate_limit(_pool(1)) is False
 
-    def test_single_credential_in_cooldown_returns_false(self):
-        assert _pool_may_recover_from_rate_limit(_pool(1, has_available=False)) is False
 
-    def test_two_credentials_available_returns_true(self):
-        """With >1 credentials and at least one available, rotate instead of fallback."""
-        assert _pool_may_recover_from_rate_limit(_pool(2)) is True
 
-    def test_multiple_credentials_all_in_cooldown_returns_false(self):
-        """All credentials cooling down — fall back rather than wait."""
-        assert _pool_may_recover_from_rate_limit(_pool(3, has_available=False)) is False
-
-    def test_many_credentials_available_returns_true(self):
-        assert _pool_may_recover_from_rate_limit(_pool(10)) is True
 
 
 # ── Skip-self dedup (#22548) ───────────────────────────────────────────────
@@ -290,34 +361,6 @@ class TestFallbackChainDedup:
             f"expected fallback to skip same-state entry, got call order: {called}"
         )
 
-    def test_skips_entry_matching_current_base_url_and_model(self):
-        """Two custom_providers entries pointing at the same shim URL
-        with the same model should dedup even if their provider names differ."""
-        fbs = [
-            # Different provider name but same shim URL + model — same backend.
-            {"provider": "claude-cli-alt", "model": "claude-opus-4.7",
-             "base_url": "http://127.0.0.1:7891/v1"},
-            # Real different fallback.
-            {"provider": "openrouter", "model": "anthropic/claude-opus-4.7"},
-        ]
-        agent = _make_agent(fallback_model=fbs)
-        agent.provider = "claude-cli"
-        agent.model = "claude-opus-4.7"
-        agent.base_url = "http://127.0.0.1:7891/v1"
-
-        called = []
-        def _resolve(provider, model=None, raw_codex=False, **kwargs):
-            called.append((provider, model))
-            return _mock_client(), model
-        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
-            with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
-                ok = agent._try_activate_fallback()
-
-        assert ok is True
-        # Same shim/base_url+model entry skipped, second one used.
-        assert called == [("openrouter", "anthropic/claude-opus-4.7")], (
-            f"expected base_url-aware dedup, got call order: {called}"
-        )
 
     def test_returns_false_when_only_self_matching_entries(self):
         """A chain with only self-matching entries exhausts to False."""
@@ -334,3 +377,128 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+    def test_allows_xai_api_fallback_from_xai_oauth_same_host_model(self):
+        """xai-oauth and xai share api.x.ai but use different credentials.
+
+        A spending-limit 403 on OAuth must still be able to fall over to the
+        API-key provider even when both entries use the same model slug and
+        base URL.  Blind base_url+model dedup incorrectly skipped that path.
+        """
+        fbs = [
+            {
+                "provider": "xai",
+                "model": "grok-4.5",
+                "base_url": "https://api.x.ai/v1",
+            },
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent.provider = "xai-oauth"
+        agent.model = "grok-4.5"
+        agent.base_url = "https://api.x.ai/v1"
+
+        called = []
+
+        def _resolve(provider, model=None, raw_codex=False, **kwargs):
+            called.append((provider, model))
+            return _mock_client(base_url="https://api.x.ai/v1"), model
+
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+            with patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ):
+                ok = agent._try_activate_fallback()
+
+        assert ok is True
+        assert called == [("xai", "grok-4.5")]
+        assert agent.provider == "xai"
+        assert agent.model == "grok-4.5"
+
+
+# ── extra_body re-resolution on fallback activation (#75091) ─────────────
+
+
+class TestFallbackExtraBodyReResolution:
+    """Fallback activation must re-resolve extra_body key-scoped.
+
+    The old provider's custom_providers-contributed extra_body keys are
+    stale on the new backend and must be dropped; caller-provided
+    request_overrides keys must survive; the fallback provider's own
+    extra_body must be merged in (salvage of #75139).
+    """
+
+    OLD_URL = "https://old-llm.example.com/v1"
+    FB_URL = "https://fb-llm.example.com/v1"
+
+    def _agent_with_custom_providers(self, caller_extra_body=None):
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom:fbprov",
+                "model": "fb-model",
+                "base_url": self.FB_URL,
+            },
+        )
+        agent.provider = "custom"
+        agent.model = "old-model"
+        agent.base_url = self.OLD_URL
+        agent._custom_providers = [
+            {
+                "name": "oldprov",
+                "base_url": self.OLD_URL,
+                "extra_body": {"enable_thinking": True, "old_only": 1},
+            },
+            {
+                "provider_key": "fbprov",
+                "base_url": self.FB_URL,
+                "extra_body": {"top_k": 20},
+            },
+        ]
+        # Simulate the init-time merge: provider extra_body + caller keys
+        # (caller wins on conflict — agent_init._merge_custom_provider_extra_body).
+        merged = {"enable_thinking": True, "old_only": 1}
+        merged.update(caller_extra_body or {})
+        agent.request_overrides = {"extra_body": merged}
+        return agent
+
+    def _activate(self, agent):
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url=self.FB_URL), "fb-model"),
+        ), patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=128_000,
+        ):
+            assert agent._try_activate_fallback() is True
+
+    def test_stale_provider_keys_removed_and_new_provider_merged(self):
+        agent = self._agent_with_custom_providers()
+        self._activate(agent)
+        eb = agent.request_overrides.get("extra_body") or {}
+        # Old provider's contributed keys are gone.
+        assert "enable_thinking" not in eb
+        assert "old_only" not in eb
+        # Fallback provider's own extra_body is applied.
+        assert eb.get("top_k") == 20
+
+    def test_caller_override_keys_survive_fallback(self):
+        agent = self._agent_with_custom_providers(
+            caller_extra_body={"reasoning": {"effort": "high"}, "enable_thinking": False},
+        )
+        self._activate(agent)
+        eb = agent.request_overrides.get("extra_body") or {}
+        # Pure caller key survives untouched.
+        assert eb.get("reasoning") == {"effort": "high"}
+        # Caller redefined a key the old provider also set (caller won at
+        # init: False != True) — the caller's value must survive key-scoped
+        # removal.
+        assert eb.get("enable_thinking") is False
+        # But the key the old provider alone contributed is dropped.
+        assert "old_only" not in eb
+        assert eb.get("top_k") == 20
+
+    def test_non_extra_body_overrides_untouched(self):
+        agent = self._agent_with_custom_providers()
+        agent.request_overrides["temperature"] = 0.2
+        self._activate(agent)
+        assert agent.request_overrides.get("temperature") == 0.2

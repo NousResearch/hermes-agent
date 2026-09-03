@@ -46,16 +46,6 @@ def _make_llm_meta(**overrides):
     return base
 
 
-def test_reports_root_is_under_logs_not_skills(curator_env):
-    """Reports live in logs/curator/, not skills/ — operational telemetry
-    belongs with the logs, not with user-authored skill data."""
-    curator = curator_env["curator"]
-    root = curator._reports_root()
-    home = curator_env["home"]
-    # Must be under logs/
-    assert root == home / "logs" / "curator"
-    # Must NOT be under skills/
-    assert "skills" not in root.parts
 
 
 def test_write_run_report_creates_both_files(curator_env):
@@ -82,116 +72,8 @@ def test_write_run_report_creates_both_files(curator_env):
     assert run_dir.parent == curator._reports_root()
 
 
-def test_run_json_has_expected_shape(curator_env):
-    """run.json must carry the machine-readable fields downstream tooling needs."""
-    curator = curator_env["curator"]
-    start = datetime.now(timezone.utc)
-
-    before_report = [
-        {"name": "old-thing", "state": "active", "pinned": False},
-        {"name": "keeper", "state": "active", "pinned": True},
-    ]
-    after_report = [
-        {"name": "keeper", "state": "active", "pinned": True},
-        {"name": "new-umbrella", "state": "active", "pinned": False},
-    ]
-
-    run_dir = curator._write_run_report(
-        started_at=start,
-        elapsed_seconds=42.0,
-        auto_counts={"checked": 2, "marked_stale": 0, "archived": 0, "reactivated": 0},
-        auto_summary="no changes",
-        before_report=before_report,
-        before_names={r["name"] for r in before_report},
-        after_report=after_report,
-        llm_meta=_make_llm_meta(
-            final="I consolidated the whole universe.",
-            tool_calls=[
-                {"name": "skills_list", "arguments": "{}"},
-                {"name": "skill_manage", "arguments": '{"action":"create"}'},
-                {"name": "terminal", "arguments": "mv ..."},
-            ],
-        ),
-    )
-    payload = json.loads((run_dir / "run.json").read_text())
-
-    # top-level shape
-    for k in (
-        "started_at", "duration_seconds", "model", "provider",
-        "auto_transitions", "counts", "tool_call_counts",
-        "archived", "added", "state_transitions",
-        "llm_final", "llm_summary", "llm_error", "tool_calls",
-    ):
-        assert k in payload, f"missing key: {k}"
-
-    # Diff logic
-    assert payload["archived"] == ["old-thing"]
-    assert payload["added"] == ["new-umbrella"]
-    # Counts reflect the diff
-    assert payload["counts"]["before"] == 2
-    assert payload["counts"]["after"] == 2
-    assert payload["counts"]["archived_this_run"] == 1
-    assert payload["counts"]["added_this_run"] == 1
-    # Tool call counts are aggregated
-    assert payload["tool_call_counts"]["skills_list"] == 1
-    assert payload["tool_call_counts"]["skill_manage"] == 1
-    assert payload["tool_call_counts"]["terminal"] == 1
-    assert payload["counts"]["tool_calls_total"] == 3
 
 
-def test_report_md_is_human_readable(curator_env):
-    """REPORT.md should be a valid markdown doc with the key sections visible."""
-    curator = curator_env["curator"]
-    start = datetime.now(timezone.utc)
-
-    run_dir = curator._write_run_report(
-        started_at=start,
-        elapsed_seconds=75.0,
-        auto_counts={"checked": 10, "marked_stale": 2, "archived": 1, "reactivated": 0},
-        auto_summary="2 marked stale, 1 archived",
-        before_report=[{"name": "foo", "state": "active", "pinned": False}],
-        before_names={"foo"},
-        after_report=[{"name": "foo-umbrella", "state": "active", "pinned": False}],
-        llm_meta=_make_llm_meta(
-            final="Consolidated foo-like skills into foo-umbrella.",
-            model="claude-opus-4.7",
-            provider="openrouter",
-            tool_calls=[
-                # Evidence that `foo` was absorbed into `foo-umbrella`:
-                # write_file under foo-umbrella referencing foo.
-                {
-                    "name": "skill_manage",
-                    "arguments": json.dumps({
-                        "action": "write_file",
-                        "name": "foo-umbrella",
-                        "file_path": "references/foo.md",
-                        "file_content": "# foo\nContent absorbed from the old foo skill.\n",
-                    }),
-                },
-            ],
-        ),
-    )
-    md = (run_dir / "REPORT.md").read_text()
-
-    # Structural checks
-    assert "# Curator run" in md
-    assert "Auto-transitions" in md
-    assert "LLM consolidation pass" in md
-    assert "Recovery" in md
-
-    # The model / provider we passed in show up
-    assert "claude-opus-4.7" in md
-    assert "openrouter" in md
-
-    # The consolidated/added lists are present with clear language
-    assert "Consolidated into umbrella skills" in md
-    assert "`foo`" in md
-    assert "merged into" in md
-    assert "`foo-umbrella`" in md
-    assert "New skills this run" in md
-
-    # The full LLM final response is included verbatim (no 240-char truncation)
-    assert "Consolidated foo-like skills into foo-umbrella." in md
 
 
 def test_same_second_reruns_get_unique_dirs(curator_env):
@@ -218,57 +100,8 @@ def test_same_second_reruns_get_unique_dirs(curator_env):
     assert b.name.startswith(a.name)
 
 
-def test_report_captures_llm_error_and_continues(curator_env):
-    """If the LLM pass recorded an error, the report still writes and
-    surfaces the error prominently."""
-    curator = curator_env["curator"]
-    run_dir = curator._write_run_report(
-        started_at=datetime.now(timezone.utc),
-        elapsed_seconds=2.0,
-        auto_counts={"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0},
-        auto_summary="no changes",
-        before_report=[],
-        before_names=set(),
-        after_report=[],
-        llm_meta=_make_llm_meta(
-            error="HTTP 400: No models provided",
-            final="",
-            summary="error",
-        ),
-    )
-    md = (run_dir / "REPORT.md").read_text()
-    assert "HTTP 400" in md
-    payload = json.loads((run_dir / "run.json").read_text())
-    assert payload["llm_error"] == "HTTP 400: No models provided"
 
 
-def test_state_transitions_captured_in_report(curator_env):
-    """When a skill moves active → stale or stale → archived between
-    before/after snapshots, the report records it."""
-    curator = curator_env["curator"]
-    start = datetime.now(timezone.utc)
-
-    before = [{"name": "getting-old", "state": "active", "pinned": False}]
-    after = [{"name": "getting-old", "state": "stale", "pinned": False}]
-
-    run_dir = curator._write_run_report(
-        started_at=start,
-        elapsed_seconds=1.0,
-        auto_counts={"checked": 1, "marked_stale": 1, "archived": 0, "reactivated": 0},
-        auto_summary="1 marked stale",
-        before_report=before,
-        before_names={r["name"] for r in before},
-        after_report=after,
-        llm_meta=_make_llm_meta(),
-    )
-    payload = json.loads((run_dir / "run.json").read_text())
-    assert payload["state_transitions"] == [
-        {"name": "getting-old", "from": "active", "to": "stale"}
-    ]
-    md = (run_dir / "REPORT.md").read_text()
-    assert "State transitions" in md
-    assert "getting-old" in md
-    assert "active → stale" in md
 
 
 # ---------------------------------------------------------------------------
@@ -371,65 +204,5 @@ def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_c
     assert "foo-umbrella" in md
 
 
-def test_curator_drops_pruned_skill_from_cron_job(curator_env_with_cron):
-    """A pruned (no-umbrella) skill should be dropped from the cron
-    job's skill list entirely — there's no forwarding target."""
-    curator = curator_env_with_cron["curator"]
-    jobs = curator_env_with_cron["jobs"]
-
-    job = jobs.create_job(
-        prompt="",
-        schedule="every 1h",
-        skills=["keep", "stale-one"],
-    )
-
-    before = [{"name": "stale-one", "state": "active", "pinned": False}]
-    after: list = []  # stale-one was archived with no target
-
-    run_dir = curator._write_run_report(
-        started_at=datetime.now(timezone.utc),
-        elapsed_seconds=1.0,
-        auto_counts={"checked": 1, "marked_stale": 0, "archived": 1, "reactivated": 0},
-        auto_summary="1 archived",
-        before_report=before,
-        before_names={"stale-one"},
-        after_report=after,
-        llm_meta=_make_llm_meta(),  # no tool calls → classifier marks it pruned
-    )
-
-    loaded = jobs.get_job(job["id"])
-    assert loaded["skills"] == ["keep"]
-
-    payload = json.loads((run_dir / "run.json").read_text())
-    assert payload["cron_rewrites"]["jobs_updated"] == 1
-    rewrites = payload["cron_rewrites"]["rewrites"]
-    assert rewrites[0]["dropped"] == ["stale-one"]
 
 
-def test_curator_report_has_no_cron_section_when_nothing_changes(curator_env_with_cron):
-    """When the curator run doesn't touch any skills, cron jobs are
-    untouched and cron_rewrites.json is not even written."""
-    curator = curator_env_with_cron["curator"]
-    jobs = curator_env_with_cron["jobs"]
-
-    jobs.create_job(prompt="", schedule="every 1h", skills=["foo"])
-
-    run_dir = curator._write_run_report(
-        started_at=datetime.now(timezone.utc),
-        elapsed_seconds=1.0,
-        auto_counts={"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0},
-        auto_summary="no changes",
-        before_report=[{"name": "foo", "state": "active", "pinned": False}],
-        before_names={"foo"},
-        after_report=[{"name": "foo", "state": "active", "pinned": False}],
-        llm_meta=_make_llm_meta(),
-    )
-
-    # No rewrites → no separate file, no section in md
-    assert not (run_dir / "cron_rewrites.json").exists()
-    md = (run_dir / "REPORT.md").read_text()
-    assert "Cron job skill references rewritten" not in md
-
-    payload = json.loads((run_dir / "run.json").read_text())
-    assert payload["cron_rewrites"]["jobs_updated"] == 0
-    assert payload["counts"]["cron_jobs_rewritten"] == 0

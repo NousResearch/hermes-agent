@@ -73,7 +73,7 @@ def _split_frontmatter(text: str) -> Optional[Dict[str, Any]]:
     """Return the parsed YAML frontmatter mapping, or None if absent/invalid."""
     if not isinstance(text, str):
         return None
-    stripped = text.lstrip()
+    stripped = text.lstrip("\ufeff").lstrip()  # BOM is not whitespace; strip explicitly
     if not stripped.startswith("---"):
         return None
     # Find the closing fence after the opening one.
@@ -206,12 +206,12 @@ def create_blueprint_job(
     optional ``prompt`` becomes the task instruction. Delivery, model, and
     toolsets carry through. Returns the created job dict.
     """
-    from cron.jobs import create_job
+    from cron.scheduler import create_job_with_scheduler_registration
 
     job_spec = blueprint_to_job_spec(spec, name=name)
     if origin is not None:
         job_spec["origin"] = origin
-    return create_job(**job_spec)
+    return create_job_with_scheduler_registration(**job_spec)
 
 
 def register_blueprint_suggestion(spec: BlueprintSpec) -> Optional[Dict[str, Any]]:
@@ -259,7 +259,6 @@ def export_blueprint(job: Dict[str, Any], body: str, *, blueprint_name: Optional
     name = name.strip("-_") or "shared-blueprint"
 
     schedule = job.get("schedule_display") or _schedule_to_string(job.get("schedule"))
-    skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
 
     blueprint_block: Dict[str, Any] = {"schedule": schedule}
     deliver = job.get("deliver")

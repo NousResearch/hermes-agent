@@ -1,7 +1,7 @@
 ---
 sidebar_position: 1
 title: "Nous Portal"
-description: "One subscription, 300+ frontier models, the Tool Gateway, and Nous Chat — the recommended way to run Hermes Agent"
+description: "One subscription, 300+ frontier models, and the Tool Gateway — the recommended way to run Hermes Agent"
 ---
 
 # Nous Portal
@@ -42,7 +42,11 @@ The Portal proxies a curated catalog of agentic models from across the ecosystem
 | **Hermes** | Hermes-4-70B, Hermes-4-405B (chat, see [note below](#a-note-on-hermes-4)) |
 | **+ everything else** | 280+ additional models — the full agentic frontier |
 
-Routing happens through OpenRouter under the hood, so model availability and failover behavior matches what you'd get with an OpenRouter key — just billed against your Nous subscription instead. Switch between Claude Sonnet 4.6 for code and Gemini 3 Pro for long context with `/model` mid-session — no new credentials, no top-ups, no surprise zero-balance errors.
+Under the hood, the Portal routes each model to the backend best suited for it — some models go through OpenRouter, others through proprietary or secondary providers, and the routing for a given model can change over time. Everything is billed against your Nous subscription either way. Switch between Claude Sonnet 4.6 for code and Gemini 3 Pro for long context with `/model` mid-session — no new credentials, no top-ups, no surprise zero-balance errors.
+
+:::note
+Because routing is per-model and not always through OpenRouter, OpenRouter-specific request extensions (such as `provider` routing preferences, `session_id` sticky routing, or top-level `cache_control`) are not part of the Portal's API contract and may be ignored depending on which backend serves the model.
+:::
 
 ### The Nous Tool Gateway
 
@@ -60,10 +64,6 @@ Without the gateway, hooking each of those up means a Firecrawl account, a FAL a
 
 You can also enable just specific gateway tools (e.g. web search but not image generation) — see [Mixing the gateway with your own backends](#mixing-the-gateway-with-your-own-backends) below.
 
-### Nous Chat
-
-Your Portal account also covers [chat.nousresearch.com](https://chat.nousresearch.com) — Nous Research's web chat interface with the same model catalog. Useful when you're away from your terminal, or for non-agent conversation work.
-
 ### No credentials in your dotfiles
 
 Because everything routes through one OAuth-authenticated Portal session, you don't accumulate a `.env` file with a dozen long-lived API keys. The refresh token at `~/.hermes/auth.json` is the only credential on disk, and Hermes mints short-lived JWTs from it per request — see [Token handling](#token-handling) below.
@@ -76,7 +76,7 @@ Because everything routes through one OAuth-authenticated Portal session, you do
 
 Nous Research's own **Hermes 4** family (Hermes-4-70B, Hermes-4-405B) is available through the Portal at heavily discounted rates. These are **frontier hybrid-reasoning chat models** — strong at math, science, instruction following, schema adherence, roleplay, and long-form writing.
 
-They are **not recommended for use inside Hermes Agent**, however. Hermes 4 is tuned for chat and reasoning, not the rapid-fire tool-calling loop the agent relies on. Use them for [Nous Chat](https://chat.nousresearch.com), for research workflows, or via the [subscription proxy](/user-guide/features/subscription-proxy) from other tooling — but for agent work, pick a frontier agentic model from the catalog instead:
+They are **not recommended for use inside Hermes Agent**, however. Hermes 4 is tuned for chat and reasoning, not the rapid-fire tool-calling loop the agent relies on. Use them for research workflows or via the [subscription proxy](/user-guide/features/subscription-proxy) from other tooling — but for agent work, pick a frontier agentic model from the catalog instead:
 
 ```bash
 /model anthropic/claude-sonnet-4.6     # best general-purpose agentic model
@@ -213,11 +213,11 @@ model:
   base_url: https://inference-api.nousresearch.com/v1
 ```
 
-The Tool Gateway settings live under their respective tool sections:
+The Tool Gateway settings live under their respective tool sections — each category has a single selection key, and picking **Nous Subscription** in `hermes tools` (or `hermes setup --portal`) writes the value `nous`:
 
 ```yaml
 web:
-  backend: nous       # web search/extract routes through Tool Gateway
+  backend: nous          # web search/extract routes through Tool Gateway
 
 image_gen:
   provider: nous
@@ -226,14 +226,23 @@ tts:
   provider: nous
 
 browser:
-  backend: nous
+  cloud_provider: nous
 ```
+
+The runtime always follows the stored selection — direct API keys left in `.env` are ignored while a category is set to `nous`, and picking a direct provider (e.g. `image_gen.provider: fal`) without its key produces a clear error rather than silently rerouting through the gateway. (Older configs used a legacy `use_gateway: true` flag; it is read as equivalent to `nous` but is no longer written.)
 
 The OAuth refresh token is stored separately at `~/.hermes/auth.json` (not in `config.yaml` — credentials and configuration are kept separate by design).
 
 ## Token handling
 
 Hermes mints a short-lived JWT from your stored Portal refresh token on each inference call rather than reusing a long-lived API key. The token lifecycle is fully automatic — refresh, mint, retry on transient 401 — and you never see it.
+
+Long-running gateway and dashboard processes also run a background keepalive that refreshes the token before it expires, so idle agents don't pay a 401 round-trip on their first request of each credential lifetime. The keepalive derives its tick from the lifetime the Portal actually issued (several ticks per lifetime), bounded above by:
+
+```yaml
+nous:
+  keepalive_interval_seconds: 900   # upper bound on the tick; 0 disables the keepalive
+```
 
 If the Portal invalidates the refresh token (password change, manual revoke, session expiry), the invalid refresh token is **quarantined locally** so Hermes stops replaying it and you don't see a stream of identical 401s. The next call surfaces a clear "re-authentication required" message. Run `hermes auth add nous` to log in again; the quarantine clears on the next successful login.
 
@@ -255,7 +264,7 @@ Your Portal refresh token was invalidated (password change, manual revoke, or se
 
 ### Want to use a specific provider model that the Portal doesn't expose
 
-The Portal proxies through OpenRouter, so any model that OpenRouter supports is generally available. If a specific model isn't appearing in `/model`, try the OpenRouter-style slug directly:
+The Portal routes each model to a suitable backend — some through OpenRouter, others through proprietary or secondary providers — so most models OpenRouter supports are generally available. If a specific model isn't appearing in `/model`, try the OpenRouter-style slug directly:
 
 ```bash
 /model anthropic/claude-opus-4.6

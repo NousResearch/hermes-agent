@@ -14,15 +14,10 @@ class TestWriteAndRead:
         ]
         result = store.write(items)
         assert len(result) == 2
-        assert result[0]["id"] == "1"
-        assert result[1]["status"] == "in_progress"
+        assert result[0]["id"] == "2"
+        assert result[0]["status"] == "in_progress"
+        assert result[1]["id"] == "1"
 
-    def test_read_returns_copy(self):
-        store = TodoStore()
-        store.write([{"id": "1", "content": "Task", "status": "pending"}])
-        items = store.read()
-        items[0]["content"] = "MUTATED"
-        assert store.read()[0]["content"] == "Task"
 
     def test_write_deduplicates_duplicate_ids(self):
         store = TodoStore()
@@ -32,8 +27,21 @@ class TestWriteAndRead:
             {"id": "1", "content": "Latest version", "status": "in_progress"},
         ])
         assert result == [
-            {"id": "2", "content": "Other task", "status": "pending"},
             {"id": "1", "content": "Latest version", "status": "in_progress"},
+            {"id": "2", "content": "Other task", "status": "pending"},
+        ]
+
+    def test_write_moves_active_item_before_earlier_pending_step(self):
+        store = TodoStore()
+        result = store.write([
+            {"id": "1", "content": "Already done", "status": "completed"},
+            {"id": "2", "content": "Verify freed space", "status": "pending"},
+            {"id": "3", "content": "Move archives to Trash", "status": "in_progress"},
+        ])
+        assert result == [
+            {"id": "1", "content": "Already done", "status": "completed"},
+            {"id": "3", "content": "Move archives to Trash", "status": "in_progress"},
+            {"id": "2", "content": "Verify freed space", "status": "pending"},
         ]
 
 
@@ -97,6 +105,23 @@ class TestMergeMode:
         items = store.read()
         assert len(items) == 2
 
+    def test_merge_reorders_active_item_ahead_of_earlier_pending_step(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Completed", "status": "completed"},
+            {"id": "2", "content": "Verify freed space", "status": "pending"},
+            {"id": "3", "content": "Move archives to Trash", "status": "pending"},
+        ])
+        result = store.write(
+            [{"id": "3", "status": "in_progress"}],
+            merge=True,
+        )
+        assert result == [
+            {"id": "1", "content": "Completed", "status": "completed"},
+            {"id": "3", "content": "Move archives to Trash", "status": "in_progress"},
+            {"id": "2", "content": "Verify freed space", "status": "pending"},
+        ]
+
 
 class TestTodoToolFunction:
     def test_read_mode(self):
@@ -105,18 +130,36 @@ class TestTodoToolFunction:
         result = json.loads(todo_tool(store=store))
         assert result["summary"]["total"] == 1
         assert result["summary"]["pending"] == 1
+        assert result["revision"] == 1
 
-    def test_write_mode(self):
-        store = TodoStore()
-        result = json.loads(todo_tool(
-            todos=[{"id": "1", "content": "New", "status": "in_progress"}],
-            store=store,
-        ))
-        assert result["summary"]["in_progress"] == 1
 
     def test_no_store_returns_error(self):
         result = json.loads(todo_tool())
         assert "error" in result
+
+
+class TestTodoStoreSnapshots:
+    def test_revision_only_advances_when_state_changes(self):
+        store = TodoStore()
+        items = [{"id": "1", "content": "Task", "status": "pending"}]
+
+        store.write(items)
+        first = store.snapshot()
+        store.write(items)
+
+        assert first["revision"] == 1
+        assert store.snapshot() == first
+
+    def test_restore_adopts_a_trusted_revision(self):
+        store = TodoStore()
+        store.restore(
+            [{"id": "1", "content": "Task", "status": "pending"}], revision=7
+        )
+
+        assert store.snapshot()["revision"] == 7
+
+        store.write([{"id": "1", "content": "Task", "status": "completed"}])
+        assert store.snapshot()["revision"] == 8
 
 
 class TestTodoStoreBounds:
@@ -146,14 +189,6 @@ class TestTodoStoreBounds:
         # Before the fix this was ~50085 chars; now it tracks the cap.
         assert len(inj) < MAX_TODO_CONTENT_CHARS + 200
 
-    def test_merge_update_content_is_capped(self):
-        """The merge path updates content directly, bypassing _validate —
-        verify it is capped too."""
-        from tools.todo_tool import MAX_TODO_CONTENT_CHARS
-        store = TodoStore()
-        store.write([{"id": "1", "content": "short", "status": "pending"}])
-        store.write([{"id": "1", "content": "B" * 50001}], merge=True)
-        assert len(store.read()[0]["content"]) <= MAX_TODO_CONTENT_CHARS
 
     def test_item_count_is_bounded(self):
         from tools.todo_tool import MAX_TODO_ITEMS

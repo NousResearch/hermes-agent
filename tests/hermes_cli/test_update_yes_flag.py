@@ -50,8 +50,9 @@ def _make_run_side_effect(
 class TestUpdateYesConfigMigration:
     """--yes auto-answers the config-migration prompt and skips API-key prompts."""
 
-    @patch("hermes_cli.config.migrate_config")
-    @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
+    @patch("hermes_cli.update_cmd._reload_config_modules")
+    @patch("hermes_cli.update_cmd._run_migrate_config_fresh")
+    @patch("hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
     @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
     @patch("shutil.which", return_value=None)
@@ -64,6 +65,7 @@ class TestUpdateYesConfigMigration:
         _mock_missing_cfg,
         _mock_version,
         mock_migrate,
+        _mock_reload,
         capsys,
     ):
         mock_run.side_effect = _make_run_side_effect(
@@ -89,8 +91,9 @@ class TestUpdateYesConfigMigration:
         # The "Would you like to configure them now?" prompt text never appears.
         assert "Would you like to configure them now?" not in out
 
-    @patch("hermes_cli.config.migrate_config")
-    @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
+    @patch("hermes_cli.update_cmd._reload_config_modules")
+    @patch("hermes_cli.update_cmd._run_migrate_config_fresh")
+    @patch("hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
     @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
     @patch("shutil.which", return_value=None)
@@ -103,6 +106,7 @@ class TestUpdateYesConfigMigration:
         _mock_missing_cfg,
         _mock_version,
         mock_migrate,
+        _mock_reload,
         capsys,
     ):
         """Regression guard: without --yes, the TTY prompt path still fires."""
@@ -135,3 +139,99 @@ class TestUpdateYesConfigMigration:
 class TestUpdateYesStashRestore:
     """--yes auto-restores the pre-update autostash without prompting."""
 
+
+
+class TestUnicodeDecodeErrorInUpdatePrompts:
+    """Regression tests (review of #68497): input() can raise
+    UnicodeDecodeError when the terminal encoding can't decode the byte
+    sequence (e.g. a non-UTF-8 locale, or an embedded terminal). Three
+    interactive update prompts call input() directly -- the config-
+    migration prompt, the stash-restore prompt, and the upstream-remote
+    prompt -- and each must fail safe (skip, don't crash) rather than let
+    the exception escape and crash `hermes update` mid-flight.
+    """
+
+    @patch("hermes_cli.update_cmd._reload_config_modules")
+    @patch("hermes_cli.update_cmd._run_migrate_config_fresh")
+    @patch("hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2))
+    @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
+    @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_unicode_decode_error_in_tty_skips_and_prints_hint(
+        self,
+        mock_run,
+        _mock_which,
+        _mock_missing_env,
+        _mock_missing_cfg,
+        _mock_version,
+        mock_migrate,
+        _mock_reload,
+        capsys,
+    ):
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+        mock_migrate.return_value = {"env_added": [], "config_added": []}
+        args = SimpleNamespace(yes=False)
+
+        import sys as _sys
+
+        with patch(
+            "builtins.input",
+            side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
+        ), patch.object(_sys.stdin, "isatty", return_value=True), patch.object(
+            _sys.stdout, "isatty", return_value=True
+        ):
+            cmd_update(args)  # must not raise
+
+        out = capsys.readouterr().out
+        assert "hermes config migrate" in out
+        mock_migrate.assert_not_called()
+
+    def test_stash_restore_unicode_decode_error_falls_through_to_skip(self, tmp_path, capsys):
+        from hermes_cli.update_cmd import _restore_stashed_changes
+
+        with patch(
+            "builtins.input",
+            side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
+        ):
+            result = _restore_stashed_changes(
+                ["git"], tmp_path, "stash@{0}", prompt_user=True, input_fn=None,
+            )  # must not raise
+
+        assert result is False
+        out = capsys.readouterr().out
+        assert "Skipped restoring local changes" in out
+        assert "git stash apply stash@{0}" in out
+
+    def test_stash_restore_eof_error_still_falls_through_to_skip(self, tmp_path):
+        """Sanity: this fix must not regress the pre-existing EOFError case,
+        which the raw input() path had no guard for at all before this fix."""
+        from hermes_cli.update_cmd import _restore_stashed_changes
+
+        with patch("builtins.input", side_effect=EOFError()):
+            result = _restore_stashed_changes(
+                ["git"], tmp_path, "stash@{0}", prompt_user=True, input_fn=None,
+            )  # must not raise
+
+        assert result is False
+
+    def test_upstream_remote_prompt_unicode_decode_error_falls_through_to_skip(
+        self, tmp_path
+    ):
+        from hermes_cli.update_cmd import _sync_with_upstream_if_needed
+
+        with patch(
+            "hermes_cli.update_cmd._has_upstream_remote", return_value=False
+        ), patch(
+            "hermes_cli.update_cmd._should_skip_upstream_prompt", return_value=False
+        ), patch(
+            "hermes_cli.update_cmd._add_upstream_remote"
+        ) as mock_add, patch(
+            "builtins.input",
+            side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
+        ):
+            _sync_with_upstream_if_needed(["git"], tmp_path)  # must not raise
+
+        mock_add.assert_not_called()

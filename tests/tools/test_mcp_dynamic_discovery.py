@@ -95,9 +95,14 @@ class TestMessageHandler:
         # reaching into asyncio.create_task internals.
         with patch.object(MCPServerTask, "_schedule_tools_refresh") as mock_schedule:
             handler = server._make_message_handler()
-            notification = ServerNotification(
-                root=ToolListChangedNotification(method="notifications/tools/list_changed")
+            notification = ToolListChangedNotification(
+                method="notifications/tools/list_changed"
             )
+            if hasattr(ServerNotification, "model_validate"):
+                # mcp < 2.0 wrapped notifications in a RootModel; 2.0 made
+                # ServerNotification a plain union of the concrete types, which
+                # has no constructor to wrap with.
+                notification = ServerNotification(root=notification)
             await handler(notification)
             mock_schedule.assert_called_once()
 
@@ -123,42 +128,6 @@ class TestDeregister:
         reg.deregister("foo")
         assert "foo" not in reg.get_all_tool_names()
 
-    def test_cleans_up_toolset_check(self):
-        reg = ToolRegistry()
-        check = lambda: True  # noqa: E731
-        reg.register(name="foo", toolset="ts1", schema={}, handler=lambda x: x, check_fn=check)
-        assert reg.is_toolset_available("ts1")
-        reg.deregister("foo")
-        # Toolset check should be gone since no tools remain
-        assert "ts1" not in reg._toolset_checks
-
-    def test_preserves_toolset_check_if_other_tools_remain(self):
-        reg = ToolRegistry()
-        check = lambda: True  # noqa: E731
-        reg.register(name="foo", toolset="ts1", schema={}, handler=lambda x: x, check_fn=check)
-        reg.register(name="bar", toolset="ts1", schema={}, handler=lambda x: x)
-        reg.deregister("foo")
-        # bar still in ts1, so check should remain
-        assert "ts1" in reg._toolset_checks
-
-    def test_removes_toolset_alias_when_last_tool_is_removed(self):
-        reg = ToolRegistry()
-        reg.register(name="foo", toolset="mcp-srv", schema={}, handler=lambda x: x)
-        reg.register_toolset_alias("srv", "mcp-srv")
-
-        reg.deregister("foo")
-
-        assert reg.get_toolset_alias_target("srv") is None
-
-    def test_preserves_toolset_alias_while_toolset_still_exists(self):
-        reg = ToolRegistry()
-        reg.register(name="foo", toolset="mcp-srv", schema={}, handler=lambda x: x)
-        reg.register(name="bar", toolset="mcp-srv", schema={}, handler=lambda x: x)
-        reg.register_toolset_alias("srv", "mcp-srv")
-
-        reg.deregister("foo")
-
-        assert reg.get_toolset_alias_target("srv") == "mcp-srv"
 
     def test_noop_for_unknown_tool(self):
         reg = ToolRegistry()

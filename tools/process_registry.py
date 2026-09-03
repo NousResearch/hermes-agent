@@ -29,6 +29,7 @@ Usage:
     process_registry.kill(session.id)
 """
 
+import codecs
 import json
 import logging
 import os
@@ -39,14 +40,21 @@ import subprocess
 import threading
 import time
 import uuid
+from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
+# systemd transient scopes exist only on Linux. Gate every scope-path branch
+# on this constant (not merely "not Windows") so macOS and other POSIX
+# platforms provably never touch systemd code (#70716 cross-platform audit).
+_IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
+
+from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +77,322 @@ MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_m
 WATCH_MIN_INTERVAL_SECONDS = 15   # Minimum spacing between consecutive watch matches
 WATCH_STRIKE_LIMIT = 3            # Strikes in a row → disable watch + promote to notify_on_complete
 
+# Lifetime cap — independent of the strike counter above. A process whose
+# pattern recurs at a cadence just above WATCH_MIN_INTERVAL_SECONDS (e.g. a
+# service restarted repeatedly over a day) never trips the consecutive-strike
+# limit, since each match lands in its own clean cooldown window, yet still
+# forces a full-context agent turn every single time (#93513). watch_patterns
+# is documented as "ONLY for rare one-shot mid-process signals", so once a
+# session has delivered this many matches over its whole life we disable it
+# and fall back to notify_on_complete, same as the strike-limit path.
+WATCH_LIFETIME_MAX_HITS = 8
+
 # Global circuit breaker — across all sessions. Secondary safety net so concurrent
 # siblings can't collectively flood the user even when each is under its own cap.
 WATCH_GLOBAL_MAX_PER_WINDOW = 15
 WATCH_GLOBAL_WINDOW_SECONDS = 10
 WATCH_GLOBAL_COOLDOWN_SECONDS = 30
+
+
+# ---------------------------------------------------------------------------
+# systemd cgroup isolation for gateway-spawned local executors (#70716)
+# ---------------------------------------------------------------------------
+# When Hermes runs as a systemd gateway with MemoryHigh/MemoryMax limits,
+# local background terminal commands inherit the gateway's cgroup.  A
+# memory-heavy executor (Codex, tests, Node) can push the whole cgroup past
+# MemoryMax and trigger systemd-oomd to kill the ENTIRE gateway — taking down
+# the messaging control plane and silently losing the active turn.
+#
+# Wrapping the spawn in ``systemd-run --user --scope --unit=hermes-worker-<pid>``
+# places the worker in its own transient cgroup so an OOM in the worker kills
+# only the worker, not the gateway.  We probe *once* whether
+# ``systemd-run --user --scope`` is actually usable (the binary can exist on
+# the PATH while the user D-Bus session is unavailable — common for system
+# services and containers), and cache the result for the process lifetime.
+
+_SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
+_SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
+_SYSTEMD_SCOPE_PROBED_AT = 0.0
+_SYSTEMD_SCOPE_FAILURE_TTL_SECONDS = 60.0
+_MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
+_DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
+_WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
+
+
+def _worker_memory_max_bytes() -> int:
+    """Return a finite per-worker cgroup limit without widening host risk.
+
+    The proposed local-memory-guard environment override is honored when it
+    tightens the safe bound, so this isolation composes with PR #57121 instead
+    of inventing a second knob.  An oversized override cannot widen host risk.
+    Otherwise retain the tighter of the gateway's current cgroup-v2
+    ``memory.max`` and half of physical RAM, capped at 4 GiB.  This keeps the
+    sibling worker outside the gateway cgroup while ensuring the worker cannot
+    consume memory up to the enclosing user slice or host limit.
+    """
+    override_bound: Optional[int] = None
+    override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
+    if override:
+        override_valid = False
+        try:
+            parsed = int(override) * 1024 * 1024
+            if parsed >= _MIN_WORKER_MEMORY_MAX_BYTES:
+                override_bound = parsed
+                override_valid = True
+        except ValueError:
+            pass
+        if not override_valid:
+            logger.warning(
+                "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB=%r; "
+                "expected an integer representing at least %d MiB",
+                override,
+                _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024),
+            )
+
+    candidates: List[int] = []
+    try:
+        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+            if line.startswith("0::"):
+                relative = line.partition("::")[2].lstrip("/")
+                raw_limit = (
+                    Path("/sys/fs/cgroup") / relative / "memory.max"
+                ).read_text(encoding="utf-8").strip()
+                if raw_limit.isdigit():
+                    cgroup_limit = int(raw_limit)
+                    if cgroup_limit >= _MIN_WORKER_MEMORY_MAX_BYTES:
+                        candidates.append(cgroup_limit)
+                break
+    except (OSError, ValueError):
+        pass
+
+    try:
+        physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(
+            os.sysconf("SC_PAGE_SIZE")
+        )
+        physical_bound = min(
+            _WORKER_MEMORY_MAX_CAP_BYTES,
+            max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
+        )
+        candidates.append(physical_bound)
+    except (OSError, ValueError, TypeError):
+        pass
+
+    safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
+    return min(override_bound, safe_bound) if override_bound else safe_bound
+
+
+def _systemd_run_user_scope_available() -> bool:
+    """Return True if ``systemd-run --user --scope`` can create a cgroup.
+
+    Cached after the first probe.  ``shutil.which`` alone is insufficient:
+    in system-service deployments (and containers) the user D-Bus session
+    bus that ``systemd-run --user`` needs may be absent even though the
+    binary is on PATH, causing every spawn to fail with
+    ``Failed to connect to user bus``.  We do a cheap no-op probe
+    (``systemd-run --user --scope --unit=… -- /bin/true``) and remember the
+    outcome.
+    """
+    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    cached = _SYSTEMD_SCOPE_AVAILABLE
+    now = time.monotonic()
+    if cached is True:
+        return True
+    if (
+        cached is False
+        and now - _SYSTEMD_SCOPE_PROBED_AT < _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS
+    ):
+        return False
+
+    # Double-checked locking keeps concurrent first-use spawns from observing
+    # a temporary False while the definitive probe is still in flight.  Such a
+    # race would launch the losing workload back inside the gateway cgroup.
+    with _SYSTEMD_SCOPE_PROBE_LOCK:
+        cached = _SYSTEMD_SCOPE_AVAILABLE
+        now = time.monotonic()
+        if cached is True:
+            return True
+        if (
+            cached is False
+            and now - _SYSTEMD_SCOPE_PROBED_AT
+            < _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS
+        ):
+            return False
+
+        available = False
+        if _IS_LINUX:
+            try:
+                import shutil
+
+                binary = shutil.which("systemd-run")
+                if binary:
+                    # Probe: create a transient scope that immediately exits.
+                    # A unique unit avoids collisions; timeout bounds D-Bus.
+                    probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+                    result = subprocess.run(
+                        [
+                            binary, "--user", "--scope", "--quiet",
+                            "--unit", probe_unit,
+                            "--collect",
+                            "--property", "MemoryAccounting=yes",
+                            "--property", f"MemoryMax={_worker_memory_max_bytes()}",
+                            "--property", "OOMPolicy=kill",
+                            "--",
+                            "/bin/true",
+                        ],
+                        capture_output=True,
+                        timeout=3,
+                    )
+                    available = result.returncode == 0
+                    if not available:
+                        logger.debug(
+                            "systemd-run --user --scope probe failed (rc=%s): %s",
+                            result.returncode,
+                            (result.stderr or b"").decode(
+                                "utf-8", "replace"
+                            ).strip(),
+                        )
+            except Exception as exc:
+                logger.debug("systemd-run --user --scope probe error: %s", exc)
+
+        _SYSTEMD_SCOPE_AVAILABLE = available
+        _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
+        return available
+
+
+def _is_supervised_gateway_process() -> bool:
+    """Return whether this process is in a supervised Hermes gateway runtime.
+
+    Both supervisor markers and ``_HERMES_GATEWAY`` are inherited by every
+    descendant, and importing ``gateway.run`` also sets the latter. Require
+    this process to own the live gateway PID file as well. That keeps transient
+    systemd scopes limited to the gateway itself instead of terminal children
+    or unrelated interactive CLIs in the same supervised process tree.
+    """
+    if os.environ.get("_HERMES_GATEWAY") != "1":
+        return False
+
+    try:
+        from gateway.restart import is_gateway_supervisor_process
+        from gateway.status import get_running_pid
+
+        return (
+            is_gateway_supervisor_process()
+            and get_running_pid(cleanup_stale=False) == os.getpid()
+        )
+    except Exception as exc:
+        logger.debug("Could not verify supervised gateway process identity: %s", exc)
+        return False
+
+
+def _build_systemd_scope_argv(
+    shell_argv: List[str],
+    unit_suffix: str,
+) -> List[str]:
+    """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation.
+
+    The resulting cgroup gets its own memory accounting so an OOM in the
+    worker does not kill the gateway cgroup (#70716).  ``--collect`` makes
+    the transient scope self-clean after exit; ``--unit`` gives it a
+    recognisable name for ``systemctl --user status`` / journalctl.
+    """
+    import shutil
+
+    binary = shutil.which("systemd-run")
+    if binary is None:
+        # Caller should have checked _systemd_run_user_scope_available();
+        # guard anyway so we never pass None into Popen.
+        return shell_argv
+    unit_name = f"hermes-worker-{unit_suffix}"
+    memory_max = _worker_memory_max_bytes()
+    return [
+        binary,
+        "--user",
+        "--scope",
+        "--quiet",
+        "--unit",
+        unit_name,
+        "--collect",
+        "--property",
+        "MemoryAccounting=yes",
+        "--property",
+        f"MemoryMax={memory_max}",
+        "--property",
+        "OOMPolicy=kill",
+        "--",
+        *shell_argv,
+    ]
+
+
+def restart_safe_gateway_child_argv(
+    command: List[str], *, unit_suffix: str
+) -> List[str]:
+    """Place a managed-systemd gateway child outside the gateway cgroup.
+
+    Children that must survive an intentional gateway restart cannot rely on
+    ``start_new_session`` alone: systemd still kills every process in the
+    service cgroup.  In that topology, require a transient user scope and fail
+    closed if it cannot be established.  Standalone processes, non-systemd
+    supervisors, and non-Linux hosts retain the direct command.
+    """
+    if not _IS_LINUX:
+        return command
+    if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
+        return command
+    if not _systemd_run_user_scope_available():
+        raise RuntimeError(
+            "cannot create restart-safe systemd scope for gateway child: "
+            "systemd-run --user --scope is unavailable"
+        )
+    scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
+    if scoped == command:
+        raise RuntimeError(
+            "cannot create restart-safe systemd scope for gateway child: "
+            "systemd-run disappeared after the availability probe"
+        )
+    return scoped
+
+
+def _stop_systemd_unit(unit_name: str) -> bool:
+    """Stop a transient systemd user scope by unit name.
+
+    This reaps the *entire* cgroup — catching double-forked descendants that
+    survive a plain PID signal because they were reparented to init inside the
+    scope (issue #70716, reviewer gap #2).  ``systemctl --user stop`` sends
+    SIGTERM to every process in the unit's cgroup and escalates to SIGKILL
+    after the unit's ``TimeoutStopSec``.
+
+    Returns True if the unit was successfully stopped (or was already gone),
+    False if ``systemctl`` is unavailable or the stop command failed.
+    """
+    import shutil
+
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return False
+    try:
+        result = subprocess.run(
+            [binary, "--user", "stop", unit_name],
+            capture_output=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or b"").decode(errors="replace").strip()
+            stderr_lower = stderr.lower()
+            if any(
+                marker in stderr_lower
+                for marker in ("not loaded", "not found", "does not exist")
+            ):
+                return True
+            logger.debug(
+                "systemctl --user stop %s exited %d: %s",
+                unit_name, result.returncode,
+                stderr,
+            )
+            return False
+        return True
+    except Exception as exc:
+        logger.debug("systemctl --user stop %s failed: %s", unit_name, exc)
+        return False
 
 
 def format_uptime_short(seconds: int) -> str:
@@ -93,6 +412,10 @@ class ProcessSession:
     id: str                                     # Unique session ID ("proc_xxxxxxxxxxxx")
     command: str                                 # Original command string
     task_id: str = ""                           # Task/sandbox isolation key
+    owner_task_id: str = ""                     # RAW spawning task id (e.g. subagent "sa-...");
+                                                # task_id is the CONTAINER key and may be collapsed
+                                                # to "default"/session key by _resolve_container_task_id,
+                                                # so ownership checks must use this field (#child-notify)
     session_key: str = ""                       # Gateway session key (for reset protection)
     pid: Optional[int] = None                   # OS process ID
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
@@ -108,6 +431,7 @@ class ProcessSession:
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
+    systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run (#70716)
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
@@ -116,6 +440,11 @@ class ProcessSession:
     watcher_thread_id: str = ""
     watcher_message_id: str = ""                # Triggering message id — reply anchor for topic routing
     watcher_interval: int = 0                   # 0 = no watcher configured
+    # Session-db id of the conversation that spawned this process. Lets the
+    # gateway's completion pre-flight (_classify_completion_target) drop
+    # notifications whose spawning session was closed at an explicit user
+    # boundary (/new), instead of injecting them into the chat's NEW session.
+    parent_session_id: str = ""
     notify_on_complete: bool = False             # Queue agent notification on exit
     # Watch patterns — trigger agent notification when output matches any pattern
     watch_patterns: List[str] = field(default_factory=list)
@@ -244,6 +573,12 @@ class ProcessRegistry:
         disabled for this session and the session is promoted to
         notify_on_complete semantics — one notification when the process
         actually exits, no more mid-process spam.
+
+        Independently, WATCH_LIFETIME_MAX_HITS caps the total number of
+        matches ever delivered for a session, so a pattern that keeps
+        recurring at a cadence just above the cooldown (e.g. a service
+        restarted repeatedly over a day) still gets disabled instead of
+        forcing a full-context agent turn indefinitely.
         """
         if not session.watch_patterns or session._watch_disabled:
             return
@@ -270,6 +605,7 @@ class ProcessRegistry:
 
         now = time.time()
         should_disable = False
+        lifetime_exhausted = False
         with session._lock:
             # Case 1: still inside the cooldown from the last emission.
             # Count this as a strike for the current window (only once per window)
@@ -308,6 +644,13 @@ class ProcessRegistry:
                 suppressed = session._watch_suppressed
                 session._watch_suppressed = 0
                 return_early = False
+                # Lifetime cap: this match is delivered (it already earned it),
+                # but disable further ones regardless of how cleanly spaced
+                # they are — see WATCH_LIFETIME_MAX_HITS above.
+                lifetime_exhausted = session._watch_hits >= WATCH_LIFETIME_MAX_HITS
+                if lifetime_exhausted:
+                    session._watch_disabled = True
+                    session.notify_on_complete = True
 
         if return_early:
             if should_disable:
@@ -316,6 +659,8 @@ class ProcessRegistry:
                 self.completion_queue.put({
                     "session_id": session.id,
                     "session_key": session.session_key,
+                    "task_id": session.task_id,
+                    "owner_task_id": session.owner_task_id or session.task_id,
                     "command": session.command,
                     "type": "watch_disabled",
                     "suppressed": session._watch_suppressed,
@@ -342,11 +687,19 @@ class ProcessRegistry:
 
         # Global circuit breaker — across all sessions (secondary safety net).
         if not self._global_watch_admit(now):
+            if lifetime_exhausted:
+                # The final match was dropped by the global breaker, but the
+                # session is already disabled — still tell the user why things
+                # went quiet (the strike path emits its summary unconditionally
+                # too).
+                self._emit_lifetime_watch_disabled(session)
             return
 
-        self.completion_queue.put({
+        notification = {
             "session_id": session.id,
             "session_key": session.session_key,
+            "task_id": session.task_id,
+            "owner_task_id": session.owner_task_id or session.task_id,
             "command": session.command,
             "type": "watch_match",
             "pattern": matched_pattern,
@@ -358,6 +711,37 @@ class ProcessRegistry:
             "user_name": session.watcher_user_name,
             "thread_id": session.watcher_thread_id,
             "message_id": session.watcher_message_id,
+        }
+        _redact_process_result(notification)
+        self.completion_queue.put(notification)
+
+        if lifetime_exhausted:
+            # Same "why things went quiet" summary as the strike-limit path,
+            # queued right after the final delivered match.
+            self._emit_lifetime_watch_disabled(session)
+
+    def _emit_lifetime_watch_disabled(self, session: ProcessSession) -> None:
+        """Queue the watch_disabled summary for the lifetime-cap path (#93513)."""
+        self.completion_queue.put({
+            "session_id": session.id,
+            "session_key": session.session_key,
+            "task_id": session.task_id,
+            "owner_task_id": session.owner_task_id or session.task_id,
+            "command": session.command,
+            "type": "watch_disabled",
+            "suppressed": 0,
+            "platform": session.watcher_platform,
+            "chat_id": session.watcher_chat_id,
+            "user_id": session.watcher_user_id,
+            "user_name": session.watcher_user_name,
+            "thread_id": session.watcher_thread_id,
+            "message_id": session.watcher_message_id,
+            "message": (
+                f"Watch patterns disabled for process {session.id} — "
+                f"reached the lifetime cap of {WATCH_LIFETIME_MAX_HITS} delivered "
+                f"matches. Falling back to notify_on_complete semantics; you'll get "
+                f"exactly one notification when the process exits."
+            ),
         })
 
     def _global_watch_admit(self, now: float) -> bool:
@@ -600,7 +984,7 @@ class ProcessRegistry:
                 subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     capture_output=True,
-                    text=True,
+                    text=True, encoding='utf-8', errors='replace',
                     timeout=10,
                     creationflags=windows_hide_flags(),
                     stdin=subprocess.DEVNULL,
@@ -694,6 +1078,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        owner_task_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -705,15 +1090,26 @@ class ProcessRegistry:
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
         """
+        # Guard against the `A && B &` subshell-wait trap (issue #68915).
+        # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds
+        # the stdout pipe open forever when B is a long-running server.
+        # The rewriter wraps it to ``A && { B & }`` so no subshell fork.
+        # Lazy import avoids circular dependency (terminal_tool imports this).
+        from tools.terminal_tool import _rewrite_compound_background as _rewrite_bg
+
+        safe_command = _rewrite_bg(command)
+
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
             task_id=task_id,
+            owner_task_id=owner_task_id or task_id,
             session_key=session_key,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
         )
 
+        pty_scope_attempted = False
         if use_pty:
             # Try PTY mode for interactive CLI tools
             try:
@@ -724,8 +1120,39 @@ class ProcessRegistry:
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
+                # PTY mode is a real TTY, so pager-happy tools (git log/diff,
+                # man) WILL page and hang waiting for `q` — default them to
+                # cat, honoring any pager the user already exported.
+                pty_env.setdefault("GIT_PAGER", "cat")
+                pty_env.setdefault("PAGER", "cat")
+                pty_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+
+                # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
+                # Wrap the PTY command in a systemd scope so interactive
+                # executors get their own cgroup, same as pipe mode.
+                pty_in_supervised_gateway = (
+                    _IS_LINUX and _is_supervised_gateway_process()
+                )
+                pty_use_systemd_scope = (
+                    pty_in_supervised_gateway and _systemd_run_user_scope_available()
+                )
+
+                if pty_use_systemd_scope:
+                    pty_argv = _build_systemd_scope_argv(
+                        pty_argv,
+                        unit_suffix=session.id,
+                    )
+                    session.systemd_unit = f"hermes-worker-{session.id}.scope"
+                    pty_scope_attempted = True
+                elif pty_in_supervised_gateway:
+                    logger.debug(
+                        "PTY background executor not isolated in a "
+                        "systemd scope (systemd-run --user unavailable); "
+                        "worker shares the gateway cgroup."
+                    )
+
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {command}"],
+                    pty_argv,
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -756,6 +1183,13 @@ class ProcessRegistry:
                 logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
+                if pty_scope_attempted and session.systemd_unit:
+                    if not _stop_systemd_unit(session.systemd_unit):
+                        raise RuntimeError(
+                            "PTY scope could not be reaped; refusing pipe fallback "
+                            "to avoid duplicate command execution"
+                        ) from e
+                    session.systemd_unit = ""
 
         # Standard Popen path (non-PTY or PTY fallback)
         # Use the user's login shell for consistency with LocalEnvironment --
@@ -768,8 +1202,55 @@ class ProcessRegistry:
         bg_env["PYTHONUNBUFFERED"] = "1"
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
+        # Cgroup isolation (#70716): when running in the live, supervised
+        # systemd gateway, wrap the worker in its own transient systemd
+        # scope so it gets a separate cgroup.  An OOM in the worker then
+        # kills only the worker instead of taking down the whole gateway
+        # cgroup (and the messaging control plane with it). This applies to
+        # both pipe mode and the PTY path above.
+        shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+        in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
+        use_systemd_scope = (
+            in_supervised_gateway and _systemd_run_user_scope_available()
+        )
+
+        if use_systemd_scope:
+            unit_suffix = (
+                f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
+            )
+            spawn_argv = _build_systemd_scope_argv(
+                shell_argv,
+                unit_suffix=unit_suffix,
+            )
+            session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
+            # CRITICAL (#70716 regression): systemd-run --scope does NOT give
+            # the worker a new session — the invoked process keeps the
+            # parent's session and inherits its controlling terminal.  From an
+            # interactive TUI this drops the worker into the same session as
+            # the foreground process group: background spawns then stop the
+            # whole session (observed as 5 dead TUIs in state T / "Arrêté").
+            # start_new_session=True gives systemd-run (and the scoped worker
+            # below it) a private session.  Cgroup isolation is preserved:
+            # the scope is attached to the invoked process, not to the
+            # spawning session.
+            popen_start_new_session = True
+        else:
+            spawn_argv = shell_argv
+            popen_start_new_session = True
+            if in_supervised_gateway:
+                # Running under a supervisor but could not get a private
+                # cgroup — the worker shares the gateway cgroup, so an OOM
+                # in the worker can still kill the whole gateway (#70716).
+                logger.debug(
+                    "Local background executor not isolated in a systemd scope "
+                    "(in_supervised_gateway=%s, systemd-run --user available=%s); "
+                    "worker shares the gateway cgroup.",
+                    in_supervised_gateway,
+                    _systemd_run_user_scope_available(),
+                )
+
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
+            spawn_argv,
             text=True,
             cwd=session.cwd,
             env=bg_env,
@@ -778,7 +1259,7 @@ class ProcessRegistry:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
-            start_new_session=True,
+            start_new_session=popen_start_new_session,
             **_popen_kwargs,
         )
 
@@ -807,7 +1288,16 @@ class ProcessRegistry:
             # descendants spawned via setsid) before re-raising so they do not
             # leak as untracked background processes.
             try:
-                if not _IS_WINDOWS:
+                if session.systemd_unit:
+                    # The worker runs in its own systemd scope and, since the
+                    # #70716 session-isolation fix, its own session.  Stop the
+                    # scope (kills every process in the worker cgroup), then
+                    # terminate the systemd-run wrapper PID as fallback.
+                    # Never killpg: scope teardown is the authoritative
+                    # cleanup for the worker cgroup.
+                    _stop_systemd_unit(session.systemd_unit)
+                    self._terminate_host_pid(proc.pid, session.host_start_time)
+                elif not _IS_WINDOWS:
                     try:
                         kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
                         os.killpg(os.getpgid(proc.pid), kill_signal)  # windows-footgun: ok - guarded by _IS_WINDOWS above
@@ -833,6 +1323,7 @@ class ProcessRegistry:
         task_id: str = "",
         session_key: str = "",
         timeout: int = 10,
+        owner_task_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process through a non-local environment backend.
@@ -849,6 +1340,7 @@ class ProcessRegistry:
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
             task_id=task_id,
+            owner_task_id=owner_task_id or task_id,
             session_key=session_key,
             cwd=cwd,
             started_at=time.time(),
@@ -934,39 +1426,120 @@ class ProcessRegistry:
         block until EOF (or a large buffer fills), which makes "live" output land
         in one burst at process exit. ``buffer.read1(4096)`` yields incremental
         chunks as bytes become available, then we decode to text.
+
+        Orphaned-pipe guard (issue #68915): when the user's command backgrounds
+        a long-lived process (``node server.js &``, ``sleep 300 &``), that
+        grandchild inherits the write end of our stdout pipe via ``fork()``.
+        The direct ``bash`` child exits promptly, but the pipe never reaches
+        EOF while the grandchild lives — so a blocking read would park this
+        thread forever, ``session.exited`` would never flip, and
+        ``notify_on_complete`` would never fire (``_reconcile_local_exit``
+        only runs lazily from poll()/wait(), which an autonomous notification
+        can't rely on). On POSIX we therefore ``select()`` with a short poll
+        interval and stop draining shortly after the direct child exits, even
+        if the pipe hasn't EOF'd — mirroring the foreground fix in
+        ``tools/environments/base.py::_wait_for_process`` (#8340). Windows
+        pipes don't support select(); the blocking path is kept there and the
+        lazy reconcile in poll()/wait() remains the safety net.
         """
         first_chunk = True
+        # Incremental decoder: raw pipe reads can split a multibyte UTF-8
+        # character across two read1() chunks. A stateless per-chunk
+        # ``bytes.decode(errors="replace")`` turns both halves into U+FFFD
+        # mojibake. The incremental decoder holds the partial sequence until
+        # the continuation bytes arrive — same treatment the foreground path
+        # already has in ``tools/environments/base.py::_wait_for_process``.
+        # (Ported from openclaw/openclaw#112325.)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+        def _append_chunk(chunk: str):
+            nonlocal first_chunk
+            if first_chunk:
+                chunk = self._clean_shell_noise(chunk)
+                first_chunk = False
+            with session._lock:
+                session.output_buffer += chunk
+                if len(session.output_buffer) > session.max_output_chars:
+                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
+            self._check_watch_patterns(session, chunk)
+            self._emit_output(session, chunk)
+
         try:
-            stdout = session.process.stdout
-            if stdout is None:
+            proc = session.process
+            if proc is None or proc.stdout is None:
                 return
+            stdout = proc.stdout
 
             raw_read = getattr(getattr(stdout, "buffer", None), "read1", None)
-            while True:
-                if raw_read is not None:
-                    raw = raw_read(4096)
-                    if not raw:
-                        break
-                    chunk = raw.decode("utf-8", errors="replace")
-                else:
-                    # Fallback for mocked/alternate streams without a buffered raw
-                    # interface. This may be less "live", but keeps compatibility.
-                    chunk = stdout.read(4096)
-                    if not chunk:
-                        break
 
-                if first_chunk:
-                    chunk = self._clean_shell_noise(chunk)
-                    first_chunk = False
-                with session._lock:
-                    session.output_buffer += chunk
-                    if len(session.output_buffer) > session.max_output_chars:
-                        session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                self._check_watch_patterns(session, chunk)
-                self._emit_output(session, chunk)
+            # Resolve a real OS fd for the select() path. Mocked streams
+            # (unit tests, adapters) may lack fileno() — fall back to the
+            # historical blocking loop for those.
+            fd = None
+            if raw_read is not None and not _IS_WINDOWS:
+                fileno = getattr(stdout, "fileno", None)
+                try:
+                    candidate = fileno() if callable(fileno) else None
+                except Exception:
+                    candidate = None
+                if isinstance(candidate, int) and candidate >= 0:
+                    fd = candidate
+
+            if fd is not None:
+                import select as _select
+
+                idle_after_exit = 0
+                while True:
+                    try:
+                        ready, _, _ = _select.select([fd], [], [], 0.2)
+                    except (ValueError, OSError):
+                        break  # fd already closed
+                    if ready:
+                        raw = raw_read(4096)
+                        if not raw:
+                            break  # true EOF — all writers closed
+                        chunk = decoder.decode(raw)
+                        if chunk:
+                            _append_chunk(chunk)
+                        idle_after_exit = 0
+                    elif proc.poll() is not None:
+                        # Direct child is gone and the pipe was idle for
+                        # ~200ms. Give it a few more cycles to catch any
+                        # buffered tail, then stop — otherwise we would wait
+                        # forever on a pipe held open by an orphaned
+                        # grandchild (issue #68915).
+                        idle_after_exit += 1
+                        if idle_after_exit >= 3:
+                            break
+            else:
+                while True:
+                    if raw_read is not None:
+                        raw = raw_read(4096)
+                        if not raw:
+                            break
+                        chunk = decoder.decode(raw)
+                        if not chunk:
+                            continue  # partial multibyte sequence — wait for more bytes
+                    else:
+                        # Fallback for mocked/alternate streams without a buffered raw
+                        # interface. This may be less "live", but keeps compatibility.
+                        chunk = stdout.read(4096)
+                        if not chunk:
+                            break
+
+                    _append_chunk(chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
+            # Flush any bytes still pending in the incremental decoder (a
+            # truncated multibyte sequence at EOF becomes one U+FFFD instead
+            # of being dropped silently).
+            try:
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    _append_chunk(tail)
+            except Exception:
+                pass
             # Always reap the child to prevent zombie processes.
             try:
                 session.process.wait(timeout=5)
@@ -978,6 +1551,51 @@ class ProcessRegistry:
                 session.completion_reason = "exited"
             self._move_to_finished(session)
 
+    @staticmethod
+    def _log_delta_command(quoted_log_path: str, offset: int) -> str:
+        """Build the shell command that reads only new bytes from a log file.
+
+        The old version ran ``cat`` on the whole file every poll, so a job
+        that keeps writing pays for its entire output again and again. Over a
+        long run that turns into a lot of wasted traffic on the docker/SSH
+        channel, since only the new part is ever used.
+
+        The command prints one header line, ``"<size> <offset>"``, then the
+        bytes between ``offset`` and ``size``. Reading the size first and
+        cutting the tail at that same size keeps the two numbers in step, so
+        a file that grows while the command runs never sends a byte twice.
+        A file that shrank was rotated or truncated, so the offset drops back
+        to 0 and the reader starts over.
+
+        The end of the window is pulled back to a UTF-8 character boundary:
+        the backend decodes each ``execute()`` result on its own, so a
+        multibyte character straddling two polls would otherwise come back
+        as replacement characters (and break watch patterns near the seam).
+        Up to 3 trailing continuation bytes are held for the next poll; the
+        header reports the trimmed size so the offset stays consistent.
+        """
+        return (
+            f"O={offset}; "
+            f"S=$({{ wc -c < {quoted_log_path}; }} 2>/dev/null | tr -dc '0-9'); "
+            f"S=${{S:-0}}; "
+            f'if [ "$S" -lt "$O" ]; then O=0; fi; '
+            # Hold back an INCOMPLETE trailing UTF-8 sequence for the next
+            # poll. Scan back up to 3 continuation bytes (octal 200-277) to
+            # the lead byte; if the lead byte's declared length (3xx=2, 34x-35x
+            # =3, 36x-37x=4) exceeds the bytes present, trim to before it.
+            # Complete sequences and ASCII tails are left untouched.
+            f'N=0; P=$S; while [ "$P" -gt "$O" ] && [ "$N" -lt 3 ]; do '
+            f"B=$(tail -c +$P {quoted_log_path} 2>/dev/null | head -c 1 | od -An -to1 | tr -dc '0-9'); "
+            f'case "$B" in 2[0-7][0-7]) P=$((P-1)); N=$((N+1));; *) break;; esac; done; '
+            f'if [ "$N" -gt 0 ] || [ "$P" -eq "$S" ]; then '
+            f"B=$(tail -c +$P {quoted_log_path} 2>/dev/null | head -c 1 | od -An -to1 | tr -dc '0-9'); "
+            f'case "$B" in 3[0-3][0-7]) L=2;; 3[4-5][0-7]) L=3;; 3[6-7][0-7]) L=4;; *) L=1;; esac; '
+            f'if [ "$L" -gt $((N+1)) ]; then S=$((P-1)); fi; fi; '
+            f'echo "$S $O"; '
+            f'if [ "$S" -gt "$O" ]; then '
+            f"tail -c +$((O+1)) {quoted_log_path} 2>/dev/null | head -c $((S-O)); fi"
+        )
+
     def _env_poller_loop(
         self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
     ):
@@ -985,24 +1603,44 @@ class ProcessRegistry:
         quoted_log_path = shlex.quote(log_path)
         quoted_pid_path = shlex.quote(pid_path)
         quoted_exit_path = shlex.quote(exit_path)
-        prev_output_len = 0  # track delta for watch pattern scanning
+        # Byte offset already read from the log. Bytes, not characters: the
+        # shell counts bytes, and a log with non-ASCII text has more bytes
+        # than characters.
+        prev_output_bytes = 0
         while not session.exited:
             time.sleep(2)  # Poll every 2 seconds
             try:
-                # Read new output from the log file
-                result = env.execute(f"cat {quoted_log_path} 2>/dev/null", timeout=10)
-                new_output = result.get("output", "")
-                if new_output:
-                    # Compute delta for watch pattern scanning
-                    delta = new_output[prev_output_len:] if len(new_output) > prev_output_len else ""
-                    prev_output_len = len(new_output)
+                # Read only the bytes written since the last poll.
+                result = env.execute(
+                    self._log_delta_command(quoted_log_path, prev_output_bytes),
+                    timeout=10,
+                )
+                raw = result.get("output", "")
+                header, _, delta = raw.partition("\n")
+                try:
+                    size_str, offset_str = header.split()
+                    new_size = int(size_str)
+                    used_offset = int(offset_str)
+                except ValueError:
+                    # No usable header (command failed, shell missing a tool).
+                    # Skip this poll rather than act on a half-read value.
+                    new_size = None
+                    used_offset = None
+                    delta = ""
+                if new_size is not None:
+                    if used_offset < prev_output_bytes:
+                        # The log was rotated or truncated, so what we hold no
+                        # longer lines up with the file. Drop it and restart.
+                        with session._lock:
+                            session.output_buffer = ""
+                    prev_output_bytes = new_size
+                if delta:
                     with session._lock:
-                        session.output_buffer = new_output
+                        session.output_buffer += delta
                         if len(session.output_buffer) > session.max_output_chars:
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                    if delta:
-                        self._check_watch_patterns(session, delta)
-                        self._emit_output(session, delta)
+                    self._check_watch_patterns(session, delta)
+                    self._emit_output(session, delta)
 
                 # Check if process is still running
                 check = env.execute(
@@ -1039,25 +1677,42 @@ class ProcessRegistry:
     def _pty_reader_loop(self, session: ProcessSession):
         """Background thread: read output from a PTY process."""
         pty = session._pty
+        # PTY reads can split a multibyte UTF-8 character across chunks just
+        # like pipe reads — hold partial sequences until the rest arrives.
+        # (Ported from openclaw/openclaw#112325.)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+        def _append_text(text: str):
+            with session._lock:
+                session.output_buffer += text
+                if len(session.output_buffer) > session.max_output_chars:
+                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
+            self._check_watch_patterns(session, text)
+            self._emit_output(session, text)
+
         try:
             while pty.isalive():
                 try:
                     chunk = pty.read(4096)
                     if chunk:
-                        # ptyprocess returns bytes
-                        text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
-                        with session._lock:
-                            session.output_buffer += text
-                            if len(session.output_buffer) > session.max_output_chars:
-                                session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                        self._check_watch_patterns(session, text)
-                        self._emit_output(session, text)
+                        # ptyprocess returns bytes; pywinpty returns str
+                        text = chunk if isinstance(chunk, str) else decoder.decode(chunk)
+                        if text:
+                            _append_text(text)
                 except EOFError:
                     break
                 except Exception:
                     break
         except Exception as e:
             logger.debug("PTY stdout reader ended: %s", e)
+
+        # Flush any partial multibyte sequence held by the decoder.
+        try:
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                _append_text(tail)
+        except Exception:
+            pass
 
         # Process exited
         try:
@@ -1089,10 +1744,12 @@ class ProcessRegistry:
         if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
-            self.completion_queue.put({
+            notification = {
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
+                "task_id": session.task_id,
+                "owner_task_id": session.owner_task_id or session.task_id,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "completion_reason": session.completion_reason,
@@ -1102,7 +1759,9 @@ class ProcessRegistry:
                 # a consumer-observed completion timestamp, this does not vary
                 # based on which watcher notices exit first.
                 "started_at": session.started_at,
-            })
+            }
+            _redact_process_result(notification)
+            self.completion_queue.put(notification)
 
     # ----- Query Methods -----
 
@@ -1146,6 +1805,138 @@ class ProcessRegistry:
                 return False
         return True
 
+    def wait_for_pending_completions(
+        self,
+        task_id: Optional[str] = None,
+        *,
+        timeout: float | None = None,
+        poll_interval: float = 1.0,
+    ) -> dict:
+        """Bounded wait for tracked ``notify_on_complete`` background processes.
+
+        One-shot CLI runs (``hermes -q/-Q/-z``) exit as soon as their single
+        turn ends.  Any background process the turn spawned with
+        ``notify_on_complete=True`` — a bounded task whose completion the
+        caller explicitly cares about — still holds a stdout pipe owned by
+        the dying parent, so it is killed by SIGPIPE on its next write a few
+        seconds later.  Bot Mode handoff REPLIES are the visible casualty
+        (#90879): a recipient invoked as ``hermes -p <bot> chat -Q
+        --query-file ...`` dispatches its reply via ``message_agent`` /
+        ``bot_relay`` exactly this way, then exits, and the reply process is
+        destroyed ~3s later.  The sender waits forever for a reply that was
+        already killed.
+
+        Called from the one-shot exit paths so the parent lingers (bounded)
+        until those deliveries actually finish.  This fixes the class — ANY
+        bounded background task in a one-shot run, not just DMs: bot_mode_dm
+        deliveries, bot_relay waiter processes, and plain
+        ``terminal(background=true, notify_on_complete=true)`` jobs.
+
+        Only ``notify_on_complete`` processes are waited on. Plain background
+        processes (servers, daemons, watch-pattern monitors) carry no
+        completion contract and are not the parent's to wait for.
+
+        Args:
+            task_id: restrict to processes spawned for this task; ``None``
+                waits on every tracked process (a one-shot CLI process hosts
+                exactly one agent, so its registry is private to that run).
+            timeout: max seconds to linger. ``None`` reads
+                ``terminal.oneshot_completion_wait_seconds`` from config
+                (default 600). ``<= 0`` disables the wait entirely.
+            poll_interval: per-pass event-wait bound; each pass re-reconciles
+                child state so an orphaned-pipe exit (#17327) can't wedge the
+                linger for the full timeout.
+
+        Returns:
+            ``{"waited": [...], "completed": [...], "timed_out": [...]}``
+            (session ids). All lists empty when there was nothing to wait on.
+        """
+        if timeout is None:
+            timeout = self._oneshot_completion_wait_seconds()
+        result: dict = {"waited": [], "completed": [], "timed_out": []}
+        with self._lock:
+            pending = [
+                s
+                for s in self._running.values()
+                if s.notify_on_complete
+                and not s.exited
+                and (task_id is None or s.task_id == task_id)
+            ]
+        if not pending or timeout <= 0:
+            return result
+        result["waited"] = [s.id for s in pending]
+        logger.info(
+            "One-shot exit lingering (bounded %ss) for %d notify_on_complete "
+            "background process(es): %s",
+            timeout,
+            len(pending),
+            ", ".join(s.id for s in pending),
+        )
+        deadline = time.monotonic() + max(float(timeout), 0.0)
+        interval = max(float(poll_interval), 0.05)
+        try:
+            from tools.interrupt import is_interrupted as _is_interrupted
+        except Exception:
+            def _is_interrupted() -> bool:
+                return False
+        interrupted = False
+        for session in pending:
+            try:
+                while not session.exited:
+                    if interrupted or _is_interrupted():
+                        interrupted = True
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    # Reconcile first: catches direct-child exits whose reader
+                    # is blocked on a pipe held open by a descendant (#17327)
+                    # and detached/env sessions, so the event actually fires.
+                    try:
+                        self._reconcile_local_exit(session)
+                        self._refresh_detached_session(session)
+                    except Exception:
+                        pass
+                    if session.exited:
+                        break
+                    session._completion_event.wait(min(remaining, interval))
+            except KeyboardInterrupt:
+                # User aborted the linger — stop waiting on everything but
+                # never let the interrupt skip the caller's durable teardown
+                # (session flush, end_session) that follows this wait.
+                interrupted = True
+            if session.exited:
+                result["completed"].append(session.id)
+            else:
+                result["timed_out"].append(session.id)
+        if result["timed_out"]:
+            logger.warning(
+                "One-shot exit linger timed out after %ss with %d background "
+                "process(es) still running: %s — they may be killed when this "
+                "process exits.",
+                timeout,
+                len(result["timed_out"]),
+                ", ".join(result["timed_out"]),
+            )
+        return result
+
+    @staticmethod
+    def _oneshot_completion_wait_seconds() -> float:
+        """Bounded linger (s) for one-shot exits with pending notify_on_complete
+        processes.  Read from ``terminal.oneshot_completion_wait_seconds``;
+        0 disables. Falls back to the DEFAULT_CONFIG value (600) when config
+        is unreadable so callers always get a sane bound.
+        """
+        try:
+            from hermes_cli.config import DEFAULT_CONFIG, cfg_get, read_raw_config
+            cfg = read_raw_config()
+            val = cfg_get(cfg, "terminal", "oneshot_completion_wait_seconds")
+            if val is None:
+                val = DEFAULT_CONFIG["terminal"]["oneshot_completion_wait_seconds"]
+            return max(float(val), 0.0)
+        except Exception:
+            return 600.0
+
     def _drain_should_skip(
         self, session_id: str, *, skip_poll_observed: bool = True
     ) -> bool:
@@ -1162,6 +1953,26 @@ class ProcessRegistry:
         return session_id in self._completion_consumed or (
             skip_poll_observed and session_id in self._poll_observed
         )
+
+    @staticmethod
+    def _surface_child_process_notifications() -> bool:
+        """Whether subagent-owned process notifications surface in the parent.
+
+        Read from ``delegation.surface_child_process_notifications`` in
+        config.yaml (default false = suppress). On any config read error the
+        DEFAULT applies (suppress) — never crash the drain loop.
+        """
+        try:
+            from hermes_cli.config import DEFAULT_CONFIG, cfg_get, read_raw_config
+            cfg = read_raw_config()
+            val = cfg_get(cfg, "delegation", "surface_child_process_notifications")
+            if val is None:
+                val = DEFAULT_CONFIG["delegation"][
+                    "surface_child_process_notifications"
+                ]
+            return bool(val)
+        except Exception:
+            return False
 
     def drain_notifications(
         self,
@@ -1201,6 +2012,10 @@ class ProcessRegistry:
         """
         results: "list[tuple[dict, str]]" = []
         requeue: "list[dict]" = []
+        # Lazily-read flag for subagent-owned process notifications
+        # (delegation.surface_child_process_notifications, default false).
+        # Read at most once per drain, and only when an sa- event shows up.
+        surface_child: "bool | None" = None
         while not self.completion_queue.empty():
             try:
                 evt = self.completion_queue.get_nowait()
@@ -1243,6 +2058,34 @@ class ProcessRegistry:
             ):
                 continue
 
+            # Subagent-owned process notifications are suppressed from the
+            # parent conversation by default — the child's consolidated
+            # delegation result is the deliverable; "npm ci finished" walls
+            # mid-chat are noise. Ownership is judged on owner_task_id (the
+            # RAW spawning task id): the container key in task_id is
+            # deliberately collapsed to "default"/the session key by
+            # _resolve_container_task_id, which previously let child events
+            # bypass this gate. Dropped, NOT requeued (children never drain
+            # notify events, so requeueing would pin them in the queue
+            # forever). Type 'async_delegation' is the delegation result
+            # itself and is NEVER suppressed.
+            _evt_task_id = str(
+                evt.get("owner_task_id") or evt.get("task_id") or ""
+            )
+            if not is_async_delegation and _evt_task_id.startswith("sa-"):
+                if surface_child is None:
+                    surface_child = self._surface_child_process_notifications()
+                if not surface_child:
+                    logger.debug(
+                        "Suppressed subagent-owned process notification "
+                        "(delegation.surface_child_process_notifications=false): "
+                        "type=%s session_id=%s task_id=%s",
+                        evt.get("type", "completion"),
+                        _evt_sid,
+                        _evt_task_id,
+                    )
+                    continue
+
             text = format_process_notification(evt)
             if text:
                 results.append((evt, text))
@@ -1250,11 +2093,55 @@ class ProcessRegistry:
             self.completion_queue.put(evt)
         return results
 
+    # Minimum characters of the random suffix required for prefix resolution.
+    # Short prefixes ("p", "pr", "proc_1") are too collision-prone to act on.
+    _MIN_PREFIX_CHARS = 4
+
     def get(self, session_id: str) -> Optional[ProcessSession]:
-        """Get a session by ID (running or finished)."""
+        """Get a session by ID (running or finished).
+
+        Accepts either the full ID or a unique ID prefix (inspired by Factory
+        Droid's task-ID prefixes, and the same UX as ``git``/``docker`` short
+        hashes): ``proc_4dae`` — or just the bare suffix ``4dae`` — resolves
+        to ``proc_4dae56ca81f6`` when exactly one session matches. Ambiguous
+        or too-short prefixes resolve to None (callers already report
+        "No process with ID ..."), never to an arbitrary pick.
+        """
         with self._lock:
             session = self._running.get(session_id) or self._finished.get(session_id)
+        if session is None:
+            session = self._resolve_prefix(session_id)
         return self._refresh_detached_session(session)
+
+    def _resolve_prefix(self, session_id: str) -> Optional[ProcessSession]:
+        """Resolve a unique session-ID prefix to its session, else None.
+
+        Exact lookups happen in :meth:`get` before this runs, so a full ID
+        never pays the scan. Matching is prefix-only (no substring) and
+        requires a unique hit; a bare suffix without the ``proc_`` lead is
+        normalized so users can paste just the hex tail.
+        """
+        if not session_id or not isinstance(session_id, str):
+            return None
+        query = session_id.strip()
+        if not query:
+            return None
+        # Allow the bare suffix form: "4dae56" -> "proc_4dae56".
+        if not query.startswith("proc_"):
+            query = f"proc_{query}"
+        suffix = query[len("proc_"):]
+        if len(suffix) < self._MIN_PREFIX_CHARS:
+            return None
+        with self._lock:
+            matches = [
+                s
+                for store in (self._running, self._finished)
+                for sid, s in store.items()
+                if sid.startswith(query)
+            ]
+        if len(matches) == 1:
+            return matches[0]
+        return None
 
     def _reconcile_local_exit(self, session: "ProcessSession") -> None:
         """Reconcile session.exited against the real child process state.
@@ -1373,7 +2260,7 @@ class ProcessRegistry:
             result["note"] = "Process recovered after restart -- output history unavailable"
         return result
 
-    def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
+    def read_log(self, session_id: str, offset: int | None = None, limit: int = 200) -> dict:
         """Read the full output log with optional pagination by lines."""
         from tools.ansi_strip import strip_ansi
 
@@ -1387,11 +2274,16 @@ class ProcessRegistry:
         lines = full_output.splitlines()
         total_lines = len(lines)
 
-        # Default: last N lines
-        if offset == 0 and limit > 0:
+        # Default (offset=None): last N lines. An explicit offset=0 means
+        # "start from the first line" — previously it was conflated with
+        # the default and silently returned the TAIL instead of the head
+        # (same falsy-coercion class as the wait() timeout guard; salvaged
+        # from PR #60004, credit @isheng-eqi).
+        if offset is None and limit > 0:
             selected = lines[-limit:]
             observed_completion_output = bool(selected) or total_lines == 0
         else:
+            offset = offset or 0
             selected = lines[offset:offset + limit]
             stop = slice(offset, offset + limit).indices(total_lines)[1]
             observed_completion_output = (
@@ -1432,6 +2324,17 @@ class ProcessRegistry:
         max_timeout = default_timeout
         requested_timeout = timeout
         timeout_note = None
+
+        # Reject non-positive timeouts — the schema declares minimum=1, but
+        # not every caller enforces schemas before dispatch. timeout=0 is
+        # falsy, so without this guard it silently fell through
+        # (`0 or max_timeout`) to the DEFAULT wait instead of erroring.
+        # Salvaged from PR #60004 (credit @isheng-eqi).
+        if requested_timeout is not None and requested_timeout <= 0:
+            return {
+                "status": "error",
+                "error": f"timeout must be positive (got {requested_timeout})",
+            }
 
         if requested_timeout and requested_timeout > max_timeout:
             effective_timeout = max_timeout
@@ -1490,11 +2393,32 @@ class ProcessRegistry:
             "status": "timeout",
             "command": session.command,
             "output": strip_ansi(session.output_buffer[-1000:]),
+            # A wait window elapsing is NOT a failure — 511 exact-duplicate
+            # process calls in a production window show models re-issuing
+            # identical waits after misreading this result as an error.
+            "process_running": True,
         }
-        if timeout_note:
-            result["timeout_note"] = timeout_note
+        uptime = time.time() - session.started_at if session.started_at else None
+        base_note = (
+            f"Wait window of {effective_timeout}s elapsed — the process is "
+            "still running. This is not an error."
+        )
+        if uptime is not None:
+            base_note += f" Uptime: {int(uptime)}s."
+        if session.notify_on_complete:
+            base_note += (
+                " notify_on_complete is set: you will be notified on exit — "
+                "do more work instead of waiting again."
+            )
         else:
-            result["timeout_note"] = f"Waited {effective_timeout}s, process still running"
+            base_note += (
+                " Poll again later or use terminal(background=true, "
+                "notify_on_complete=true) next time for automatic notification."
+            )
+        if timeout_note:
+            result["timeout_note"] = f"{timeout_note}. {base_note}"
+        else:
+            result["timeout_note"] = base_note
         return result
 
     def kill_process(
@@ -1509,7 +2433,10 @@ class ProcessRegistry:
         ``consume_output`` is true for explicit tool/RPC kills because their
         caller observes the returned output. Bulk cleanup passes false: it
         discards each result and therefore must not suppress an autonomous
-        output-bearing completion notification.
+        output-bearing completion notification. Exception: abandoned-turn
+        reaping (``kill_started_since``) is bulk cleanup that deliberately
+        passes true — a killed abandoned process must not enqueue a synthetic
+        follow-up that revives work the timeout/interrupt stopped.
         """
         from tools.ansi_strip import strip_ansi
 
@@ -1518,6 +2445,12 @@ class ProcessRegistry:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
         if session.exited:
+            # Even if the main process already exited, a double-forked
+            # descendant may still be alive in the systemd scope (#70716,
+            # reviewer gap #2 — the ``already_exited`` early return skipped
+            # unit cleanup).  Stop the scope to reap any survivors.
+            if session.systemd_unit:
+                _stop_systemd_unit(session.systemd_unit)
             with session._lock:
                 result = {
                     "status": "already_exited",
@@ -1553,8 +2486,14 @@ class ProcessRegistry:
             elif session.detached and session.pid_scope == "host" and session.pid:
                 # Identity check, not bare liveness: if the PID is gone OR was
                 # recycled onto an unrelated process, treat our process as
-                # exited and never tree-kill the stranger.
+                # exited and never tree-kill the stranger.  If this recovered
+                # session also carries an owned systemd scope, stop that scope
+                # before returning: a daemonized descendant may still be alive
+                # there even though the wrapper PID exited or was recycled
+                # across the gateway restart (#70716, teknium1 review).
                 if not self._host_pid_is_ours(session.pid, session.host_start_time):
+                    if session.systemd_unit:
+                        _stop_systemd_unit(session.systemd_unit)
                     with session._lock:
                         session.exited = True
                         session.exit_code = None
@@ -1576,6 +2515,16 @@ class ProcessRegistry:
                         "its original runtime handle is no longer available"
                     ),
                 }
+
+            # If the worker was spawned in its own systemd scope (#70716),
+            # stop the entire unit to reap any double-forked descendants that
+            # were reparented inside the scope and survived the PID signal
+            # above (reviewer gap #2).  ``systemctl --user stop`` sends
+            # SIGTERM to every process in the cgroup and escalates to SIGKILL
+            # after TimeoutStopSec.  This is additive — the PID-based kill
+            # above already handled the main process; this catches stragglers.
+            if session.systemd_unit:
+                _stop_systemd_unit(session.systemd_unit)
             # Capture output before marking consumed, then mark consumed before
             # exposing ``exited`` to watcher tasks. This closes the delayed
             # notification race without discarding the terminal transcript.
@@ -1614,7 +2563,9 @@ class ProcessRegistry:
                 if _IS_WINDOWS:
                     pty_data = data.decode("utf-8") if isinstance(data, bytes) else str(data)
                 else:
-                    pty_data = data.encode("utf-8") if isinstance(data, str) else data
+                    # surrogateescape: a PTY is a byte stream — round-trip the
+                    # original bytes instead of crashing on surrogate content.
+                    pty_data = data.encode("utf-8", "surrogateescape") if isinstance(data, str) else data
                 session._pty.write(pty_data)
                 return {"status": "ok", "bytes_written": len(data)}
             except Exception as e:
@@ -1631,8 +2582,26 @@ class ProcessRegistry:
             return {"status": "error", "error": str(e)}
 
     def submit_stdin(self, session_id: str, data: str = "") -> dict:
-        """Send data + newline to a running process's stdin (like pressing Enter)."""
-        return self.write_stdin(session_id, data + "\n")
+        """Send data + newline to a running process's stdin (like pressing Enter).
+
+        On a Windows PTY session the Enter key is a carriage return: ConPTY
+        cooked input treats ``\\r`` as end-of-line, and a bare ``\\n`` written
+        through pywinpty is NOT delivered as a line terminator — the child's
+        blocking line read (Python ``readline()``, Go ``bufio.Scanner`` as in
+        ``gh auth login``'s "Press Enter to open the browser" prompt) simply
+        never returns and the process hangs while looking healthy. Verified
+        empirically via pywinpty 2.0.15: ``\\n`` -> no line, ``\\r`` /
+        ``\\r\\n`` -> line delivered. Use ``\\r\\n`` so the child sees both the
+        Enter keypress and a conventional newline; POSIX PTYs and Popen pipes
+        keep the plain ``\\n``.
+        """
+        session = self.get(session_id)
+        is_windows_pty = bool(
+            _IS_WINDOWS and session is not None
+            and getattr(session, "_pty", None)
+        )
+        line_ending = "\r\n" if is_windows_pty else "\n"
+        return self.write_stdin(session_id, data + line_ending)
 
     def request_close_terminal(self, session_id: str) -> dict:
         """Ask the desktop GUI to close the read-only terminal tab mirroring this
@@ -1821,20 +2790,64 @@ class ProcessRegistry:
         with self._lock:
             return any(not s.exited for s in self._running.values())
 
-    def kill_all(self, task_id: str = None) -> int:
+    def snapshot_running_ids(self, task_id: str) -> frozenset[str]:
+        """Capture running process IDs owned by ``task_id``.
+
+        Gateway turns use this as a boundary marker: if a turn times out, only
+        processes absent from its starting snapshot belong to the abandoned
+        turn. Older session processes must survive because background tasks
+        intentionally span successful turns.
+        """
+        with self._lock:
+            return frozenset(
+                s.id
+                for s in self._running.values()
+                if s.task_id == task_id and not s.exited
+            )
+
+    def kill_started_since(
+        self,
+        task_id: str,
+        baseline_ids,
+        *,
+        source: str,
+    ) -> int:
+        """Kill processes created for ``task_id`` after a prior snapshot.
+
+        ``consume_output`` is forced on: abandoned-turn output must not
+        enqueue a synthetic follow-up that revives work the timeout
+        deliberately stopped.
+        """
+        return self.kill_all(
+            task_id,
+            exclude_ids=frozenset(baseline_ids or ()),
+            source=source,
+            consume_output=True,
+        )
+
+    def kill_all(
+        self,
+        task_id: Optional[str] = None,
+        *,
+        exclude_ids: frozenset = frozenset(),
+        source: str = "kill_all",
+        consume_output: bool = False,
+    ) -> int:
         """Kill all running processes, optionally filtered by task_id. Returns count killed."""
         with self._lock:
             targets = [
                 s for s in self._running.values()
-                if (task_id is None or s.task_id == task_id) and not s.exited
+                if (task_id is None or s.task_id == task_id)
+                and s.id not in exclude_ids
+                and not s.exited
             ]
 
         killed = 0
         for session in targets:
             result = self.kill_process(
                 session.id,
-                source="kill_all",
-                consume_output=False,
+                source=source,
+                consume_output=consume_output,
             )
             if result.get("status") in {"killed", "already_exited"}:
                 killed += 1
@@ -1877,7 +2890,10 @@ class ProcessRegistry:
 
     # ----- Checkpoint (crash recovery) -----
 
-    def _write_checkpoint(self):
+    def _write_checkpoint(
+        self,
+        extra_entries: Optional[List[Dict[str, Any]]] = None,
+    ):
         """Write running process metadata to checkpoint file atomically."""
         try:
             with self._lock:
@@ -1891,13 +2907,22 @@ class ProcessRegistry:
                             s.host_start_time = self._safe_host_start_time(s.pid)
                         entries.append({
                             "session_id": s.id,
-                            "command": s.command,
+                            # Redact inline credentials before persisting to
+                            # disk — the checkpoint file lives under
+                            # ~/.hermes/processes.json with the raw command
+                            # (issue #77484). Recovery only uses command for
+                            # display/logging (the process is already running;
+                            # adoption re-validates the PID, never re-runs the
+                            # command), so masking is lossless.
+                            "command": redact_sensitive_text(s.command, code_file=True),
                             "pid": s.pid,
                             "pid_scope": s.pid_scope,
                             "host_start_time": s.host_start_time,
+                            "systemd_unit": s.systemd_unit,
                             "cwd": s.cwd,
                             "started_at": s.started_at,
                             "task_id": s.task_id,
+                            "owner_task_id": s.owner_task_id or s.task_id,
                             "session_key": s.session_key,
                             "watcher_platform": s.watcher_platform,
                             "watcher_chat_id": s.watcher_chat_id,
@@ -1906,9 +2931,17 @@ class ProcessRegistry:
                             "watcher_thread_id": s.watcher_thread_id,
                             "watcher_message_id": s.watcher_message_id,
                             "watcher_interval": s.watcher_interval,
+                            "parent_session_id": s.parent_session_id,
                             "notify_on_complete": s.notify_on_complete,
                             "watch_patterns": s.watch_patterns,
                         })
+                if extra_entries:
+                    tracked_ids = {item.get("session_id") for item in entries}
+                    entries.extend(
+                        item
+                        for item in extra_entries
+                        if item.get("session_id") not in tracked_ids
+                    )
             
             # Atomic write to avoid corruption on crash
             from utils import atomic_json_write
@@ -1931,6 +2964,7 @@ class ProcessRegistry:
             return 0
 
         recovered = 0
+        unresolved_scope_entries: List[Dict[str, Any]] = []
         for entry in entries:
             pid = entry.get("pid")
             if not pid:
@@ -1964,16 +2998,27 @@ class ProcessRegistry:
                         "an unrelated process; refusing to adopt it.",
                         entry.get("session_id", "?"), pid,
                     )
+                systemd_unit = entry.get("systemd_unit", "")
+                if systemd_unit and not _stop_systemd_unit(systemd_unit):
+                    logger.warning(
+                        "Could not reap persisted scope %s for dead wrapper pid %s; "
+                        "retaining checkpoint entry for the next startup",
+                        systemd_unit,
+                        pid,
+                    )
+                    unresolved_scope_entries.append(entry)
                 continue
 
             session = ProcessSession(
                 id=entry["session_id"],
                 command=entry.get("command", "unknown"),
                 task_id=entry.get("task_id", ""),
+                owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
                 session_key=entry.get("session_key", ""),
                 pid=pid,
                 host_start_time=recorded_start,
                 pid_scope=pid_scope,
+                systemd_unit=entry.get("systemd_unit", ""),
                 cwd=entry.get("cwd"),
                 started_at=entry.get("started_at", time.time()),
                 detached=True,  # Can't read output, but can report status + kill
@@ -1984,6 +3029,7 @@ class ProcessRegistry:
                 watcher_thread_id=entry.get("watcher_thread_id", ""),
                 watcher_message_id=entry.get("watcher_message_id", ""),
                 watcher_interval=entry.get("watcher_interval", 0),
+                parent_session_id=entry.get("parent_session_id", ""),
                 notify_on_complete=entry.get("notify_on_complete", False),
                 watch_patterns=entry.get("watch_patterns", []),
             )
@@ -2005,9 +3051,10 @@ class ProcessRegistry:
                     "thread_id": session.watcher_thread_id,
                     "message_id": session.watcher_message_id,
                     "notify_on_complete": session.notify_on_complete,
+                    "parent_session_id": session.parent_session_id,
                 })
 
-        self._write_checkpoint()
+        self._write_checkpoint(extra_entries=unresolved_scope_entries)
 
         return recovered
 
@@ -2029,6 +3076,95 @@ def _format_age(seconds: float) -> str:
         return f"{m}m" if s == 0 else f"{m}m{s}s"
     h, m = divmod(m, 60)
     return f"{h}h" if m == 0 else f"{h}h{m}m"
+
+
+def _model_not_found_patterns() -> "list[str]":
+    """Model-not-found phrases from the failover classifier.
+
+    Imported from ``agent.error_classifier`` so the batch renderer applies
+    the SAME classification the failover path consumes — no hand-copied
+    pattern list to drift. Fails open to a minimal built-in set so a
+    classifier import problem never hides the per-task blocks.
+    (Import approach from PR #97667 by @liuhao1024.)
+    """
+    try:
+        from agent.error_classifier import _MODEL_NOT_FOUND_PATTERNS
+
+        return list(_MODEL_NOT_FOUND_PATTERNS)
+    except Exception:
+        return ["is not a valid model", "model not found", "model_not_found"]
+
+
+def _delegation_config() -> dict:
+    """Load the active delegation config (model/provider/fallbacks), fail-open.
+
+    Mirrors ``tools.delegate_tool._load_config`` so the renderer sees the same
+    ``model`` / ``provider`` the dispatcher used, without importing the heavy
+    delegation module at import time. Returns ``{}`` on any error so callers
+    fail open to "no notice" rather than dropping the per-task blocks.
+    """
+    try:
+        from tools.delegate_tool import _load_config as _cfg
+
+        return _cfg() or {}
+    except Exception:
+        return {}
+
+
+def _delegation_model_not_found(results, config) -> bool:
+    """True when a result entry reflects a config-level model_not_found rejection.
+
+    Matches when at least one entry's error/summary text contains both a
+    model-not-found phrase AND the name of the currently-configured delegation
+    model — so a stale task failing on a *different* (removed) model is not
+    mis-attributed to the config-level root cause.
+    """
+    model = (config or {}).get("model")
+    if not model:
+        return False
+    model = str(model).lower()
+    for r in results or []:
+        text = " ".join(
+            str(part) for part in (r.get("error"), r.get("summary")) if part
+        ).lower()
+        if not text or model not in text:
+            continue
+        if any(p in text for p in _model_not_found_patterns()):
+            return True
+    return False
+
+
+def _delegation_model_not_found_notice(results) -> "list[str] | None":
+    """Build the config-level model_not_found notice lines, or None.
+
+    Returns ``None`` unless at least one result entry shows the configured
+    delegation model being rejected by its provider, in which case a short
+    actionable block is returned. Every failure path fails open to ``None`` so
+    a config hiccup never hides the per-task blocks. Emit once per batch.
+    """
+    config = _delegation_config()
+    if not _delegation_model_not_found(results, config):
+        return None
+    model = config.get("model") or "?"
+    provider = config.get("provider") or "configured provider"
+    lines = [
+        "⚠ SUBAGENT MODEL REJECTED: the configured Subagent Model "
+        f'"{model}" was rejected by provider "{provider}" '
+        "(HTTP 400: not a valid model ID).",
+        "Every task in this batch failed for this reason before doing any work.",
+        "Check Settings → Advanced → Subagent Model (or: "
+        "hermes config get delegation.model).",
+    ]
+    try:
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        if not get_fallback_chain(config):
+            lines.append(
+                "No fallback chain is configured, so no failover was attempted."
+            )
+    except Exception:
+        pass
+    return lines
 
 
 def _format_async_delegation(evt: dict) -> str:
@@ -2054,6 +3190,7 @@ def _format_async_delegation(evt: dict) -> str:
     error = evt.get("error")
     api_calls = evt.get("api_calls", 0)
     duration = evt.get("duration_seconds", "?")
+    truncated = evt.get("truncated") or evt.get("exit_reason") == "max_iterations"
     dispatched_at = evt.get("dispatched_at")
     completed_at = evt.get("completed_at") or _time.time()
 
@@ -2088,13 +3225,21 @@ def _format_async_delegation(evt: dict) -> str:
             lines.append("--- ERROR ---")
             lines.append(f"The batch did not complete successfully: {error}")
             return "\n".join(lines)
+        # Config-level rejection notice BEFORE the per-task wall — a rejected
+        # delegation model fails every task identically before doing any
+        # work, and that signal must not stay buried in the task blocks.
+        _notice = _delegation_model_not_found_notice(results)
+        if _notice:
+            lines.append("")
+            lines.extend(_notice)
         for r in sorted(results, key=lambda x: x.get("task_index", 0)):
             idx = r.get("task_index", 0)
             r_status = r.get("status", "?")
             r_summary = r.get("summary")
             r_error = r.get("error")
             r_goal = goals[idx] if idx < len(goals) else r.get("goal", "")
-            icon = "✓" if r_status in ("completed", "success") else "✗"
+            r_truncated = r.get("truncated") or r.get("exit_reason") == "max_iterations"
+            icon = "⚠" if r_truncated else ("✓" if r_status in ("completed", "success") else "✗")
             lines.append("")
             header = f"--- {icon} TASK {idx + 1}/{n}"
             if r_goal:
@@ -2104,9 +3249,17 @@ def _format_async_delegation(evt: dict) -> str:
                 header += f", api_calls={r['api_calls']}"
             if r.get("duration_seconds") is not None:
                 header += f", {r['duration_seconds']}s"
+            if r_truncated:
+                header += ", TRUNCATED: hit max_iterations — work may be incomplete"
             header += ") ---"
             lines.append(header)
             if r_status in ("completed", "success") and r_summary:
+                if r_truncated:
+                    lines.append(
+                        "[TRUNCATED — subagent hit its iteration cap; the "
+                        "summary below may be incomplete. Verify before relying "
+                        "on it, or re-dispatch the unfinished part.]"
+                    )
                 lines.append(r_summary)
             elif r_summary:
                 if r_error:
@@ -2118,6 +3271,11 @@ def _format_async_delegation(evt: dict) -> str:
                     f"(no summary — status={r_status}"
                     + (f": {r_error}" if r_error else "")
                     + ")"
+                )
+            r_live = r.get("live_transcript")
+            if r_live:
+                lines.append(
+                    f"Full live transcript (complete tool/assistant trace): {r_live}"
                 )
         return "\n".join(lines)
 
@@ -2141,9 +3299,20 @@ def _format_async_delegation(evt: dict) -> str:
     if toolsets:
         lines.append(f"Toolsets: {', '.join(toolsets)}")
     lines.append(f"Role: {role}   Model: {model}")
-    lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s")
+    _notice = _delegation_model_not_found_notice([evt])
+    if _notice:
+        lines.append("")
+        lines.extend(_notice)
+    _trunc = " [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""
+    lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s{_trunc}")
     lines.append("--- RESULT ---")
     if status in ("completed", "success") and summary:
+        if truncated:
+            lines.append(
+                "[TRUNCATED — subagent hit its iteration cap; the summary below "
+                "may be incomplete. Verify before relying on it, or re-dispatch "
+                "the unfinished part.]"
+            )
         lines.append(summary)
     elif status == "interrupted":
         lines.append(
@@ -2165,6 +3334,45 @@ def _format_async_delegation(evt: dict) -> str:
     return "\n".join(lines)
 
 
+def _delegation_attribution_line(evt: dict) -> "str | None":
+    """One-line delegation attribution for a child-originated process event.
+
+    Subagents run their terminal sessions under ``task_id == subagent_id``
+    (delegate_tool._run_single_child). When a background process they started
+    completes, its notification is routed to the PARENT conversation by
+    design (children consume their own waits via process(wait); anything
+    that outlives the child must land where a durable consumer exists).
+    Without attribution the parent-facing user sees an anonymous raw output
+    wall mid-conversation with no hint it came from a delegation. Resolve
+    the task_id against the live + recently-finished subagent registry and
+    return a short provenance line, or None for parent-owned processes.
+    """
+    task_id = str(evt.get("owner_task_id") or evt.get("task_id") or "")
+    if not task_id.startswith("sa-"):
+        return None
+    try:
+        from tools.delegate_tool import get_subagent_attribution
+
+        info = get_subagent_attribution(task_id)
+    except Exception:
+        info = None
+    if not info:
+        # The task_id shape says "subagent" even when the registry entry has
+        # aged out — still attribute generically rather than anonymously.
+        return f"Started by subagent {task_id} (delegate_task)."
+    goal = str(info.get("goal") or "").strip()
+    if len(goal) > 120:
+        goal = goal[:117] + "..."
+    deleg = info.get("delegation_id")
+    parts = [f"Started by subagent {task_id}"]
+    if deleg:
+        parts.append(f"of delegation {deleg}")
+    line = " ".join(parts) + "."
+    if goal:
+        line += f' Task: "{goal}"'
+    return line
+
+
 def format_process_notification(evt: dict) -> "str | None":
     """Format a process notification event into a [IMPORTANT: ...] message.
 
@@ -2174,8 +3382,15 @@ def format_process_notification(evt: dict) -> "str | None":
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
     _cmd = evt.get("command", "unknown")
+    _attribution = _delegation_attribution_line(evt)
 
     if evt_type == "watch_disabled":
+        return f"[IMPORTANT: {evt.get('message', '')}]"
+
+    # Overflow events carry their human-readable summary in `message` —
+    # without this case they fall through to the completion formatter and
+    # surface as a phantom "process exited (exit code ?)" notification.
+    if evt_type in ("watch_overflow_tripped", "watch_overflow_released"):
         return f"[IMPORTANT: {evt.get('message', '')}]"
 
     if evt_type == "watch_match":
@@ -2185,6 +3400,10 @@ def format_process_notification(evt: dict) -> "str | None":
         text = (
             f"[IMPORTANT: Background process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
+        )
+        if _attribution:
+            text += f"{_attribution}\n"
+        text += (
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
         )
@@ -2213,12 +3432,26 @@ def format_process_notification(evt: dict) -> "str | None":
         _status = "completed normally"
     else:
         _status = "exited"
-    return (
+    text = (
         f"[IMPORTANT: Background process {_sid} {_status} "
         f"(exit code {_exit}{_signal}).\n"
+    )
+    if _attribution:
+        text += f"{_attribution}\n"
+        # A subagent-owned process's full output belongs in the child's
+        # transcript/summary, not as a raw wall in the parent conversation —
+        # trim the tail hard while keeping enough to recognise failures.
+        if isinstance(_out, str) and len(_out) > 600:
+            _out = (
+                "...(output trimmed — subagent-owned process; see the "
+                "delegation's live transcript for full output)\n"
+                + _out[-600:]
+            )
+    text += (
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
     )
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -2227,42 +3460,46 @@ def format_process_notification(evt: dict) -> "str | None":
 from tools.registry import registry, tool_error
 
 PROCESS_SCHEMA = {
-    "name": "process",
+    "name": "process_manage",
+    # Dieted (#95681): the action enum names the verbs; the description
+    # keeps only non-obvious semantics. write-vs-submit is the tool's one
+    # real trap (a lone \n on a Windows PTY is not a line terminator) —
+    # that teaching gains emphasis rather than losing it.
     "description": (
-        "Manage background processes started with terminal(background=true). "
-        "Actions: 'list' (show all), 'poll' (check status + new output), "
-        "'log' (full output with pagination), 'wait' (block until done or timeout), "
-        "'kill' (terminate), 'write' (send raw stdin data without newline), "
-        "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF)."
+        "Poll, wait on, or kill background terminal processes (from "
+        "terminal(background=true)). "
+        "poll: status + new output. log: full output, paged. wait: block "
+        "until exit or timeout (partial output on timeout). write vs "
+        "submit: submit appends Enter — use it to answer prompts; write "
+        "sends raw bytes, no newline. close: EOF stdin. kill: terminate."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit", "close"],
-                "description": "Action to perform on background processes"
+                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit", "close"]
             },
             "session_id": {
                 "type": "string",
-                "description": "Process session ID (from terminal background output). Required for all actions except 'list'."
+                "description": "From terminal background output; any unique prefix works ('4dae' for proc_4dae56ca81f6). Required except for 'list'."
             },
             "data": {
                 "type": "string",
-                "description": "Text to send to process stdin (for 'write' and 'submit' actions)"
+                "description": "Stdin text for write/submit."
             },
             "timeout": {
                 "type": "integer",
-                "description": "Max seconds to block for 'wait' action. Returns partial output on timeout.",
+                "description": "Max seconds for 'wait'.",
                 "minimum": 1
             },
             "offset": {
                 "type": "integer",
-                "description": "Line offset for 'log' action (default: last 200 lines)"
+                "description": "Log line offset (default: last 200)."
             },
             "limit": {
                 "type": "integer",
-                "description": "Max lines to return for 'log' action",
+                "description": "Max log lines.",
                 "minimum": 1
             }
         },
@@ -2312,7 +3549,12 @@ def _handle_process(args, **kw):
         except Exception:
             session_key = ""
         return json.dumps(
-            {"processes": process_registry.list_sessions(task_id=task_id, session_key=session_key or None)},
+            {
+                "processes": [
+                    _redact_process_result(p)
+                    for p in process_registry.list_sessions(task_id=task_id, session_key=session_key or None)
+                ]
+            },
             ensure_ascii=False,
         )
     elif action in {"poll", "log", "wait", "kill", "write", "submit", "close"}:
@@ -2322,7 +3564,7 @@ def _handle_process(args, **kw):
             return json.dumps(_redact_process_result(process_registry.poll(session_id)), ensure_ascii=False)
         elif action == "log":
             return json.dumps(_redact_process_result(process_registry.read_log(
-                session_id, offset=args.get("offset", 0), limit=args.get("limit", 200))), ensure_ascii=False)
+                session_id, offset=args.get("offset"), limit=args.get("limit", 200))), ensure_ascii=False)
         elif action == "wait":
             return json.dumps(_redact_process_result(process_registry.wait(session_id, timeout=args.get("timeout"))), ensure_ascii=False)
         elif action == "kill":
@@ -2340,7 +3582,7 @@ def _handle_process(args, **kw):
 
 
 registry.register(
-    name="process",
+    name="process_manage",
     toolset="terminal",
     schema=PROCESS_SCHEMA,
     handler=_handle_process,

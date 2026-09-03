@@ -2,8 +2,11 @@
  * Pure helpers for window zoom. The main process owns webContents.setZoomLevel,
  * so the menu items, the Ctrl/Cmd shortcuts, and the settings UI all funnel
  * through this one clamped scale. Percent is the user-facing unit (100 = the
- * default size); Chromium's internal unit is the zoom level, where
- * factor = 1.2 ^ level.
+ * Chromium actual-size baseline); Chromium's internal unit is the zoom level,
+ * where factor = 1.2 ^ level.
+ *
+ * Our shipped default is the Appearance 90% preset — tight enough to feel
+ * denser than Chromium 100%, and selected in the UI Scale control on first run.
  */
 
 export const ZOOM_STORAGE_KEY = 'hermes:desktop:zoomLevel'
@@ -12,9 +15,15 @@ const ZOOM_FACTOR_BASE = 1.2
 const MIN_ZOOM_LEVEL = -9
 const MAX_ZOOM_LEVEL = 9
 
+/** Half Chromium's default step; matching the shortcuts and View menu. */
+export const ZOOM_STEP = 0.1
+
+/** Appearance 90% preset. Fresh installs + Actual Size / Ctrl+0. */
+export const DEFAULT_ZOOM_LEVEL = Math.log(0.9) / Math.log(ZOOM_FACTOR_BASE)
+
 export function clampZoomLevel(value) {
   if (!Number.isFinite(value)) {
-    return 0
+    return DEFAULT_ZOOM_LEVEL
   }
 
   return Math.min(Math.max(value, MIN_ZOOM_LEVEL), MAX_ZOOM_LEVEL)
@@ -26,7 +35,7 @@ export function zoomLevelToPercent(level) {
 
 export function percentToZoomLevel(percent) {
   if (!Number.isFinite(percent) || percent <= 0) {
-    return 0
+    return DEFAULT_ZOOM_LEVEL
   }
 
   return clampZoomLevel(Math.log(percent / 100) / Math.log(ZOOM_FACTOR_BASE))
@@ -48,38 +57,156 @@ export function applyZoomLevel(webContents, level) {
   return clamped
 }
 
-// Chromium on Windows can drop webContents zoom when a BrowserWindow is minimized
-// and restored or crosses onto a monitor with different display scaling. Re-apply
-// the persisted level after each completed lifecycle transition.
-export const ZOOM_REASSERT_WINDOW_EVENTS = ['show', 'restore', 'moved']
+// Chromium can drop webContents zoom when a BrowserWindow is resized, minimized
+// and restored, crosses onto a monitor with different display scaling, or loses
+// and regains focus (alt-tab on Windows high-DPI displays triggers a DPI
+// re-evaluation). macOS and Windows provide trailing `resized`/`moved` events;
+// Linux only provides the noisy `resize`/`move` pair, so debounce those
+// fallbacks before re-applying the persisted level.
+export const ZOOM_RESIZE_REASSERT_DELAY_MS = 100
 
-export function installZoomReassertOnWindowEvents(win, reassert) {
+// Linux settle-verify: a re-assert can land while the compositor is still
+// reconfiguring the window's surface (Cosmic tiled mode fires a resize storm
+// the moment a new session window opens, and the final event can arrive before
+// the new scale is committed), in which case Chromium drops the just-applied
+// zoom and the window stays stuck at the wrong scale until the next
+// transition. After the debounced re-assert we therefore re-check a few times
+// at a settle delay; each re-assert is drift-guarded (see
+// restorePersistedZoomLevel), so a window that already matches the persisted
+// level costs nothing and the chain is bounded.
+export const ZOOM_REASSERT_SETTLE_DELAY_MS = 300
+export const ZOOM_REASSERT_MAX_SETTLE_CHECKS = 3
+
+export function zoomReassertWindowEvents(platform = process.platform) {
+  return platform === 'linux'
+    ? ['show', 'restore', 'focus', 'resize', 'move']
+    : ['show', 'restore', 'focus', 'resized', 'moved']
+}
+
+// Linux/Wayland fires `focus` on intra-app focus shifts (sidebar clicks,
+// Ctrl+Tab session switching, tile activation) — not just the cross-app
+// alt-tab the Windows high-DPI immediate-reassert guard (#50837) targets.
+// An undebounced reassert on every such focus event re-applies the persisted
+// zoom level mid-interaction, producing a visible zoom/DPI jump. Debounce
+// `focus` alongside `resize`/`move` on Linux; Windows alt-tab keeps its
+// immediate path because `platform` is `win32` there.
+const DEBOUNCED_REASSERT_EVENTS = new Set(['resize', 'move'])
+
+export function isDebouncedReassertEvent(event, platform = process.platform) {
+  return DEBOUNCED_REASSERT_EVENTS.has(event) || (platform === 'linux' && event === 'focus')
+}
+
+export function installZoomReassertOnWindowEvents(win, reassert, platform = process.platform) {
   if (!win?.on) {
     return
   }
 
-  for (const event of ZOOM_REASSERT_WINDOW_EVENTS) {
+  let resizeTimer
+  let settleTimer
+  let settleChecks = 0
+
+  const scheduleSettleCheck = () => {
+    if (platform !== 'linux') {
+      return
+    }
+
+    settleChecks += 1
+
+    if (settleChecks > ZOOM_REASSERT_MAX_SETTLE_CHECKS) {
+      return
+    }
+
+    settleTimer = setTimeout(() => {
+      if (!win.isDestroyed?.()) {
+        reassert()
+        scheduleSettleCheck()
+      }
+    }, ZOOM_REASSERT_SETTLE_DELAY_MS)
+  }
+
+  const reassertWithSettleCheck = () => {
+    settleChecks = 0
+    reassert()
+    scheduleSettleCheck()
+  }
+
+  for (const event of zoomReassertWindowEvents(platform)) {
     win.on(event, () => {
       if (win.isDestroyed?.()) {
         return
       }
 
-      reassert()
+      if (!isDebouncedReassertEvent(event, platform)) {
+        clearTimeout(settleTimer)
+        reassertWithSettleCheck()
+
+        return
+      }
+
+      clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        if (!win.isDestroyed?.()) {
+          clearTimeout(settleTimer)
+          reassertWithSettleCheck()
+        }
+      }, ZOOM_RESIZE_REASSERT_DELAY_MS)
     })
   }
 }
 
 /**
- * Zoom-wiring decision per window kind. Chat windows (main + session) keep
- * global UI zoom; the pet overlay opts out because it sizes its own OS window
- * to the sprite and inheriting zoom would crop it.
+ * Chromium persists zoom PER URL, and a hash route is a distinct URL. Desktop
+ * is a HashRouter over one `file://index.html`, so every session/settings route
+ * carries its own `partition.per_host_zoom_levels` record, and an in-page
+ * navigation applies the target route's record over whatever the window is
+ * showing. A route the user never zoomed on has no record at all, so it
+ * resolves to the host default — level 0, i.e. 100%.
  *
- * Extracted so the "pet opts out, everything else opts in" contract is
+ * In-page navigation fires neither `did-finish-load` nor any window event, so
+ * nothing re-asserted the persisted level: opening a fresh session dropped the
+ * window to 100% while the Appearance control kept reading the chosen scale (it
+ * only learns of changes through `hermes:zoom:changed`, which never fired —
+ * which is why touching the setting appeared to fix it). #48658, #38854, #79863.
+ *
+ * Verified on real Electron 40.10.2 / Chromium 144 (win32): at
+ * `did-navigate-in-page` the frame already reports the target route's level, so
+ * restorePersistedZoomLevel's drift-guard sees the drop and re-applies — and
+ * still no-ops when the route's record already matches. Subframe hash changes
+ * must not touch the chat window's UI scale.
+ */
+export function installZoomReassertOnNavigation(webContents, reassert) {
+  if (!webContents?.on) {
+    return
+  }
+
+  const reassertIfAlive = () => {
+    if (!webContents.isDestroyed?.()) {
+      reassert()
+    }
+  }
+
+  webContents.on('did-finish-load', reassertIfAlive)
+  webContents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
+    if (isMainFrame) {
+      reassertIfAlive()
+    }
+  })
+}
+
+/**
+ * Zoom-wiring decision per window kind. Chat windows (main + session + the HUD)
+ * keep global UI zoom; the pet overlay and the Quick Entry composer opt out
+ * because they size their own OS window and inheriting zoom would crop or
+ * overflow them.
+ *
+ * Extracted so the "helper windows opt out, everything else opts in" contract is
  * unit-testable without booting a BrowserWindow or reading source.
  */
 export const ZOOM_WINDOW_CONFIG = {
   chat: { zoom: true },
-  petOverlay: { zoom: false }
+  petOverlay: { zoom: false },
+  quickEntry: { zoom: false },
+  wakeIndicator: { zoom: false }
 } as const
 
 export function zoomWiringForWindowKind(kind) {

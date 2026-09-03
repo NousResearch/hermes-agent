@@ -8,14 +8,40 @@ the provider's config schema. Writes config to config.yaml + .env.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import shlex
-from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 _CANCELLED = -1
+
+
+def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
+    """Return the pip deps a provider actually needs on THIS install.
+
+    ``plugin.yaml`` declares the provider's baseline bridge packages, but
+    some providers install mode-dependent extras at setup time that the
+    manifest can't express. Hindsight's ``local_embedded`` mode installs
+    ``hindsight-all`` (daemon + embedder + client) during
+    ``hermes memory setup`` — if the update-time refresh only reinstalled
+    the declared ``hindsight-client``, the embedded daemon would stay
+    broken after a venv rebuild stripped ``hindsight-embed`` (#70636).
+    """
+    deps = list(declared or [])
+    if provider_name == "hindsight":
+        try:
+            import json
+            cfg_path = get_hermes_home() / "hindsight" / "config.json"
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+            mode = cfg.get("mode", "")
+            # "local" is a legacy alias for "local_embedded"
+            if mode in {"local", "local_embedded"}:
+                deps.append("hindsight-all")
+        except Exception:
+            pass
+    return deps
 
 
 # ---------------------------------------------------------------------------
@@ -77,8 +103,16 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # Provider discovery
 # ---------------------------------------------------------------------------
 
-def _install_dependencies(provider_name: str) -> None:
-    """Install pip dependencies declared in plugin.yaml."""
+def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
+    """Install pip dependencies declared in ``plugin.yaml``.
+
+    When ``force`` is true, every declared dependency is handed to the
+    installer even if its import currently succeeds — the resolver then
+    reinstalls anything missing or version-drifted and no-ops on satisfied
+    ranges. This is how ``hermes update`` heals the active memory provider
+    after a venv rebuild/sync removed or downgraded its bridge packages
+    (#53272, #70636).
+    """
     import subprocess
     from plugins.memory import find_provider_dir
 
@@ -96,7 +130,7 @@ def _install_dependencies(provider_name: str) -> None:
     except Exception:
         return
 
-    pip_deps = meta.get("pip_dependencies", [])
+    pip_deps = _provider_pip_dependencies(provider_name, meta.get("pip_dependencies", []))
     if not pip_deps:
         return
 
@@ -108,10 +142,15 @@ def _install_dependencies(provider_name: str) -> None:
         "hindsight-all": "hindsight",
     }
 
-    # Check which packages are missing
+    # Check which packages need installation.
     missing = []
     for dep in pip_deps:
-        import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
+        if force:
+            missing.append(dep)
+            continue
+        dep_name = re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*", dep)
+        base = dep_name.group(0) if dep_name else dep
+        import_name = _IMPORT_NAMES.get(base, base.replace("-", "_").split("[")[0])
         try:
             __import__(import_name)
         except ImportError:
@@ -122,16 +161,22 @@ def _install_dependencies(provider_name: str) -> None:
 
     print(f"\n  Installing dependencies: {', '.join(missing)}")
 
-    from hermes_cli.tools_config import _pip_install
+    # Environment-aware install: on immutable hosted images the agent venv
+    # is sealed read-only and installs must go to the durable target on the
+    # data volume (HERMES_LAZY_INSTALL_TARGET). install_specs handles the
+    # routing/gating; on normal installs it is venv-scoped as before (NS-605).
+    from tools.lazy_deps import install_specs
 
     manual_cmd = f"uv pip install {' '.join(missing)}"
     try:
-        result = _pip_install(["--quiet"] + missing, timeout=120)
-        if result.returncode == 0:
+        outcome = install_specs(missing, timeout=120)
+        if outcome.ok:
             print(f"  ✓ Installed {', '.join(missing)}")
+        elif outcome.blocked:
+            print(f"  ⚠ Cannot install {', '.join(missing)}: {outcome.reason}")
         else:
             print(f"  ⚠ Failed to install {', '.join(missing)}")
-            stderr = (result.stderr or "")[:200]
+            stderr = (outcome.stderr or "")[:200]
             if stderr:
                 print(f"    {stderr}")
             print(f"  Run manually: {manual_cmd}")
@@ -289,7 +334,6 @@ def cmd_setup(args) -> None:
     if not isinstance(provider_config, dict):
         provider_config = {}
 
-    env_path = get_hermes_home() / ".env"
     env_writes = {}
 
     if schema:
@@ -368,7 +412,7 @@ def cmd_setup(args) -> None:
 
     # Write secrets to .env
     if env_writes:
-        _write_env_vars(env_path, env_writes)
+        _write_env_vars(env_writes)
 
     print(f"\n  Memory provider: {name}")
     print("  Activation saved to config.yaml")
@@ -379,35 +423,52 @@ def cmd_setup(args) -> None:
     print("\n  Start a new session to activate.\n")
 
 
-def _write_env_vars(env_path: Path, env_writes: dict) -> None:
-    """Append or update env vars in .env file."""
-    env_path.parent.mkdir(parents=True, exist_ok=True)
+def _write_env_vars(
+    env_writes: dict,
+    hermes_home: str | os.PathLike[str] | None = None,
+) -> None:
+    """Persist memory-provider env vars through the canonical ``.env`` writer.
 
-    existing_lines = []
-    if env_path.exists():
-        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+    Delegates to ``hermes_cli.config.save_env_value`` so every key flows
+    through the same input-validation gate as every other ``.env`` writer:
+    the ``_ENV_VAR_NAME_RE`` regex (no malformed identifiers), the
+    ``_ENV_VAR_NAME_DENYLIST`` (no ``LD_PRELOAD`` / ``PYTHONPATH`` /
+    ``HERMES_HOME`` / etc.), CR/LF stripping on the value, and the atomic
+    0o600-from-creation write (no TOCTOU permission window). This function
+    previously wrote via ``Path.write_text`` directly, bypassing all of
+    that: a memory-provider plugin schema declaring ``env_var: "LD_PRELOAD"``
+    would land in ``.env`` verbatim and load via the ``env_loader.py``
+    ``.env`` -> ``os.environ`` chain on the next Hermes startup, and the
+    file existed at the default umask between the write and the later
+    ``chmod`` regardless of key legitimacy.
 
-    updated_keys = set()
-    new_lines = []
-    for line in existing_lines:
-        key_match = line.split("=", 1)[0].strip() if "=" in line else ""
-        if key_match in env_writes:
-            new_lines.append(f"{key_match}={env_writes[key_match]}")
-            updated_keys.add(key_match)
-        else:
-            new_lines.append(line)
+    Validation failures (``ValueError`` from ``save_env_value`` — a
+    denylisted name or an identifier rejected by ``_ENV_VAR_NAME_RE``) are
+    surfaced and skipped rather than aborting the wizard, so a single bad
+    key from one schema field doesn't take down the rest of the batch.
+    Non-validation errors (filesystem failures, permission errors) are
+    intentionally NOT caught — those indicate the wizard cannot safely
+    persist any subsequent key either and should propagate.
 
-    for key, val in env_writes.items():
-        if key not in updated_keys:
-            new_lines.append(f"{key}={val}")
+    ``hermes_home`` may be supplied by plugin ``post_setup`` hooks that
+    already received an explicit home directory (e.g. a non-default
+    profile). It is applied through the context-local Hermes home override
+    so ``save_env_value`` still owns the validation, sanitization, and
+    atomic-write path without mutating global ``os.environ``.
+    """
+    from hermes_cli.config import save_env_value
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    # Restrict permissions — .env holds API keys and tokens.
+    token = set_hermes_home_override(hermes_home) if hermes_home is not None else None
     try:
-        import stat
-        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
-    except OSError:
-        pass  # Windows or read-only FS
+        for key, val in env_writes.items():
+            try:
+                save_env_value(key, val)
+            except ValueError as exc:
+                print(f"  Skipping {key}: {exc}")
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
 
 
 # ---------------------------------------------------------------------------
@@ -422,8 +483,25 @@ def cmd_status(args) -> None:
     mem_config = config.get("memory", {})
     provider_name = mem_config.get("provider", "")
 
+    memory_enabled = mem_config.get("memory_enabled", True)
+    user_profile_enabled = mem_config.get("user_profile_enabled", True)
+
+    mem_mark = "enabled ✓" if memory_enabled else "disabled ✗"
+    user_mark = "enabled ✓" if user_profile_enabled else "disabled ✗"
+
+    # Check if the memory tool is enabled for the CLI platform via the
+    # canonical resolver and respects the check_fn gate when both stores are disabled.
+    from hermes_cli.tools_config import _get_platform_tools
+    from tools.memory_tool import check_memory_requirements
+    cli_tools = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    memory_tool_enabled = ("memory" in cli_tools) and check_memory_requirements()
+    tool_mark = "enabled ✓" if memory_tool_enabled else "disabled ✗"
+
     print("\nMemory status\n" + "─" * 40)
-    print("  Built-in:  always active")
+    print("  Built-in (MEMORY.md / USER.md):")
+    print(f"    Memory injection:   {mem_mark}")
+    print(f"    User profile:       {user_mark}")
+    print(f"    Memory tool:        {tool_mark}")
     print(f"  Provider:  {provider_name or '(none — built-in only)'}")
 
     providers = _get_available_providers()
@@ -469,6 +547,12 @@ def cmd_status(args) -> None:
                         if url and not is_set:
                             line += f"  → {url}"
                         print(line)
+                print(
+                    "  Note: systemd/gateway services do not inherit ~/.hermes/.env —"
+                )
+                print(
+                    "        set any variables above in the service environment."
+                )
         else:
             print("\n  Plugin:    NOT installed ✗")
             print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")

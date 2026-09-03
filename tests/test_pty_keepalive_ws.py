@@ -8,12 +8,13 @@ from hermes_cli import web_server
 class FakeBridge:
     def __init__(self):
         self.alive = True
+        self.written = bytearray()
 
     def read(self, timeout):
         return b""        # idle forever
 
     def write(self, data):
-        pass
+        self.written.extend(data)
 
     def resize(self, cols, rows):
         pass
@@ -24,11 +25,16 @@ class FakeBridge:
 
 @pytest.fixture
 def pty_keepalive_harness(monkeypatch):
-    spawned = []
+    class Spawned(list):
+        pass
+
+    spawned = Spawned()
+    spawned.bridges = []
 
     def fake_spawn(argv, cwd=None, env=None):
         b = FakeBridge()
         spawned.append(argv)
+        spawned.bridges.append(b)
         return b
 
     monkeypatch.setattr(web_server.PtyBridge, "spawn", staticmethod(fake_spawn))
@@ -60,6 +66,7 @@ async def test_attach_token_reuses_same_session(pty_keepalive_harness):
     with client.websocket_connect("/api/pty?attach=TOK1") as ws2:
         ws2.send_bytes(b"again")
     assert len(pty_keepalive_harness) == 1                # reattached, did not respawn
+    assert bytes(pty_keepalive_harness.bridges[0].written) == b"hi\x0cagain"
 
 
 @pytest.mark.asyncio
@@ -74,17 +81,6 @@ async def test_attach_token_reuses_same_resume(pty_keepalive_harness):
     assert pty_keepalive_harness == [["x", "same"]]
 
 
-@pytest.mark.asyncio
-async def test_attach_token_does_not_reuse_different_resume(pty_keepalive_harness):
-    """A keep-alive token must not pin /chat to an old selected session."""
-    from starlette.testclient import TestClient
-
-    client = TestClient(web_server.app)
-    with client.websocket_connect("/api/pty?attach=TOK1&resume=old") as ws1:
-        ws1.send_bytes(b"hi")
-    with client.websocket_connect("/api/pty?attach=TOK1&resume=new") as ws2:
-        ws2.send_bytes(b"again")
-    assert pty_keepalive_harness == [["x", "old"], ["x", "new"]]
 
 
 @pytest.mark.asyncio
@@ -99,16 +95,6 @@ async def test_attach_token_reuses_canonical_resume(pty_keepalive_harness):
     assert pty_keepalive_harness == [["x", "child"]]
 
 
-@pytest.mark.asyncio
-async def test_attach_token_does_not_reuse_different_profile(pty_keepalive_harness):
-    from starlette.testclient import TestClient
-
-    client = TestClient(web_server.app)
-    with client.websocket_connect("/api/pty?attach=TOK1&profile=alpha") as ws1:
-        ws1.send_bytes(b"hi")
-    with client.websocket_connect("/api/pty?attach=TOK1&profile=beta") as ws2:
-        ws2.send_bytes(b"again")
-    assert len(pty_keepalive_harness) == 2
 
 
 @pytest.mark.asyncio

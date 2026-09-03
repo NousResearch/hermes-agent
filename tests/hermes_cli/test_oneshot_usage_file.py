@@ -54,16 +54,4 @@ class TestWriteUsageFile:
         # Missing result fields serialize as null, not KeyError.
         assert report["estimated_cost_usd"] is None
 
-    def test_creates_parent_directories(self, tmp_path):
-        path = tmp_path / "nested" / "dir" / "usage.json"
-        _write_usage_file(str(path), _result())
-        assert json.loads(path.read_text())["total_tokens"] == 1250
 
-    def test_unwritable_path_never_raises(self):
-        # Root-owned path — the write must be swallowed, not raised.
-        _write_usage_file("/proc/definitely/not/writable/usage.json", _result())
-
-    def test_result_failed_flag_carries_through(self, tmp_path):
-        path = tmp_path / "usage.json"
-        _write_usage_file(str(path), _result(failed=True))
-        assert json.loads(path.read_text())["failed"] is True

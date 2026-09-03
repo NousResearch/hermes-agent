@@ -16,6 +16,18 @@ describe('applyCompletion', () => {
   it('replaces an argument token after a space (subcommand completion)', () => {
     expect(applyCompletion('/cron ad', 'add', 6)).toBe('/cron add')
   })
+
+  it('applies an inline skill pick without disturbing the prose in front of it', () => {
+    // The gateway returns bare names for `complete.slash`; a mid-message
+    // reference replaces from just after its own `/`, so "please run " stays.
+    expect(applyCompletion('please run /cle', 'clean', 12)).toBe('please run /clean')
+  })
+
+  it('drops the row slash based on the character before the replace point, not the input start', () => {
+    // Widget-app rows carry a leading slash. Mid-message the input does NOT
+    // start with `/`, so a start-anchored check would double it up.
+    expect(applyCompletion('please run /cle', '/clean', 12)).toBe('please run /clean')
+  })
 })
 
 describe('completionToApplyOnSubmit', () => {

@@ -15,24 +15,27 @@ browser tool needs agent-browser).
 """
 from __future__ import annotations
 
-import os
 import platform
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from hermes_constants import agent_browser_runnable
+from hermes_constants import agent_browser_runnable, find_node_executable
 from tools.environments.local import hermes_subprocess_env
 
 _IS_WINDOWS = platform.system() == "Windows"
 
 _DEP_CHECKS = {
-    "node": lambda: shutil.which("node") is not None,
+    # find_node_executable() rather than a bare which(): $HERMES_HOME/node is
+    # not on PATH, so which() would report Node missing on an install that has
+    # a managed one and trigger a redundant re-install.
+    "node": lambda: find_node_executable("node") is not None,
     "browser": lambda: (
         agent_browser_runnable(shutil.which("agent-browser"))
         or _has_system_browser()
         or _has_hermes_agent_browser()
+        or _has_npx_agent_browser()
     ),
     "ripgrep": lambda: shutil.which("rg") is not None,
     "ffmpeg": lambda: shutil.which("ffmpeg") is not None,
@@ -55,6 +58,25 @@ def _has_system_browser() -> bool:
         if shutil.which(name):
             return True
     return False
+
+
+def _has_npx_agent_browser() -> bool:
+    """agent-browser resolves lazily via npx on the default install (#43564),
+    invisible to the PATH/managed-dir probes above. Mirror
+    tools.browser_tool.check_browser_requirements's Termux carve-out so this
+    check can't diverge from what browser tools actually find."""
+    try:
+        from tools.browser_tool import (
+            _find_agent_browser,
+            _is_npx_agent_browser_sentinel,
+            _requires_real_termux_browser_install,
+        )
+        browser_cmd = _find_agent_browser(validate=False)
+    except Exception:
+        return False
+    if not _is_npx_agent_browser_sentinel(browser_cmd):
+        return False
+    return not _requires_real_termux_browser_install(browser_cmd)
 
 
 def _has_hermes_agent_browser() -> bool:

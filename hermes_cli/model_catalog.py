@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -73,7 +74,10 @@ DEFAULT_CATALOG_URL = (
 DEFAULT_CATALOG_FALLBACK_URLS: tuple[str, ...] = (
     "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/website/static/api/model-catalog.json",
 )
-DEFAULT_TTL_HOURS = 1
+DEFAULT_TTL_MINUTES = 20
+# Legacy key. ``ttl_hours`` is honoured only when the user set it explicitly;
+# the shipped default is ``ttl_minutes`` above.
+DEFAULT_TTL_HOURS = DEFAULT_TTL_MINUTES / 60.0
 DEFAULT_FETCH_TIMEOUT = 8.0
 SUPPORTED_SCHEMA_VERSION = 1
 
@@ -103,10 +107,28 @@ def _load_catalog_config() -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
 
+    # ``ttl_minutes`` is the shipped default (20). ``ttl_hours`` is the legacy
+    # key: honoured when a user set it explicitly and ``ttl_minutes`` is still
+    # at its default (load_config() deep-merges the default in, so "present"
+    # alone doesn't mean "user-set"), so old customized configs keep their
+    # chosen window.
+    ttl_minutes = raw.get("ttl_minutes")
+    try:
+        ttl_minutes = float(ttl_minutes) if ttl_minutes not in (None, "") else DEFAULT_TTL_MINUTES
+    except (TypeError, ValueError):
+        ttl_minutes = DEFAULT_TTL_MINUTES
+    if ttl_minutes == DEFAULT_TTL_MINUTES and raw.get("ttl_hours"):
+        try:
+            ttl_minutes = float(raw["ttl_hours"]) * 60.0
+        except (TypeError, ValueError):
+            pass
+    if ttl_minutes <= 0:
+        ttl_minutes = DEFAULT_TTL_MINUTES
+
     return {
         "enabled": bool(raw.get("enabled", True)),
         "url": str(raw.get("url") or DEFAULT_CATALOG_URL),
-        "ttl_hours": float(raw.get("ttl_hours") or DEFAULT_TTL_HOURS),
+        "ttl_hours": ttl_minutes / 60.0,
         "providers": raw.get("providers") if isinstance(raw.get("providers"), dict) else {},
     }
 
@@ -229,6 +251,36 @@ def _write_disk_cache(data: dict[str, Any]) -> None:
         logger.info("model catalog cache write failed: %s", exc)
 
 
+# Stale-while-revalidate machinery: at most one background manifest refresh
+# in flight per process. The refreshed manifest lands on disk; the NEXT
+# get_catalog() call picks it up via the mtime check.
+_catalog_swr_lock = threading.Lock()
+_catalog_swr_inflight = False
+
+
+def _spawn_catalog_swr_refresh(url: str) -> None:
+    """Refresh the catalog manifest off-thread (fire-and-forget, deduped)."""
+    global _catalog_swr_inflight
+    with _catalog_swr_lock:
+        if _catalog_swr_inflight:
+            return
+        _catalog_swr_inflight = True
+
+    def _refresh() -> None:
+        global _catalog_swr_inflight
+        try:
+            fetched = _fetch_manifest_with_fallback(url, DEFAULT_FETCH_TIMEOUT)
+            if fetched is not None:
+                _write_disk_cache(fetched)
+        except Exception:
+            logger.debug("catalog SWR refresh failed", exc_info=True)
+        finally:
+            with _catalog_swr_lock:
+                _catalog_swr_inflight = False
+
+    threading.Thread(target=_refresh, daemon=True, name="model-catalog-swr").start()
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -268,6 +320,16 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
         _catalog_cache_source_mtime = disk_mtime
         return disk_data
 
+    # Stale-while-revalidate: an expired disk copy is served immediately and
+    # refreshed off-thread, so interactive surfaces (the /model picker calls
+    # this via get_curated_nous_model_ids on every open) never block on the
+    # manifest fetch. Only a cold cache (no disk copy at all) still blocks.
+    if not force_refresh and disk_data is not None:
+        _catalog_cache = disk_data
+        _catalog_cache_source_mtime = disk_mtime
+        _spawn_catalog_swr_refresh(cfg["url"])
+        return disk_data
+
     # Need to (re)fetch. If it fails, fall back to any stale disk copy.
     fetched = _fetch_manifest_with_fallback(cfg["url"], DEFAULT_FETCH_TIMEOUT)
     if fetched is not None:
@@ -287,6 +349,33 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
         return disk_data
 
     return {}
+
+
+def refresh_interval_seconds() -> float:
+    """Return the configured catalog TTL in seconds (the gateway poll cadence)."""
+    return max(60.0, _load_catalog_config()["ttl_hours"] * 3600.0)
+
+
+def refresh_catalogs() -> bool:
+    """Force-refresh every remote model catalog the picker reads from.
+
+    Fetches the curated manifest, the OpenRouter live list (tool-support /
+    free-pricing filter) and the Nous Portal recommendations, writing each
+    to its disk cache so the next ``/model`` open in ANY process on this
+    machine sees the new lists. Blocking; run it off the event loop.
+    Returns True when the manifest refresh succeeded.
+    """
+    if not _load_catalog_config()["enabled"]:
+        return False
+    catalog = get_catalog(force_refresh=True)
+    try:
+        from hermes_cli.models import fetch_nous_recommended_models, fetch_openrouter_models
+
+        fetch_openrouter_models(force_refresh=True)
+        fetch_nous_recommended_models(force_refresh=True)
+    except Exception:
+        logger.debug("provider catalog refresh failed", exc_info=True)
+    return bool(catalog)
 
 
 def _fetch_provider_override(provider: str) -> dict[str, Any] | None:

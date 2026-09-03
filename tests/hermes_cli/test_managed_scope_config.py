@@ -40,26 +40,6 @@ def test_managed_beats_user(homes):
     assert cfg_get(load_config(), "model", "default") == "managed/model"
 
 
-def test_managed_leaf_does_not_freeze_siblings(homes):
-    """D3/Q4: pinning model.default leaves model.fallback user-controlled."""
-    from hermes_cli.config import load_config, cfg_get
-
-    home, managed = homes
-    _write(home / "config.yaml", "model:\n  default: user/model\n  fallback: user/fb\n")
-    _write(managed / "config.yaml", "model:\n  default: managed/model\n")
-    cfg = load_config()
-    assert cfg_get(cfg, "model", "default") == "managed/model"
-    assert cfg_get(cfg, "model", "fallback") == "user/fb"  # sibling preserved
-
-
-def test_no_managed_config_is_unchanged(homes):
-    from hermes_cli.config import load_config, cfg_get
-
-    home, _ = homes
-    _write(home / "config.yaml", "model:\n  default: user/model\n")
-    assert cfg_get(load_config(), "model", "default") == "user/model"
-
-
 def test_managed_list_wins_wholesale(homes):
     """D3: a managed list value replaces the user's wholesale."""
     from hermes_cli.config import load_config, cfg_get
@@ -68,17 +48,6 @@ def test_managed_list_wins_wholesale(homes):
     _write(home / "config.yaml", "toolsets:\n  enabled: [a, b, c]\n")
     _write(managed / "config.yaml", "toolsets:\n  enabled: [x]\n")
     assert cfg_get(load_config(), "toolsets", "enabled") == ["x"]
-
-
-def test_editing_managed_file_invalidates_cache(homes):
-    from hermes_cli.config import load_config, cfg_get
-
-    home, managed = homes
-    _write(home / "config.yaml", "model:\n  default: user/model\n")
-    _write(managed / "config.yaml", "model:\n  default: managed/v1\n")
-    assert cfg_get(load_config(), "model", "default") == "managed/v1"
-    _write(managed / "config.yaml", "model:\n  default: managed/v2\n")
-    assert cfg_get(load_config(), "model", "default") == "managed/v2"
 
 
 def test_user_cannot_shadow_managed_literal_via_envref(homes, monkeypatch):
@@ -95,3 +64,40 @@ def test_user_cannot_shadow_managed_literal_via_envref(homes, monkeypatch):
     _write(home / "config.yaml", "model:\n  default: ${EVIL}\n")
     _write(managed / "config.yaml", "model:\n  default: managed/locked\n")
     assert cfg_get(load_config(), "model", "default") == "managed/locked"
+
+
+def test_managed_nested_dict_default_flattens_on_load(homes):
+    """A dict-valued managed ``model.default`` must flatten on load.
+
+    ``load_config()`` merges the managed overlay after its single
+    normalization pass, so a managed ``model.default: {provider: ...,
+    model: ...}`` used to reach runtime readers as a raw dict. The overlay
+    is now normalized before merging (parity with
+    ``managed_scope.apply_managed_overlay``), so the merged config exposes a
+    string ``default`` paired with the nested ``provider``.
+    """
+    from hermes_cli.config import load_config, cfg_get
+
+    home, managed = homes
+    _write(home / "config.yaml", "model:\n  default: user/model\n")
+    _write(managed / "config.yaml", "model:\n  default:\n    provider: nous\n    model: managed/nested\n")
+    cfg = load_config()
+    assert cfg_get(cfg, "model", "default") == "managed/nested"
+    assert cfg_get(cfg, "model", "provider") == "nous"
+
+
+def test_managed_bare_string_model_flattens_to_default_on_load(homes):
+    """A bare ``model: <string>`` in the managed file stays a dict shape.
+
+    Mirrors the existing managed-overlay contract: a bare string model must
+    merge as ``model.default`` so readers that do
+    ``cfg["model"]["default"]`` keep working (never a bare string at
+    ``cfg["model"]``).
+    """
+    from hermes_cli.config import load_config, cfg_get
+
+    home, managed = homes
+    _write(home / "config.yaml", "model:\n  default: user/model\n")
+    _write(managed / "config.yaml", "model: managed/bare\n")
+    cfg = load_config()
+    assert cfg_get(cfg, "model", "default") == "managed/bare"

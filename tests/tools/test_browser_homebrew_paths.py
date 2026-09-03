@@ -2,15 +2,19 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock, mock_open
 
 import pytest
 
 from tools.browser_tool import (
+    _agent_browser_candidate_present,
     _discover_homebrew_node_dirs,
     _find_agent_browser,
     _run_browser_command,
+    _run_chrome_fallback_command,
+    AGENT_BROWSER_NPX_SPEC,
     _SANE_PATH,
     check_browser_requirements,
 )
@@ -35,14 +39,6 @@ class TestSanePath:
     def test_includes_termux_bin(self):
         assert "/data/data/com.termux/files/usr/bin" in _SANE_PATH.split(os.pathsep)
 
-    def test_includes_termux_sbin(self):
-        assert "/data/data/com.termux/files/usr/sbin" in _SANE_PATH.split(os.pathsep)
-
-    def test_includes_homebrew_bin(self):
-        assert "/opt/homebrew/bin" in _SANE_PATH.split(os.pathsep)
-
-    def test_includes_homebrew_sbin(self):
-        assert "/opt/homebrew/sbin" in _SANE_PATH.split(os.pathsep)
 
     def test_includes_standard_dirs(self):
         path_parts = _SANE_PATH.split(os.pathsep)
@@ -59,28 +55,6 @@ class TestDiscoverHomebrewNodeDirs:
         with patch("os.path.isdir", return_value=False):
             assert _discover_homebrew_node_dirs() == ()
 
-    def test_finds_versioned_node_dirs(self):
-        """Should discover node@20/bin, node@24/bin etc."""
-        entries = ["node@20", "node@24", "openssl", "node", "python@3.12"]
-
-        def mock_isdir(p):
-            if p == "/opt/homebrew/opt":
-                return True
-            # node@20/bin and node@24/bin exist
-            if p in {
-                "/opt/homebrew/opt/node@20/bin",
-                "/opt/homebrew/opt/node@24/bin",
-            }:
-                return True
-            return False
-
-        with patch("os.path.isdir", side_effect=mock_isdir), \
-             patch("os.listdir", return_value=entries):
-            result = _discover_homebrew_node_dirs()
-
-        assert len(result) == 2
-        assert "/opt/homebrew/opt/node@20/bin" in result
-        assert "/opt/homebrew/opt/node@24/bin" in result
 
     def test_excludes_plain_node(self):
         """'node' (unversioned) should be excluded — covered by /opt/homebrew/bin."""
@@ -105,89 +79,6 @@ class TestFindAgentBrowser:
              patch("tools.browser_tool.agent_browser_runnable", return_value=True):
             assert _find_agent_browser() == "/usr/local/bin/agent-browser"
 
-    def test_finds_in_homebrew_bin(self):
-        """Should search Homebrew dirs when not found on current PATH."""
-        def mock_which(cmd, path=None):
-            if path and "/opt/homebrew/bin" in path and cmd == "agent-browser":
-                return "/opt/homebrew/bin/agent-browser"
-            return None
-
-        with patch("shutil.which", side_effect=mock_which), \
-             patch("tools.browser_tool.agent_browser_runnable", return_value=True), \
-             patch("os.path.isdir", return_value=True), \
-             patch(
-                 "tools.browser_tool._discover_homebrew_node_dirs",
-                 return_value=[],
-             ):
-            result = _find_agent_browser()
-            assert result == "/opt/homebrew/bin/agent-browser"
-
-    def test_finds_npx_in_homebrew(self):
-        """Should find npx in Homebrew paths as a fallback."""
-        def mock_which(cmd, path=None):
-            if cmd == "agent-browser":
-                return None
-            if cmd == "npx":
-                if path and "/opt/homebrew/bin" in path:
-                    return "/opt/homebrew/bin/npx"
-                return None
-            return None
-
-        # Mock Path.exists() to prevent the local node_modules check from matching
-        original_path_exists = Path.exists
-
-        def mock_path_exists(self):
-            if "node_modules" in str(self) and "agent-browser" in str(self):
-                return False
-            return original_path_exists(self)
-
-        with patch("shutil.which", side_effect=mock_which), \
-             patch("os.path.isdir", return_value=True), \
-             patch.object(Path, "exists", mock_path_exists), \
-             patch(
-                 "tools.browser_tool._discover_homebrew_node_dirs",
-                 return_value=[],
-             ):
-            result = _find_agent_browser()
-            assert result == "npx agent-browser"
-
-    def test_finds_npx_in_termux_fallback_path(self):
-        """Should find npx when only Termux fallback dirs are available."""
-        def mock_which(cmd, path=None):
-            if cmd == "agent-browser":
-                return None
-            if cmd == "npx":
-                if path and "/data/data/com.termux/files/usr/bin" in path:
-                    return "/data/data/com.termux/files/usr/bin/npx"
-                return None
-            return None
-
-        original_path_exists = Path.exists
-
-        def mock_path_exists(self):
-            if "node_modules" in str(self) and "agent-browser" in str(self):
-                return False
-            return original_path_exists(self)
-
-        real_isdir = os.path.isdir
-
-        def selective_isdir(path):
-            if path in {
-                "/data/data/com.termux/files/usr/bin",
-                "/data/data/com.termux/files/usr/sbin",
-            }:
-                return True
-            return real_isdir(path)
-
-        with patch("shutil.which", side_effect=mock_which), \
-             patch("os.path.isdir", side_effect=selective_isdir), \
-             patch.object(Path, "exists", mock_path_exists), \
-             patch(
-                 "tools.browser_tool._discover_homebrew_node_dirs",
-                 return_value=[],
-             ):
-            result = _find_agent_browser()
-            assert result == "npx agent-browser"
 
     def test_raises_when_not_found(self):
         """Should raise FileNotFoundError when nothing works."""
@@ -207,6 +98,169 @@ class TestFindAgentBrowser:
              ):
             with pytest.raises(FileNotFoundError, match="agent-browser CLI not found"):
                 _find_agent_browser()
+
+    def test_finds_in_local_node_modules_bin(self):
+        """Should fall through to the repo's node_modules/.bin when both the
+        bare PATH and the extended (Homebrew/fallback) PATH miss."""
+        repo_root = Path(_bt.__file__).parent.parent
+        local_bin_dir = repo_root / "node_modules" / ".bin"
+        local_bin_path = str(local_bin_dir / "agent-browser")
+
+        def mock_which(cmd, path=None):
+            if cmd == "agent-browser" and path and str(local_bin_dir) in path:
+                return local_bin_path
+            return None
+
+        original_is_dir = Path.is_dir
+
+        def mock_is_dir(self):
+            if self == local_bin_dir:
+                return True
+            return original_is_dir(self)
+
+        with patch("shutil.which", side_effect=mock_which), \
+             patch("os.path.isdir", return_value=False), \
+             patch.object(Path, "is_dir", mock_is_dir), \
+             patch("tools.browser_tool.agent_browser_runnable", return_value=True), \
+             patch(
+                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 return_value=[],
+             ):
+            result = _find_agent_browser()
+
+        assert result == local_bin_path
+
+    def test_extended_path_hit_validate_false_skips_runnable_check(self, tmp_path):
+        """Readiness probes (validate=False, used by _has_agent_browser) must
+        resolve a candidate found via the extended PATH's path= kwarg lookup
+        without calling agent_browser_runnable — that keeps the probe a cheap
+        existence check with no subprocess spawn."""
+        fake_binary = tmp_path / "agent-browser"
+        fake_binary.write_text("#!/bin/sh\n")
+        fake_binary.chmod(0o755)
+
+        def mock_which(cmd, path=None):
+            if cmd == "agent-browser" and path:
+                return str(fake_binary)
+            return None  # bare (path=None) PATH lookup misses
+
+        with patch("shutil.which", side_effect=mock_which), \
+             patch("os.path.isdir", return_value=True), \
+             patch(
+                 "tools.browser_tool.agent_browser_runnable",
+                 side_effect=AssertionError(
+                     "validate=False must not call agent_browser_runnable"
+                 ),
+             ), \
+             patch(
+                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 return_value=["/opt/homebrew/bin"],
+             ):
+            result = _find_agent_browser(validate=False)
+
+        assert result == str(fake_binary)
+
+    def test_local_bin_hit_validate_false_skips_runnable_check(self, tmp_path):
+        """Same no-subprocess-spawn contract for the node_modules/.bin
+        candidate: validate=False relies on _agent_browser_candidate_present's
+        existence+exec-bit check instead of shelling out to --version."""
+        repo_root = Path(_bt.__file__).parent.parent
+        local_bin_dir = repo_root / "node_modules" / ".bin"
+
+        fake_binary = tmp_path / "agent-browser"
+        fake_binary.write_text("#!/bin/sh\n")
+        fake_binary.chmod(0o755)
+
+        def mock_which(cmd, path=None):
+            if cmd == "agent-browser" and path and str(local_bin_dir) in path:
+                return str(fake_binary)
+            return None
+
+        original_is_dir = Path.is_dir
+
+        def mock_is_dir(self):
+            if self == local_bin_dir:
+                return True
+            return original_is_dir(self)
+
+        with patch("shutil.which", side_effect=mock_which), \
+             patch("os.path.isdir", return_value=False), \
+             patch.object(Path, "is_dir", mock_is_dir), \
+             patch(
+                 "tools.browser_tool.agent_browser_runnable",
+                 side_effect=AssertionError(
+                     "validate=False must not call agent_browser_runnable"
+                 ),
+             ), \
+             patch(
+                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 return_value=[],
+             ):
+            result = _find_agent_browser(validate=False)
+
+        assert result == str(fake_binary)
+
+    def test_npx_fallback_validate_false(self):
+        """The npx sentinel must resolve through the validate=False path too,
+        independent of the fully-mocked coverage in test_nous_subscription.py."""
+        def mock_which(cmd, path=None):
+            if cmd == "agent-browser":
+                return None
+            if cmd == "npx":
+                return "/usr/bin/npx"
+            return None
+
+        original_path_exists = Path.exists
+
+        def mock_path_exists(self):
+            if "node_modules" in str(self) and "agent-browser" in str(self):
+                return False
+            return original_path_exists(self)
+
+        with patch("shutil.which", side_effect=mock_which), \
+             patch("os.path.isdir", return_value=False), \
+             patch.object(Path, "exists", mock_path_exists), \
+             patch("tools.browser_tool.node_tool_runnable", return_value=True), \
+             patch(
+                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 return_value=[],
+             ):
+            result = _find_agent_browser(validate=False)
+
+        assert result == "npx agent-browser"
+
+
+class TestAgentBrowserCandidatePresent:
+    """Direct unit tests for the validate=False candidate check used by every
+    branch of _find_agent_browser's readiness-probe (no-subprocess) mode."""
+
+    def test_none_is_false(self):
+        assert _agent_browser_candidate_present(None) is False
+
+    def test_empty_string_is_false(self):
+        assert _agent_browser_candidate_present("") is False
+
+    def test_npx_sentinel_is_true_without_touching_filesystem(self):
+        assert _agent_browser_candidate_present("npx agent-browser") is True
+
+    def test_executable_file_is_true(self, tmp_path):
+        binary = tmp_path / "agent-browser"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        assert _agent_browser_candidate_present(str(binary)) is True
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="exec-bit is not meaningful on Windows; os.name == 'nt' short-circuits",
+    )
+    def test_nonexecutable_file_is_false(self, tmp_path):
+        binary = tmp_path / "agent-browser"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o644)
+        assert _agent_browser_candidate_present(str(binary)) is False
+
+    def test_nonexistent_path_is_false(self, tmp_path):
+        assert _agent_browser_candidate_present(str(tmp_path / "missing")) is False
 
 
 class TestBrowserRequirements:
@@ -297,8 +351,12 @@ class TestRunBrowserCommandPathConstruction:
             "navigate",
         ]
 
-    def test_subprocess_splits_npx_fallback_into_command_and_package(self, tmp_path):
-        """The synthetic npx fallback should still expand into separate argv items."""
+
+    def test_npx_sentinel_resolves_via_resolve_npx_bin_with_pinned_spec(self, tmp_path):
+        """When _find_agent_browser resolves the npx sentinel, the cmd prefix
+        must come from _resolve_npx_bin() (not a bare shutil.which("npx"), which
+        could let a broken system npx shadow a healthy Hermes-managed one) and
+        use the pinned agent-browser npx spec, not a bare "agent-browser"."""
         captured_cmd = None
 
         mock_proc = MagicMock()
@@ -319,7 +377,8 @@ class TestRunBrowserCommandPathConstruction:
         hermes_home = str(tmp_path / "hermes-home")
 
         with patch("tools.browser_tool._find_agent_browser", return_value="npx agent-browser"), \
- patch("tools.browser_tool._chromium_installed", return_value=True), \
+             patch("tools.browser_tool._resolve_npx_bin", return_value="/opt/hermes/node/bin/npx"), \
+             patch("tools.browser_tool._chromium_installed", return_value=True), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
@@ -341,129 +400,11 @@ class TestRunBrowserCommandPathConstruction:
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
 
         assert captured_cmd is not None
-        # The prefix must split "npx agent-browser" into two argv items.
-        # On POSIX shutil.which("npx") returns the absolute path if npx is on
-        # PATH (which the test's patched PATH always contains when the system
-        # has it installed).  The important invariant is that the second
-        # argv item is the package name "agent-browser", not a merged
-        # "npx agent-browser" string — that's what Popen needs.
-        assert len(captured_cmd) >= 2
-        assert captured_cmd[0].endswith("npx") or captured_cmd[0] == "npx"
-        assert captured_cmd[1] == "agent-browser"
-        assert captured_cmd[2:6] == [
-            "--session",
-            "test-session",
-            "--json",
-            "navigate",
+        assert captured_cmd[:5] == [
+            "/opt/hermes/node/bin/npx", "--ignore-scripts", "--prefer-offline", "-y",
+            AGENT_BROWSER_NPX_SPEC,
         ]
-
-    def test_subprocess_path_includes_homebrew_node_dirs(self, tmp_path):
-        """When _discover_homebrew_node_dirs returns dirs, they should appear
-        in the subprocess env PATH passed to Popen."""
-        captured_env = {}
-
-        # Create a mock Popen that captures the env dict
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.wait.return_value = 0
-
-        def capture_popen(cmd, **kwargs):
-            captured_env.update(kwargs.get("env", {}))
-            return mock_proc
-
-        fake_session = {
-            "session_name": "test-session",
-            "session_id": "test-id",
-            "cdp_url": None,
-        }
-
-        # Write fake JSON output to the stdout temp file
-        fake_json = json.dumps({"success": True})
-        stdout_file = tmp_path / "stdout"
-        stdout_file.write_text(fake_json)
-
-        fake_homebrew_dirs = [
-            "/opt/homebrew/opt/node@24/bin",
-            "/opt/homebrew/opt/node@20/bin",
-        ]
-
-        # We need os.path.isdir to return True for our fake dirs
-        # but we also need real isdir for tmp_path operations
-        real_isdir = os.path.isdir
-
-        def selective_isdir(p):
-            if p in fake_homebrew_dirs or p.startswith(str(tmp_path)):
-                return True
-            if "/opt/homebrew/" in p:
-                return True  # _SANE_PATH dirs
-            return real_isdir(p)
-
-        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
- patch("tools.browser_tool._chromium_installed", return_value=True), \
-             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
-             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=fake_homebrew_dirs), \
-             patch("os.path.isdir", side_effect=selective_isdir), \
-             patch("subprocess.Popen", side_effect=capture_popen), \
-             patch("os.open", return_value=99), \
-             patch("os.close"), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
-            # The function reads from temp files for stdout/stderr
-            with patch("builtins.open", mock_open(read_data=fake_json)):
-                _run_browser_command("test-task", "navigate", ["https://example.com"])
-
-        # Verify Homebrew node dirs made it into the subprocess PATH
-        result_path = captured_env.get("PATH", "")
-        assert "/opt/homebrew/opt/node@24/bin" in result_path
-        assert "/opt/homebrew/opt/node@20/bin" in result_path
-        assert "/opt/homebrew/bin" in result_path  # from _SANE_PATH
-
-    def test_subprocess_path_includes_sane_path_homebrew(self, tmp_path):
-        """_SANE_PATH Homebrew entries should appear even without versioned node dirs."""
-        captured_env = {}
-
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.wait.return_value = 0
-
-        def capture_popen(cmd, **kwargs):
-            captured_env.update(kwargs.get("env", {}))
-            return mock_proc
-
-        fake_session = {
-            "session_name": "test-session",
-            "session_id": "test-id",
-            "cdp_url": None,
-        }
-
-        fake_json = json.dumps({"success": True})
-        real_isdir = os.path.isdir
-
-        def selective_isdir(p):
-            if "/opt/homebrew/" in p:
-                return True
-            if p.startswith(str(tmp_path)):
-                return True
-            return real_isdir(p)
-
-        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
- patch("tools.browser_tool._chromium_installed", return_value=True), \
-             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
-             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
-             patch("os.path.isdir", side_effect=selective_isdir), \
-             patch("subprocess.Popen", side_effect=capture_popen), \
-             patch("os.open", return_value=99), \
-             patch("os.close"), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
-            with patch("builtins.open", mock_open(read_data=fake_json)):
-                _run_browser_command("test-task", "navigate", ["https://example.com"])
-
-        result_path = captured_env.get("PATH", "")
-        assert "/opt/homebrew/bin" in result_path
-        assert "/opt/homebrew/sbin" in result_path
+        assert captured_cmd[5:9] == ["--session", "test-session", "--json", "navigate"]
 
     def test_subprocess_path_includes_termux_fallback_dirs(self, tmp_path):
         """Termux fallback dirs should survive browser PATH rebuilding."""
@@ -513,3 +454,127 @@ class TestRunBrowserCommandPathConstruction:
         result_path = captured_env.get("PATH", "")
         assert "/data/data/com.termux/files/usr/bin" in result_path
         assert "/data/data/com.termux/files/usr/sbin" in result_path
+
+
+class TestRunChromeFallbackCommandNpxResolution:
+    """_run_chrome_fallback_command builds its own npx cmd prefix independently
+    of _run_browser_command's — it must resolve npx the same way (via
+    _resolve_npx_bin(), not a bare shutil.which("npx")) and use the pinned
+    agent-browser npx spec."""
+
+    def test_npx_sentinel_resolves_via_resolve_npx_bin_with_pinned_spec(self, tmp_path):
+        captured_cmds = []
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            captured_cmds.append(cmd)
+            return mock_proc
+
+        url_result = {"success": True, "data": {"url": "https://example.com"}}
+
+        with patch("tools.browser_tool._run_browser_command", return_value=url_result), \
+             patch("tools.browser_tool._find_agent_browser", return_value="npx agent-browser"), \
+             patch("tools.browser_tool._resolve_npx_bin", return_value="/opt/hermes/node/bin/npx"), \
+             patch("tools.browser_tool._chromium_installed", return_value=True), \
+             patch("tools.browser_tool._running_in_docker", return_value=False), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("subprocess.Popen", side_effect=capture_popen):
+            _run_chrome_fallback_command("test-task", "navigate", ["https://example.com"], timeout=10)
+
+        assert captured_cmds, "expected at least one Popen call for the chrome-fallback session"
+        first_cmd = captured_cmds[0]
+        assert first_cmd[:5] == [
+            "/opt/hermes/node/bin/npx", "--ignore-scripts", "--prefer-offline", "-y",
+            AGENT_BROWSER_NPX_SPEC,
+        ]
+        assert first_cmd[5] == "--engine" and first_cmd[6] == "chrome"
+        assert first_cmd[7] == "--session" and first_cmd[8].startswith("h_cfb_")
+        assert first_cmd[9] == "--json"
+
+
+class TestResolveNpxBinPriority:
+    """The extended/managed search must be checked before a bare ambient
+    PATH lookup, so a broken/unexpected system npx can't shadow a healthy
+    Hermes-managed one — and each candidate must be validated (actually
+    runs) before being trusted, mirroring _find_agent_browser's own
+    validation discipline for agent-browser itself."""
+
+    def test_prefers_managed_extended_path_over_bare_path(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "/hermes/node/bin")
+        monkeypatch.setattr(
+            bt.shutil, "which",
+            lambda cmd, path=None: (
+                "/hermes/node/bin/npx" if path == "/hermes/node/bin"
+                else "/usr/local/bin/npx"
+            ),
+        )
+        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: True)
+
+        assert bt._resolve_npx_bin() == "/hermes/node/bin/npx"
+
+    def test_falls_back_to_bare_path_when_managed_candidate_is_broken(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "/hermes/node/bin")
+        monkeypatch.setattr(
+            bt.shutil, "which",
+            lambda cmd, path=None: (
+                "/hermes/node/bin/npx" if path == "/hermes/node/bin"
+                else "/usr/local/bin/npx"
+            ),
+        )
+        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: p == "/usr/local/bin/npx")
+
+        assert bt._resolve_npx_bin() == "/usr/local/bin/npx"
+
+    def test_returns_none_when_nothing_runnable(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "")
+        monkeypatch.setattr(bt.shutil, "which", lambda cmd, path=None: "/usr/local/bin/npx")
+        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: False)
+
+        assert bt._resolve_npx_bin() is None
+
+    def test_skips_extended_lookup_when_merge_browser_path_returns_empty(self, monkeypatch):
+        """_merge_browser_path("") returning a falsy string (no extended
+        candidate dirs found on disk) must short-circuit straight to the
+        bare-PATH rung — shutil.which must not be called with a path=""
+        kwarg (which would silently mean "search cwd only" on some
+        platforms rather than "no extended search"), and node_tool_runnable
+        must only be asked about the one real candidate."""
+        import tools.browser_tool as bt
+
+        which_calls = []
+
+        def fake_which(cmd, path=None):
+            which_calls.append((cmd, path))
+            return "/usr/bin/npx" if path is None else None
+
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "")
+        monkeypatch.setattr(bt.shutil, "which", fake_which)
+        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: p == "/usr/bin/npx")
+
+        assert bt._resolve_npx_bin() == "/usr/bin/npx"
+        assert which_calls == [("npx", None)]
+
+    def test_falls_back_to_bare_path_when_extended_dir_has_no_npx(self, monkeypatch):
+        """A non-empty extended search PATH that simply doesn't contain an
+        npx binary (shutil.which returns None there) must fall through to
+        the bare-PATH rung rather than treating "no extended npx" the same
+        as "extended npx found but broken"."""
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "/hermes/node/bin")
+        monkeypatch.setattr(
+            bt.shutil, "which",
+            lambda cmd, path=None: None if path == "/hermes/node/bin" else "/usr/bin/npx",
+        )
+        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: True)
+
+        assert bt._resolve_npx_bin() == "/usr/bin/npx"

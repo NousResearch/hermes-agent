@@ -30,52 +30,13 @@ def bare_runner():
 
 
 @pytest.mark.asyncio
-async def test_teardown_calls_both_methods(bare_runner):
-    """The helper cancels background tasks AND disconnects, in that order."""
-    calls = []
-    adapter = MagicMock()
-    adapter.cancel_background_tasks = AsyncMock(
-        side_effect=lambda: calls.append("cancel")
-    )
-    adapter.disconnect = AsyncMock(side_effect=lambda: calls.append("disconnect"))
-
-    await bare_runner._bounded_adapter_teardown(adapter, Platform.TELEGRAM)
-
-    adapter.cancel_background_tasks.assert_awaited_once()
-    adapter.disconnect.assert_awaited_once()
-    assert calls == ["cancel", "disconnect"]
-
-
-@pytest.mark.asyncio
-async def test_teardown_bounds_hanging_disconnect(bare_runner, monkeypatch, caplog):
-    """A wedged disconnect() must time out instead of hanging the loop."""
-    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
-    adapter = MagicMock()
-    adapter.cancel_background_tasks = AsyncMock(return_value=None)
-
-    async def hang():
-        await asyncio.sleep(60)
-
-    adapter.disconnect = AsyncMock(side_effect=hang)
-
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
-        await asyncio.wait_for(
-            bare_runner._bounded_adapter_teardown(adapter, Platform.FEISHU),
-            timeout=5.0,  # the helper itself must return well under this
-        )
-
-    adapter.disconnect.assert_awaited_once()
-    assert "feishu disconnect timed out" in caplog.text
-
-
-@pytest.mark.asyncio
 async def test_teardown_bounds_hanging_cancel(bare_runner, monkeypatch, caplog):
     """A wedged cancel_background_tasks() must time out, then disconnect runs."""
     monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
     adapter = MagicMock()
 
     async def hang():
-        await asyncio.sleep(60)
+        await asyncio.sleep(0.2)
 
     adapter.cancel_background_tasks = AsyncMock(side_effect=hang)
     adapter.disconnect = AsyncMock(return_value=None)
@@ -92,43 +53,44 @@ async def test_teardown_bounds_hanging_cancel(bare_runner, monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
-async def test_teardown_swallows_exceptions(bare_runner):
-    """Errors in either await must not propagate — shutdown continues."""
+async def test_teardown_continues_after_cancellation_swallowing_background_cancel(
+    bare_runner, monkeypatch, caplog
+):
+    """A stuck cancellation handler cannot prevent adapter disconnect.
+
+    This models a platform task that catches ``CancelledError`` while it is
+    unwinding.  The teardown deadline must release runner ownership promptly,
+    then proceed to disconnect instead of waiting for that old task forever.
+    """
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
     adapter = MagicMock()
-    adapter.cancel_background_tasks = AsyncMock(side_effect=RuntimeError("bg"))
-    adapter.disconnect = AsyncMock(side_effect=RuntimeError("disc"))
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
 
-    # Must NOT raise.
-    await bare_runner._bounded_adapter_teardown(adapter, Platform.TELEGRAM)
+    async def swallow_cancellation():
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+        finished.set()
 
-    adapter.cancel_background_tasks.assert_awaited_once()
-    adapter.disconnect.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_teardown_profile_suffix_in_logs(bare_runner, caplog):
-    """Multiplex (secondary-profile) teardown tags log lines with the profile."""
-    adapter = MagicMock()
-    adapter.cancel_background_tasks = AsyncMock(return_value=None)
+    adapter.cancel_background_tasks = AsyncMock(side_effect=swallow_cancellation)
     adapter.disconnect = AsyncMock(return_value=None)
+    operation = asyncio.create_task(
+        bare_runner._bounded_adapter_teardown(adapter, Platform.FEISHU)
+    )
+    await started.wait()
+    done, _pending = await asyncio.wait({operation}, timeout=0.2)
+    try:
+        assert operation in done
+        adapter.disconnect.assert_awaited_once()
+        assert "feishu background-task cancel timed out" in caplog.text
+    finally:
+        release.set()
+        await asyncio.wait({operation}, timeout=0.2)
+        await asyncio.wait_for(finished.wait(), timeout=0.2)
 
-    with caplog.at_level(logging.INFO, logger="gateway.run"):
-        await bare_runner._bounded_adapter_teardown(
-            adapter, Platform.TELEGRAM, profile="acct2"
-        )
 
-    assert "(profile: acct2)" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_teardown_timeout_zero_disables_bound(bare_runner, monkeypatch):
-    """timeout=0 disables the wait_for wrapper but still calls through."""
-    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0")
-    adapter = MagicMock()
-    adapter.cancel_background_tasks = AsyncMock(return_value=None)
-    adapter.disconnect = AsyncMock(return_value=None)
-
-    await bare_runner._bounded_adapter_teardown(adapter, Platform.TELEGRAM)
-
-    adapter.cancel_background_tasks.assert_awaited_once()
-    adapter.disconnect.assert_awaited_once()

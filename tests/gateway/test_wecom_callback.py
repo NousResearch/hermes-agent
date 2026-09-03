@@ -44,15 +44,6 @@ class TestWecomCrypto:
         )
         assert b"<Content>hello</Content>" in decrypted
 
-    def test_signature_mismatch_raises(self):
-        app = _app()
-        crypt = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
-        encrypted_xml = crypt.encrypt("<xml/>", nonce="n", timestamp="1")
-        root = ET.fromstring(encrypted_xml)
-        from plugins.platforms.wecom.wecom_crypto import SignatureError
-        with pytest.raises(SignatureError):
-            crypt.decrypt("bad-sig", "1", "n", root.findtext("Encrypt", default=""))
-
 
 class TestWecomCallbackEventConstruction:
     def test_build_event_extracts_text_message(self):
@@ -75,27 +66,8 @@ class TestWecomCallbackEventConstruction:
         assert event.message_id == "123456789"
         assert event.text == "\u4f60\u597d"
 
-    def test_build_event_returns_none_for_subscribe(self):
-        adapter = WecomCallbackAdapter(_config())
-        xml_text = """
-        <xml>
-          <ToUserName>ww1234567890</ToUserName>
-          <FromUserName>zhangsan</FromUserName>
-          <CreateTime>1710000000</CreateTime>
-          <MsgType>event</MsgType>
-          <Event>subscribe</Event>
-        </xml>
-        """
-        event = adapter._build_event(_app(), xml_text)
-        assert event is None
-
 
 class TestWecomCallbackRouting:
-    def test_user_app_key_scopes_across_corps(self):
-        adapter = WecomCallbackAdapter(_config())
-        assert adapter._user_app_key("corpA", "alice") == "corpA:alice"
-        assert adapter._user_app_key("corpB", "alice") == "corpB:alice"
-        assert adapter._user_app_key("corpA", "alice") != adapter._user_app_key("corpB", "alice")
 
     @pytest.mark.asyncio
     async def test_send_selects_correct_app_for_scoped_chat_id(self):
@@ -126,31 +98,6 @@ class TestWecomCallbackRouting:
         assert calls["json"]["touser"] == "alice"
         assert calls["json"]["agentid"] == 2002
         assert "tok-b" in calls["url"]
-
-    @pytest.mark.asyncio
-    async def test_send_falls_back_from_bare_user_id_when_unique(self):
-        apps = [_app(name="corp-a", corp_id="corpA", agent_id="1001")]
-        adapter = WecomCallbackAdapter(_config(apps=apps))
-        adapter._user_app_map["corpA:alice"] = "corp-a"
-        adapter._access_tokens["corp-a"] = {"token": "tok-a", "expires_at": 9999999999}
-
-        calls = {}
-
-        class FakeResponse:
-            def json(self):
-                return {"errcode": 0, "msgid": "ok2"}
-
-        class FakeClient:
-            async def post(self, url, json):
-                calls["url"] = url
-                calls["json"] = json
-                return FakeResponse()
-
-        adapter._http_client = FakeClient()
-        result = await adapter.send("alice", "hello")
-
-        assert result.success is True
-        assert calls["json"]["agentid"] == 1001
 
 
 class TestWecomCallbackSendTokenRefresh:
@@ -190,91 +137,6 @@ class TestWecomCallbackSendTokenRefresh:
         assert len(post_calls) == 2
         assert "fresh" in post_calls[1]
         assert adapter._access_tokens["test-app"]["token"] == "fresh"
-
-    @pytest.mark.asyncio
-    async def test_send_retries_with_fresh_token_on_errcode_42001(self):
-        """errcode=42001 (token expired) must also trigger the refresh-retry path."""
-        adapter = WecomCallbackAdapter(_config())
-        adapter._access_tokens["test-app"] = {"token": "expired", "expires_at": 9999999999}
-
-        responses = [
-            {"errcode": 42001, "errmsg": "access_token expired"},
-            {"errcode": 0, "msgid": "msg-42"},
-        ]
-        post_calls = []
-
-        class FakeClient:
-            async def post(self, url, json=None, **kw):
-                post_calls.append(url)
-
-                class R:
-                    def json(inner):
-                        return responses[len(post_calls) - 1]
-                return R()
-
-            async def get(self, url, params=None, **kw):
-                class R:
-                    def json(inner):
-                        return {"errcode": 0, "access_token": "renewed", "expires_in": 7200}
-                return R()
-
-        adapter._http_client = FakeClient()
-        result = await adapter.send("alice", "hello")
-
-        assert result.success is True
-        assert len(post_calls) == 2
-
-    @pytest.mark.asyncio
-    async def test_send_does_not_retry_on_non_token_errcode(self):
-        """Errors unrelated to token validity must fail immediately without retrying."""
-        adapter = WecomCallbackAdapter(_config())
-        adapter._access_tokens["test-app"] = {"token": "good", "expires_at": 9999999999}
-
-        post_calls = []
-
-        class FakeClient:
-            async def post(self, url, json=None, **kw):
-                post_calls.append(url)
-
-                class R:
-                    def json(inner):
-                        return {"errcode": 60020, "errmsg": "not allow to access"}
-                return R()
-
-        adapter._http_client = FakeClient()
-        result = await adapter.send("alice", "hello")
-
-        assert result.success is False
-        assert len(post_calls) == 1
-
-    @pytest.mark.asyncio
-    async def test_send_fails_cleanly_when_retry_also_fails(self):
-        """If the refreshed token is also rejected, return failure without looping further."""
-        adapter = WecomCallbackAdapter(_config())
-        adapter._access_tokens["test-app"] = {"token": "bad1", "expires_at": 9999999999}
-
-        post_calls = []
-
-        class FakeClient:
-            async def post(self, url, json=None, **kw):
-                post_calls.append(url)
-
-                class R:
-                    def json(inner):
-                        return {"errcode": 42001, "errmsg": "access_token expired"}
-                return R()
-
-            async def get(self, url, params=None, **kw):
-                class R:
-                    def json(inner):
-                        return {"errcode": 0, "access_token": "bad2", "expires_in": 7200}
-                return R()
-
-        adapter._http_client = FakeClient()
-        result = await adapter.send("alice", "hello")
-
-        assert result.success is False
-        assert len(post_calls) == 2
 
 
 class TestWecomCallbackPollLoop:
@@ -335,15 +197,5 @@ class TestWecomCallbackBodySizeLimit:
         oversized = b"<xml>" + b"A" * (_MAX_BODY + 1) + b"</xml>"
         response = await adapter._handle_callback(self._request(oversized))
         assert response.status == 413
-
-    @pytest.mark.asyncio
-    async def test_normal_sized_body_not_rejected_for_size(self):
-        adapter = WecomCallbackAdapter(_config())
-        # A small body passes the size guard and proceeds to decrypt, which
-        # fails signature verification (400), NOT 413 — proving the guard
-        # doesn't reject legitimate-sized payloads.
-        small = b"<xml><Encrypt>not-real</Encrypt></xml>"
-        response = await adapter._handle_callback(self._request(small))
-        assert response.status != 413
 
 

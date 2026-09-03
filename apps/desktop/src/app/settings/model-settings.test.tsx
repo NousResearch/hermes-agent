@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
@@ -21,13 +22,18 @@ const saveMoaModels = vi.fn()
 const setEnvVar = vi.fn()
 const getHermesConfigRecord = vi.fn()
 const saveHermesConfig = vi.fn()
+const startManualLocalEndpoint = vi.fn()
+const startManualOnboarding = vi.fn()
 const startManualProviderOAuth = vi.fn()
+let profileSwitchHandler: (() => void) | null = null
 
 vi.mock('@/hermes', () => ({
-  getGlobalModelInfo: () => getGlobalModelInfo(),
-  getGlobalModelOptions: () => getGlobalModelOptions(),
-  getAuxiliaryModels: () => getAuxiliaryModels(),
-  getMoaModels: () => getMoaModels(),
+  getGlobalModelInfo: (profile?: null | string) => getGlobalModelInfo(profile),
+  getGlobalModelOptions: (opts?: unknown, profile?: null | string) => getGlobalModelOptions(opts, profile),
+  getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
+  getApiRequestProfile: () => 'default',
+  getMoaModels: (profile?: null | string) => getMoaModels(profile),
+  profileScopeKey: (scope?: null | string) => (scope ?? '').trim() || 'default',
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
@@ -38,7 +44,15 @@ vi.mock('@/hermes', () => ({
 }))
 
 vi.mock('@/store/onboarding', () => ({
+  startManualLocalEndpoint: () => startManualLocalEndpoint(),
+  startManualOnboarding: () => startManualOnboarding(),
   startManualProviderOAuth: (slug: string) => startManualProviderOAuth(slug)
+}))
+
+vi.mock('../hooks/use-on-profile-switch', () => ({
+  useOnProfileSwitch: (handler: () => void) => {
+    profileSwitchHandler = handler
+  }
 }))
 
 beforeEach(() => {
@@ -59,7 +73,7 @@ beforeEach(() => {
     tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
   })
   getMoaModels.mockResolvedValue(null)
-  setModelAssignment.mockResolvedValue({ provider: 'nous', model: 'hermes-4', gateway_tools: [] })
+  setModelAssignment.mockResolvedValue({ ok: true, provider: 'nous', model: 'hermes-4', gateway_tools: [] })
   getRecommendedDefaultModel.mockResolvedValue({ provider: 'nous', model: 'hermes-4', free_tier: null })
   setEnvVar.mockResolvedValue({ ok: true })
   getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'medium', service_tier: 'normal' } })
@@ -69,18 +83,47 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  profileSwitchHandler = null
 })
 
-async function renderModelSettings() {
+async function renderModelSettings(scopeProfile?: string) {
   const { ModelSettings } = await import('./model-settings')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   return render(
-    <QueryClientProvider client={client}>
-      <ModelSettings />
-    </QueryClientProvider>
+    // The aux-task deep-link highlight reads useSearchParams, so the page
+    // needs a router context in tests (the app provides HashRouter at root).
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ModelSettings scopeProfile={scopeProfile} />
+      </QueryClientProvider>
+    </MemoryRouter>
   )
 }
+
+describe('ModelSettings profile scope', () => {
+  // #90549: the API helpers treat `null` as "deliberately target the
+  // primary/default profile". A page following the active profile must pass
+  // `undefined`, or every read repaints the primary's model and the user's
+  // change looks reverted.
+  it('follows the active profile (undefined, never null) when unscoped', async () => {
+    await renderModelSettings()
+
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalledWith(undefined))
+    expect(getGlobalModelOptions).toHaveBeenCalledWith(undefined, undefined)
+    expect(getAuxiliaryModels).toHaveBeenCalledWith(undefined)
+    expect(getMoaModels).toHaveBeenCalledWith(undefined)
+  })
+
+  it('reads through the explicit scope override when one is set', async () => {
+    await renderModelSettings('research')
+
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalledWith('research'))
+    expect(getGlobalModelOptions).toHaveBeenCalledWith(undefined, 'research')
+    expect(getAuxiliaryModels).toHaveBeenCalledWith('research')
+    expect(getMoaModels).toHaveBeenCalledWith('research')
+  })
+})
 
 describe('ModelSettings', () => {
   it('loads the current main model and lists configured providers only', async () => {
@@ -96,6 +139,151 @@ describe('ModelSettings', () => {
     // "Nous" shows in both the trigger and the open list.
     expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
     expect(screen.queryByText(/DeepSeek/)).toBeNull()
+  })
+
+  it.each(['custom', 'local', 'custom:lab'])(
+    'opens local endpoint setup when %s has no inventory row',
+    async provider => {
+      getGlobalModelInfo.mockResolvedValueOnce({ provider, model: '' })
+      getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
+
+      await renderModelSettings()
+
+      const providerSelect = (await screen.findAllByRole('combobox'))[0]
+
+      expect(providerSelect.textContent).toContain(provider)
+      expect(screen.queryByText(/undefined/)).toBeNull()
+      expect(screen.queryByText(/signs in through your browser/)).toBeNull()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
+
+      expect(startManualLocalEndpoint).toHaveBeenCalledOnce()
+      expect(startManualOnboarding).not.toHaveBeenCalled()
+      expect(startManualProviderOAuth).not.toHaveBeenCalled()
+    }
+  )
+
+  it('opens the generic provider picker for an unknown provider with no inventory row', async () => {
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'retired-provider', model: '' })
+    getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
+
+    await renderModelSettings()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
+
+    expect(startManualOnboarding).toHaveBeenCalledOnce()
+    expect(startManualLocalEndpoint).not.toHaveBeenCalled()
+    expect(startManualProviderOAuth).not.toHaveBeenCalled()
+  })
+
+  it('deep-links a known OAuth provider row into its setup flow', async () => {
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'anthropic', model: '' })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Anthropic',
+          slug: 'anthropic',
+          models: [],
+          authenticated: false,
+          auth_type: 'oauth'
+        }
+      ]
+    })
+
+    await renderModelSettings()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up Anthropic' }))
+
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic')
+    expect(startManualLocalEndpoint).not.toHaveBeenCalled()
+    expect(startManualOnboarding).not.toHaveBeenCalled()
+  })
+
+  it('replaces the selected provider and model when the active profile changes', async () => {
+    getGlobalModelInfo
+      .mockResolvedValueOnce({ provider: 'custom', model: 'local-a' })
+      .mockResolvedValueOnce({ provider: 'nous', model: 'hermes-4' })
+    getGlobalModelOptions
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Custom A',
+            slug: 'custom',
+            models: ['local-a'],
+            authenticated: true
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Nous',
+            slug: 'nous',
+            models: ['hermes-4'],
+            authenticated: true,
+            capabilities: { 'hermes-4': { reasoning: true, fast: true } }
+          }
+        ]
+      })
+
+    await renderModelSettings()
+    expect((await screen.findAllByRole('combobox'))[0].textContent).toContain('Custom A')
+
+    await act(async () => {
+      profileSwitchHandler?.()
+    })
+
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getAllByRole('combobox')[0].textContent).toContain('Nous'))
+    expect(screen.queryByRole('button', { name: 'Set up provider' })).toBeNull()
+  })
+
+  it('preserves a user-defined provider endpoint when applying the main model', async () => {
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Nous',
+          slug: 'nous',
+          models: ['hermes-4'],
+          authenticated: true
+        },
+        {
+          name: 'Ollama',
+          slug: 'local-ollama',
+          models: ['qwen3:latest'],
+          authenticated: true,
+          is_user_defined: true,
+          api_url: 'http://localhost:11434/v1'
+        }
+      ]
+    })
+    setModelAssignment.mockResolvedValueOnce({
+      ok: true,
+      provider: 'local-ollama',
+      model: 'qwen3:latest',
+      gateway_tools: []
+    })
+
+    await renderModelSettings()
+
+    const providerSelect = (await screen.findAllByRole('combobox'))[0]
+    fireEvent.click(providerSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'Ollama' }))
+
+    const modelSelect = (await screen.findAllByRole('combobox'))[1]
+    fireEvent.click(modelSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'qwen3:latest' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'qwen3:latest',
+        provider: 'local-ollama',
+        scope: 'main',
+        base_url: 'http://localhost:11434/v1'
+      })
+    )
   })
 
   it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {
@@ -155,8 +343,44 @@ describe('ModelSettings', () => {
     )
   })
 
+  it('carries the user-defined endpoint when an aux slot is set to a local main model', async () => {
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Ollama',
+          slug: 'local-ollama',
+          models: ['qwen3:latest'],
+          authenticated: true,
+          is_user_defined: true,
+          api_url: 'http://localhost:11434/v1'
+        }
+      ]
+    })
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'local-ollama', model: 'qwen3:latest' })
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'local-ollama', model: 'qwen3:latest' },
+      tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
+    })
+
+    await renderModelSettings()
+
+    const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
+    fireEvent.click(setToMainButtons[0])
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'qwen3:latest',
+        provider: 'local-ollama',
+        scope: 'auxiliary',
+        task: 'vision',
+        base_url: 'http://localhost:11434/v1'
+      })
+    )
+  })
+
   it('warns when a main switch leaves auxiliary tasks pinned to another provider', async () => {
     setModelAssignment.mockResolvedValueOnce({
+      ok: true,
       provider: 'openrouter',
       model: 'anthropic/claude-opus-4.7',
       gateway_tools: [],
@@ -320,5 +544,93 @@ describe('ModelSettings MoA preset editor', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('autosaves the selected preset when its enabled switch is toggled', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await openReferenceEditor()
+
+      fireEvent.click(screen.getByRole('switch', { name: 'Enabled' }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(saveMoaModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presets: expect.objectContaining({
+            default: expect.objectContaining({ enabled: false })
+          })
+        })
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('saves a disabled reference model without removing it (per-slot enabled toggle)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await openReferenceEditor()
+
+      fireEvent.click(screen.getByRole('switch', { name: 'Disable reference 1' }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(saveMoaModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presets: expect.objectContaining({
+            default: expect.objectContaining({
+              reference_models: [
+                expect.objectContaining({ provider: 'nous', model: 'hermes-4', enabled: false }),
+                expect.objectContaining({ provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' })
+              ]
+            })
+          })
+        })
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('ModelSettings code-skew 503', () => {
+  const skewError = new Error(
+    'Error invoking remote method \'hermes:api\': Error: 503: {"detail":"Restart required: This process is running code from 08b4875f4a but the checkout on disk is now 48d2528066. The model picker would risk a stale-module crash — restart the Desktop-owned backend to load the new code (use Restart backend in Hermes Desktop, or quit and reopen the app)"}'
+  )
+
+  afterEach(() => {
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  it('unwraps the stale-backend 503 instead of dumping IPC JSON', async () => {
+    getGlobalModelOptions.mockRejectedValueOnce(skewError)
+
+    await renderModelSettings()
+
+    await waitFor(() => {
+      expect(screen.getByText(/running old code after an update/i)).toBeTruthy()
+    })
+    expect(screen.getByRole('button', { name: 'Restart backend' })).toBeTruthy()
+    expect(screen.queryByText(/hermes:api/)).toBeNull()
+    expect(screen.queryByText(/systemctl/)).toBeNull()
+  })
+
+  it('recycles the Desktop-owned backend and reloads the catalog', async () => {
+    const recycleBackend = vi.fn().mockResolvedValue({ ok: true })
+
+    ;(window as unknown as { hermesDesktop: { recycleBackend: typeof recycleBackend } }).hermesDesktop = {
+      recycleBackend
+    }
+
+    getGlobalModelOptions.mockRejectedValueOnce(skewError)
+
+    await renderModelSettings()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Restart backend' })).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restart backend' }))
+
+    await waitFor(() => expect(recycleBackend).toHaveBeenCalledWith(undefined))
+    await waitFor(() => expect(getGlobalModelOptions.mock.calls.length).toBeGreaterThan(1))
   })
 })

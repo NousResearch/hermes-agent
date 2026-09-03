@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Reveal/focus a pane in the Hermes desktop GUI.
+
+Lives in the ``desktop_ui`` toolset (like the other GUI affordances), which the
+GUI gateway enables only for desktop-sourced sessions. Emits ``pane.reveal``
+through the shared ``desktop_ui`` bridge; the renderer runs each pane's own
+reveal path and only acts on the active window (a background turn never moves
+the user's focus). To show a URL/file, use ``open_preview``; to close it, use
+``close_preview``.
+"""
+
+import json
+
+from tools import desktop_ui
+from tools.registry import registry, tool_error
+
+PANES = ("chat", "files", "terminal", "review", "sessions")
+
+
+def focus_pane_tool(pane: str) -> str:
+    """Ask the desktop GUI to reveal and focus ``pane``."""
+    name = (pane or "").strip().lower()
+    if name not in PANES:
+        return tool_error(f"pane must be one of: {', '.join(PANES)}.")
+
+    try:
+        ok = desktop_ui.emit("pane.reveal", {"pane": name})
+    except Exception as exc:
+        return tool_error(f"Failed to focus the {name} pane: {exc}")
+    if not ok:
+        return tool_error("Pane focus is only available in the Hermes desktop app.")
+
+    return json.dumps({"success": True, "pane": name}, ensure_ascii=False)
+
+
+FOCUS_PANE_SCHEMA = {
+    "name": "focus_pane",
+    "description": (
+        "Reveal and focus a Hermes desktop pane when the user asks to see it: "
+        "chat, files, terminal, review (git diff), or sessions. For URLs/"
+        "files use the desktop_preview tool instead."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pane": {
+                "type": "string",
+                "enum": list(PANES),
+                "description": "Which pane to reveal.",
+            },
+        },
+        "required": ["pane"],
+    },
+}
+
+
+registry.register(
+    name="focus_pane",
+    toolset="desktop_ui",
+    schema=FOCUS_PANE_SCHEMA,
+    handler=lambda args, **kw: focus_pane_tool(pane=args.get("pane", "")),
+    emoji="🪟",
+)

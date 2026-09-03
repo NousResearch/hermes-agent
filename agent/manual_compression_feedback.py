@@ -7,6 +7,36 @@ from typing import Any, Sequence
 from agent.redact import redact_sensitive_text
 
 
+def describe_compression_lock_skip(lock_signal: Any) -> str:
+    """User-facing text for a manual /compress skipped by the compression lock.
+
+    ``lock_signal`` is ``agent._compression_skipped_due_to_lock`` (or the
+    ``holder`` carried by the TUI's ``CompressionLockHeld``): a descriptive
+    holder string when another compressor CONFIRMED holds the lock, or
+    ``True``/``None`` when acquisition failed without a confirmed holder
+    (``hermes_state.try_acquire_compression_lock`` catches ``sqlite3.Error``
+    internally and returns ``False``, so a failed acquire is NOT proof that
+    another compression is running). The two cases must be worded
+    differently: claiming "already in progress" on an unconfirmed failure
+    misdirects the user when the real problem is a broken lock subsystem.
+    """
+    holder = (
+        lock_signal
+        if isinstance(lock_signal, str) and lock_signal.strip()
+        else None
+    )
+    if holder:
+        return (
+            f"⏳ Compression already in progress for this session "
+            f"(holder: {holder}). Please wait for it to finish."
+        )
+    return (
+        "⏳ Compression skipped: could not acquire this session's "
+        "compression lock. Another compression may still be running, or "
+        "the lock check failed — try again shortly."
+    )
+
+
 def summarize_manual_compression(
     before_messages: Sequence[dict[str, Any]],
     after_messages: Sequence[dict[str, Any]],
@@ -23,6 +53,11 @@ def summarize_manual_compression(
         compression_state is not None
         and getattr(compression_state, "_last_compress_aborted", False) is True
     )
+    refused_would_grow = (
+        compression_state is not None
+        and getattr(compression_state, "_last_compress_refused_would_grow", False)
+        is True
+    )
     fallback_used = (
         compression_state is not None
         and getattr(compression_state, "_last_summary_fallback_used", False) is True
@@ -35,7 +70,12 @@ def summarize_manual_compression(
     if not isinstance(failure_reason, str) or not failure_reason.strip():
         failure_reason = None
 
-    if aborted:
+    if refused_would_grow:
+        headline = (
+            f"Compression refused (summary would grow the conversation): "
+            f"{before_count} messages preserved"
+        )
+    elif aborted:
         headline = f"Compression aborted: {before_count} messages preserved"
     elif fallback_used:
         headline = (
@@ -48,6 +88,8 @@ def summarize_manual_compression(
 
     if noop and after_tokens == before_tokens:
         token_line = f"Approx request size: ~{before_tokens:,} tokens (unchanged)"
+    elif refused_would_grow:
+        token_line = f"Approx request size: ~{before_tokens:,} tokens (unchanged)"
     else:
         token_line = (
             f"Approx request size: ~{before_tokens:,} → "
@@ -55,7 +97,12 @@ def summarize_manual_compression(
         )
 
     note = None
-    if aborted:
+    if refused_would_grow:
+        note = (
+            "The generated summary was larger than what it would replace; "
+            "no messages were removed."
+        )
+    elif aborted:
         note = "Summary generation failed; no messages were removed."
     elif fallback_used:
         dropped_count = getattr(
@@ -83,6 +130,7 @@ def summarize_manual_compression(
     return {
         "noop": noop,
         "aborted": aborted,
+        "refused_would_grow": refused_would_grow,
         "fallback_used": fallback_used,
         "headline": headline,
         "token_line": token_line,

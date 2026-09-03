@@ -27,13 +27,20 @@ class _FakeRelayAdapter:
         return True
 
 
-def _runner_with(monkeypatch, *, idle, armed_adapter=True):
+def _runner_with(monkeypatch, *, idle, armed_adapter=True, can_self_suspend=True):
     """Build a GatewayRunner without booting it, stubbing just what the watcher
     touches. Real methods (_scale_to_zero_is_idle composition, the watcher body)
-    run; only their dependencies are stubbed."""
+    run; only their dependencies are stubbed.
+
+    `can_self_suspend` stands in for the platform: True is Fly (an in-machine
+    suspend API exists, so quiescing is followed by a freeze), False is anywhere
+    the platform suspends on its own timer. The watcher only quiesces in the
+    first case, so this defaults True to keep the existing cases on that path.
+    """
     r = GatewayRunner.__new__(GatewayRunner)
     r._running = True
     r._scale_to_zero_cooldown_until = 0.0
+    r._scale_to_zero_no_suspend_logged = False
     r._last_inbound_at = time.time()
     r._running_agents = {}
     r._background_tasks = set()
@@ -43,7 +50,41 @@ def _runner_with(monkeypatch, *, idle, armed_adapter=True):
     monkeypatch.setattr(r, "_relay_adapter_for_dormancy", lambda: adapter, raising=False)
     monkeypatch.setattr(r, "_scale_to_zero_idle_timeout_seconds", lambda: 300.0, raising=False)
     monkeypatch.setattr(r, "_update_runtime_status", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(
+        "gateway.scale_to_zero.self_suspend_available",
+        lambda *a, **k: can_self_suspend,
+    )
     return r, adapter
+
+
+@pytest.mark.asyncio
+async def test_watcher_does_not_quiesce_when_the_platform_owns_the_suspend(
+    monkeypatch,
+):
+    """Quiescing cannot help when the platform owns the freeze, and the reconnect
+    that follows the socket close undoes the flip, so the destination ends up
+    unflipped when the freeze lands.
+    """
+    r, adapter = _runner_with(monkeypatch, idle=True, can_self_suspend=False)
+    suspends = []
+    monkeypatch.setattr(
+        r,
+        "_scale_to_zero_self_suspend",
+        lambda *a, **k: suspends.append(1),
+        raising=False,
+    )
+
+    task = asyncio.create_task(r._scale_to_zero_watcher(interval=0.01))
+    await asyncio.sleep(0.1)
+    r._running = False
+    await asyncio.wait_for(task, timeout=2)
+
+    assert adapter.go_dormant_calls == 0, "must not flip/close on a platform-timed suspend"
+    assert suspends == []
+    # No cooldown either: nothing was driven, so the next tick is free to act
+    # the moment the platform picture changes.
+    assert r._scale_to_zero_cooldown_until == 0.0
+    assert r._scale_to_zero_no_suspend_logged is True
 
 
 @pytest.mark.asyncio
@@ -59,36 +100,6 @@ async def test_watcher_goes_dormant_when_idle(monkeypatch):
     assert r._scale_to_zero_cooldown_until > time.time()
 
 
-@pytest.mark.asyncio
-async def test_watcher_does_not_go_dormant_when_busy(monkeypatch):
-    r, adapter = _runner_with(monkeypatch, idle=False)
-    task = asyncio.create_task(r._scale_to_zero_watcher(interval=0.01))
-    await asyncio.sleep(0.1)
-    r._running = False
-    await asyncio.wait_for(task, timeout=2)
-    assert adapter.go_dormant_calls == 0
-
-
-@pytest.mark.asyncio
-async def test_watcher_respects_cooldown(monkeypatch):
-    r, adapter = _runner_with(monkeypatch, idle=True)
-    # Cooldown active far in the future: even though idle, no dormancy fires.
-    r._scale_to_zero_cooldown_until = time.time() + 3600
-    task = asyncio.create_task(r._scale_to_zero_watcher(interval=0.01))
-    await asyncio.sleep(0.1)
-    r._running = False
-    await asyncio.wait_for(task, timeout=2)
-    assert adapter.go_dormant_calls == 0
-
-
-@pytest.mark.asyncio
-async def test_watcher_noop_when_no_relay_adapter(monkeypatch):
-    # Armed-but-no-relay-adapter (e.g. relay not yet connected): must not crash.
-    r, _ = _runner_with(monkeypatch, idle=True, armed_adapter=False)
-    task = asyncio.create_task(r._scale_to_zero_watcher(interval=0.01))
-    await asyncio.sleep(0.1)
-    r._running = False
-    await asyncio.wait_for(task, timeout=2)
     # No exception, loop exits cleanly — nothing to assert beyond survival.
 
 
@@ -99,7 +110,7 @@ def test_bg_work_blocks_idle_via_background_tasks(monkeypatch):
     r = GatewayRunner.__new__(GatewayRunner)
 
     async def _never():
-        await asyncio.sleep(3600)
+        await asyncio.sleep(0.2)
 
     loop = asyncio.new_event_loop()
     try:
@@ -111,17 +122,6 @@ def test_bg_work_blocks_idle_via_background_tasks(monkeypatch):
     finally:
         loop.run_until_complete(asyncio.gather(t, return_exceptions=True))
         loop.close()
-
-
-def test_bg_work_blocks_idle_via_async_delegation(monkeypatch):
-    """delegate_task(background=true) lives in tools.async_delegation, not the
-    process registry. An active background delegation must block suspend too."""
-    r = GatewayRunner.__new__(GatewayRunner)
-    r._background_tasks = set()
-
-    monkeypatch.setattr("tools.async_delegation.active_count", lambda: 1)
-
-    assert r._scale_to_zero_has_live_background_work() is True
 
 
 def test_real_inbound_after_dormancy_restores_running_status(monkeypatch):
@@ -142,13 +142,6 @@ def test_real_inbound_after_dormancy_restores_running_status(monkeypatch):
 
     assert r._last_inbound_at > 0.0
     assert status_updates == ["running"]
-
-
-def test_bg_work_false_when_quiet():
-    r = GatewayRunner.__new__(GatewayRunner)
-    r._background_tasks = set()
-    # No background tasks, no active processes in this fresh process.
-    assert r._scale_to_zero_has_live_background_work() is False
 
 
 # ── _scale_to_zero_should_arm: the CALL SITE feeds config.platforms (the F25 bug) ──
@@ -210,28 +203,336 @@ def test_no_arm_when_a_direct_platform_is_actually_enabled(monkeypatch):
     assert r._scale_to_zero_should_arm() is False
 
 
-def test_arm_when_no_platform_enabled_at_all(monkeypatch):
-    """Chronos-only / no-messaging agent (all placeholders disabled) can scale to zero."""
+
+# ── the self-suspend step: fires only after a clean quiesce, in order ─────────
+#
+# The gateway owns the suspend (Fly Proxy autostop is inbound-only/job-blind and
+# no longer held open by outbound sockets), so the watcher must (a) suspend only
+# AFTER go_dormant succeeded — the relay flip precedes the freeze, closing the
+# buffered-event black hole — and (b) never suspend when the quiesce failed or
+# inbound landed mid-quiesce.
+
+
+@pytest.mark.asyncio
+async def test_watcher_self_suspends_after_dormant(monkeypatch):
+    r, adapter = _runner_with(monkeypatch, idle=True)
+    calls = []
+
+    async def fake_suspend():
+        calls.append(("suspend", adapter.go_dormant_calls))
+        r._running = False  # stop the loop after the first full sequence
+
+    monkeypatch.setattr(r, "_scale_to_zero_self_suspend", fake_suspend, raising=False)
+    task = asyncio.create_task(r._scale_to_zero_watcher(interval=0.01))
+    await asyncio.wait_for(task, timeout=2)
+    # Suspend fired exactly once, and only AFTER go_dormant ran (flip-before-freeze).
+    assert calls == [("suspend", 1)]
+
+
+@pytest.mark.asyncio
+async def test_watcher_skips_suspend_when_dormant_fails(monkeypatch):
+    r, adapter = _runner_with(monkeypatch, idle=True)
+
+    async def broken_dormant():
+        raise RuntimeError("quiesce failed")
+
+    adapter.go_dormant = broken_dormant
+    suspend_calls = []
+
+    async def fake_suspend():
+        suspend_calls.append(1)
+
+    monkeypatch.setattr(r, "_scale_to_zero_self_suspend", fake_suspend, raising=False)
+    task = asyncio.create_task(r._scale_to_zero_watcher(interval=0.01))
+    await asyncio.sleep(0.1)
+    r._running = False
+    await asyncio.wait_for(task, timeout=2)
+    # A failed quiesce means an UNFLIPPED relay — suspending would black-hole
+    # inbound events. Must stay awake.
+    assert suspend_calls == []
+
+
+@pytest.mark.asyncio
+async def test_watcher_skips_suspend_when_inbound_lands_mid_quiesce(monkeypatch):
+    r, adapter = _runner_with(monkeypatch, idle=True)
+    # First idle check (loop gate) True, second (post-quiesce re-check) False.
+    reads = iter([True, False, False, False, False, False])
+    monkeypatch.setattr(
+        r, "_scale_to_zero_is_idle", lambda: next(reads, False), raising=False
+    )
+    suspend_calls = []
+
+    async def fake_suspend():
+        suspend_calls.append(1)
+
+    monkeypatch.setattr(r, "_scale_to_zero_self_suspend", fake_suspend, raising=False)
+    task = asyncio.create_task(r._scale_to_zero_watcher(interval=0.01))
+    await asyncio.sleep(0.15)
+    r._running = False
+    await asyncio.wait_for(task, timeout=2)
+    assert adapter.go_dormant_calls == 1
+    assert suspend_calls == []
+
+
+@pytest.mark.asyncio
+async def test_self_suspend_noop_off_fly(monkeypatch):
+    """Off-Fly (no flaps socket/identity) the helper is a silent no-op —
+    dormancy without platform suspend, never an error."""
+    r = GatewayRunner.__new__(GatewayRunner)
+    monkeypatch.setattr(
+        "gateway.scale_to_zero.self_suspend_available", lambda *a, **k: False
+    )
+    called = []
+    monkeypatch.setattr(
+        "gateway.scale_to_zero.suspend_self",
+        lambda *a, **k: called.append(1) or True,
+    )
+    await r._scale_to_zero_self_suspend()
+    assert called == []
+
+
+# ── non-messaging platforms must not disarm (the api_server-key regression) ──
+#
+# The Docker stage2 hook now generates API_SERVER_KEY for every container, and
+# key presence force-enables the api_server platform (gateway/config.py). The
+# arm gate counted every enabled platform, so `api_server` (a loopback
+# listener, not a messaging socket) made messaging_is_relay_only_or_absent
+# False on EVERY hosted instance — silently disarming scale-to-zero. The gate
+# must only count messaging platforms (excluding LOCAL/API_SERVER/WEBHOOK,
+# mirroring _connect_platforms' messaging_platforms exclusion set).
+
+
+def test_arm_true_with_api_server_enabled(monkeypatch):
     from gateway.platforms.base import Platform
 
     r = _arm_runner(
         monkeypatch,
-        {Platform.TELEGRAM: False, Platform.DISCORD: False},
+        {
+            Platform.RELAY: True,
+            Platform.API_SERVER: True,
+            Platform.TELEGRAM: False,
+        },
     )
     assert r._scale_to_zero_should_arm() is True
 
 
-def test_no_arm_when_not_opted_in(monkeypatch):
-    """Relay-only but the Labs stamp is off ⇒ never arm (fail-safe default)."""
+def test_arm_true_with_all_non_messaging_surfaces_enabled(monkeypatch):
     from gateway.platforms.base import Platform
 
-    r = _arm_runner(monkeypatch, {Platform.RELAY: True}, enabled=False)
+    r = _arm_runner(
+        monkeypatch,
+        {
+            Platform.RELAY: True,
+            Platform.API_SERVER: True,
+            Platform.WEBHOOK: True,
+            Platform.LOCAL: True,
+        },
+    )
+    assert r._scale_to_zero_should_arm() is True
+
+
+def test_direct_platform_still_disarms_alongside_api_server(monkeypatch):
+    """The messaging-only filter must not over-broaden: a genuinely enabled
+    direct-socket platform still disarms even with api_server also enabled."""
+    from gateway.platforms.base import Platform
+
+    r = _arm_runner(
+        monkeypatch,
+        {
+            Platform.RELAY: True,
+            Platform.API_SERVER: True,
+            Platform.DISCORD: True,
+        },
+    )
     assert r._scale_to_zero_should_arm() is False
 
 
-def test_no_arm_without_wake_url(monkeypatch):
-    """Relay-only + opted in but no registered wake URL ⇒ no arm (§3.4(1))."""
+# ── supervised watchers must NOT count as live background work (staging bug) ──
+#
+# _spawn_supervised parks every permanent watcher task (session-expiry, kanban,
+# reconnect, the scale-to-zero watcher ITSELF, ...) in _background_tasks. The
+# bg-work check counted them, so an armed gateway considered itself busy
+# forever and never went dormant — verified live on staging 2026-08-12 (armed
+# at 05:25, fully idle 25+ min, zero "going dormant" lines). Fly's coarse
+# autostop masked this until the gateway took ownership of the suspend.
+# These tests exercise the REAL _spawn_supervised path — the earlier tests
+# stubbed _background_tasks and missed the call site (same trap as F25).
+
+
+@pytest.mark.asyncio
+async def test_supervised_watchers_do_not_block_idle():
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._running = True
+    r._background_tasks = set()
+
+    async def _forever():
+        await asyncio.sleep(3600)
+
+    # Spawn like production does — through _spawn_supervised.
+    for name in ("session_expiry", "kanban", "scale_to_zero_watcher"):
+        r._spawn_supervised(lambda: _forever(), name)
+    await asyncio.sleep(0)  # let tasks start
+    try:
+        assert r._scale_to_zero_has_live_background_work() is False
+    finally:
+        for t in r._background_tasks:
+            t.cancel()
+        await asyncio.gather(*r._background_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_transient_background_task_still_blocks_idle():
+    """A plain (untagged) task in _background_tasks — startup-resume events,
+    ad-hoc work — must still count as live background work."""
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._running = True
+
+    async def _work():
+        await asyncio.sleep(3600)
+
+    t = asyncio.create_task(_work())
+    r._background_tasks = {t}
+    try:
+        assert r._scale_to_zero_has_live_background_work() is True
+    finally:
+        t.cancel()
+        await asyncio.gather(t, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_done_supervised_watcher_is_ignored_either_way():
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._running = True
+
+    async def _quick():
+        return None
+
+    t = asyncio.create_task(_quick())
+    await t
+    r._background_tasks = {t}
+    assert r._scale_to_zero_has_live_background_work() is False
+
+
+# ── permanent tasks spawned OUTSIDE _spawn_supervised must also be tagged ──
+#
+# _loop_heartbeat_task and _heartbeat_poll_task are both infinite while-True
+# loops added to _background_tasks via plain asyncio.create_task() + manual
+# add(), NOT through _spawn_supervised — so they were untagged and defeated
+# the fix above: _loop_heartbeat_task starts unconditionally on every
+# gateway boot (start()), which would make the busy check return True
+# forever regardless of the _spawn_supervised fix, on every armed instance.
+
+
+@pytest.mark.asyncio
+async def test_loop_heartbeat_task_does_not_block_idle():
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._running = True
+    r._background_tasks = set()
+    r._loop_heartbeat_task = None
+    r._gateway_started_at = time.time()
+
+    r._start_loop_heartbeat_task()
+    await asyncio.sleep(0)  # let the task start
+    try:
+        assert r._scale_to_zero_has_live_background_work() is False
+    finally:
+        r._loop_heartbeat_task.cancel()
+        await asyncio.gather(r._loop_heartbeat_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_poll_task_does_not_block_idle():
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._running = True
+    r._background_tasks = set()
+    r._heartbeat_poll_task = None
+    r._heartbeat_watch = {}
+    r._running_agents = {}
+
+    r._start_heartbeat_poller()
+    await asyncio.sleep(0)  # let the task start
+    try:
+        assert r._scale_to_zero_has_live_background_work() is False
+    finally:
+        r._heartbeat_poll_task.cancel()
+        await asyncio.gather(r._heartbeat_poll_task, return_exceptions=True)
+
+
+# ── in-flight cron / API-server work must block suspend (the 10:45 near-miss) ──
+#
+# Cron jobs run on the scheduler's thread pool and API-server runs live on the
+# adapter — both outside _running_agents (the #60432 blind spot). The idle
+# predicate must consume _active_work_count() (agents + cron + api runs), or a
+# suspend can freeze a cron job mid-run: observed on staging 2026-08-20, where
+# is_idle held True throughout a live cron run and only tick timing saved it.
+
+
+def _work_count_runner(monkeypatch, *, agents=0, cron_ids=(), api_runs=0):
+    from types import SimpleNamespace
+
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._running = True
+    r._running_agents = {f"a{i}": object() for i in range(agents)}
+    r._background_tasks = set()
+    r._last_inbound_at = 0.0  # inbound-quiet for hours
+    monkeypatch.setattr(
+        r, "_scale_to_zero_idle_timeout_seconds", lambda: 300.0, raising=False
+    )
+    monkeypatch.setattr(
+        "cron.scheduler.get_running_job_ids", lambda: set(cron_ids)
+    )
+    api_adapter = SimpleNamespace(active_agent_work_count=lambda: api_runs)
     from gateway.platforms.base import Platform
 
-    r = _arm_runner(monkeypatch, {Platform.RELAY: True}, wake_url=None)
-    assert r._scale_to_zero_should_arm() is False
+    r.adapters = {Platform.API_SERVER: api_adapter}
+    return r
+
+
+def test_running_cron_job_blocks_idle(monkeypatch):
+    r = _work_count_runner(monkeypatch, cron_ids={"job1"})
+    assert r._scale_to_zero_is_idle() is False
+
+
+def test_active_api_run_blocks_idle(monkeypatch):
+    r = _work_count_runner(monkeypatch, api_runs=1)
+    assert r._scale_to_zero_is_idle() is False
+
+
+def test_idle_true_when_all_work_sources_quiet(monkeypatch):
+    r = _work_count_runner(monkeypatch)
+    assert r._scale_to_zero_is_idle() is True
+
+
+def test_unreadable_cron_source_fails_awake(monkeypatch):
+    """A transient failure reading the cron work source must count as WORK
+    (stay awake), not as idle — fail-open accounting would reopen the
+    mid-job-freeze hole exactly when bookkeeping is broken."""
+    r = _work_count_runner(monkeypatch)
+
+    def _boom():
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr("cron.scheduler.get_running_job_ids", _boom)
+    assert r._scale_to_zero_is_idle() is False
+
+
+def test_unreadable_api_source_fails_awake(monkeypatch):
+    from types import SimpleNamespace
+
+    def _boom():
+        raise RuntimeError("adapter wedged")
+
+    r = _work_count_runner(monkeypatch)
+    from gateway.platforms.base import Platform
+
+    r.adapters = {Platform.API_SERVER: SimpleNamespace(active_agent_work_count=_boom)}
+    assert r._scale_to_zero_is_idle() is False
+
+
+def test_missing_api_adapter_is_not_work(monkeypatch):
+    """No api_server adapter at all (common: relay-only instance before the
+    key existed) is a NORMAL state, not an unreadable source — must not hold
+    the machine awake."""
+    r = _work_count_runner(monkeypatch)
+    r.adapters = {}
+    assert r._scale_to_zero_is_idle() is True

@@ -64,6 +64,49 @@ class CapabilityDescriptor:
     # "no context" — additive within contract_version 1. from_json filters
     # unknown keys, so a connector sending this to an older gateway is safe too.
     supports_context: bool = False
+    # Whether the connector's platform can host a FLAT continuable cron
+    # surface (native Slack's ``cron_continuable_surface: in_channel``): the
+    # brief posts top-level in the channel/DM and a plain reply continues the
+    # job via the flat ``(platform, chat_id, None)`` session. The scheduler
+    # fails safe to thread mode when False (D6 gate), so an older connector
+    # that never sends this keeps today's thread behavior — additive within
+    # contract_version 1.
+    supports_inchannel_continuable: bool = False
+    # Whether the connector's platform sender can render block-level
+    # formatting from raw markdown (Slack: rich_text lists, Block Kit
+    # tables/markdown blocks). When True AND the operator enables the
+    # rich_blocks/markdown_blocks knobs, the gateway stamps ``format_hints``
+    # into outbound send/edit metadata; the connector renders blocks and
+    # keeps the plain text as fallback. Default False — old connectors never
+    # receive hints, old gateways never send them. Additive within
+    # contract_version 1.
+    supports_block_formatting: bool = False
+    # Op-level capability discovery (Phase 1 parity): the outbound op names the
+    # connector's sender for this platform actually implements (e.g.
+    # ["send", "edit", "typing", "follow_up", "get_chat_info"]). Empty tuple =
+    # the connector predates the field; callers MUST treat that as "legacy op
+    # set" (send/edit/typing/follow_up) rather than "nothing supported", so an
+    # old connector keeps working unchanged. Additive within contract_version 1.
+    # Stored as a tuple so the frozen dataclass stays hashable/immutable.
+    supported_ops: tuple = ()
+
+    # The op set every connector supported before ``supported_ops`` existed.
+    # Used as the assumed capability set when a legacy connector sends no list.
+    LEGACY_OPS = ("send", "edit", "typing", "follow_up")
+
+    def supports_op(self, op: str) -> bool:
+        """Whether the connector advertises the outbound op ``op``.
+
+        Fail-open for legacy connectors: an empty ``supported_ops`` means the
+        connector predates op discovery, so assume the legacy op set (the four
+        ops every connector implemented before the field existed). A NEW op
+        (e.g. ``get_chat_info``) is therefore only True when explicitly
+        advertised — exactly the discovery semantics Phase 1 needs: the gateway
+        can probe capability without trying the op and parsing an error.
+        """
+        if not self.supported_ops:
+            return op in self.LEGACY_OPS
+        return op in self.supported_ops
 
     def to_json(self) -> str:
         """Serialize to a compact, stable JSON string for the handshake frame."""
@@ -93,6 +136,19 @@ class CapabilityDescriptor:
                     filtered["max_message_length"] = 4096
             except (TypeError, ValueError):
                 filtered["max_message_length"] = 4096
+        # Normalize supported_ops at the trust boundary: JSON carries a list;
+        # the frozen dataclass stores a tuple. Non-list/malformed values (or a
+        # list holding non-strings) degrade to () — the legacy-op-set fallback —
+        # rather than raising, matching the "malformed input never breaks the
+        # handshake" posture above.
+        if "supported_ops" in filtered:
+            raw_ops = filtered["supported_ops"]
+            if isinstance(raw_ops, (list, tuple)):
+                filtered["supported_ops"] = tuple(
+                    str(op) for op in raw_ops if isinstance(op, str) and op
+                )
+            else:
+                filtered["supported_ops"] = ()
         return cls(**filtered)
 
     @classmethod

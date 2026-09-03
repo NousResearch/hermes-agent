@@ -8,9 +8,17 @@ import os
 import sys
 import subprocess
 import shutil
+import importlib.util
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import (
+    detect_install_method,
+    get_env_path,
+    get_hermes_home,
+    get_project_root,
+    is_nix_install_method,
+    recommended_update_command_for_method,
+)
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 from hermes_constants import agent_browser_runnable
@@ -25,7 +33,9 @@ load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".en
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
+from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_state_common import FTS_STORAGE_VERSION
 from utils import base_url_host_matches
 
 
@@ -44,16 +54,21 @@ _PROVIDER_ENV_HINTS = (
     "KIMI_CN_API_KEY",
     "GMI_API_KEY",
     "FIREWORKS_API_KEY",
+    "ACTUAL_API_KEY",
+    "ACTUAL_BASE_URL",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY",
     "DEEPSEEK_API_KEY",
     "DASHSCOPE_API_KEY",
     "HF_TOKEN",
+    "AI_GATEWAY_API_KEY",
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
+    "COMMANDCODE_API_KEY",
     "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY",
+    "TOKENPLAN_API_KEY",
 )
 
 
@@ -70,6 +85,154 @@ def _system_package_install_cmd(pkg: str) -> str:
     if sys.platform == "darwin":
         return f"brew install {pkg}"
     return f"sudo apt install {pkg}"
+
+
+def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
+    """Return an actionable SQLite upgrade hint for this install layout."""
+    method = install_method or detect_install_method(PROJECT_ROOT)
+    if method == "docker":
+        command = recommended_update_command_for_method(method)
+        action = f"run `{command}`, then recreate all Hermes containers"
+    elif is_nix_install_method(method):
+        # The Nix helper is prose guidance, not a literal shell command.
+        action = recommended_update_command_for_method(method)
+    elif method == "apt":
+        action = f"run `{recommended_update_command_for_method(method)}`"
+    else:
+        action = "run `hermes update`"
+    return (
+        f"({action}; fixed versions: 3.51.3+ / 3.50.7 / 3.44.6 — "
+        "see https://sqlite.org/wal.html#walresetbug)"
+    )
+
+
+def _hermes_database_paths(hermes_home: Path) -> list[tuple[str, Path]]:
+    """Return (display name, path) pairs for Hermes-managed SQLite databases."""
+    # backup.py owns the canonical list of per-profile stores; reuse it.
+    from hermes_cli.backup import _QUICK_STATE_FILES
+
+    entries = [
+        (name, hermes_home / name)
+        for name in _QUICK_STATE_FILES
+        if name.endswith(".db")
+    ]
+    # Non-default kanban boards each keep their own kanban.db.
+    for board_db in sorted((hermes_home / "kanban" / "boards").glob("*/kanban.db")):
+        entries.append((str(board_db.relative_to(hermes_home)), board_db))
+    return entries
+
+
+_SQLITE_HEADER_MAGIC = b"SQLite format 3\x00"
+
+
+def _unreadable_reason(db_path: Path) -> str:
+    """Explain why a database file could not be read, without opening it.
+
+    ``read_header_bytes_preopen`` collapses every ``OSError`` into ``None``,
+    but doctor's job is to say *which* problem it hit. ``stat()`` and
+    ``access()`` answer that from directory metadata alone — neither takes a
+    file descriptor, so neither can cancel the file's POSIX advisory locks.
+    """
+    try:
+        db_path.stat()
+    except OSError as exc:
+        return str(exc)
+    if not os.access(db_path, os.R_OK):
+        return f"permission denied: {db_path}"
+    return "file could not be read"
+
+
+def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
+    """Return (journal mode, error) from the file header without opening the database.
+
+    Header byte 18 is 2 for WAL and 1 for a rollback journal. Opening the
+    database through the SQLite engine — even read-only — creates -wal/-shm
+    sidecar files, which a diagnostic must not do.
+
+    The byte read is routed through ``read_header_bytes_preopen`` rather than
+    a bare ``open()``: closing *any* descriptor for a database file cancels
+    this process's POSIX advisory locks on it, so a raw read would drop the
+    locks a live connection is holding (see ``hermes_cli.sqlite_safe_read``).
+    ``run_doctor`` is also called in-process by the dashboard console, which
+    holds live ``SessionDB`` connections. The helper refuses in that case and
+    the mode is reported as unreadable instead.
+    """
+    from hermes_cli.sqlite_safe_read import (
+        has_live_connection,
+        read_header_bytes_preopen,
+    )
+
+    header = read_header_bytes_preopen(db_path, length=20)
+    if header is None:
+        if has_live_connection(db_path):
+            return None, "database is open in this process"
+        return None, _unreadable_reason(db_path)
+    if len(header) == 0:
+        return None, "file is empty"
+    if len(header) < 20 or not header.startswith(_SQLITE_HEADER_MAGIC):
+        return None, "file is not a database"
+    if header[18] == 2:
+        return "wal", None
+    if header[18] == 1:
+        return "rollback", None
+    return None, f"unrecognized file-format version {header[18]}"
+
+
+def _format_db_size(db_path: Path) -> str:
+    # backup.py owns human-readable size formatting; reuse it (as with
+    # _QUICK_STATE_FILES above) and keep only the stat-failure wrap here.
+    from hermes_cli.backup import _format_size
+
+    try:
+        nbytes = db_path.stat().st_size
+    except OSError:
+        return "size unknown"
+    return _format_size(nbytes)
+
+
+def _report_database_journal_modes(
+    hermes_home: Path | None = None,
+    version_info: tuple[int, ...] | None = None,
+) -> None:
+    """List each database's journal mode; warn on WAL under a vulnerable SQLite."""
+    from hermes_state import _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable
+
+    vulnerable = is_sqlite_wal_reset_vulnerable(version_info)
+    home = hermes_home if hermes_home is not None else HERMES_HOME
+    try:
+        databases = _hermes_database_paths(home)
+    except Exception as exc:
+        check_warn(f"Could not list Hermes databases: {exc}")
+        return
+    exposed = []
+    for name, path in databases:
+        if not path.is_file():
+            continue
+        mode, error = _read_journal_mode(path)
+        size = _format_db_size(path)
+        if error is not None:
+            if vulnerable:
+                check_warn(
+                    f"{name}: journal mode could not be read",
+                    f"({error}; cannot rule out WAL exposure)",
+                )
+            else:
+                check_info(f"{name}: journal mode could not be read ({error})")
+        elif mode == "wal":
+            if vulnerable:
+                exposed.append(name)
+                check_warn(
+                    f"{name} is in WAL mode ({size})",
+                    "(exposed to the WAL-reset bug until SQLite is upgraded)",
+                )
+            else:
+                check_info(f"{name}: WAL journal mode ({size})")
+        elif vulnerable:
+            check_info(f"{name}: rollback journal mode ({size}, not exposed)")
+        else:
+            check_info(f"{name}: rollback journal mode ({size})")
+    if exposed:
+        check_info(f"To clear the exposure: {_wal_reset_repair_hint()}")
 
 
 def _safe_which(cmd: str) -> str | None:
@@ -134,6 +297,60 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
     return ""
 
 
+def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
+    """Return doctor rows for web search/extract provider readiness (#78412).
+
+    Each row is ``(status, label, detail)`` where *status* is ``ok`` or ``warn``.
+    Uses the same active-provider resolvers as the tools, but reports readiness
+    from ``is_available()`` so an explicitly selected but unconfigured backend
+    does not look healthy.
+    """
+    rows: list[tuple[str, str, str]] = []
+    try:
+        from agent.web_search_registry import (
+            get_active_extract_provider,
+            get_active_search_provider,
+        )
+        from tools.web_tools import _ensure_web_plugins_loaded, _provider_is_ready
+
+        # Doctor runs in a fresh process — bundled web providers register
+        # during plugin discovery, which nothing has triggered yet here.
+        # Without this the registry is empty and every row reads
+        # "no provider selected or registered" (idempotent, cheap on rerun).
+        _ensure_web_plugins_loaded()
+    except Exception:
+        return rows
+
+    for capability, getter in (
+        ("web search", get_active_search_provider),
+        ("web extract", get_active_extract_provider),
+    ):
+        try:
+            provider = getter()
+        except Exception:
+            provider = None
+        if provider is None:
+            rows.append(
+                (
+                    "warn",
+                    capability,
+                    "(no provider selected or registered)",
+                )
+            )
+            continue
+        name = getattr(provider, "name", None) or type(provider).__name__
+        if _provider_is_ready(provider):
+            rows.append(("ok", capability, f"({name})"))
+        else:
+            rows.append(
+                (
+                    "warn",
+                    capability,
+                    f"({name} selected; provider not configured)",
+                )
+            )
+    return rows
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
     updated_available = list(available)
@@ -189,6 +406,129 @@ def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
+def _doctor_memory_config(hermes_home: Path | None = None) -> dict:
+    """Return the effective memory section used by doctor diagnostics."""
+    home = hermes_home if hermes_home is not None else HERMES_HOME
+    try:
+        from hermes_cli.config import _expand_env_vars, read_user_config_raw
+
+        config_path = home / "config.yaml"
+        if not config_path.exists():
+            return {}
+        config = _expand_env_vars(read_user_config_raw(config_path))
+        try:
+            from hermes_cli import managed_scope
+
+            config = managed_scope.apply_managed_overlay(config)
+        except Exception:
+            pass
+        section = config.get("memory") if isinstance(config, dict) else None
+        return section if isinstance(section, dict) else {}
+    except Exception:
+        return {}
+
+
+# ── state.db health/stats thresholds (advisory only — module constants,
+# deliberately NOT config: doctor warnings are guidance, not policy) ──
+STATE_DB_SIZE_WARN_BYTES = 1 * 1024 * 1024 * 1024   # 1 GiB logical size
+
+
+# Shared byte formatter, aliased to the name this module's three rendering
+# call sites already use.
+from hermes_cli.sizefmt import format_bytes as _human_bytes
+
+
+def _render_state_db_stats(stats: dict, holders=None) -> list:
+    """Turn a collect_state_db_stats() dict into doctor output lines.
+
+    Returns a list of ``(kind, text, detail)`` tuples where kind is one of
+    'info' / 'warn'. Pure formatting — no I/O — so it is unit-testable
+    without spawning the doctor CLI. Tolerates None in every field.
+    """
+    lines: list = []
+    stats = stats or {}
+
+    logical = stats.get("logical_size_bytes")
+    wal = stats.get("wal_size_bytes")
+    freelist = stats.get("freelist_count")
+
+    size_bits = []
+    if logical is not None:
+        size_bits.append(f"logical size {_human_bytes(logical)}")
+    if stats.get("page_count") is not None:
+        size_bits.append(f"{stats['page_count']:,} pages")
+    if freelist is not None:
+        size_bits.append(f"{freelist:,} free")
+    if wal is not None:
+        size_bits.append(f"WAL {_human_bytes(wal)}")
+    if size_bits:
+        lines.append(("info", "state.db " + ", ".join(size_bits), ""))
+
+    row_bits = []
+    if stats.get("messages") is not None:
+        row_bits.append(f"{stats['messages']:,} messages")
+    if stats.get("sessions") is not None:
+        row_bits.append(f"{stats['sessions']:,} sessions")
+    if stats.get("journal_mode"):
+        row_bits.append(f"journal_mode={stats['journal_mode']}")
+    if holders is not None:
+        row_bits.append(f"{holders} process(es) holding the DB open")
+    if row_bits:
+        lines.append(("info", ", ".join(row_bits), ""))
+
+    fts = stats.get("fts_tables")
+    if fts:
+        present = [t for t, ok in fts.items() if ok]
+        lines.append((
+            "info",
+            "FTS tables: " + (", ".join(present) if present else "none"),
+            "",
+        ))
+
+    deferral = stats.get("fts_rebuild_deferral")
+    if isinstance(deferral, dict):
+        attempts = deferral.get("attempts")
+        pids = deferral.get("holder_pids") or []
+        lines.append((
+            "warn",
+            f"state.db FTS repair is blocked after {attempts or '?'} "
+            f"deferral(s) by PID(s) {pids or 'unknown'}",
+            "(stop the listed processes, then run 'hermes sessions "
+            "optimize-storage' with the gateway stopped)",
+        ))
+
+    # Advisory: oversized database. Suggest auto_prune, and — when the FTS
+    # rebuild is pending OR the DB predates the current trigram layout — the offline
+    # optimize-storage pass that migrates/compacts the FTS indexes.
+    if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
+        detail = (
+            "consider enabling sessions.auto_prune in config.yaml "
+            "to bound growth"
+        )
+        stale_trigram = (
+            fts is not None
+            and fts.get("messages_fts_trigram")
+            and (stats.get("fts_storage_version") or 0) < FTS_STORAGE_VERSION
+        )
+        if stats.get("fts_rebuild_pending") or stale_trigram:
+            detail += (
+                "; run 'hermes sessions optimize-storage' offline "
+                "(with the gateway stopped) to compact FTS storage"
+            )
+        lines.append((
+            "warn",
+            f"state.db is large ({_human_bytes(logical)})",
+            f"({detail})",
+        ))
+
+    # WAL runaway is deliberately NOT warned here: the pre-existing WAL
+    # check later in the state.db section already warns above 50 MB and
+    # offers a checkpoint via --fix; a second warning at a higher threshold
+    # would only duplicate it.
+
+    return lines
+
+
 def _section(title: str) -> None:
     """Print a doctor section banner: blank line + bold cyan ◆ title."""
     print()
@@ -199,6 +539,158 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     """Emit a check_fail and append the corresponding fix instruction."""
     check_fail(text, detail)
     issues.append(fix)
+
+
+# Deprecated / legacy config keys still read for back-compat. Doctor surfaces
+# them as non-failing warnings with the modern replacement — it does not
+# auto-migrate or delete (migrations live in config.py version steps).
+_DEPRECATED_CONFIG_KEYS: tuple[tuple[str, str, str], ...] = (
+    # (section, key, replacement)
+    ("display", "tool_progress_overrides", "display.platforms"),
+    ("delegation", "max_async_children", "delegation.max_concurrent_children"),
+)
+
+# compression.summary_* → auxiliary.compression (model/provider/base_url)
+_DEPRECATED_COMPRESSION_SUMMARY_KEYS: tuple[str, ...] = (
+    "summary_model",
+    "summary_provider",
+    "summary_base_url",
+)
+
+# Deprecated env vars (checked in the .env file, not process env, so config→env
+# bridges like terminal.cwd → TERMINAL_CWD do not false-positive).
+_DEPRECATED_ENV_VARS: tuple[tuple[str, str], ...] = (
+    # HERMES_TOOL_PROGRESS is fully unsupported since the v12 config support
+    # floor removed its only consumer (the v3→4 migration) — it is silently
+    # ignored. HERMES_TOOL_PROGRESS_MODE is still read by the gateway as a
+    # back-compat fallback but remains deprecated.
+    ("HERMES_TOOL_PROGRESS", "display.tool_progress in config.yaml — ignored/unsupported since config floor v12"),
+    ("HERMES_TOOL_PROGRESS_MODE", "display.tool_progress in config.yaml"),
+    ("TERMINAL_CWD", "terminal.cwd in config.yaml"),
+    ("MESSAGING_CWD", "terminal.cwd in config.yaml"),
+    ("QQ_HOME_CHANNEL", "QQBOT_HOME_CHANNEL"),
+    ("QQ_HOME_CHANNEL_NAME", "QQBOT_HOME_CHANNEL_NAME"),
+)
+
+
+def collect_deprecated_config_keys(raw_config: dict | None) -> list[tuple[str, str]]:
+    """Return ``(legacy_path, replacement)`` for deprecated keys present in *raw_config*.
+
+    Only keys that appear in the on-disk YAML are reported (raw file load, not
+    merged defaults). Empty containers still count — presence of the legacy
+    key is the signal that the user should migrate.
+    """
+    findings: list[tuple[str, str]] = []
+    if not isinstance(raw_config, dict):
+        return findings
+
+    for section, key, replacement in _DEPRECATED_CONFIG_KEYS:
+        section_val = raw_config.get(section)
+        if isinstance(section_val, dict) and key in section_val:
+            findings.append((f"{section}.{key}", replacement))
+
+    compression = raw_config.get("compression")
+    if isinstance(compression, dict):
+        for key in _DEPRECATED_COMPRESSION_SUMMARY_KEYS:
+            if key in compression:
+                findings.append((f"compression.{key}", "auxiliary.compression"))
+
+    return findings
+
+
+def collect_deprecated_env_vars(env_map: dict | None) -> list[tuple[str, str]]:
+    """Return ``(legacy_env, replacement)`` for deprecated vars present in *env_map*.
+
+    *env_map* should come from the on-disk ``.env`` (e.g. ``load_env()``), not
+    ``os.environ``, so bridged runtime vars do not trigger false positives.
+    """
+    findings: list[tuple[str, str]] = []
+    if not isinstance(env_map, dict):
+        return findings
+    for name, replacement in _DEPRECATED_ENV_VARS:
+        val = env_map.get(name)
+        if val is not None and str(val).strip() != "":
+            findings.append((name, replacement))
+    return findings
+
+
+def collect_relay_plugin_cutover_findings(
+    raw_config: dict | None,
+    env_map: dict | None,
+) -> list[tuple[str, str]]:
+    """Return actionable findings for the removed Hermes Relay plugin."""
+    from hermes_cli.relay_plugin_cutover import (
+        LEGACY_RELAY_EXPORT_ENV_VARS,
+        RELAY_PLUGINS_CONFIG_ENV,
+        configured_legacy_relay_env_vars,
+        legacy_relay_plugin_keys,
+    )
+
+    findings: list[tuple[str, str]] = []
+    if isinstance(raw_config, dict):
+        plugins = raw_config.get("plugins")
+        if isinstance(plugins, dict):
+            for key in legacy_relay_plugin_keys(plugins.get("enabled")):
+                findings.append(
+                    (
+                        f"plugins.enabled: {key}",
+                        f"remove it and configure {RELAY_PLUGINS_CONFIG_ENV}",
+                    )
+                )
+
+    effective_env = dict(env_map or {})
+    # Fall through to process-level env ONLY when no explicit env_map was
+    # given: run_doctor passes None and wants live-process vars included, but
+    # callers (and tests) that hand in an explicit map are describing a
+    # complete environment — merging os.environ on top breaks hermeticity on
+    # any box that exports legacy relay vars (10-vs-2 findings, Aug 2026).
+    if env_map is None:
+        for name in (*LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV):
+            if name not in effective_env and os.environ.get(name) is not None:
+                effective_env[name] = os.environ[name]
+    if not str(effective_env.get(RELAY_PLUGINS_CONFIG_ENV, "")).strip():
+        for name in configured_legacy_relay_env_vars(effective_env):
+            findings.append(
+                (
+                    name,
+                    f"move exporter settings to {RELAY_PLUGINS_CONFIG_ENV}; "
+                    "this variable is now ignored",
+                )
+            )
+    return findings
+
+
+def report_deprecated_config_and_env(
+    raw_config: dict | None = None,
+    env_map: dict | None = None,
+) -> list[tuple[str, str]]:
+    """Emit non-failing doctor warnings for deprecated config keys and env vars.
+
+    Returns the list of ``(legacy, replacement)`` findings that were reported
+    (empty when nothing deprecated is present). Does not mutate config/env and
+    does not append to the blocking ``issues`` list.
+    """
+    deprecated = collect_deprecated_config_keys(raw_config)
+    deprecated.extend(collect_deprecated_env_vars(env_map))
+    relay_cutover = collect_relay_plugin_cutover_findings(raw_config, env_map)
+    findings = deprecated + relay_cutover
+    if not findings:
+        check_ok("No deprecated config keys or env vars")
+        return findings
+
+    for legacy, replacement in deprecated:
+        check_warn(
+            f"Deprecated: {legacy}",
+            f"(use {replacement} instead)",
+        )
+        check_info(f"Replace {legacy} → {replacement} (warn-only; not auto-migrated here)")
+    for legacy, replacement in relay_cutover:
+        check_warn(
+            f"Breaking Relay migration: {legacy}",
+            f"({replacement})",
+        )
+        check_info(f"Migrate {legacy}: {replacement}")
+    return findings
 
 
 def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
@@ -329,21 +821,90 @@ def _check_s6_supervision(issues: list[str]) -> None:
     )
 
 
-def check_certificates() -> None:
+def check_certificates(should_fix: bool = False, issues: "list | None" = None) -> None:
     """Verify the certifi CA bundle is loadable.
 
     Surfaces the SSLConfigurationError user-friendly path before they hit
     a wall of tracebacks on the first outbound HTTPS call.
+
+    With ``--fix``, a broken bundle (missing/corrupt ``cacert.pem`` — e.g.
+    after a brew Python upgrade rebuilt the venv, #29866) is repaired by
+    force-reinstalling certifi into THIS interpreter's environment and
+    re-verifying.
     """
     try:
         from agent.ssl_guard import verify_ca_bundle_with_fallback
         from agent.errors import SSLConfigurationError
-        verify_ca_bundle_with_fallback()
-        check_ok("SSL CA certificate bundle is valid")
-    except SSLConfigurationError as e:
-        check_fail("SSL CA certificate bundle is broken", str(e))
     except Exception as e:
         check_warn("SSL certificate check skipped", str(e))
+        return
+
+    try:
+        verify_ca_bundle_with_fallback()
+        check_ok("SSL CA certificate bundle is valid")
+        return
+    except SSLConfigurationError as e:
+        first_error = str(e)
+    except Exception as e:
+        check_warn("SSL certificate check skipped", str(e))
+        return
+
+    if not should_fix:
+        check_fail("SSL CA certificate bundle is broken", first_error)
+        if issues is not None:
+            issues.append(
+                "Repair the CA bundle: run `hermes doctor --fix`, or "
+                f"`{sys.executable} -m pip install --force-reinstall certifi`"
+            )
+        return
+
+    # --fix: force-reinstall certifi into the running interpreter's env and
+    # re-verify. importlib caches are invalidated so certifi.where() resolves
+    # the fresh install without a process restart.
+    check_fail("SSL CA certificate bundle is broken", first_error)
+    print("    → Repairing: force-reinstalling certifi...")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--force-reinstall", "certifi"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except Exception as exc:
+        check_fail("certifi repair could not run pip", str(exc))
+        if issues is not None:
+            issues.append(
+                f"Reinstall certifi manually: {sys.executable} -m pip install "
+                "--force-reinstall certifi"
+            )
+        return
+    if result.returncode != 0:
+        tail = (result.stderr or result.stdout or "")[-500:]
+        check_fail("certifi reinstall failed", tail)
+        if issues is not None:
+            issues.append(
+                f"Reinstall certifi manually: {sys.executable} -m pip install "
+                "--force-reinstall certifi"
+            )
+        return
+
+    # Drop any cached certifi module so where() re-resolves the new bundle.
+    import importlib
+    for mod_name in [m for m in sys.modules if m == "certifi" or m.startswith("certifi.")]:
+        sys.modules.pop(mod_name, None)
+    importlib.invalidate_caches()
+
+    try:
+        verify_ca_bundle_with_fallback()
+        check_ok("SSL CA certificate bundle repaired (certifi reinstalled)")
+    except SSLConfigurationError as e:
+        check_fail("SSL CA certificate bundle still broken after reinstall", str(e))
+        if issues is not None:
+            issues.append(
+                "certifi reinstall did not restore the CA bundle — check for a "
+                "custom CA env var (SSL_CERT_FILE/REQUESTS_CA_BUNDLE) pointing "
+                "at a missing file, or recreate the venv."
+            )
 
 
 def _check_gateway_service_linger(issues: list[str]) -> None:
@@ -415,6 +976,7 @@ def _build_apikey_providers_list() -> list:
         ("MiniMax",          ("MINIMAX_API_KEY",),                           "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
         # MiniMax CN: /v1 endpoint does NOT support /models (returns 404).
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                        "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", False),
+        ("Vercel AI Gateway", ("AI_GATEWAY_API_KEY",),                       "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                          "https://api.kilo.ai/api/gateway/models", "KILOCODE_BASE_URL", True),
         ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                      "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
         # OpenCode Go has no shared /models endpoint; skip the health check.
@@ -430,7 +992,7 @@ def _build_apikey_providers_list() -> list:
         "Arcee AI": "arcee", "GMI Cloud": "gmi", "DeepSeek": "deepseek",
         "Hugging Face": "huggingface", "NVIDIA NIM": "nvidia",
         "Alibaba/DashScope": "alibaba", "MiniMax": "minimax",
-        "MiniMax (China)": "minimax-cn",
+        "MiniMax (China)": "minimax-cn", "Vercel AI Gateway": "ai-gateway",
         "Kilo Code": "kilocode", "OpenCode Zen": "opencode-zen",
         "OpenCode Go": "opencode-go",
     }
@@ -508,6 +1070,189 @@ def managed_scope_check() -> None:
     )
     if os.environ.get("HERMES_MANAGED_DIR", "").strip():
         check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
+
+
+def check_macos_tcc_grants() -> None:
+    """Check macOS TCC grant persistence for a locally-built desktop bundle.
+
+    TCC keys permission grants (Screen Recording, Full Disk Access,
+    Accessibility, ...) to the app's code-signing requirement. A bundle
+    signed with the pre-#73681 cdhash-pinned ad-hoc identity gets a new DR on
+    every rebuild, so all grants silently stop matching — and the stale row
+    keeps the System Settings toggle ON while macOS re-prompts on every
+    capture (issue #86385).
+
+    Post-#73681 builds pin ``designated => identifier "com.nousresearch.hermes"``
+    (no cdhash), so new grants survive rebuilds — but grants made to older
+    binaries remain stale until re-granted once. The stale state is not
+    directly readable (TCC.db needs Full Disk Access), so this check reports
+    the DR class and, when the DR is stable, prints the exact one-time repair.
+    Silent on non-macOS and when no desktop bundle is installed.
+    """
+    if sys.platform != "darwin":
+        return
+    app = _desktop_app_bundle()
+    if app is None:
+        return
+    dr = _macos_desktop_dr(app)
+    if not dr:
+        check_warn(
+            "macOS TCC grant check",
+            "(could not read code-signing requirement of the desktop bundle)",
+        )
+        return
+    # The DR string is the only readable signal — TCC.db itself needs Full
+    # Disk Access. A cdhash anchor marks the pre-#73681 ad-hoc identity
+    # (rebuild ⇒ new cdhash ⇒ stale grants); its absence marks identifier-
+    # pinned. Treat the match as a proxy for the signing class, not a
+    # contract on DR wording.
+    if "cdhash" in dr.lower():
+        check_warn(
+            "macOS TCC grants will reset after every update",
+            "the desktop bundle's designated requirement is cdhash-pinned "
+            "(pre-#73681 build) — rebuilds invalidate all permission grants. "
+            "Run `hermes update` to get the stable identifier-pinned signing "
+            "identity, then re-grant permissions once.",
+        )
+        return
+    if "certificate" in dr.lower():
+        # Certificate-anchored DR (hermes desktop --setup-tcc-identity, or a
+        # notarized release build): the strongest anchor TCC can key on.
+        check_ok(
+            "macOS TCC signing identity is stable",
+            "(certificate-anchored DR; grants survive rebuilds)",
+        )
+    else:
+        check_ok(
+            "macOS TCC signing identity is stable",
+            "(identifier-pinned DR; grants survive rebuilds — for the strongest "
+            "anchor, see `hermes desktop --setup-tcc-identity`)",
+        )
+    check_info(
+        "If macOS still re-prompts for permissions (toggle shows ON): the stored "
+        "grant is stale — run `tccutil reset ScreenCapture com.nousresearch.hermes` "
+        "(repeat per affected service), toggle it ON in System Settings, then "
+        "fully quit & relaunch Hermes once."
+    )
+
+
+def _desktop_app_bundle() -> Path | None:
+    """Locate the locally-built desktop app bundle, if any.
+
+    Mirrors the install layout the self-updater produces
+    (``apps/desktop/release/mac-<arch>/Hermes.app``) — the only layout whose
+    ad-hoc re-signed bundle can invalidate TCC grants. When multiple arch
+    trees coexist (stale cross-build), the newest wins, matching
+    ``_desktop_packaged_executable``'s selection. ``/Applications/Hermes.app``
+    is deliberately not probed: it is the separately-signed Hermes-Setup
+    launcher (``com.nousresearch.hermes.setup``, certificate-anchored), whose
+    grants are stable by construction and unaffected by rebuilds.
+    """
+    root = Path(__file__).resolve().parents[1]
+    release_dir = root / "apps" / "desktop" / "release"
+    candidates = [p for p in release_dir.glob("mac*/Hermes.app") if p.is_dir()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _macos_desktop_dr(app: Path) -> str | None:
+    """Return the bundle's designated requirement string, or None on failure."""
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return None
+    try:
+        proc = subprocess.run(
+            [codesign, "-d", "--requirements", "-", str(app)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        # Never let a hanging codesign abort the whole doctor run — the
+        # caller falls through to its "could not read" warning.
+        return None
+    if proc.returncode != 0:
+        return None
+    return (proc.stdout or "") + (proc.stderr or "")
+
+
+def check_macos_tcc_anchor(should_fix: bool = False) -> None:
+    """Report (and optionally install) the dylib-complete TCC anchor (#95596).
+
+    Silent on non-macOS and for interpreters that are not uv-managed.  Never
+    raises — a failed check must not crash doctor.  Install is gated by the
+    module's pre-install boot probe, so ``--fix`` cannot brick the CLI.
+    """
+    try:
+        from hermes_cli import macos_tcc_anchor as tcc
+
+        status, detail = tcc.tcc_anchor_state()
+        if status == "skip":
+            return
+        if status == "active":
+            check_ok("macOS TCC anchor active", f"({detail})")
+            return
+        if should_fix:
+            anchored = tcc.ensure_tcc_anchor()
+            if anchored is not None:
+                check_ok("macOS TCC anchor installed", f"({anchored})")
+                return
+        check_warn(
+            "macOS TCC anchor missing" if status == "missing" else "macOS TCC anchor stale",
+            f"({detail})",
+        )
+    except Exception as e:  # diagnostics must never crash
+        check_warn("macOS TCC anchor check failed", f"({e})")
+
+
+def check_macos_full_disk_access() -> None:
+    """One-grant guidance: Full Disk Access silences every folder prompt.
+
+    macOS TCC prompts per-category (Desktop, then Downloads, then Documents,
+    ...), so first-run agents drip-feed permission dialogs as they touch each
+    folder. ONE Full Disk Access grant covers all of them, permanently — and
+    with the stable signing identities now in place (#73681/#95091/#95131),
+    it survives updates too. This check probes whether the terminal context
+    already has FDA and, when it doesn't, prints the exact one-switch setup
+    with the System Settings deep link.
+
+    Probe: readability of ``~/Library/Application Support/com.apple.TCC`` —
+    the TCC database directory itself is FDA-gated, readable ONLY with the
+    grant, and (critically) probing it with os.access/listdir does NOT
+    trigger a prompt: TCC prompts fire for protected-CATEGORY paths (Desktop
+    etc.), while the TCC dir simply returns EPERM without one. Silent on
+    non-macOS.
+    """
+    if sys.platform != "darwin":
+        return
+    tcc_dir = Path.home() / "Library" / "Application Support" / "com.apple.TCC"
+    try:
+        os.listdir(tcc_dir)
+        has_fda = True
+    except PermissionError:
+        has_fda = False
+    except OSError:
+        # Missing dir / other error: can't tell — stay silent rather than
+        # nag on an indeterminate probe.
+        return
+    if has_fda:
+        check_ok(
+            "macOS Full Disk Access granted",
+            "(no per-folder permission prompts will occur)",
+        )
+        return
+    check_info(
+        "One switch silences all macOS folder prompts: grant your terminal "
+        "app Full Disk Access and Hermes will never trip per-folder dialogs "
+        "(Desktop/Downloads/Documents/...) again. Open: System Settings → "
+        "Privacy & Security → Full Disk Access — or run:\n"
+        "      open \"x-apple.systempreferences:com.apple.preference"
+        ".security?Privacy_AllFiles\"\n"
+        "    then enable your terminal (and Hermes.app if you use Desktop), "
+        "and restart them once. With Hermes' stable signing identities the "
+        "grant survives every update."
+    )
 
 
 def run_doctor(args):
@@ -645,7 +1390,34 @@ def run_doctor(args):
             "Upgrade Python to 3.10+",
             issues,
         )
-    
+
+    # Linked SQLite library (issue #69784): version + source id matter independently
+    # of the Python minor — uv's python-build-standalone can keep a vulnerable
+    # SQLite across Python upgrades.
+    try:
+        import sqlite3
+        from hermes_state import is_sqlite_wal_reset_vulnerable, sqlite_source_id
+
+        _sqlite_ver = sqlite3.sqlite_version
+        _sqlite_src = sqlite_source_id()
+        _sqlite_src_short = (
+            (_sqlite_src[:48] + "…") if len(_sqlite_src) > 48 else _sqlite_src
+        )
+        if is_sqlite_wal_reset_vulnerable():
+            # Warn-only: Hermes already refuses to enable WAL on fresh DBs.
+            # Do not append to ``issues`` because runtime repair remains
+            # best-effort and unsupported installs may need manual action.
+            check_warn(
+                f"SQLite {_sqlite_ver} (WAL-reset bug)",
+                _sqlite_upgrade_hint(),
+            )
+        else:
+            check_ok(f"SQLite {_sqlite_ver}")
+        if _sqlite_src_short:
+            check_info(f"SQLite source id: {_sqlite_src_short}")
+        _report_database_journal_modes()
+    except Exception as e:
+        check_warn(f"SQLite version probe failed: {e}")
     # Check if in virtual environment
     in_venv = sys.prefix != sys.base_prefix
     if in_venv:
@@ -653,12 +1425,26 @@ def run_doctor(args):
     else:
         check_warn("Not in virtual environment", "(recommended)")
 
+    # macOS TCC interpreter anchor (#95596): dylib-complete re-land of the
+    # mechanism reverted in #95563. Silent on non-macOS.
+    check_macos_tcc_anchor(should_fix=should_fix)
+
+    # macOS Full Disk Access (issue #52010 follow-up): one grant silences
+    # every per-folder prompt permanently. Silent on non-macOS.
+    check_macos_full_disk_access()
+
     # Detect drift between pyproject.toml and hermes_cli/__init__.py versions
     # (a git conflict resolution can silently revert one but not the other).
     _check_version_consistency(issues)
 
+    # macOS TCC grant persistence (issue #86385): a locally-built desktop
+    # bundle whose DR is cdhash-pinned loses every permission grant on each
+    # rebuild; a post-#73681 identifier-pinned DR survives, but grants made
+    # to older binaries stay stale (toggle shows ON while macOS re-prompts).
+    check_macos_tcc_grants()
+
     _section("SSL / CA Certificates")
-    check_certificates()
+    check_certificates(should_fix=should_fix, issues=manual_issues)
 
     _section("Required Packages")
     required_packages = [
@@ -697,11 +1483,13 @@ def run_doctor(args):
     if env_path.exists():
         check_ok(f"{_DHH}/.env file exists")
         
-        # Check for common issues. Pin encoding to UTF-8 because .env files are
-        # written as UTF-8 everywhere in the codebase, while Path.read_text()
-        # defaults to the system locale — which crashes on non-UTF-8 Windows
-        # locales (e.g. GBK) as soon as the file contains any non-ASCII byte.
-        content = env_path.read_text(encoding="utf-8")
+        # Prefer UTF-8 (.env is written as UTF-8 elsewhere). Fall back to
+        # latin-1 for Windows Notepad/cp1252 files that are not valid UTF-8 —
+        # matches hermes_cli.env_loader._load_dotenv_with_fallback.
+        try:
+            content = env_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            content = env_path.read_text(encoding="latin-1")
         if _has_provider_env_config(content):
             check_ok("API key or custom endpoint configured")
         else:
@@ -738,8 +1526,9 @@ def run_doctor(args):
 
         # Validate model.provider and model.default values
         try:
-            import yaml as _yaml
-            cfg = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            # Raw-file diagnostic: inspects what the user actually wrote.
+            from hermes_cli.config import read_user_config_raw
+            cfg = read_user_config_raw(config_path)
             model_section = cfg.get("model") or {}
             provider_raw = (model_section.get("provider") or "").strip()
             provider = provider_raw.lower()
@@ -751,18 +1540,20 @@ def run_doctor(args):
                     PROVIDER_REGISTRY,
                     resolve_provider as _resolve_auth_provider,
                 )
-                known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto"}
+                known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto", "moa"}
             except Exception:
                 _resolve_auth_provider = None
                 pass
             try:
                 from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
                 from hermes_cli.providers import (
+                    custom_provider_aliases as _custom_provider_aliases,
                     normalize_provider as _normalize_catalog_provider,
                     resolve_provider_full as _resolve_provider_full,
                 )
             except Exception:
                 _compatible_custom_providers = None
+                _custom_provider_aliases = None
                 _normalize_catalog_provider = None
                 _resolve_provider_full = None
 
@@ -775,13 +1566,21 @@ def run_doctor(args):
 
             user_providers = cfg.get("providers")
             if isinstance(user_providers, dict):
-                known_providers.update(str(name).strip().lower() for name in user_providers if str(name).strip())
+                from hermes_cli.config import is_provider_enabled
+                known_providers.update(
+                    str(name).strip().lower()
+                    for name, prov_cfg in user_providers.items()
+                    if str(name).strip() and is_provider_enabled(prov_cfg)
+                )
             for entry in custom_providers:
                 if not isinstance(entry, dict):
                     continue
                 name = str(entry.get("name") or "").strip()
-                if name:
-                    known_providers.add("custom:" + name.lower().replace(" ", "-"))
+                provider_key = str(entry.get("provider_key") or "").strip()
+                if name and _custom_provider_aliases is not None:
+                    known_providers.update(
+                        _custom_provider_aliases(name, provider_key)
+                    )
 
             valid_provider_ids = set(known_providers)
             provider_ids_to_accept = {provider} if provider else set()
@@ -841,6 +1640,7 @@ def run_doctor(args):
             providers_accepting_vendor_slugs = {
                 "openrouter",
                 "auto",
+                "ai-gateway",
                 "kilocode",
                 "opencode-zen",
                 "huggingface",
@@ -966,9 +1766,9 @@ def run_doctor(args):
 
         # Detect stale root-level model keys (known bug source — PR #4329)
         try:
-            import yaml
-            with open(config_path, encoding="utf-8") as f:
-                raw_config = yaml.safe_load(f) or {}
+            # Raw-file diagnostic: stale-key detection must see the raw file.
+            from hermes_cli.config import read_user_config_raw
+            raw_config = read_user_config_raw(config_path)
             stale_root_keys = [k for k in ("provider", "base_url") if k in raw_config and isinstance(raw_config[k], str)]
             if stale_root_keys:
                 check_warn(
@@ -1013,10 +1813,9 @@ def run_doctor(args):
         # Read the .env FILE directly (load_env), not get_env_value/os.environ,
         # which the startup bridge may already have overridden.
         try:
-            import yaml
-            from hermes_cli.config import load_env, remove_env_value
-            with open(config_path, encoding="utf-8") as f:
-                raw_config = yaml.safe_load(f) or {}
+            from hermes_cli.config import load_env, read_user_config_raw, remove_env_value
+            # Raw-file diagnostic: drift check against the raw file.
+            raw_config = read_user_config_raw(config_path)
             agent_cfg = raw_config.get("agent")
             cfg_max_turns = (
                 agent_cfg.get("max_turns")
@@ -1059,6 +1858,25 @@ def run_doctor(args):
         except Exception:
             pass
 
+        # Surface deprecated/legacy config keys and env vars (warn-only).
+        # Migrations may still live in config.py version steps; doctor does
+        # not auto-delete here — only tells the user the modern replacement.
+        try:
+            from hermes_cli.config import load_env as _load_env_depr
+            from hermes_cli.config import read_user_config_raw as _read_raw_depr
+
+            # Raw-file diagnostic: deprecation sweep inspects the raw file.
+            _raw_for_depr = _read_raw_depr(config_path)
+            # Prefer the on-disk .env so bridged process env (e.g. TERMINAL_CWD
+            # from terminal.cwd) does not false-positive.
+            try:
+                _env_for_depr = _load_env_depr()
+            except Exception:
+                _env_for_depr = {}
+            report_deprecated_config_and_env(_raw_for_depr, _env_for_depr)
+        except Exception:
+            pass
+
         # Validate config structure (catches malformed custom_providers, etc.)
         try:
             from hermes_cli.config import validate_config_structure
@@ -1074,6 +1892,19 @@ def run_doctor(args):
                     for hint_line in ci.hint.splitlines():
                         check_info(hint_line)
                     issues.append(ci.message)
+        except Exception:
+            pass
+
+    if not config_path.exists():
+        # No config.yaml — still surface deprecated env vars from .env.
+        try:
+            from hermes_cli.config import load_env as _load_env_depr
+
+            try:
+                _env_for_depr = _load_env_depr()
+            except Exception:
+                _env_for_depr = {}
+            report_deprecated_config_and_env({}, _env_for_depr)
         except Exception:
             pass
 
@@ -1106,12 +1937,14 @@ def run_doctor(args):
 
     try:
         from hermes_cli.auth import (
-            get_nous_auth_status,
+            get_nous_auth_status_local,
             get_codex_auth_status,
             get_minimax_oauth_auth_status,
         )
 
-        nous_status = get_nous_auth_status()
+        # Read-only display: refresh-free snapshot — doctor must never
+        # trigger an OAuth refresh as a side effect of a health check.
+        nous_status = get_nous_auth_status_local()
         if nous_status.get("logged_in"):
             check_ok("Nous Portal auth", "(logged in)")
         else:
@@ -1169,8 +2002,19 @@ def run_doctor(args):
     else:
         check_warn(f"{_DHH} not found", "(will be created on first use)")
     
-    # Check expected subdirectories
-    expected_subdirs = ["cron", "sessions", "logs", "skills", "memories"]
+    from tools.memory_tool import get_builtin_memory_store_flags
+
+    _memory_config = _doctor_memory_config(hermes_home)
+    _memory_enabled, _user_profile_enabled = get_builtin_memory_store_flags(
+        {"memory": _memory_config}
+    )
+
+    # Check expected subdirectories. The built-in file store does not create or
+    # consume memories/ when both targets are disabled, so stale migration files
+    # are not an active diagnostic surface.
+    expected_subdirs = ["cron", "sessions", "logs", "skills"]
+    if _memory_enabled or _user_profile_enabled:
+        expected_subdirs.append("memories")
     for subdir_name in expected_subdirs:
         subdir_path = hermes_home / subdir_name
         if subdir_path.exists():
@@ -1205,22 +2049,28 @@ def run_doctor(args):
             check_ok(f"Created {_DHH}/SOUL.md with basic template")
             fixed_count += 1
     
-    # Check memory directory
+    # Check only enabled built-in stores. External providers are additive, but
+    # users can explicitly disable either legacy file target; stale files left
+    # by a migration must not be presented as active memory usage.
     memories_dir = hermes_home / "memories"
-    if memories_dir.exists():
+    if not (_memory_enabled or _user_profile_enabled):
+        check_info("Built-in memory files disabled by config")
+    elif memories_dir.exists():
         check_ok(f"{_DHH}/memories/ directory exists")
         memory_file = memories_dir / "MEMORY.md"
         user_file = memories_dir / "USER.md"
-        if memory_file.exists():
-            size = len(memory_file.read_text(encoding="utf-8").strip())
-            check_ok(f"MEMORY.md exists ({size} chars)")
-        else:
-            check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
-        if user_file.exists():
-            size = len(user_file.read_text(encoding="utf-8").strip())
-            check_ok(f"USER.md exists ({size} chars)")
-        else:
-            check_info("USER.md not created yet (will be created when the agent first writes a memory)")
+        if _memory_enabled:
+            if memory_file.exists():
+                size = len(memory_file.read_text(encoding="utf-8").strip())
+                check_ok(f"MEMORY.md exists ({size} chars)")
+            else:
+                check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
+        if _user_profile_enabled:
+            if user_file.exists():
+                size = len(user_file.read_text(encoding="utf-8").strip())
+                check_ok(f"USER.md exists ({size} chars)")
+            else:
+                check_info("USER.md not created yet (will be created when the agent first writes a memory)")
     else:
         check_warn(f"{_DHH}/memories/ not found", "(will be created on first use)")
         if should_fix:
@@ -1326,6 +2176,36 @@ def run_doctor(args):
                     )
             else:
                 check_warn(f"{_DHH}/state.db exists but has issues: {e}")
+
+        # Health/stats snapshot (#statedb-visibility): a multi-GB state.db
+        # with a runaway WAL was previously invisible to every Hermes
+        # surface. Strictly read-only (mode=ro) so it is safe against a
+        # live DB held by the gateway; any failure degrades to one info
+        # line rather than failing doctor.
+        try:
+            from hermes_state import collect_state_db_stats, count_db_holders
+
+            _db_stats = collect_state_db_stats(state_db_path)
+            _db_holders = count_db_holders(state_db_path)
+            for _kind, _text, _detail in _render_state_db_stats(
+                _db_stats, holders=_db_holders
+            ):
+                if _kind == "warn":
+                    check_warn(_text, _detail)
+                    if "auto_prune" in _detail:
+                        issues.append(
+                            "state.db is large — enable sessions.auto_prune "
+                            "in config.yaml"
+                            + (
+                                " and run 'hermes sessions optimize-storage' "
+                                "offline (gateway stopped)"
+                                if "optimize-storage" in _detail else ""
+                            )
+                        )
+                else:
+                    check_info(_text + (f" {_detail}" if _detail else ""))
+        except Exception as _stats_exc:
+            check_info(f"state.db stats unavailable ({_stats_exc})")
     else:
         check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
 
@@ -1514,7 +2394,7 @@ def run_doctor(args):
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
-                    text=True,
+                    text=True, encoding='utf-8', errors='replace',
                     timeout=15
                 )
             except subprocess.TimeoutExpired:
@@ -1554,26 +2434,135 @@ def run_doctor(args):
                 issues,
             )
 
+    # Vercel Sandbox (if using vercel_sandbox backend)
+    if terminal_env == "vercel_sandbox":
+        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
+        from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
+        if runtime in _SUPPORTED_VERCEL_RUNTIMES:
+            check_ok("Vercel runtime", f"({runtime})")
+        else:
+            supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
+            _fail_and_issue(
+                "Vercel runtime unsupported",
+                f"({runtime}; use {supported})",
+                f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}",
+                issues,
+            )
+
+        disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
+        if disk in {"", "0", "51200"}:
+            check_ok("Vercel disk setting", "(uses platform default)")
+        else:
+            _fail_and_issue(
+                "Vercel custom disk unsupported",
+                "(reset terminal.container_disk to 51200)",
+                "Vercel Sandbox does not support custom container_disk; use the shared default 51200",
+                issues,
+            )
+
+        if importlib.util.find_spec("vercel") is not None:
+            check_ok("vercel SDK", "(installed)")
+        else:
+            _fail_and_issue(
+                "vercel SDK not installed",
+                "(pip install 'hermes-agent[vercel]')",
+                "Install the Vercel optional dependency: pip install 'hermes-agent[vercel]'",
+                issues,
+            )
+
+        auth_status = describe_vercel_auth()
+        if auth_status.ok:
+            check_ok("Vercel auth", f"({auth_status.label})")
+        elif auth_status.label.startswith("partial"):
+            _fail_and_issue(
+                "Vercel auth incomplete",
+                f"({auth_status.label})",
+                "Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together",
+                issues,
+            )
+        else:
+            _fail_and_issue(
+                "Vercel auth not configured",
+                f"({auth_status.label})",
+                "Configure Vercel Sandbox auth with VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID",
+                issues,
+            )
+        for line in auth_status.detail_lines:
+            check_info(f"Vercel auth {line}")
+
+        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
+        if persistent:
+            check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
+        else:
+            check_info("Vercel persistence: ephemeral filesystem")
+
+    # Plugin-registered terminal backends (if one is the active backend)
+    if terminal_env not in {
+        "local", "docker", "singularity", "modal", "managed_modal",
+        "daytona", "vercel_sandbox", "ssh",
+    }:
+        try:
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
+            from agent.terminal_env_registry import get_provider
+
+            _provider = get_provider(terminal_env)
+        except Exception:
+            _provider = None
+        if _provider is None:
+            _fail_and_issue(
+                f"Unknown terminal backend '{terminal_env}'",
+                "(no built-in or plugin backend by that name)",
+                "Fix terminal.backend in config.yaml, or install/enable the plugin that provides it",
+                issues,
+            )
+        else:
+            for _ok, _label, _detail in _provider.doctor_checks():
+                if _ok:
+                    check_ok(_label, _detail)
+                else:
+                    _fail_and_issue(_label, _detail, _detail.strip("()"), issues)
+
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):
         check_ok("Node.js")
-        # Check if agent-browser is installed
-        agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
+        # agent-browser is no longer a root package.json dependency (#43564)
+        # — it resolves lazily via npx (or a global/Hermes-managed install)
+        # at first use. Mirror tools.browser_tool._find_agent_browser's own
+        # resolution cascade here so doctor can't diverge from what browser
+        # tools will actually find; validate=False keeps this a cheap
+        # existence check with no subprocess spawn or install side effects.
         agent_browser_ok = False
-        _which_ab = shutil.which("agent-browser")
-        if agent_browser_path.exists():
-            check_ok("agent-browser (Node.js)", "(browser automation)")
+        try:
+            from tools.browser_tool import _find_agent_browser, _is_npx_agent_browser_sentinel
+            _resolved_ab = _find_agent_browser(validate=False)
+        except Exception:
+            _resolved_ab = None
+
+        if _resolved_ab and _is_npx_agent_browser_sentinel(_resolved_ab):
+            check_ok("agent-browser", "(resolves via npx on first use)")
             agent_browser_ok = True
-        elif _which_ab and agent_browser_runnable(_which_ab):
+            if should_fix:
+                # Doctor can't tell from here whether npx's cache already
+                # has agent-browser warm — just fire the same warm-up
+                # `hermes update` does, so a session's first browser call
+                # doesn't pay the registry fetch either way.
+                from tools.browser_tool import warm_agent_browser_npx_cache
+                if warm_agent_browser_npx_cache():
+                    check_info("  Warmed npx cache for agent-browser")
+                else:
+                    check_info("  Could not warm npx cache (offline or npx unavailable)")
+        elif _resolved_ab and agent_browser_runnable(_resolved_ab):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
-        elif _which_ab:
+        elif _resolved_ab:
             # Found on PATH but won't run — almost always a dangling global
             # symlink left behind by agent-browser's npm postinstall after a
             # `hermes update` wiped node_modules (issue #48521).
             check_warn(
                 "agent-browser found but not runnable",
-                f"(broken symlink at {_which_ab}? run: npm install)",
+                f"(broken symlink at {_resolved_ab}? run: npx agent-browser --version)",
             )
         elif _is_termux():
             check_info("agent-browser is not installed (expected in the tested Termux path)")
@@ -1582,7 +2571,7 @@ def run_doctor(args):
             for step in _termux_browser_setup_steps(node_installed=True):
                 check_info(step)
         else:
-            check_warn("agent-browser not installed", "(run: npm install)")
+            check_warn("agent-browser not installed", "(requires npm/npx on PATH)")
 
         # Chromium presence — the browser tools silently fail to register when
         # agent-browser is found but no Playwright-managed Chromium is on disk
@@ -1598,7 +2587,7 @@ def run_doctor(args):
                     _chromium_installed,
                     _is_camofox_mode,
                     _get_cloud_provider,
-                    _get_cdp_override,
+                    _get_cdp_override_raw,
                     _using_lightpanda_engine,
                 )
             except Exception:
@@ -1611,7 +2600,7 @@ def run_doctor(args):
                 # Lightpanda all bypass the local Chromium requirement.
                 skip_chromium_check = (
                     _is_camofox_mode()
-                    or bool(_get_cdp_override())
+                    or bool(_get_cdp_override_raw())
                     or _get_cloud_provider() is not None
                     or _using_lightpanda_engine()
                 )
@@ -1641,7 +2630,37 @@ def run_doctor(args):
             check_info(step)
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
-    
+
+    # Lightpanda engine (browser.engine / AGENT_BROWSER_ENGINE). Independent
+    # of Node: Browser Use mode spawns ``lightpanda serve`` itself.
+    try:
+        from tools.browser_tool import _using_lightpanda_engine, lightpanda_engine_status
+        from tools.browser_lightpanda import LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary
+    except Exception:
+        pass
+    else:
+        # _using_lightpanda_engine() is a cached config read — a failure
+        # there would be exceptional, not something to silently hide.
+        if _using_lightpanda_engine():
+            try:
+                _lp_used, _lp_reason = lightpanda_engine_status()
+            except Exception as e:
+                _lp_used, _lp_reason = False, f"status check failed: {e}"
+            if not _lp_used:
+                check_warn("browser.engine=lightpanda is shadowed", f"({_lp_reason})")
+                check_info(
+                    "Fix: pick Lightpanda in `hermes tools` → Browser Automation, "
+                    "or set browser.engine: auto"
+                )
+            elif find_lightpanda_binary():
+                check_ok("Lightpanda", f"({_lp_reason})")
+            else:
+                check_warn(
+                    "Lightpanda selected but binary not found",
+                    "(browser tools will fail until it is installed)",
+                )
+                check_info(LIGHTPANDA_INSTALL_HINT)
+
     # npm audit for all Node.js packages
     _npm_bin = _safe_which("npm")
     if _npm_bin:
@@ -1678,7 +2697,7 @@ def run_doctor(args):
                 audit_result = subprocess.run(
                     [_npm_bin, "audit", "--json", *audit_extra],
                     cwd=str(npm_dir),
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
                 )
                 import json as _json
                 audit_data = _json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
@@ -2080,7 +3099,6 @@ def run_doctor(args):
                 [f"Install azure-identity: {sys.executable} -m pip install azure-identity"],
             )
 
-        base_url = str(model_cfg.get("base_url") or "").strip()
         entra_cfg = model_cfg.get("entra") or {}
         if not isinstance(entra_cfg, dict):
             entra_cfg = {}
@@ -2184,11 +3202,26 @@ def run_doctor(args):
         
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
-        
+
+        # Web is split into search/extract readiness rows so an explicitly
+        # selected but unconfigured backend cannot look healthy (#78412).
+        web_rows = []
+        if "web" in available or any(item.get("name") == "web" for item in unavailable):
+            web_rows = _doctor_web_capability_rows()
+            if web_rows:
+                available = [tid for tid in available if tid != "web"]
+                unavailable = [item for item in unavailable if item.get("name") != "web"]
+
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})
             check_ok(info.get("name", tid), _doctor_tool_availability_detail(tid))
-        
+
+        for status, label, detail in web_rows:
+            if status == "ok":
+                check_ok(label, detail)
+            else:
+                check_warn(label, detail)
+
         for item in unavailable:
             env_vars = item.get("missing_vars") or item.get("env_vars") or []
             if env_vars:
@@ -2201,7 +3234,8 @@ def run_doctor(args):
         # current CLI platform. Default-off or explicitly disabled toolsets may
         # still show warnings above, but should not pollute the final summary.
         api_disabled = _missing_api_key_toolsets_for_summary(unavailable)
-        if api_disabled:
+        web_not_ready = any(status != "ok" for status, _, _ in web_rows)
+        if api_disabled or web_not_ready:
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
@@ -2214,7 +3248,7 @@ def run_doctor(args):
         if lock_file.exists():
             try:
                 import json
-                lock_data = json.loads(lock_file.read_text())
+                lock_data = json.loads(lock_file.read_text(encoding="utf-8"))
                 count = len(lock_data.get("installed", {}))
                 check_ok(f"Lock file OK ({count} hub-installed skill(s))")
             except Exception:
@@ -2248,21 +3282,7 @@ def run_doctor(args):
         check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
 
     _section("Memory Provider")
-    _active_memory_provider = ""
-    try:
-        import yaml as _yaml
-        _mem_cfg_path = HERMES_HOME / "config.yaml"
-        if _mem_cfg_path.exists():
-            with open(_mem_cfg_path, encoding="utf-8") as _f:
-                _raw_cfg = _yaml.safe_load(_f) or {}
-            try:
-                from hermes_cli import managed_scope
-                _raw_cfg = managed_scope.apply_managed_overlay(_raw_cfg)
-            except Exception:
-                pass
-            _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
-    except Exception:
-        pass
+    _active_memory_provider = _memory_config.get("provider", "")
 
     if not _active_memory_provider:
         check_ok("Built-in memory active", "(no external provider configured — this is fine)")
@@ -2380,7 +3400,7 @@ def run_doctor(args):
                     if not wrapper.is_file():
                         continue
                     try:
-                        content = wrapper.read_text()
+                        content = wrapper.read_text(encoding="utf-8")
                         if "hermes -p" in content:
                             _m = _re.search(r"hermes -p (\S+)", content)
                             if _m and not profile_exists(_m.group(1)):
@@ -2389,6 +3409,14 @@ def run_doctor(args):
                         pass
     except ImportError:
         pass
+    except Exception:
+        pass
+
+    # Opt-in live backend probes run AFTER all static checks, only with
+    # `hermes doctor --live` (real network calls; bounded + read-only).
+    try:
+        from hermes_cli.doctor_live import maybe_run_live_checks
+        maybe_run_live_checks(args, manual_issues)
     except Exception:
         pass
 

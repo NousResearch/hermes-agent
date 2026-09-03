@@ -7,9 +7,10 @@ task wrapper is cancelled.
 """
 
 import asyncio
-import queue
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
-
+from gateway.platforms.api_server import ThreadSafeAsyncQueue
 
 
 # ---------------------------------------------------------------------------
@@ -45,9 +46,6 @@ class TestSSEAgentCancelOnDisconnect:
         the agent task must be cancelled."""
         adapter = _make_adapter()
 
-        stream_q = queue.Queue()
-        stream_q.put("hello ")  # Some data already queued
-
         # Agent task that runs forever (simulates a long LLM call)
         agent_done = asyncio.Event()
 
@@ -57,6 +55,12 @@ class TestSSEAgentCancelOnDisconnect:
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            # Constructed inside the running loop — ThreadSafeAsyncQueue
+            # captures asyncio.get_running_loop() at construction time.
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("hello ")  # Some data already queued
 
             agent_task = asyncio.ensure_future(fake_agent())
 
@@ -94,15 +98,16 @@ class TestSSEAgentCancelOnDisconnect:
         """On normal stream completion, agent task should NOT be cancelled."""
         adapter = _make_adapter()
 
-        stream_q = queue.Queue()
-        stream_q.put("hello")
-        stream_q.put(None)  # End-of-stream sentinel
-
         async def fake_agent():
             return {"final_response": "done"}, {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("hello")
+            stream_q.put_nowait(None)  # End-of-stream sentinel
 
             agent_task = asyncio.ensure_future(fake_agent())
             await asyncio.sleep(0)  # Let agent complete
@@ -128,14 +133,15 @@ class TestSSEAgentCancelOnDisconnect:
         """BrokenPipeError (another disconnect variant) also cancels the task."""
         adapter = _make_adapter()
 
-        stream_q = queue.Queue()
-
         async def fake_agent():
-            await asyncio.sleep(999)  # Never completes
+            await asyncio.sleep(0.2)  # Never completes
             return {}, {}
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
 
             agent_task = asyncio.ensure_future(fake_agent())
 
@@ -158,14 +164,15 @@ class TestSSEAgentCancelOnDisconnect:
         """If agent already finished before disconnect, don't try to cancel."""
         adapter = _make_adapter()
 
-        stream_q = queue.Queue()
-        stream_q.put("data")
-
         async def fake_agent():
             return {"final_response": "done"}, {}
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("data")
 
             agent_task = asyncio.ensure_future(fake_agent())
             await asyncio.sleep(0)  # Let agent complete
@@ -200,9 +207,6 @@ class TestSSEAgentCancelOnDisconnect:
         so the agent thread stops making LLM API calls."""
         adapter = _make_adapter()
 
-        stream_q = queue.Queue()
-        stream_q.put("hello ")
-
         agent_done = asyncio.Event()
 
         async def fake_agent():
@@ -215,6 +219,10 @@ class TestSSEAgentCancelOnDisconnect:
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("hello ")
 
             agent_task = asyncio.ensure_future(fake_agent())
             agent_ref = [mock_agent]
@@ -250,14 +258,15 @@ class TestSSEAgentCancelOnDisconnect:
         on disconnect — just without the interrupt() call."""
         adapter = _make_adapter()
 
-        stream_q = queue.Queue()
-
         async def fake_agent():
             await asyncio.sleep(999)
             return {}, {}
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
 
             agent_task = asyncio.ensure_future(fake_agent())
 
@@ -318,12 +327,15 @@ class TestSSEAgentFailureFinishReason:
 
     def _run(self, fake_agent, queue_items=("partial",)):
         adapter = _make_adapter()
-        stream_q = queue.Queue()
-        for item in queue_items:
-            stream_q.put(item)
-        stream_q.put(None)  # clean end-of-stream sentinel
 
         async def run():
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            for item in queue_items:
+                stream_q.put_nowait(item)
+            stream_q.put_nowait(None)  # clean end-of-stream sentinel
+
             agent_task = asyncio.ensure_future(fake_agent())
             resp, chunks = _capturing_response()
             with patch("gateway.platforms.api_server.web.StreamResponse",
@@ -381,3 +393,90 @@ class TestSSEAgentFailureFinishReason:
         # No error/hermes pollution on the happy path.
         assert "error" not in finish
         assert "hermes" not in finish
+
+
+# ---------------------------------------------------------------------------
+# Sweeper review fix (teknium1, 2026-07-30): cover the cross-thread
+# ``put_threadsafe`` boundary that #72610 introduces via ``ThreadSafeAsyncQueue``.
+# ``run_conversation`` runs in a worker thread (``loop.run_in_executor``),
+# so its ``_on_delta`` / ``_on_tool_*`` callbacks must be able to push into
+# the queue from off the owning event loop and immediately wake the
+# consumer ``get()`` — this is the production boundary the original tests
+# only exercised with same-loop ``put_nowait``.
+# ---------------------------------------------------------------------------
+
+class TestThreadSafeAsyncQueueCrossThreadBoundary:
+    """gateway/platforms/api_server.py — ThreadSafeAsyncQueue"""
+
+    def test_worker_thread_put_threadsafe_wakes_owning_loop_get(self):
+        """A real daemon-Thread calling ``put_threadsafe`` from off-loop must
+        immediately unblock an ``await q.get()`` on the owning event loop.
+        This mirrors the ``run_conversation``/``run_in_executor`` boundary."""
+
+        loop = asyncio.new_event_loop()
+
+        async def consumer():
+            q = ThreadSafeAsyncQueue()
+
+            async def wait_for_item():
+                return await asyncio.wait_for(q.get(), timeout=2)
+
+            def worker():
+                time.sleep(0.05)
+                # No ``loop=`` kwarg on purpose: production callers
+                # (_on_delta / _on_tool_*) never pass one, so the queue
+                # must resolve its own ``_loop_ref``. Passing loop= here
+                # would make a broken _loop_ref pass this test.
+                q.put_threadsafe("from-worker")
+
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+
+            got = await wait_for_item()
+            assert got == "from-worker"
+
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+
+        loop.run_until_complete(consumer())
+        loop.close()
+
+    def test_twenty_concurrent_threads_no_drop(self):
+        """Twenty concurrent off-loop ``put_threadsafe`` calls — all arrive.
+        Regression test for the #65003 producer path."""
+
+        loop = asyncio.new_event_loop()
+        n = 20
+
+        async def consumer():
+            q = ThreadSafeAsyncQueue()
+            received = []
+
+            async def drain():
+                for _ in range(n):
+                    received.append(await q.get())
+
+            def worker(idx):
+                time.sleep(0.01 + idx * 0.002)
+                # No ``loop=`` kwarg — exercise the production
+                # ``_loop_ref`` resolution path (see the note above).
+                q.put_threadsafe(f"item-{idx}")
+
+            threads = [
+                threading.Thread(target=worker, args=(i,), daemon=True)
+                for i in range(n)
+            ]
+            for t in threads:
+                t.start()
+
+            await asyncio.wait_for(drain(), timeout=5)
+
+            for t in threads:
+                t.join(timeout=2)
+                assert not t.is_alive()
+
+            assert len(received) == n
+            assert set(received) == {f"item-{i}" for i in range(n)}
+
+        loop.run_until_complete(consumer())
+        loop.close()

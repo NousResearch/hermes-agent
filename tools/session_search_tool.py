@@ -2,23 +2,27 @@
 """
 Session Search Tool - Long-Term Conversation Recall
 
-Single-shape tool with three calling modes (inferred from args, no explicit
+Single-shape tool with four calling modes (inferred from args, no explicit
 mode parameter):
 
-  1. DISCOVERY — pass ``query``. Runs FTS5, dedupes hits by session lineage,
-     returns top N sessions each with: snippet, ±5 message window around the
-     match, plus bookend_start (first 3 user+assistant msgs of session) and
-     bookend_end (last 3). Zero LLM cost.
+  1. DISCOVERY — pass ``query``. Runs FTS5 and dedupes hits by session lineage.
+     Adaptive detail (the default) fully hydrates the top result with a ±5
+     message window and bookends, while lower-ranked results keep the exact
+     anchor message plus metadata. Pass ``detail="full"`` to fully hydrate
+     every result. Zero LLM cost.
 
   2. SCROLL — pass ``session_id`` + ``around_message_id``. Returns a window
      of ±window messages centered on the anchor, no FTS5, no bookends. To
      scroll forward / backward, re-anchor on the last / first message id of
      the returned window.
 
-  3. BROWSE — no args. Returns recent sessions chronologically (titles,
+  3. READ — pass ``session_id`` without an anchor. Returns the whole session,
+     or a bounded head/tail view for large sessions.
+
+  4. BROWSE — no args. Returns recent sessions chronologically (titles,
      previews, timestamps).
 
-All three modes operate on the SQLite session DB via the FTS5 index and
+All four modes operate on the SQLite session DB via the FTS5 index and
 the get_anchored_view / get_messages_around primitives in hermes_state.
 No LLM calls anywhere — every shape returns actual messages from the DB.
 
@@ -33,11 +37,13 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Union
 
+from hermes_state_common import _RESET_END_REASONS
+
 # Sources that are excluded from session browsing/searching by default.
 # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool;
-# delegate subagent runs are tagged "subagent" — neither belongs in the
-# user's session history.
-_HIDDEN_SESSION_SOURCES = ("subagent", "tool")
+# delegate subagent runs are tagged "subagent"; kanban dispatcher workers are
+# tagged "kanban" — none belongs in the user's session history.
+_HIDDEN_SESSION_SOURCES = ("kanban", "subagent", "tool")
 
 # Automation sources that are kept searchable but DEMOTED below interactive
 # sessions in discover ranking. Cron jobs run on a schedule and accumulate
@@ -54,6 +60,40 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # interactive matches buried under a wall of cron hits, so this is well above
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
+
+# Raw FTS rows are only a discovery-plan input. The final response hydrates
+# its own anchored message window and bookends after lineage deduplication.
+_DISCOVER_SEARCH_FIELDS = (
+    "id",
+    "session_id",
+    "role",
+    "snippet",
+    "source",
+    "model",
+    "session_started",
+)
+
+# Prefixes that identify generated context-compaction handoff summaries.
+# These are inserted by agent/context_compressor.py as normal user/assistant
+# messages but contain machine-generated summary metadata — not user content.
+# They must be excluded from discovery bookends to avoid re-introducing huge
+# compaction payloads into fresh sessions via session_search.  (#43175)
+_COMPACTION_PREFIXES = (
+    "[CONTEXT COMPACTION",
+    "[CONTEXT SUMMARY]:",
+)
+
+# Gateway /new, /reset, idle/daily expiry, and CLI /new end the predecessor
+# without carrying its transcript into the child. Those children share a
+# parent_session_id lineage with the current session, but the prior content
+# is NOT in live context — unlike compression continuations (summary carried
+# forward) and live delegation children (parent still running).
+#
+# Derived from the canonical gateway reset-reason set so the recovery fence
+# and this tool cannot drift (see the comment on _RESET_END_REASONS).
+# "new_session" is the CLI /new end reason (cli.py), which the gateway set
+# does not include.
+_FRESH_RESET_END_REASONS = frozenset(_RESET_END_REASONS) | {"new_session"}
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -81,18 +121,39 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     return str(ts)
 
 
-def _resolve_to_parent(db, session_id: str) -> str:
-    """Walk parent_session_id chain to the lineage root. Falls back to input on errors."""
+def _is_compaction_summary(content: str) -> bool:
+    """Return True if *content* looks like a generated compaction handoff."""
+    if not content:
+        return False
+    stripped = content.lstrip()
+    return any(stripped.startswith(p) for p in _COMPACTION_PREFIXES)
+
+
+def _resolve_to_parent(db, session_id: str) -> tuple[str, bool]:
+    """Walk parent_session_id chain to the lineage root.
+
+    Returns ``(root_id, has_compression_hop)`` where ``has_compression_hop`` is
+    True if any session along the chain ended with ``end_reason = 'compression'``
+    — i.e. at least one parent/ancestor was compression-rotated into this
+    lineage. That flag lets callers distinguish a compression-split lineage
+    (parent content summarised away, no longer in live context) from a
+    delegation lineage (child content still visible to the parent agent).
+
+    Falls back to ``(session_id, False)`` on errors.
+    """
     if not session_id:
-        return session_id
-    visited = set()
+        return session_id, False
+    visited: set[str] = set()
     cur = session_id
+    has_compression = False
     while cur and cur not in visited:
         visited.add(cur)
         try:
             s = db.get_session(cur)
             if not s:
                 break
+            if s.get("end_reason") == "compression":
+                has_compression = True
             parent = s.get("parent_session_id")
             if not parent:
                 break
@@ -100,7 +161,121 @@ def _resolve_to_parent(db, session_id: str) -> str:
         except Exception as e:
             logging.debug("Error resolving parent for %s: %s", cur, e, exc_info=True)
             break
-    return cur
+    return cur, has_compression
+
+
+def _resolve_lineage(db, session_id: str) -> str:
+    """Convenience: return only the lineage root (ignores compression hop)."""
+    return _resolve_to_parent(db, session_id)[0]
+
+
+def _session_end_reason(db, session_id: str) -> Optional[str]:
+    """Return the session's ``end_reason``, or None if missing/unended/error."""
+    if not session_id:
+        return None
+    try:
+        s = db.get_session(session_id)
+        if not s:
+            return None
+        return s.get("end_reason") or None
+    except Exception:
+        return None
+
+
+def _is_compression_ended(db, session_id: str) -> bool:
+    """Return True if *session_id* itself ended with ``end_reason='compression'``.
+
+    Unlike the ``has_compression_hop`` flag from :func:`_resolve_to_parent`
+    (which is True for any descendant of a compression-ended ancestor), this
+    checks only the session's own ``end_reason``. A delegation child created
+    under a compression continuation has ``parent_session_id`` set but its own
+    ``end_reason`` is ``None`` — its content is still live to the parent agent,
+    so it must stay excluded from discovery.
+    """
+    return _session_end_reason(db, session_id) == "compression"
+
+
+def _session_left_live_context(db, session_id: str) -> bool:
+    """True when *session_id*'s transcript is no longer in anyone's live context.
+
+    Two shapes qualify:
+
+    - ``compression``: the transcript was summarised into the continuation
+      child, so the original rows left live context.
+    - fresh resets (:data:`_FRESH_RESET_END_REASONS`): every
+      ``_RESET_END_REASONS`` member plus CLI ``new_session`` — the child
+      starts empty and carries nothing forward.
+
+    Everything else stays excluded from same-lineage recall: live delegation
+    children (``end_reason is None``) are still visible to the parent agent,
+    and ``branched`` parents were verbatim-copied into the branch child, so
+    their content IS the current context.
+    """
+    end_reason = _session_end_reason(db, session_id)
+    return end_reason == "compression" or _is_fresh_reset_session(end_reason)
+
+
+def _is_fresh_reset_session(end_reason: Optional[str]) -> bool:
+    """True when *end_reason* is a /new-style reset (transcript not carried forward)."""
+    return end_reason in _FRESH_RESET_END_REASONS
+
+
+def _get_message_storage_state(db, message_id) -> Optional[Dict[str, Any]]:
+    """Return the owning session and visibility flags for *message_id*."""
+    if not message_id:
+        return None
+    try:
+        with db._lock:
+            cursor = db._conn.execute(
+                "SELECT session_id, active, compacted FROM messages WHERE id = ?",
+                (message_id,),
+            )
+            row = cursor.fetchone()
+    except Exception:
+        logging.debug(
+            "message storage-state lookup failed for %s", message_id, exc_info=True
+        )
+        return None
+    return dict(row) if row is not None else None
+
+
+def _is_compacted_message(db, message_id) -> bool:
+    """Return True if *message_id* is a compaction-archived row.
+
+    Compaction archives are ``active=0, compacted=1`` — the content was
+    summarised away from live context by :meth:`archive_and_compact`.
+    Rewind/undo rows are ``active=0, compacted=0`` and must stay hidden.
+
+    Used by ``_discover`` to distinguish a compaction-archived FTS hit on the
+    current session (pre-compaction content no longer in live context — should
+    stay discoverable) from an active live hit (already in context — skip).
+    Returns False on any error so the caller falls back to the safe default
+    (skip the current session).
+    """
+    state = _get_message_storage_state(db, message_id)
+    return state is not None and state["active"] == 0 and state["compacted"] == 1
+
+
+def _annotate_rebuild_status(db, payload: Dict[str, Any]) -> None:
+    """Add a rebuild-progress note when the deferred FTS backfill (schema
+    v23) is still running, so the agent can tell the user why older results
+    may be incomplete/slower instead of treating a thin result set as
+    ground truth. No-op (and never raises) when no rebuild is pending."""
+    try:
+        status = db.fts_rebuild_status()
+    except Exception:
+        return
+    if status is None:
+        return
+    payload["index_rebuild"] = {
+        "percent": status["percent"],
+        "note": (
+            f"The search index is rebuilding in the background "
+            f"({status['percent']}% done, {status['indexed']:,} of "
+            f"{status['total']:,} messages). Results from older messages "
+            f"may be incomplete until it finishes."
+        ),
+    }
 
 
 def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -120,12 +295,36 @@ def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     )
 
 
-def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
-    """Slim a message row for the tool response. Keeps content even if empty."""
+def _shape_message(
+    m: Dict[str, Any],
+    anchor_id: Optional[int] = None,
+    max_content_len: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Slim a message row for the tool response. Keeps content even if empty.
+
+    When *max_content_len* is set, ``content`` is truncated to that many
+    characters and ``content_truncated`` / ``original_content_chars`` metadata
+    is added so callers know the payload was bounded.
+    """
+    raw_content = m.get("content")
+    if isinstance(raw_content, str) and "\x1b" in raw_content:
+        # Recalled messages can carry ANSI escape sequences (e.g. archived
+        # terminal output). Strip them before returning content to the model.
+        from tools.ansi_strip import strip_ansi
+
+        raw_content = strip_ansi(raw_content)
+    if max_content_len and raw_content and len(raw_content) > max_content_len:
+        content = raw_content[:max_content_len] + "…"
+        truncated = True
+        original_chars = len(raw_content)
+    else:
+        content = raw_content
+        truncated = False
+        original_chars = None
     entry = {
         "id": m.get("id"),
         "role": m.get("role"),
-        "content": m.get("content"),
+        "content": content,
         "timestamp": m.get("timestamp"),
     }
     if m.get("tool_name"):
@@ -136,6 +335,9 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
         entry["tool_call_id"] = m.get("tool_call_id")
     if anchor_id is not None and m.get("id") == anchor_id:
         entry["anchor"] = True
+    if truncated:
+        entry["content_truncated"] = True
+        entry["original_content_chars"] = original_chars
     # Strip None values to keep payload tight, but always keep content
     # (absent content is meaningful — tool-call-only assistant turns).
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
@@ -162,6 +364,28 @@ def _resolve_profile_db(profile: str):
         raise ValueError(f"profile '{canon}' does not exist")
 
     return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
+
+
+def _session_link(session_id: str, profile: str = None) -> str:
+    """The reference the agent writes to point the user at a session.
+
+    Same value the desktop composer emits when a session is dragged into a
+    message, so the desktop renders it as a link carrying the session's title.
+    The profile segment is omitted when we can't name it confidently — a bare
+    id still resolves, it just can't disambiguate across profiles.
+    """
+    name = (profile or "").strip()
+    if not name:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            resolved = get_active_profile_name()
+            name = "" if resolved == "custom" else resolved
+        except Exception:
+            logging.debug("get_active_profile_name failed for session link", exc_info=True)
+            name = ""
+
+    return f"@session:{name}/{session_id}" if name else f"@session:{session_id}"
 
 
 def _locate_session_db(session_id: str):
@@ -208,7 +432,7 @@ def _locate_session_db(session_id: str):
     return None, None
 
 
-def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
+def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
     """Read shape: dump a whole session by id (head + tail when large).
 
     Serves the linked-session case — the user dropped an @session reference and
@@ -239,6 +463,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
         "success": True,
         "mode": "read",
         "session_id": session_id,
+        "link": _session_link(session_id, link_profile),
         "session_meta": {
             "when": _format_timestamp(meta.get("started_at")),
             "source": meta.get("source"),
@@ -257,27 +482,47 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
-        sessions = db.list_sessions_rich(
-            limit=limit + 5,
+        # Never use list_sessions_rich(order_by_last_active=True) here.  That
+        # generic query walks every compression chain and derives activity and
+        # previews from messages before LIMIT; on a multi-GB state.db it can
+        # monopolise a gateway callback for minutes.  The dedicated browse
+        # query preselects an indexed, bounded candidate set and carries a
+        # cooperative SQLite VM cancellation deadline.
+        bounded_list = getattr(db, "list_recent_sessions_bounded", None)
+        if bounded_list is None:
+            # Fail closed rather than silently returning to the exact
+            # whole-database query shape this path exists to eliminate.
+            raise RuntimeError(
+                "session database does not support bounded recent-session browse"
+            )
+        sessions = bounded_list(
+            limit=limit + 15,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            order_by_last_active=True,
-        )  # fetch extra so we can skip current
+            timeout_seconds=3.0,
+        )
 
-        current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
+        current_root, has_compression_hop = (
+            _resolve_to_parent(db, current_session_id)
+            if current_session_id else (None, False)
+        )
 
         results = []
         for s in sessions:
             sid = s.get("id", "")
-            if current_root and (sid == current_root or sid == current_session_id):
+            if sid == current_session_id:
                 continue
-            # Skip child / delegation sessions
-            if s.get("parent_session_id"):
+            # Compression continuation: the root's original turns were
+            # summarised into the live child, so hide the root. /new-reset
+            # children share a lineage root but carry no transcript — keep
+            # that root browsable.
+            if has_compression_hop and current_root and sid == current_root:
                 continue
             results.append({
                 "session_id": sid,
+                "link": _session_link(sid, link_profile),
                 "title": s.get("title") or None,
                 "source": s.get("source", ""),
                 "started_at": s.get("started_at", ""),
@@ -330,16 +575,40 @@ def _scroll(
             window = 5
     window = max(1, min(window, 20))
 
-    # Reject scrolling inside the active session lineage — those messages are
-    # already in context.
+    # Locate the anchor before applying the current-lineage guard. Discovery
+    # intentionally surfaces same-lineage history that is no longer in live
+    # context: in-place compacted rows, compression-ended parents, and
+    # /new-reset predecessors. Scroll must preserve that distinction instead
+    # of rejecting the discovery result it just returned.
+    anchor_state = _get_message_storage_state(db, around_message_id)
+    owning_session_id = (
+        anchor_state.get("session_id") if anchor_state is not None else None
+    )
+
     if current_session_id:
-        a_root = _resolve_to_parent(db, session_id)
-        c_root = _resolve_to_parent(db, current_session_id)
+        anchor_session_id = owning_session_id or session_id
+        a_root = _resolve_lineage(db, anchor_session_id)
+        c_root = _resolve_lineage(db, current_session_id)
         if a_root and c_root and a_root == c_root:
-            return tool_error(
-                "scroll rejected: anchor lives in the current session lineage (already in your active context)",
-                success=False,
+            is_compacted_anchor = (
+                anchor_state is not None
+                and anchor_state["active"] == 0
+                and anchor_state["compacted"] == 1
             )
+            is_inactive_non_compacted_anchor = (
+                anchor_state is not None
+                and anchor_state["active"] == 0
+                and anchor_state["compacted"] != 1
+            )
+            is_out_of_context_history = (
+                not is_inactive_non_compacted_anchor
+                and _session_left_live_context(db, anchor_session_id)
+            )
+            if not (is_compacted_anchor or is_out_of_context_history):
+                return tool_error(
+                    "scroll rejected: anchor lives in the current session lineage (already in your active context)",
+                    success=False,
+                )
 
     # Session existence check
     try:
@@ -364,21 +633,10 @@ def _scroll(
     # child sessions). Locate the real owning session and refetch.
     rebind_warning = None
     if not messages:
-        owning = None
-        try:
-            conn = getattr(db, "_conn", None)
-            if conn is not None:
-                row = conn.execute(
-                    "SELECT session_id FROM messages WHERE id = ?",
-                    (around_message_id,),
-                ).fetchone()
-                owning = row[0] if row else None
-        except Exception as e:
-            logging.debug("owning-session lookup failed: %s", e, exc_info=True)
-            owning = None
+        owning = owning_session_id
         if owning and owning != session_id:
-            a_root = _resolve_to_parent(db, session_id)
-            o_root = _resolve_to_parent(db, owning)
+            a_root = _resolve_lineage(db, session_id)
+            o_root = _resolve_lineage(db, owning)
             if a_root and o_root and a_root == o_root:
                 try:
                     rebind_view = db.get_messages_around(owning, around_message_id, window=window)
@@ -418,6 +676,12 @@ def _scroll(
         "messages": [_shape_message(m, anchor_id=around_message_id) for m in messages],
         "messages_before": view.get("messages_before", 0),
         "messages_after": view.get("messages_after", 0),
+        "hint": (
+            "Scroll forward: re-call with around_message_id = the LAST message's "
+            "id; backward: the FIRST message's id (the boundary message repeats "
+            "as an orientation marker). messages_before/messages_after < window "
+            "means you've hit that end of the session."
+        ),
     }
     if rebind_warning:
         response["warning"] = rebind_warning
@@ -447,9 +711,12 @@ def _title_match_result(
     if not session_id:
         return None
 
-    lineage_root = _resolve_to_parent(db, session_id)
+    lineage_root = _resolve_lineage(db, session_id)
     if current_lineage_root and lineage_root == current_lineage_root:
-        return None
+        # Same-lineage title hits are in-context only when the session is
+        # still live. /new-reset and compression-ended parents are not.
+        if not _session_left_live_context(db, session_id):
+            return None
 
     try:
         session_meta = db.get_session(lineage_root) or db.get_session(session_id) or {}
@@ -489,6 +756,7 @@ def _title_match_result(
         "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or messages[-3:])],
         "messages_before": view.get("messages_before", 0),
         "messages_after": view.get("messages_after", max(len(messages) - 5, 0)),
+        "detail": "full",
         "_lineage_root": lineage_root,
     }
     if lineage_root and lineage_root != session_id:
@@ -502,11 +770,13 @@ def _discover(
     role_filter: Optional[List[str]],
     limit: int,
     sort: Optional[str],
+    detail: str,
     current_session_id: str = None,
+    link_profile: str = None,
 ) -> str:
-    """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
+    """Discovery shape: FTS5 plus adaptive or full result hydration."""
     role_list = role_filter if role_filter else ["user", "assistant"]
-    current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
+    current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     title_result = _title_match_result(db, query, current_lineage_root)
 
     try:
@@ -519,6 +789,7 @@ def _discover(
             # of cron rows are still in hand for the demotion pass below.
             offset=0,
             sort=sort,
+            fields=_DISCOVER_SEARCH_FIELDS,
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
@@ -531,14 +802,21 @@ def _discover(
     raw_results = _order_for_recall(raw_results)
 
     if not raw_results and not title_result:
-        return json.dumps({
+        _empty_payload = {
             "success": True,
             "mode": "discover",
             "query": query,
+            "detail": detail,
             "results": [],
             "count": 0,
-            "message": "No matching sessions found.",
-        }, ensure_ascii=False)
+            "message": (
+                "No matching sessions found. FTS5 ANDs all terms by default — "
+                "broaden with OR (`alpha OR beta`), exact-match with quoted "
+                "phrases, exclude with NOT, or prefix-match with `deploy*`."
+            ),
+        }
+        _annotate_rebuild_status(db, _empty_payload)
+        return json.dumps(_empty_payload, ensure_ascii=False)
 
     # Dedupe by lineage. Keep the raw owning session_id on the surviving
     # row — only that pairs validly with the FTS5 match id for the anchored
@@ -556,12 +834,36 @@ def _discover(
         if len(seen_sessions) >= limit:
             break
         raw_sid = r["session_id"]
-        resolved_sid = _resolve_to_parent(db, raw_sid)
-        # Skip the current session lineage
+        resolved_sid, _ = _resolve_to_parent(db, raw_sid)
+        # Skip the current session lineage — UNLESS the hit's transcript has
+        # left live context. Three sub-cases:
+        #
+        # Legacy compression rotation: the FTS hit lives in a session that
+        # itself ended with end_reason='compression'. That session's content
+        # has been replaced by a summary in the continuation child, so it
+        # must stay discoverable.
+        #
+        # /new-reset (and idle/daily/CLI new_session): the predecessor was
+        # ended without carrying any transcript into the child. Same lineage
+        # root, but the prior conversation is NOT in the active context —
+        # hiding it made gateway recall go blind after every /new (#85756).
+        # A live delegation child has end_reason=None, so it stays excluded.
+        #
+        # In-place compaction: the FTS hit lives on the SAME session_id as the
+        # current session, but the matched message row is an archived
+        # (active=0, compacted=1) row. The live-context load filters active=1,
+        # so that content is no longer in context — let it through.
+        is_compacted_hit = _is_compacted_message(db, r.get("id"))
+        is_ended_session = _session_left_live_context(db, raw_sid)
         if current_lineage_root and resolved_sid == current_lineage_root:
-            continue
+            if not (is_ended_session or is_compacted_hit):
+                continue
         if current_session_id and raw_sid == current_session_id:
-            continue
+            # Same-session hit: only skip if the matched message is still live
+            # (active=1). Archived/compacted rows are pre-compaction content
+            # that's been summarised away — let them through.
+            if not is_compacted_hit:
+                continue
         if resolved_sid not in seen_sessions:
             row = dict(r)
             row["_lineage_root"] = resolved_sid
@@ -585,6 +887,11 @@ def _discover(
         except Exception:
             session_meta = {}
 
+        result_detail = "full" if detail == "full" or not results else "compact"
+        window_messages = view.get("window") or []
+        if result_detail == "compact":
+            window_messages = [m for m in window_messages if m.get("id") == msg_id]
+
         entry = {
             "session_id": hit_sid,
             "when": _format_timestamp(
@@ -596,27 +903,60 @@ def _discover(
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
             "snippet": match_info.get("snippet") or "",
-            "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
-            "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
-            "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],
+            "bookend_start": (
+                [
+                    _shape_message(m, max_content_len=1200)
+                    for m in (view.get("bookend_start") or [])
+                    if not _is_compaction_summary(m.get("content", ""))
+                ]
+                if result_detail == "full"
+                else []
+            ),
+            "messages": [
+                _shape_message(m, anchor_id=msg_id, max_content_len=4000)
+                for m in window_messages
+            ],
+            "bookend_end": (
+                [
+                    _shape_message(m, max_content_len=1200)
+                    for m in (view.get("bookend_end") or [])
+                    if not _is_compaction_summary(m.get("content", ""))
+                ]
+                if result_detail == "full"
+                else []
+            ),
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),
+            "detail": result_detail,
         }
         if lineage_root and lineage_root != hit_sid:
             entry["parent_session_id"] = lineage_root
         results.append(entry)
 
-    return json.dumps({
+    for entry in results:
+        entry["link"] = _session_link(entry["session_id"], link_profile)
+
+    _final_payload = {
         "success": True,
         "mode": "discover",
         "query": query,
+        "detail": detail,
         "results": results,
         "count": len(results),
         "sessions_searched": len(seen_sessions),
-    }, ensure_ascii=False)
+        "link_hint": (
+            "When referring the user to a session, write its `link` value "
+            "verbatim inline mid-sentence (it renders as a titled link) — never "
+            "as markdown, in backticks, on its own line, or next to the "
+            "title/id/date. To read more around a compact result, scroll: "
+            "session_search(session_id=..., around_message_id=match_message_id)."
+        ),
+    }
+    _annotate_rebuild_status(db, _final_payload)
+    return json.dumps(_final_payload, ensure_ascii=False)
 
 
-def session_search(
+def _session_search_impl(
     query: str = "",
     role_filter: str = None,
     limit: int = 3,
@@ -630,10 +970,14 @@ def session_search(
     sort: str = None,
     # Cross-profile (any shape)
     profile: str = None,
+    # Discovery result shaping (appended to preserve positional compatibility)
+    detail: str = "adaptive",
+    *,
+    _owned_dbs: Optional[List[Any]] = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
-    Discovery: pass ``query``.
+    Discovery: pass ``query``; ``detail="full"`` hydrates every result.
     Scroll:    pass ``session_id`` + ``around_message_id``.
     Read:      pass ``session_id`` (no anchor) — dumps the whole session.
     Browse:    pass nothing.
@@ -642,15 +986,6 @@ def session_search(
     ``@session:<profile>/<id>`` link). Scroll wins over read/discovery when an
     anchor is set — the agent has asked for a specific slice.
     """
-    if db is None:
-        try:
-            from hermes_state import SessionDB
-            db = SessionDB()
-        except Exception:
-            logging.debug("SessionDB unavailable for session_search", exc_info=True)
-            from hermes_state import format_session_db_unavailable
-            return tool_error(format_session_db_unavailable(), success=False)
-
     # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
     # Session ids never contain "/", so a slash unambiguously means profile/id —
     # always strip the prefix off the id, and adopt the embedded profile only
@@ -673,6 +1008,8 @@ def session_search(
             return tool_error(f"profile '{profile}': {e}", success=False)
         if profile_db is not None:
             db = profile_db
+            if _owned_dbs is not None:
+                _owned_dbs.append(profile_db)
             current_session_id = None
 
     # Scroll shape takes precedence — explicit anchor beats any query.
@@ -688,7 +1025,7 @@ def session_search(
     # Read shape: a session_id with no anchor → dump the whole session.
     if isinstance(session_id, str) and session_id.strip():
         sid = session_id.strip()
-        result = _read_session(db, sid)
+        result = _read_session(db, sid, link_profile=profile)
         if json.loads(result).get("success"):
             return result
 
@@ -698,7 +1035,7 @@ def session_search(
         located, owner = _locate_session_db(sid)
         if located is not None:
             try:
-                found = json.loads(_read_session(located, sid))
+                found = json.loads(_read_session(located, sid, link_profile=owner))
             finally:
                 located.close()
             if found.get("success"):
@@ -716,7 +1053,7 @@ def session_search(
 
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -730,21 +1067,84 @@ def session_search(
         if candidate in ("newest", "oldest"):
             sort_norm = candidate
 
+    detail_norm = (
+        "full"
+        if isinstance(detail, str) and detail.strip().lower() == "full"
+        else "adaptive"
+    )
+
     return _discover(
         db=db,
         query=query.strip(),
         role_filter=role_list,
         limit=limit,
         sort=sort_norm,
+        detail=detail_norm,
         current_session_id=current_session_id,
+        link_profile=profile,
     )
+
+
+def session_search(
+    query: str = "",
+    role_filter: str = None,
+    limit: int = 3,
+    db=None,
+    current_session_id: str = None,
+    # Scroll shape
+    session_id: str = None,
+    around_message_id: int = None,
+    window: int = 5,
+    # Discovery shape
+    sort: str = None,
+    # Cross-profile (any shape)
+    profile: str = None,
+    # Discovery result shaping (appended to preserve positional compatibility)
+    detail: str = "adaptive",
+) -> str:
+    """Run session search and close databases opened by this invocation."""
+    owned_dbs: List[Any] = []
+    if db is None:
+        try:
+            from hermes_state import get_shared_session_db
+
+            db = get_shared_session_db()
+            owned_dbs.append(db)
+        except Exception:
+            logging.debug("SessionDB unavailable for session_search", exc_info=True)
+            from hermes_state import format_session_db_unavailable
+
+            return tool_error(format_session_db_unavailable(), success=False)
+
+    try:
+        return _session_search_impl(
+            query=query,
+            role_filter=role_filter,
+            limit=limit,
+            db=db,
+            current_session_id=current_session_id,
+            session_id=session_id,
+            around_message_id=around_message_id,
+            window=window,
+            sort=sort,
+            profile=profile,
+            detail=detail,
+            _owned_dbs=owned_dbs,
+        )
+    finally:
+        for owned_db in reversed(owned_dbs):
+            try:
+                from hermes_state import release_or_close
+                release_or_close(owned_db)
+            except Exception:
+                logging.debug("Failed to close session_search SessionDB", exc_info=True)
 
 
 def check_session_search_requirements() -> bool:
     """Requires the SQLite state database."""
     try:
-        from hermes_state import DEFAULT_DB_PATH
-        return DEFAULT_DB_PATH.parent.exists()
+        from hermes_state import _default_db_path
+        return _default_db_path().parent.exists()
     except ImportError:
         return False
 
@@ -752,68 +1152,19 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Search past sessions stored in the local session DB, or scroll inside one. "
-        "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
-        "shape returns actual messages from the DB.\n\n"
-        "SOURCE-FIRST LIMIT\n\n"
-        "  This tool searches Hermes conversation history only. It is not evidence "
-        "about the current contents of external sources. If the user provided a "
-        "direct source such as a URL, phone number/contact, app/thread, file path, "
-        "account, website, or live system, inspect that original source before or "
-        "instead of session_search when accessible. Use session_search as secondary "
-        "context for what was previously said, not as primary proof of what the "
-        "source currently contains. If the original source is inaccessible, say so "
-        "and why before falling back to session history. Do not conclude 'not found' "
-        "or 'no prior correspondence' from session_search alone when a direct source "
-        "was provided.\n\n"
-        "FOUR CALLING SHAPES\n\n"
-        "  1) DISCOVERY — pass `query`:\n"
-        "     session_search(query=\"auth refactor\", limit=3)\n"
-        "     Runs FTS5, dedupes hits by session lineage, returns the top N sessions. "
-        "Each result carries:\n"
-        "       - session_id, title, when, source\n"
-        "       - snippet: FTS5-highlighted match excerpt\n"
-        "       - bookend_start: first 3 user+assistant messages of the session "
-        "(the goal / kickoff)\n"
-        "       - messages: ±5 messages around the FTS5 match, with the anchor message "
-        "flagged (the hit in context)\n"
-        "       - bookend_end: last 3 user+assistant messages of the session "
-        "(the resolution / decisions)\n"
-        "       - match_message_id, messages_before, messages_after\n"
-        "     Bookends + window together let you reconstruct goal → match → resolution "
-        "without paying for the whole transcript.\n\n"
-        "  2) SCROLL — pass `session_id` + `around_message_id`:\n"
-        "     session_search(session_id=\"...\", around_message_id=12345, window=10)\n"
-        "     Returns a window of ±`window` messages centered on the anchor. No FTS5, "
-        "no bookends — just the slice. Use after a discovery call when you need more "
-        "context than the ±5 default window.\n"
-        "       - To scroll FORWARD: pass messages[-1].id back as around_message_id.\n"
-        "       - To scroll BACKWARD: pass messages[0].id back as around_message_id.\n"
-        "       - The boundary message appears in both windows — orientation marker.\n"
-        "       - When messages_before or messages_after is < window, you're at the "
-        "start or end of the session.\n\n"
-        "  3) READ — pass `session_id` only (no around_message_id):\n"
-        "     session_search(session_id=\"...\", profile=\"work\")\n"
-        "     Dumps the whole session by id (first 20 + last 10 messages when "
-        "large). This is how you resolve an `@session:<profile>/<id>` link the "
-        "user dropped into the chat: split the value on `/` into profile + id "
-        "and call session_search(session_id=id, profile=profile).\n\n"
-        "  4) BROWSE — no args:\n"
-        "     session_search()\n"
-        "     Returns recent sessions chronologically: titles, previews, timestamps. "
-        "Use when the user asks \"what was I working on\" without naming a topic.\n\n"
-        "FTS5 SYNTAX\n\n"
-        "  AND is the default — multi-word queries require all terms. Use OR explicitly "
-        "for broader recall (`alpha OR beta OR gamma`), quoted phrases for exact match "
-        "(`\"docker networking\"`), boolean (`python NOT java`), or prefix wildcards "
-        "(`deploy*`).\n\n"
-        "WHEN TO USE\n\n"
-        "  Reach for this on questions about Hermes conversation history itself, such "
-        "as \"what did we do about X\", \"where did we leave Y\", or \"find the "
-        "session where Z\". If the user provided a direct source identifier, inspect "
-        "that source first when accessible; session_search can then supply historical "
-        "context. The session DB carries what was said when; external tools show "
-        "current source/world state."
+        "Recall past conversations: search or read old Hermes sessions (FTS5), or "
+        "scroll inside one. Four shapes, picked by args: `query` = discovery "
+        "(top-N matching sessions, top result fully hydrated); `session_id` + "
+        "`around_message_id` = scroll (window of messages around an anchor); "
+        "`session_id` alone = read a whole session — how you resolve an "
+        "`@session:<profile>/<id>` link (split on '/' into profile + id); no "
+        "args = browse recent sessions. Results are actual DB messages, no LLM. "
+        "Searches conversation history ONLY — when the user gave a direct "
+        "source (URL, file, contact, live system), inspect that first; never "
+        "conclude 'not found' from history alone. Use for questions about past "
+        "conversations: 'what did we do about X', 'where did we leave Y'. When "
+        "referring the user to a session, write its `link` value verbatim "
+        "inline (it renders as a titled link)."
     ),
     "parameters": {
         "type": "object",
@@ -840,13 +1191,21 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "enum": ["newest", "oldest"],
                 "description": (
-                    "Discovery shape only. Temporal bias on top of FTS5 ranking. Omit "
-                    "to keep relevance-only ordering (suitable for exploratory recall — "
-                    "\"what do we know about X\"). Set 'newest' for recency-shaped "
-                    "questions (\"where did we leave X\"). Set 'oldest' for "
-                    "origin-shaped questions (\"how did X start\"). Ignored in scroll "
-                    "and browse shapes."
+                    "Discovery shape only. Temporal bias on top of FTS5 ranking: omit "
+                    "for relevance-only (exploratory recall), 'newest' for "
+                    "\"where did we leave X\", 'oldest' for \"how did X start\"."
                 ),
+            },
+            "detail": {
+                "type": "string",
+                "enum": ["adaptive", "full"],
+                "description": (
+                    "Discovery shape only. 'adaptive' (default) fully hydrates the "
+                    "top-ranked result and returns only the exact anchor message for "
+                    "lower-ranked results. 'full' returns bookends and the complete "
+                    "anchored window for every result."
+                ),
+                "default": "adaptive",
             },
             "session_id": {
                 "type": "string",
@@ -859,10 +1218,9 @@ SESSION_SEARCH_SCHEMA = {
             "around_message_id": {
                 "type": "integer",
                 "description": (
-                    "Scroll shape. Message id to center the window on. From a discovery "
-                    "result use match_message_id, or any id seen in a prior window. To "
-                    "scroll forward pass the last window message's id; to scroll "
-                    "backward pass the first."
+                    "Scroll shape. Message id to center the window on — use "
+                    "match_message_id from a discovery result, or any id from a "
+                    "prior window."
                 ),
             },
             "window": {
@@ -912,6 +1270,7 @@ registry.register(
         around_message_id=args.get("around_message_id"),
         window=args.get("window", 5),
         sort=args.get("sort"),
+        detail=args.get("detail", "adaptive"),
         profile=args.get("profile"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),

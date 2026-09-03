@@ -30,12 +30,46 @@ import logging
 import re
 import inspect
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
+
+# Providers that predate the checkpoint-API attribute are implicitly on the
+# historical best-effort contract (API v1).
+_LEGACY_PRE_COMPRESS_API_VERSION = 1
+
+
+def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
+    """True if ``fn`` can receive the ``require_checkpoint`` keyword.
+
+    Checkpoint (v2) providers written against the original docs example use
+    the bare ``on_pre_compress(self, messages)`` signature; calling them with
+    the keyword would raise ``TypeError`` — which, under
+    ``require_checkpoint=True``, the host would re-raise as a checkpoint
+    failure even though the provider's durable write succeeded. Inspect the
+    signature and fall back to the legacy call shape when the keyword (or a
+    ``**kwargs`` catch-all) is absent. Unreadable signatures (C callables,
+    exotic proxies) conservatively report False.
+    """
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if (
+            param.name == "require_checkpoint"
+            and param.kind in (
+                inspect.Parameter.KEYWORD_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ):
+            return True
+    return False
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +114,17 @@ def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
     return schema
 
 
-def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool:
+def memory_provider_tools_enabled(
+    enabled_toolsets: Optional[List[str]],
+    disabled_toolsets: Optional[List[str]] = None,
+    *,
+    memory_tool_present: bool = False,
+) -> bool:
     """Return whether external memory-provider tools should be exposed."""
+    if disabled_toolsets and "memory" in disabled_toolsets:
+        return False
+    if memory_tool_present:
+        return True
     if enabled_toolsets is None:
         return True
     if not enabled_toolsets:
@@ -98,6 +141,29 @@ def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool
         return False
 
 
+def memory_provider_tools_exposed(agent: Any) -> bool:
+    """Whether external memory-provider tools are exposed on ``agent``.
+
+    Same gate as ``inject_memory_provider_tools`` so the provider's
+    ``system_prompt_block()`` and its tool schemas are presented to the
+    model together — otherwise the system prompt would advertise tools
+    that don't exist in the tool surface (#81014).
+    """
+    tools = getattr(agent, "tools", None)
+    if isinstance(tools, (list, tuple)):
+        memory_tool_present = any(
+            isinstance(tool, dict) and tool.get("function", {}).get("name") == "memory"
+            for tool in tools
+        )
+    else:
+        memory_tool_present = False
+    return memory_provider_tools_enabled(
+        getattr(agent, "enabled_toolsets", None),
+        getattr(agent, "disabled_toolsets", None),
+        memory_tool_present=memory_tool_present,
+    )
+
+
 def inject_memory_provider_tools(agent: Any) -> int:
     """Append external memory-provider tool schemas to an agent tool surface."""
     memory_manager = getattr(agent, "_memory_manager", None)
@@ -110,10 +176,23 @@ def inject_memory_provider_tools(agent: Any) -> int:
         for tool in tools
         if isinstance(tool, dict)
     }
-    if (
-        "memory" not in existing_tool_names
-        and not memory_provider_tools_enabled(getattr(agent, "enabled_toolsets", None))
-    ):
+    if not memory_provider_tools_exposed(agent):
+        # A provider is configured but the memory toolset is gated off
+        # (platform_toolsets / disabled_toolsets). Say so once — a silent
+        # return 0 here made #81014 undiagnosable: the provider looked
+        # "half on" with no clue which config key suppressed its tools.
+        _providers = [
+            p for p in (getattr(memory_manager, "providers", None) or [])
+            if getattr(p, "name", "") != "builtin"
+        ]
+        if _providers:
+            logger.info(
+                "Memory provider(s) %s configured but the 'memory' toolset is "
+                "gated off for this session (platform_toolsets / "
+                "agent.disabled_toolsets) — provider tools and system-prompt "
+                "block are both withheld.",
+                [getattr(p, "name", type(p).__name__) for p in _providers],
+            )
         return 0
 
     get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)
@@ -378,6 +457,16 @@ class MemoryManager:
         # _submit_background() and the sync_all/queue_prefetch_all rationale.
         self._sync_executor: Optional[ThreadPoolExecutor] = None
         self._sync_executor_lock = threading.Lock()
+        # Futures are tracked by durability class so shutdown can give writes
+        # a bounded FIFO drain, then explicitly report anything abandoned.
+        self._background_futures: Dict[Future, str] = {}
+        self._shutting_down = False
+        self._shutdown_drain_state: Dict[str, Any] = {
+            "status": "not_started",
+            "abandoned_writes": 0,
+            "abandoned_prefetches": 0,
+            "active_tasks": 0,
+        }
 
     # -- Registration --------------------------------------------------------
 
@@ -539,8 +628,13 @@ class MemoryManager:
             except Exception as exc:  # pragma: no cover - re-raised by caller
                 error_box["value"] = exc
 
+        # Propagate the caller's contextvars (profile HERMES_HOME override)
+        # to the prefetch thread — see _submit_background.
+        import contextvars
+        from functools import partial
+
         thread = threading.Thread(
-            target=_run,
+            target=partial(contextvars.copy_context().run, _run),
             daemon=True,
             name=f"memory-prefetch-{provider.name}",
         )
@@ -574,6 +668,38 @@ class MemoryManager:
             raise error_box["value"]
         return result_box.get("value", "")
 
+    def describe_recall(self) -> str:
+        """Build a deterministic, model-independent recall indicator line.
+
+        Call right after :meth:`prefetch_all` on the turn thread. Collects each
+        provider's :meth:`MemoryProvider.recall_status` and renders a single
+        status string (e.g. ``"🧠 Provider — recalled 3 memories"``) so the
+        user SEES memory was used regardless of whether the model mentions it.
+        Returns ``""`` when no provider injected memory this turn — callers can
+        emit the result unconditionally.
+        """
+        segments: List[str] = []
+        for provider in self._providers:
+            try:
+                status = provider.recall_status()
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' recall_status failed (non-fatal): %s",
+                    provider.name, e,
+                )
+                continue
+            if status is None:
+                continue
+            if status.count == 1:
+                detail = "recalled 1 memory"
+            elif status.count > 1:
+                detail = f"recalled {status.count} memories"
+            else:
+                # count <= 0 → content injected but no discrete count (reflect).
+                detail = "recalled relevant memory"
+            segments.append(f"{status.glyph} {status.provider_label} — {detail}")
+        return "  ".join(segments)
+
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn.
 
@@ -599,7 +725,7 @@ class MemoryManager:
                         provider.name, e,
                     )
 
-        self._submit_background(_run)
+        self._submit_background(_run, kind="prefetch")
 
     # -- Sync ----------------------------------------------------------------
 
@@ -675,46 +801,70 @@ class MemoryManager:
 
     # -- Background dispatch -------------------------------------------------
 
-    def _submit_background(self, fn) -> None:
-        """Run ``fn`` on the manager's background worker.
+    def _submit_background(self, fn, *, kind: str = "write") -> None:
+        """Queue ``fn`` on the serialized worker and track its durability class.
 
-        The executor is created lazily and shared across calls. If the
-        executor can't be created or has already been shut down, ``fn``
-        runs inline as a last-resort fallback — losing the async benefit
-        but never losing the write itself. ``fn`` must do its own
-        per-provider error handling; this wrapper only guards executor
-        plumbing.
+        The submitted callable is wrapped with the CALLER's contextvars:
+        profile isolation in multi-profile processes (gateway multiplexer,
+        dashboard, cron) is a ContextVar-scoped HERMES_HOME override, and
+        executor worker threads start with empty contexts — without the
+        wrap, a provider resolving ambient state (config paths, secrets)
+        from the worker would silently land on the default profile.
         """
+        import contextvars
+        from functools import partial
+
+        ctx = contextvars.copy_context()
+        fn = partial(ctx.run, fn)
         executor = self._get_sync_executor()
         if executor is None:
-            # Executor unavailable (shut down / creation failed) — run
-            # inline rather than drop the work. Slow, but correct.
+            if self._shutting_down:
+                logger.warning("Memory manager is shutting down; rejecting late %s task", kind)
+                return
+            # Creation failure outside shutdown: preserve the historical
+            # fail-safe behavior and run the operation inline.
             try:
                 fn()
             except Exception as e:  # pragma: no cover - fn guards internally
                 logger.debug("Inline memory background task failed: %s", e)
             return
         try:
-            executor.submit(fn)
+            # Make submit+tracking atomic with the shutdown snapshot. The
+            # callback is attached after releasing the lock because an already
+            # completed future invokes callbacks synchronously.
+            with self._sync_executor_lock:
+                if self._shutting_down:
+                    logger.warning("Memory manager is shutting down; rejecting late %s task", kind)
+                    return
+                future = executor.submit(fn)
+                self._background_futures[future] = kind
+            future.add_done_callback(self._forget_background_future)
         except RuntimeError:
-            # Executor was shut down between the get and the submit
-            # (teardown race). Fall back to inline.
+            if self._shutting_down:
+                logger.warning("Memory manager shut down during %s submission; task rejected", kind)
+                return
             try:
                 fn()
             except Exception as e:  # pragma: no cover - fn guards internally
                 logger.debug("Inline memory background task failed: %s", e)
 
+    def _forget_background_future(self, future: Future) -> None:
+        with self._sync_executor_lock:
+            self._background_futures.pop(future, None)
+
     def _get_sync_executor(self) -> Optional[ThreadPoolExecutor]:
         """Lazily create the single-worker background executor."""
+        if self._shutting_down:
+            return None
         if self._sync_executor is not None:
             return self._sync_executor
         with self._sync_executor_lock:
+            if self._shutting_down:
+                return None
             if self._sync_executor is None:
                 try:
                     # Daemon workers (see tools.daemon_pool): a provider wedged
-                    # on a network call must never block interpreter exit —
-                    # stdlib ThreadPoolExecutor's atexit hook would join it
-                    # unconditionally even after shutdown(wait=False).
+                    # on a network call must never block interpreter exit.
                     from tools.daemon_pool import DaemonThreadPoolExecutor
                     self._sync_executor = DaemonThreadPoolExecutor(
                         max_workers=1,
@@ -940,16 +1090,82 @@ class MemoryManager:
                     provider.name, e,
                 )
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+    def supports_pre_compress_checkpoint(
+        self,
+        api_version: int = PRE_COMPRESS_CHECKPOINT_API_VERSION,
+    ) -> bool:
+        """Return whether an active provider guarantees checkpoint API support."""
+        for provider in self._providers:
+            try:
+                provider_version = int(
+                    getattr(
+                        provider,
+                        "pre_compress_checkpoint_api_version",
+                        _LEGACY_PRE_COMPRESS_API_VERSION,
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
+            if provider_version >= api_version:
+                return True
+        return False
+
+    def on_pre_compress(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        evidence_messages: Optional[List[Dict[str, Any]]] = None,
+        require_checkpoint: bool = False,
+        checkpoint_api_version: int = PRE_COMPRESS_CHECKPOINT_API_VERSION,
+    ) -> str:
         """Notify all providers before context compression.
 
         Returns combined text from providers to include in the compression
         summary prompt. Empty string if no provider contributes.
+
+        ``messages`` is the raw transcript — the historical (API v1)
+        contract every existing provider receives unchanged.
+        ``evidence_messages`` is the host-normalized direct-evidence list
+        handed only to providers that opted into checkpoint API v2+; when
+        omitted, v2 providers receive the raw list too.
+
+        When ``require_checkpoint`` is true, at least one provider
+        advertising the requested checkpoint API must return successfully;
+        its exception is propagated so the caller can preserve the
+        uncompressed transcript.
         """
         parts = []
+        checkpoint_succeeded = False
         for provider in self._providers:
             try:
-                result = provider.on_pre_compress(messages)
+                provider_version = int(
+                    getattr(
+                        provider,
+                        "pre_compress_checkpoint_api_version",
+                        _LEGACY_PRE_COMPRESS_API_VERSION,
+                    )
+                )
+            except (TypeError, ValueError):
+                provider_version = _LEGACY_PRE_COMPRESS_API_VERSION
+            is_checkpoint_provider = provider_version >= checkpoint_api_version
+            provider_messages = messages
+            if is_checkpoint_provider and evidence_messages is not None:
+                provider_messages = evidence_messages
+            try:
+                if is_checkpoint_provider and _accepts_require_checkpoint(
+                    provider.on_pre_compress
+                ):
+                    result = provider.on_pre_compress(
+                        provider_messages,
+                        require_checkpoint=require_checkpoint,
+                    )
+                else:
+                    # Legacy (v1) providers keep the strict one-argument
+                    # contract. v2 providers written against the original
+                    # docs example (``def on_pre_compress(self, messages)``)
+                    # also land here instead of dying on an unexpected
+                    # kwarg — they simply never see the requirement signal.
+                    result = provider.on_pre_compress(provider_messages)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:
@@ -957,6 +1173,16 @@ class MemoryManager:
                     "Memory provider '%s' on_pre_compress failed: %s",
                     provider.name, e,
                 )
+                if require_checkpoint and is_checkpoint_provider:
+                    raise
+            else:
+                if is_checkpoint_provider:
+                    checkpoint_succeeded = True
+        if require_checkpoint and not checkpoint_succeeded:
+            raise RuntimeError(
+                "No active memory provider completed pre-compress checkpoint "
+                f"API v{checkpoint_api_version}"
+            )
         return "\n\n".join(parts)
 
     @staticmethod
@@ -1129,51 +1355,66 @@ class MemoryManager:
                     provider.name, e,
                 )
 
-    def _drain_sync_executor(self) -> None:
-        """Shut down the background executor, waiting briefly for drain.
-
-        Bounded by ``_SYNC_DRAIN_TIMEOUT_S``: a wedged provider must never
-        hang process/session teardown. We stop accepting new work and
-        cancel anything still queued, then wait at most the drain timeout
-        for the currently-running task on a watcher thread. The worker is
-        daemon, so an over-running task dies with the interpreter.
-        """
+    @property
+    def shutdown_drain_state(self) -> Dict[str, Any]:
+        """Snapshot of the most recent bounded shutdown drain outcome."""
         with self._sync_executor_lock:
+            return dict(self._shutdown_drain_state)
+
+    def _drain_sync_executor(self) -> None:
+        """Give queued FIFO work a bounded chance, then abandon explicitly."""
+        with self._sync_executor_lock:
+            self._shutting_down = True
             executor = self._sync_executor
             self._sync_executor = None
+            tracked = dict(self._background_futures)
+            self._shutdown_drain_state = {
+                "status": "draining" if executor is not None else "drained",
+                "abandoned_writes": 0,
+                "abandoned_prefetches": 0,
+                "active_tasks": sum(not future.done() for future in tracked),
+            }
         if executor is None:
             return
-        try:
-            # Stop accepting new work and drop anything still queued, but
-            # do NOT block here — cancel_futures cancels not-yet-started
-            # tasks; the in-flight one keeps running on its daemon thread.
-            executor.shutdown(wait=False, cancel_futures=True)
-        except TypeError:
-            # Older Python without cancel_futures kwarg.
-            try:
-                executor.shutdown(wait=False)
-            except Exception as e:  # pragma: no cover
-                logger.debug("Memory sync executor shutdown failed: %s", e)
-            return
-        except Exception as e:  # pragma: no cover
-            logger.debug("Memory sync executor shutdown failed: %s", e)
-            return
-        # Give an in-flight sync a bounded chance to finish on a watcher
-        # thread so we don't block the caller past the drain timeout.
-        drainer = threading.Thread(
-            target=lambda: self._bounded_executor_wait(executor),
-            daemon=True,
-            name="mem-sync-drain",
-        )
-        drainer.start()
-        drainer.join(timeout=_SYNC_DRAIN_TIMEOUT_S)
 
-    @staticmethod
-    def _bounded_executor_wait(executor: ThreadPoolExecutor) -> None:
-        try:
-            executor.shutdown(wait=True)
-        except Exception as e:  # pragma: no cover
-            logger.debug("Memory sync executor drain wait failed: %s", e)
+        # shutdown(wait=False) closes submission without touching the FIFO.
+        # Waiting on the tracked futures lets the real single-worker executor
+        # run every queued write/boundary task in order up to the deadline.
+        executor.shutdown(wait=False, cancel_futures=False)
+        _, pending = wait(tuple(tracked), timeout=_SYNC_DRAIN_TIMEOUT_S)
+        if not pending:
+            with self._sync_executor_lock:
+                self._shutdown_drain_state.update(status="drained", active_tasks=0)
+            return
+
+        abandoned_writes = 0
+        abandoned_prefetches = 0
+        active_tasks = 0
+        for future in pending:
+            kind = tracked[future]
+            if future.cancel():
+                if kind == "prefetch":
+                    abandoned_prefetches += 1
+                else:
+                    abandoned_writes += 1
+            else:
+                active_tasks += 1
+
+        with self._sync_executor_lock:
+            self._shutdown_drain_state.update(
+                status="timed_out",
+                abandoned_writes=abandoned_writes,
+                abandoned_prefetches=abandoned_prefetches,
+                active_tasks=active_tasks,
+            )
+        logger.warning(
+            "Memory shutdown drain timed out after %.2fs; abandoning %d queued "
+            "memory write(s) and %d queued prefetch(es); %d active task(s) remain detached",
+            _SYNC_DRAIN_TIMEOUT_S,
+            abandoned_writes,
+            abandoned_prefetches,
+            active_tasks,
+        )
 
     def initialize_all(self, session_id: str, **kwargs) -> None:
         """Initialize all providers.

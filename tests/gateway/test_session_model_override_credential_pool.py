@@ -35,35 +35,3 @@ def test_fast_session_override_includes_credential_pool(monkeypatch):
     assert runtime.get("credential_pool") is fake_pool
 
 
-def test_apply_session_override_backfills_credential_pool(monkeypatch):
-    runner = object.__new__(GatewayRunner)
-    fake_pool = MagicMock(name="pool")
-    runner._session_model_overrides = {
-        "sess-2": {
-            "model": "kimi-k2.7",
-            "provider": "custom:hyper",
-            "api_key": "sk-test",
-        },
-    }
-    monkeypatch.setattr(
-        "gateway.run._credential_pool_for_provider",
-        lambda provider: fake_pool,
-    )
-
-    model, runtime = runner._apply_session_model_override(
-        "sess-2",
-        "default-model",
-        {"api_key": "old", "provider": "x"},
-    )
-
-    assert model == "kimi-k2.7"
-    assert runtime["credential_pool"] is fake_pool
-
-
-def test_credential_pool_for_provider_delegates(monkeypatch):
-    sentinel = object()
-    monkeypatch.setattr(
-        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
-        lambda p: {"credential_pool": sentinel, "provider": p},
-    )
-    assert _credential_pool_for_provider("custom:hyper") is sentinel

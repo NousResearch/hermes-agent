@@ -12,9 +12,34 @@ Memory provider plugins give Hermes Agent persistent, cross-session knowledge be
 Memory providers are one of two **provider plugin** types. The other is [Context Engine Plugins](/developer-guide/context-engine-plugin), which replace the built-in context compressor. Both follow the same pattern: single-select, config-driven, managed via `hermes plugins`.
 :::
 
-## Directory Structure
+## Installation Layouts
 
-Each memory provider lives in `plugins/memory/<name>/`:
+Hermes discovers memory providers from four sources, in this precedence order:
+
+| Source | Location | Notes |
+|---|---|---|
+| Bundled | `plugins/memory/<name>/` | Ships with Hermes. Closed to new providers — see [CONTRIBUTING](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md). |
+| User | `$HERMES_HOME/plugins/<name>/` | Dropped in by the user, per profile. |
+| Project | `./.hermes/plugins/<name>/` | Opt-in via `HERMES_ENABLE_PROJECT_PLUGINS=1`. |
+| Package | `hermes_agent.memory_providers` entry point | `pip install`, nothing to copy. |
+
+Earlier sources win on a name collision, so a directory dropped into a working
+tree can never shadow a shipped provider.
+
+:::note
+This is the reverse of the general plugin system's later-wins order. A memory
+provider is activated by *name* (`memory.provider`), so shadowing would
+silently redirect the agent's memory rather than merely override a tool.
+:::
+
+Discovery only *enumerates* — it never imports a provider. Nothing runs until
+`memory.provider` names it.
+
+### Directory Provider
+
+A directory provider lives in `plugins/memory/<name>/` when bundled with
+Hermes, in `$HERMES_HOME/plugins/<name>/` when installed by a user, or in
+`./.hermes/plugins/<name>/` for a project-local one:
 
 ```
 plugins/memory/my-provider/
@@ -22,6 +47,28 @@ plugins/memory/my-provider/
 ├── plugin.yaml      # Metadata (name, description, hooks)
 └── README.md        # Setup instructions, config reference, tools
 ```
+
+### Packaged Provider
+
+A pip-installed provider publishes an entry point in the
+`hermes_agent.memory_providers` group. The entry-point name is the provider
+name users select in `memory.provider`; its value points to the provider's
+`register(ctx)` function:
+
+```toml title="pyproject.toml"
+[project.entry-points."hermes_agent.memory_providers"]
+my-provider = "my_provider:register"
+```
+
+Point the entry point at the **package**, or at a `register(ctx)` inside it, and
+keep your implementation, skills, and other resources in the normal Python
+package layout. No copy under `$HERMES_HOME/plugins/` is required.
+
+A package entry point gets everything a directory install does, including the
+two files Hermes reads from disk rather than importing — `config_schema.py`
+(the dashboard config panel) and `cli.py` (your `hermes <provider>`
+subcommands). Both are found next to your package's `__init__.py`, so point the
+entry point at a package rather than a single module if you ship either.
 
 ## The MemoryProvider ABC
 
@@ -76,12 +123,80 @@ class MyMemoryProvider(MemoryProvider):
 |--------|-----------|----------|
 | `system_prompt_block()` | System prompt assembly | Static provider info |
 | `prefetch(query, *, session_id="")` | Before each API call | Return recalled context |
-| `queue_prefetch(query)` | After each turn | Pre-warm for next turn |
-| `sync_turn(user, assistant, *, session_id="")` | After each completed turn | Persist conversation |
+| `queue_prefetch(query, *, session_id="")` | After each turn | Pre-warm for next turn |
+| `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
+
+## Pre-Compress Checkpoints (fail-closed)
+
+`on_pre_compress()` is best-effort by default: if your provider raises, the
+host logs the failure and compression proceeds. That is the right default for
+insight extraction — and the wrong one for a provider whose job is to archive
+transcript evidence to a durable store *before* the lossy rewrite. For that
+case the host offers an opt-in checkpoint contract (API v2):
+
+```python
+from agent.memory_provider import MemoryProvider
+
+class MyArchivingProvider(MemoryProvider):
+    # Opt in: every successful on_pre_compress() return means the durable
+    # checkpoint is committed. Raise on any failure — do not return partial
+    # success. Version 1 (the inherited default) is the implicit historical
+    # contract: best-effort semantics, raw message list.
+    pre_compress_checkpoint_api_version = 2
+
+    def on_pre_compress(self, messages, *, require_checkpoint=False):
+        # require_checkpoint mirrors the operator's checkpoint_required
+        # setting: True means a raise here blocks the lossy rewrite.
+        ids = self._archive(messages)   # must be durable before returning
+        return f"checkpoint: {ids}"     # forwarded into the summary prompt
+```
+
+Operators enable enforcement per deployment:
+
+```yaml
+compression:
+  checkpoint_required: true   # default: false
+```
+
+With the gate on, compression **fails closed** before any lossy rewrite unless
+an active provider advertising the API completed its checkpoint: the
+uncompressed transcript is preserved, the compaction attempt errors with
+`BLOCKED_MISSING_PREREQUISITE`, and it can be retried once your store
+recovers. With the gate off (default), nothing changes for existing providers.
+
+The gate binds to every compaction authority, not just the Hermes
+summarizer: server-side native compaction (`compression.codex_responses_native`)
+is suppressed while the gate is armed, post-turn micro-compaction
+(`compression.micro_compact`) is forced off at agent init (it absorbs old
+exchanges into a rolling summary with no checkpoint hook in its path), and
+the `codex_app_server` API mode is refused at agent init — the codex agent
+compacts its own thread with no truthful pre-compaction boundary, so a
+required checkpoint cannot be guaranteed there. The checkpoint-aware Hermes
+compressor stays the only lossy authority.
+
+What your provider receives depends on its declared API version. Version 1
+providers (the implicit default — every pre-existing provider) keep the
+historical contract: the raw message list, exactly as before. Version 2
+checkpoint providers receive normalized direct evidence instead:
+user/assistant text rows only — tool results, system messages, the
+`tool_calls` payload of assistant messages (their prose is kept), and prior
+compaction summaries are filtered host-side. Prior summaries are recognized
+via a persistent `_compressed_summary` message marker that survives process
+restarts, so a resumed session never feeds derivative summaries back into
+your archive.
+
+**Checkpoints must be idempotent.** After a fail-closed block, the next
+compaction attempt calls `on_pre_compress()` again with the same transcript —
+and a transcript that grew only slightly produces largely overlapping
+evidence. Key your archive writes by content (for example a transcript
+digest) and upsert, so retries and overlaps deduplicate instead of
+accumulating duplicate archives.
+
+Contract tests: `tests/agent/test_pre_compress_checkpoint_contract.py`.
 
 ## Config Schema
 
@@ -138,6 +253,27 @@ def register(ctx) -> None:
     """Called by the memory plugin discovery system."""
     ctx.register_memory_provider(MyMemoryProvider())
 ```
+
+A provider may also expose read-only skills from the same callback. Skills are
+qualified by the entry-point name and are loaded only when that memory provider
+is active:
+
+```python
+from pathlib import Path
+
+SKILLS_DIR = Path(__file__).parent / "skills"
+
+def register(ctx) -> None:
+    ctx.register_memory_provider(MyMemoryProvider())
+    ctx.register_skill(
+        "maintenance",
+        SKILLS_DIR / "maintenance" / "SKILL.md",
+        "Maintain the provider's memory store",
+    )
+```
+
+With the `my-provider` entry point active, the skill is available as
+`my-provider:maintenance` through `skill_view()`.
 
 ## plugin.yaml
 

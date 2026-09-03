@@ -33,8 +33,14 @@ Substrate facts (verified May 2026):
 
 from __future__ import annotations
 
+from contextvars import copy_context
 from dataclasses import dataclass, replace
-from typing import Optional
+from threading import Lock, Thread, current_thread
+from typing import Any, Optional
+
+
+_pricing_prewarm_lock = Lock()
+_pricing_prewarm_threads: dict[tuple[str, tuple[tuple[str, str], ...]], Thread] = {}
 
 
 # ─── Public types ───────────────────────────────────────────────────────
@@ -52,6 +58,7 @@ class ConfigContext:
     current_base_url: str
     user_providers: dict
     custom_providers: list
+    excluded_providers: list = None
 
     def with_overrides(
         self,
@@ -82,26 +89,34 @@ def load_picker_context() -> ConfigContext:
     Replaces the inline 17-LOC config-slice that ``web_server.py`` and
     ``tui_gateway/server.py`` (×2 sites) used to do.
     """
-    from hermes_cli.config import get_compatible_custom_providers, load_config
+    from hermes_cli.config import (
+        coerce_provider_id,
+        get_compatible_custom_providers,
+        load_config,
+        stringify_provider_map,
+    )
 
     cfg = load_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, dict):
-        current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
-        current_provider = model_cfg.get("provider", "") or ""
-        current_base_url = model_cfg.get("base_url", "") or ""
+        # PyYAML parses unquoted scalars as int (`provider: 2070`). Keep these
+        # as strings so picker/options paths never call `.strip()` on an int.
+        current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
+        current_provider = coerce_provider_id(model_cfg.get("provider", ""))
+        current_base_url = str(model_cfg.get("base_url", "") or "")
     else:
         # config.model can be a bare string in older configs.
         current_model = str(model_cfg) if model_cfg else ""
         current_provider = ""
         current_base_url = ""
-    raw = cfg.get("providers")
+    excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
     return ConfigContext(
         current_provider=current_provider,
         current_model=current_model,
         current_base_url=current_base_url,
-        user_providers=raw if isinstance(raw, dict) else {},
+        user_providers=stringify_provider_map(cfg.get("providers")),
         custom_providers=get_compatible_custom_providers(cfg),
+        excluded_providers=excluded if isinstance(excluded, list) else [],
     )
 
 
@@ -116,11 +131,14 @@ def build_models_payload(
     picker_hints: bool = False,
     canonical_order: bool = False,
     pricing: bool = False,
+    pricing_cache_only: bool = False,
     capabilities: bool = False,
+    featured: bool = False,
     force_fresh_nous_tier: bool = False,
     refresh: bool = False,
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
+    for_picker: bool = False,
     max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
@@ -144,10 +162,20 @@ def build_models_payload(
       show $/Mtok columns and gate paid models on free accounts —
       mirroring the ``hermes model`` CLI picker. Adds network calls
       (pricing fetch + Nous tier check); only set for interactive pickers.
+    - ``pricing_cache_only``: when pricing is enabled, use only values already
+      resident in process caches. Normal picker opens use this while a
+      background worker warms cold pricing endpoints.
     - ``capabilities``: add a per-row ``capabilities`` map
       ``{model: {fast, reasoning}}`` so pickers can gate the model-options
       controls (fast toggle / reasoning) to what each model actually
       supports, instead of offering knobs the backend would reject.
+    - ``featured``: add a per-row ``featured_models`` list — the newest few
+      models per lab (by models.dev release_date, ranked within the row's own
+      models; see ``_FEATURED_PER_LAB``) for aggregator providers that serve
+      dozens of models across many labs. Pickers default their visible set to
+      these; the rest of ``models`` stays reachable via search / show-all. Empty
+      for single-lab providers (callers fall back to top-N). Derived live from
+      models.dev — no allowlist.
     - ``force_fresh_nous_tier``: bypass the short Nous free-tier cache when
       selecting Portal-recommended Nous models and applying tier gating. Keep
       this false for UI picker opens; explicit auth/model flows can opt in
@@ -165,6 +193,11 @@ def build_models_payload(
       false, still live-probe the current custom endpoint. This keeps normal
       GUI/TUI picker opens fast while making the active custom provider's model
       list match the classic CLI picker.
+    - ``for_picker``: interactive-picker visibility. Keeps providers whose
+      credential pool exists but is entirely rate-limited (exhausted) in the
+      list. Rate limits are per-model, so a different model under the same
+      provider may still work; hiding the provider strands the user. Set for
+      any surface a human is choosing from, not for programmatic resolution.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -179,7 +212,34 @@ def build_models_payload(
         refresh=refresh,
         probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider,
+        for_picker=for_picker,
+        excluded_providers=ctx.excluded_providers or [],
     )
+
+    # Managed local runtime: staged GGUFs are selectable like any provider's
+    # models. list_authenticated_providers can't know about them (no
+    # credential, no custom_providers entry — the credential is
+    # reachability), so inject the row here where every picker surface
+    # inherits it. Present whenever models are staged; picking one routes
+    # through the llamacpp alias -> managed/detected server resolution.
+    local_row = _local_runtime_row(ctx)
+    if local_row is not None:
+        rows = [r for r in rows if str(r.get("slug", "")).lower() != "llamacpp"]
+        rows.append(local_row)
+        # A live session on the managed server reports provider "custom"
+        # (the resolution seam's generic label for a raw base_url), which
+        # would otherwise materialize a duplicate "Custom endpoint" row
+        # carrying the same staged models and stealing the checkmark. The
+        # Local row owns the managed server's identity — drop custom rows
+        # that point at the managed endpoint.
+        if local_row.get("is_current"):
+            def _is_managed_custom(row: dict) -> bool:
+                if str(row.get("slug", "")).lower() != "custom":
+                    return False
+                models = {str(m) for m in (row.get("models") or [])}
+                return bool(models) and models <= set(local_row["models"])
+
+            rows = [r for r in rows if not _is_managed_custom(r)]
 
     moa_row = _moa_provider_row(ctx.current_provider)
     if moa_row is not None:
@@ -192,9 +252,15 @@ def build_models_payload(
         # has lost its credential, list_authenticated_providers() omits it;
         # keep that one row visible so the UI can show the saved selection and
         # a re-auth affordance instead of appearing to jump to another provider.
-        rows = list(rows) + _append_unconfigured_rows(
-            rows, ctx, current_only=True
-        )
+        # Exception: a "custom" current whose endpoint is the managed local
+        # server is already represented (with the checkmark) by the Local row
+        # — the skeleton would resurrect the duplicate the dedup above removed.
+        _local_owns_current = bool(local_row and local_row.get("is_current")
+                                   and (ctx.current_provider or "").lower() == "custom")
+        if not _local_owns_current:
+            rows = list(rows) + _append_unconfigured_rows(
+                rows, ctx, current_only=True
+            )
 
     # --- Deduplicate: remove models from aggregators that overlap with
     # user-defined providers.  When a local proxy (e.g. litellm-proxy)
@@ -248,9 +314,16 @@ def build_models_payload(
     if canonical_order:
         rows = _reorder_canonical(rows)
     if pricing:
-        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
+        _apply_pricing(
+            rows,
+            force_fresh_nous_tier=force_fresh_nous_tier,
+            cached_only=pricing_cache_only,
+        )
     if capabilities:
         _apply_capabilities(rows)
+    if featured:
+        _apply_featured(rows)
+    _apply_custom_aliases(rows)
 
     return {
         "providers": rows,
@@ -259,14 +332,183 @@ def build_models_payload(
     }
 
 
+def build_model_options_payload(
+    ctx: ConfigContext,
+    *,
+    explicit_only: bool = False,
+    include_unconfigured: bool = False,
+    refresh: bool = False,
+) -> dict:
+    """Build the shared API-server/dashboard/TUI model-options payload.
+
+    This wraps ``build_models_payload`` with the stable picker shape and the
+    safe custom-provider probe policy used for normal GUI/TUI opens:
+
+    - normal open: probe only the current custom provider so offline saved
+      endpoints do not block the picker
+    - explicit refresh: probe every custom provider while busting the model
+      cache so live catalogs repopulate fully
+    """
+    refresh = bool(refresh)
+    payload = build_models_payload(
+        ctx,
+        explicit_only=bool(explicit_only),
+        include_unconfigured=bool(include_unconfigured),
+        picker_hints=True,
+        canonical_order=True,
+        pricing=True,
+        pricing_cache_only=not refresh,
+        capabilities=True,
+        featured=True,
+        refresh=refresh,
+        probe_custom_providers=refresh,
+        probe_current_custom_provider=not refresh,
+    )
+    if not refresh:
+        _prewarm_pricing_async(
+            payload["providers"],
+            current_provider=ctx.current_provider,
+            current_base_url=ctx.current_base_url,
+        )
+    return payload
+
+
+# ─── Public: auxiliary-task pickers ─────────────────────────────────────
+
+
+def build_aux_picker_rows(
+    *,
+    current_provider: str = "",
+    current_model: str = "",
+    current_base_url: str = "",
+    max_models: int | None = None,
+) -> list[dict]:
+    """Provider rows for any auxiliary-task picker (vision, compression, …).
+
+    THE entry point for every aux picker — present and future. Call this
+    instead of ``list_authenticated_providers()`` directly.
+
+    Aux pickers kept re-deriving their own kwargs and each one silently
+    dropped a different slice of the user's configuration. Two independent
+    contributor PRs landed against the same two call sites for exactly this:
+    #52642 (user ``providers:`` / ``custom_providers:`` entries never
+    appeared) and #66624 (providers with an exhausted credential pool were
+    hidden). Both were per-site kwarg patches, so the next aux picker would
+    have reintroduced the same gap. Routing through one function makes the
+    correct behaviour the default that a new caller cannot forget:
+
+    - user-defined ``providers:`` and saved ``custom_providers:`` entries
+    - ``model_catalog.excluded_providers`` honoured, matching ``/model``
+    - exhausted-credential-pool providers stay visible (``for_picker``)
+    - the active custom endpoint is probed, offline saved ones are not, so
+      the picker never blocks on a dead local server
+
+    The virtual ``moa`` row is excluded: auxiliary tasks must not run the
+    MoA reference fan-out, and ``auxiliary_client`` unwraps a ``moa``
+    provider to its aggregator slot anyway (see ``_resolve_auto``), so
+    offering it here would be a choice silently rewritten behind the user's
+    back. Mirrors the same filter in ``hermes_cli/moa_cmd.py``.
+
+    Rows are the standard ``list_authenticated_providers`` shape. Pair with
+    :func:`format_aux_picker_entries` to render them.
+    """
+    ctx = load_picker_context().with_overrides(
+        current_provider=current_provider,
+        current_model=current_model,
+        current_base_url=current_base_url,
+    )
+    rows = build_models_payload(
+        ctx,
+        for_picker=True,
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+        max_models=max_models,
+    )["providers"]
+    return [r for r in rows if str(r.get("slug") or "").strip().lower() != "moa"]
+
+
+def format_aux_picker_entries(
+    rows: list[dict],
+    *,
+    current_provider: str = "",
+    current_base_url: str = "",
+) -> list[tuple[str, str, list[str]]]:
+    """Render aux-picker rows as ``(slug, label, models)`` menu entries.
+
+    Owns the label text and the ``← current`` marker so every aux picker
+    presents providers identically. Callers add their own leading/trailing
+    entries (``auto``, ``Custom endpoint``, ``Back``) around this list.
+
+    A custom endpoint set via a raw ``base_url`` is "current" only through
+    that URL — never through a provider slug — so when ``current_base_url``
+    is set no provider row is marked, matching the pre-existing behaviour of
+    both call sites.
+    """
+    entries: list[tuple[str, str, list[str]]] = []
+    current_slug = str(current_provider or "").strip().lower()
+    has_base_url = bool(str(current_base_url or "").strip())
+    for row in rows:
+        slug = str(row.get("slug") or "")
+        name = row.get("name") or slug
+        total = row.get("total_models") or len(row.get("models") or [])
+        model_hint = f" — {total} models" if total else ""
+        marker = (
+            "  ← current"
+            if slug.lower() == current_slug and current_slug and not has_base_url
+            else ""
+        )
+        entries.append((slug, f"{name}{model_hint}{marker}", list(row.get("models") or [])))
+    return entries
+
+
+def _reasoning_catalog_reader(slug: str):
+    """Per-model reasoning-capability reader for aggregators that publish one.
+
+    Cache-only — building the picker payload must never block on HTTP. A cold
+    cache warms in the background so the next open is accurate; until then the
+    model reports no restriction and the UI offers the full scale.
+    """
+    try:
+        from hermes_cli.models import (
+            nous_model_reasoning_capabilities,
+            openrouter_model_reasoning_capabilities,
+            warm_nous_reasoning_caps_async,
+            warm_openrouter_reasoning_caps_async,
+        )
+    except Exception:
+        return None
+
+    if slug == "nous":
+        warm_nous_reasoning_caps_async()
+        return nous_model_reasoning_capabilities
+    if slug == "openrouter":
+        warm_openrouter_reasoning_caps_async()
+        return openrouter_model_reasoning_capabilities
+    return None
+
+
 def _apply_capabilities(rows: list[dict]) -> None:
-    """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
+    """Attach a ``{model: {fast, reasoning, ...}}`` map to each provider row.
 
     `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
     enforces). `reasoning` comes from the models.dev catalog when known and
     defaults to True otherwise — the effort dial is broadly accepted and a
     no-op on models that ignore it, whereas hiding it from a capable-but-
     uncatalogued model is the worse failure.
+
+    Aggregators that publish per-model reasoning detail add
+    `can_disable_reasoning`, False on reasoning-mandatory routes whose upstream
+    answers a disable with HTTP 400. Omitted when the catalog doesn't say,
+    which the UI reads as "no restriction known". Such a catalog also overrides
+    `reasoning` itself when it reports a route that takes no reasoning
+    parameter — a definitive negative from the provider actually serving the
+    model outranks the models.dev inference.
+
+    The catalog's `supported_efforts` list is deliberately NOT forwarded: it
+    under-reports. The Portal accepts and honors levels a route doesn't
+    advertise (``z-ai/glm-5.3`` publishes ``max, high, low`` yet serves
+    ``minimal`` at its lowest thinking), so filtering the picker by that list
+    would hide levels that demonstrably work.
     """
     from hermes_cli.models import model_supports_fast_mode
 
@@ -277,7 +519,8 @@ def _apply_capabilities(rows: list[dict]) -> None:
 
     for row in rows:
         slug = row.get("slug") or ""
-        caps: dict[str, dict[str, bool]] = {}
+        caps: dict[str, dict[str, Any]] = {}
+        read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
 
         for model in row.get("models") or []:
             reasoning = True
@@ -289,12 +532,119 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 except Exception:
                     reasoning = True
 
-            caps[model] = {
+            entry: dict[str, Any] = {
                 "fast": bool(model_supports_fast_mode(model)),
                 "reasoning": reasoning,
             }
 
+            if reasoning and read_reasoning_catalog is not None:
+                try:
+                    detail = read_reasoning_catalog(model)
+                except Exception:
+                    detail = None
+                if detail and not detail.get("supports_reasoning"):
+                    # For a route it serves, the aggregator's own catalog beats
+                    # models.dev: no reasoning parameter means no reasoning
+                    # controls, so there is no disable to describe either.
+                    entry["reasoning"] = False
+                elif detail:
+                    entry["can_disable_reasoning"] = not detail.get("mandatory")
+
+            caps[model] = entry
+
         row["capabilities"] = caps
+
+
+# How many models per lab the picker features by default. Aggregator rows keep
+# the newest N of each lab (by models.dev release_date) and hide the older tail
+# behind search / show-all. 5 keeps a lab's current headliners without letting a
+# prolific vendor (OpenAI's gpt-5.6-* family) flood the default view.
+_FEATURED_PER_LAB = 5
+
+
+def _apply_featured(rows: list[dict]) -> None:
+    """Attach a ``featured_models`` shortlist to each aggregator provider row.
+
+    Aggregator providers (nous, openrouter) serve dozens of models across many
+    labs, so a flat "top-N" default would drop whole labs from the picker.
+    Instead we surface the ``_FEATURED_PER_LAB`` newest models per lab (the
+    vendor segment of a ``vendor/model`` id), ranked by models.dev
+    ``release_date`` among that row's OWN models — never against the current
+    date, so the choice is stable as models age. Same-date ties (and labs whose
+    models lack a date) fall back to the row's curated order, which is already
+    flagship-first, so a lab keeps its headliners rather than an arbitrary slice.
+
+    Derived live from the models.dev catalog already loaded on this path (same
+    source as pricing/capabilities) — there is no hand-maintained allowlist to
+    keep in sync. Non-aggregator providers (a single lab, local endpoints,
+    custom proxies) get an empty list and callers fall back to their existing
+    top-N behaviour; splitting one lab into a shortlist would just hide models.
+    """
+    try:
+        from agent.models_dev import get_model_info
+    except Exception:
+        get_model_info = None  # type: ignore[assignment]
+
+    for row in rows:
+        slug = str(row.get("slug") or "").strip().lower()
+        models = row.get("models") or []
+
+        # Group models by lab; only multi-lab aggregators get a shortlist.
+        by_lab: dict[str, list[tuple[int, str, str]]] = {}
+        for pos, model in enumerate(models):
+            lab = model.split("/", 1)[0] if "/" in model else ""
+            if not lab:
+                # No vendor prefix → single-namespace provider, not an
+                # aggregator. Bail on the whole row (see below).
+                by_lab = {}
+                break
+            date = ""
+            if get_model_info is not None:
+                info = get_model_info(slug, model) or get_model_info("openrouter", model)
+                date = getattr(info, "release_date", "") if info else ""
+            by_lab.setdefault(lab, []).append((pos, date, model))
+
+        # A shortlist only makes sense when the row spans several labs.
+        if len(by_lab) < 2:
+            row["featured_models"] = []
+            continue
+
+        featured: list[str] = []
+        for entries in by_lab.values():
+            # Newest release_date first; earlier list position breaks ties and
+            # is the sole key when a lab has no dated models (all ""). Keep the
+            # newest _FEATURED_PER_LAB of each lab.
+            ranked = sorted(entries, key=lambda e: (e[1], -e[0]), reverse=True)
+            featured.extend(model for _pos, _date, model in ranked[:_FEATURED_PER_LAB])
+        # Preserve the row's model order for stable rendering.
+        order = {m: i for i, m in enumerate(models)}
+        row["featured_models"] = sorted(featured, key=lambda m: order[m])
+
+
+def _apply_custom_aliases(rows: list[dict]) -> None:
+    """Attach the accepted identity set to each user-defined provider row.
+
+    A session's ``model.options`` reports the canonical ``custom:<key>``
+    identity (via ``canonical_custom_identity``), while catalog rows carry
+    the bare config key as ``slug``. GUI pickers compare the two to decide
+    which row is active; exact equality never matches for custom providers
+    (#87035). Exposing ``aliases`` — every current and legacy spelling from
+    :func:`hermes_cli.providers.custom_provider_aliases` — lets the frontend
+    do a membership check instead.
+    """
+    from hermes_cli.providers import custom_provider_aliases
+
+    for row in rows:
+        if not row.get("is_user_defined"):
+            continue
+        try:
+            row["aliases"] = sorted(
+                custom_provider_aliases(
+                    str(row.get("name", "")), str(row.get("slug", ""))
+                )
+            )
+        except Exception:
+            continue
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────
@@ -370,6 +720,53 @@ def _append_unconfigured_rows(
     return extras
 
 
+def _anthropic_oauth_credentials_present() -> bool:
+    """True when the user explicitly authenticated Anthropic via OAuth.
+
+    Two deliberate flows leave no trace in active_provider /
+    model.provider / API-key env vars: Hermes' own Anthropic device flow
+    (token in auth.json) and a Claude Code login (~/.claude/.credentials.json).
+    ``list_authenticated_providers`` already accepts both readers as real
+    credentials when discovering rows; this mirrors that acceptance so the
+    desktop explicit-only filter does not silently drop a provider the user
+    deliberately signed into. Unlike ambient CLI tokens (gh -> copilot),
+    an OAuth access token only exists after an interactive login.
+    """
+    try:
+        from agent.anthropic_adapter import (
+            read_claude_code_credentials,
+            read_hermes_oauth_credentials,
+        )
+
+        hermes_creds = read_hermes_oauth_credentials() or {}
+        if hermes_creds.get("accessToken"):
+            return True
+        cc_creds = read_claude_code_credentials() or {}
+        if cc_creds.get("accessToken"):
+            return True
+    except Exception:
+        return False
+    # Pool-only OAuth entries (auth.json credential_pool.anthropic) are the
+    # canonical location for wired tokens and equally deliberate — the
+    # discovery side accepts them via pool.has_credentials(), so the filter
+    # must too or those rows are built and then silently dropped. Read-only
+    # dict access (no load_pool) so a picker open never mutates auth.json.
+    try:
+        from agent.credential_pool import AUTH_TYPE_OAUTH
+        from hermes_cli.auth import read_credential_pool
+
+        for entry in read_credential_pool("anthropic"):
+            if (
+                isinstance(entry, dict)
+                and entry.get("auth_type") == AUTH_TYPE_OAUTH
+                and str(entry.get("access_token") or "").strip()
+            ):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
     """Keep only rows backed by explicit user configuration.
 
@@ -391,6 +788,15 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
         if current_slug and slug == current_slug:
             kept.append(row)
             continue
+        if row.get("source") == "local-runtime":
+            # Managed local models are explicit configuration by existence:
+            # the user downloaded gigabytes into the machine-scoped models
+            # dir. There is deliberately no config credential to find
+            # (credential is reachability), so without this clause the row
+            # only survives on the profile where Use was last clicked —
+            # every other profile loses local models from its picker.
+            kept.append(row)
+            continue
         if slug == "moa":
             # MoA is a virtual routing mode, not an independently configured
             # provider. Hide it from explicit-only pickers unless it is the
@@ -400,9 +806,57 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             if _raw_config_has_enabled_moa_preset():
                 kept.append(row)
             continue
+        if _provider_is_keyless(slug):
+            # Keyless providers (opencode-free) require no configuration at
+            # all — there is nothing to "explicitly configure", and hiding
+            # them would defeat their purpose (zero-setup discoverability).
+            kept.append(row)
+            continue
+        if slug == "anthropic" and _anthropic_oauth_credentials_present():
+            # Anthropic OAuth logins (Hermes device flow / Claude Code) are
+            # deliberate sign-ins that leave no trace in active_provider,
+            # model.provider, or API-key env vars. The strict gate below
+            # would drop the row even though list_authenticated_providers
+            # just accepted those same credentials when building it.
+            kept.append(row)
+            continue
+        if _external_process_signed_in(slug):
+            # External-process providers (copilot-acp) authenticate through
+            # their own CLI (`copilot login`), which — like the Anthropic
+            # OAuth case above — leaves no trace in active_provider,
+            # model.provider, or env vars. Verified CLI credentials are a
+            # deliberate sign-in; without this the desktop picker drops the
+            # row the picker-discovery side just accepted.
+            kept.append(row)
+            continue
         if is_provider_explicitly_configured(slug):
             kept.append(row)
     return kept
+
+
+def _external_process_signed_in(slug: str) -> bool:
+    """True when an external-process provider has verified CLI credentials."""
+    try:
+        from hermes_cli.auth import (
+            PROVIDER_REGISTRY,
+            get_external_process_provider_status,
+        )
+        pconfig = PROVIDER_REGISTRY.get(slug)
+        if not pconfig or pconfig.auth_type != "external_process":
+            return False
+        return bool(get_external_process_provider_status(slug).get("auth_verified"))
+    except Exception:
+        return False
+
+
+def _provider_is_keyless(slug: str) -> bool:
+    """True when the provider's Hermes overlay declares it keyless."""
+    try:
+        from hermes_cli.providers import HERMES_OVERLAYS
+        overlay = HERMES_OVERLAYS.get(slug)
+        return bool(overlay is not None and getattr(overlay, "keyless", False))
+    except Exception:
+        return False
 
 
 def _raw_config_has_enabled_moa_preset() -> bool:
@@ -512,6 +966,7 @@ def _apply_pricing(
     rows: list[dict],
     *,
     force_fresh_nous_tier: bool = False,
+    cached_only: bool = False,
 ) -> None:
     """Enrich each provider row with per-model pricing + Nous tier gating.
 
@@ -533,6 +988,8 @@ def _apply_pricing(
     from hermes_cli.models import (
         _format_price_per_mtok,
         check_nous_free_tier,
+        compute_sale_discount,
+        get_cached_nous_free_tier,
         get_pricing_for_provider,
         partition_nous_models_by_tier,
     )
@@ -546,10 +1003,36 @@ def _apply_pricing(
         if not models:
             continue
         try:
-            raw_pricing = get_pricing_for_provider(slug) or {}
+            pricing_kwargs = {"cached_only": True} if cached_only else {}
+            raw_pricing = get_pricing_for_provider(slug, **pricing_kwargs) or {}
         except Exception:
             raw_pricing = {}
+        cached_nous_tier: Optional[bool] = None
+        if slug == "nous" and cached_only:
+            cached_nous_tier = get_cached_nous_free_tier()
+            if cached_nous_tier is None:
+                # Entitlement is not yet known. Keep the response nonblocking,
+                # but fail closed until this profile's prewarm has populated
+                # both caches; otherwise a free account can briefly select
+                # paid models on its first picker open.
+                row["free_tier_pending"] = True
+                row["unavailable_models"] = list(models)
+                # Every model renders locked until the prewarm lands; say why
+                # on the existing per-provider warning surface instead of
+                # leaving the user staring at a greyed-out list.
+                if not row.get("warning"):
+                    row["warning"] = (
+                        "Checking Nous plan entitlement… models unlock on the "
+                        "next picker open or refresh."
+                    )
+                continue
         if not raw_pricing:
+            if slug == "nous":
+                row["free_tier"] = bool(cached_nous_tier)
+                row["pricing_pending"] = True
+                row["unavailable_models"] = (
+                    list(models) if cached_nous_tier else []
+                )
             continue
 
         formatted: dict[str, dict] = {}
@@ -565,12 +1048,33 @@ def _apply_pricing(
             cache = _format_price_per_mtok(cache_raw) if cache_raw else None
             # A model is "free" when both input and output cost nothing.
             is_free = inp == "free" and (out == "free" or out == "")
-            formatted[mid] = {
+            entry: dict = {
                 "input": inp,
                 "output": out,
                 "cache": cache,
                 "free": is_free,
             }
+            # Sale chrome is Nous Portal-only. Other providers (OpenRouter,
+            # Novita, …) never get discount_percent / was_* even if a nested
+            # pricing.original somehow appeared in their catalog. Free / $0
+            # models get flat -100% chrome (was_* only when the gateway
+            # served an original).
+            if slug == "nous":
+                sale = compute_sale_discount(
+                    inp_raw, out_raw, p.get("original")
+                )
+                if sale is not None:
+                    discount_percent, was_prompt_raw, was_out_raw = sale
+                    entry["discount_percent"] = discount_percent
+                    if was_prompt_raw != "":
+                        entry["was_input"] = _format_price_per_mtok(
+                            was_prompt_raw
+                        )
+                    if was_out_raw != "":
+                        entry["was_output"] = _format_price_per_mtok(
+                            was_out_raw
+                        )
+            formatted[mid] = entry
 
         if formatted:
             row["pricing"] = formatted
@@ -578,9 +1082,12 @@ def _apply_pricing(
         if slug == "nous":
             try:
                 if nous_free_tier is None:
-                    nous_free_tier = check_nous_free_tier(
-                        force_fresh=force_fresh_nous_tier
-                    )
+                    if cached_only:
+                        nous_free_tier = cached_nous_tier
+                    else:
+                        nous_free_tier = check_nous_free_tier(
+                            force_fresh=force_fresh_nous_tier
+                        )
                 row["free_tier"] = bool(nous_free_tier)
                 if nous_free_tier:
                     _selectable, unavailable = partition_nous_models_by_tier(
@@ -594,6 +1101,118 @@ def _apply_pricing(
                 # is never blocked from picking a model.
                 row["free_tier"] = False
                 row["unavailable_models"] = []
+
+
+def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
+    """Build the ``llamacpp`` provider row from staged local models.
+
+    Present whenever GGUFs are staged in the managed models directory —
+    downloaded models must be selectable even before the server is running
+    (selection starts it via the runtime_provider seam / activate flow).
+    Returns ``None`` when nothing is staged.
+    """
+    try:
+        from hermes_cli.local_runtime.bootstrap import staged_model_ids
+
+        staged = staged_model_ids()
+        if not staged:
+            return None
+        current = (ctx.current_provider or "").strip().lower() in (
+            "llamacpp", "llama.cpp", "llama-cpp")
+        if not current:
+            # A LIVE session on the managed server reports provider "custom"
+            # (the resolution seam's label) with the managed base_url. Match
+            # on the endpoint so the picker still marks this row current —
+            # otherwise the session the user is chatting in shows no
+            # selection.
+            try:
+                from hermes_cli.local_runtime.endpoint import _state_endpoint
+
+                managed = _state_endpoint()
+                current = bool(
+                    managed
+                    and (ctx.current_base_url or "").strip().rstrip("/")
+                    == managed["base_url"].rstrip("/"))
+            except Exception:
+                current = False
+        return {
+            "slug": "llamacpp",
+            # Bare "Local" everywhere user-facing: the engine name is an
+            # implementation detail (the pane brands this "Local models").
+            "name": "Local",
+            "is_current": current,
+            "is_user_defined": False,
+            "models": staged,
+            "total_models": len(staged),
+            "source": "local-runtime",
+            "authenticated": True,       # the credential is reachability
+            "auth_type": "local",
+            "warning": None,
+        }
+    except Exception:
+        return None
+
+
+def _prewarm_pricing_async(
+    rows: list[dict],
+    *,
+    current_provider: str = "",
+    current_base_url: str = "",
+) -> Optional[Thread]:
+    """Warm picker pricing caches without delaying the current payload."""
+    from hermes_constants import hermes_home_key
+    from hermes_cli.models import pricing_cache_scope
+
+    profile_key = hermes_home_key()
+    endpoint_scope = tuple(
+        sorted(
+            (
+                slug,
+                pricing_cache_scope(
+                    slug,
+                    current_provider=current_provider,
+                    current_base_url=current_base_url,
+                ),
+            )
+            for slug in {
+                str(row.get("slug") or "").lower()
+                for row in rows
+                if row.get("slug")
+            }
+        )
+    )
+    prewarm_key = (profile_key, endpoint_scope)
+
+    with _pricing_prewarm_lock:
+        current = _pricing_prewarm_threads.get(prewarm_key)
+        if current is not None and current.is_alive():
+            return current
+
+        # The worker mutates only private copies while the pricing helpers
+        # populate their shared process caches.
+        worker_rows = [
+            {**row, "models": list(row.get("models") or [])}
+            for row in rows
+        ]
+
+        def _worker() -> None:
+            try:
+                _apply_pricing(worker_rows)
+            finally:
+                with _pricing_prewarm_lock:
+                    if _pricing_prewarm_threads.get(prewarm_key) is current_thread():
+                        _pricing_prewarm_threads.pop(prewarm_key, None)
+
+        worker_context = copy_context()
+        thread = Thread(
+            target=worker_context.run,
+            args=(_worker,),
+            name="hermes-picker-pricing-prewarm",
+            daemon=True,
+        )
+        _pricing_prewarm_threads[prewarm_key] = thread
+        thread.start()
+        return thread
 
 
 def _moa_provider_row(current_provider: str = "") -> dict | None:

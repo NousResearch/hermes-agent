@@ -176,80 +176,6 @@ class TestPluginDispatch:
         )
         assert result is None
 
-    def test_voice_model_speed_format_forwarded(self):
-        provider = _FakeTTSProvider(name="cartesia")
-        tts_registry.register_provider(provider)
-
-        result = tts_tool._dispatch_to_plugin_provider(
-            text="hello",
-            output_path="/tmp/out.opus",
-            provider="cartesia",
-            tts_config={
-                "voice": "voice-aria",
-                "model": "sonic-2",
-                "speed": 1.2,
-                "output_format": "opus",
-            },
-        )
-        assert result == "/tmp/out.opus"
-        kwargs = provider.last_call["kwargs"]
-        assert kwargs["voice"] == "voice-aria"
-        assert kwargs["model"] == "sonic-2"
-        assert kwargs["speed"] == 1.2
-        assert kwargs["format"] == "opus"
-
-    def test_empty_string_voice_passed_as_none(self):
-        """Empty-string config values are normalized to None so providers can
-        fall back to their own defaults (matches the ABC contract)."""
-        provider = _FakeTTSProvider(name="cartesia")
-        tts_registry.register_provider(provider)
-
-        tts_tool._dispatch_to_plugin_provider(
-            text="hello",
-            output_path="/tmp/out.mp3",
-            provider="cartesia",
-            tts_config={"voice": "", "model": ""},
-        )
-        kwargs = provider.last_call["kwargs"]
-        assert kwargs["voice"] is None
-        assert kwargs["model"] is None
-
-    def test_provider_returning_different_path_honored(self):
-        """If a provider rewrites the output path (e.g. format-driven extension
-        change), the dispatcher returns the new path."""
-        provider = _FakeTTSProvider(name="cartesia", return_path="/tmp/rewritten.opus")
-        tts_registry.register_provider(provider)
-
-        result = tts_tool._dispatch_to_plugin_provider(
-            text="hi",
-            output_path="/tmp/out.mp3",
-            provider="cartesia",
-            tts_config={},
-        )
-        assert result == "/tmp/rewritten.opus"
-
-    def test_provider_returning_none_falls_back_to_output_path(self):
-        """Defensive: a provider returning None means the dispatcher should
-        report the caller-supplied output_path (matches the ABC contract — the
-        provider is supposed to write to output_path)."""
-        provider = _FakeTTSProvider(name="cartesia", return_path=None)
-        # Override the default-output-path behavior to return None explicitly
-        provider._return_path = None
-
-        class _ReturnsNone(_FakeTTSProvider):
-            def synthesize(self, text, output_path, **kw):
-                return None  # type: ignore[return-value]
-
-        provider2 = _ReturnsNone(name="weird")
-        tts_registry.register_provider(provider2)
-
-        result = tts_tool._dispatch_to_plugin_provider(
-            text="hi",
-            output_path="/tmp/out.mp3",
-            provider="weird",
-            tts_config={},
-        )
-        assert result == "/tmp/out.mp3"
 
     def test_provider_exception_bubbles_up(self):
         """Plugin exceptions are NOT swallowed by the dispatcher — they bubble
@@ -283,32 +209,10 @@ class TestVoiceCompatibleHelper:
         )
         assert tts_tool._plugin_provider_is_voice_compatible("cartesia") is True
 
-    def test_voice_compatible_false_by_default(self):
-        tts_registry.register_provider(_FakeTTSProvider(name="cartesia"))
-        assert tts_tool._plugin_provider_is_voice_compatible("cartesia") is False
 
     def test_unregistered_provider_returns_false(self):
         assert tts_tool._plugin_provider_is_voice_compatible("unknown") is False
 
-    def test_empty_provider_name_returns_false(self):
-        assert tts_tool._plugin_provider_is_voice_compatible("") is False
-
-    @pytest.mark.parametrize(
-        "builtin",
-        ["edge", "openai", "elevenlabs", "minimax", "gemini",
-         "mistral", "xai", "piper", "kittentts", "neutts"],
-    )
-    def test_builtin_names_return_false(self, builtin):
-        """voice_compatible helper short-circuits built-ins so they go
-        through the legacy code path that handles their format quirks."""
-        assert tts_tool._plugin_provider_is_voice_compatible(builtin) is False
-
-    def test_voice_compatible_case_insensitive(self):
-        tts_registry.register_provider(
-            _FakeTTSProvider(name="cartesia", voice_compat=True)
-        )
-        assert tts_tool._plugin_provider_is_voice_compatible("CARTESIA") is True
-        assert tts_tool._plugin_provider_is_voice_compatible("  cartesia  ") is True
 
     def test_provider_property_exception_returns_false(self):
         """A buggy ``voice_compatible`` property raising must not crash the

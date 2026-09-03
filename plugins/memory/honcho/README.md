@@ -17,10 +17,12 @@ hermes memory setup honcho   # configure Honcho directly (works on a fresh insta
 hermes memory setup          # generic picker, choose Honcho from the list
 ```
 
-For cloud, the wizard asks **OAuth or API key**. OAuth opens a browser
-sign-in and stores the grant itself — nothing to copy; tokens refresh
-automatically. The desktop app offers the same flow as a **Connect** link
-next to the memory-provider dropdown.
+For cloud, the wizard asks **OAuth, device code, or API key**. OAuth opens a
+browser sign-in and stores the grant itself — nothing to copy; tokens refresh
+automatically. On SSH/headless machines choose **device**: the CLI prints a
+short code and a link you open in a browser on any other machine; setup
+completes once you approve there. The desktop app offers the browser flow as
+a **Connect** link next to the memory-provider dropdown.
 
 Or manually:
 ```bash
@@ -213,7 +215,7 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `writeFrequency` | string/int | `"async"` | `"async"` (background), `"turn"` (sync per turn), `"session"` (batch on end), or integer N (every N turns) |
-| `saveMessages` | bool | `true` | Persist messages to Honcho API |
+| `saveMessages` | bool | `true` | Persist messages to Honcho API. When `false`, all automatic writes are skipped — raw turns (`sync_turn`), conclusion mirroring (`on_memory_write`), and session-end/shutdown flushes — while read and tools paths stay fully functional. |
 
 ### Session Resolution
 
@@ -347,6 +349,7 @@ Presets:
 | `HONCHO_OAUTH_DASHBOARD` | OAuth authorize origin (default: cloud dashboard; local-dev `localhost:3000`) |
 | `HONCHO_OAUTH_AUTHORIZE_URL` | Full authorize URL (overrides the dashboard origin) |
 | `HONCHO_OAUTH_TOKEN_URL` | Token endpoint (default: cloud API; local-dev `localhost:8000`) |
+| `HONCHO_OAUTH_DEVICE_AUTH_URL` | Device-authorization endpoint (default: derived from the token URL) |
 | `HONCHO_OAUTH_CLIENT_ID` | OAuth client (default `hermes-agent`) |
 | `HONCHO_OAUTH_SCOPE` | Requested scope (default `write`) |
 

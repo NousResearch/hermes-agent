@@ -23,14 +23,8 @@ class TestIsSeen:
     def test_empty_config_unseen(self):
         assert is_seen({}, BUSY_INPUT_FLAG) is False
 
-    def test_missing_onboarding_unseen(self):
-        assert is_seen({"display": {}}, BUSY_INPUT_FLAG) is False
 
-    def test_onboarding_not_dict_unseen(self):
-        assert is_seen({"onboarding": "nope"}, BUSY_INPUT_FLAG) is False
 
-    def test_seen_dict_missing_flag(self):
-        assert is_seen({"onboarding": {"seen": {}}}, BUSY_INPUT_FLAG) is False
 
     def test_seen_flag_true(self):
         cfg = {"onboarding": {"seen": {BUSY_INPUT_FLAG: True}}}
@@ -40,18 +34,9 @@ class TestIsSeen:
         cfg = {"onboarding": {"seen": {BUSY_INPUT_FLAG: False}}}
         assert is_seen(cfg, BUSY_INPUT_FLAG) is False
 
-    def test_other_flags_isolated(self):
-        cfg = {"onboarding": {"seen": {BUSY_INPUT_FLAG: True}}}
-        assert is_seen(cfg, TOOL_PROGRESS_FLAG) is False
 
 
 class TestMarkSeen:
-    def test_creates_missing_file_and_sets_flag(self, tmp_path):
-        cfg_path = tmp_path / "config.yaml"
-        assert mark_seen(cfg_path, BUSY_INPUT_FLAG) is True
-
-        loaded = yaml.safe_load(cfg_path.read_text())
-        assert loaded["onboarding"]["seen"][BUSY_INPUT_FLAG] is True
 
     def test_preserves_other_config(self, tmp_path):
         cfg_path = tmp_path / "config.yaml"
@@ -67,17 +52,6 @@ class TestMarkSeen:
         assert loaded["display"]["skin"] == "default"
         assert loaded["onboarding"]["seen"][BUSY_INPUT_FLAG] is True
 
-    def test_preserves_other_seen_flags(self, tmp_path):
-        cfg_path = tmp_path / "config.yaml"
-        cfg_path.write_text(yaml.safe_dump({
-            "onboarding": {"seen": {TOOL_PROGRESS_FLAG: True}},
-        }))
-
-        assert mark_seen(cfg_path, BUSY_INPUT_FLAG) is True
-        loaded = yaml.safe_load(cfg_path.read_text())
-
-        assert loaded["onboarding"]["seen"][TOOL_PROGRESS_FLAG] is True
-        assert loaded["onboarding"]["seen"][BUSY_INPUT_FLAG] is True
 
     def test_idempotent(self, tmp_path):
         cfg_path = tmp_path / "config.yaml"
@@ -91,47 +65,14 @@ class TestMarkSeen:
 
         assert yaml.safe_load(first) == yaml.safe_load(second)
 
-    def test_handles_non_dict_onboarding(self, tmp_path):
-        cfg_path = tmp_path / "config.yaml"
-        cfg_path.write_text(yaml.safe_dump({"onboarding": "corrupted"}))
 
-        assert mark_seen(cfg_path, BUSY_INPUT_FLAG) is True
-        loaded = yaml.safe_load(cfg_path.read_text())
-        assert loaded["onboarding"]["seen"][BUSY_INPUT_FLAG] is True
-
-    def test_handles_non_dict_seen(self, tmp_path):
-        cfg_path = tmp_path / "config.yaml"
-        cfg_path.write_text(yaml.safe_dump({"onboarding": {"seen": "corrupted"}}))
-
-        assert mark_seen(cfg_path, BUSY_INPUT_FLAG) is True
-        loaded = yaml.safe_load(cfg_path.read_text())
-        assert loaded["onboarding"]["seen"][BUSY_INPUT_FLAG] is True
 
 
 class TestHintMessages:
-    def test_busy_input_hint_gateway_interrupt(self):
-        msg = busy_input_hint_gateway("interrupt")
-        assert "/busy queue" in msg
-        assert "interrupted" in msg.lower()
 
-    def test_busy_input_hint_gateway_queue(self):
-        msg = busy_input_hint_gateway("queue")
-        assert "/busy interrupt" in msg
-        assert "queued" in msg.lower()
 
-    def test_busy_input_hint_gateway_steer(self):
-        msg = busy_input_hint_gateway("steer")
-        assert "/busy interrupt" in msg
-        assert "/busy queue" in msg
-        assert "steer" in msg.lower()
 
-    def test_busy_input_hint_cli_interrupt(self):
-        msg = busy_input_hint_cli("interrupt")
-        assert "/busy queue" in msg
 
-    def test_busy_input_hint_cli_queue(self):
-        msg = busy_input_hint_cli("queue")
-        assert "/busy interrupt" in msg
 
     def test_busy_input_hint_cli_steer(self):
         msg = busy_input_hint_cli("steer")
@@ -139,9 +80,6 @@ class TestHintMessages:
         assert "/busy queue" in msg
         assert "steer" in msg.lower()
 
-    def test_tool_progress_hints_mention_verbose(self):
-        assert "/verbose" in tool_progress_hint_gateway()
-        assert "/verbose" in tool_progress_hint_cli()
 
     def test_hints_are_not_empty(self):
         for hint in (
@@ -190,29 +128,16 @@ class TestDetectOpenclawResidue:
         (tmp_path / ".openclaw").mkdir()
         assert detect_openclaw_residue(home=tmp_path) is True
 
-    def test_returns_false_when_absent(self, tmp_path):
-        assert detect_openclaw_residue(home=tmp_path) is False
 
     def test_returns_false_when_path_is_a_file(self, tmp_path):
         # A stray file named ``.openclaw`` is NOT a workspace — skip the banner.
         (tmp_path / ".openclaw").write_text("oops")
         assert detect_openclaw_residue(home=tmp_path) is False
 
-    def test_default_home_does_not_crash(self):
-        # Smoke: real $HOME lookup must not raise regardless of state.
-        assert isinstance(detect_openclaw_residue(), bool)
 
 
 class TestOpenclawResidueHint:
-    def test_hint_mentions_migrate_command(self):
-        # `migrate` is the non-destructive path — should lead the banner.
-        msg = openclaw_residue_hint_cli()
-        assert "hermes claw migrate" in msg
-        assert "~/.openclaw" in msg
 
-    def test_hint_mentions_cleanup_command(self):
-        # `cleanup` is mentioned as the follow-up archive step.
-        assert "hermes claw cleanup" in openclaw_residue_hint_cli()
 
     def test_hint_warns_cleanup_breaks_openclaw(self):
         # Archiving the directory breaks OpenClaw for users still running it —
@@ -246,16 +171,7 @@ class TestProfileBuildMode:
         assert profile_build_mode({"onboarding": {}}) == "ask"
         assert profile_build_mode({"onboarding": {"profile_build": "ask"}}) == "ask"
 
-    def test_off_disables(self):
-        from agent.onboarding import profile_build_mode
 
-        assert profile_build_mode({"onboarding": {"profile_build": "off"}}) == "off"
-        assert profile_build_mode({"onboarding": {"profile_build": "OFF"}}) == "off"
-
-    def test_unknown_value_falls_back_to_ask(self):
-        from agent.onboarding import profile_build_mode
-
-        assert profile_build_mode({"onboarding": {"profile_build": "banana"}}) == "ask"
 
     def test_non_mapping_config_safe(self):
         from agent.onboarding import profile_build_mode

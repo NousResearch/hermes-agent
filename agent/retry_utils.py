@@ -8,7 +8,9 @@ rate-limited provider concurrently.
 import random
 import threading
 import time
-from typing import Any
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Any, Optional
 
 # Monotonic counter for jitter seed uniqueness within the same process.
 # Protected by a lock to avoid race conditions in concurrent retry paths
@@ -31,6 +33,58 @@ _ZAI_CODING_OVERLOAD_LONG_BACKOFF = (30.0, 60.0, 90.0, 120.0)
 # long-tier entry is reachable). Keeping it a single module constant prevents
 # the two from silently desyncing if the short-retry count is ever tuned.
 _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS = 3
+
+
+def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
+    """Parse a ``Retry-After`` value into non-negative seconds.
+
+    Accepts either a raw header value (numeric string / HTTP-date / number)
+    or a headers mapping, in which case the ``Retry-After`` key is looked up
+    case-insensitively (``.get`` on dict-like objects tries both common
+    casings; real HTTP header containers like httpx/requests are already
+    case-insensitive).
+
+    Returns:
+        Seconds as a ``float`` (negative deltas clamped to ``0.0``), or
+        ``None`` when the header is absent or unparseable.
+    """
+    raw = value_or_headers
+    if raw is not None and not isinstance(raw, (str, int, float)):
+        # Looks like a headers mapping — pull the header out of it.
+        getter = getattr(raw, "get", None)
+        if callable(getter):
+            try:
+                value = getter("Retry-After")
+                if value is None:
+                    value = getter("retry-after")
+            except Exception:
+                return None
+            raw = value
+        else:
+            return None
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return max(0.0, float(raw))
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        return max(0.0, float(text))
+    except (TypeError, ValueError):
+        pass
+    # HTTP-date form (RFC 7231): seconds until that instant, clamped at 0.
+    try:
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
 
 
 def jittered_backoff(

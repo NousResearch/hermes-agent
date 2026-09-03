@@ -224,3 +224,124 @@ def test_force_close_tcp_sockets_descends_httpcore_1_connection_wrapper():
     # #29507: close() must NOT be called from this helper — the owning
     # httpx worker thread releases the FD, not us.
     assert sock.close_calls == 0
+
+
+def test_force_close_tcp_sockets_finds_sockets_on_httpx_mounts():
+    """HTTP(S)_PROXY / keepalive mounts put live sockets on ``_mounts``.
+
+    #72975: walking only ``_transport`` returned tcp_force_closed=0 while the
+    stream was still mid-recv on a mounted proxy pool, so interrupt logged
+    success and the provider kept the slot for minutes.
+    """
+    from agent.agent_runtime_helpers import force_close_tcp_sockets
+
+    class FakeSocket:
+        def __init__(self):
+            self.shutdown_calls = 0
+            self.close_calls = 0
+
+        def shutdown(self, _how):
+            self.shutdown_calls += 1
+
+        def close(self):
+            self.close_calls += 1
+
+    sock = FakeSocket()
+    stream = SimpleNamespace(_sock=sock)
+    # TunnelHTTPConnection-shaped: outer proxy wrapper → HTTP11 stream.
+    http11 = SimpleNamespace(_network_stream=stream)
+    tunnel = SimpleNamespace(_connection=http11)
+    mount_pool = SimpleNamespace(_connections=[tunnel])
+    mount_transport = SimpleNamespace(_pool=mount_pool)
+    # Default transport is empty — the failing layout from #72975.
+    empty_pool = SimpleNamespace(_connections=[])
+    default_transport = SimpleNamespace(_pool=empty_pool)
+    http_client = SimpleNamespace(
+        _transport=default_transport,
+        _mounts={"https://": mount_transport},
+    )
+    openai_client = SimpleNamespace(_client=http_client)
+
+    assert force_close_tcp_sockets(openai_client) == 1
+    assert sock.shutdown_calls == 1
+    assert sock.close_calls == 0
+
+
+def test_force_close_tcp_sockets_finds_in_flight_pool_request_sockets():
+    """httpcore keeps the live connection on PoolRequest.connection.
+
+    #85252: walking only ``_connections`` (and treating an empty list as
+    falsy) returned tcp_force_closed=0 while the hung recv was still on
+    the in-flight request. Must shut that socket down without close().
+    """
+    from agent.agent_runtime_helpers import force_close_tcp_sockets
+
+    class FakeSocket:
+        def __init__(self):
+            self.shutdown_calls = 0
+            self.close_calls = 0
+            self.timeouts = []
+
+        def settimeout(self, value):
+            self.timeouts.append(value)
+
+        def shutdown(self, _how):
+            self.shutdown_calls += 1
+
+        def close(self):
+            self.close_calls += 1
+
+    sock = FakeSocket()
+    stream = SimpleNamespace(_sock=sock)
+    http11 = SimpleNamespace(_network_stream=stream)
+    in_flight = SimpleNamespace(_connection=http11)
+    pool_req = SimpleNamespace(connection=in_flight)
+    # Empty _connections is the failing layout: the live socket lives
+    # only on the in-flight PoolRequest.
+    pool = SimpleNamespace(_connections=[], _requests=[pool_req])
+    transport = SimpleNamespace(_pool=pool)
+    http_client = SimpleNamespace(_transport=transport)
+    openai_client = SimpleNamespace(_client=http_client)
+
+    assert force_close_tcp_sockets(openai_client) == 1
+    assert sock.shutdown_calls == 1
+    assert sock.close_calls == 0
+    assert sock.timeouts == [0]
+
+
+def test_force_close_tcp_sockets_clears_timeout_before_shutdown():
+    """Hung SSL recv with timeout=None can ignore SHUT_RDWR until the
+    socket timeout is cleared (#85252). Still no close() (#29507)."""
+    from agent.agent_runtime_helpers import force_close_tcp_sockets
+
+    class FakeSocket:
+        def __init__(self):
+            self.order = []
+
+        def settimeout(self, value):
+            self.order.append(("settimeout", value))
+
+        def shutdown(self, _how):
+            self.order.append(("shutdown", _how))
+
+        def close(self):
+            self.order.append(("close", None))
+
+    sock = FakeSocket()
+    stream = SimpleNamespace(_sock=sock)
+    http11 = SimpleNamespace(_network_stream=stream)
+    pool_entry = SimpleNamespace(_connection=http11)
+    pool = SimpleNamespace(_connections=[pool_entry])
+    transport = SimpleNamespace(_pool=pool)
+    http_client = SimpleNamespace(_transport=transport)
+    openai_client = SimpleNamespace(_client=http_client)
+
+    import socket as _socket
+
+    assert force_close_tcp_sockets(openai_client) == 1
+    assert sock.order == [
+        ("settimeout", 0),
+        ("shutdown", _socket.SHUT_RDWR),
+    ]
+
+

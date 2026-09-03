@@ -29,12 +29,37 @@ from typing import Any, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
 )
 from gateway.platforms.helpers import redact_phone, strip_markdown
+
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_scoped_secret(name, default=None):
+    """Scope-aware credential read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under a profile secret
+    scope -- the scope is authoritative and a scoped miss returns ``default``
+    (no cross-profile borrow from ``os.environ``, which may hold another
+    profile's value). The DEFAULT profile's adapter constructs and sends
+    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
+    profile's own value, so fall back to it. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and
+    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +76,7 @@ def check_sms_requirements() -> bool:
         import aiohttp  # noqa: F401
     except ImportError:
         return False
-    return bool(os.getenv("TWILIO_ACCOUNT_SID") and os.getenv("TWILIO_AUTH_TOKEN"))
+    return bool(_get_scoped_secret("TWILIO_ACCOUNT_SID") and _get_scoped_secret("TWILIO_AUTH_TOKEN"))
 
 
 class SmsAdapter(BasePlatformAdapter):
@@ -66,8 +91,8 @@ class SmsAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SMS)
-        self._account_sid: str = os.environ["TWILIO_ACCOUNT_SID"]
-        self._auth_token: str = os.environ["TWILIO_AUTH_TOKEN"]
+        self._account_sid: str = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
+        self._auth_token: str = _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
         self._from_number: str = os.getenv("TWILIO_PHONE_NUMBER", "")
         self._webhook_port: int = int(
             os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
@@ -132,7 +157,7 @@ class SmsAdapter(BasePlatformAdapter):
         await site.start()
         self._http_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=True,
+            trust_env=gateway_trust_env(),
         )
         self._running = True
 
@@ -142,6 +167,8 @@ class SmsAdapter(BasePlatformAdapter):
             self._webhook_port,
             redact_phone(self._from_number),
         )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -174,7 +201,7 @@ class SmsAdapter(BasePlatformAdapter):
 
         session = self._http_session or aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=True,
+            trust_env=gateway_trust_env(),
         )
         try:
             for chunk in chunks:
@@ -435,14 +462,14 @@ async def _standalone_send(
 ):
     """Out-of-process SMS delivery via the Twilio REST API. Implements the
     standalone_sender_fn contract; replaces the legacy _send_sms helper."""
-    auth_token = getattr(pconfig, "api_key", None) or os.getenv("TWILIO_AUTH_TOKEN", "")
+    auth_token = getattr(pconfig, "api_key", None) or _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
     try:
         import aiohttp
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     import base64
 
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+    account_sid = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
     from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
     if not account_sid or not auth_token or not from_number:
         return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}

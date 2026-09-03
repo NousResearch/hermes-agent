@@ -26,6 +26,7 @@ def _wire_agent(shell, compressed_head):
     shell.agent.session_id = None
     shell.agent.tools = None
     shell.agent._compress_context.return_value = (compressed_head, "")
+    shell.agent._compression_skipped_due_to_lock = False
 
 
 def test_compress_here_compresses_head_only(capsys):

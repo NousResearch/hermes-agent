@@ -52,7 +52,7 @@ function useDecoded(text: string): string {
     const chars = [...text]
     const scrambleable = chars.map(() => false)
 
-    for (let i = 0; i < chars.length; ) {
+    for (let i = 0; i < chars.length;) {
       if (!/[a-z0-9]/i.test(chars[i])) {
         i += 1
 

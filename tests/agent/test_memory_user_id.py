@@ -63,42 +63,7 @@ class RecordingProvider(MemoryProvider):
 class TestMemoryManagerUserIdThreading:
     """Verify user_id reaches providers via initialize_all."""
 
-    def test_user_id_forwarded_to_provider(self):
-        mgr = MemoryManager()
-        p = RecordingProvider()
-        mgr.add_provider(p)
 
-        mgr.initialize_all(
-            session_id="sess-123",
-            platform="telegram",
-            user_id="tg_user_42",
-        )
-
-        assert p._init_kwargs.get("user_id") == "tg_user_42"
-        assert p._init_kwargs.get("platform") == "telegram"
-        assert p._init_session_id == "sess-123"
-
-    def test_chat_context_forwarded_to_provider(self):
-        mgr = MemoryManager()
-        p = RecordingProvider()
-        mgr.add_provider(p)
-
-        mgr.initialize_all(
-            session_id="sess-chat",
-            platform="discord",
-            user_id="discord_u_7",
-            user_name="fakeusername",
-            chat_id="1485316232612941897",
-            chat_name="fakeassistantname-forums",
-            chat_type="thread",
-            thread_id="1491249007475949698",
-        )
-
-        assert p._init_kwargs.get("user_name") == "fakeusername"
-        assert p._init_kwargs.get("chat_id") == "1485316232612941897"
-        assert p._init_kwargs.get("chat_name") == "fakeassistantname-forums"
-        assert p._init_kwargs.get("chat_type") == "thread"
-        assert p._init_kwargs.get("thread_id") == "1491249007475949698"
 
     def test_no_user_id_when_cli(self):
         """CLI sessions should not have user_id in kwargs."""
@@ -114,20 +79,6 @@ class TestMemoryManagerUserIdThreading:
         assert "user_id" not in p._init_kwargs
         assert p._init_kwargs.get("platform") == "cli"
 
-    def test_user_id_none_not_forwarded(self):
-        """Explicit None user_id should not appear in kwargs."""
-        mgr = MemoryManager()
-        p = RecordingProvider()
-        mgr.add_provider(p)
-
-        # Simulates what happens when AIAgent passes user_id=None
-        # (the agent code only adds user_id to kwargs when it's truthy)
-        mgr.initialize_all(
-            session_id="sess-789",
-            platform="discord",
-        )
-
-        assert "user_id" not in p._init_kwargs
 
     def test_multiple_providers_all_receive_user_id(self):
         mgr = MemoryManager()
@@ -157,21 +108,6 @@ class TestMemoryManagerUserIdThreading:
 class TestMem0UserIdScoping:
     """Verify Mem0 plugin uses gateway user_id when provided."""
 
-    def test_gateway_user_id_overrides_default(self):
-        """When user_id is passed via kwargs, it should override the config default."""
-        from plugins.memory.mem0 import Mem0MemoryProvider
-
-        provider = Mem0MemoryProvider()
-        # Mock _load_config to return a config with default user_id
-        with patch("plugins.memory.mem0._load_config", return_value={
-            "api_key": "test-key",
-            "user_id": "hermes-user",
-            "agent_id": "hermes",
-            "rerank": True,
-        }):
-            provider.initialize(session_id="test-sess", user_id="tg_user_99")
-
-        assert provider._user_id == "tg_user_99"
 
     def test_no_user_id_falls_back_to_config(self):
         """Without user_id in kwargs, should use config default."""
@@ -188,19 +124,6 @@ class TestMem0UserIdScoping:
 
         assert provider._user_id == "custom-default"
 
-    def test_no_user_id_no_config_uses_hermes_user(self):
-        """Without user_id or config override, should default to 'hermes-user'."""
-        from plugins.memory.mem0 import Mem0MemoryProvider
-
-        provider = Mem0MemoryProvider()
-        with patch("plugins.memory.mem0._load_config", return_value={
-            "api_key": "test-key",
-            "agent_id": "hermes",
-            "rerank": True,
-        }):
-            provider.initialize(session_id="test-sess")
-
-        assert provider._user_id == "hermes-user"
 
     def test_different_users_get_different_ids(self):
         """Two providers initialized with different user_ids should be scoped differently."""

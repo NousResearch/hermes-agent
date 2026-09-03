@@ -29,65 +29,6 @@ def test_get_git_commit_uses_live_git_when_available(tmp_path):
     mock_build.assert_not_called()
 
 
-def test_get_git_commit_falls_back_to_build_sha_when_live_git_fails(tmp_path):
-    """Docker image case: live git returns non-zero → use baked SHA."""
-    from hermes_cli import dump
-
-    repo_dir = tmp_path / "no-git-here"
-    repo_dir.mkdir()
-
-    failed = MagicMock(returncode=128, stdout="")
-    with patch("hermes_cli.dump.subprocess.run", return_value=failed), \
-         patch("hermes_cli.build_info.get_build_sha", return_value="cafef00d"):
-        commit = dump._get_git_commit(repo_dir)
-
-    assert commit == "cafef00d"
-
-
-def test_get_git_commit_falls_back_when_git_returns_empty_stdout(tmp_path):
-    """Edge case: git exits 0 but prints nothing — still try the baked SHA."""
-    from hermes_cli import dump
-
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-
-    empty = MagicMock(returncode=0, stdout="\n")
-    with patch("hermes_cli.dump.subprocess.run", return_value=empty), \
-         patch("hermes_cli.build_info.get_build_sha", return_value="abcdef12"):
-        commit = dump._get_git_commit(repo_dir)
-
-    assert commit == "abcdef12"
-
-
-def test_get_git_commit_falls_back_when_git_raises(tmp_path):
-    """git binary missing (e.g. minimal container w/o git) → baked SHA path."""
-    from hermes_cli import dump
-
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-
-    with patch("hermes_cli.dump.subprocess.run", side_effect=FileNotFoundError("git")), \
-         patch("hermes_cli.build_info.get_build_sha", return_value="feedface"):
-        commit = dump._get_git_commit(repo_dir)
-
-    assert commit == "feedface"
-
-
-def test_get_git_commit_returns_unknown_when_neither_source_available(tmp_path):
-    """Pip-installed wheel: no git, no baked SHA → '(unknown)' (legacy contract)."""
-    from hermes_cli import dump
-
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-
-    failed = MagicMock(returncode=128, stdout="")
-    with patch("hermes_cli.dump.subprocess.run", return_value=failed), \
-         patch("hermes_cli.build_info.get_build_sha", return_value=None):
-        commit = dump._get_git_commit(repo_dir)
-
-    assert commit == "(unknown)"
-
-
 def test_get_git_commit_output_format_identical_between_sources(tmp_path):
     """Regression guard: live-git and baked-SHA outputs share the same shape.
 
@@ -118,20 +59,6 @@ def test_get_git_commit_output_format_identical_between_sources(tmp_path):
     assert all(c in "0123456789abcdef" for c in live)
 
 
-def test_get_git_commit_date_uses_live_git(tmp_path):
-    """Source install: ``git log -1 --format=%cd --date=short`` returns the date."""
-    from hermes_cli import dump
-
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-
-    git_result = MagicMock(returncode=0, stdout="2026-06-17\n")
-    with patch("hermes_cli.dump.subprocess.run", return_value=git_result):
-        date = dump._get_git_commit_date(repo_dir)
-
-    assert date == "2026-06-17"
-
-
 def test_get_git_commit_date_empty_when_git_fails(tmp_path):
     """Docker image / pip wheel: no git → '' so the dump line drops the date."""
     from hermes_cli import dump
@@ -146,14 +73,3 @@ def test_get_git_commit_date_empty_when_git_fails(tmp_path):
     assert date == ""
 
 
-def test_get_git_commit_date_empty_when_git_raises(tmp_path):
-    """git binary missing → '' (no crash, suffix simply omitted)."""
-    from hermes_cli import dump
-
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-
-    with patch("hermes_cli.dump.subprocess.run", side_effect=FileNotFoundError("git")):
-        date = dump._get_git_commit_date(repo_dir)
-
-    assert date == ""

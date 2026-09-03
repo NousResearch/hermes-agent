@@ -8,15 +8,15 @@ blocks completion, and never upgrades targeted checks into "repo green".
 from __future__ import annotations
 
 import json
-import re
 import shlex
 import sqlite3
 import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -28,7 +28,12 @@ _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
-_SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
+
+
+@dataclass(frozen=True)
+class _ShellSegment:
+    tokens: list[str]
+    following_operator: str | None = None
 
 
 @dataclass(frozen=True)
@@ -60,14 +65,41 @@ def _db_path() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
+    from hermes_state import apply_wal_with_fallback
+
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
-    _ensure_schema(conn)
+    try:
+        apply_wal_with_fallback(conn, db_label="verification_evidence.db")
+        conn.execute("PRAGMA busy_timeout=5000")
+        _ensure_schema(conn)
+    except Exception:
+        # A PRAGMA/DDL failure after a successful connect() must not leak the
+        # just-opened connection back to the caller.
+        conn.close()
+        raise
     return conn
+
+
+@contextmanager
+def _transaction() -> Iterator[sqlite3.Connection]:
+    """Open a connection, commit/rollback on exit, and ALWAYS close it.
+
+    ``sqlite3.Connection.__enter__``/``__exit__`` only commit or roll back the
+    transaction; they do not close the connection. Using ``with _connect()``
+    alone therefore leaks a connection — and its WAL/SHM file descriptors — on
+    every call, deferring the close to the garbage collector, which over a
+    long-running process can exhaust ``RLIMIT_NOFILE`` (the cron-ledger sibling
+    of this bug was #69567 / PR #69594).
+    """
+    conn = _connect()
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -122,18 +154,102 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _split_segment_tokens(command: str) -> list[list[str]]:
-    segments: list[list[str]] = []
-    for segment in _SHELL_SPLIT_RE.split(command.strip()):
-        if not segment:
+def _split_shell_segments(command: str, *, posix: bool = True) -> list[_ShellSegment]:
+    """Tokenize top-level shell commands while preserving their control operators."""
+    raw_segments: list[tuple[str, str | None]] = []
+    start = 0
+    quote: str | None = None
+    escaped = False
+    index = 0
+
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            escaped = False
+            index += 1
             continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+
+        operator = None
+        if command.startswith(("&&", "||", "|&"), index):
+            operator = command[index:index + 2]
+        elif char == "\n":
+            operator = ";"
+        elif char in ";|":
+            operator = char
+        elif (
+            char == "&"
+            and (index == 0 or command[index - 1] not in "<>")
+            and not command.startswith(("&>", "&>>"), index)
+        ):
+            operator = char
+
+        if operator is None:
+            index += 1
+            continue
+
+        raw = command[start:index].strip()
+        if not raw:
+            return []
+        raw_segments.append((raw, operator))
+        index += 1 if char == "\n" else len(operator)
+        start = index
+
+    if quote or escaped:
+        return []
+    trailing = command[start:].strip()
+    if trailing:
+        raw_segments.append((trailing, None))
+    elif raw_segments and raw_segments[-1][1] not in {";"}:
+        return []
+
+    segments: list[_ShellSegment] = []
+    for raw, operator in raw_segments:
         try:
-            tokens = shlex.split(segment)
+            tokens = shlex.split(raw, posix=posix)
         except ValueError:
-            continue
-        if tokens:
-            segments.append(tokens)
+            return []
+        if not tokens:
+            return []
+        segments.append(_ShellSegment(tokens=tokens, following_operator=operator))
     return segments
+
+
+def _exit_status_is_attributable(
+    segments: list[_ShellSegment], match_index: int, exit_code: int
+) -> bool:
+    """Whether the shell's status proves the matched segment's own status."""
+    if not segments or not 0 <= match_index < len(segments):
+        return False
+    if any(segment.following_operator == "&" for segment in segments):
+        return False
+
+    sequence_start = 0
+    for index, segment in enumerate(segments[:-1]):
+        if segment.following_operator == ";":
+            sequence_start = index + 1
+    if match_index < sequence_start:
+        return False
+
+    sequence = segments[sequence_start:]
+    operators = [segment.following_operator for segment in sequence[:-1]]
+    if any(operator in {"|", "|&", "||"} for operator in operators):
+        return False
+    if len(sequence) == 1:
+        return True
+    return int(exit_code) == 0 and all(operator == "&&" for operator in operators)
 
 
 def _clean_token(token: str) -> str:
@@ -195,18 +311,25 @@ def _equivalent_needles(needle: list[str]) -> list[list[str]]:
     return candidates
 
 
-def _find_canonical_match(command: str, canonical_commands: list[str]) -> Optional[tuple[str, list[str]]]:
+def _find_canonical_match(
+    command: str,
+    canonical_commands: list[str],
+    exit_code: int,
+) -> Optional[tuple[str, list[str]]]:
     """Return ``(canonical, trailing_args)`` for the first detected command."""
 
-    segments = _split_segment_tokens(command)
+    segments = _split_shell_segments(command)
     for canonical in canonical_commands:
         needle = _canonical_tokens(canonical)
         if not needle:
             continue
-        for tokens in segments:
-            candidate_tokens = _strip_command_prefix(tokens)
+        for index, segment in enumerate(segments):
+            candidate_tokens = _strip_command_prefix(segment.tokens)
             for candidate in _equivalent_needles(needle):
-                if candidate_tokens[:len(candidate)] == candidate:
+                if (
+                    candidate_tokens[:len(candidate)] == candidate
+                    and _exit_status_is_attributable(segments, index, exit_code)
+                ):
                     return canonical, candidate_tokens[len(candidate):]
     return None
 
@@ -297,11 +420,21 @@ def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[
     return None
 
 
-def _find_ad_hoc_match(command: str, root: str | Path | None) -> Optional[list[str]]:
-    for tokens in _split_segment_tokens(command):
-        trailing_args = _ad_hoc_script_args(tokens, root)
-        if trailing_args is not None:
-            return trailing_args
+def _find_ad_hoc_match(
+    command: str,
+    root: str | Path | None,
+    exit_code: int = 0,
+) -> Optional[list[str]]:
+    # Try both posix=True (default) and posix=False (Windows backslash paths)
+    # so ad-hoc verification scripts with backslash paths are matched on Windows.
+    for posix in (True, False):
+        segments = _split_shell_segments(command, posix=posix)
+        for index, segment in enumerate(segments):
+            trailing_args = _ad_hoc_script_args(segment.tokens, root)
+            if trailing_args is not None and _exit_status_is_attributable(
+                segments, index, exit_code
+            ):
+                return trailing_args
     return None
 
 
@@ -402,10 +535,10 @@ def classify_verification_command(
         return None
 
     verify_commands = list(facts.get("verifyCommands") or [])
-    match = _find_canonical_match(command, verify_commands)
+    match = _find_canonical_match(command, verify_commands, int(exit_code))
     is_ad_hoc = False
     if match is None and not verify_commands:
-        ad_hoc_args = _find_ad_hoc_match(command, facts.get("root"))
+        ad_hoc_args = _find_ad_hoc_match(command, facts.get("root"), int(exit_code))
         if ad_hoc_args is not None:
             match = ("ad-hoc verification script", ad_hoc_args)
             is_ad_hoc = True
@@ -446,10 +579,59 @@ def record_terminal_result(
     )
     if evidence is None:
         return None
+    return _insert_evidence(evidence)
 
+
+def record_verify_run(
+    *,
+    root: str | Path,
+    session_id: str | None = None,
+    ok: bool,
+    command: str = "hermes verify",
+    scope: str = "full",
+    output: str = "",
+) -> Optional[dict[str, Any]]:
+    """Record a completed ``hermes verify`` run as verification evidence.
+
+    Explicit CLI-side write: unlike :func:`record_terminal_result` there is
+    nothing to classify — the caller (the ``hermes verify`` command) already
+    knows the run was a verification pass and whether it succeeded. A passing
+    run marks the workspace ``passed`` for the verify-on-stop guard exactly
+    like a passing canonical test command would; a failing run records the
+    failure so the guard keeps asking for a fix.
+
+    ``root`` is re-resolved through :func:`agent.coding_context.project_facts_for`
+    so the recorded workspace root matches what :func:`verification_status`
+    derives when the stop guard later looks the evidence up.
+    """
+    try:
+        from agent.coding_context import project_facts_for
+
+        facts = project_facts_for(root)
+    except Exception:
+        facts = None
+
+    resolved = str(Path(root).resolve())
+    evidence = VerificationEvidence(
+        command=command,
+        canonical_command="hermes verify",
+        kind="verify",
+        scope=scope if scope in {"full", "targeted"} else "full",
+        status="passed" if ok else "failed",
+        exit_code=0 if ok else 1,
+        cwd=resolved,
+        root=str((facts or {}).get("root") or resolved),
+        session_id=str(session_id or "default"),
+        output_summary=_summarize_output(output),
+    )
+    return _insert_evidence(evidence)
+
+
+def _insert_evidence(evidence: VerificationEvidence) -> dict[str, Any]:
+    """Insert a classified evidence row and repoint the workspace state."""
     created_at = _utc_now()
     with _DB_LOCK:
-        with _connect() as conn:
+        with _transaction() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO verification_events(
@@ -515,7 +697,7 @@ def mark_workspace_edited(
     edited_at = _utc_now()
 
     with _DB_LOCK:
-        with _connect() as conn:
+        with _transaction() as conn:
             row = conn.execute(
                 """
                 SELECT changed_paths_json FROM verification_state
@@ -565,7 +747,7 @@ def verification_status(
     sid = str(session_id or "default")
     root = str(facts.get("root") or Path(cwd or ".").resolve())
     with _DB_LOCK:
-        with _connect() as conn:
+        with _transaction() as conn:
             state = conn.execute(
                 """
                 SELECT last_event_id, last_edit_at, changed_paths_json

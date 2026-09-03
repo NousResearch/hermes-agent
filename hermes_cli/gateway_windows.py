@@ -10,7 +10,7 @@ Design notes
 ------------
 * ``schtasks /Create /SC ONLOGON /RL LIMITED`` means the task runs at the
   CURRENT USER's next logon without any elevation prompt. Manual starts and
-  install ``--start-now`` use the direct detached ``pythonw`` launcher instead
+  install ``--start-now`` use the direct hidden-console launcher instead
   of ``schtasks /Run`` so start/restart behavior is consistent.
 * We write a shared ``gateway.cmd`` wrapper plus a console-less ``gateway.vbs``
   launcher. Scheduled Task and Startup-folder persistence both route through
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ctypes
 import locale
+import logging
 import os
 import re
 import shlex
@@ -40,10 +41,13 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from hermes_cli._subprocess_compat import (
+    _WINDOWS_GATEWAY_BREAKAWAY_ENV,
     windows_detach_flags,
     windows_detach_flags_without_breakaway,
     windows_hide_flags,
 )
+
+logger = logging.getLogger(__name__)
 
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
 _SCHTASKS_TIMEOUT_S = 15
@@ -54,6 +58,12 @@ _FALLBACK_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 _ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IGNORECASE)
+
+# Set by _spawn_detached() when the breakaway spawn failed and it had to
+# retry WITHOUT CREATE_BREAKAWAY_FROM_JOB — meaning the child stays inside
+# the parent's Job Object and may be killed when this shell exits (#91675).
+# Dict (not bare bool) so the flag is mutable without ``global``.
+_LAST_SPAWN_BREAKAWAY_FALLBACK: dict = {"fallback": False}
 
 _TASK_NAME_DEFAULT = "Hermes_Gateway"
 _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
@@ -208,9 +218,14 @@ def _current_profile_cli_args() -> list[str]:
 def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None = None) -> bool:
     """Launch an elevated gateway subcommand via UAC and return True on handoff.
 
-    Use pythonw.exe for the elevated child so approving UAC does not leave a
-    second elevated console window sitting open after the handoff. All operator
-    decisions are already collected in the parent shell before this point.
+    The elevated child is the console ``python.exe`` launched with
+    ``SW_HIDE``: ShellExecuteW applies the show-command to a console app's
+    console window, so the child owns a single *hidden* console that its own
+    subprocess spawns (schtasks, taskkill, …) inherit — no visible window
+    after the UAC approval, and no per-descendant conhost flashes (the
+    console-less pythonw.exe alternative re-created #54220/#56747 for every
+    console-subsystem child). All operator decisions are already collected in
+    the parent shell before this point.
     """
     _assert_windows()
     args = ["-m", "hermes_cli.main", *_current_profile_cli_args(), "gateway", command]
@@ -218,7 +233,7 @@ def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None 
         args.extend(extra_args)
     params = subprocess.list2cmdline(args)
     cwd = str(Path(__file__).resolve().parent.parent)
-    elevated_python = _derive_venv_pythonw(sys.executable)
+    elevated_python = sys.executable
     try:
         result = ctypes.windll.shell32.ShellExecuteW(
             None,
@@ -226,7 +241,7 @@ def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None 
             elevated_python,
             params,
             cwd,
-            0,  # SW_HIDE: pythonw child should not create a visible console.
+            0,  # SW_HIDE: the child's console exists but is never shown.
         )
     except Exception as exc:
         print(f"⚠ Could not launch elevated gateway {command} prompt: {exc}")
@@ -389,8 +404,13 @@ def _build_gateway_cmd_script(
     The script:
       - cd's into a stable working directory
       - exports HERMES_HOME, PYTHONIOENCODING, VIRTUAL_ENV
-      - invokes ``pythonw -m hermes_cli.main [--profile X] gateway run``
-        directly so the wrapper cmd.exe exits without a visible gateway console
+      - invokes ``python -m hermes_cli.main [--profile X] gateway run``
+
+    The .cmd is a compatibility/manual-run artifact: service persistence
+    (Scheduled Task, Startup folder) routes through the ``.vbs`` launcher,
+    which runs this same command line hidden (window style 0).  Run by hand
+    in a real terminal, the console interpreter keeps the gateway attached
+    to that terminal like a normal foreground ``hermes gateway run``.
 
     We intentionally do NOT inline PATH overrides here — cmd.exe inherits
     the per-user PATH the Scheduled Task was created with, and forcibly
@@ -401,7 +421,8 @@ def _build_gateway_cmd_script(
     lines.append(f'set "HERMES_HOME={hermes_home}"')
     lines.append('set "PYTHONIOENCODING=utf-8"')
     lines.append('set "HERMES_GATEWAY_DETACHED=1"')
-    pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    lines.append('set "HERMES_SUPERVISED_CHILD=1"')
+    python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # VIRTUAL_ENV lets the gateway's own python detection find the venv
     # if someone imports hermes_constants-based logic during startup.
     lines.append(f'set "VIRTUAL_ENV={_preserve_hermes_home_path(venv_dir)}"')
@@ -411,14 +432,12 @@ def _build_gateway_cmd_script(
     ]
     lines.append(f'set "PYTHONPATH={";".join([*pythonpath_entries, "%PYTHONPATH%"])}"')
 
-    prog_args = [pythonw_path, "-m", "hermes_cli.main"]
+    prog_args = [python_exe_path, "-m", "hermes_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())
     prog_args.extend(["gateway", "run"])
-    # `pythonw.exe` is a GUI-subsystem executable: cmd.exe launches it and
-    # returns immediately, so the Scheduled Task action finishes without a
-    # visible console window. Do NOT use `start` here; that creates an extra
-    # wrapper process and made gateway lifecycle/status harder to reason about.
+    # Do NOT use `start` here; that creates an extra wrapper process and made
+    # gateway lifecycle/status harder to reason about.
     # Do NOT use `--replace` for service-managed starts; repeated /Run calls
     # should be idempotent, not churn parent/child takeover loops.
     lines.append(" ".join(_quote_cmd_script_arg(a) for a in prog_args))
@@ -443,7 +462,7 @@ def _build_gateway_vbs_script(
     hermes_home: str,
     profile_arg: str,
 ) -> str:
-    """Build a console-less ``gateway.vbs`` launcher (CRLF-terminated).
+    """Build a hidden-console ``gateway.vbs`` launcher (CRLF-terminated).
 
     The Scheduled Task runs this through ``wscript.exe`` instead of ``cmd.exe``.
 
@@ -454,15 +473,20 @@ def _build_gateway_vbs_script(
     code as a user cancel, so the ``RestartOnFailure`` policy never fires and the
     gateway silently disappears on every reboot.
 
-    ``wscript.exe`` and ``pythonw.exe`` are both GUI-subsystem executables with
-    no console, so this launcher receives no console control events. It mirrors
-    ``_build_gateway_cmd_script`` (same env + argv via ``_resolve_detached_python``)
-    but sets the environment on the WScript.Shell process and ``Run``s pythonw
-    directly — no cmd.exe anywhere in the chain.
+    ``wscript.exe`` is a GUI-subsystem executable with no console, so this
+    launcher receives no console control events. It ``Run``s the console
+    ``python.exe`` with window style 0 (hidden): the gateway owns a single
+    hidden console — never shown, never CTRL_CLOSE'd at logon, and inherited
+    by every console-subsystem descendant (git, gh, node, …) so none of them
+    allocate a visible flashing conhost (#54220/#56747; the previous
+    console-less pythonw.exe gateway forced exactly that per-descendant
+    flash). No cmd.exe anywhere in the chain. Mirrors
+    ``_build_gateway_cmd_script`` (same env + argv via
+    ``_resolve_detached_python``).
     """
-    pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
 
-    prog_args = [pythonw_path, "-m", "hermes_cli.main"]
+    prog_args = [python_exe_path, "-m", "hermes_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())
     prog_args.extend(["gateway", "run"])
@@ -483,6 +507,7 @@ def _build_gateway_vbs_script(
         f"env.Item({_quote_vbs_string('HERMES_HOME')}) = {_quote_vbs_string(hermes_home)}",
         f"env.Item({_quote_vbs_string('PYTHONIOENCODING')}) = {_quote_vbs_string('utf-8')}",
         f"env.Item({_quote_vbs_string('HERMES_GATEWAY_DETACHED')}) = {_quote_vbs_string('1')}",
+        f"env.Item({_quote_vbs_string('HERMES_SUPERVISED_CHILD')}) = {_quote_vbs_string('1')}",
         f"env.Item({_quote_vbs_string('VIRTUAL_ENV')}) = {_quote_vbs_string(_preserve_hermes_home_path(venv_dir))}",
         # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%``: chain onto
         # whatever PYTHONPATH the task environment already carries, at runtime.
@@ -493,8 +518,9 @@ def _build_gateway_vbs_script(
         f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {_quote_vbs_string(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async. pythonw is
-        # GUI-subsystem so no console is ever created for the gateway either.
+        # Window style 0 = hidden; bWaitOnReturn False = detached/async. The
+        # console python's one console is created hidden and inherited by all
+        # descendants, so nothing ever flashes.
         f"sh.Run {_quote_vbs_string(command_line)}, 0, False",
     ]
     return "\r\n".join(lines) + "\r\n"
@@ -700,60 +726,58 @@ def _install_startup_entry(script_path: Path) -> Path:
     return entry
 
 
-def _derive_venv_pythonw(python_exe: str) -> str:
-    """Given a ``python.exe`` path, return the sibling ``pythonw.exe`` if present.
-
-    ``pythonw.exe`` is the console-less variant. Using it for detached
-    daemons means there's no console handle to inherit from the spawning
-    shell, which is what lets the gateway survive a parent-shell exit on
-    Windows. Falls back to the original ``python.exe`` if the ``w`` variant
-    isn't there — caller must still set CREATE_NO_WINDOW in that case.
-    """
-    p = Path(python_exe)
-    candidate = p.with_name(p.stem + "w" + p.suffix)
-    if candidate.exists():
-        return str(candidate)
-    return python_exe
-
-
-def _read_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
-    cfg_path = venv_dir / "pyvenv.cfg"
-    try:
-        lines = cfg_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return {}
-    parsed: dict[str, str] = {}
-    for raw in lines:
-        if "=" not in raw:
-            continue
-        key, value = raw.split("=", 1)
-        parsed[key.strip().lower()] = value.strip()
-    return parsed
-
-
 def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
-    """Return (windowed_python, venv_dir, extra_pythonpath) for detached runs.
+    """Return (hidden_console_python, venv_dir, extra_pythonpath) for detached runs.
 
-    uv-created Windows venv launchers are special: ``venv\\Scripts\\pythonw.exe``
-    starts hidden, but then respawns the base interpreter as console
-    ``python.exe``.  That child opens a visible Windows Terminal tab.  For uv
-    venvs, use the base ``pythonw.exe`` directly and put the repo + venv
-    site-packages on ``PYTHONPATH`` so imports still resolve without the venv
-    launcher.
+    Returns the venv's **console** ``python.exe`` — deliberately NOT
+    ``pythonw.exe``.  Every detached launch path pairs this interpreter with a
+    hidden-console mechanism (``CREATE_NO_WINDOW`` creationflags, or
+    ``WScript.Shell.Run`` window style 0), so the daemon owns a single hidden
+    console that all of its console-subsystem descendants (git, gh, cmd, node,
+    wmic, powershell, …) inherit instead of each allocating a visible flashing
+    one.  A GUI-subsystem ``pythonw.exe`` daemon has NO console, which is what
+    made every descendant spawn flash (#54220/#56747) and forced the endless
+    per-call-site CREATE_NO_WINDOW sweep.  Root cause isolated + A/B verified
+    on Windows 11 by the desktop backend fix (commit aa2ae36c3f).
+
+    Two historical premises behind the old pythonw selection were re-tested on
+    current Windows in that fix and did not hold up:
+
+    - uv venv launcher: ``venv\\Scripts\\python.exe`` under ``CREATE_NO_WINDOW``
+      re-execs the base interpreter *windowless* — the child inherits the
+      shim's hidden console, so no conhost flashes (the #52239 concern).  The
+      historical "CREATE_NO_WINDOW cannot suppress the second window"
+      observations were made while ``DETACHED_PROCESS`` was in the flag
+      bundle, where MSDN specifies CREATE_NO_WINDOW is IGNORED — the hide bit
+      was dead, not ineffective.  The base-interpreter + PYTHONPATH-overlay
+      detour is therefore unnecessary; the venv shim resolves imports itself.
+    - Console python restores stdout/stderr, so daemon logs flow normally.
+
+    ``extra_pythonpath`` is always empty now; the tuple shape is kept so the
+    call sites (argv builders, cmd/vbs renderers, restart-spec rewriter,
+    gateway watcher) stay unchanged.
+
+    Legacy normalization: launchers and argv snapshots from pre-aa2ae36c3f
+    installs lead with ``pythonw.exe``. When the sibling console
+    ``python.exe`` exists, swap to it so respawns and regenerated launchers
+    get the hidden-console design instead of resurrecting the console-less
+    daemon (the #54220/#56747 flash class, plus the ``sys.stderr is None``
+    startup-crash class from #71671).
     """
     p = Path(python_exe)
+    if p.name.lower() in ("pythonw.exe", "pythonw"):
+        sibling = p.with_name("python.exe" if p.suffix else "python")
+        try:
+            if sibling.exists():
+                p = sibling
+                python_exe = str(sibling)
+        except OSError:
+            # Can't stat the sibling — keep the original interpreter. A
+            # console-less gateway is worse than a hidden-console one, but a
+            # failed respawn is worse still.
+            pass
     venv_dir = p.parent.parent
-    windowed = _derive_venv_pythonw(python_exe)
-
-    cfg = _read_pyvenv_cfg(venv_dir)
-    home = cfg.get("home", "")
-    if "uv" in cfg and home:
-        base_pythonw = Path(home) / "pythonw.exe"
-        site_packages = venv_dir / "Lib" / "site-packages"
-        if base_pythonw.exists() and site_packages.exists():
-            return (str(base_pythonw), venv_dir, [str(site_packages)])
-
-    return (windowed, venv_dir, [])
+    return (python_exe, venv_dir, [])
 
 
 def _prepend_pythonpath(env_overlay: dict[str, str], entries: list[str]) -> None:
@@ -798,6 +822,7 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
         "HERMES_HOME": hermes_home,
         "PYTHONIOENCODING": "utf-8",
         "HERMES_GATEWAY_DETACHED": "1",
+        "HERMES_SUPERVISED_CHILD": "1",
         "VIRTUAL_ENV": _preserve_hermes_home_path(venv_dir),
     }
     _prepend_pythonpath(
@@ -812,22 +837,19 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
 def windowless_gateway_restart_spec(
     run_argv: list[str],
 ) -> tuple[list[str], str, dict[str, str]]:
-    """Rewrite a console-``python.exe`` gateway argv into a windowless one.
+    """Return the (argv, cwd, env overlay) for a hidden-console gateway respawn.
 
     The post-update restart paths build their respawn command from
-    ``get_python_path()`` which returns the venv's console ``python.exe``.
-    On Windows — especially with uv-created venvs — launching that
-    interpreter (even with ``CREATE_NO_WINDOW``) leaves a persistent
-    console window: ``venv\\Scripts\\python.exe`` is a launcher shim that
-    re-execs the *base* console interpreter, which allocates its own
-    conhost.  ``CREATE_NO_WINDOW`` cannot suppress that second window.
-    See ``_resolve_detached_python`` for the gory details.
-
-    This mirrors what ``_build_gateway_argv`` / ``_spawn_detached`` do for
-    a clean start: swap the interpreter for the windowless ``pythonw.exe``
-    (base interpreter for uv venvs) and return the cwd + env overlay
-    (VIRTUAL_ENV, PYTHONPATH) the base interpreter needs to resolve the
-    ``hermes_cli`` package without the venv launcher's site config.
+    ``get_python_path()`` (the venv's console ``python.exe``).  That is the
+    right interpreter: the watcher launches it with ``CREATE_NO_WINDOW``
+    detach flags, so the respawned gateway owns a single hidden console that
+    all of its descendants inherit — nothing flashes (#54220/#56747; the old
+    pythonw.exe rewrite here produced a console-less gateway whose every
+    console-subsystem child allocated a visible conhost).  This helper now
+    only normalizes the interpreter via ``_resolve_detached_python`` and
+    supplies the stable cwd + env overlay (HERMES_HOME, VIRTUAL_ENV,
+    PYTHONPATH) so the respawn doesn't depend on the watcher's transient
+    working directory.
 
     Returns ``(new_argv, working_dir, env_overlay)``.  ``new_argv``
     preserves every argument after the interpreter (``-m hermes_cli.main
@@ -846,18 +868,17 @@ def windowless_gateway_restart_spec(
     python_exe = run_argv[0]
     rest = run_argv[1:]
 
-    # Only rewrite when the leading token actually looks like a python
-    # interpreter we can find a windowless sibling for.  If a caller passed
-    # something else (a captured argv whose argv[0] is already pythonw, or a
-    # non-python launcher), leave it alone.
+    # Normalize the leading interpreter token and derive the venv layout.
+    # If a caller passed something other than a python path (a non-python
+    # launcher), leave the argv alone.
     try:
-        windowless_python, venv_dir, extra_pythonpath = _resolve_detached_python(
+        hidden_console_python, venv_dir, extra_pythonpath = _resolve_detached_python(
             python_exe
         )
     except Exception:
         return run_argv, "", {}
 
-    new_argv = [windowless_python, *rest]
+    new_argv = [hidden_console_python, *rest]
 
     working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
     project_root = str(PROJECT_ROOT)
@@ -883,13 +904,16 @@ def windowless_gateway_restart_spec(
 def _spawn_detached(script_path: Path | None = None) -> int:
     """Launch the gateway as a fully detached background process.
 
-    We spawn ``pythonw.exe -m hermes_cli.main gateway run``
-    directly — NOT through a cmd.exe shim — because on Windows a cmd.exe
-    child inherits the parent session's console handle and tends to get
-    reaped when the spawning shell exits. pythonw.exe has no console, and
-    combined with DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
-    CREATE_NO_WINDOW + DEVNULL stdio + a fresh env, the resulting process
-    is independent of whichever shell started it.
+    We spawn ``python.exe -m hermes_cli.main gateway run`` directly — NOT
+    through a cmd.exe shim — because on Windows a cmd.exe child inherits the
+    parent session's console handle and tends to get reaped when the spawning
+    shell exits.  With ``CREATE_NO_WINDOW`` the gateway gets its OWN hidden
+    console instead of inheriting ours, so it survives our shell closing, and
+    every console-subsystem descendant it spawns inherits that hidden console
+    instead of flashing a visible one (#54220/#56747 — this is why we don't
+    use console-less pythonw.exe here). Combined with
+    CREATE_NEW_PROCESS_GROUP + DEVNULL stdin + a fresh env, the resulting
+    process is independent of whichever shell started it.
 
     Arg ``script_path`` is accepted for API symmetry with older callers
     but ignored — we don't need it now that we go direct.
@@ -902,11 +926,14 @@ def _spawn_detached(script_path: Path | None = None) -> int:
 
     # Inherit PATH etc. from the current env, overlay our required vars.
     env = {**os.environ, **env_overlay}
+    primary_env = {**env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "1"}
 
-    # DETACHED_PROCESS        0x00000008  — no console attached to child
     # CREATE_NEW_PROCESS_GROUP 0x00000200 — child gets its own group, won't
     #                                       receive Ctrl+C from our group
-    # CREATE_NO_WINDOW         0x08000000 — belt-and-braces no-console flag
+    # CREATE_NO_WINDOW         0x08000000 — child owns a hidden console:
+    #                                       detached from our console's
+    #                                       lifetime AND inheritable by its
+    #                                       descendants (no conhost flashes)
     # CREATE_BREAKAWAY_FROM_JOB 0x01000000 — escape any job object the
     #                                       parent is in (prevents parent-
     #                                       job teardown from reaping us;
@@ -929,30 +956,42 @@ def _spawn_detached(script_path: Path | None = None) -> int:
             proc = subprocess.Popen(
                 argv,
                 cwd=working_dir,
-                env=env,
+                env=primary_env,
                 creationflags=flags,
                 close_fds=True,
                 stdin=subprocess.DEVNULL,
                 stdout=log_fh,
                 stderr=log_fh,
             )
-    except OSError:
+        _LAST_SPAWN_BREAKAWAY_FALLBACK["fallback"] = False
+    except OSError as exc:
         # CREATE_BREAKAWAY_FROM_JOB can fail with "access denied" when the
         # parent's job object doesn't permit breakaway (some Windows
         # Terminal configs). Retry without the breakaway flag — in most
-        # setups pythonw.exe + DETACHED_PROCESS is enough on its own.
+        # setups the hidden-console CREATE_NO_WINDOW spawn is enough on
+        # its own.
+        error_code = getattr(exc, "winerror", None)
+        if error_code is None:
+            error_code = exc.errno
+        logger.warning(
+            "Gateway breakaway spawn failed (error=%s); retrying without "
+            "CREATE_BREAKAWAY_FROM_JOB",
+            error_code,
+        )
         flags_no_breakaway = windows_detach_flags_without_breakaway()
+        fallback_env = {**env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "0"}
         with open(stray_log, "ab", buffering=0) as log_fh:
             proc = subprocess.Popen(
                 argv,
                 cwd=working_dir,
-                env=env,
+                env=fallback_env,
                 creationflags=flags_no_breakaway,
                 close_fds=True,
                 stdin=subprocess.DEVNULL,
                 stdout=log_fh,
                 stderr=log_fh,
             )
+        _LAST_SPAWN_BREAKAWAY_FALLBACK["fallback"] = True
     return proc.pid
 
 
@@ -1147,33 +1186,257 @@ def install(
     raise RuntimeError(f"Windows gateway install failed: {detail}")
 
 
-def _wait_for_gateway_ready(timeout_s: float = 6.0, interval_s: float = 0.4) -> list[int]:
+def _confirm_gateway_stable(
+    initial_pids: list[int], confirm_s: float, interval_s: float,
+    all_profiles: bool = False,
+) -> list[int]:
+    """Re-check a freshly detected gateway for ``confirm_s`` seconds.
+
+    A single process-table hit only proves the child was *created*, not that
+    it survived startup — a gateway that crashes moments after spawn (or is
+    reaped by the parent shell's Job Object, #91675/#84185) passes a
+    first-hit poll and then dies. Require the gateway to stay visible for
+    the whole confirmation window before we vouch for it. Returns the last
+    observed PID list, or ``[]`` if the gateway vanished mid-window.
+    """
+    if confirm_s <= 0:
+        return initial_pids
+    from hermes_cli.gateway import find_gateway_pids
+
+    pids = initial_pids
+    confirm_deadline = time.monotonic() + confirm_s
+    while time.monotonic() < confirm_deadline:
+        time.sleep(interval_s)
+        pids = list(find_gateway_pids(all_profiles=all_profiles))
+        if not pids:
+            return []
+    return pids
+
+
+def _wait_for_gateway_ready(
+    timeout_s: float = 6.0,
+    interval_s: float = 0.4,
+    confirm_s: float = 2.0,
+    all_profiles: bool = False,
+) -> list[int]:
     """Poll for a live gateway process for up to ``timeout_s`` seconds.
 
-    Returns the list of PIDs found. Empty list means nothing came up in
-    time — the caller should surface that to the user as a failed start.
+    A first process-table hit is treated as *provisional*: the gateway must
+    then stay visible for ``confirm_s`` more seconds before we report it
+    ready (see :func:`_confirm_gateway_stable` — a child that dies right
+    after spawn must not earn a ✓, #91675). If it vanishes during the
+    confirmation window, polling resumes until the deadline.
+
+    ``all_profiles`` widens the scan across every profile's gateway — the
+    post-update resume path relaunches the whole fleet, not just the active
+    profile.
+
+    Returns the list of PIDs found. Empty list means nothing (stable) came
+    up in time — the caller should surface that to the user as a failed
+    start.
     """
     from hermes_cli.gateway import find_gateway_pids
 
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        pids = list(find_gateway_pids())
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        pids = list(find_gateway_pids(all_profiles=all_profiles))
         if pids:
-            return pids
+            confirmed = _confirm_gateway_stable(
+                pids, confirm_s, interval_s, all_profiles=all_profiles
+            )
+            if confirmed:
+                return confirmed
+            continue  # died during confirmation — keep polling until deadline
         time.sleep(interval_s)
     return []
+
+
+# ---------------------------------------------------------------------------
+# Start attestation — honest reporting for deaths AFTER the liveness poll
+# ---------------------------------------------------------------------------
+#
+# The liveness poll (even with the confirmation window above) cannot observe
+# a death that happens after this CLI process exits — the exact #91675
+# failure mode, where the parent shell's Job Object tears the gateway down
+# on CLI exit. So every ✓ persists a small attestation marker recording
+# which PIDs we vouched for. The NEXT gateway CLI invocation checks the
+# marker: if those PIDs are gone and the lifecycle ledger shows no clean
+# exit for them, the earlier ✓ was a lie and we say so — once — with the
+# schtasks recovery hint.
+
+_START_ATTESTATION_RELATIVE = ("state", "gateway.start-attestation.json")
+
+
+def _start_attestation_path() -> Path:
+    from hermes_cli.config import get_hermes_home
+
+    return Path(get_hermes_home()).joinpath(*_START_ATTESTATION_RELATIVE)
+
+
+def _write_start_attestation(pids: list[int], via: str) -> None:
+    """Persist the PIDs a ✓ vouched for. Best-effort, never raises."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    try:
+        path = _start_attestation_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "pids": [int(p) for p in pids],
+            "via": via,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(_json.dumps(payload), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        logger.debug("Failed to write gateway start attestation", exc_info=True)
+
+
+def _clear_start_attestation() -> None:
+    try:
+        _start_attestation_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _attested_pid_exited_cleanly(pid: int) -> bool:
+    """True when the lifecycle ledger shows a clean exit for ``pid``."""
+    import json as _json
+
+    try:
+        from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
+        from hermes_cli.config import get_hermes_home
+
+        sentinel_path = get_lifecycle_sentinel_path(Path(get_hermes_home()))
+        data = _json.loads(sentinel_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return (
+        isinstance(data, dict)
+        and data.get("phase") == "exited"
+        and data.get("pid") == pid
+    )
+
+
+def check_start_attestation(current_pids: list[int] | None = None) -> str | None:
+    """Surface (once) a gateway that died after a ✓ was printed for it.
+
+    Reads the attestation marker left by the last successful-looking start.
+    Outcomes:
+
+    * gateway currently running → the start held (or the service healed it);
+      clear the marker silently.
+    * attested PIDs all gone, lifecycle ledger shows a clean exit for one of
+      them → planned stop; clear silently.
+    * attested PIDs all gone with NO clean-exit record → the previous ✓ was
+      false (#91675: parent Job Object teardown killed the child after the
+      poll). Return a warning string and consume the marker so it prints
+      exactly once.
+
+    Never raises.
+    """
+    import json as _json
+
+    try:
+        path = _start_attestation_path()
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        _clear_start_attestation()
+        return None
+    attested = [p for p in data.get("pids", []) if isinstance(p, int)]
+    if not attested:
+        _clear_start_attestation()
+        return None
+
+    if current_pids is None:
+        try:
+            from hermes_cli.gateway import find_gateway_pids
+
+            current_pids = list(find_gateway_pids())
+        except Exception:
+            return None
+
+    if current_pids:
+        # Gateway is up — the previous start held, or something restarted it.
+        _clear_start_attestation()
+        return None
+
+    if any(_attested_pid_exited_cleanly(pid) for pid in attested):
+        _clear_start_attestation()
+        return None
+
+    _clear_start_attestation()
+    via = data.get("via") or "direct spawn"
+    ts = data.get("ts") or "unknown time"
+    lines = [
+        f"⚠ The previous gateway start ({via}, {ts}) reported success, but the "
+        f"process (PID {', '.join(map(str, attested))}) died without a clean "
+        "shutdown record.",
+        "  This usually means the shell that ran `hermes gateway start` was inside "
+        "a Windows Job Object that killed the gateway on exit (#91675).",
+    ]
+    try:
+        if is_task_registered():
+            lines.append(
+                f"  Recovery: schtasks /Run /TN {get_task_name()}   "
+                "(Task Scheduler starts the gateway outside any Job Object)"
+            )
+    except Exception:
+        pass
+    return "\n".join(lines)
+
+
+def _print_start_attestation_warning() -> None:
+    """Print the stale-attestation warning if one is pending. Never raises."""
+    try:
+        warning = check_start_attestation()
+    except Exception:
+        return
+    if warning:
+        print(warning)
 
 
 def _report_gateway_start(via: str) -> None:
     pids = _wait_for_gateway_ready()
     if pids:
         print(f"✓ Gateway started via {via} (PID: {', '.join(map(str, pids))})")
+        if _LAST_SPAWN_BREAKAWAY_FALLBACK.get("fallback"):
+            print(
+                "⚠ The gateway could not break away from this shell's Job Object; "
+                "it may be killed when this shell exits."
+            )
+            try:
+                if is_task_registered():
+                    print(
+                        f"  If it dies, start it with: schtasks /Run /TN {get_task_name()}"
+                    )
+            except Exception:
+                pass
+        _write_start_attestation(pids, via)
     else:
-        print(f"⚠ Launched gateway via {via}, but no process detected after 6s.")
+        print(
+            f"✗ Gateway start via {via} FAILED — no stable gateway process "
+            "detected within the verification window."
+        )
+        print(
+            "  (The process may have been created and then killed — e.g. by a "
+            "parent Job Object, #91675.)"
+        )
         print("  Check the log for startup errors:")
         from hermes_cli.config import get_hermes_home
         print(f"    type {Path(get_hermes_home())}\\logs\\gateway.log")
         print(f"    type {Path(get_hermes_home())}\\logs\\gateway-stdio.log")
+        try:
+            if is_task_registered():
+                print(
+                    f"  Recovery: schtasks /Run /TN {get_task_name()}   "
+                    "(starts the gateway outside any Job Object)"
+                )
+        except Exception:
+            pass
 
 
 def _print_next_steps() -> None:
@@ -1417,6 +1680,9 @@ def _print_deep_probes() -> None:
 def status(deep: bool = False) -> None:
     """Print a status report for the Windows gateway service."""
     _assert_windows()
+    # Surface (once) any gateway that died after a previous start printed ✓
+    # — the poll can't see deaths that happen after the CLI exits (#91675).
+    _print_start_attestation_warning()
     task_name = get_task_name()
     task_installed = is_task_registered()
     startup_installed = is_startup_entry_installed()
@@ -1460,6 +1726,9 @@ def status(deep: bool = False) -> None:
 def start() -> None:
     """Start the gateway using the canonical detached Windows launch path."""
     _assert_windows()
+    # Report (once) if the LAST start's ✓ turned out to be false — the child
+    # died after the poll window, e.g. parent Job Object teardown (#91675).
+    _print_start_attestation_warning()
     running_pids = _gateway_pids()
     if running_pids:
         print(f"✓ Gateway already running (PID: {', '.join(map(str, running_pids))})")
@@ -1542,7 +1811,7 @@ def _windows_stop_drain_timeout() -> float:
 def _force_terminate_known_gateway_pids(pids: list[int]) -> int:
     """Force-kill known gateway PIDs without a broad process sweep."""
     try:
-        from gateway.status import _pid_exists, terminate_pid
+        from gateway.status import _pid_exists, get_process_start_time, terminate_pid
     except ImportError:
         return 0
 
@@ -1556,7 +1825,11 @@ def _force_terminate_known_gateway_pids(pids: list[int]) -> int:
         try:
             if not _pid_exists(pid):
                 continue
-            terminate_pid(pid, force=True)
+            terminate_pid(
+                pid,
+                force=True,
+                expected_start_time=get_process_start_time(pid),
+            )
             killed += 1
         except ProcessLookupError:
             continue
@@ -1593,6 +1866,10 @@ def stop() -> None:
     """
     _assert_windows()
     from gateway.status import get_running_pid
+
+    # A user-initiated stop is a planned death: the attestation from the
+    # last start must not later be reported as a silent crash (#91675).
+    _clear_start_attestation()
 
     # Phase 1: ask the running gateway (if any) to drain itself by writing
     # the planned-stop marker, then wait briefly for it to exit cleanly.

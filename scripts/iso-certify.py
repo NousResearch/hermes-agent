@@ -178,7 +178,7 @@ class ScratchDashboard:
         ]
         self.proc = subprocess.Popen(
             cmd, cwd=str(REPO_ROOT), env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1,
         )
         threading.Thread(target=self._drain, args=(self.proc.stdout,), name="dash-log", daemon=True).start()
         if not self._ready.wait(timeout=90.0):

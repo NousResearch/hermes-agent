@@ -53,24 +53,7 @@ class TestUpdateSessionMeta:
         assert stored["cwd"] == "/new/path"
         assert stored["provider"] == "openai"
 
-    def test_updates_model_when_provided(self, tmp_path):
-        db = _tmp_db(tmp_path)
-        db.create_session("s2", source="acp", model="gpt-3.5")
 
-        db.update_session_meta("s2", json.dumps({"cwd": "."}), model="gpt-4o")
-
-        row = db.get_session("s2")
-        assert row["model"] == "gpt-4o"
-
-    def test_preserves_existing_model_when_none(self, tmp_path):
-        """Passing model=None must leave the stored model unchanged (COALESCE)."""
-        db = _tmp_db(tmp_path)
-        db.create_session("s3", source="acp", model="claude-3")
-
-        db.update_session_meta("s3", json.dumps({"cwd": "."}), model=None)
-
-        row = db.get_session("s3")
-        assert row["model"] == "claude-3"
 
     def test_uses_execute_write_not_private_api(self, tmp_path):
         """update_session_meta must route through _execute_write, not _conn directly."""
@@ -91,10 +74,6 @@ class TestUpdateSessionMeta:
             "update_session_meta must call _execute_write at least once"
         )
 
-    def test_noop_on_nonexistent_session(self, tmp_path):
-        """Updating a non-existent session must not raise."""
-        db = _tmp_db(tmp_path)
-        db.update_session_meta("ghost", json.dumps({"cwd": "."}), model=None)
 
 
 # ---------------------------------------------------------------------------

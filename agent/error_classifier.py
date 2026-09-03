@@ -18,6 +18,12 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# Synthetic error code used when the OpenAI SDK rejects a provider's SSE
+# ``data:`` field before Hermes receives a completion chunk.  Keeping this
+# distinct from generic JSON parse failures lets the classifier make narrow,
+# provider-stream-specific recovery decisions without inventing an HTTP status.
+PROVIDER_STREAM_NON_JSON_ERROR_CODE = "provider_stream_non_json_data"
+
 
 # ── Error taxonomy ──────────────────────────────────────────────────────
 
@@ -51,6 +57,7 @@ class FailoverReason(enum.Enum):
     context_overflow = "context_overflow"  # Context too large — compress, not failover
     payload_too_large = "payload_too_large"  # 413 — compress payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
+    image_corrupt = "image_corrupt"       # Provider says the image bytes are undecodable — shrinking won't help, strip and retry instead
 
     # Model / provider policy
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
@@ -61,6 +68,7 @@ class FailoverReason(enum.Enum):
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
+    reasoning_mandatory = "reasoning_mandatory"  # Route rejects reasoning: {enabled: false} — send the disable no more this session and retry
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
@@ -96,6 +104,15 @@ class ClassifiedError:
     def is_auth(self) -> bool:
         return self.reason in {FailoverReason.auth, FailoverReason.auth_permanent}
 
+    @property
+    def billing_unverified(self) -> bool:
+        """True when a ``billing`` verdict rests on an ambiguous body.
+
+        Anthropic's "out of extra usage" 400 can also be a content-filter
+        rejection (#82154); surfaces must hedge rather than assert exhaustion.
+        """
+        return bool(self.error_context.get("billing_unverified"))
+
 
 
 # ── Provider-specific patterns ──────────────────────────────────────────
@@ -108,6 +125,8 @@ _BILLING_PATTERNS = [
     "credit balance",
     "credits exhausted",
     "credits have been exhausted",
+    "requires available credits",
+    "account balance is too low",
     "no usable credits",
     "top up your credits",
     "payment required",
@@ -122,6 +141,25 @@ _BILLING_PATTERNS = [
     "model_not_supported_on_free_tier",
     "not available on the free tier",
 ]
+
+# Billing-pattern matches that are NOT proof of billing exhaustion. Anthropic
+# returns the identical "out of extra usage" body on a subscription OAuth
+# token both when the overage bucket is genuinely depleted AND when its
+# server-side content filter rejects part of the request (#82154) — the two
+# are indistinguishable from the response. Classification stays ``billing``
+# (rotation + fallback remain the right recovery either way), but the
+# ambiguity is carried in ``error_context`` so downstream surfaces hedge
+# instead of asserting exhaustion as fact, and the credential pool applies a
+# short cooldown instead of the one-hour billing bench (a content-filter
+# rejection leaves the credential perfectly healthy).
+_UNVERIFIED_BILLING_PATTERNS = ("out of extra usage",)
+
+
+def _billing_ambiguity_context(error_msg: str) -> Dict[str, Any]:
+    """error_context marking a billing verdict as unverified (see above)."""
+    if any(p in error_msg for p in _UNVERIFIED_BILLING_PATTERNS):
+        return {"billing_unverified": True, "possible_content_filter": True}
+    return {}
 
 # xAI's explicit Grok credit-exhaustion code. Keep the HTTP 403 special case
 # provider-scoped: other providers' generic billing codes historically remain
@@ -139,6 +177,7 @@ _BILLING_ERROR_CODES = frozenset({
     "no_usable_credits",
     "balance_depleted",
     "model_not_supported_on_free_tier",
+    "member_spend_cap_exceeded",
     _XAI_SPENDING_LIMIT_ERROR_CODE,
 })
 
@@ -159,6 +198,14 @@ _RATE_LIMIT_PATTERNS = [
     "throttlingexception",
     "too many concurrent requests",
     "servicequotaexceededexception",
+    # Generic throttle prefix — Bedrock (and some proxies) surface throttling
+    # as "Throttling error: Too many tokens, please wait before trying
+    # again."  Without this entry the message falls through to the
+    # context-overflow list (which contains "too many tokens") and the retry
+    # loop compresses a healthy session instead of backing off.  Matched
+    # BEFORE _CONTEXT_OVERFLOW_PATTERNS in the message-only path, so the
+    # throttle wins.  (port of anomalyco/opencode#37848's exclusion guard)
+    "throttling",
 ]
 
 # Patterns that indicate provider-side overload, NOT a per-credential rate
@@ -200,10 +247,15 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "retry",
     "resets at",
     "reset in",
+    "resets in",
+    "reset after",
+    "available in",
     "wait",
     "requests remaining",
     "periodic",
     "window",
+    "per minute",
+    "per second",
 ]
 
 # Payload-too-large patterns detected from message text (no status_code attr).
@@ -212,6 +264,12 @@ _PAYLOAD_TOO_LARGE_PATTERNS = [
     "request entity too large",
     "payload too large",
     "error code: 413",
+    # Anthropic's structured 413 error type.  Normally arrives with an HTTP
+    # 413 status (handled by the status path), but aggregators/proxies can
+    # re-wrap it into a plain message with no status attribute — route it to
+    # the same compression recovery.  (port of anomalyco/opencode#37848)
+    "request_too_large",
+    "request exceeds the maximum size",
 ]
 
 # Image-size patterns.  Matched against 400 bodies (not 413) because most
@@ -227,8 +285,47 @@ _IMAGE_TOO_LARGE_PATTERNS = [
     "image dimensions exceed",  # Anthropic: "image dimensions exceed max allowed size: 8000 pixels"
     "dimensions exceed max allowed size",  # Anthropic dimension-cap (wording variant)
     "max allowed size: 8000",  # Anthropic dimension-cap (explicit pixel ceiling)
+    # Vendors that reject the same oversized image without using the word
+    # "image".  MiniMax's Anthropic-compatible endpoint returns
+    # "media exceeds size limit: max 10485760 bytes (2013)" for a native
+    # image part above its 10 MB ceiling (#76039).  Matched on the "media"
+    # fragment to mirror "image exceeds" above and catch reworded variants.
+    # A non-image media rejection (audio/video) that lands here is safe: the
+    # shrink pass finds no image parts, returns False, and the caller
+    # surfaces the original error unchanged.
+    "media exceeds",
+    "media too large",
     # "request_too_large" on a request known to contain an image → image is
     # the likely culprit; we still try the shrink path before giving up.
+]
+
+# Image-corruption patterns — distinct from _IMAGE_TOO_LARGE_PATTERNS above.
+# These fire when the provider can decode the request but not the image
+# bytes themselves (e.g. a re-serialized image part in replayed history that
+# lost data along the way). Re-encoding/shrinking corrupt bytes does not fix
+# corruption, so this list is routed to the strip-and-retry path
+# (FailoverReason.image_corrupt), never to the shrink path.
+#
+# xAI wording: {"code":"invalid-argument","error":"...Invalid PNG image."}
+# xAI has a second wording for the same failure class depending on where
+# the truncation lands: "Invalid PNG image." for aligned truncation,
+# "base64 string of provided image cannot be decoded" for unaligned
+# truncation (confirmed by the issue reporter — same root cause, two wire
+# messages).
+# A third xAI wording covers the URL-image path — the provider downloads
+# the image itself and rejects the fetched bytes:
+# {"code":"invalid-argument","error":"code: 'Client specified an invalid
+# argument', message: \"Downloaded response does not contain a valid JPG,
+# PNG, WebP, or ICO image.\""}
+# Matched as the full observed sentence on purpose — shorter fragments
+# ("downloaded response does not contain a valid") also match non-image
+# download failures and would misroute them into strip-and-retry.
+# See: https://github.com/NousResearch/hermes-agent/issues/69078
+_IMAGE_CORRUPT_PATTERNS = [
+    "invalid png image",
+    "invalid jpeg image",
+    "base64 string of provided image cannot be decoded",
+    "downloaded response does not contain a valid jpg, png, webp, or ico image",
 ]
 
 # Providers that follow the OpenAI spec strictly require tool message
@@ -269,6 +366,11 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     "context window",
     "prompt is too long",
     "prompt exceeds max length",
+    # NOTE: bare "max_tokens" is load-bearing — the output-cap-retry path keys
+    # off it (e.g. "max_tokens: 65536 > context_window: 200000 ..."). Do NOT
+    # remove it. Provider empty-response advisories also contain "very low
+    # max_tokens", but those are intercepted by _EMPTY_PROVIDER_RESPONSE_PATTERNS
+    # BEFORE this list is consulted, so they never mis-route into compression.
     "max_tokens",
     "maximum number of tokens",
     # vLLM / local inference server patterns
@@ -286,11 +388,17 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     # Chinese error messages (some providers return these)
     "超过最大长度",
     "上下文长度",
+    # Z.AI / Zhipu GLM pattern (English form; error code 1210)
+    "tokens in request more than max tokens allowed",
     # AWS Bedrock Converse API error patterns
     "input is too long",
     "max input token",
     "input token",
     "exceeds the maximum number of input tokens",
+    # Together/Fireworks-style: "Input length 131393 exceeds the maximum
+    # allowed input length of 131040 tokens."  No other pattern in this list
+    # matches that wording.  (port of anomalyco/opencode#37848)
+    "maximum allowed input length",
 ]
 
 # Model not found patterns
@@ -314,6 +422,71 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no endpoints found that support tool use",
 ]
 
+
+def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
+    """True when a bare model id is only known to the provider as ``vendor/id``.
+
+    Some providers answer a malformed model id with a naked 404 that names
+    nothing — NVIDIA NIM returns ``404 page not found`` for a bare
+    ``nemotron-3-ultra-550b-a55b``, indistinguishable from a bad endpoint
+    path. Consulting the curated catalogue tells the two apart: if the id
+    carries no ``/`` but the catalogue has exactly one entry ending in
+    ``/<id>``, the prefix was dropped and the failure is deterministic.
+
+    Never guesses — an id absent from the catalogue (a local NIM container,
+    a proxied model) returns False so genuine endpoint problems keep their
+    retryable ``unknown`` classification.
+    """
+    name = (model or "").strip()
+    if not name or "/" in name:
+        return False
+    try:
+        from hermes_cli.model_normalize import suggest_prefixed_model_id
+
+        return bool(suggest_prefixed_model_id((provider or "").strip(), name))
+    except Exception:
+        return False
+
+
+# Malformed-message-array 400s.  Deterministic request-shape rejections that
+# describe the *transcript* being invalid, not a parameter.  The canonical
+# case: a stream dies mid-response and Hermes persists a content-less
+# assistant stub; on the next turn the Anthropic message schema (and the
+# litellm/Bedrock proxies in front of it) reject the whole request with
+#   "all messages must have non-empty content except for the optional final
+#    assistant message"  /  errorCode INVALID_REQUEST_BODY
+# These are NOT context overflow — the input may be tiny — but a large
+# session used to mis-route them into the compression loop via the generic
+# "400 + large session" heuristic below, ending in "Cannot compress further"
+# every retry (the input is unchanged, so compression cannot help).  Match
+# the message-shape signals explicitly and fail fast as a format_error so the
+# loop stops looping.  The empty-stub creation is the root cause (fixed in
+# chat_completion_helpers); this pattern stops the misclassification symptom
+# for transcripts that already contain a poisoned stub.
+# Qwen/vLLM chat-template raise_exception("No user query found in messages")
+# — shared between _INVALID_MESSAGE_BODY_PATTERNS (→ format_error) and the
+# llama.cpp grammar exclusion guard below. Keeping a single constant prevents
+# the two sites from silently drifting if the phrase is ever changed.
+_NO_USER_QUERY_SIGNAL = "no user query found"
+
+_INVALID_MESSAGE_BODY_PATTERNS = [
+    "must have non-empty content",
+    "messages must have non-empty",
+    "invalid_request_body",
+    "text content blocks must be non-empty",
+    "content field is required",
+    "messages: at least one message is required",
+    # Qwen / vLLM chat templates raise this when the request has no surviving
+    # non-empty user turn (oversized session truncation, compression that
+    # dropped the only user message, or a resumed lineage that opens with
+    # assistant/tool). Deterministic — compression cannot invent a user
+    # query the template already rejected. Fail fast as format_error so we
+    # do not thrash the compression loop or mis-route into llama.cpp
+    # grammar recovery when local engines wrap the raise_exception as
+    # applyPromptTemplate / "Unable to generate parser for this template".
+    _NO_USER_QUERY_SIGNAL,
+]
+
 # Request-validation patterns — the request is malformed and will fail
 # identically on every retry. Some OpenAI-compatible gateways (notably
 # codex.nekos.me) return these as 5xx instead of the standard 4xx, which
@@ -331,6 +504,63 @@ _REQUEST_VALIDATION_PATTERNS = [
     "unknown_parameter",
     "unsupported_parameter",
 ]
+
+# A reasoning-mandatory route answering ``reasoning: {enabled: false}``
+# (Nous Portal + OpenRouter wording; ``error_msg`` is lowercased upstream).
+_REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
+
+# Request parameters that Hermes sends on SOME routes only, paired with the
+# providers/hosts where sending them is deliberate.
+#
+# When a host that is NOT in the allowed set rejects one of these fields, the
+# client never put it in the body — the provider's own gateway injected it —
+# so the 400 is a server-side flake rather than a deterministic request-shape
+# error.  See ``_is_server_injected_param_rejection`` and the branch in
+# ``_classify_400``.
+#
+# ``prompt_cache_retention`` is only sent for api.meta.ai and bedrock-mantle
+# hosts (agent/transports/codex.py::_default_prompt_cache_retention_for_request).
+# The Codex OAuth backend rejects it spontaneously on requests that provably
+# never carried it.
+_SERVER_INJECTED_PARAM_SENDERS: Dict[str, tuple] = {
+    "prompt_cache_retention": ("meta", "muse", "msl", "model-api", "bedrock", "mantle"),
+}
+
+
+def _is_server_injected_param_rejection(error_msg: str, provider: str) -> bool:
+    """True when a 400 blames a parameter this route never sends.
+
+    ``error_msg`` is the lowercased, concatenated message text; ``provider`` is
+    the lowercased provider slug.  A match means the rejection cannot be
+    attributed to our own request shape, so the error is transient and retrying
+    the identical request is the correct recovery.
+
+    Deliberately conservative: it fires only for known one-route-only
+    parameters AND only when the current provider is not one of the routes that
+    actually sends them, so a genuine client-side bad parameter (``max_tokens``
+    on a GPT-5 model) still fails fast as a ``format_error``.
+    """
+    if not error_msg:
+        return False
+    provider_slug = (provider or "").strip().lower()
+    for param, senders in _SERVER_INJECTED_PARAM_SENDERS.items():
+        if param not in error_msg:
+            continue
+        # Require the message to actually be a rejection of that parameter,
+        # not an incidental mention.
+        if not (
+            "not supported" in error_msg
+            or "unsupported" in error_msg
+            or "unknown" in error_msg
+            or "unrecognized" in error_msg
+        ):
+            continue
+        if any(sender in provider_slug for sender in senders):
+            # This route sends the field on purpose — a real request error.
+            return False
+        return True
+    return False
+
 
 # OpenRouter aggregator policy-block patterns.
 #
@@ -406,6 +636,7 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = [
 _AUTH_PATTERNS = [
     "invalid api key",
     "invalid_api_key",
+    "gateway_auth_failed",
     "authentication",
     "unauthorized",
     "forbidden",
@@ -424,6 +655,19 @@ _THINKING_SIG_PATTERNS = [
 # the exception type is generic (e.g. RuntimeError from a local shim that
 # wraps a subprocess timeout).  Checked before the type-based transport
 # heuristics so custom-provider "timed out" errors don't fall through to
+# Provider empty-response advisories (OpenRouter / nano-gpt / similar).
+# Checked before context-overflow matching because the advisory text often
+# mentions "max_tokens" as a possible cause, which historically sat in
+# _CONTEXT_OVERFLOW_PATTERNS and sent healthy sessions into a compression
+# death spiral ending in "Cannot compress further".
+_EMPTY_PROVIDER_RESPONSE_PATTERNS = [
+    "returned an empty response",
+    "empty response despite retries",
+    "provider returned an empty response",
+    "model returning empty responses",
+    "empty response stream",
+]
+
 # the unknown bucket and get misreported as empty responses.
 _TIMEOUT_MESSAGE_PATTERNS = [
     "timed out",
@@ -432,6 +676,43 @@ _TIMEOUT_MESSAGE_PATTERNS = [
     "deadline exceeded",
     "operation timed out",
     "upstream timed out",
+]
+
+# Connection-establishment / DNS failure message patterns.  These surface
+# when the exception TYPE is generic (RuntimeError/Exception from a local
+# shim, MCP bridge, subprocess wrapper, or an SDK that re-raises without
+# chaining) so the _TRANSPORT_ERROR_TYPES check never fires, and the error
+# carries no HTTP status.  Without message-level matching they fall through
+# to FailoverReason.unknown, which misses the transport eager-fallback path
+# in the retry loop (unknown retries the same dead endpoint for the full
+# budget before fallback).  Ported from anomalyco/opencode#40707, which hit
+# the same bug shape: serialized midstream errors matched by type only.
+#
+# Deliberately EXCLUDES mid-stream disconnect strings ("connection reset by
+# peer", "peer closed connection", "unexpected eof", "socket hang up") —
+# those belong to _SERVER_DISCONNECT_PATTERNS, whose classification step
+# runs later and routes large sessions to context-overflow compression.
+# A connection that was never established cannot be a server-side overflow
+# rejection, so these are safe to classify as plain retryable transport.
+_CONNECTION_MESSAGE_PATTERNS = [
+    # TCP connect failures
+    "connection refused",
+    "econnrefused",
+    "no route to host",
+    "network is unreachable",
+    "network unreachable",
+    # DNS resolution failures (Python, glibc, macOS, Node bridge phrasings)
+    "name or service not known",
+    "temporary failure in name resolution",
+    "nodename nor servname provided",
+    "getaddrinfo failed",
+    "getaddrinfo enotfound",
+    "eai_again",
+    # Node/undici bridge generic network failure (MCP servers, local shims)
+    "fetch failed",
+    "failed to fetch",
+    # Envoy/proxy upstream connect failure (cloud gateways)
+    "upstream connect error",
 ]
 
 # Transport error type names
@@ -543,6 +824,7 @@ def classify_api_error(
     """Classify an API error into a structured recovery recommendation.
 
     Priority-ordered pipeline:
+      0. Plugin ``transform_api_error_classification`` hooks (first valid result wins)
       1. Special-case provider-specific patterns (thinking sigs, tier gates)
       2. HTTP status code + message-aware refinement
       3. Error code classification (from body)
@@ -571,6 +853,7 @@ def classify_api_error(
         status_code = 429
     body = _extract_error_body(error)
     error_code = _extract_error_code(body)
+    response_headers = _extract_response_headers(error)
 
     # Build a comprehensive error message string for pattern matching.
     # str(error) alone may not include the body message (e.g. OpenAI SDK's
@@ -625,6 +908,41 @@ def classify_api_error(
         }
         defaults.update(overrides)
         return ClassifiedError(**defaults)
+
+    # ── 0. Plugin classifiers (first valid result wins) ─────────────
+    #
+    # Consulted BEFORE the built-in pipeline so a provider plugin can both
+    # add classifications the core patterns miss and correct ones they get
+    # wrong for its provider (see the ``transform_api_error_classification`` entry in
+    # hermes_cli.plugins.VALID_HOOKS for the callback contract). Callback
+    # exceptions are isolated inside invoke_hook and malformed returns are
+    # dropped by the helper, so a broken plugin can never break
+    # classification — the guard here only covers import/dispatch failure.
+    try:
+        from hermes_cli.plugins import get_plugin_error_classification
+        plugin_classification = get_plugin_error_classification(
+            provider=provider,
+            model=model,
+            status_code=status_code,
+            error_type=error_type,
+            error_code=error_code,
+            error_message=error_msg,
+            error_body=body,
+            error=error,
+            approx_tokens=approx_tokens,
+            context_length=context_length,
+            num_messages=num_messages,
+        )
+    except Exception as exc:
+        logger.debug("Plugin error classification unavailable: %s", exc)
+        plugin_classification = None
+    if plugin_classification is not None:
+        reason = plugin_classification.pop("reason")
+        logger.info(
+            "API error classified by plugin hook: %s (provider=%s, status=%s)",
+            reason.value, provider, status_code,
+        )
+        return _result(reason, **plugin_classification)
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
 
@@ -714,9 +1032,16 @@ def classify_api_error(
     # recognizable phrases; on match we strip ``pattern``/``format`` from
     # ``self.tools`` in the retry loop and retry once. Cloud providers are
     # unaffected — they accept these keywords and we never hit this branch.
-    if (
-        status_code == 400
-        and (
+    #
+    # Exclude Qwen/vLLM template raise_exception("No user query found…")
+    # wrapped by some local engines as applyPromptTemplate / "Unable to
+    # generate parser for this template". That is a poisoned transcript
+    # shape (handled via _INVALID_MESSAGE_BODY_PATTERNS → format_error),
+    # not a tool-schema grammar rejection — matching it here strips
+    # pattern/format keywords and retries uselessly while the real fix
+    # is /new (or a successful compression that preserves a user turn).
+    if status_code == 400:
+        _llama_cpp_grammar_hit = (
             "error parsing grammar" in error_msg
             or "json-schema-to-grammar" in error_msg
             or (
@@ -724,6 +1049,11 @@ def classify_api_error(
                 and "template" in error_msg
             )
         )
+    else:
+        _llama_cpp_grammar_hit = False
+    if (
+        _llama_cpp_grammar_hit
+        and _NO_USER_QUERY_SIGNAL not in error_msg
     ):
         return _result(
             FailoverReason.llama_cpp_grammar_pattern,
@@ -768,10 +1098,32 @@ def classify_api_error(
             provider=provider_lower, model=model_lower,
             approx_tokens=approx_tokens, context_length=context_length,
             num_messages=num_messages,
+            response_headers=response_headers,
             result_fn=_result,
         )
         if classified is not None:
             return classified
+
+    # Local MoA streaming compatibility errors are adapter-shape bugs, not a
+    # provider outage. Falling back to another model would silently switch the
+    # user's selected MoA route to a single-model answer (#55933 follow-up).
+    if provider_lower == "moa" and (
+        "'types.SimpleNamespace' object is not iterable" in str(error)
+        or "'types.SimpleNamespace' object has no attribute 'index'" in str(error)
+    ):
+        return _result(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=False,
+        )
+
+    # Local MoA config drift is deterministic: a persisted session can retain
+    # a preset name that was later renamed/deleted. Retrying the same lookup
+    # cannot recover and makes a clear config error look like an API outage.
+    from agent.errors import MoAPresetNotFoundError
+
+    if isinstance(error, MoAPresetNotFoundError):
+        return _result(FailoverReason.model_not_found, retryable=False)
 
     # ── 3. Error code classification ────────────────────────────────
 
@@ -904,6 +1256,7 @@ def _classify_by_status(
     approx_tokens: int,
     context_length: int,
     num_messages: int = 0,
+    response_headers=None,
     result_fn,
 ) -> Optional[ClassifiedError]:
     """Classify based on HTTP status code with message-aware refinement."""
@@ -977,6 +1330,18 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
+        # A bare id that the provider's catalogue only knows in prefixed form
+        # is a malformed model id, not a routing glitch — NVIDIA NIM answers
+        # one with a naked ``404 page not found`` that names nothing, so the
+        # generic branch below burns three retries and reports what looks
+        # like an outage (#78796). Deterministic: don't retry, and let the
+        # model_not_found surface carry the real cause.
+        if _model_id_missing_known_prefix(model, provider):
+            return result_fn(
+                FailoverReason.model_not_found,
+                retryable=False,
+                should_fallback=True,
+            )
         # Generic 404 with no "model not found" signal — could be a wrong
         # endpoint path (common with local llama.cpp / Ollama / vLLM when
         # the URL is slightly misconfigured), a proxy routing glitch, or
@@ -1026,6 +1391,48 @@ def _classify_by_status(
                 should_fallback=True,
                 error_context=ctx,
             )
+        # Account/subscription usage exhaustion is a quota wall, not a
+        # request-rate throttle. Anthropic returns this as 429, so the generic
+        # branch below used to retry it and Desktop rendered a provider error
+        # instead of the billing/quota recovery. Preserve periodic quotas when
+        # the response supplies an explicit reset/retry signal.
+        #
+        # The check covers the narrow #93419 core (Anthropic's
+        # ``usage_limit_reached``) plus the broader ``_USAGE_LIMIT_PATTERNS``
+        # ("quota", "limit exceeded", "key limit exceeded") so other providers'
+        # hard quota walls also route to billing — but ONLY when the message is
+        # not itself an explicit rate-limit phrase. Without that guard,
+        # "Rate limit exceeded" ("limit exceeded" substring) would wrongly
+        # promote to non-retryable billing. (broadening + guard credit #39441)
+        has_usage_limit = (
+            error_code.lower() == "usage_limit_reached"
+            or "usage_limit_reached" in error_msg
+            or any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+        )
+        # Explicit billing phrases in a 429 body are a hard wall regardless of
+        # usage-limit wording — a provider that wraps "insufficient credits" in
+        # a 429 (rather than 402) was previously retried as a rate limit and
+        # burned the pool. (credit #39441)
+        has_billing = any(p in error_msg for p in _BILLING_PATTERNS)
+        has_explicit_rate_limit = any(
+            p in error_msg for p in _RATE_LIMIT_PATTERNS
+        )
+        has_transient_signal = _has_usage_limit_transient_signal(
+            error_msg,
+            body,
+            response_headers,
+        )
+        if (
+            (has_billing or has_usage_limit)
+            and not has_explicit_rate_limit
+            and not has_transient_signal
+        ):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
@@ -1051,11 +1458,16 @@ def _classify_by_status(
         # server_error" rule turns one bad request into a retry flood.
         # Detect the unambiguous request-validation signals (in either the
         # message text or the structured error code) and fail fast.
+        #
+        # Exception: a parameter WE never sent on this route was injected by
+        # the provider/proxy itself, so the rejection is not deterministic and
+        # the generic retryable-5xx handling is correct. Mirrors the guard in
+        # _classify_400 — see _is_server_injected_param_rejection.
         if (
             any(p in error_msg for p in _REQUEST_VALIDATION_PATTERNS)
             or error_code.lower() in {"invalid_request_error", "unknown_parameter",
                                       "unsupported_parameter"}
-        ):
+        ) and not _is_server_injected_param_rejection(error_msg, provider):
             return result_fn(
                 FailoverReason.format_error,
                 retryable=False,
@@ -1067,6 +1479,14 @@ def _classify_by_status(
         # remaining explicit context-overflow signal routes into the
         # compression-and-retry path (mirroring _classify_400) instead of
         # blind server_error retries that exhaust and drop the turn.
+        # Empty-response advisories that mention "max_tokens" must not enter
+        # that compression path.
+        if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
+            return result_fn(
+                FailoverReason.server_error,
+                retryable=True,
+                should_compress=False,
+            )
         if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
             return result_fn(
                 FailoverReason.context_overflow,
@@ -1080,6 +1500,12 @@ def _classify_by_status(
         # Cloudflare/Tailscale hop relabeling the status). Route explicit
         # overflow bodies into compression; otherwise treat as transient
         # overload and retry.
+        if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
+            return result_fn(
+                FailoverReason.server_error,
+                retryable=True,
+                should_compress=False,
+            )
         if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
             return result_fn(
                 FailoverReason.context_overflow,
@@ -1112,6 +1538,41 @@ def _classify_by_status(
         return result_fn(FailoverReason.server_error, retryable=True)
 
     return None
+
+
+def _has_usage_limit_transient_signal(
+    error_msg: str,
+    body: dict,
+    response_headers,
+) -> bool:
+    """Return whether a usage-limit response identifies a reset window."""
+    if any(pattern in error_msg for pattern in _USAGE_LIMIT_TRANSIENT_SIGNALS):
+        return True
+
+    payloads = [body]
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        payloads.append(body["error"])
+    reset_fields = ("resets_in_seconds", "resets_at", "reset_at", "retry_after")
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        if any(
+            payload.get(field) is not None and payload.get(field) != ""
+            for field in reset_fields
+        ):
+            return True
+
+    if response_headers and hasattr(response_headers, "get"):
+        for header in (
+            "retry-after",
+            "Retry-After",
+            "x-ratelimit-reset",
+            "X-RateLimit-Reset",
+        ):
+            value = response_headers.get(header)
+            if value is not None and value != "":
+                return True
+    return False
 
 
 def _classify_402(error_msg: str, result_fn) -> ClassifiedError:
@@ -1170,6 +1631,16 @@ def _classify_400(
             retryable=True,
         )
 
+    # Image-corruption from 400 (xAI's undecodable-image check fires this way).
+    # Must be checked BEFORE image_too_large: both are image-shaped 400s, but
+    # corrupt bytes need strip-and-retry, not shrink-and-retry — shrinking
+    # can't repair a truncated/malformed PNG.
+    if any(p in error_msg for p in _IMAGE_CORRUPT_PATTERNS):
+        return result_fn(
+            FailoverReason.image_corrupt,
+            retryable=True,
+        )
+
     # Image-too-large from 400 (Anthropic's 5 MB per-image check fires this way).
     # Must be checked BEFORE context_overflow because messages can trip both
     # patterns ("exceeds" + "image") and image-shrink is a cheaper recovery.
@@ -1200,13 +1671,46 @@ def _classify_400(
             should_fallback=False,
         )
 
+    # Reasoning-mandatory route rejecting a disable (Nous Portal / OpenRouter
+    # for GLM-5.3 etc.: "Reasoning is mandatory for this endpoint and cannot
+    # be disabled").  Deterministic for the request shape, but the only bad
+    # field is ``reasoning: {enabled: false}`` — the conversation_loop drops
+    # the disable and retries once.  Must precede the request-validation
+    # branch, which would abort the turn as a format_error.
+    if _REASONING_MANDATORY_PATTERN in error_msg:
+        return result_fn(
+            FailoverReason.reasoning_mandatory,
+            retryable=True,
+            should_compress=False,
+            should_fallback=False,
+        )
+
+    # Server-injected parameter rejection: a 400 blaming a request field the
+    # client never sent.  MUST be checked BEFORE the request-validation branch
+    # below, which would otherwise class it as a deterministic format_error and
+    # abort the turn.
+    #
+    # Observed live on the Codex OAuth backend (chatgpt.com/backend-api/codex):
+    # it intermittently adds ``prompt_cache_retention`` to its own upstream
+    # call and then rejects it, so a byte-identical request succeeds on retry
+    # (measured ~20% failure over n=20 on a minimal 1-message request that
+    # provably carried no cache parameters).  Retrying is the correct and only
+    # recovery; failing fast burnt an entire large-context request per attempt.
+    if _is_server_injected_param_rejection(error_msg, provider):
+        return result_fn(
+            FailoverReason.server_error,
+            retryable=True,
+            # The request shape was fine — never route this into compression.
+            should_compress=False,
+        )
+
     # Request-validation errors (unsupported / unknown parameter) MUST be
     # checked BEFORE context_overflow.  A GPT-5 model rejecting max_tokens
     # returns:
     #   "Unsupported parameter: 'max_tokens' is not supported with this model.
     #    Use 'max_completion_tokens' instead."
-    # That string contains the literal substring "max_tokens", which is one of
-    # the _CONTEXT_OVERFLOW_PATTERNS — so without this guard the 400 is
+    # That string contains the literal substring "max_tokens", which historically
+    # sat in _CONTEXT_OVERFLOW_PATTERNS — so without this guard the 400 is
     # misclassified as context_overflow, routed into the compression loop,
     # re-sent with the same bad parameter, and ends in "Cannot compress
     # further".  These errors are deterministic (every retry gets the identical
@@ -1226,6 +1730,44 @@ def _classify_400(
             FailoverReason.format_error,
             retryable=False,
             should_fallback=True,
+        )
+
+    # Malformed message array (empty-content assistant stub, etc.). Must be
+    # checked BEFORE context_overflow: the input can be tiny, so the generic
+    # "400 + large session" heuristic would otherwise mis-route it into the
+    # compression loop and thrash until "Cannot compress further" on every
+    # retry (the request is unchanged, so compression cannot fix it). This is
+    # a deterministic request-shape rejection — fail fast as a non-retryable
+    # format_error and fall back. Checked against the message text AND the
+    # structured error code, since proxies (litellm/Bedrock) surface the
+    # signal in errorCode=INVALID_REQUEST_BODY.
+    if (
+        any(p in error_msg for p in _INVALID_MESSAGE_BODY_PATTERNS)
+        or error_code_lower == "invalid_request_body"
+    ):
+        logger.warning(
+            "Malformed message array 400 (invalid request body) classified as "
+            "format_error, NOT context overflow — failing fast + falling back "
+            "instead of entering the compression loop. This usually means an "
+            "empty-content assistant stub is in the transcript; num_messages=%s "
+            "approx_tokens=%s. error=%.200s",
+            num_messages, approx_tokens, error_msg,
+        )
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
+        )
+
+    # Empty-provider-response advisories must not enter compression. They
+    # often mention "max_tokens" as a possible cause and used to match the
+    # bare overflow pattern, then thrash compress until "Cannot compress
+    # further" on an otherwise healthy session (custom endpoints / nano-gpt).
+    if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
+        return result_fn(
+            FailoverReason.server_error,
+            retryable=True,
+            should_compress=False,
         )
 
     # Context overflow from 400
@@ -1265,6 +1807,10 @@ def _classify_400(
             retryable=False,
             should_rotate_credential=True,
             should_fallback=True,
+            # "out of extra usage" on a 400 is ambiguous — it can also be a
+            # content-filter rejection (#82154). Mark the verdict unverified
+            # so downstream hedges and the pool skips the 1-hour bench.
+            error_context=_billing_ambiguity_context(error_msg),
         )
 
     # Generic 400 + large session → probable context overflow
@@ -1277,6 +1823,18 @@ def _classify_400(
         # Responses API (and some providers) use flat body: {"message": "..."}
         if not err_body_msg:
             err_body_msg = str(body.get("message") or "").strip().lower()
+        # litellm / Bedrock proxies use a custom shape: {"errorMessage": "...",
+        # "errorCode": "...", "errorArgs": {"reason": "..."}}.  Without these
+        # keys err_body_msg stays "" and a long, descriptive rejection is
+        # wrongly treated as a "generic" (bare) error below, which — on a
+        # large session — mis-routes into the compression loop.  Recognize
+        # them so the is_generic heuristic sees the real message length.
+        if not err_body_msg:
+            err_body_msg = str(body.get("errorMessage") or "").strip().lower()
+        if not err_body_msg:
+            _args = body.get("errorArgs")
+            if isinstance(_args, dict):
+                err_body_msg = str(_args.get("reason") or "").strip().lower()
     is_generic = len(err_body_msg) < 30 or err_body_msg in {"error", ""}
     # Absolute token/message-count thresholds are only a proxy for smaller
     # context windows.  Large-context sessions can have many messages while
@@ -1307,6 +1865,20 @@ def _classify_by_error_code(
 ) -> Optional[ClassifiedError]:
     """Classify by structured error codes from the response body."""
     code_lower = error_code.lower()
+
+    if (
+        code_lower == PROVIDER_STREAM_NON_JSON_ERROR_CODE
+        and "request validation failed:" in error_msg
+    ):
+        # Some OpenAI-compatible endpoints encode deterministic request
+        # validation failures as plain-text ``event: error`` SSE data behind
+        # HTTP 200.  Retrying the unchanged request cannot succeed, but a
+        # configured provider fallback still may.
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
+        )
 
     if code_lower in {"resource_exhausted", "throttled", "rate_limit_exceeded"}:
         return result_fn(
@@ -1374,6 +1946,13 @@ def _classify_by_message(
             retryable=True,
         )
 
+    # Image-corruption patterns (from message text when no status_code)
+    if any(p in error_msg for p in _IMAGE_CORRUPT_PATTERNS):
+        return result_fn(
+            FailoverReason.image_corrupt,
+            retryable=True,
+        )
+
     # Image-too-large patterns (from message text when no status_code)
     if any(p in error_msg for p in _IMAGE_TOO_LARGE_PATTERNS):
         return result_fn(
@@ -1420,6 +1999,10 @@ def _classify_by_message(
             retryable=False,
             should_rotate_credential=True,
             should_fallback=True,
+            # Status-less path: adapters can strip the HTTP status from the
+            # Anthropic "out of extra usage" 400, so the same ambiguity
+            # marking applies here (#82154).
+            error_context=_billing_ambiguity_context(error_msg),
         )
 
     # Rate limit patterns
@@ -1429,6 +2012,15 @@ def _classify_by_message(
             retryable=True,
             should_rotate_credential=True,
             should_fallback=True,
+        )
+
+    # Empty-provider-response advisories (often mention "max_tokens") must
+    # retry without compression — see the matching 400-path guard above.
+    if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
+        return result_fn(
+            FailoverReason.server_error,
+            retryable=True,
+            should_compress=False,
         )
 
     # Context overflow patterns
@@ -1475,6 +2067,16 @@ def _classify_by_message(
     # loop rebuilds the client instead of treating the turn as an empty
     # model response.
     if any(p in error_msg for p in _TIMEOUT_MESSAGE_PATTERNS):
+        return result_fn(FailoverReason.timeout, retryable=True)
+
+    # Connection-establishment / DNS failure message patterns — same shim
+    # problem as the timeout patterns above: the wrapping exception type is
+    # generic, so _TRANSPORT_ERROR_TYPES never matches and the error would
+    # fall through to FailoverReason.unknown. Classified as timeout (the
+    # transport bucket) so the retry loop's eager transport fallback and
+    # client rebuild apply. Never routes to compression: a connection that
+    # was never established is not a context-overflow signal.
+    if any(p in error_msg for p in _CONNECTION_MESSAGE_PATTERNS):
         return result_fn(FailoverReason.timeout, retryable=True)
 
     return None
@@ -1524,6 +2126,21 @@ def _extract_error_body(error: Exception) -> dict:
     return {}
 
 
+def _extract_response_headers(error: Exception):
+    """Walk the error and its cause chain to find response headers."""
+    current = error
+    for _ in range(5):
+        response = getattr(current, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers and hasattr(headers, "get"):
+            return headers
+        cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if cause is None or cause is current:
+            break
+        current = cause
+    return {}
+
+
 def _extract_error_code(body: dict) -> str:
     """Extract an error code string from the response body."""
     if not body:
@@ -1566,7 +2183,7 @@ def _extract_error_code(body: dict) -> str:
                 return nested_code
 
     # Top-level code
-    code = body.get("code") or body.get("error_code") or ""
+    code = body.get("code") or body.get("error_code") or body.get("errorCode") or ""
     if isinstance(code, (str, int)):
         text = str(code).strip()
         if text and text != "400":
@@ -1586,6 +2203,16 @@ def _extract_message(error: Exception, body: dict) -> str:
         msg = body.get("message", "")
         if isinstance(msg, str) and msg.strip():
             return msg.strip()[:500]
+        # litellm / Bedrock proxy shape: {"errorMessage": "...",
+        # "errorArgs": {"reason": "..."}}.
+        msg = body.get("errorMessage", "")
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()[:500]
+        args = body.get("errorArgs")
+        if isinstance(args, dict):
+            reason = args.get("reason", "")
+            if isinstance(reason, str) and reason.strip():
+                return reason.strip()[:500]
     # Fallback to str(error)
     return str(error)[:500]
 

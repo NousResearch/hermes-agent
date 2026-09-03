@@ -6,7 +6,7 @@ import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
-import { repoStatus, resolveRenamePath } from './git-review-ops'
+import { gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewList } from './git-review-ops'
 
 const tempDirs: string[] = []
 
@@ -32,6 +32,30 @@ function makeRepo() {
 
 test('resolveRenamePath: plain path is unchanged', () => {
   assert.equal(resolveRenamePath('src/a.ts'), 'src/a.ts')
+})
+
+test('gitFor accepts an internally resolved git binary path containing spaces', () => {
+  assert.doesNotThrow(() => gitFor(process.cwd(), 'C:\\Program Files\\Git\\cmd\\git.exe'))
+})
+
+test('gitFor runs git through a spaced binary path', async () => {
+  if (process.platform !== 'win32') {
+    return
+  }
+
+  const gitBin = path.join(process.env.ProgramFiles || String.raw`C:\Program Files`, 'Git', 'cmd', 'git.exe')
+
+  if (!fs.existsSync(gitBin)) {
+    return
+  }
+
+  const repo = makeRepo()
+
+  fs.writeFileSync(path.join(repo, 'changed.txt'), 'review me\n')
+
+  const status = await gitFor(repo, gitBin).status()
+
+  assert.equal(status.not_added.includes('changed.txt'), true)
 })
 
 test('resolveRenamePath: simple rename resolves to the new path', () => {
@@ -62,4 +86,34 @@ test('repoStatus reports an untracked directory without recursively listing its 
     status.files.map(file => file.path),
     ['generated/']
   )
+})
+
+test('reviewList reports an untracked directory without recursively listing its contents', async () => {
+  const dir = makeRepo()
+  const nested = path.join(dir, 'browser-profile', 'Default', 'Cache')
+
+  fs.mkdirSync(nested, { recursive: true })
+
+  for (let i = 0; i < 20; i++) {
+    fs.writeFileSync(path.join(nested, `cache-${i}.bin`), 'generated\n')
+  }
+
+  const result = await reviewList(dir, 'uncommitted', null, 'git')
+
+  assert.deepEqual(
+    result.files.map(file => file.path),
+    ['browser-profile/']
+  )
+})
+
+test('reviewList caps the file payload returned to the renderer', async () => {
+  const dir = makeRepo()
+
+  for (let i = 0; i < REVIEW_FILE_CAP + 10; i++) {
+    fs.writeFileSync(path.join(dir, `untracked-${String(i).padStart(4, '0')}.txt`), 'generated\n')
+  }
+
+  const result = await reviewList(dir, 'uncommitted', null, 'git')
+
+  assert.equal(result.files.length, REVIEW_FILE_CAP)
 })

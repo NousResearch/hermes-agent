@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +32,12 @@ def _probe_state_db(home: Path) -> dict[str, Any]:
         # A readiness probe must never compete with normal state writers. A
         # read-only schema query still catches unreadable/corrupt databases
         # without taking a write reservation on every health poll.
+        # ``closing(...)`` is required: sqlite3's connection context manager
+        # only commits/rolls back — it never closes, so a bare ``with
+        # sqlite3.connect(...)`` leaks one connection (and its fds) per
+        # health poll in the long-running gateway (#69678/#69567 bug class).
         uri = f"file:{path.as_posix()}?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=1.0) as conn:
+        with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as conn:
             conn.execute("PRAGMA query_only = ON")
             conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
         return _check("ok")
@@ -81,6 +86,20 @@ def _probe_gateway(runtime_status: dict[str, Any]) -> dict[str, Any]:
     return _check(status, state=state, connected_platforms=connected, platforms=configured)
 
 
+def _probe_session_store(
+    runtime_status: dict[str, Any], state_db_probe: dict[str, Any]
+) -> dict[str, Any]:
+    """Report the running gateway cache state, not an independent reopen."""
+    runtime_store = runtime_status.get("session_store")
+    if isinstance(runtime_store, dict):
+        state = str(runtime_store.get("status") or "unknown")
+        if state in {"ok", "unavailable", "retrying"}:
+            return _check(state)
+    # Older gateways do not publish a cache state. Preserve their readiness
+    # behavior until their process restarts onto a version that does.
+    return _check("ok" if state_db_probe.get("status") == "ok" else "unavailable")
+
+
 def collect_runtime_readiness(
     *,
     configured_model: str,
@@ -97,8 +116,10 @@ def collect_runtime_readiness(
     """
     home = get_hermes_home()
     runtime = runtime_status if isinstance(runtime_status, dict) else {}
+    state_db_probe = _probe_state_db(home)
     checks = {
-        "state_db": _probe_state_db(home),
+        "state_db": state_db_probe,
+        "session_store": _probe_session_store(runtime, state_db_probe),
         "config": _probe_config(home),
         "model": _check("ok" if str(configured_model or "").strip() else "degraded"),
         "disk": _probe_disk(home),

@@ -319,6 +319,32 @@ def _unique_slug(conn: sqlite3.Connection, candidate: str) -> str:
     return slug
 
 
+def _primary_path_key(path: str) -> str:
+    """Comparison key for primary-path dedup (absolute + case/sep-normalized)."""
+    return os.path.normcase(_normalize_path(path))
+
+
+def find_by_primary_path(
+    conn: sqlite3.Connection, path: str, *, include_archived: bool = False
+) -> Optional[Project]:
+    """The first (oldest) project whose primary path matches ``path``, else None.
+
+    Comparison is separator/case normalized so equivalent Windows spellings of
+    the same folder do not slip past the dedup check.
+    """
+    key = _primary_path_key(path)
+    if not key:
+        return None
+    for proj in list_projects(conn, include_archived=include_archived):
+        primary = proj.primary_path or next(
+            (f.path for f in proj.folders if f.is_primary),
+            proj.folders[0].path if proj.folders else None,
+        )
+        if primary and _primary_path_key(primary) == key:
+            return proj
+    return None
+
+
 def create_project(
     conn: sqlite3.Connection,
     *,
@@ -330,12 +356,19 @@ def create_project(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     board_slug: Optional[str] = None,
+    allow_duplicate_path: bool = False,
 ) -> str:
     """Create a project and return its id.
 
     ``folders`` are normalized to absolute paths. If ``primary_path`` is given
     it is added to the folder set (if not already present) and marked primary;
     otherwise the first folder becomes primary.
+
+    Duplicate projects pointing at the same folder multiply the sidebar's
+    per-project repo subtrees (every duplicate renders its own copy of the same
+    lanes), so a create whose resolved primary path already belongs to a
+    non-archived project raises ``ValueError`` naming the existing project —
+    pass ``allow_duplicate_path=True`` to bypass deliberately.
     """
     name = str(name or "").strip()
     if not name:
@@ -356,6 +389,14 @@ def create_project(
         folder_paths.insert(0, primary)
     if primary is None and folder_paths:
         primary = folder_paths[0]
+
+    if primary and not allow_duplicate_path:
+        existing = find_by_primary_path(conn, primary)
+        if existing is not None:
+            raise ValueError(
+                f"folder already belongs to project '{existing.slug}' ({existing.id}); "
+                "switch to it instead of creating a duplicate"
+            )
 
     with write_txn(conn):
         unique = _unique_slug(conn, slug_candidate)
@@ -596,6 +637,7 @@ def delete_project(conn: sqlite3.Connection, project_id: str) -> bool:
 
 
 _ACTIVE_META_KEY = "active_id"
+_DISCOVERY_POLICY_META_KEY = "repo_discovery_policy"
 
 
 def set_active(conn: sqlite3.Connection, project_id: Optional[str]) -> None:
@@ -618,6 +660,53 @@ def get_active_id(conn: sqlite3.Connection) -> Optional[str]:
     return row["value"] if row else None
 
 
+def get_discovery_policy_key(conn: sqlite3.Connection) -> Optional[str]:
+    row = conn.execute(
+        "SELECT value FROM project_meta WHERE key = ?", (_DISCOVERY_POLICY_META_KEY,)
+    ).fetchone()
+    return row["value"] if row else None
+
+
+def reconcile_discovered_repos_policy(
+    conn: sqlite3.Connection,
+    policy_key: str,
+    *,
+    preserve_unversioned: bool = False,
+) -> bool:
+    """Clear cached scan rows when their discovery policy changes.
+
+    Existing pre-policy rows are retained only for the backward-compatible
+    default policy. Returns whether rows were cleared.
+    """
+    current = get_discovery_policy_key(conn)
+    if current == policy_key:
+        return False
+
+    cleared = current is not None or not preserve_unversioned
+    with write_txn(conn):
+        if cleared:
+            conn.execute("DELETE FROM discovered_repos")
+        conn.execute(
+            "INSERT INTO project_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_DISCOVERY_POLICY_META_KEY, policy_key),
+        )
+    return cleared
+
+
+def clear_discovered_repos(
+    conn: sqlite3.Connection, *, policy_key: Optional[str] = None
+) -> None:
+    with write_txn(conn):
+        conn.execute("DELETE FROM discovered_repos")
+        if policy_key is not None:
+            conn.execute(
+                "INSERT INTO project_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_DISCOVERY_POLICY_META_KEY, policy_key),
+            )
+
+
 # ---------------------------------------------------------------------------
 # Discovered repos (filesystem scan cache)
 # ---------------------------------------------------------------------------
@@ -628,6 +717,7 @@ def record_discovered_repos(
     repos: Iterable[tuple[str, Optional[str]]],
     *,
     replace: bool = False,
+    policy_key: Optional[str] = None,
 ) -> int:
     """Persist scanned git repo roots into the cache.
 
@@ -655,6 +745,12 @@ def record_discovered_repos(
                 "ON CONFLICT(root) DO UPDATE SET label = excluded.label, "
                 "last_seen = excluded.last_seen",
                 rows,
+            )
+        if policy_key is not None:
+            conn.execute(
+                "INSERT INTO project_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_DISCOVERY_POLICY_META_KEY, policy_key),
             )
     return len(rows)
 

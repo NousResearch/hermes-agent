@@ -56,7 +56,18 @@ def _normalize_cwd_for_compare(cwd: str | None) -> str:
     elif re.match(r"^/mnt/[A-Za-z]/", expanded):
         expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
 
-    return os.path.normpath(expanded)
+    # Resolve symlink aliases so equivalent spellings of the same directory
+    # compare equal — macOS reports editor workspaces as ``/var/...`` while
+    # sessions get stored under ``/private/var/...`` (and ``/tmp`` vs
+    # ``/private/tmp``), which made ACP history filters silently drop a
+    # workspace's own sessions. ``os.path.realpath`` is lexical for missing
+    # paths (strict=False), so cwds that don't exist on this host — e.g.
+    # WSL-translated Windows drives — keep the previous normpath behavior.
+    # Ported from PrimeIntellect-ai/prime-agent#628.
+    try:
+        return os.path.realpath(expanded)
+    except OSError:
+        return os.path.normpath(expanded)
 
 
 def _build_session_title(title: Any, preview: Any, cwd: str | None) -> str:
@@ -480,16 +491,17 @@ class SessionManager:
                 # fresh agent with _session_db_created=False (so the check above
                 # is False) yet leave the durable archived transcript in place.
                 # A full-history replace would DELETE those archived rows just
-                # like the owned-agent case. Guard against it: when archived
-                # rows exist, replace ONLY the live (active=1) set and leave the
-                # archived turns untouched; otherwise the destructive replace is
-                # safe (fresh create/fork with no archived history to lose).
-                try:
-                    has_archived = db.has_archived_messages(state.session_id)
-                except Exception:
-                    has_archived = False
+                # like the owned-agent case. Guard against it by replacing ONLY
+                # the live (active=1) set unconditionally: on a fresh
+                # create/fork every row is active=1, so active-only replace is
+                # behaviorally identical to the full replace — and when archived
+                # rows DO exist they survive. An existence probe here
+                # (has_archived_messages) would fail OPEN into the destructive
+                # replace on any DB error and can race a concurrent
+                # archive_and_compact — the same probe failure mode #80216's
+                # /retry fix (gateway/slash_commands.py) deliberately avoids.
                 db.replace_messages(
-                    state.session_id, state.history, active_only=has_archived
+                    state.session_id, state.history, active_only=True
                 )
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
@@ -534,9 +546,15 @@ class SessionManager:
 
         model = row.get("model") or None
 
-        # Load conversation history.
+        # Load conversation history. repair_alternation: this restore feeds
+        # LIVE REPLAY — the loaded list becomes the resumed agent's working
+        # conversation. A durable ``user;user`` violation left in state.db would
+        # otherwise re-fire the pre-request defensive repair on every request
+        # for the rest of the session (see hermes_state.get_messages_as_conversation).
         try:
-            history = db.get_messages_as_conversation(session_id)
+            history = db.get_messages_as_conversation(
+                session_id, repair_alternation=True
+            )
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []
@@ -642,6 +660,30 @@ class SessionManager:
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
 
         _register_task_cwd(session_id, cwd)
+
+        # Bounded wait for background MCP discovery so already-spawning fast
+        # servers land in the agent's tool snapshot.  ACP entry.py fires
+        # discovery in a background daemon thread (start_background_mcp_discovery);
+        # the agent snapshots tools once at build (run_agent/agent_init) and
+        # never re-reads the registry, so without this join a reachable-but-
+        # slow configured server would be invisible for the whole session.
+        # ``ensure_mcp_discovery_before_agent_build`` also (re)starts discovery
+        # when the entry.py spawn never ran or exited with zero connected
+        # servers (the retry-after-zero-connected allowance), making this
+        # construction site self-sufficient.  Bounded by
+        # ``mcp_discovery_timeout`` (config.yaml, default ~1.5s) so a dead
+        # server can't block — servers that miss the bound are picked up by
+        # the automatic late-refresh (see HermesACPAgent._schedule_mcp_late_refresh).
+        try:
+            from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
+
+            ensure_mcp_discovery_before_agent_build(
+                logger=logger,
+                thread_name="acp-mcp-discovery",
+            )
+        except Exception:
+            logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
+
         agent = AIAgent(**kwargs)
         # Codex app-server sessions are spawned lazily on the first turn. Stamp
         # the ACP workspace onto the agent so the Codex runtime starts from the

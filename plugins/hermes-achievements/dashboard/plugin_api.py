@@ -142,16 +142,47 @@ ACHIEVEMENTS: List[Dict[str, Any]] = [
 ]
 
 
+def _data_dir() -> Path:
+    """Durable data root (``<hermes home>/plugin-data/hermes-achievements/``).
+
+    Was the install tree (``plugins/hermes-achievements/``) before the
+    plugin-data convention existed — state parked there died on
+    ``hermes plugins remove``/``update``. Legacy files migrate on first read.
+    """
+    try:
+        from plugins.plugin_storage import plugin_data_dir
+
+        return plugin_data_dir("hermes-achievements")
+    except Exception:
+        # Standalone dashboard import (no plugins package on sys.path):
+        # keep the plugin working with the same layout, computed locally.
+        root = get_hermes_home() / "plugin-data" / "hermes-achievements"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+
+def _data_file(name: str) -> Path:
+    path = _data_dir() / name
+    if not path.exists():
+        legacy = get_hermes_home() / "plugins" / "hermes-achievements" / name
+        if legacy.exists():
+            try:
+                path.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+            except Exception:
+                pass
+    return path
+
+
 def state_path() -> Path:
-    return get_hermes_home() / "plugins" / "hermes-achievements" / "state.json"
+    return _data_file("state.json")
 
 
 def snapshot_path() -> Path:
-    return get_hermes_home() / "plugins" / "hermes-achievements" / "scan_snapshot.json"
+    return _data_file("scan_snapshot.json")
 
 
 def checkpoint_path() -> Path:
-    return get_hermes_home() / "plugins" / "hermes-achievements" / "scan_checkpoint.json"
+    return _data_file("scan_checkpoint.json")
 
 
 def load_state() -> Dict[str, Any]:
@@ -159,7 +190,7 @@ def load_state() -> Dict[str, Any]:
     if not path.exists():
         return {"unlocks": {}}
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {"unlocks": {}}
 
@@ -167,7 +198,7 @@ def load_state() -> Dict[str, Any]:
 def save_state(state: Dict[str, Any]) -> None:
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2, sort_keys=True))
+    path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _json_safe(value: Any) -> Any:
@@ -185,7 +216,7 @@ def load_snapshot() -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             return data
     except Exception:
@@ -196,7 +227,7 @@ def load_snapshot() -> Optional[Dict[str, Any]]:
 def save_snapshot(data: Dict[str, Any]) -> None:
     path = snapshot_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_json_safe(data), indent=2, sort_keys=True))
+    path.write_text(json.dumps(_json_safe(data), indent=2, sort_keys=True), encoding="utf-8")
 
 
 def load_checkpoint() -> Dict[str, Any]:
@@ -204,7 +235,7 @@ def load_checkpoint() -> Dict[str, Any]:
     if not path.exists():
         return {"schema_version": 1, "generated_at": 0, "sessions": {}}
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             data.setdefault("schema_version", 1)
             data.setdefault("generated_at", 0)
@@ -219,7 +250,7 @@ def load_checkpoint() -> Dict[str, Any]:
 def save_checkpoint(data: Dict[str, Any]) -> None:
     path = checkpoint_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_json_safe(data), indent=2, sort_keys=True))
+    path.write_text(json.dumps(_json_safe(data), indent=2, sort_keys=True), encoding="utf-8")
 
 
 def session_fingerprint(meta: Dict[str, Any]) -> Dict[str, Any]:

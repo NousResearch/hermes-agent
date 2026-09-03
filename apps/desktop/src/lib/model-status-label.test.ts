@@ -4,8 +4,9 @@ import {
   currentPickerSelection,
   displayModelName,
   formatModelStatusLabel,
-  reasoningEffortLabel
+  modelDisplayParts
 } from './model-status-label'
+import { reasoningEffortLabel } from './reasoning-effort'
 
 describe('model-status-label', () => {
   it('formats display names consistently', () => {
@@ -18,6 +19,18 @@ describe('model-status-label', () => {
   it('strips trailing date-pin snapshots from the display name', () => {
     expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4 5')
     expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')
+  })
+
+  it('renders local GGUF ids as a clean name with a quant tag', () => {
+    expect(modelDisplayParts('Qwen3.6-27B-UD-Q4_K_XL')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q4' })
+    expect(modelDisplayParts('Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL')).toEqual({
+      name: 'Nemotron 3 Nano 30B A3B',
+      tag: 'Q4'
+    })
+    expect(modelDisplayParts('Qwen3-4B-Instruct-2507-UD-Q8_K_XL')).toEqual({ name: 'Qwen3 4B', tag: 'Q8' })
+    expect(modelDisplayParts('some-model-Q6_K')).toEqual({ name: 'Some Model', tag: 'Q6' })
+    // Cloud ids keep their existing behavior.
+    expect(modelDisplayParts('anthropic/claude-opus-4.8-fast').tag).toBe('Fast')
   })
 
   it('maps reasoning effort to compact labels', () => {
@@ -34,9 +47,16 @@ describe('model-status-label', () => {
     )
   })
 
-  it('always surfaces the effort (default medium) so the level is visible', () => {
+  it('falls back to the profile default effort, then to medium', () => {
     expect(formatModelStatusLabel('openai/gpt-5.5', { reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
     expect(formatModelStatusLabel('openai/gpt-5.5')).toBe('GPT-5.5 · Med')
+    // No session-level effort → the configured profile default is advertised,
+    // not Hermes' built-in medium.
+    expect(formatModelStatusLabel('openai/gpt-5.5', { defaultEffort: 'high' })).toBe('GPT-5.5 · High')
+    // An explicit session effort still wins over the profile default.
+    expect(formatModelStatusLabel('openai/gpt-5.5', { defaultEffort: 'high', reasoningEffort: 'low' })).toBe(
+      'GPT-5.5 · Low'
+    )
   })
 
   it('returns just the placeholder name when there is no model', () => {
@@ -48,19 +68,23 @@ describe('model-status-label', () => {
     const options = { model: 'hermes-4', provider: 'nous' }
 
     it('prefers the sticky composer pick over the profile default pre-session', () => {
-      expect(currentPickerSelection(false, store, options)).toEqual(store)
+      expect(currentPickerSelection(store, options)).toEqual(store)
     })
 
-    it('lets the live session model.options win when a session exists', () => {
-      expect(currentPickerSelection(true, store, options)).toEqual(options)
+    it('keeps the SessionView selection when a stale options response disagrees', () => {
+      expect(currentPickerSelection(store, options)).toEqual(store)
     })
 
     it('falls back to options when the store is empty', () => {
-      expect(currentPickerSelection(false, { model: '', provider: '' }, options)).toEqual(options)
+      expect(currentPickerSelection({ model: '', provider: '' }, options)).toEqual(options)
+    })
+
+    it('uses the complete options pair instead of mixing a partial store selection', () => {
+      expect(currentPickerSelection({ model: 'opus', provider: '' }, options)).toEqual(options)
     })
 
     it('falls back to the store while options are still loading', () => {
-      expect(currentPickerSelection(true, store, undefined)).toEqual(store)
+      expect(currentPickerSelection(store, undefined)).toEqual(store)
     })
   })
 })

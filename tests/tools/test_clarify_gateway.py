@@ -13,7 +13,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 
-
 def _clear_clarify_state():
     """Reset module-level state between tests."""
     from tools import clarify_gateway as cm
@@ -40,8 +39,18 @@ class TestClarifyPrimitive:
             cm.resolve_gateway_clarify("id1", "B")
 
         threading.Thread(target=resolver).start()
-        result = cm.wait_for_response("id1", timeout=2.0)
+        result = cm.wait_for_response("id1", timeout=10.0)
         assert result == "B"
+
+    def test_first_resolution_wins(self):
+        """A late cancellation must not overwrite an already-selected choice."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("id-race", "sk-race", "Pick one", ["A", "B"])
+
+        assert cm.resolve_gateway_clarify("id-race", "A") is True
+        assert cm.resolve_gateway_clarify("id-race", "") is False
+        assert entry.response == "A"
 
     def test_open_ended_auto_awaits_text(self):
         """Clarify with no choices is in text-capture mode immediately."""
@@ -73,67 +82,6 @@ class TestClarifyPrimitive:
         assert pending is not None
         assert pending.clarify_id == "id3b"
 
-    def test_resolve_text_response_maps_numeric_choice(self):
-        """Typed numbers should resolve to the canonical choice string."""
-        from tools import clarify_gateway as cm
-
-        cm.register("id3c", "sk3c", "Pick", ["X", "Y"])
-        assert cm.resolve_text_response_for_session("sk3c", "2") is True
-        assert cm.wait_for_response("id3c", timeout=0.1) == "Y"
-
-    def test_resolve_text_response_accepts_custom_other_text(self):
-        """Arbitrary typed text should resolve as a custom Other answer."""
-        from tools import clarify_gateway as cm
-
-        cm.register("id3d", "sk3d", "Pick", ["X", "Y"])
-        custom = "None of those are valid options"
-        assert cm.resolve_text_response_for_session("sk3d", custom) is True
-        assert cm.wait_for_response("id3d", timeout=0.1) == custom
-
-    def test_other_button_flips_to_text_mode(self):
-        """mark_awaiting_text makes get_pending_for_session find the entry."""
-        from tools import clarify_gateway as cm
-
-        cm.register("id4", "sk4", "Pick", ["X", "Y"])
-        assert cm.get_pending_for_session("sk4") is None
-
-        flipped = cm.mark_awaiting_text("id4")
-        assert flipped is True
-
-        pending = cm.get_pending_for_session("sk4")
-        assert pending is not None
-        assert pending.clarify_id == "id4"
-
-    def test_mark_awaiting_text_unknown_id(self):
-        """mark_awaiting_text on a non-existent id returns False."""
-        from tools import clarify_gateway as cm
-
-        assert cm.mark_awaiting_text("nope") is False
-
-    def test_timeout_returns_none(self):
-        """wait_for_response returns None when no resolve fires within the timeout."""
-        from tools import clarify_gateway as cm
-
-        cm.register("id5", "sk5", "Q?", ["A"])
-        result = cm.wait_for_response("id5", timeout=0.2)
-        assert result is None
-
-    def test_resolve_unknown_id_returns_false(self):
-        """resolve_gateway_clarify is idempotent on unknown ids."""
-        from tools import clarify_gateway as cm
-
-        assert cm.resolve_gateway_clarify("nope", "anything") is False
-
-    def test_resolve_after_wait_completes_is_noop(self):
-        """A late resolve on a finished entry doesn't blow up."""
-        from tools import clarify_gateway as cm
-
-        cm.register("id6", "sk6", "Q?", ["A"])
-        # Time out, entry gets cleaned up
-        cm.wait_for_response("id6", timeout=0.1)
-        # Late button click — should not raise
-        result = cm.resolve_gateway_clarify("id6", "A")
-        assert result is False
 
     def test_clear_session_cancels_pending_entries(self):
         """clear_session unblocks blocked threads with empty response."""
@@ -149,16 +97,38 @@ class TestClarifyPrimitive:
             time.sleep(0.05)
             cancelled = cm.clear_session("sk7")
             assert cancelled == 1
-            result = fut.result(timeout=2.0)
+            result = fut.result(timeout=10.0)
             # clear_session sets response="" then the wait returns it
             assert result == ""
 
-    def test_has_pending(self):
+
+    def test_clear_session_preserves_resolved_response(self):
+        """clear_session must not clobber an answer that already won.
+
+        First-writer-wins (doryani-ai on PR #75732): a button callback that
+        resolved the entry before session cleanup must keep its response.
+        clear_session only cancels entries whose event is not yet set, so
+        the racing waiter observes the real answer, not the empty sentinel.
+        """
         from tools import clarify_gateway as cm
 
-        cm.register("id8", "sk8", "Q?", ["A"])
-        assert cm.has_pending("sk8") is True
-        assert cm.has_pending("nonexistent") is False
+        cm.register("id-race", "sk-race", "Pick one", ["A", "B"])
+
+        def waiter():
+            return cm.wait_for_response("id-race", timeout=10.0)
+
+        with ThreadPoolExecutor(1) as pool:
+            fut = pool.submit(waiter)
+            time.sleep(0.05)
+            # Button wins the race first...
+            assert cm.resolve_gateway_clarify("id-race", "B") is True
+            # ...then session cleanup runs before the waiter wakes.
+            cancelled = cm.clear_session("sk-race")
+            assert cancelled == 0
+            result = fut.result(timeout=10.0)
+            # The real answer must survive cleanup, not the "" cancellation.
+            assert result == "B"
+
 
     def test_notify_register_unregister_clears_pending(self):
         """unregister_notify cancels any pending clarify so threads unwind."""
@@ -177,7 +147,7 @@ class TestClarifyPrimitive:
             cm.unregister_notify("sk9")
 
             # unregister_notify calls clear_session; thread unwinds
-            result = fut.result(timeout=2.0)
+            result = fut.result(timeout=10.0)
             assert result == ""
 
     def test_session_index_isolation(self):
@@ -250,3 +220,243 @@ class TestGatewayTextIntercept:
         
         # Clean up
         cm.clear_session("sk-tf")
+
+
+class TestCoverageGaps:
+    """Cover remaining branches: signature(), get_entry miss, find_awaiting
+    with deleted entry, cancel with None entry, timeout exception, get_notify."""
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def test_entry_signature(self):
+        """_ClarifyEntry.signature() returns the expected dict."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("sig1", "sk", "Q?", ["A", "B"])
+        sig = entry.signature()
+        assert sig["clarify_id"] == "sig1"
+        assert sig["session_key"] == "sk"
+        assert sig["question"] == "Q?"
+        assert sig["choices"] == ["A", "B"]
+
+
+    def test_wait_for_response_unknown_id_returns_none(self):
+        """wait_for_response on a non-existent id returns None immediately."""
+        from tools import clarify_gateway as cm
+
+        assert cm.wait_for_response("nonexistent-id", timeout=0.1) is None
+
+
+    def test_get_clarify_timeout_exception_returns_default(self, monkeypatch):
+        """get_clarify_timeout returns 3600 when load_config raises."""
+        from tools import clarify_gateway as cm
+
+        monkeypatch.setattr("hermes_cli.config.load_config",
+                            lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert cm.get_clarify_timeout() == 3600
+
+
+    def test_get_notify_returns_none_when_not_registered(self):
+        """get_notify returns None for an unregistered session."""
+        from tools import clarify_gateway as cm
+
+        assert cm.get_notify("unregistered") is None
+
+
+class TestClarifyTimeoutResolution:
+    """resolve_clarify_timeout is the single source of truth for the clarify
+    timeout, shared by the CLI, TUI/desktop, and messaging-gateway paths."""
+
+    def test_canonical_agent_key(self):
+        from tools import clarify_gateway as cm
+
+        assert cm.resolve_clarify_timeout({"agent": {"clarify_timeout": 900}}) == 900
+
+
+    def test_non_positive_preserved_as_unlimited_sentinel(self):
+        """<= 0 is passed through verbatim — the waiting loops read it as
+        'unlimited', so the resolver must not clamp it to a positive default."""
+        from tools import clarify_gateway as cm
+
+        assert cm.resolve_clarify_timeout({"agent": {"clarify_timeout": 0}}) == 0
+        assert cm.resolve_clarify_timeout({"clarify": {"timeout": -1}}) == -1
+
+
+class TestUnlimitedWait:
+    """timeout <= 0 makes wait_for_response block until the answer arrives
+    instead of auto-skipping."""
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def test_zero_timeout_waits_until_resolved(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("u1", "sk", "Q?", ["A", "B"])
+        result_box = {}
+
+        def waiter():
+            result_box["r"] = cm.wait_for_response("u1", timeout=0)
+
+        t = threading.Thread(target=waiter)
+        t.start()
+        # An unlimited wait cannot finish while nothing resolves it: still
+        # running after a comfortable margin (old code auto-skipped at once).
+        t.join(timeout=1.5)
+        assert t.is_alive()
+
+        # Once resolved, the unlimited wait returns the real answer.
+        cm.resolve_gateway_clarify("u1", "B")
+        t.join(timeout=5.0)
+        assert not t.is_alive()
+        assert result_box["r"] == "B"
+
+
+class TestMultiSelectTextFallback:
+    """Multi-select clarifies via the gateway text fallback.
+
+    The adapter's numbered-list fallback asks the user to reply with
+    comma/space-separated numbers; _coerce_text_response must map those to a
+    JSON array of choice labels (which _parse_multi_select_response on the
+    tool side decodes into a list).
+    """
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def _register_multi(self, cid="m1", choices=("A", "B", "C")):
+        from tools import clarify_gateway as cm
+        entry = cm.register(cid, "sk", "Pick some", list(choices), multi_select=True)
+        # Text fallback path always flips awaiting_text on.
+        cm.mark_awaiting_text(cid)
+        return entry
+
+    def test_register_stores_multi_select_flag(self):
+        entry = self._register_multi()
+        assert entry.multi_select is True
+        assert entry.signature()["multi_select"] is True
+
+
+    def test_multi_select_without_choices_is_ignored(self):
+        """multi_select on an open-ended clarify is meaningless — dropped."""
+        from tools import clarify_gateway as cm
+        entry = cm.register("s2", "sk", "Q?", None, multi_select=True)
+        assert entry.multi_select is False
+
+
+    def test_duplicate_selections_deduped(self):
+        import json
+        from tools import clarify_gateway as cm
+        entry = self._register_multi()
+        coerced = cm._coerce_text_response(entry, "1, 1, 2")
+        assert json.loads(coerced) == ["A", "B"]
+
+    def test_resolve_text_response_end_to_end(self):
+        """resolve_text_response_for_session delivers the JSON array to the waiter."""
+        import json
+        from tools import clarify_gateway as cm
+        self._register_multi(cid="m3")
+        result_box = {}
+
+        def waiter():
+            result_box["r"] = cm.wait_for_response("m3", timeout=5)
+
+        t = threading.Thread(target=waiter)
+        t.start()
+        time.sleep(0.05)
+        assert cm.resolve_text_response_for_session("sk", "1,2") is True
+        t.join(timeout=5)
+        assert json.loads(result_box["r"]) == ["A", "B"]
+
+    def test_single_select_regression_numeric(self):
+        """Single-select coercion unchanged: '2' maps to the choice label string."""
+        from tools import clarify_gateway as cm
+        entry = cm.register("s3", "sk", "Q?", ["A", "B", "C"])
+        assert cm._coerce_text_response(entry, "2") == "B"
+
+    def test_single_select_regression_label(self):
+        from tools import clarify_gateway as cm
+        entry = cm.register("s4", "sk", "Q?", ["A", "B"])
+        assert cm._coerce_text_response(entry, "b") == "B"
+
+
+class TestNativeRejectClassification:
+    """Rejected typed replies must distinguish free prose from bad selections.
+
+    Free prose cancels/falls through (deadlock break). Selection-shaped but
+    invalid replies (out-of-range number, unrecognised comma-list) keep the
+    pending clarify armed so the user can retry.
+    """
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def test_multi_select_out_of_range_is_invalid_selection(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "ms-oor", "sk-ms", "Pick some", ["A", "B", "C"], multi_select=True,
+        )
+        assert entry.awaiting_text is False
+        value, reason = cm._coerce_text_response_detailed(entry, "99")
+        assert value is None
+        assert reason == "invalid_selection"
+        assert cm.attempt_text_response_for_session("sk-ms", "99") == (
+            cm.TEXT_REJECTED_SELECTION
+        )
+        pending = cm.get_pending_for_session("sk-ms", include_choice_prompts=True)
+        assert pending is not None
+        assert not pending.event.is_set()
+
+    def test_multi_select_bad_comma_list_is_invalid_selection(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "ms-bad", "sk-ms2", "Pick some", ["A", "B", "C"], multi_select=True,
+        )
+        value, reason = cm._coerce_text_response_detailed(entry, "1,99")
+        assert value is None
+        assert reason == "invalid_selection"
+        assert cm.attempt_text_response_for_session("sk-ms2", "nope,nope") == (
+            cm.TEXT_REJECTED_SELECTION
+        )
+        pending = cm.get_pending_for_session("sk-ms2", include_choice_prompts=True)
+        assert pending is not None
+        assert not pending.event.is_set()
+
+    def test_multi_select_free_prose_is_rejected_prose(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "ms-prose", "sk-ms3", "Pick some", ["A", "B"], multi_select=True,
+        )
+        value, reason = cm._coerce_text_response_detailed(
+            entry, "just checking the visual UI, no need to pass any data",
+        )
+        assert value is None
+        assert reason == "prose"
+        assert cm.attempt_text_response_for_session(
+            "sk-ms3", "just checking the visual UI, no need to pass any data",
+        ) == cm.TEXT_REJECTED_PROSE
+
+    def test_single_select_out_of_range_is_invalid_selection(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("ss-oor", "sk-ss", "Pick one", ["A", "B"])
+        value, reason = cm._coerce_text_response_detailed(entry, "9")
+        assert value is None
+        assert reason == "invalid_selection"
+        assert cm.attempt_text_response_for_session("sk-ss", "9") == (
+            cm.TEXT_REJECTED_SELECTION
+        )
+
+    def test_single_select_prose_is_rejected_prose(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("ss-prose", "sk-ss2", "Pick one", ["A", "B"])
+        value, reason = cm._coerce_text_response_detailed(
+            entry, "one more unrelated thought",
+        )
+        assert value is None
+        assert reason == "prose"

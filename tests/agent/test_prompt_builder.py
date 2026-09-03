@@ -1108,6 +1108,13 @@ class TestExecutionGuidanceModels:
         for fam in ("deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral"):
             assert fam in EXECUTION_GUIDANCE_MODELS
 
+    def test_muse_spark_gets_both_guidance_blocks(self):
+        # Muse Spark closes the turn after a chat-only response on defaults
+        # (#96550) — it needs tool-use enforcement AND execution guidance.
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
+        assert any(p in "meta/muse-spark-1.3-contributor" for p in TOOL_USE_ENFORCEMENT_MODELS)
+        assert any(p in "meta/muse-spark-1.3-contributor" for p in EXECUTION_GUIDANCE_MODELS)
+
     def test_excludes_google_and_claude(self):
         # Gemini/Gemma get GOOGLE_MODEL_OPERATIONAL_GUIDANCE instead;
         # Claude doesn't exhibit the targeted failure modes.

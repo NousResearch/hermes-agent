@@ -30,6 +30,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -51,6 +52,7 @@ _MANIFEST_VERSION = 1
 
 # Substituted at install time inside `transport.command` / `transport.args`.
 _INSTALL_DIR_VAR = "${INSTALL_DIR}"
+_EXE_SUFFIX_VAR = "${EXE_SUFFIX}"
 
 
 # ─── Data classes ────────────────────────────────────────────────────────────
@@ -547,14 +549,15 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     return dest
 
 
-def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
-    if _INSTALL_DIR_VAR not in value:
-        return value
-    if install_dir is None:
-        raise CatalogError(
-            f"manifest references {_INSTALL_DIR_VAR} but no install block exists"
-        )
-    return value.replace(_INSTALL_DIR_VAR, str(install_dir))
+def _expand_install_vars(value: str, install_dir: Optional[Path]) -> str:
+    """Expand install-time path placeholders for the current platform."""
+    if _INSTALL_DIR_VAR in value:
+        if install_dir is None:
+            raise CatalogError(
+                f"manifest references {_INSTALL_DIR_VAR} but no install block exists"
+            )
+        value = value.replace(_INSTALL_DIR_VAR, str(install_dir))
+    return value.replace(_EXE_SUFFIX_VAR, ".exe" if sys.platform == "win32" else "")
 
 
 def _prompt_env_vars(specs: List[EnvVarSpec]) -> Dict[str, str]:
@@ -589,9 +592,9 @@ def _build_server_config(
     cfg: dict = {}
     t = entry.transport
     if t.type == "stdio":
-        cfg["command"] = _expand_install_dir(t.command or "", install_dir)
+        cfg["command"] = _expand_install_vars(t.command or "", install_dir)
         if t.args:
-            cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
+            cfg["args"] = [_expand_install_vars(a, install_dir) for a in t.args]
         if t.env:
             cfg["env"] = dict(t.env)
     elif t.type == "http":

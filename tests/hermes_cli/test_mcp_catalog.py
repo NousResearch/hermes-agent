@@ -817,6 +817,70 @@ class TestToolsConfigIncludeMode:
 
 
 class TestShippedCatalog:
+    @pytest.mark.parametrize(
+        ("platform_name", "expected_suffix"),
+        [("linux", ""), ("darwin", ""), ("win32", ".exe")],
+    )
+    def test_icloud_source_build_is_platform_portable(
+        self, monkeypatch, tmp_path, platform_name, expected_suffix
+    ):
+        """The iCloud bootstrap uses only cross-platform Go behavior.
+
+        The same shell commands are passed on every host. Go creates the
+        output directory and selects the native executable suffix; the
+        generated stdio command must point at that exact file.
+        """
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli import mcp_catalog
+        from hermes_cli.mcp_catalog import (
+            _build_server_config,
+            _catalog_root,
+            _parse_manifest,
+            _run_bootstrap,
+        )
+
+        manifest = _catalog_root() / "icloud" / "manifest.yaml"
+        if not manifest.exists():
+            pytest.skip("iCloud catalog manifest not present in this checkout")
+
+        entry = _parse_manifest(manifest)
+        assert entry.install is not None
+
+        commands = entry.install.bootstrap
+        build_commands = [
+            command for command in commands if command.startswith("go build ")
+        ]
+        assert len(build_commands) == 1
+        build_command = build_commands[0]
+        assert "-o bin/" in build_command
+        assert '-ldflags="' in build_command
+        assert all(
+            token not in command.lower()
+            for command in commands
+            for token in ("mkdir", "cp ", "mv ", "powershell", "bash")
+        )
+
+        calls = []
+
+        class _FakeProc:
+            returncode = 0
+
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs))
+            return _FakeProc()
+
+        monkeypatch.setattr(mcp_catalog.subprocess, "run", fake_run)
+        monkeypatch.setattr(mcp_catalog.sys, "platform", platform_name)
+
+        install_dir = tmp_path / "icloud"
+        _run_bootstrap(install_dir, commands)
+        cfg = _build_server_config(entry, install_dir)
+
+        assert [command for command, _ in calls] == commands
+        assert all(call_kwargs["shell"] is True for _, call_kwargs in calls)
+        assert all(call_kwargs["cwd"] == str(install_dir) for _, call_kwargs in calls)
+        assert cfg["command"] == f"{install_dir}/bin/icloud-mcp{expected_suffix}"
+
     def test_all_shipped_manifests_parse(self, monkeypatch):
         """Every manifest in optional-mcps/ must parse cleanly.
 

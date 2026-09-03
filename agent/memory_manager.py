@@ -234,6 +234,10 @@ _INTERNAL_CONTEXT_RE = re.compile(
     r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>',
     re.IGNORECASE,
 )
+_INTERNAL_TAGGED_BLOCK_RES = (
+    re.compile(r'<\s*prior_memory_file\s*>[\s\S]*?</\s*prior_memory_file\s*>', re.IGNORECASE),
+    re.compile(r'<\s*ai_identity_seed\s*>[\s\S]*?</\s*ai_identity_seed\s*>', re.IGNORECASE),
+)
 _INTERNAL_NOTE_RE = re.compile(
     r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
     re.IGNORECASE,
@@ -243,6 +247,8 @@ _INTERNAL_NOTE_RE = re.compile(
 def sanitize_context(text: str) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output."""
     text = _INTERNAL_CONTEXT_RE.sub('', text)
+    for pattern in _INTERNAL_TAGGED_BLOCK_RES:
+        text = pattern.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
     return text

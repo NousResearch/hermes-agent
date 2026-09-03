@@ -80,6 +80,79 @@ class TestSanitizeId:
         assert "!" not in result
 
 
+class TestSharedVenueContextIsolation:
+    def test_shared_venue_auto_injection_keeps_only_its_session_summary(self):
+        provider = HonchoMemoryProvider()
+        provider._chat_type = "group"
+        provider._thread_id = "999"
+
+        result = provider._filter_auto_injection_context({
+            "summary": "Thread summary",
+            "representation": "User representation",
+            "card": "Name: Guy",
+            "ai_representation": "AI representation",
+            "ai_card": "Role: Assistant",
+        })
+
+        assert result == {"summary": "Thread summary"}
+
+    def test_direct_message_keeps_full_auto_injection_context(self):
+        provider = HonchoMemoryProvider()
+        provider._chat_type = "dm"
+        provider._thread_id = None
+        context = {"summary": "Session summary", "representation": "User representation"}
+
+        assert provider._filter_auto_injection_context(context) == context
+
+    def test_shared_venue_disables_dialectic_auto_injection(self):
+        provider = HonchoMemoryProvider()
+        provider._chat_type = "group"
+        provider._thread_id = "999"
+
+        assert provider._allow_dialectic_auto_injection() is False
+
+
+class TestSummaryOnlyPrefetch:
+    def test_summary_only_does_not_fetch_peer_profiles(self):
+        mgr = HonchoSessionManager()
+        session = HonchoSession(
+            key="discord:thread-123",
+            user_peer_id="user-discord-thread-123",
+            assistant_peer_id="hermes-assistant",
+            honcho_session_id="discord-thread-123",
+        )
+        mgr._cache[session.key] = session
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = SimpleNamespace(
+            summary=SimpleNamespace(content="Thread-only summary"),
+        )
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+        mgr._fetch_peer_context = MagicMock()
+
+        result = mgr.get_prefetch_context(session.key, summary_only=True)
+
+        assert result == {"summary": "Thread-only summary"}
+        mgr._fetch_peer_context.assert_not_called()
+
+
+class TestPerSessionObservationScoping:
+    def test_session_metadata_overrides_manager_default_for_observer_resolution(self):
+        mgr = HonchoSessionManager()
+        mgr._ai_observe_others = False
+        session = HonchoSession(
+            key="discord:thread-123",
+            user_peer_id="user-discord-thread-123",
+            assistant_peer_id="hermes-assistant",
+            honcho_session_id="discord-thread-123",
+            metadata={"ai_observe_others": True},
+        )
+
+        observer, target = mgr._resolve_observer_target(session, "user")
+
+        assert observer == session.assistant_peer_id
+        assert target == session.user_peer_id
+
+
 # ---------------------------------------------------------------------------
 # HonchoSessionManager._format_migration_transcript
 # ---------------------------------------------------------------------------

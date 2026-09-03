@@ -6573,6 +6573,50 @@ def _ensure_healthy_or_recycle(server: Any, server_name: str) -> None:
         _signal_reconnect(server)
 
 
+def _install_schema_tolerant_validation(session: Any, server_name: str) -> None:
+    """Degrade MCP outputSchema validation failures instead of failing the call.
+
+    ``ClientSession.call_tool`` revalidates ``structuredContent`` against the
+    tool's advertised ``outputSchema`` *after* the RPC round-trip completed,
+    and on a mismatch raises ``RuntimeError`` — discarding the usable
+    ``content`` blocks and striking the per-server circuit breaker as if the
+    server were down (#101330). A schema violation is the opposite of an
+    outage: the server is reachable and answering, and the failure is
+    deterministic per call, so "stop retrying this call" is right while "the
+    server is unreachable" is false. Wrap the SDK's public
+    ``validate_tool_result`` so a violation warns once per (server, tool)
+    and ``call_tool`` returns the result intact — Hermes' normal content
+    pipeline serves ``result.content``, and the success path resets the
+    breaker instead of advancing it.
+    """
+    if session is None:
+        return
+    if getattr(session, "_hermes_tolerant_output_schema", False):
+        return  # already wrapped — idempotent across calls and reconnects
+    original = getattr(session, "validate_tool_result", None)
+    if original is None:
+        return  # SDK variant without the validator — nothing to soften
+    session._hermes_tolerant_output_schema = True
+    warned: Set[str] = set()
+
+    async def _tolerant_validate(name: str, result: Any) -> None:
+        try:
+            await original(name, result)
+        except RuntimeError as exc:
+            if name not in warned:
+                warned.add(name)
+                logger.warning(
+                    "MCP %s: tool '%s' returned structuredContent that "
+                    "violates its own outputSchema (%s); serving "
+                    "result.content instead",
+                    server_name,
+                    name,
+                    exc,
+                )
+
+    session.validate_tool_result = _tolerant_validate
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -6680,6 +6724,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                             f"MCP stdio subprocess for '{server_name}' had "
                             f"already exited when the call was dispatched"
                         )
+                    _install_schema_tolerant_validation(server.session, server_name)
                     _call_coro = server.session.call_tool(tool_name, arguments=args)
                     _watch_children = getattr(server, "_watch_stdio_children", None)
                     _watch_ok = (

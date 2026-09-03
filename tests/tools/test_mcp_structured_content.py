@@ -204,6 +204,106 @@ class TestMetaPassthrough:
         assert data == {"result": "done"}
 
 
+class _ValidatingFakeSession:
+    """Mimics ``mcp.ClientSession``: ``call_tool`` revalidates the result
+    against the tool's advertised outputSchema and raises RuntimeError on a
+    violation — discarding a result whose ``content`` blocks are usable
+    (#101330)."""
+
+    def __init__(self, result, invalid=True):
+        self._result = result
+        self._invalid = invalid
+        self.call_count = 0
+
+        async def _strict_validate(name, res):
+            if self._invalid:
+                raise RuntimeError(
+                    f"Invalid structured content returned by tool {name}: "
+                    "'locale' is a required property"
+                )
+
+        self.validate_tool_result = _strict_validate
+
+    def call_tool(self, name, arguments=None, **kwargs):
+        async def _coro():
+            self.call_count += 1
+            await self.validate_tool_result(name, self._result)
+            return self._result
+
+        return _coro()
+
+
+@pytest.fixture
+def _patch_validating_server():
+    """Register a schema-validating fake session under the real handler path."""
+    session = _ValidatingFakeSession(
+        _FakeCallToolResult(
+            content=[_FakeContentBlock("usable payload")],
+            structuredContent={"ok": False},
+        )
+    )
+    fake_server = SimpleNamespace(session=session, _rpc_lock=None)
+    with (
+        patch.dict(mcp_tool._servers, {"test-server": fake_server}),
+        patch(
+            "tools.mcp_tool._run_on_mcp_loop",
+            side_effect=_fake_run_on_mcp_loop,
+        ),
+        patch.dict(mcp_tool._server_error_counts, {}, clear=True),
+    ):
+        yield session
+
+
+class TestOutputSchemaTolerance:
+    """A schema-invalid structuredContent must degrade, not fail the call
+    or trip the per-server circuit breaker (#101330)."""
+
+    def test_schema_violation_serves_content(self, _patch_validating_server):
+        """content blocks survive an outputSchema validation failure."""
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data["result"] == "usable payload"
+
+    def test_schema_violation_does_not_trip_breaker(self, _patch_validating_server):
+        """Past the threshold (3), calls still reach the server — the RPC
+        completed, so the server is not 'unreachable'."""
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        for _ in range(4):
+            data = json.loads(handler({}))
+            assert data["result"] == "usable payload"
+        assert _patch_validating_server.call_count == 4
+        assert mcp_tool._server_error_counts.get("test-server", 0) == 0
+
+    def test_validation_failure_warns_once_per_tool(
+        self, _patch_validating_server, caplog
+    ):
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        with caplog.at_level("WARNING", logger="tools.mcp_tool"):
+            handler({})
+            handler({})
+        warnings = [
+            r
+            for r in caplog.records
+            if "violates its own outputSchema" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+
+    def test_valid_structured_content_unaffected(self, _patch_validating_server):
+        """When validation passes, the tolerant wrapper is a no-op."""
+        _patch_validating_server._invalid = False
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data["result"] == "usable payload"
+        assert data["structuredContent"] == {"ok": False}
+
+    def test_install_is_idempotent(self):
+        session = _ValidatingFakeSession(_FakeCallToolResult(content=[]))
+        mcp_tool._install_schema_tolerant_validation(session, "srv")
+        wrapped = session.validate_tool_result
+        mcp_tool._install_schema_tolerant_validation(session, "srv")
+        assert session.validate_tool_result is wrapped
+
+
 class TestReservedMetaKeyPredicate:
     def test_reserved_prefixes(self):
         assert mcp_tool._is_reserved_mcp_meta_key("modelcontextprotocol.io/x")

@@ -532,6 +532,11 @@ export const zh: Translations = {
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       reasoningCollapsedTitle: '默认折叠推理过程',
       reasoningCollapsedDesc: '保留流式推理内容，但在您打开前保持折叠。',
+      codeBlockCollapseTitle: '代码块高度',
+      codeBlockCollapseDesc: '紧凑：超过约 7 行后折叠；宽松：超过约 20 行后折叠；关闭：从不折叠，长代码块可完整选中。',
+      codeBlockCollapseCompact: '紧凑',
+      codeBlockCollapseTall: '宽松',
+      codeBlockCollapseOff: '关闭',
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,

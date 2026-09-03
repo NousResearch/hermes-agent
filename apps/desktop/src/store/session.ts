@@ -70,6 +70,12 @@ function storedComposerString(base: string): string | null {
   return key === null ? null : storedString(key)
 }
 
+function storedComposerBoolean(base: string, fallback: boolean): boolean {
+  const key = composerSelectionKey(base)
+
+  return key === null ? fallback : storedBoolean(key, fallback)
+}
+
 // The last chat the user had open, so a relaunch lands back on it instead of an
 // empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
 //
@@ -1088,9 +1094,9 @@ export function getSessionOwnerHint(
 export const $resumeExhaustedSessionId = atom<string | null>(null)
 export const $currentModel = atom(storedComposerString(COMPOSER_MODEL_KEY) ?? '')
 export const $currentProvider = atom(storedComposerString(COMPOSER_PROVIDER_KEY) ?? '')
-export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
+export const $currentReasoningEffort = atom(storedComposerString(COMPOSER_EFFORT_KEY) ?? '')
 export const $currentServiceTier = atom('')
-export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
+export const $currentFastMode = atom(storedComposerBoolean(COMPOSER_FAST_KEY, false))
 // Effective approval-bypass state mirrored from the gateway (session.info).
 // Persistence lives in the backend config (approvals.mode), so this is a plain
 // reflection of the truth the gateway reports rather than its own store.
@@ -1152,6 +1158,11 @@ function rescopeComposerSelection(nextScope: string | null): void {
   $currentModel.set(storedComposerString(COMPOSER_MODEL_KEY) ?? '')
   $currentProvider.set(storedComposerString(COMPOSER_PROVIDER_KEY) ?? '')
   $currentModelSource.set(getCurrentModelSource())
+  // Same cross-connection leak model/provider/source were scoped against:
+  // a reasoning-effort or fast-mode pick on one remote connection+profile
+  // must not ride into a brand-new chat on a different one.
+  $currentReasoningEffort.set(storedComposerString(COMPOSER_EFFORT_KEY) ?? '')
+  $currentFastMode.set(storedComposerBoolean(COMPOSER_FAST_KEY, false))
 }
 
 /** Publish an exact registry route before active-profile effects can persist a
@@ -1363,7 +1374,11 @@ export const markComposerSelectionManual = (): void => {
 
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
-  persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
+  const key = composerSelectionKey(COMPOSER_EFFORT_KEY)
+
+  if (key !== null) {
+    persistString(key, $currentReasoningEffort.get() || null)
+  }
 }
 
 // The profile's `agent.reasoning_effort`, mirrored from config so surfaces that
@@ -1378,7 +1393,11 @@ export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($curr
 
 export const setCurrentFastMode = (next: Updater<boolean>) => {
   updateAtom($currentFastMode, next)
-  persistBoolean(COMPOSER_FAST_KEY, $currentFastMode.get())
+  const key = composerSelectionKey(COMPOSER_FAST_KEY)
+
+  if (key !== null) {
+    persistBoolean(key, $currentFastMode.get())
+  }
 }
 
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)

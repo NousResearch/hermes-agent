@@ -22,8 +22,10 @@ import {
   $activeSessionId,
   $connection,
   $currentCwd,
+  $currentFastMode,
   $currentModel,
   $currentProvider,
+  $currentReasoningEffort,
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
@@ -57,9 +59,11 @@ import {
   setConnection,
   setCurrentCwd,
   setCurrentCwdTransient,
+  setCurrentFastMode,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider,
+  setCurrentReasoningEffort,
   setRememberedRoute,
   setRememberedSessionId,
   setSelectedStoredSessionId,
@@ -87,6 +91,8 @@ describe('composer model persistence scope', () => {
     setCurrentModel('')
     setCurrentProvider('')
     setCurrentModelSource('')
+    setCurrentReasoningEffort('')
+    setCurrentFastMode(false)
   })
 
   afterEach(() => {
@@ -102,31 +108,46 @@ describe('composer model persistence scope', () => {
     setCurrentModel('grok-4')
     setCurrentProvider('xai-oauth')
     setCurrentModelSource('manual')
+    setCurrentReasoningEffort('high')
+    setCurrentFastMode(true)
 
     setConnection(remote('fred-work'))
     expect($currentModel.get()).toBe('')
     expect($currentProvider.get()).toBe('')
+    expect($currentReasoningEffort.get()).toBe('')
+    expect($currentFastMode.get()).toBe(false)
 
     setCurrentModel('local/model')
     setCurrentProvider('custom:local')
+    setCurrentReasoningEffort('low')
+    setCurrentFastMode(false)
     setConnection(remote('fred'))
 
     expect($currentModel.get()).toBe('grok-4')
     expect($currentProvider.get()).toBe('xai-oauth')
+    expect($currentReasoningEffort.get()).toBe('high')
+    expect($currentFastMode.get()).toBe(true)
   })
 
   it('keeps inferred local-primary connections on the historical bare keys', () => {
     setComposerSelectionOwner('remote', 'default')
     window.localStorage.setItem('hermes.desktop.composer.model', 'legacy-model')
     window.localStorage.setItem('hermes.desktop.composer.provider', 'legacy-provider')
+    window.localStorage.setItem('hermes.desktop.composer.reasoning-effort', 'medium')
+    window.localStorage.setItem('hermes.desktop.composer.fast', 'true')
 
     setConnection({ baseUrl: '', connectionId: 'local', mode: 'local', profile: 'default' } as never)
 
     expect($currentModel.get()).toBe('legacy-model')
     expect($currentProvider.get()).toBe('legacy-provider')
+    expect($currentReasoningEffort.get()).toBe('medium')
+    expect($currentFastMode.get()).toBe(true)
     setCurrentModel('next-model')
+    setCurrentReasoningEffort('next-effort')
     expect(window.localStorage.getItem('hermes.desktop.composer.model')).toBe('next-model')
     expect(window.localStorage.getItem('hermes.desktop.composer.model.registry.local.default')).toBeNull()
+    expect(window.localStorage.getItem('hermes.desktop.composer.reasoning-effort')).toBe('next-effort')
+    expect(window.localStorage.getItem('hermes.desktop.composer.reasoning-effort.registry.local.default')).toBeNull()
   })
 
   it('uses the live registry owner when the connection descriptor is stale', () => {
@@ -137,6 +158,8 @@ describe('composer model persistence scope', () => {
     setCurrentModel('grok-4')
     setCurrentProvider('xai-oauth')
     setCurrentModelSource('manual')
+    setCurrentReasoningEffort('high')
+    setCurrentFastMode(true)
 
     // ensureGatewayAgent publishes this coordinate even if getConnectionFor
     // fails and $connection therefore still describes fred.
@@ -144,14 +167,20 @@ describe('composer model persistence scope', () => {
     setCurrentModel('local/model')
     setCurrentProvider('custom:local')
     setCurrentModelSource('default')
+    setCurrentReasoningEffort('low')
+    setCurrentFastMode(false)
 
     setComposerSelectionOwner('aibox', 'fred')
     expect($currentModel.get()).toBe('grok-4')
     expect($currentProvider.get()).toBe('xai-oauth')
+    expect($currentReasoningEffort.get()).toBe('high')
+    expect($currentFastMode.get()).toBe(true)
 
     setComposerSelectionOwner('aibox', 'fred-work')
     expect($currentModel.get()).toBe('local/model')
     expect($currentProvider.get()).toBe('custom:local')
+    expect($currentReasoningEffort.get()).toBe('low')
+    expect($currentFastMode.get()).toBe(false)
   })
 })
 

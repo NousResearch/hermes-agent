@@ -1379,8 +1379,15 @@ def _(rid, params: dict) -> dict:
                     "checkpoints": [
                         {
                             "hash": c.get("hash", ""),
+                            "short_hash": c.get("short_hash", ""),
+                            "shortHash": c.get("short_hash", ""),
                             "timestamp": c.get("timestamp", ""),
-                            "message": c.get("message", ""),
+                            "message": c.get("reason") or c.get("message", ""),
+                            "reason": c.get("reason", ""),
+                            "files_changed": c.get("files_changed", 0),
+                            "filesChanged": c.get("files_changed", 0),
+                            "insertions": c.get("insertions", 0),
+                            "deletions": c.get("deletions", 0),
                         }
                         for c in mgr.list_checkpoints(cwd)
                     ],

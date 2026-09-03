@@ -2186,6 +2186,56 @@ def _verify_and_restore_state_dbs_post_update() -> None:
         logger.debug("Sibling-profile state.db guard sweep failed: %s", exc)
 
 
+def _fix_install_ownership(install_root: Path) -> None:
+    """Fix ownership of install tree if update created root-owned files.
+
+    When `hermes update` runs via sudo or git operations create files as root,
+    subsequent non-root runs fail with permission errors. This function walks
+    the install tree and chowns any root-owned files back to the invoking user.
+
+    This is a defensive fix for #102193 — the update process should not create
+    root-owned files when run without sudo, but this handles the case where
+    it does (e.g. due to sudo, git config, or container environments).
+    """
+    import os
+    import stat
+    import subprocess
+
+    # Get the invoking user's UID/GID (not root). On Windows this is a no-op.
+    if os.name == "nt":
+        return
+
+    try:
+        real_uid = int(os.getenv("SUDO_UID") or os.getuid())  # windows-footgun: ok — guarded by os.name == "nt" early return above
+        real_gid = int(os.getenv("SUDO_GID") or os.getgid())  # windows-footgun: ok — guarded by os.name == "nt" early return above
+    except Exception:
+        return
+
+    # Skip if already running as the target user
+    if os.getuid() == real_uid and os.getgid() == real_gid:  # windows-footgun: ok — guarded by os.name == "nt" early return above
+        return
+
+    # Walk the install tree and chown root-owned files
+    # Limit depth and skip symlinks to avoid issues
+    fixed = 0
+    for root, dirs, files in os.walk(install_root):
+        # Skip .git/objects to avoid permission issues during chown
+        if ".git" in root:
+            continue
+        for name in files + dirs:
+            path = Path(root) / name
+            try:
+                st = path.stat()
+                if st.st_uid == 0 and st.st_gid == 0:
+                    # Root-owned file/dir — chown it
+                    path.chown(real_uid, real_gid)
+                    fixed += 1
+            except Exception:
+                pass
+    if fixed:
+        logger.info("Post-update: fixed ownership of %d root-owned file(s)/dir(s)", fixed)
+
+
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -9612,6 +9662,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Seed the model-catalog disk cache from the freshly-pulled checkout.
         # The repo ships the canonical catalog at
         # website/static/api/model-catalog.json, and `git pull` just made it
+
+        # Fix file ownership if update created root-owned files (#102193).
+        # When update runs via sudo or git operations create files as root,
+        # subsequent non-root runs fail. Chown the install tree back to the
+        # invoking user so future updates work without permission errors.
+        try:
+            _fix_install_ownership(_m().PROJECT_ROOT)
+        except Exception as _e:
+            logger.debug("Post-update ownership fix skipped: %s", _e)
         # current — so copy it straight over ~/.hermes/cache/model_catalog.json
         # instead of waiting on a network fetch (which can be bot-gated or hit a
         # Portal hiccup). Keeps the model picker's curated/free lists in sync

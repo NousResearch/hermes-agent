@@ -1777,6 +1777,22 @@ export function ChatSidebar({
                       </div>
                     ) : (
                       <>
+                        {!showAllProfiles && !agentsGrouped ? (
+                          <Tip label={s.projects.newButton}>
+                            <Button
+                              aria-label={s.projects.newButton}
+                              className={HEADER_ACTION_BTN}
+                              onClick={event => {
+                                event.stopPropagation()
+                                openProjectCreate()
+                              }}
+                              size="icon-xs"
+                              variant="ghost"
+                            >
+                              <Codicon name="add" size="0.75rem" />
+                            </Button>
+                          </Tip>
+                        ) : null}
                         {!showAllProfiles ? (
                           <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
                             <Button

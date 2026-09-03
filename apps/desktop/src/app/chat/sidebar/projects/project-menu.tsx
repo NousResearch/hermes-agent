@@ -22,6 +22,7 @@ import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $panesFlipped, dismissAutoProject } from '@/store/layout'
+import { $showAllProfiles } from '@/store/profile'
 import {
   copyPath,
   deleteProject,
@@ -56,6 +57,12 @@ function useProjectActions({
   const p = t.sidebar.projects
   const target = { id: project.id, name: project.label }
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+  // Project RPCs are per-profile: the unified "All profiles" sidebar view has
+  // no active profile to send, so deleteProject would fail and roll back
+  // silently. Disable the destructive action there instead of letting a
+  // confirmed delete appear to do nothing (projectParams throws
+  // "Projects are unavailable while viewing all profiles").
+  const showAllProfiles = useStore($showAllProfiles)
 
   const removeAuto = () => {
     dismissAutoProject(project.id)
@@ -118,6 +125,9 @@ function useProjectActions({
         icon: 'trash',
         key: 'delete',
         label: `${p.menuDelete}…`,
+        // No active profile in the all-profiles view: the delete RPC cannot be
+        // scoped, so keep the destructive path from silently no-op'ing.
+        disabled: showAllProfiles,
         onSelect: () => setConfirmDeleteOpen(true),
         variant: 'destructive'
       }

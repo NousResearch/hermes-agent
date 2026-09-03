@@ -571,7 +571,30 @@ async function normalizeContent(content) {
       targetText: reactionTargetText(target),
     };
   }
-  // A user tapping a poll choice arrives as `poll_option` carrying the chosen
+  // An iMessage threaded reply wraps the actual content + the target message
+  // being replied to. Flatten it so Python sees type="reply" with the inner
+  // text plus reply_to_message_id / reply_to_text hydrated from the target —
+  // otherwise the raw shape falls through to "content type not handled" and
+  // the user's reply text is lost.
+  if (content.type === "reply") {
+    const target = content.target;
+    const inner =
+      content.content && typeof content.content === "object"
+        ? await normalizeContent(content.content)
+        : { type: "unknown" };
+    return {
+      type: "reply",
+      text: inner.text || "",
+      reply_to_message_id: target?.id ?? null,
+      // Same hydration spectrum gives reaction targets — lets Python inject
+      // `[Replying to: "..."]` context so the model knows WHICH message.
+      reply_to_text: reactionTargetText(target),
+      reply_to_direction: target?.direction ?? null,
+      // normalized inner content (media etc.) for future handling
+      content: inner,
+    };
+  }
+  // A user chat tapping a poll choice arrives as `poll_option` carrying the chosen
   // option title + whether it was selected (true) or deselected (false). This
   // is how a native iMessage poll's vote streams back — Python turns a
   // selection into the answer that resolves a pending `clarify`.

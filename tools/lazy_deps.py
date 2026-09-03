@@ -85,6 +85,51 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Durable install-target path binding.
+#
+# On sealed/immutable deployments the Docker image sets
+# ``HERMES_LAZY_INSTALL_TARGET`` (e.g. ``/opt/data/lazy-packages``) and makes
+# the agent venv read-only (``HERMES_DISABLE_LAZY_INSTALLS=1``). Packages that
+# ship pre-installed into that durable volume are SAFE to import — the security
+# model appends (never prepends) the target so it can only ADD modules and can
+# never shadow or downgrade anything the core venv ships.
+#
+# The original design only appended this dir from inside ``ensure()`` *after* a
+# successful install. But when lazy installs are disabled the install path never
+# runs, so a pre-installed package in the durable target stayed invisible to the
+# already-running interpreter — breaking every feature that relied on it (e.g.
+# local STT / faster-whisper for inbound voice transcription on iMessage,
+# Telegram, Discord, …). Bind the target at module import time, independent of
+# the install gate, so pre-installed durable packages are always importable.
+# Idempotent: no-ops if already on sys.path or if the env var is unset.
+# =============================================================================
+
+_LAZY_TARGET_ENV = "HERMES_LAZY_INSTALL_TARGET"
+
+
+def _bind_lazy_install_target_to_sys_path() -> None:
+    """Append ``HERMES_LAZY_INSTALL_TARGET`` to ``sys.path`` once, always.
+
+    Safe regardless of ``HERMES_DISABLE_LAZY_INSTALLS``: the directory only
+    ever contains packages the deployment pre-installed, and it is appended
+    (lowest priority) so it cannot shadow core modules. Runs at import time so
+    the running interpreter can import pre-installed durable packages without a
+    restart — this is what makes local STT work on sealed-venv installs.
+    """
+    raw = os.environ.get(_LAZY_TARGET_ENV, "").strip()
+    if not raw:
+        return
+    target = str(Path(raw).resolve())
+    if target in sys.path:
+        return
+    sys.path.append(target)
+    logger.debug("Bound durable lazy-install target %s onto sys.path", target)
+
+
+_bind_lazy_install_target_to_sys_path()
+
+
+# =============================================================================
 # Allowlist of lazy-installable backends.
 #
 # Keys are dot-separated feature names ("namespace.backend"). Values are

@@ -1,6 +1,6 @@
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { posix, win32 } from 'node:path'
 
 export type SupportedTerminal = 'cursor' | 'vscode' | 'windsurf'
 
@@ -215,14 +215,14 @@ export function getVSCodeStyleConfigDir(
   homeDir: string = homedir()
 ): null | string {
   if (platform === 'darwin') {
-    return join(homeDir, 'Library', 'Application Support', appName, 'User')
+    return posix.join(homeDir, 'Library', 'Application Support', appName, 'User')
   }
 
   if (platform === 'win32') {
-    return env['APPDATA'] ? join(env['APPDATA'], appName, 'User') : null
+    return env['APPDATA'] ? win32.join(env['APPDATA'], appName, 'User') : null
   }
 
-  return join(homeDir, '.config', appName, 'User')
+  return posix.join(homeDir, '.config', appName, 'User')
 }
 
 function isKeybinding(value: unknown): value is Keybinding {
@@ -353,7 +353,8 @@ export async function configureTerminalKeybindings(
     }
   }
 
-  const keybindingsFile = join(configDir, 'keybindings.json')
+  const pathApi = platform === 'win32' ? win32 : posix
+  const keybindingsFile = pathApi.join(configDir, 'keybindings.json')
 
   try {
     await ops.mkdir(configDir, { recursive: true })
@@ -489,7 +490,8 @@ export async function shouldPromptForTerminalSetup(options?: {
   }
 
   try {
-    const content = await ops.readFile(join(configDir, 'keybindings.json'), 'utf8')
+    const pathApi = platform === 'win32' ? win32 : posix
+    const content = await ops.readFile(pathApi.join(configDir, 'keybindings.json'), 'utf8')
     const parsed: unknown = JSON.parse(stripJsonComments(content))
 
     if (!Array.isArray(parsed)) {

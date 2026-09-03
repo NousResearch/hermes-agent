@@ -611,6 +611,7 @@ def init_agent(
     checkpoint_max_snapshots: int = 20,
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
+    checkpoint_interval: int = 10,
     pass_session_id: bool = False,
     requested_provider: str = None,
     capabilities: Optional[Dict[str, bool]] = None,
@@ -1755,6 +1756,7 @@ def init_agent(
         max_snapshots=checkpoint_max_snapshots,
         max_total_size_mb=checkpoint_max_total_size_mb,
         max_file_size_mb=checkpoint_max_file_size_mb,
+        checkpoint_interval=checkpoint_interval,
     )
     
     # SQLite session store (optional -- provided by CLI or gateway)

@@ -99,6 +99,33 @@ def _ensure_file_checkpoint(
     resolved_path = _resolve_path_for_task(file_path, effective_task_id or "default")
     work_dir = agent._checkpoint_mgr.get_working_dir_for_path(str(resolved_path))
     agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+    # Stash the pre-write hash for the mutation journal even when snapshots
+    # are disabled — the journal is the always-on triage record (#99869).
+    try:
+        agent._checkpoint_mgr.note_pending_mutation(str(resolved_path), tool=function_name)
+    except Exception as exc:
+        logger.debug("pending-mutation note failed for %s: %s", file_path, exc)
+    # Periodic checkpoint hook for long-running sessions (#99869):
+    # fires every checkpoint_interval file mutations regardless of the
+    # per-turn dedup, so a multi-hour sweep still persists progress.
+    try:
+        agent._checkpoint_mgr.maybe_periodic_checkpoint(
+            work_dir, f"periodic before {function_name}"
+        )
+    except Exception as exc:
+        logger.debug("periodic checkpoint hook failed: %s", exc)
+
+
+def _maybe_periodic_terminal_checkpoint(
+    agent, working_dir: str, command: str
+) -> None:
+    """Periodic checkpoint for destructive terminal commands (#99869)."""
+    try:
+        agent._checkpoint_mgr.maybe_periodic_checkpoint(
+            working_dir, f"periodic before terminal: {command[:60]}"
+        )
+    except Exception as exc:
+        logger.debug("periodic terminal checkpoint hook failed: %s", exc)
 
 
 def _budget_for_agent(agent) -> BudgetConfig:
@@ -1038,6 +1065,15 @@ def _begin_tool_execution(
             )
 
     agent._current_tool = function_name
+    # Compact last-action for session-interruption markers (#99869).
+    # Read by _record_session_interruption when a turn dies mid-task.
+    try:
+        _action_target = function_args.get("path") or function_args.get("command", "")
+        agent._last_tool_action = (
+            f"{function_name}:{str(_action_target)[:160]}" if _action_target else function_name
+        )
+    except Exception as exc:
+        logger.debug("last-tool-action record failed: %s", exc)
     agent._touch_activity(f"executing tool: {function_name}")
     try:
         from tools.environments.base import set_activity_callback
@@ -1071,7 +1107,10 @@ def _begin_tool_execution(
         except Exception as callback_error:
             logging.debug("Tool start callback error: %s", callback_error)
 
-    if function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
+    # Snapshot calls self-gate on checkpoints.enabled; the pending-mutation
+    # note inside runs regardless so the journal records even for default
+    # sessions (#99869).
+    if function_name in {"write_file", "patch"}:
         try:
             _ensure_file_checkpoint(
                 agent,
@@ -1079,10 +1118,10 @@ def _begin_tool_execution(
                 function_args,
                 effective_task_id,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("file checkpoint preflight failed: %s", exc)
 
-    if function_name == "terminal" and agent._checkpoint_mgr.enabled:
+    if function_name == "terminal":
         try:
             command = function_args.get("command", "")
             if _is_destructive_command(command):
@@ -1092,8 +1131,9 @@ def _begin_tool_execution(
                 agent._checkpoint_mgr.ensure_checkpoint(
                     cwd, f"before terminal: {command[:60]}"
                 )
-        except Exception:
-            pass
+                _maybe_periodic_terminal_checkpoint(agent, cwd, command)
+        except Exception as exc:
+            logger.debug("terminal checkpoint preflight failed: %s", exc)
 
 
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:

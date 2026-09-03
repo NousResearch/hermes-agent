@@ -54,7 +54,9 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -71,6 +73,12 @@ logger = logging.getLogger(__name__)
 
 CHECKPOINT_BASE = get_hermes_home() / "checkpoints"
 
+# Session-terminate marker directory — ~/.hermes/sessions/<id>.interrupted
+# Used by #99869: long-running sessions that die mid-task (auth error,
+# timeout 124, context exhaustion) record a marker so the next session can
+# triage instead of trusting stale in-memory state.
+_SESSION_MARKER_DIRNAME = "sessions"
+
 # Single shared store directory under CHECKPOINT_BASE.
 _STORE_DIRNAME = "store"
 _REFS_PREFIX = "refs/hermes"
@@ -81,6 +89,25 @@ _LEGACY_PREFIX = "legacy-"
 
 # Agent-write ledger cap: newest entries retained per project.
 _LEDGER_MAX_ENTRIES = 2000
+
+# Mutation-journal cap: newest JSONL lines retained per project. The journal
+# is deliberately tiny (one line per landed write_file/patch: path,
+# before/after hashes, tool, timestamp) so the next session can triage
+# without forensics even when snapshots are disabled.
+_JOURNALS_DIRNAME = "journals"
+_JOURNAL_MAX_LINES = 2000
+# Pending pre-write hashes: bounded so a pathological loop can't grow it.
+_PENDING_MUTATIONS_MAX = 500
+
+# Minimum gap between two periodic snapshots of the same directory.
+# _last_periodic_ts is the rate-limit clock: without it checkpoint_interval=1
+# plus a 500-file sweep would take 500 back-to-back git snapshots.
+_PERIODIC_MIN_INTERVAL_S = 60.0
+
+# Marker freshness: surfaced to humans/models within this window; pruned
+# from disk after _MARKER_PRUNE_AGE_S so dead sessions can't accumulate.
+_MARKER_FRESH_S = 86400
+_MARKER_PRUNE_AGE_S = 7 * 86400
 
 DEFAULT_EXCLUDES = [
     # Dependency / build output
@@ -259,6 +286,94 @@ def _load_ledger(store: Path, dir_hash: str) -> Dict[str, Dict]:
         return {}
 
 
+def _fsync_file(path: Path) -> None:
+    """Best-effort fsync of a single file's data to stable storage."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _fsync_parent_dir(path: Path) -> None:
+    """Best-effort fsync of a file's parent directory (dirent durability).
+
+    Without this, a crash between ``os.replace`` and the directory entry
+    hitting disk can still lose the new inode. No-op where the platform
+    cannot open directories (e.g. Windows raises OSError — ignored).
+    """
+    try:
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        try:
+            os.close(dir_fd)
+        except OSError:
+            pass
+
+
+def _durable_replace(tmp: Path, target: Path) -> None:
+    """Atomically swap ``tmp`` onto ``target`` with durability.
+
+    fsyncs the temp file's data, renames (atomic on POSIX and on every
+    backend FS we run on — same-directory temp is the caller's contract),
+    then fsyncs the parent dir. Same shape as the ``tools/mcp_oauth.py``
+    token-store write, plus the post-rename dir fsync.
+    """
+    _fsync_file(tmp)
+    os.replace(tmp, target)
+    _fsync_parent_dir(target)
+
+
+def durable_atomic_write(path_value: str, data) -> Path:
+    """Atomic + durable write for out-of-band scripts (no_agent cron jobs).
+
+    Canonical pattern for anything that mutates files outside
+    ``write_file`` / ``_atomic_write`` (e.g. a ``no_agent=True`` watchdog
+    like ``scripts/ci-sweep-cap.py``): temp file in the SAME directory,
+    flush + fsync, atomic rename, parent-dir fsync.
+
+    ``data`` is ``str`` (UTF-8) or ``bytes``. Returns the target path.
+
+    Caveat (issue #99869): atomic rename only protects against TORN
+    writes. A *completed* write of logically-wrong content (a buggy
+    transform that emits 70 bytes) still lands 70 bytes. Validate content
+    BEFORE calling — the in-process ``write_file`` path additionally has a
+    fail-closed syntax gate and post-write hash verification; scripts
+    using this helper should do their own sanity checks (e.g. refuse to
+    shrink a file by >90% without an explicit flag).
+    """
+    target = Path(path_value).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.tmp.{os.getpid()}.{time.monotonic_ns()}")
+    try:
+        if isinstance(data, bytes):
+            tmp.write_bytes(data)
+        else:
+            tmp.write_text(data, encoding="utf-8")
+        _durable_replace(tmp, target)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return target
+
+
 def _save_ledger(store: Path, dir_hash: str, ledger: Dict[str, Dict]) -> None:
     """Persist the agent-write ledger, capped to the newest entries."""
     try:
@@ -273,9 +388,74 @@ def _save_ledger(store: Path, dir_hash: str, ledger: Dict[str, Dict]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(ledger), encoding="utf-8")
-        tmp.replace(path)
+        _durable_replace(tmp, path)
     except OSError:
         logger.debug("Failed to save agent-write ledger for %s", dir_hash, exc_info=True)
+
+
+def _journal_path(store: Path, dir_hash: str) -> Path:
+    return store / _JOURNALS_DIRNAME / f"{dir_hash}.jsonl"
+
+
+def _append_journal(store: Path, dir_hash: str, entry: Dict) -> None:
+    """Append one JSONL line, trimming to the newest _JOURNAL_MAX_LINES."""
+    path = _journal_path(store, dir_hash)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(entry)
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+    except OSError:
+        logger.debug("Failed to append journal for %s", dir_hash, exc_info=True)
+        return
+    try:
+        # Size-gated trim: only pay for a full read when the file is plausibly
+        # over budget (entries average well under 512B).
+        try:
+            oversized = path.stat().st_size > _JOURNAL_MAX_LINES * 512
+        except OSError:
+            oversized = False
+        if oversized:
+            with open(path, "r", encoding="utf-8") as fh:
+                lines = fh.readlines()
+            if len(lines) > _JOURNAL_MAX_LINES:
+                tmp = path.with_suffix(".jsonl.tmp")
+                tmp.write_text("".join(lines[-_JOURNAL_MAX_LINES:]), encoding="utf-8")
+                _durable_replace(tmp, path)
+            else:
+                _fsync_parent_dir(path)
+        else:
+            _fsync_parent_dir(path)
+    except OSError:
+        logger.debug("Failed to trim journal for %s", dir_hash, exc_info=True)
+
+
+def _read_journal(store: Path, dir_hash: str, limit: int = 20) -> List[Dict]:
+    """Newest-first journal entries (tolerates torn trailing lines)."""
+    try:
+        raw = _journal_path(store, dir_hash).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    out: List[Dict] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            out.append(data)
+    out.sort(key=lambda e: e.get("ts", 0), reverse=True)
+    # Cap semantic: never surface more than the newest _JOURNAL_MAX_LINES,
+    # even when the size-gated write-side trim has not tripped yet.
+    return out[: min(max(0, int(limit)), _JOURNAL_MAX_LINES)]
 
 
 def _ref_name(dir_hash: str) -> str:
@@ -780,13 +960,24 @@ class CheckpointManager:
         max_snapshots: int = 20,
         max_total_size_mb: int = 500,
         max_file_size_mb: int = 10,
+        checkpoint_interval: int = 10,
     ):
         self.enabled = enabled
         self.max_snapshots = max(1, int(max_snapshots))
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
+        self.checkpoint_interval = max(1, int(checkpoint_interval))
         self._checkpointed_dirs: Set[str] = set()
         self._git_available: Optional[bool] = None  # lazy probe
+        # Periodic checkpoint counter for long-running sessions (#99869).
+        self._periodic_counter: int = 0
+        # Last periodic checkpoint timestamp per working_dir — rate-limit
+        # clock for maybe_periodic_checkpoint (see _PERIODIC_MIN_INTERVAL_S).
+        self._last_periodic_ts: Dict[str, float] = {}
+        # Pre-write content hashes keyed by normalized path, stashed by
+        # note_pending_mutation before a file tool runs and consumed by
+        # record_mutation after it lands. Bounded (_PENDING_MUTATIONS_MAX).
+        self._pending_mutations: Dict[str, Dict] = {}
 
     # ------------------------------------------------------------------
     # Turn lifecycle
@@ -825,6 +1016,68 @@ class CheckpointManager:
             _save_ledger(store, dir_hash, ledger)
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
+
+    # ------------------------------------------------------------------
+    # Mutation journal (#99869 proposal 3)
+    # ------------------------------------------------------------------
+    # Snapshots stay opt-in (``checkpoints.enabled``, default False — git
+    # snapshots are heavyweight). The journal is the always-on half: one
+    # JSONL line per landed write_file/patch (path, before/after hashes,
+    # tool, timestamp), recorded regardless of ``enabled``, so the next
+    # session can triage what changed even when no snapshot exists.
+
+    def note_pending_mutation(self, file_path: str, tool: str = "") -> None:
+        """Stash the pre-write content hash for a file about to be mutated.
+
+        Called BEFORE the file tool runs (from the checkpoint preflight).
+        Never raises.
+        """
+        try:
+            path = _normalize_path(file_path)
+            if len(self._pending_mutations) >= _PENDING_MUTATIONS_MAX:
+                self._pending_mutations.pop(next(iter(self._pending_mutations)))
+            self._pending_mutations[str(path)] = {
+                "before_sha": _hash_file(path),
+                "tool": tool or "",
+                "ts": time.time(),
+            }
+        except Exception as exc:
+            logger.debug("note_pending_mutation failed for %s: %s", file_path, exc)
+
+    def record_mutation(self, file_path: str, tool: str = "") -> bool:
+        """Append one journal line for a landed file mutation. Never raises.
+
+        Consumes the pre-write hash stashed by :meth:`note_pending_mutation`
+        (None when the write bypassed the preflight). Works regardless of
+        ``enabled`` — the journal is bookkeeping, not snapshotting.
+        """
+        try:
+            path = _normalize_path(file_path)
+            key = str(path)
+            pending = self._pending_mutations.pop(key, {}) or {}
+            entry = {
+                "ts": time.time(),
+                "path": key,
+                "tool": tool or pending.get("tool", ""),
+                "before": pending.get("before_sha"),
+                "after": _hash_file(path),
+            }
+            working_dir = self.get_working_dir_for_path(key)
+            store = _store_path(CHECKPOINT_BASE)
+            _append_journal(store, _project_hash(working_dir), entry)
+            return True
+        except Exception as exc:
+            logger.debug("record_mutation failed for %s: %s", file_path, exc)
+            return False
+
+    def read_journal(self, working_dir: str, limit: int = 20) -> List[Dict]:
+        """Newest-first journal entries for a working directory."""
+        try:
+            store = _store_path(CHECKPOINT_BASE)
+            return _read_journal(store, _project_hash(str(_normalize_path(working_dir))), limit)
+        except Exception as exc:
+            logger.debug("read_journal failed for %s: %s", working_dir, exc)
+            return []
 
     def safe_restore_plan(self, working_dir: str, commit_hash: str) -> Dict:
         """Classify files changed since ``commit_hash`` for a safe restore.
@@ -925,6 +1178,42 @@ class CheckpointManager:
             return self._take(abs_dir, reason)
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
+            return False
+
+    def maybe_periodic_checkpoint(self, working_dir: str, reason: str = "periodic") -> bool:
+        """Periodic checkpoint hook for long-running sessions (#99869).
+
+        Fires every ``checkpoint_interval`` tool calls regardless of the
+        per-turn dedup, so a multi-hour sweep that stays within one turn
+        or loops over many files still persists progress incrementally.
+        Bypasses the per-turn dedup by clearing the dir from the set
+        before delegating to :meth:`ensure_checkpoint`.
+
+        Returns True if a checkpoint was taken.
+        Never raises.
+        """
+        if not self.enabled:
+            return False
+        try:
+            self._periodic_counter += 1
+            if self._periodic_counter % self.checkpoint_interval != 0:
+                return False
+            abs_dir = str(_normalize_path(working_dir))
+            # Rate-limit: a sweep with checkpoint_interval=1 would otherwise
+            # take back-to-back git snapshots of the same dir.
+            now = time.time()
+            if now - self._last_periodic_ts.get(abs_dir, 0.0) < _PERIODIC_MIN_INTERVAL_S:
+                return False
+            # Bypass per-turn dedup for the periodic tick — long loops often
+            # mutate many files within one turn and would otherwise keep only
+            # the first snapshot.
+            self._checkpointed_dirs.discard(abs_dir)
+            took = self.ensure_checkpoint(working_dir, reason)
+            if took:
+                self._last_periodic_ts[abs_dir] = now
+            return took
+        except Exception as exc:
+            logger.debug("Periodic checkpoint failed: %s", exc)
             return False
 
     def list_checkpoints(self, working_dir: str) -> List[Dict]:
@@ -1648,6 +1937,276 @@ def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
     lines.append("  /rollback diff <N>        preview changes since checkpoint N")
     lines.append("  /rollback <N> <file>      restore a single file from checkpoint N")
     return "\n".join(lines)
+
+
+
+# ---------------------------------------------------------------------------
+# Session-terminate markers — #99869
+# ---------------------------------------------------------------------------
+# When a long-running session dies mid-task (AuthenticationError, terminal
+# exit 124, context exhaustion, SIGKILL, process crash), the next session
+# has no way to know the prior session died partway through a write. These
+# markers give that signal: a small JSON file under
+# <hermes-home>/sessions/<id>.interrupted with timestamp + last_action +
+# reason. The next session surfaces a warning AND injects the record into
+# its continuation prompt (see build_interruption_note) instead of trusting
+# stale state.
+#
+# Crash-safety design (review #100220): no in-process handler can run on
+# SIGKILL, so the marker is written UP FRONT — reason "in_flight" at turn
+# start — and CLEARED on clean completion. A kill/crash between the two
+# leaves the in-flight marker behind with zero handler involvement; the
+# failure-path call sites then only OVERWRITE the reason with something
+# more specific. Signal handlers (SIGTERM/SIGINT) and the cron script
+# watchdog add specificity on paths where a parent survives.
+#
+# Path note: the issue suggested ~/.local/share/hermes/sessions/.interrupted.
+# We use get_hermes_home()/sessions/<id>.interrupted instead — the same
+# profile-aware, platform-correct root as checkpoints (Windows:
+# %LOCALAPPDATA%/hermes, POSIX: ~/.hermes, $HERMES_HOME override honored) —
+# so markers follow the active profile like every other session artifact.
+
+def _session_marker_dir(base=None):
+    return (base or get_hermes_home()) / _SESSION_MARKER_DIRNAME
+
+
+def _session_marker_path(session_id, base=None):
+    safe_id = re.sub(r"[^a-zA-Z0-9._-]", "_", str(session_id).strip())[:128]
+    if not safe_id:
+        safe_id = "unknown"
+    return _session_marker_dir(base) / f"{safe_id}.interrupted"
+
+
+def _prune_old_markers(base=None):
+    """Best-effort removal of markers older than _MARKER_PRUNE_AGE_S."""
+    try:
+        now = time.time()
+        d = _session_marker_dir(base)
+        if not d.exists():
+            return
+        for p in d.glob("*.interrupted"):
+            try:
+                if now - p.stat().st_mtime > _MARKER_PRUNE_AGE_S:
+                    p.unlink()
+            except OSError:
+                continue
+    except Exception as exc:
+        logger.debug("marker prune failed: %s", exc)
+
+
+def write_interrupted_marker(session_id, last_action="", reason="interrupted",
+                             base=None, last_checkpoint=None):
+    """Write a marker for a terminated (or in-flight) session. Best-effort.
+
+    ``reason="in_flight"`` marks a session that STARTED work and has not
+    cleanly finished — the SIGKILL-proof half of the protocol. Failure
+    paths overwrite it with a specific reason; clean completion clears it
+    via :func:`clear_interrupted_marker`.
+    """
+    try:
+        marker = _session_marker_path(session_id, base)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "session_id": session_id,
+            "timestamp": time.time(),
+            "iso_time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "last_action": (last_action or "")[:2000],
+            "reason": (reason or "interrupted")[:500],
+        }
+        if last_checkpoint:
+            payload["last_checkpoint"] = str(last_checkpoint)[:500]
+        tmp = marker.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _durable_replace(tmp, marker)
+        _prune_old_markers(base)
+        return marker
+    except Exception as exc:
+        logger.debug("write_interrupted_marker failed for %s: %s", session_id, exc)
+        return None
+
+
+def read_interrupted_marker(session_id, base=None):
+    """Read an interrupted marker, or None if absent/unreadable."""
+    try:
+        marker = _session_marker_path(session_id, base)
+        if not marker.exists():
+            return None
+        return json.loads(marker.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.debug("read_interrupted_marker failed for %s: %s", session_id, exc)
+        return None
+
+
+def clear_interrupted_marker(session_id, base=None):
+    """Remove a marker after it has been triaged. Returns True if removed."""
+    try:
+        marker = _session_marker_path(session_id, base)
+        if marker.exists():
+            marker.unlink()
+            return True
+        return False
+    except Exception as exc:
+        logger.debug("clear_interrupted_marker failed for %s: %s", session_id, exc)
+        return False
+
+
+def list_interrupted_markers(base=None):
+    """List all interrupted markers (newest first)."""
+    try:
+        d = _session_marker_dir(base)
+        if not d.exists():
+            return []
+        out = []
+        for p in d.glob("*.interrupted"):
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                data["_path"] = str(p)
+                out.append(data)
+            except (OSError, ValueError) as exc:
+                logger.debug("skipping unreadable marker %s: %s", p, exc)
+                continue
+        out.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+        return out
+    except Exception as exc:
+        logger.debug("list_interrupted_markers failed: %s", exc)
+        return []
+
+
+# Terminating-signal handlers: SIGTERM/SIGINT get a chance to record a
+# specific reason before the process dies. SIGKILL is uncatchable by design —
+# the in-flight marker (written at turn start) is what covers that path.
+_installed_termination_sessions = set()
+
+
+def install_termination_handlers(session_id, last_action_fn=None, base=None):
+    """Record a marker when SIGTERM/SIGINT lands. Best-effort, idempotent.
+
+    Main-thread only (signal.signal requires it — gateway worker threads
+    skip silently) and once per session id. The handler overwrites the
+    in-flight marker with the signal reason, then re-raises with the
+    default disposition so the exit status still reflects the signal.
+    ``last_action_fn`` is a zero-arg callable returning the latest tool
+    action for the marker (may be None).
+    """
+    try:
+        if not session_id or session_id in _installed_termination_sessions:
+            return False
+        if threading.current_thread() is not threading.main_thread():
+            return False
+        _installed_termination_sessions.add(session_id)
+
+        def _handle(signum, _frame):
+            try:
+                last_action = ""
+                if last_action_fn is not None:
+                    try:
+                        last_action = str(last_action_fn() or "")
+                    except Exception as exc:
+                        logger.debug("termination last-action probe failed: %s", exc)
+                write_interrupted_marker(
+                    session_id,
+                    last_action=last_action,
+                    reason="sigterm" if signum == signal.SIGTERM else "sigint",
+                    base=base,
+                )
+            except Exception as exc:
+                logger.debug("termination marker write failed: %s", exc)
+            finally:
+                try:
+                    signal.signal(signum, signal.SIG_DFL)
+                    signal.raise_signal(signum)
+                except Exception as exc:
+                    logger.debug("termination re-raise failed: %s", exc)
+                    raise SystemExit(128 + int(signum))
+
+        for _sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(_sig, _handle)
+            except (OSError, ValueError, RuntimeError) as exc:
+                logger.debug("cannot install handler for signal %s: %s", _sig, exc)
+        return True
+    except Exception as exc:
+        logger.debug("install_termination_handlers failed: %s", exc)
+        return False
+
+
+def build_interruption_note(working_dir=None, exclude_session_id="", base=None):
+    """Build the model-facing interruption note for the continuation prompt.
+
+    Returns None when no recent (24h) foreign markers exist. Includes the
+    newest markers (reason + last action), the last checkpoint pointer for
+    ``working_dir`` when one exists, and the tail of the mutation journal
+    so the model can triage instead of trusting stale tree state.
+    """
+    try:
+        now = time.time()
+        markers = [
+            m for m in list_interrupted_markers(base=base)
+            if now - m.get("timestamp", 0) < _MARKER_FRESH_S
+            and m.get("session_id", "") != (exclude_session_id or "")
+        ]
+        if not markers:
+            return None
+        lines = [
+            "[System note: one or more previous sessions were interrupted "
+            "before completing their task. Do NOT trust in-memory/file-tree "
+            "state from before the interruption — verify against disk and "
+            "the checkpoints below.]",
+        ]
+        for m in markers[:3]:
+            sid = str(m.get("session_id", "?"))[:24]
+            reason = m.get("reason", "interrupted")
+            when = m.get("iso_time", "")
+            act = (m.get("last_action", "") or "")[:160]
+            ckpt = m.get("last_checkpoint", "")
+            detail = f"session {sid} at {when} — reason={reason} last_action={act}"
+            if ckpt:
+                detail += f" last_checkpoint={ckpt}"
+            lines.append("- " + detail)
+        if working_dir:
+            try:
+                mgr = CheckpointManager()
+                cps = mgr.list_checkpoints(str(working_dir))
+                if cps:
+                    latest = cps[0]
+                    lines.append(
+                        "Last checkpoint for %s: %s (%s — %s). Prefer "
+                        "`hermes checkpoints` / `/rollback` over manual "
+                        "forensics." % (
+                            working_dir,
+                            latest.get("short_hash", latest.get("hash", "?")),
+                            latest.get("date", latest.get("timestamp", "")),
+                            latest.get("reason", ""),
+                        )
+                    )
+                else:
+                    lines.append(
+                        "No checkpoint exists for %s — journal entries below "
+                        "are the only record." % working_dir
+                    )
+                store = _store_path(CHECKPOINT_BASE)
+                journal = _read_journal(
+                    store, _project_hash(str(_normalize_path(str(working_dir)))), 5
+                )
+                for e in journal:
+                    lines.append(
+                        "- mutated %s via %s (before=%.8s after=%.8s)" % (
+                            e.get("path", "?"),
+                            e.get("tool", "?"),
+                            str(e.get("before") or "-"),
+                            str(e.get("after") or "-"),
+                        )
+                    )
+            except Exception as exc:
+                logger.debug("interruption checkpoint/journal lookup failed: %s", exc)
+        lines.append(
+            "Triage before continuing: re-read the files above, diff against "
+            "the checkpoint when present, and re-apply only verified work."
+        )
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.debug("build_interruption_note failed: %s", exc)
+        return None
 
 
 # ---------------------------------------------------------------------------

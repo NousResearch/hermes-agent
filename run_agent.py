@@ -566,6 +566,7 @@ class AIAgent:
         checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
+        checkpoint_interval: int = 10,
         pass_session_id: bool = False,
         requested_provider: str = None,
         capabilities: Dict[str, bool] | None = None,
@@ -659,6 +660,7 @@ class AIAgent:
             checkpoint_max_snapshots=checkpoint_max_snapshots,
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
+            checkpoint_interval=checkpoint_interval,
             pass_session_id=pass_session_id,
         )
 
@@ -4100,13 +4102,21 @@ class AIAgent:
                 changed.update(landed_paths)
             # Feed the checkpoint agent-write ledger so /rollback's safe mode
             # can tell Hermes-authored content from later user hand-edits.
+            # The mutation journal records regardless of checkpoints.enabled
+            # so a later session can triage without forensics (#99869).
             mgr = getattr(self, "_checkpoint_mgr", None)
+            if mgr is not None:
+                for _p in landed_paths:
+                    try:
+                        mgr.record_mutation(_p, tool=tool_name)
+                    except Exception as exc:
+                        logger.debug("mutation journal record failed for %s: %s", _p, exc)
             if mgr is not None and getattr(mgr, "enabled", False):
                 for _p in landed_paths:
                     try:
                         mgr.record_agent_write(_p)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("agent-write ledger record failed for %s: %s", _p, exc)
         if is_error and not landed:
             preview = _extract_error_preview(result)
             for path in targets:

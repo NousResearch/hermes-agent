@@ -1478,6 +1478,17 @@ class ShellFileOperations(FileOperations):
         script = (
             "set -e; "
             f"d={q_parent}; t={q_path}; "
+            # Durable-write fsync helper (#99869 review): a bare
+            # `sync FILE` is a no-op on Windows Git Bash / MSYS (the repro
+            # env) and sync(1) without an operand only schedules a global
+            # flush. Do a real fsync(2) via python when available, keep
+            # `sync` as fallback for python-less backends, `true` as the
+            # final fallback so behavior never regresses. Always returns 0
+            # (best-effort — durability must not fail the write itself).
+            '_fsync() { '
+            'command -v python3 >/dev/null 2>&1 && python3 -c "import os,sys; f=os.open(sys.argv[1], os.O_RDONLY); os.fsync(f); os.close(f)" "$1" 2>/dev/null && return 0; '
+            'command -v python >/dev/null 2>&1 && python -c "import os,sys; f=os.open(sys.argv[1], os.O_RDONLY); os.fsync(f); os.close(f)" "$1" 2>/dev/null && return 0; '
+            'sync "$1" 2>/dev/null && return 0; sync 2>/dev/null; return 0; }; '
             # Follow a symlink target so we edit the file the link points at,
             # rather than replacing the symlink itself with a plain file (which
             # orphans the real target and destroys the link). Recompute the
@@ -1504,11 +1515,16 @@ class ShellFileOperations(FileOperations):
             '[ -n "$m" ] && chmod "$m" "$tmp" 2>/dev/null || true; '
             "fi; "
             'cat > "$tmp"; '
+            # fsync the temp file's data before the atomic rename (#99869).
+            '_fsync "$tmp"; '
             # new file: umask-default perms instead of mktemp's 0600 (#70856).
             # Runs AFTER cat so a write-masking umask can't EACCES the stream;
             # quoted "=rw" so zsh doesn't =word-expand it.
             'if [ ! -e "$t" ]; then chmod "=rw" "$tmp" 2>/dev/null || true; fi; '
             'mv -f "$tmp" "$t"; '
+            # fsync the target and the parent dir after rename so a crash
+            # between mv and the dirent hitting disk can't lose the inode.
+            '_fsync "$t"; _fsync "$d"; '
             "trap - EXIT"
         )
         return self._exec(script, stdin_data=content)

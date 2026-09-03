@@ -25,6 +25,7 @@ move-and-name refactor with no semantic change.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import uuid
@@ -1540,6 +1541,38 @@ def build_turn_context(
                 if plugin_user_context
                 else _gateway_notes
             )
+
+    # Interrupted-session note (#99869): when a PRIOR session died mid-task,
+    # the model must not trust stale tree state. Rides the same user-message
+    # injection channel as plugin/gateway context (API copy only — stored
+    # content stays clean, system prompt stays byte-stable). First turn per
+    # session only: the sidecar replays verbatim afterwards, and repeating it
+    # every turn would nag forever while untriaged markers exist. The human
+    # half (_vprint) lives in run_conversation and repeats while markers do.
+    try:
+        if (
+            not getattr(agent, "_interruption_note_injected", False)
+            and not bool(conversation_history)
+        ):
+            from tools.checkpoint_manager import build_interruption_note
+
+            try:
+                _note_cwd = os.getcwd()
+            except OSError:
+                _note_cwd = ""
+            _interruption_note = build_interruption_note(
+                working_dir=_note_cwd or None,
+                exclude_session_id=getattr(agent, "session_id", "") or "",
+            )
+            if _interruption_note:
+                plugin_user_context = (
+                    plugin_user_context + "\n\n" + _interruption_note
+                    if plugin_user_context
+                    else _interruption_note
+                )
+            agent._interruption_note_injected = True
+    except Exception as exc:
+        logger.debug("interruption-note injection failed: %s", exc)
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}

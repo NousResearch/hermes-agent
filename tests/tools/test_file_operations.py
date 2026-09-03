@@ -922,3 +922,41 @@ class TestEscapeNativeToolArg:
         assert node_cmds, f"no node command captured in: {commands}"
         assert "'C:/Users/alice/app/main.js'" in node_cmds[0]
         assert "/c/Users" not in node_cmds[0]
+
+
+# =========================================================================
+# Atomic write durability: real fsync, not bare `sync FILE` (#99869 review)
+# =========================================================================
+
+class TestAtomicWriteDurability:
+    """`sync FILE` is a no-op on Windows Git Bash/MSYS (the issue's repro
+    env). The generated script must fsync via fsync(2) instead."""
+
+    def test_script_fsyncs_temp_target_and_parent_dir(self, mock_env):
+        seen = {}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            seen["script"] = command
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        ops._atomic_write("/tmp/test/a.txt", "hello\n")
+        script = seen["script"]
+        assert "fsync" in script
+        # The old no-op chain must be gone (matched with surrounding context
+        # so the _fsync helper calls don't trip the substring).
+        assert 'sync "$tmp" 2>/dev/null || sync' not in script
+        assert 'sync "$t" 2>/dev/null || sync' not in script
+        assert '_fsync "$tmp"' in script
+        assert '_fsync "$t"' in script
+        assert '_fsync "$d"' in script
+
+    def test_real_write_roundtrips_with_fsync_script(self, tmp_path):
+        """End-to-end guard against shell syntax errors in the new lines."""
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        dest = tmp_path / "durable.txt"
+        result = ops.write_file(str(dest), "durable content\n")
+        assert result.error is None, f"write failed: {result.error}"
+        assert dest.read_text() == "durable content\n"
+        assert list(tmp_path.glob(".hermes-tmp.*")) == []

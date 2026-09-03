@@ -807,3 +807,61 @@ class TestScriptTimeoutTreeKill:
                     psutil.Process(gpid).kill()
                 except psutil.NoSuchProcess:
                     pass
+
+
+class TestCronScriptInterruptionMarker:
+    """The scheduler (which survives the kill) must leave an interrupted
+    marker when a cron script times out or crashes (#99869 review)."""
+
+    def test_timeout_kill_leaves_marker(self, cron_env, monkeypatch):
+        from cron import scheduler as sched
+        from tools.checkpoint_manager import list_interrupted_markers
+
+        scripts_dir = cron_env / "scripts"
+        (scripts_dir / "slow.py").write_text(
+            "import time; time.sleep(30)\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "1")
+        monkeypatch.setattr(sched, "_SCRIPT_TIMEOUT", sched._DEFAULT_SCRIPT_TIMEOUT)
+
+        ok, _out = sched._run_job_script(
+            str(scripts_dir / "slow.py"), workdir=str(cron_env), job_id="job-1"
+        )
+        assert not ok
+        markers = [
+            m for m in list_interrupted_markers(base=cron_env)
+            if m.get("session_id") == "cron-script:job-1"
+        ]
+        assert len(markers) == 1
+        assert markers[0]["reason"] == "cron_script_timeout_killed"
+
+    def test_nonzero_exit_leaves_marker(self, cron_env):
+        from cron import scheduler as sched
+        from tools.checkpoint_manager import list_interrupted_markers
+
+        scripts_dir = cron_env / "scripts"
+        (scripts_dir / "boom.py").write_text(
+            "import sys; print('half-written'); sys.exit(3)\n", encoding="utf-8"
+        )
+        ok, _out = sched._run_job_script(
+            str(scripts_dir / "boom.py"), workdir=str(cron_env), job_id="job-2"
+        )
+        assert not ok
+        markers = [
+            m for m in list_interrupted_markers(base=cron_env)
+            if m.get("session_id") == "cron-script:job-2"
+        ]
+        assert len(markers) == 1
+        assert markers[0]["reason"] == "cron_script_exit_3"
+
+    def test_success_leaves_no_marker(self, cron_env):
+        from cron import scheduler as sched
+        from tools.checkpoint_manager import list_interrupted_markers
+
+        scripts_dir = cron_env / "scripts"
+        (scripts_dir / "fine.py").write_text('print("ok")\n', encoding="utf-8")
+        ok, _out = sched._run_job_script(
+            str(scripts_dir / "fine.py"), workdir=str(cron_env), job_id="job-3"
+        )
+        assert ok
+        assert list_interrupted_markers(base=cron_env) == []

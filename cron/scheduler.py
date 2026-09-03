@@ -4520,10 +4520,35 @@ def _windows_cron_bootstrap_argv(
     return [python_exe, "-c", bootstrap, script_path]
 
 
+def _note_cron_script_interruption(
+    job_id: str, script_path: str, reason: str, detail: str = ""
+) -> None:
+    """Leave an interrupted-session marker when a cron script dies abnormally.
+
+    This is the parent-side half of #99869: the scheduler survives the
+    timeout/cancel kill (or a plain crash) and records it, so the next
+    session — agent or human — can triage instead of trusting whatever the
+    script half-wrote. Best-effort; never raises.
+    """
+    try:
+        from tools.checkpoint_manager import write_interrupted_marker
+
+        sid = f"cron-script:{job_id}" if job_id else f"cron-script:{Path(script_path).name}"
+        write_interrupted_marker(
+            sid,
+            last_action=f"{script_path} {detail}"[:2000],
+            reason=reason,
+            base=_get_hermes_home(),
+        )
+    except Exception as exc:
+        logger.debug("cron script interruption marker failed: %s", exc)
+
+
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
+    job_id: str = "",
 ) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -4675,6 +4700,9 @@ def _run_job_script(
                 # must not orphan own-session grandchildren either.
                 _terminate_cron_script_tree(proc)
                 _drain_script_pipes(proc)
+                _note_cron_script_interruption(
+                    job_id, str(path), "cron_script_cancelled"
+                )
                 return False, "Script cancelled because cron fire ownership was lost"
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -4689,6 +4717,9 @@ def _run_job_script(
                 # layer's tree-kill (#85147, d6a5cb9725).
                 _terminate_cron_script_tree(proc)
                 _drain_script_pipes(proc)
+                _note_cron_script_interruption(
+                    job_id, str(path), "cron_script_timeout_killed"
+                )
                 return False, f"Script timed out after {script_timeout}s: {path}"
             try:
                 stdout_raw, stderr_raw = proc.communicate(timeout=min(0.1, remaining))
@@ -4715,11 +4746,17 @@ def _run_job_script(
                 parts.append(f"stderr:\n{stderr}")
             if stdout:
                 parts.append(f"stdout:\n{stdout}")
+            _note_cron_script_interruption(
+                job_id, str(path),
+                f"cron_script_exit_{proc.returncode}",
+                detail=(stderr or stdout)[-300:],
+            )
             return False, "\n".join(parts)
 
         return True, stdout
 
     except Exception as exc:
+        _note_cron_script_interruption(job_id, str(script_path), "cron_script_error")
         return False, f"Script execution failed: {exc}"
 
 
@@ -4744,14 +4781,15 @@ def _run_job_script_with_claim_heartbeat(
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    job_id = str(job.get("id") or "")
     if not (
         isinstance(schedule, dict)
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
+                               job_id=job_id)
 
-    job_id = str(job.get("id") or "")
     stop = threading.Event()
     heartbeat_context = contextvars.copy_context()
 
@@ -4780,10 +4818,12 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
+                               job_id=job_id)
 
     try:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
+                               job_id=job_id)
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -4854,7 +4894,9 @@ def _build_job_prompt(
         if prerun_script is not None:
             success, script_output = prerun_script
         else:
-            success, script_output = _run_job_script(script_path)
+            success, script_output = _run_job_script(
+                script_path, job_id=str(job.get("id") or "")
+            )
         if success:
             if script_output:
                 prompt = (

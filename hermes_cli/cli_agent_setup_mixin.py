@@ -569,6 +569,7 @@ class CLIAgentSetupMixin:
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
+                checkpoint_interval=getattr(self, "checkpoint_interval", 10),
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 checkpoint_max_total_size_mb=self.checkpoint_max_total_size_mb,
                 checkpoint_max_file_size_mb=self.checkpoint_max_file_size_mb,

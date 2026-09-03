@@ -40,6 +40,37 @@ from agent.conversation_compression import (
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
+
+# Session-terminate marker for long-running sessions (#99869).
+def _record_session_interruption(agent, reason: str, last_action: str = "") -> None:
+    """Best-effort: write <hermes-home>/sessions/<id>.interrupted marker.
+
+    Called when a turn ends via kill/timeout/auth-error/context-exhaustion
+    so the next session can triage instead of trusting stale state.
+    Overwrites the "in_flight" marker written at turn start (see the
+    session-start block below) with the specific failure reason.
+    """
+    try:
+        sid = getattr(agent, "session_id", "") or ""
+        if not sid:
+            return
+        last_action = (last_action or "")[:2000]
+        reason = (reason or "interrupted")[:500]
+        if not last_action:
+            try:
+                # Assigned on every tool dispatch in _begin_tool_execution;
+                # _current_tool is the live fallback while a tool runs.
+                acted = getattr(agent, "_last_tool_action", "") or getattr(
+                    agent, "_current_tool", ""
+                ) or ""
+                if acted:
+                    last_action = str(acted)[:2000]
+            except Exception as exc:
+                logger.debug("interruption last-action probe failed: %s", exc)
+        from tools.checkpoint_manager import write_interrupted_marker
+        write_interrupted_marker(sid, last_action=last_action, reason=reason)
+    except Exception as exc:
+        logger.debug("session interruption record failed: %s", exc)
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
 from agent.message_metadata import append_message
@@ -2271,6 +2302,74 @@ def run_conversation(
     # (early failure / interrupt) so the hook receives None rather than a
     # stale prior turn's usage.
     agent._last_turn_usage = None
+
+    # Session-terminate markers for long-running sessions (#99869):
+    # write this session's in-flight marker FIRST, so a SIGKILL / process
+    # crash / watchdog exit-124 still leaves a record — no in-process
+    # handler can run on those paths, but an up-front marker needs none.
+    # Failure sites below overwrite the reason; clean completion clears it.
+    # The model-facing half of the signal is injected into the continuation
+    # prompt in build_turn_context (user-message channel), not here.
+    try:
+        from tools.checkpoint_manager import (
+            install_termination_handlers,
+            list_interrupted_markers,
+            write_interrupted_marker,
+        )
+        _own_sid = getattr(agent, "session_id", "") or ""
+        if _own_sid:
+            try:
+                install_termination_handlers(
+                    _own_sid,
+                    last_action_fn=lambda: (
+                        getattr(agent, "_last_tool_action", "")
+                        or getattr(agent, "_current_tool", "")
+                    ),
+                )
+            except Exception as exc:
+                logger.debug("termination handler install failed: %s", exc)
+            try:
+                _inflight_action = (
+                    getattr(agent, "_last_tool_action", "")
+                    or getattr(agent, "_current_tool", "")
+                    or (str(user_message)[:160] if isinstance(user_message, str) else "")
+                )
+                write_interrupted_marker(
+                    _own_sid, last_action=str(_inflight_action)[:500], reason="in_flight"
+                )
+            except Exception as exc:
+                logger.debug("in-flight marker write failed: %s", exc)
+        _recent_markers = list_interrupted_markers()
+        if _recent_markers:
+            _now = __import__("time").time()
+            # Only surface markers from the last 24h to avoid stale noise,
+            # and never our own in-flight marker — it just says we're running.
+            _recent = [
+                m for m in _recent_markers
+                if _now - m.get("timestamp", 0) < 86400
+                and m.get("session_id", "") != _own_sid
+            ]
+            if _recent:
+                agent._vprint(
+                    "⚠️  Previous long-running session was interrupted before completing its task.",
+                    force=True,
+                )
+                for _m in _recent[:3]:
+                    _sid = _m.get("session_id", "?")[:12]
+                    _when = _m.get("iso_time", "")
+                    _reason = _m.get("reason", "")
+                    _act = (_m.get("last_action", "") or "")[:80]
+                    agent._vprint(
+                        f"   • session {_sid} at {_when} — {_reason} last_action={_act}",
+                        force=True,
+                    )
+                agent._vprint(
+                    "   Partial file mutations may have been left on disk. "
+                    "Check `hermes checkpoints` / `/rollback` before trusting state.",
+                    force=True,
+                )
+    except Exception as exc:
+        logger.debug("interrupted-marker session-start handling failed: %s", exc)
 
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
@@ -4973,6 +5072,7 @@ def run_conversation(
                 api_elapsed = time.time() - api_start_time
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
                 interrupted = True
+                _record_session_interruption(agent, "interrupted_during_api_call", last_action="api_call")
                 # Preserve any assistant text already streamed to the user
                 # before the stop landed. Dropping it leaves history with no
                 # record of the half-finished reply on screen, so the next turn
@@ -5797,6 +5897,7 @@ def run_conversation(
                         _retry.restart_with_redirected_messages = True
                         break
                     agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)
+                    _record_session_interruption(agent, f"interrupted_during_error:{error_type}", last_action=str(api_error)[:500])
                     _interrupt_text = f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))})."
                     close_interrupted_tool_sequence(messages, _interrupt_text)
                     agent._persist_session(messages, conversation_history)
@@ -5870,6 +5971,7 @@ def run_conversation(
                         "(compression.enabled: false). Run /compress to compact manually, "
                         "/new to start fresh, or switch to a larger-context model."
                     )
+                    _record_session_interruption(agent, "context_overflow_compaction_disabled", last_action=_final_response[:500])
                     return {
                         "final_response": _final_response,
                         "messages": messages,
@@ -9260,6 +9362,29 @@ def run_conversation(
                 # break sites that set final_response without appending.
                 break
     
+    # Session-terminate marker for long-running sessions (#99869):
+    # if the turn ended via interruption / failure / context-exhaustion,
+    # record a marker so the next session can triage.
+    try:
+        _failure_reason = ""
+        if interrupted:
+            _failure_reason = f"interrupted:{_turn_exit_reason}"
+        elif failed:
+            _failure_reason = f"failed:{_turn_exit_reason}:{str(final_response)[:300]}"
+        elif _compression_timeout_exhausted:
+            _failure_reason = "compression_exhausted"
+        _resp_text = str(final_response or "")
+        if "AuthenticationError" in _resp_text or " 401" in _resp_text or ("auth" in _resp_text.lower() and "error" in _resp_text.lower()):
+            _failure_reason = _failure_reason or f"auth_error:{_resp_text[:300]}"
+        elif "exit 124" in _resp_text or "timeout" in _resp_text.lower() and "124" in _resp_text:
+            _failure_reason = _failure_reason or f"timeout_124:{_resp_text[:300]}"
+        elif "context" in _resp_text.lower() and ("exhaust" in _resp_text.lower() or "overflow" in _resp_text.lower()):
+            _failure_reason = _failure_reason or f"context_exhausted:{_resp_text[:300]}"
+        if _failure_reason:
+            _record_session_interruption(agent, _failure_reason, last_action=_turn_exit_reason)
+    except Exception as exc:
+        logger.debug("turn-end interruption record failed: %s", exc)
+
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
@@ -9280,6 +9405,17 @@ def run_conversation(
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,
     )
+    # On clean completion, clear this session's interrupted marker if any
+    # (it was triaged successfully). Best-effort.
+    try:
+        if not interrupted and not failed and not _compression_timeout_exhausted:
+            from tools.checkpoint_manager import clear_interrupted_marker
+            _sid = getattr(agent, "session_id", "") or ""
+            if _sid:
+                clear_interrupted_marker(_sid)
+    except Exception as exc:
+        logger.debug("interrupted-marker clear failed: %s", exc)
+
     if _compression_timeout_exhausted:
         # Reuse the gateway's existing context-recovery contract (#98722,
         # salvaged from #98741). The bloated transcript remains intact while

@@ -5538,6 +5538,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if isinstance(cp_cfg, bool):
             cp_cfg = {"enabled": cp_cfg}
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
+        # Periodic checkpoint interval for long-running sessions (#99869).
+        try:
+            self.checkpoint_interval = int(cp_cfg.get("checkpoint_interval", 10))
+        except Exception:
+            self.checkpoint_interval = 10
+        if self.checkpoint_interval < 1:
+            self.checkpoint_interval = 1
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 20)
         self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
         self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)

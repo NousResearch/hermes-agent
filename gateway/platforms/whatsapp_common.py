@@ -18,9 +18,9 @@ mixin's methods are called (typically in ``__init__``):
 
     self.config        # gateway.config.PlatformConfig
     self.name          # str — adapter name (used in log lines)
-    self._dm_policy             # str: "open" | "allowlist" | "disabled"
+    self._dm_policy             # str: "open" | "allowlist" | "disabled" | "pairing"
     self._allow_from            # set[str]
-    self._group_policy          # str: "open" | "allowlist" | "disabled"
+    self._group_policy          # str: "open" | "allowlist" | "disabled" | "pairing"
     self._group_allow_from      # set[str]
     self._mention_patterns      # list[re.Pattern]
     self._reply_prefix          # Optional[str]
@@ -283,6 +283,8 @@ class WhatsAppBehaviorMixin:
         if self._group_policy == "allowlist":
             return self._matches_whatsapp_allowlist(chat_id, self._group_allow_from)
         if self._group_policy == "pairing":
+            # Pairing is a DM handshake; there is no group-level pairing
+            # flow. An explicit pairing policy therefore disables groups.
             return False
         if self._group_policy == "open":
             return True
@@ -399,6 +401,12 @@ class WhatsAppBehaviorMixin:
         if is_group:
             chat_id = chat_id_raw
             if not self._is_group_allowed(chat_id):
+                logger.info(
+                    "[%s] Dropping WhatsApp group message for %s: group_policy=%s",
+                    self.name,
+                    chat_id or "<unknown>",
+                    self._group_policy,
+                )
                 return False
         else:
             sender_id = str(data.get("senderId") or data.get("from") or "")

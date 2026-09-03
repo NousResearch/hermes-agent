@@ -1892,17 +1892,26 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     # Anthropic Claude models on Bedrock.
     # Context windows per Anthropic's official models comparison
     # (https://platform.claude.com/docs/en/about-claude/models/overview).
-    # Fable / Sonnet 5 / Opus 4.8 / 4.7 / 4.6 / Sonnet 4.6 have 1M generally
-    # available (no beta header required as of April 2026). Sonnet 4.5 and
-    # Sonnet 4 had their `context-1m-2025-08-07` beta retired on
+    # Fable / Sonnet 5 / Opus 5 / Opus 4.8 / 4.7 / 4.6 / Sonnet 4.6 have 1M
+    # generally available (no beta header required as of April 2026). Sonnet
+    # 4.5 and Sonnet 4 had their `context-1m-2025-08-07` beta retired on
     # April 30, 2026, so they are standard 200K; Haiku 4.5 is 200K.
+    # Opus 5 was added to agent/model_metadata.py DEFAULT_CONTEXT_LENGTHS as
+    # 1M but never here, so this table contradicted the invariant stated three
+    # lines below and the Bedrock path resolved 128K for a 1M model. Its
+    # Bedrock model card agrees it is 1M by default:
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-5.html
     # These 1M entries must match agent/model_metadata.py
-    # DEFAULT_CONTEXT_LENGTHS or the agent compresses context prematurely.
+    # DEFAULT_CONTEXT_LENGTHS or the agent compresses context prematurely;
+    # test_million_token_claude_entries_match_model_metadata enforces the
+    # pairing so a new 1M Claude generation fails the suite instead of
+    # silently inheriting BEDROCK_DEFAULT_CONTEXT_LENGTH (#74263).
     # Keys are matched by longest-substring, so the versioned 4-6/4-7/4-8
     # entries win over the generic "anthropic.claude-opus-4" fallback.
     "anthropic.claude-fable-5":      1_000_000,
     "anthropic.claude-fable":        1_000_000,
     "anthropic.claude-sonnet-5":     1_000_000,
+    "anthropic.claude-opus-5":       1_000_000,
     "anthropic.claude-opus-4-8":     1_000_000,
     "anthropic.claude-opus-4-7":     1_000_000,
     "anthropic.claude-opus-4-6":     1_000_000,

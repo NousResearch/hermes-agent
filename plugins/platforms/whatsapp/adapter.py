@@ -277,6 +277,8 @@ def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
     """Terminate the bridge process using process-tree semantics where possible."""
     if _IS_WINDOWS:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         cmd = ["taskkill", "/PID", str(proc.pid), "/T"]
         if force:
             cmd.append("/F")
@@ -286,6 +288,7 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
                 capture_output=True,
                 text=True, encoding='utf-8', errors='replace',
                 timeout=10,
+                creationflags=windows_hide_flags(),
             )
         except FileNotFoundError:
             if force:

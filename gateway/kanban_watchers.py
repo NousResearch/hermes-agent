@@ -211,6 +211,43 @@ def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
+    def _kanban_delivery_adapter(self, platform: Any, sub: dict) -> Any:
+        """Resolve the credential-owning adapter for one subscription.
+
+        New subscriptions persist the transport profile. For older rows, allow
+        the primary adapter only when the destination explicitly matches a
+        profile route and that profile does not configure its own adapter for
+        this platform. A configured-but-disconnected adapter fails closed.
+        """
+        owner_profile = str(sub.get("notifier_profile") or "").strip() or None
+        resolve_owned = getattr(self, "_authorization_adapter", None)
+        adapter = resolve_owned(platform, owner_profile) if callable(resolve_owned) else None
+        if adapter is not None or not owner_profile:
+            return adapter
+
+        configured = getattr(self, "_profile_configured_platforms", {}) or {}
+        if platform in (configured.get(owner_profile) or set()):
+            return None
+
+        routes = getattr(getattr(self, "config", None), "profile_routes", None) or []
+        if not routes:
+            return None
+        metadata = sub.get("delivery_metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        from gateway.profile_routing import match_profile_route
+
+        matched = match_profile_route(
+            routes,
+            getattr(platform, "value", str(platform)).lower(),
+            guild_id=str(metadata.get("scope_id") or "") or None,
+            chat_id=str(sub.get("chat_id") or "") or None,
+            thread_id=str(sub.get("thread_id") or "") or None,
+            parent_chat_id=str(metadata.get("parent_chat_id") or "") or None,
+        )
+        if matched is None or matched.profile != owner_profile:
+            return None
+        return (getattr(self, "adapters", None) or {}).get(platform)
+
     def _owns_kanban_dispatcher_lock(self) -> bool:
         """Return whether this gateway currently owns the singleton lock."""
         return getattr(self, "_kanban_dispatcher_lock_handle", None) is not None
@@ -462,15 +499,6 @@ class GatewayKanbanWatchersMixin:
                                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
                             for sub in subs:
                                 try:
-                                    owner_profile = sub.get("notifier_profile") or None
-                                    if owner_profile and owner_profile != notifier_profile:
-                                        _owner_adapters = getattr(self, "_profile_adapters", {}).get(owner_profile)
-                                        if not _owner_adapters:
-                                            logger.debug(
-                                                "kanban notifier: subscription for %s owned by profile %s; current profile %s has no adapter for it, skipping",
-                                                sub.get("task_id"), owner_profile, notifier_profile,
-                                            )
-                                            continue
                                     platform = (sub.get("platform") or "").lower()
                                     if platform not in active_platforms:
                                         logger.debug(
@@ -538,7 +566,7 @@ class GatewayKanbanWatchersMixin:
                     # wrong bot (the cross-profile mis-delivery this whole change
                     # exists to fix). The helper returns None only when the profile
                     # (or default) genuinely has no adapter for the platform.
-                    adapter = self._authorization_adapter(plat, sub_profile or None)
+                    adapter = self._kanban_delivery_adapter(plat, sub)
                     if adapter is None:
                         logger.debug(
                             "kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",

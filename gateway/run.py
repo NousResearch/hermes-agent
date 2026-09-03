@@ -7591,6 +7591,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # Enabled declarations are separate from connected adapters. An empty
+        # profile map can mean either "virtual route through the primary bot"
+        # or "own bot configured but failed"; notifier fallback must know which.
+        self._profile_configured_platforms: Dict[str, set[Platform]] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -17315,6 +17319,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
         profile_map = self._profile_adapters.setdefault(profile_name, {})
+        configured_platforms = getattr(self, "_profile_configured_platforms", None)
+        if not isinstance(configured_platforms, dict):
+            # Keep object.__new__ test/plugin runners compatible with the real
+            # constructor while still installing the ownership distinction.
+            configured_platforms = {}
+            self._profile_configured_platforms = configured_platforms
+        configured_platforms[profile_name] = {
+            platform
+            for platform, platform_config in profile_cfg.platforms.items()
+            if platform_config.enabled
+            and not (
+                getattr(self.config, "multiplex_profiles", False)
+                and platform is Platform.RELAY
+            )
+        }
         connected = 0
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
@@ -27563,6 +27582,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        # Agent/runtime routing and transport ownership are distinct. The
+        # source's in-process adapter provenance is authoritative when a shared
+        # primary bot routes a chat into a secondary profile.
+        _registered_transport = self._registered_transport_adapter(context.source)
+        _transport_profile = self._adapter_profile_for_source(context.source)
+        if _registered_transport is not None and not _transport_profile:
+            _transport_profile = (
+                getattr(self, "_primary_profile_name", None)
+                or self._active_profile_name()
+                or "default"
+            )
+        elif not _transport_profile:
+            # Hand-built/restored sources have no live adapter provenance.
+            # Preserve the historical runtime stamp rather than guessing.
+            _transport_profile = getattr(context.source, "profile", "") or ""
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -27578,6 +27612,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            transport_profile=_transport_profile,
             async_delivery=_async_delivery,
             cron_session="",
         )

@@ -144,3 +144,13 @@ class TestBedrockNormalize:
         assert nr.finish_reason == "stop"
         assert nr.usage is not None
         assert nr.usage.prompt_tokens == 10
+
+
+class TestBedrockContextLimits:
+
+    def test_claude_37_sonnet_context_limit(self):
+        from agent.bedrock_adapter import _static_bedrock_context_length
+        assert _static_bedrock_context_length("anthropic.claude-3-7-sonnet-20250219-v1:0") == 200_000
+        assert _static_bedrock_context_length("anthropic.claude-3-7-sonnet") == 200_000
+        assert _static_bedrock_context_length("anthropic.claude-3-5-sonnet") == 200_000
+

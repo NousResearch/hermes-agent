@@ -1911,6 +1911,7 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     "anthropic.claude-haiku-4-5":    200_000,
     "anthropic.claude-opus-4":       200_000,
     "anthropic.claude-sonnet-4":     200_000,
+    "anthropic.claude-3-7-sonnet":   200_000,
     "anthropic.claude-3-5-sonnet":   200_000,
     "anthropic.claude-3-5-haiku":    200_000,
     "anthropic.claude-3-opus":       200_000,

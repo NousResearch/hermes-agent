@@ -909,3 +909,60 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+def test_claude_37_sonnet_pricing_and_cache_rates():
+    entry = get_pricing_entry("claude-3-7-sonnet-20250219", provider="anthropic")
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("3.00")
+    assert entry.output_cost_per_million == Decimal("15.00")
+    assert entry.cache_read_cost_per_million == Decimal("0.30")
+    assert entry.cache_write_cost_per_million == Decimal("3.75")
+
+    result = estimate_usage_cost(
+        "claude-3-7-sonnet",
+        CanonicalUsage(
+            input_tokens=1_000,
+            output_tokens=500,
+            cache_read_tokens=2_000,
+            cache_write_tokens=1_000,
+        ),
+        provider="anthropic",
+    )
+    # (1k * $3.00 + 500 * $15.00 + 2k * $0.30 + 1k * $3.75) / 1M
+    # = (0.003 + 0.0075 + 0.0006 + 0.00375) = 0.01485
+    assert result.amount_usd == Decimal("0.01485")
+
+
+def test_gpt_45_preview_pricing():
+    entry = get_pricing_entry("gpt-4.5-preview", provider="openai")
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("75.00")
+    assert entry.output_cost_per_million == Decimal("150.00")
+    assert entry.cache_read_cost_per_million == Decimal("37.50")
+
+    result = estimate_usage_cost(
+        "gpt-4.5-preview-2025-02-27",
+        CanonicalUsage(input_tokens=10_000, output_tokens=2_000, cache_read_tokens=5_000),
+        provider="openai",
+    )
+    # (10k * 75 + 2k * 150 + 5k * 37.5) / 1M = (0.75 + 0.30 + 0.1875) = 1.2375
+    assert result.amount_usd == Decimal("1.2375")
+
+
+def test_gemini_20_flash_lite_pricing():
+    entry = get_pricing_entry("gemini-2.0-flash-lite", provider="google")
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("0.075")
+    assert entry.output_cost_per_million == Decimal("0.30")
+    assert entry.cache_read_cost_per_million == Decimal("0.0075")
+
+
+def test_bedrock_claude_37_sonnet_pricing():
+    entry = get_pricing_entry("anthropic.claude-3-7-sonnet", provider="bedrock")
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("3.00")
+    assert entry.output_cost_per_million == Decimal("15.00")
+    assert entry.cache_read_cost_per_million == Decimal("0.30")
+    assert entry.cache_write_cost_per_million == Decimal("3.75")
+

@@ -466,7 +466,64 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/api/pricing/",
         pricing_version="openai-pricing-2026-03-16",
     ),
+    (
+        "openai",
+        "gpt-4.5-preview-2025-02-27",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("75.00"),
+        output_cost_per_million=Decimal("150.00"),
+        cache_read_cost_per_million=Decimal("37.50"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "gpt-4.5-preview",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("75.00"),
+        output_cost_per_million=Decimal("150.00"),
+        cache_read_cost_per_million=Decimal("37.50"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "gpt-4.5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("75.00"),
+        output_cost_per_million=Decimal("150.00"),
+        cache_read_cost_per_million=Decimal("37.50"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
     # ── Anthropic older models (pre-4.5 generation) ────────────────────────
+    (
+        "anthropic",
+        "claude-3-7-sonnet-20250219",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-3-7-sonnet",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
     (
         "anthropic",
         "claude-3-5-sonnet-20241022",
@@ -681,6 +738,17 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-07-07",
     ),
+    (
+        "google",
+        "gemini-2.0-flash-lite",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.075"),
+        output_cost_per_million=Decimal("0.30"),
+        cache_read_cost_per_million=Decimal("0.0075"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
     # AWS Bedrock — pricing per the Bedrock pricing page.
     # Bedrock charges the same per-token rates as the model provider but
     # through AWS billing.  These are the on-demand prices (no commitment).
@@ -771,6 +839,30 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("4.00"),
         cache_read_cost_per_million=Decimal("0.08"),
         cache_write_cost_per_million=Decimal("1.00"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-3-7-sonnet",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-3-5-sonnet",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
         source="official_docs_snapshot",
         source_url="https://aws.amazon.com/bedrock/pricing/",
         pricing_version="bedrock-pricing-2026-04",

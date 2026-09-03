@@ -497,7 +497,7 @@ class TestProjectToolArgs:
             "timeout": 60,
             "workdir": "/tmp",
             "pty": False,
-            "notify_on_complete": True,
+            "notify": True,
         }
         result = project_tool_args("terminal", args)
         assert result == args

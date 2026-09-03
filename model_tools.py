@@ -23,7 +23,7 @@ from tools.registry import (
     registry, tool_error)
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
-from tools.arg_coercion import coerce_tool_args
+from tools.arg_coercion import coerce_tool_args, project_tool_args
 from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
 
 logger = logging.getLogger(__name__)
@@ -680,42 +680,6 @@ class _CallIds:
         """Same fields with None -> "" (hook/middleware wire contract)."""
         return {k: v or "" for k, v in asdict(self).items()}
 
-def project_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip arguments not declared in the tool's registered schema.
-
-    Prevents hidden control-plane parameters (e.g. ``force`` on the terminal
-    tool) from reaching handlers when the model includes them in the tool
-    call arguments.  Schemas that explicitly set ``additionalProperties: true``
-    on the top-level parameters object are respected — unknown arguments are
-    preserved for tools that intentionally accept them.
-    """
-    if not args or not isinstance(args, dict):
-        return args
-
-    schema = registry.get_schema(tool_name)
-    if not schema:
-        return args
-
-    params = schema.get("parameters") or {}
-    properties = params.get("properties")
-    if not properties:
-        return args
-
-    # JSON Schema: missing additionalProperties defaults to True (allow extra).
-    # Only strip when a schema explicitly forbids them.
-    if params.get("additionalProperties") is not False:
-        return args
-
-    declared = set(properties.keys())
-    unknown = set(args.keys()) - declared
-    if not unknown:
-        return args
-
-    logger.warning(
-        "project_tool_args: stripped unknown arguments for %s: %s",
-        tool_name, ", ".join(sorted(unknown)),
-    )
-    return {k: v for k, v in args.items() if k in declared}
 
 
 def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Optional[str], Optional[str]]:

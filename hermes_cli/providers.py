@@ -218,7 +218,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.fireworks.ai/inference/v1",
     ),
     "actual": HermesOverlay(
-        transport="codex_responses",
+        transport="openai_chat",
         extra_env_vars=("ACTUAL_API_KEY", "ACTUAL_BASE_URL"),
         base_url_override="https://api.actual.inc/v1",
         base_url_env_var="ACTUAL_BASE_URL",

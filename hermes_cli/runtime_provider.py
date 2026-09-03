@@ -39,6 +39,7 @@ from hermes_cli.auth import (
     has_usable_secret,
     is_actual_local_base_url,
     normalize_actual_base_url,
+    resolve_actual_api_mode,
 )
 from hermes_cli import config as _config_mod
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
@@ -161,6 +162,9 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     # hostname per #32243.
     if hostname == "api.meta.ai":
         return "codex_responses"
+    # Preserve URL-only/custom-provider behavior. The built-in Actual provider
+    # selects Chat Completions by identity, but an existing custom entry at this
+    # host historically selected Responses and must not silently flip on upgrade.
     if hostname == "api.actual.inc":
         return "codex_responses"
     # Ramp Router: Responses-native host — /v1/chat/completions is only a
@@ -545,6 +549,13 @@ def _resolve_runtime_from_pool_entry(
         base_url = base_url or OPENROUTER_BASE_URL
     elif provider == "xai":
         api_mode = "codex_responses"
+    elif provider == "actual":
+        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        configured_mode = (
+            model_cfg.get("api_mode") if configured_provider == "actual" else None
+        )
+        api_mode = resolve_actual_api_mode(configured_mode)
+        base_url = normalize_actual_base_url(base_url)
     elif provider == "nous":
         from hermes_cli.providers import nous_api_mode
 
@@ -1924,7 +1935,11 @@ def _resolve_explicit_runtime(
         elif provider == "xai":
             api_mode = "codex_responses"
         elif provider == "actual":
-            api_mode = "codex_responses"
+            configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+            configured_mode = (
+                model_cfg.get("api_mode") if configured_provider == "actual" else None
+            )
+            api_mode = resolve_actual_api_mode(configured_mode)
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
@@ -2602,7 +2617,10 @@ def resolve_runtime_provider(
         elif provider == "xai":
             api_mode = "codex_responses"
         elif provider == "actual":
-            api_mode = "codex_responses"
+            configured_mode = (
+                model_cfg.get("api_mode") if cfg_provider == "actual" else None
+            )
+            api_mode = resolve_actual_api_mode(configured_mode)
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.

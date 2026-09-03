@@ -206,6 +206,7 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    reasoning: object = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -221,6 +222,7 @@ def run_oneshot(
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
             spend per invocation.
+        reasoning: Optional reasoning-effort override for this invocation.
 
     Returns the exit code.  The caller owns process termination.
     """
@@ -280,6 +282,7 @@ def run_oneshot(
                     prompt,
                     model=model,
                     provider=provider,
+                    reasoning=reasoning,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
                     skills=skills,
@@ -361,6 +364,7 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
+    reasoning: object = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -454,6 +458,19 @@ def _run_agent(
         explicit_api_key=explicit_api_key_from_alias,
     )
 
+    from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+
+    reasoning_config = resolve_reasoning_config(cfg, effective_model)
+    if reasoning is not None and str(reasoning).strip():
+        parsed_reasoning = parse_reasoning_effort(reasoning)
+        if parsed_reasoning is None:
+            logging.warning(
+                "Unknown --reasoning '%s', keeping the configured level",
+                reasoning,
+            )
+        else:
+            reasoning_config = parsed_reasoning
+
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
     # sets; explicit values preserve user order.
@@ -503,6 +520,7 @@ def _run_agent(
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
             ephemeral_system_prompt=skills_prompt,
+            reasoning_config=reasoning_config,
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction

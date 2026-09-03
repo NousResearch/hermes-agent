@@ -4341,6 +4341,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "ACTUAL_API_MODE": {
+        "description": "Actual transport override (chat_completions or codex_responses)",
+        "prompt": "Actual API mode (leave empty for chat_completions)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "FIREWORKS_API_KEY": {
         "description": "Fireworks AI API key",
         "prompt": "Fireworks AI API key",

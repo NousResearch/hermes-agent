@@ -31,7 +31,6 @@ def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
     return match.group(1) if match else sid
 
 from agent.reasoning_effort import (
-    ACTUAL_RELAY_EFFORTS,
     XAI_GROK46_EFFORTS,
     XAI_LEGACY_EFFORTS,
     clamp_effort,
@@ -617,10 +616,6 @@ class ResponsesApiTransport(ProviderTransport):
                 XAI_GROK46_EFFORTS if is_grok_46_family(model)
                 else XAI_LEGACY_EFFORTS
             )
-        elif (params.get("provider") or "").strip().lower() == "actual":
-            # Actual Computer relays to SGLang/vLLM backends:
-            # none/low/medium/high/max.
-            _supported = ACTUAL_RELAY_EFFORTS
         else:
             # Profile-declared vocabulary first: gateways that validate
             # reasoning.effort per model (Ramp Router reads its live catalog)

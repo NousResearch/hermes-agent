@@ -82,6 +82,7 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tup
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from hermes_cli.config import (
+    _canonical_api_mode,
     get_hermes_home,
     get_config_path,
     read_raw_config,
@@ -207,7 +208,7 @@ def normalize_actual_base_url(base_url: str) -> str:
 
     Actual hosted inference is exposed at api.actual.inc, while the Actual
     client's offline local server binds a loopback host. Both use a /v1 API
-    surface for Hermes' Responses transport.
+    surface for Hermes' selected OpenAI-compatible transport.
     """
     url = str(base_url or "").strip().rstrip("/")
     if not url:
@@ -223,6 +224,30 @@ def normalize_actual_base_url(base_url: str) -> str:
     if is_actual_local_base_url(url) and path in {"", "/"}:
         return url + "/v1"
     return url
+
+
+def resolve_actual_api_mode(requested_mode: Any = None) -> str:
+    """Return Actual's default chat transport or its explicit Responses opt-in."""
+    override = os.getenv("ACTUAL_API_MODE", "").strip()
+    if override:
+        normalized_override = _canonical_api_mode(override).lower()
+        if normalized_override in {"chat_completions", "codex_responses"}:
+            return normalized_override
+        logger.warning(
+            "Ignoring invalid ACTUAL_API_MODE=%r; expected chat_completions or codex_responses",
+            override,
+        )
+
+    normalized_requested = ""
+    if isinstance(requested_mode, str) and requested_mode.strip():
+        normalized_requested = _canonical_api_mode(requested_mode).lower()
+    if normalized_requested and normalized_requested != "chat_completions":
+        logger.info(
+            "Routing the built-in Actual provider through chat_completions instead of "
+            "persisted api_mode=%s; set ACTUAL_API_MODE=codex_responses to opt in",
+            normalized_requested,
+        )
+    return "chat_completions"
 
 
 # =============================================================================

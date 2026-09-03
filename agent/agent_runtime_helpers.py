@@ -2800,6 +2800,17 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(getattr(agent, "provider", ""))
+        if profile is not None:
+            for key, value in profile.build_client_kwargs_extras(
+                base_url=client_kwargs.get("base_url", "")
+            ).items():
+                client_kwargs.setdefault(key, value)
+    except Exception:
+        _ra().logger.debug("Provider client-kwargs hook skipped", exc_info=True)
     # The MoA virtual provider has no real OpenAI wire endpoint - the facade
     # *is* the client. Rebuilding a native OpenAI client while
     # agent.provider == "moa" (client replacement, stream-retry pool cleanup,
@@ -2813,7 +2824,11 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         return build_moa_facade(agent, getattr(agent, "model", None) or "default")
     ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
     ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
-    httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
+    httpx_verify = resolve_httpx_verify(
+        ca_bundle=ssl_ca_cert,
+        ssl_verify=ssl_verify_cfg,
+        base_url=str(client_kwargs.get("base_url", "")),
+    )
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
     # ── Provider-supplied client (registration seam) ──────────────────────

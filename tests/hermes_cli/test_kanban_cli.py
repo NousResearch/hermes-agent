@@ -70,6 +70,37 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_cli_protected_review_rejects_then_allows_operator_override(kanban_home):
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="protected", assignee="builder")
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn,
+            task_id,
+            reviewer="reviewer",
+            metadata={"review_contract": {"schema": 1, "required_criteria": ["tests"]}},
+            expected_run_id=implementation.current_run_id,
+        )
+
+    rejected = kc.run_slash(f'complete {task_id} --summary "missing evidence"')
+    assert "structured review completion rejected" in rejected
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, task_id).status == "review"
+
+    overridden = kc.run_slash(
+        f'complete {task_id} --summary "accepted risk" '
+        '--review-override-reason "maintainer approved follow-up"'
+    )
+    assert f"Completed {task_id}" in overridden
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, task_id).status == "done"
+        assert any(
+            event.kind == "review_completion_overridden"
+            for event in kb.list_events(conn, task_id)
+        )
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

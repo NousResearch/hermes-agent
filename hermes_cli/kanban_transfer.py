@@ -439,14 +439,16 @@ def import_board(
     # Rewritten rather than moved across: the archive's copy names a slug
     # and a workdir that belong to the exporting machine.
     name = str(staged_meta.get("name") or manifest.get("board_name") or target)
-    kb.write_board_metadata(
-        target,
-        name=name,
-        description=str(staged_meta.get("description") or ""),
-        icon=str(staged_meta.get("icon") or ""),
-        color=str(staged_meta.get("color") or ""),
-        archived=False,
-    )
+    metadata_fields: dict[str, Any] = {
+        "name": name,
+        "description": str(staged_meta.get("description") or ""),
+        "icon": str(staged_meta.get("icon") or ""),
+        "color": str(staged_meta.get("color") or ""),
+        "archived": False,
+    }
+    if "review_contract" in staged_meta:
+        metadata_fields["review_contract"] = staged_meta["review_contract"]
+    kb.write_board_metadata(target, **metadata_fields)
     # Bring the imported schema up to this install's version before the
     # relocation pass writes to it.
     kb.init_db(board=target)

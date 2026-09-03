@@ -878,6 +878,7 @@ def write_board_metadata(
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
     project_id: Optional[str] = None,
+    review_contract: Any = ...,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -908,6 +909,11 @@ def write_board_metadata(
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
     if project_id is not None:
         meta["project_id"] = str(project_id) if project_id else None
+    if review_contract is not ...:
+        if review_contract is None:
+            meta.pop("review_contract", None)
+        else:
+            meta["review_contract"] = review_contract
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -5360,6 +5366,140 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class ReviewCompletionRejected(ValueError):
+    """Raised when a protected review supplies invalid approval evidence."""
+
+    def __init__(self, reasons: list[str]):
+        self.reasons = list(reasons)
+        super().__init__(
+            "structured review completion rejected: "
+            + "; ".join(reasons)
+            + ". Use request_changes for implementation defects or block for "
+            "an external review dependency."
+        )
+
+
+def _review_completion_contract(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+) -> tuple[bool, Optional[Any], Optional[int]]:
+    """Return the declared contract and active review run, if this is review."""
+    task_row = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if task_row is None:
+        return False, None, None
+
+    current_run_id = task_row["current_run_id"]
+    is_review = task_row["status"] == "review"
+    if task_row["status"] == "running" and current_run_id is not None:
+        claimed = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND run_id = ? AND kind = 'claimed' "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id, int(current_run_id)),
+        ).fetchone()
+        try:
+            payload = json.loads(claimed["payload"]) if claimed and claimed["payload"] else {}
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        is_review = isinstance(payload, dict) and payload.get("source_status") == "review"
+    if not is_review:
+        return False, None, None
+
+    requested_runs = conn.execute(
+        "SELECT metadata FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'review_requested' "
+        "ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    for requested in requested_runs:
+        if not requested["metadata"]:
+            continue
+        try:
+            requested_metadata = json.loads(requested["metadata"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(requested_metadata, dict) and "review_contract" in requested_metadata:
+            return True, requested_metadata["review_contract"], current_run_id
+
+    board_metadata = read_board_metadata(board if board is not None else get_current_board())
+    if "review_contract" in board_metadata:
+        return True, board_metadata["review_contract"], current_run_id
+    return False, None, current_run_id
+
+
+def _review_completion_reasons(contract: Any, metadata: Optional[dict]) -> list[str]:
+    """Validate schema-v1 review evidence and return all contract violations."""
+    reasons: list[str] = []
+    if not isinstance(contract, dict):
+        return ["review_contract must be an object"]
+    if type(contract.get("schema")) is not int or contract["schema"] != 1:
+        reasons.append("review_contract.schema must be 1")
+
+    required = contract.get("required_criteria", [])
+    if (
+        not isinstance(required, list)
+        or any(not isinstance(item, str) or not item.strip() for item in required)
+        or len({item.strip() for item in required}) != len(required)
+    ):
+        reasons.append("review_contract.required_criteria must contain unique non-empty strings")
+        required = []
+    else:
+        required = [item.strip() for item in required]
+    if not isinstance(contract.get("require_commit", False), bool):
+        reasons.append("review_contract.require_commit must be a boolean")
+
+    evidence = metadata if isinstance(metadata, dict) else {}
+    if type(evidence.get("review_schema")) is not int or evidence["review_schema"] != 1:
+        reasons.append("review_schema must be 1")
+    if evidence.get("review_outcome") != "approved":
+        reasons.append("review_outcome must be approved")
+
+    for key in ("reviewer_checks_failed", "unresolved_findings", "untested_required"):
+        if evidence.get(key) != []:
+            reasons.append(f"{key} must be an empty list")
+
+    acceptance = evidence.get("acceptance")
+    rows_by_id: dict[str, list[dict]] = {}
+    if not isinstance(acceptance, list):
+        reasons.append("acceptance must be a list")
+        acceptance = []
+    for row in acceptance:
+        if not isinstance(row, dict):
+            reasons.append("each acceptance row must be an object")
+            continue
+        criterion_id = row.get("criterion_id")
+        if not isinstance(criterion_id, str) or not criterion_id.strip():
+            reasons.append("each acceptance row needs a non-empty criterion_id")
+            continue
+        criterion_id = criterion_id.strip()
+        rows_by_id.setdefault(criterion_id, []).append(row)
+        if row.get("status") != "PASS":
+            reasons.append(f"acceptance criterion {criterion_id} must be PASS")
+        if not isinstance(row.get("evidence"), str) or not row["evidence"].strip():
+            reasons.append(f"acceptance criterion {criterion_id} needs evidence")
+    for criterion_id in required:
+        count = len(rows_by_id.get(criterion_id, []))
+        if count != 1:
+            reasons.append(
+                f"required criterion {criterion_id} must appear exactly once (found {count})"
+            )
+
+    if contract.get("require_commit", False):
+        commit = evidence.get("commit")
+        if not isinstance(commit, str) or re.fullmatch(r"[0-9a-fA-F]{40}", commit) is None:
+            reasons.append("commit must be a full 40-character hexadecimal SHA")
+
+    if "approved" in evidence and evidence["approved"] is not True:
+        reasons.append("approved must be true")
+    if "verdict" in evidence and evidence["verdict"] != "approved":
+        reasons.append("verdict must be approved")
+    return reasons
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5370,6 +5510,8 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True,
+    review_override_reason: Optional[str] = None,
+    board: Optional[str] = None,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
 
@@ -5387,6 +5529,12 @@ def complete_task(
     callers do not have to pass both. ``metadata`` is a free-form dict
     (e.g. ``{"changed_files": [...], "tests_run": [...]}``) — workers
     are encouraged to use it for structured handoff facts.
+
+    When the latest ``review_requested`` run metadata or board metadata
+    declares a ``review_contract``, review completions must satisfy that
+    structured contract. ``review_override_reason`` is an explicit operator
+    risk acceptance; it emits ``review_completion_overridden`` rather than
+    masquerading as an ordinary approval.
 
     ``created_cards`` is an optional list of task ids the completing
     worker claims to have created. Each id is verified against
@@ -5408,6 +5556,40 @@ def complete_task(
     # final write transaction below to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+
+    if expected_run_id is not None:
+        active = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if (
+            active is None
+            or active["current_run_id"] is None
+            or int(active["current_run_id"]) != int(expected_run_id)
+        ):
+            return False
+
+    contract_enabled, contract, review_run_id = _review_completion_contract(
+        conn, task_id, board=board,
+    )
+    review_rejection_reasons = (
+        _review_completion_reasons(contract, metadata) if contract_enabled else []
+    )
+    override_reason = str(review_override_reason or "").strip()
+    if override_reason and expected_run_id is not None:
+        raise ValueError(
+            "review_override_reason is restricted to manual operator actions; "
+            "an active reviewer must use request_changes or block"
+        )
+    if review_rejection_reasons and not override_reason:
+        with write_txn(conn):
+            _append_event(
+                conn,
+                task_id,
+                "review_completion_rejected",
+                {"reasons": review_rejection_reasons},
+                run_id=review_run_id,
+            )
+        raise ReviewCompletionRejected(review_rejection_reasons)
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -5487,6 +5669,17 @@ def complete_task(
             )
         if cur.rowcount != 1:
             return False
+        if review_rejection_reasons:
+            _append_event(
+                conn,
+                task_id,
+                "review_completion_overridden",
+                {
+                    "reason": override_reason,
+                    "contract_violations": review_rejection_reasons,
+                },
+                run_id=review_run_id,
+            )
         if isinstance(metadata, dict):
             _persist_scratch_completion_artifacts(conn, task_id, metadata)
             for stored_path in metadata.pop("_staged_artifacts", []):

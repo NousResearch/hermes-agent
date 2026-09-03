@@ -638,6 +638,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+    p_complete.add_argument(
+        "--review-override-reason",
+        default=None,
+        help=(
+            "Explicitly accept a protected review's structured contract violations. "
+            "The reason is recorded in a distinct audit event. Manual use only."
+        ),
+    )
 
     p_edit = sub.add_parser(
         "edit",
@@ -2357,12 +2365,14 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         return 1
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
+    review_override_reason = getattr(args, "review_override_reason", None)
     # Guard: structured handoff fields are per-run, so they'd be
     # copy-pasted identically across N runs — almost always a footgun.
     # Refuse instead of silently doing the wrong thing.
-    if len(ids) > 1 and (summary or raw_meta):
+    if len(ids) > 1 and (summary or raw_meta or review_override_reason):
         print(
-            "kanban: --summary / --metadata are per-task and can't be used "
+            "kanban: --summary / --metadata / --review-override-reason are per-task "
+            "and can't be used "
             "with multiple ids (would apply the same handoff to every task). "
             "Complete tasks one at a time, or drop the flags for the bulk close.",
             file=sys.stderr,
@@ -2407,13 +2417,20 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 failed.append(tid)
                 continue
 
-            if not kb.complete_task(
-                conn, tid,
-                result=args.result,
-                summary=summary,
-                metadata=metadata,
-                expected_run_id=_worker_run_id_for(tid),
-            ):
+            try:
+                completed = kb.complete_task(
+                    conn, tid,
+                    result=args.result,
+                    summary=summary,
+                    metadata=metadata,
+                    expected_run_id=_worker_run_id_for(tid),
+                    review_override_reason=review_override_reason,
+                )
+            except ValueError as exc:
+                failed.append(tid)
+                print(f"kanban: {exc}", file=sys.stderr)
+                continue
+            if not completed:
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
             else:

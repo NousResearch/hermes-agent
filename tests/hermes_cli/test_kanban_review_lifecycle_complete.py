@@ -149,6 +149,301 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
     assert completed.block_recurrences == 0
 
 
+def test_protected_review_rejects_contradictory_approval_and_stays_recoverable(conn):
+    task_id = kb.create_task(conn, title="Validate duration hour choices", assignee="builder")
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        summary="Ready for structured review.",
+        metadata={
+            "review_contract": {
+                "schema": 1,
+                "required_criteria": ["duration-hours"],
+                "require_commit": True,
+            }
+        },
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+    assert review is not None
+
+    with pytest.raises(ValueError, match="structured review completion rejected"):
+        kb.complete_task(
+            conn,
+            task_id,
+            summary="Approved, with a required mismatch still present.",
+            metadata={
+                "review_schema": 1,
+                "review_outcome": "approved",
+                "commit": "a" * 40,
+                "acceptance": [
+                    {
+                        "criterion_id": "duration-hours",
+                        "status": "PASS",
+                        "evidence": "browser check",
+                    }
+                ],
+                "reviewer_checks_failed": [],
+                "unresolved_findings": [],
+                "untested_required": [],
+                "approved": False,
+            },
+            expected_run_id=review.current_run_id,
+        )
+
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.status == "running"
+    assert task.current_run_id == review.current_run_id
+    rejected = _event(kb.list_events(conn, task_id), "review_completion_rejected")
+    assert rejected.run_id == review.current_run_id
+    assert "approved must be true" in rejected.payload["reasons"]
+
+
+def test_malformed_declared_review_contract_fails_closed(conn):
+    task_id = kb.create_task(conn, title="Malformed contract", assignee="builder")
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        metadata={"review_contract": None},
+        expected_run_id=implementation.current_run_id,
+    )
+
+    with pytest.raises(ValueError, match="review_contract must be an object"):
+        kb.complete_task(conn, task_id, summary="manual approval")
+
+    assert kb.get_task(conn, task_id).status == "review"
+
+
+def test_board_review_contract_protects_manual_review_completion(
+    conn,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    kb.write_board_metadata(
+        "default",
+        review_contract={"schema": 1, "required_criteria": ["tests"]},
+    )
+    task_id = kb.create_task(conn, title="Board-protected review", assignee="builder")
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        expected_run_id=implementation.current_run_id,
+    )
+
+    with pytest.raises(ValueError, match="review_schema must be 1"):
+        kb.complete_task(conn, task_id, summary="missing evidence")
+
+    assert kb.get_task(conn, task_id).status == "review"
+
+
+def test_protected_review_accepts_complete_structured_approval(conn):
+    task_id = kb.create_task(conn, title="Valid protected review", assignee="builder")
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        metadata={
+            "review_contract": {
+                "schema": 1,
+                "required_criteria": ["tests", "behavior"],
+                "require_commit": True,
+            }
+        },
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id)
+    assert review is not None
+    assert kb.complete_task(
+        conn,
+        task_id,
+        summary="All required checks passed.",
+        metadata={
+            "review_schema": 1,
+            "review_outcome": "approved",
+            "commit": "0123456789abcdef0123456789abcdef01234567",
+            "acceptance": [
+                {"criterion_id": "tests", "status": "PASS", "evidence": "suite green"},
+                {"criterion_id": "behavior", "status": "PASS", "evidence": "reproduced"},
+            ],
+            "reviewer_checks_failed": [],
+            "unresolved_findings": [],
+            "untested_required": [],
+            "approved": True,
+            "verdict": "approved",
+        },
+        expected_run_id=review.current_run_id,
+    )
+    assert kb.get_task(conn, task_id).status == "done"
+
+
+@pytest.mark.parametrize("status", ["FAIL", "BLOCKED", "UNTESTED"])
+def test_protected_review_rejects_nonpassing_acceptance_rows(conn, status: str):
+    task_id = kb.create_task(conn, title=f"Rejected {status} review", assignee="builder")
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        metadata={"review_contract": {"schema": 1, "required_criteria": ["tests"]}},
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id)
+    assert review is not None
+    with pytest.raises(ValueError, match="criterion tests must be PASS"):
+        kb.complete_task(
+            conn,
+            task_id,
+            summary="Not actually approved.",
+            metadata={
+                "review_schema": 1,
+                "review_outcome": "approved",
+                "acceptance": [
+                    {"criterion_id": "tests", "status": status, "evidence": "result"}
+                ],
+                "reviewer_checks_failed": [],
+                "unresolved_findings": [],
+                "untested_required": [],
+            },
+            expected_run_id=review.current_run_id,
+        )
+    assert kb.get_task(conn, task_id).status == "running"
+
+
+@pytest.mark.parametrize(
+    ("patch", "reason"),
+    [
+        ({"review_schema": 2}, "review_schema must be 1"),
+        ({"review_outcome": "changes_requested"}, "review_outcome must be approved"),
+        ({"reviewer_checks_failed": ["lint"]}, "reviewer_checks_failed must be an empty list"),
+        ({"unresolved_findings": ["bug"]}, "unresolved_findings must be an empty list"),
+        ({"untested_required": ["browser"]}, "untested_required must be an empty list"),
+        ({"acceptance": []}, "required criterion tests must appear exactly once"),
+        ({"commit": "abc123"}, "commit must be a full 40-character hexadecimal SHA"),
+        ({"verdict": "request_changes"}, "verdict must be approved"),
+    ],
+)
+def test_review_contract_validator_rejects_each_conflicting_field(patch: dict, reason: str):
+    evidence = {
+        "review_schema": 1,
+        "review_outcome": "approved",
+        "commit": "a" * 40,
+        "acceptance": [
+            {"criterion_id": "tests", "status": "PASS", "evidence": "suite green"}
+        ],
+        "reviewer_checks_failed": [],
+        "unresolved_findings": [],
+        "untested_required": [],
+        "approved": True,
+        "verdict": "approved",
+    }
+    evidence.update(patch)
+    reasons = kb._review_completion_reasons(
+        {"schema": 1, "required_criteria": ["tests"], "require_commit": True},
+        evidence,
+    )
+    assert any(reason in item for item in reasons)
+
+
+def test_review_risk_override_is_distinct_and_audited(conn):
+    task_id = kb.create_task(conn, title="Accepted review risk", assignee="builder")
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        metadata={"review_contract": {"schema": 1, "required_criteria": ["tests"]}},
+        expected_run_id=implementation.current_run_id,
+    )
+
+    assert kb.complete_task(
+        conn,
+        task_id,
+        summary="Maintainer accepted the documented risk.",
+        review_override_reason="Shipping is time-critical; follow-up is scheduled.",
+    )
+    assert kb.get_task(conn, task_id).status == "done"
+    events = kb.list_events(conn, task_id)
+    overridden = _event(events, "review_completion_overridden")
+    assert overridden.payload["reason"] == "Shipping is time-critical; follow-up is scheduled."
+    assert overridden.payload["contract_violations"]
+    assert not [event for event in events if event.kind == "review_completion_rejected"]
+
+
+def test_active_reviewer_cannot_self_grant_manual_risk_override(conn):
+    task_id = kb.create_task(conn, title="Operator-only risk acceptance", assignee="builder")
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        metadata={"review_contract": {"schema": 1, "required_criteria": ["tests"]}},
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id)
+    assert review is not None
+
+    with pytest.raises(ValueError, match="manual operator actions"):
+        kb.complete_task(
+            conn,
+            task_id,
+            summary="Reviewer attempted to accept their own risk.",
+            review_override_reason="self-approved",
+            expected_run_id=review.current_run_id,
+        )
+    assert kb.get_task(conn, task_id).status == "running"
+
+
+def test_task_review_contract_survives_rereview_handoffs(conn):
+    task_id = kb.create_task(conn, title="Persistent protected review", assignee="builder")
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        metadata={"review_contract": {"schema": 1, "required_criteria": ["tests"]}},
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id)
+    assert review is not None
+    assert kb.request_changes(
+        conn,
+        task_id,
+        reason="Fix the failing behavior.",
+        expected_run_id=review.current_run_id,
+    ) == (True, "builder")
+    rework = kb.claim_task(conn, task_id)
+    assert rework is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        summary="Corrected implementation; contract intentionally omitted here.",
+        expected_run_id=rework.current_run_id,
+    )
+
+    with pytest.raises(ValueError, match="review_schema must be 1"):
+        kb.complete_task(conn, task_id, summary="approval without structured evidence")
+    assert kb.get_task(conn, task_id).status == "review"
+
+
 @pytest.mark.parametrize("bad_payload", [None, "{not-json", "{}"])
 def test_rereview_requires_explicit_reviewer_when_provenance_is_invalid(
     conn,

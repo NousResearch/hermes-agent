@@ -132,6 +132,30 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_tool_surfaces_protected_review_rejection(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        implementation = kb.get_task(conn, worker_env)
+        assert implementation is not None
+        assert kb.request_review(
+            conn,
+            worker_env,
+            reviewer="test-worker",
+            metadata={"review_contract": {"schema": 1, "required_criteria": ["tests"]}},
+            expected_run_id=implementation.current_run_id,
+        )
+        assert kb.claim_review_task(conn, worker_env) is not None
+
+    response = json.loads(kt._handle_complete({"summary": "approved without evidence"}))
+    assert "structured review completion rejected" in response["error"]
+    with kb.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "running"
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

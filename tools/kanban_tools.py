@@ -785,6 +785,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    board=board,
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
@@ -1821,7 +1822,10 @@ KANBAN_COMPLETE_SCHEMA = {
                     "Free-form dict of structured facts about this "
                     "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
                     "\"findings\": [...]}. Surfaced to downstream "
-                    "workers alongside ``summary``."
+                    "workers alongside ``summary``. When a review_contract is "
+                    "declared, completion metadata must include review_schema, "
+                    "review_outcome, acceptance, reviewer_checks_failed, "
+                    "unresolved_findings, and untested_required evidence."
                 ),
             },
             "result": {
@@ -1958,7 +1962,9 @@ KANBAN_REQUEST_REVIEW_SCHEMA = {
                 "type": "object",
                 "description": (
                     "Optional structured handoff facts for the reviewer, such "
-                    "as changed_files, tests_run, commit, or decisions."
+                    "as changed_files, tests_run, commit, or decisions. To protect "
+                    "this and later review passes, include review_contract with "
+                    "schema, required_criteria, and optional require_commit."
                 ),
                 "additionalProperties": True,
             },

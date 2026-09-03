@@ -392,6 +392,54 @@ Keep secrets, raw logs, tokens, OAuth material, and unrelated transcripts out of
 tests, say so explicitly in `summary` and use `metadata` for the evidence that
 does exist, such as source URLs, issue ids, or manual review steps.
 
+#### Protected structured reviews
+
+Boards that need machine-enforced approval can opt into review schema 1. For a
+single task, declare the contract in the metadata passed to
+`kanban_request_review`:
+
+```json
+{
+  "review_contract": {
+    "schema": 1,
+    "required_criteria": ["tests", "duration-hours"],
+    "require_commit": true
+  }
+}
+```
+
+To protect every review on a board, put the same `review_contract` object in
+that board's `board.json`. Existing boards and tasks remain unchanged when no
+contract is declared. A task-level declaration takes precedence and remains in
+force across requested-changes/re-review cycles.
+
+A protected review completes only with matching structured metadata:
+
+```json
+{
+  "review_schema": 1,
+  "review_outcome": "approved",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "acceptance": [
+    {"criterion_id": "tests", "status": "PASS", "evidence": "suite green"},
+    {"criterion_id": "duration-hours", "status": "PASS", "evidence": "browser check"}
+  ],
+  "reviewer_checks_failed": [],
+  "unresolved_findings": [],
+  "untested_required": []
+}
+```
+
+Missing rows, non-`PASS` status, malformed commit identifiers, non-empty failure
+lists, and conflicting `approved` or `verdict` fields reject completion and emit
+a `review_completion_rejected` event without ending the review run. Free-form
+summary text stays explanatory and is not parsed as approval evidence.
+
+An operator can intentionally accept documented risk with
+`hermes kanban complete <task> --review-override-reason "…"`. This is unavailable
+to an active reviewer-owned run and records `review_completion_overridden` with
+both the reason and contract violations.
+
 ### The worker lifecycle
 
 Every profile that works kanban tasks automatically gets the worker lifecycle — it's injected into the worker's system prompt at spawn (the `KANBAN_GUIDANCE` block), so there is **nothing to install or configure**. It teaches the worker the full lifecycle in **tool calls**, not CLI commands:

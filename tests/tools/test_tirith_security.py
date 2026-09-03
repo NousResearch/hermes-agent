@@ -417,14 +417,11 @@ class TestLazyInstallPolicy:
 
 
 # ---------------------------------------------------------------------------
-# Unsupported platform (Windows etc.) — silent fast-path everywhere
+# Unsupported managed-install platform (Windows etc.)
 # ---------------------------------------------------------------------------
 
 class TestUnsupportedPlatform:
-    """When _detect_target() returns None (no tirith binary for this OS+arch),
-    the entire subsystem must stay silent: no PATH probes, no download thread,
-    no disk failure marker, no spawn attempts, no CLI banner. Pattern-matching
-    guards still cover the gap; tirith content scanning is just absent."""
+    """Manager support must not disable an operator-provided scanner."""
 
     @pytest.mark.parametrize("system, machine, expected", [
         ("Linux", "x86_64", True),
@@ -460,34 +457,107 @@ class TestUnsupportedPlatform:
 
     @patch("tools.tirith_security._load_security_config")
     def test_check_command_security_unsupported_allows_silently(self, mock_cfg):
-        """Windows: skip the resolver and spawn entirely — return allow with
-        an empty summary so callers can't accidentally surface 'tirith
-        unavailable' messaging to the user."""
+        """Default fail-open remains silent when no local scanner exists."""
         mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
-                                 "tirith_timeout": 5, "tirith_fail_open": True}
-        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
-             patch("tools.tirith_security.subprocess.run") as mock_run, \
-             patch("tools.tirith_security._resolve_tirith_path") as mock_resolve:
-            result = check_command_security("rm -rf /")
-            assert result == {"action": "allow", "findings": [], "summary": ""}
-            mock_run.assert_not_called()
-            mock_resolve.assert_not_called()
-
-    @patch("tools.tirith_security._load_security_config")
-    def test_explicit_path_still_honored_on_unsupported_platform(self, mock_cfg):
-        """If a user explicitly configured a tirith_path (e.g. they built it
-        themselves under WSL), the unsupported-platform short-circuit must
-        NOT override that — explicit config wins."""
-        mock_cfg.return_value = {"tirith_enabled": True,
-                                 "tirith_path": "/opt/custom/tirith",
                                  "tirith_timeout": 5, "tirith_fail_open": True}
         _tirith_mod._resolved_path = None
         with patch("tools.tirith_security.is_platform_supported", return_value=False), \
-             patch("os.path.isfile", return_value=True), \
-             patch("os.access", return_value=True):
-            result = _tirith_mod._resolve_tirith_path("/opt/custom/tirith")
-            assert result == "/opt/custom/tirith"
-            assert _tirith_mod._resolved_path == "/opt/custom/tirith"
+             patch("tools.tirith_security.shutil.which", return_value=None) as mock_which, \
+             patch("tools.tirith_security.subprocess.run") as mock_run, \
+             patch("tools.tirith_security._warn_once") as mock_warn:
+            result = check_command_security("rm -rf /")
+            assert result == {"action": "allow", "findings": [], "summary": ""}
+            mock_run.assert_not_called()
+            mock_warn.assert_not_called()
+            mock_which.assert_called_once_with("tirith")
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_explicit_path_scans_on_unsupported_platform(
+        self, mock_cfg, mock_run, tmp_path
+    ):
+        """A working explicit scanner remains authoritative everywhere."""
+        binary = tmp_path / "tirith"
+        binary.write_text("scanner", encoding="utf-8")
+        binary.chmod(0o700)
+        mock_cfg.return_value = {"tirith_enabled": True,
+                                 "tirith_path": str(binary),
+                                 "tirith_timeout": 5,
+                                 "tirith_fail_open": False}
+        mock_run.return_value = _mock_run(
+            1,
+            _json_stdout([{"rule_id": "homograph_url"}], "blocked"),
+        )
+        _tirith_mod._resolved_path = None
+        with patch("tools.tirith_security.is_platform_supported", return_value=False):
+            result = check_command_security("curl https://example.test")
+
+        assert result["action"] == "block"
+        assert mock_run.call_args.args[0][0] == str(binary)
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_default_path_scans_on_unsupported_platform(self, mock_cfg, mock_run):
+        """Manager support does not suppress the ordinary PATH contract."""
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        mock_run.return_value = _mock_run(2, _json_stdout(summary="review"))
+        _tirith_mod._resolved_path = None
+        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
+             patch("tools.tirith_security.shutil.which",
+                   return_value="/usr/local/bin/tirith"), \
+             patch("tools.tirith_security.threading.Thread") as mock_thread:
+            result = check_command_security("curl https://example.test")
+
+        assert result["action"] == "warn"
+        assert mock_run.call_args.args[0][0] == "/usr/local/bin/tirith"
+        mock_thread.assert_not_called()
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_unsupported_missing_scanner_honors_fail_closed(self, mock_cfg):
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": False}
+        _tirith_mod._resolved_path = None
+        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
+             patch("tools.tirith_security.shutil.which", return_value=None), \
+             patch("tools.tirith_security.subprocess.run") as mock_run:
+            result = check_command_security("echo guarded")
+
+        assert result == {
+            "action": "block",
+            "findings": [],
+            "summary": "tirith path unavailable (fail-closed)",
+        }
+        mock_run.assert_not_called()
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_ensure_installed_honors_explicit_path(self, mock_cfg, tmp_path):
+        binary = tmp_path / "tirith"
+        binary.write_text("scanner", encoding="utf-8")
+        binary.chmod(0o700)
+        mock_cfg.return_value = {"tirith_enabled": True,
+                                 "tirith_path": str(binary),
+                                 "tirith_timeout": 5,
+                                 "tirith_fail_open": True}
+        _tirith_mod._resolved_path = None
+        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
+             patch("tools.tirith_security.threading.Thread") as mock_thread:
+            assert ensure_installed() == str(binary)
+
+        mock_thread.assert_not_called()
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_ensure_installed_honors_path(self, mock_cfg):
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        _tirith_mod._resolved_path = None
+        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
+             patch("tools.tirith_security.shutil.which",
+                   return_value="/usr/local/bin/tirith"), \
+             patch("tools.tirith_security.threading.Thread") as mock_thread:
+            assert ensure_installed() == "/usr/local/bin/tirith"
+
+        mock_thread.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -1544,7 +1544,8 @@ def _schedule_managed_update(
     """Launch at most one non-blocking managed update worker at a time."""
     global _update_thread
     if (
-        _is_explicit_path(configured_path)
+        not is_platform_supported()
+        or _is_explicit_path(configured_path)
         or not _is_managed_tirith(path)
         or not _tirith_auto_install_allowed()
         or not _update_is_due()
@@ -1611,14 +1612,6 @@ def _resolve_tirith_path(
     explicit = _is_explicit_path(configured_path)
     install_failed = _resolved_path is _INSTALL_FAILED
 
-    # Platform is unsupported by Hermes' Tirith manager. Cache the verdict and
-    # return the unexpanded configured path; the spawn loop will fail-open via
-    # the dedupe'd OSError handler.
-    if not explicit and not is_platform_supported():
-        _resolved_path = _INSTALL_FAILED
-        _install_failure_reason = "unsupported_platform"
-        return None if background_only else expanded
-
     # Explicit path: check it and stop. Never auto-download a replacement.
     if explicit:
         if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
@@ -1644,6 +1637,14 @@ def _resolve_tirith_path(
         _clear_install_failed()
         _schedule_managed_update(found, configured_path, log_failures=False)
         return found
+
+    # Platform support controls Hermes' managed cache and installer, not
+    # whether an operator-provided Tirith binary may scan commands. Explicit
+    # paths and PATH discovery above therefore remain available everywhere.
+    if not is_platform_supported():
+        _resolved_path = _INSTALL_FAILED
+        _install_failure_reason = "unsupported_platform"
+        return None if background_only else expanded
 
     hermes_bin = _managed_tirith_path()
     if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
@@ -1775,14 +1776,6 @@ def ensure_installed(*, log_failures: bool = True):
             return path
         return None
 
-    # Platform is unsupported by Hermes' Tirith manager — don't probe PATH,
-    # start a download thread, or write a disk failure marker. Pattern-matching
-    # guards still run; this path stays silent.
-    if not is_platform_supported():
-        _resolved_path = _INSTALL_FAILED
-        _install_failure_reason = "unsupported_platform"
-        return None
-
     configured_path = cfg["tirith_path"]
     explicit = _is_explicit_path(configured_path)
     expanded = os.path.expanduser(configured_path)
@@ -1812,6 +1805,14 @@ def ensure_installed(*, log_failures: bool = True):
             log_failures=log_failures,
         )
         return found
+
+    # Unsupported manager targets may still use explicit or PATH binaries,
+    # but Hermes must not inspect its managed cache or start an installer for
+    # an archive format it does not support.
+    if not is_platform_supported():
+        _resolved_path = _INSTALL_FAILED
+        _install_failure_reason = "unsupported_platform"
+        return None
 
     hermes_bin = _managed_tirith_path()
     if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
@@ -1898,12 +1899,6 @@ def check_command_security(command: str) -> dict:
             "summary": f"tirith unavailable (circuit breaker, fail-{'open' if action == 'allow' else 'closed'})",
         }
 
-    # Unsupported manager platform (currently native Windows and unknown
-    # architectures). Skip the resolver entirely; pattern-matching guards
-    # still run via the rest of approval.py.
-    if not is_platform_supported():
-        return {"action": "allow", "findings": [], "summary": ""}
-
     tirith_path = _resolve_tirith_path(
         cfg["tirith_path"], background_only=True
     )
@@ -1911,12 +1906,15 @@ def check_command_security(command: str) -> dict:
     fail_open = cfg["tirith_fail_open"]
 
     if tirith_path is None:
-        _warn_once(
-            "tirith_path_none",
-            "tirith path resolved to None; scanning disabled",
-        )
+        unsupported_manager = _install_failure_reason == "unsupported_platform"
+        if not unsupported_manager:
+            _warn_once(
+                "tirith_path_none",
+                "tirith path resolved to None; scanning disabled",
+            )
         if fail_open:
-            return {"action": "allow", "findings": [], "summary": "tirith path unavailable"}
+            summary = "" if unsupported_manager else "tirith path unavailable"
+            return {"action": "allow", "findings": [], "summary": summary}
         return {"action": "block", "findings": [], "summary": "tirith path unavailable (fail-closed)"}
 
     try:

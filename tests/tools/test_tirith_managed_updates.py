@@ -435,6 +435,20 @@ class TestManagedCachePlacement:
 
 
 class TestUpdateScheduling:
+    def test_unsupported_manager_never_schedules_managed_update(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        managed = _write_executable(tmp_path / "bin" / "tirith")
+        monkeypatch.setattr(tirith, "is_platform_supported", lambda: False)
+        monkeypatch.setattr(tirith, "_tirith_auto_install_allowed", lambda: True)
+        monkeypatch.setattr(tirith, "_update_is_due", lambda: True)
+        monkeypatch.setattr(tirith.threading, "Thread", _CapturedThread)
+
+        tirith._schedule_managed_update(str(managed), "tirith")
+
+        assert not _CapturedThread.instances
+
     def test_managed_cache_returns_immediately_and_schedules_background_update(
         self, tmp_path, monkeypatch
     ):

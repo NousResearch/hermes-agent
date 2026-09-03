@@ -314,6 +314,17 @@ class TestResumePendingSystemNote:
         # But still guards against re-running already-recorded tool calls.
         assert "already appear in the history" in note
 
+    def test_empty_message_interactive_note_continues_task_safely(self):
+        """Interactive startup auto-resume must continue without asking a
+        generic question, while preserving ambiguous-side-effect safety."""
+        note = build_resume_recovery_note("restart_timeout", "", interactive=True)
+        assert "CONTINUE the interrupted task" in note
+        assert "ask what they would like to do next" not in note
+        assert "skip any unfinished work" not in note
+        assert "already appear in the history" in note
+        assert "effect is UNKNOWN" in note
+        assert "Inspect current state before retrying" in note
+
 
     def test_resume_note_is_persisted_instead_of_original_empty_message(self):
         """The auto-resume note must not leave an empty row in state.db."""

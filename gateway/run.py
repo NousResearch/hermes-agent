@@ -1552,13 +1552,11 @@ def build_resume_recovery_note(
     startup auto-resume turn synthesized by
     ``_schedule_resume_pending_sessions`` with no human message attached.
 
-    ``interactive`` selects the empty-message guidance: on interactive
-    platforms a human is present, so "report the restore and ask what next"
-    is right.  On non-interactive event platforms (webhook, API server —
-    adapters with ``interactive_resume = False``) nobody can answer; the
-    resumed turn must instead complete the interrupted work, or the task is
-    silently abandoned behind a "restored" acknowledgement that goes
-    nowhere (#57056).
+    ``interactive`` selects the empty-message guidance. Interactive platforms
+    report the restore before continuing; non-interactive event platforms
+    (webhook, API server — adapters with ``interactive_resume = False``)
+    continue silently. In both cases the resumed turn must complete the
+    interrupted work rather than abandoning it behind a generic question.
     """
     reason_phrase = (
         "a gateway restart"
@@ -1578,12 +1576,17 @@ def build_resume_recovery_note(
         )
     elif interactive:
         resume_guidance = (
-            "Report to the user that the session was restored "
-            "successfully and ask what they would like to do next."
+            "Report to the user that the session was restored successfully, "
+            "then review the conversation history and CONTINUE the interrupted "
+            "task to completion. Do not ask a generic question about what to "
+            "do next."
         )
         tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any "
-            "unfinished work from the conversation history."
+            "Do NOT re-run tool calls whose results already appear in the "
+            "history. If a tool call has no recorded result, its effect is "
+            "UNKNOWN. Inspect current state before retrying. If the effect "
+            "cannot be verified and retrying could duplicate an external or "
+            "irreversible action, stop and ask one specific safety question."
         )
     else:
         resume_guidance = (

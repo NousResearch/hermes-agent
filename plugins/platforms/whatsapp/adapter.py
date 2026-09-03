@@ -1507,7 +1507,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             elif media_type == "sticker":
                 msg_type = MessageType.STICKER
             elif data.get("hasMedia"):
-                if "image" in media_type:
+                if "image" in media_type or media_type == "gif":
+                    # Animated GIFs arrive as videoMessage with gifPlayback=true
+                    # and the bridge reports mediaType 'gif' (#80063).
                     msg_type = MessageType.PHOTO
                 elif "video" in media_type:
                     msg_type = MessageType.VIDEO
@@ -1538,21 +1540,42 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             media_types = []
             for url in raw_urls:
                 bridge_mime = str(data.get("mime") or "").strip()
+                is_gif = media_type == "gif"
+                gif_video_container = is_gif and bridge_mime.lower().startswith("video/")
                 if msg_type == MessageType.PHOTO and url.startswith(("http://", "https://")):
+                    # Baileys reports gifPlayback video messages as ``gif`` but
+                    # the downloaded bytes are normally an MP4 (mime
+                    # ``video/mp4``). Do not send those bytes through the image
+                    # cache or give them a misleading ``.gif`` extension. The
+                    # bridge normally supplies a local path; if a producer
+                    # supplies a remote video URL, preserve that truthful URL
+                    # and MIME instead of pretending it is an image.
+                    if gif_video_container:
+                        cached_urls.append(url)
+                        media_types.append(bridge_mime)
+                        print(f"[{self.name}] Keeping GIF video container URL: {url}", flush=True)
+                        continue
+                    img_ext = ".gif" if is_gif else ".jpg"
+                    img_mime = bridge_mime or ("image/gif" if is_gif else "image/jpeg")
                     try:
-                        cached_path = await cache_image_from_url(url, ext=".jpg")
+                        cached_path = await cache_image_from_url(url, ext=img_ext)
                         cached_urls.append(cached_path)
-                        media_types.append(bridge_mime or "image/jpeg")
+                        media_types.append(img_mime)
                         print(f"[{self.name}] Cached user image: {cached_path}", flush=True)
                     except Exception as e:
                         print(f"[{self.name}] Failed to cache image: {e}", flush=True)
                         cached_urls.append(url)
-                        media_types.append(bridge_mime or "image/jpeg")
+                        media_types.append(img_mime)
                 elif msg_type == MessageType.PHOTO and os.path.isabs(url):
                     # Local file path — bridge already downloaded the image
                     if _is_allowed_bridge_path(url):
                         cached_urls.append(url)
-                        media_types.append(bridge_mime or "image/jpeg")
+                        if is_gif and not bridge_mime:
+                            suffix = Path(url).suffix.lower()
+                            media_mime = "video/mp4" if suffix in _WA_VIDEO_EXTS else "image/gif"
+                        else:
+                            media_mime = bridge_mime or ("image/gif" if is_gif else "image/jpeg")
+                        media_types.append(media_mime)
                         print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
                     else:
                         print(f"[{self.name}] Rejected bridge image path outside cache dir: {url}", flush=True)

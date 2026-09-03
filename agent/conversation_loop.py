@@ -2036,7 +2036,7 @@ def run_conversation(
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
-    gateway_turn: bool = False,
+    gateway_turn: Any = None,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -2065,8 +2065,8 @@ def run_conversation(
             Discord/Telegram message id) to store as metadata on that
             persisted user message, so restart drain-window recovery can
             dedup an interrupted turn against the transcript.
-        gateway_turn: Trusted marker set only by the gateway's natural-turn
-            runner. Direct CLI, TUI, desktop, and API calls leave it false.
+        gateway_turn: Opaque marker minted only by the gateway's natural-turn
+            runner. Direct CLI, TUI, desktop, and API calls leave it unset.
                 or queuing follow-up prefetch work.
 
     Returns:
@@ -2296,7 +2296,9 @@ def run_conversation(
     agent._required_terminal_turn_active = False
     try:
         required_terminal_policy = load_required_terminal_policy(
-            agent, gateway_turn=gateway_turn
+            agent,
+            gateway_turn=gateway_turn,
+            platform_message_id=persist_user_platform_id,
         )
         if required_terminal_policy is not None:
             required_terminal_failure = required_terminal_policy.failure_response
@@ -3698,9 +3700,18 @@ def run_conversation(
                         )
                     from agent import relay_llm
 
+                    def _dispatch_physical_provider(final_api_kwargs):
+                        if required_terminal_policy is not None:
+                            final_api_kwargs = apply_required_terminal_request(
+                                final_api_kwargs,
+                                policy=required_terminal_policy,
+                                provider=agent.provider,
+                            )
+                        return agent._interruptible_api_call(final_api_kwargs)
+
                     return relay_llm.execute(
                         next_api_kwargs,
-                        agent._interruptible_api_call,
+                        _dispatch_physical_provider,
                         session_id=str(agent.session_id or ""),
                         name=str(agent.provider or "provider"),
                         model_name=str(agent.model or ""),
@@ -8304,6 +8315,11 @@ def run_conversation(
                         persisted = False
                     if persisted is False:
                         final_response = required_terminal_failure
+                        messages.pop()
+                        append_message(
+                            messages,
+                            {"role": "assistant", "content": final_response},
+                        )
                         failed = True
                         _turn_exit_reason = (
                             "required_terminal_tool_failure(final_persistence)"

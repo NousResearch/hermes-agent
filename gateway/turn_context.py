@@ -93,6 +93,10 @@ class TurnContext:
     # be the replied-to message on Slack/Mattermost/Buzz or None for Telegram
     # topics. Used to stamp platform_message_id on the persisted user turn.
     inbound_message_id: Optional[str] = None
+    # Opaque marker minted only from a non-internal MessageEvent with the same
+    # inbound_message_id. Direct agent callers cannot activate gateway policy
+    # with a boolean or platform label.
+    gateway_turn: Any = None
     moa_config: Optional[dict] = None
     persist_user_message: Optional[Any] = None
     persist_user_timestamp: Optional[float] = None

@@ -27,13 +27,50 @@ class RequiredTerminalPolicy:
     failure_response: str = DEFAULT_FAILURE_RESPONSE
 
 
+_NATURAL_GATEWAY_TURN_SEAL = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _NaturalGatewayTurn:
+    platform_message_id: str
+    seal: object
+
+
+def _mint_natural_gateway_turn(
+    platform_message_id: Any, *, internal: bool
+) -> _NaturalGatewayTurn | None:
+    """Mint the private marker used by the natural inbound gateway runner."""
+
+    if internal:
+        return None
+    message_id = str(platform_message_id or "").strip()
+    if not message_id:
+        return None
+    return _NaturalGatewayTurn(message_id, _NATURAL_GATEWAY_TURN_SEAL)
+
+
+def _natural_gateway_message_id(gateway_turn: Any) -> str | None:
+    if (
+        isinstance(gateway_turn, _NaturalGatewayTurn)
+        and gateway_turn.seal is _NATURAL_GATEWAY_TURN_SEAL
+    ):
+        return gateway_turn.platform_message_id
+    return None
+
+
 def load_required_terminal_policy(
-    agent: Any, *, gateway_turn: bool
+    agent: Any, *, gateway_turn: Any, platform_message_id: Any
 ) -> RequiredTerminalPolicy | None:
     """Read the profile-owned policy only at the trusted gateway boundary."""
 
-    if not gateway_turn:
+    capability_message_id = _natural_gateway_message_id(gateway_turn)
+    if capability_message_id is None:
         return None
+    durable_message_id = str(platform_message_id or "").strip()
+    if not durable_message_id or durable_message_id != capability_message_id:
+        raise RequiredTerminalTurnError(
+            "natural gateway capability does not match durable inbound identity"
+        )
 
     from hermes_cli.config import load_config_readonly
 

@@ -7099,7 +7099,7 @@ class TurnRunner:
             _conversation_kwargs = {
                 "conversation_history": agent_history,
                 "task_id": ctx.session_id,
-                "gateway_turn": ctx.inbound_message_id is not None,
+                "gateway_turn": ctx.gateway_turn,
             }
             if _persist_user_message_override is not None:
                 _conversation_kwargs["persist_user_message"] = _persist_user_message_override
@@ -23186,6 +23186,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # session_entry.session_id while the old run is still unwinding.
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()
+            from agent.required_terminal_turn import _mint_natural_gateway_turn
+
+            _gateway_turn = _mint_natural_gateway_turn(
+                event.message_id,
+                internal=bool(getattr(event, "internal", False)),
+            )
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
@@ -23198,6 +23204,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 inbound_message_id=(
                     str(event.message_id) if event.message_id else None
                 ),
+                gateway_turn=_gateway_turn,
                 channel_prompt=event.channel_prompt,
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
@@ -31145,6 +31152,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         inbound_message_id: Optional[str] = None,
+        gateway_turn: Any = None,
         channel_prompt: Optional[str] = None,
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
@@ -31167,6 +31175,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 inbound_message_id=inbound_message_id,
+                gateway_turn=gateway_turn,
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
@@ -31181,6 +31190,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 inbound_message_id=inbound_message_id,
+                gateway_turn=gateway_turn,
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
@@ -31324,6 +31334,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         inbound_message_id: Optional[str] = None,
+        gateway_turn: Any = None,
         channel_prompt: Optional[str] = None,
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
@@ -31636,6 +31647,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _interrupt_depth=_interrupt_depth,
             event_message_id=event_message_id,
             inbound_message_id=inbound_message_id,
+            gateway_turn=gateway_turn,
             moa_config=moa_config,
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,

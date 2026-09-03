@@ -110,6 +110,7 @@ def handle_turn(params, *, request_id, turn_id, tool_call_id, **kwargs):
         request_id=request_id,
         turn_id=turn_id,
         tool_call_id=tool_call_id,
+        receipt={"request_id": request_id},
     )
 
 
@@ -133,9 +134,9 @@ agent:
     failure_response: "The request could not be committed safely. Please retry."
 ```
 
-The policy currently supports natural gateway turns through the `openai-codex` Responses transport. Hermes forces exactly one call to the named tool after middleware and transport preflight, suppresses provider prose and streaming, persists the tool call/result and exact terminal response, then stops without a second model call or fallback. Missing or inconsistent configuration, the wrong number of calls, mixed prose, handler failure, an invalid receipt, or transcript-persistence failure all fail closed.
+The policy currently supports natural gateway turns carrying a durable platform message ID through the `openai-codex` Responses transport. Hermes forces exactly one call to the named tool after middleware and transport preflight, suppresses provider prose and streaming, persists the tool call/result and exact terminal response, then stops without a second model call or fallback. Missing or inconsistent configuration, the wrong number of calls, mixed prose, handler failure, an invalid receipt, or transcript-persistence failure all fail closed.
 
-`request_id` is host-owned and stable for the same gateway session and inbound platform message. A mutating handler must enforce durable idempotency itself: same request ID and same intent replays the stored response; the same request ID with a different intent must not mutate.
+`receipt` is required and must be JSON-serializable. `request_id` is host-owned and stable for the same gateway session and inbound platform message. A mutating handler must enforce durable idempotency itself: same request ID and same intent replays the stored response; the same request ID with a different intent must not mutate.
 
 ## What plugins can do
 

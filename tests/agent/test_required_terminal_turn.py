@@ -11,6 +11,7 @@ import pytest
 from agent.required_terminal_turn import (
     DEFAULT_FAILURE_RESPONSE,
     TerminalToolResult,
+    _mint_natural_gateway_turn,
 )
 from agent.transports.types import NormalizedResponse, ToolCall
 from hermes_cli.middleware import (
@@ -40,6 +41,7 @@ DOMAIN = {
     "calls": 0,
     "receipts": {},
 }
+_AUTO_GATEWAY_TURN = object()
 
 
 def _domain_handler(args, **kwargs):
@@ -282,7 +284,7 @@ def _make_agent(
     if fail_flush_role is not None:
         real_flush = agent._flush_messages_to_session_db
 
-        def guarded_flush(_self, messages, history):
+        def guarded_flush(_self, messages, history=None):
             if messages and messages[-1].get("role") == fail_flush_role:
                 if fail_flush_role != "assistant" or (
                     len(messages) >= 2 and messages[-2].get("role") == "tool"
@@ -308,8 +310,13 @@ def _run_case(
     api_mode="codex_responses",
     platform="telegram",
     tamper_execution=False,
-    gateway_turn=True,
+    relay_rewrite=None,
+    gateway_turn=_AUTO_GATEWAY_TURN,
 ):
+    if gateway_turn is _AUTO_GATEWAY_TURN:
+        gateway_turn = _mint_natural_gateway_turn(
+            platform_message_id, internal=False
+        )
     agent, session_db, requests, streamed, transforms = _make_agent(
         monkeypatch,
         tmp_path,
@@ -322,6 +329,15 @@ def _run_case(
         platform=platform,
         tamper_execution=tamper_execution,
     )
+    if relay_rewrite is not None:
+        from agent import relay_llm
+
+        setattr(agent, "_disable_streaming", True)
+
+        def relay_execute(request, callback, **_kwargs):
+            return callback(relay_rewrite(dict(request)))
+
+        monkeypatch.setattr(relay_llm, "execute", relay_execute)
     try:
         result = agent.run_conversation(
             "learner input",
@@ -362,6 +378,50 @@ def test_real_loop_success_is_terminal_and_persisted(monkeypatch, tmp_path):
     roles = [row["role"] for row in persisted]
     assert roles[-4:] == ["user", "assistant", "tool", "assistant"]
     assert persisted[-1]["content"] == expected
+
+
+def test_relay_final_request_cannot_relax_terminal_constraint(
+    monkeypatch, tmp_path
+):
+    response = NormalizedResponse(None, [_tool_call()], "stop")
+
+    result, _persisted, requests, _streamed, _transforms, _agent = _run_case(
+        monkeypatch,
+        tmp_path,
+        "relay-relaxes-constraint",
+        response,
+        relay_rewrite=lambda request: {
+            **request,
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+        },
+    )
+    assert result["completed"] is True
+    assert requests[0]["tool_choice"] == {
+        "type": "function",
+        "name": TOOL_NAME,
+    }
+    assert requests[0]["parallel_tool_calls"] is False
+
+
+def test_relay_final_request_cannot_remove_terminal_tool(monkeypatch, tmp_path):
+    response = NormalizedResponse(None, [_tool_call()], "stop")
+    DOMAIN.update(mode="success", calls=0, mutations=0, receipts={})
+    result, _persisted, requests, _streamed, _transforms, _agent = _run_case(
+        monkeypatch,
+        tmp_path,
+        "relay-removes-tool",
+        response,
+        relay_rewrite=lambda request: {
+            **request,
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+        },
+    )
+    assert result["final_response"] == DEFAULT_FAILURE_RESPONSE
+    assert requests == []
+    assert DOMAIN["calls"] == 0
 
 
 def test_wrong_missing_multiple_and_mixed_prose_fail_before_execution(
@@ -434,6 +494,14 @@ def test_bad_results_and_persistence_fail_closed(monkeypatch, tmp_path):
     assert result["completed"] is False
     assert streamed == [] and transforms == []
     assert "UNTRUSTED" not in json.dumps(persisted)
+    assistant_rows = [
+        row for row in result["messages"] if row.get("role") == "assistant"
+    ]
+    assert assistant_rows[-1]["content"] == DEFAULT_FAILURE_RESPONSE
+    assert not any(
+        str(row.get("content") or "").startswith("committed:")
+        for row in assistant_rows
+    )
 
 
 def test_cached_agent_resets_receipt_and_domain_replays_idempotently(
@@ -457,25 +525,25 @@ def test_cached_agent_resets_receipt_and_domain_replays_idempotently(
             "first",
             conversation_history=[],
             persist_user_platform_id="same",
-            gateway_turn=True,
+            gateway_turn=_mint_natural_gateway_turn("same", internal=False),
         )
         second = agent.run_conversation(
             "retry",
             conversation_history=[],
             persist_user_platform_id="same",
-            gateway_turn=True,
+            gateway_turn=_mint_natural_gateway_turn("same", internal=False),
         )
         conflict_result = agent.run_conversation(
             "conflict",
             conversation_history=[],
             persist_user_platform_id="same",
-            gateway_turn=True,
+            gateway_turn=_mint_natural_gateway_turn("same", internal=False),
         )
         third = agent.run_conversation(
             "new",
             conversation_history=[],
             persist_user_platform_id="new",
-            gateway_turn=True,
+            gateway_turn=_mint_natural_gateway_turn("new", internal=False),
         )
         assert first["final_response"] == second["final_response"]
         assert DOMAIN["mutations"] == 1 and DOMAIN["calls"] == 3
@@ -540,6 +608,48 @@ def test_policy_is_opt_in_and_unsupported_boundaries_fail_preflight(
         assert requests[0]["tool_choice"] == "auto"
         assert streamed == ["UNTRUSTED STREAM"]
         assert transforms == ["transform_llm_output"]
+
+    internal_marker = _mint_natural_gateway_turn(
+        "internal-message", internal=True
+    )
+    assert internal_marker is None
+    internal, _persisted, requests, streamed, transforms, _agent = _run_case(
+        monkeypatch,
+        tmp_path,
+        "internal-gateway-event",
+        ordinary,
+        platform_message_id="internal-message",
+        gateway_turn=internal_marker,
+    )
+    assert internal["final_response"] == "UNTRUSTED TRANSFORM"
+    assert requests[0]["tool_choice"] == "auto"
+    assert streamed == ["UNTRUSTED STREAM"]
+    assert transforms == ["transform_llm_output"]
+
+    forged, _persisted, requests, streamed, transforms, _agent = _run_case(
+        monkeypatch,
+        tmp_path,
+        "forged-gateway-bool",
+        ordinary,
+        gateway_turn=True,
+    )
+    assert forged["final_response"] == "UNTRUSTED TRANSFORM"
+    assert requests[0]["tool_choice"] == "auto"
+    assert streamed == ["UNTRUSTED STREAM"]
+    assert transforms == ["transform_llm_output"]
+
+    mismatched, _persisted, requests, streamed, transforms, _agent = _run_case(
+        monkeypatch,
+        tmp_path,
+        "mismatched-gateway-capability",
+        ordinary,
+        platform_message_id="message-1",
+        gateway_turn=_mint_natural_gateway_turn(
+            "different-message", internal=False
+        ),
+    )
+    assert mismatched["final_response"] == DEFAULT_FAILURE_RESPONSE
+    assert requests == [] and streamed == [] and transforms == []
 
     unsupported, _persisted, requests, streamed, transforms, _agent = _run_case(
         monkeypatch,

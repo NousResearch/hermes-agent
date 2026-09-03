@@ -1770,6 +1770,55 @@ def _dir_has_any_entry(directory: Path) -> bool:
     return False
 
 
+def _workdir_state(
+    workdir: str,
+    parent_dev: Optional[int] = None,
+    parent_ino: Optional[int] = None,
+    require_parent_identity: bool = True,
+) -> str:
+    """Classify a checkpoint workdir using the orphan-pruner safety rules."""
+    if not workdir:
+        return "orphan"
+    try:
+        if Path(workdir).exists():
+            return "live"
+    except OSError:
+        return "unreachable"
+    if _workdir_is_observably_gone(
+        workdir,
+        parent_dev=parent_dev,
+        parent_ino=parent_ino,
+        require_parent_identity=require_parent_identity,
+    ):
+        return "orphan"
+    return "unreachable"
+
+
+def _metadata_workdir_state(meta: Dict) -> str:
+    """Classify a v2 project from its persisted workdir evidence."""
+    parent_dev = meta.get("workdir_parent_dev")
+    parent_ino = meta.get("workdir_parent_ino")
+    if not isinstance(parent_dev, int) or isinstance(parent_dev, bool):
+        parent_dev = None
+    if not isinstance(parent_ino, int) or isinstance(parent_ino, bool):
+        parent_ino = None
+    return _workdir_state(
+        meta.get("workdir") or "",
+        parent_dev=parent_dev,
+        parent_ino=parent_ino,
+    )
+
+
+def _pre_v2_workdir_state(repo: Dict) -> str:
+    """Classify a pre-v2 project without overstating unreadable metadata."""
+    if repo.get("marker_unreadable"):
+        return "unreachable"
+    return _workdir_state(
+        repo.get("workdir") or "",
+        require_parent_identity=False,
+    )
+
+
 def prune_checkpoints(
     retention_days: int = 7,
     delete_orphans: bool = True,
@@ -1804,7 +1853,7 @@ def prune_checkpoints(
     also deleted.
 
     Returns a dict with counts ``{"scanned", "deleted_orphan",
-    "deleted_stale", "errors", "bytes_freed"}``.
+    "deleted_stale", "protected_unreachable", "errors", "bytes_freed"}``.
 
     Never raises — maintenance must never block interactive startup.
     """
@@ -1813,6 +1862,7 @@ def prune_checkpoints(
         "scanned": 0,
         "deleted_orphan": 0,
         "deleted_stale": 0,
+        "protected_unreachable": 0,
         "errors": 0,
         "bytes_freed": 0,
     }
@@ -1860,18 +1910,10 @@ def prune_checkpoints(
         child = repo["path"]
         result["scanned"] += 1
         reason: Optional[str] = None
+        state = _pre_v2_workdir_state(repo)
         if (
             delete_orphans
-            and not repo["marker_unreadable"]
-            and (
-                repo["workdir"] is None
-                # The frozen pre-v2 layout has no metadata channel to carry a
-                # recorded parent identity, so only the structural checks
-                # (parent present + populated / live mount point) apply here.
-                or _workdir_is_observably_gone(
-                    repo["workdir"], require_parent_identity=False,
-                )
-            )
+            and state == "orphan"
             and (orphan_allowlist is None or str(child) in orphan_allowlist)
         ):
             reason = "orphan"
@@ -1889,6 +1931,8 @@ def prune_checkpoints(
             if newest > 0 and newest < cutoff:
                 reason = "stale"
         if reason is None:
+            if delete_orphans and state == "unreachable":
+                result["protected_unreachable"] += 1
             continue
         try:
             size = _dir_size_bytes(child)
@@ -1912,22 +1956,10 @@ def prune_checkpoints(
                 continue
             result["scanned"] += 1
             reason = None
-            parent_dev = meta.get("workdir_parent_dev")
-            parent_ino = meta.get("workdir_parent_ino")
-            if not isinstance(parent_dev, int) or isinstance(parent_dev, bool):
-                parent_dev = None
-            if not isinstance(parent_ino, int) or isinstance(parent_ino, bool):
-                parent_ino = None
+            state = _metadata_workdir_state(meta)
             if (
                 delete_orphans
-                and (
-                    not workdir
-                    or _workdir_is_observably_gone(
-                        workdir,
-                        parent_dev=parent_dev,
-                        parent_ino=parent_ino,
-                    )
-                )
+                and state == "orphan"
                 and (orphan_allowlist is None or dir_hash in orphan_allowlist)
             ):
                 reason = "orphan"
@@ -1936,6 +1968,8 @@ def prune_checkpoints(
                 if last_touch > 0 and last_touch < cutoff:
                     reason = "stale"
             if reason is None:
+                if delete_orphans and state == "unreachable":
+                    result["protected_unreachable"] += 1
                 continue
             ref = _ref_name(dir_hash)
             _delete_ref(store, ref)
@@ -2069,7 +2103,7 @@ def maybe_auto_prune_checkpoints(
         if not base.exists():
             out["result"] = {
                 "scanned": 0, "deleted_orphan": 0, "deleted_stale": 0,
-                "errors": 0, "bytes_freed": 0,
+                "protected_unreachable": 0, "errors": 0, "bytes_freed": 0,
             }
             return out
 
@@ -2127,10 +2161,12 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
 
     ``pre_v2_projects`` covers shadow repos still on the pre-v2 per-project
     layout (``base/<hash>/HEAD``) — distinct from ``legacy_archives``, which
-    are already-migrated ``legacy-<ts>/`` dirs. Callers that preview an
-    orphan-deletion sweep must include both ``projects`` and
-    ``pre_v2_projects``, since ``prune_checkpoints`` deletes orphans from
-    both layouts.
+    are already-migrated ``legacy-<ts>/`` dirs. Each project reports a
+    ``state`` of ``live``, ``orphan`` (safe to prune), or ``unreachable``
+    (retained because deletion cannot be distinguished from unavailable
+    storage). Callers that preview an orphan-deletion sweep must include both
+    ``projects`` and ``pre_v2_projects``, since ``prune_checkpoints`` deletes
+    orphans from both layouts.
     """
     base = checkpoint_base or CHECKPOINT_BASE
     out: Dict = {
@@ -2153,6 +2189,7 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
             for meta in _list_projects(store):
                 dir_hash = meta.get("_hash") or ""
                 workdir = meta.get("workdir") or ""
+                state = _metadata_workdir_state(meta)
                 ref = _ref_name(dir_hash)
                 ok, count_out, _ = _run_git(
                     ["rev-list", "--count", ref], store, str(base),
@@ -2165,21 +2202,22 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
                 out["projects"].append({
                     "hash": dir_hash,
                     "workdir": workdir,
-                    "exists": bool(workdir) and Path(workdir).exists(),
+                    "exists": state == "live",
+                    "state": state,
                     "created_at": meta.get("created_at"),
                     "last_touch": meta.get("last_touch"),
                     "commits": commits,
                 })
     out["project_count"] = len(out["projects"])
 
-    out["pre_v2_projects"] = [
-        {
-            "path": str(r["path"]),
-            "workdir": r["workdir"],
-            "exists": r["exists"],
-        }
-        for r in _pre_v2_shadow_repos(base)
-    ]
+    for repo in _pre_v2_shadow_repos(base):
+        state = _pre_v2_workdir_state(repo)
+        out["pre_v2_projects"].append({
+            "path": str(repo["path"]),
+            "workdir": repo["workdir"],
+            "exists": state == "live",
+            "state": state,
+        })
 
     for child in base.iterdir():
         if child.is_dir() and child.name.startswith(_LEGACY_PREFIX):

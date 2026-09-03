@@ -915,6 +915,29 @@ class TestPruneCheckpointsV2:
         gone_hash = _project_hash(str(gone))
         assert not (base / "store" / "projects" / f"{gone_hash}.json").exists()
 
+    def test_reports_unreachable_project_retained_by_orphan_safety(
+        self, tmp_path, monkeypatch,
+    ):
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+
+        parent = tmp_path / "volume"
+        project = parent / "project"
+        project.mkdir(parents=True)
+        (project / "f").write_text("checkpointed")
+
+        m = CheckpointManager(enabled=True)
+        assert m.ensure_checkpoint(str(project), "initial") is True
+        project_hash = _project_hash(str(project))
+        shutil.rmtree(project)
+        assert not any(parent.iterdir())
+
+        result = prune_checkpoints(retention_days=0, checkpoint_base=base)
+
+        assert result["deleted_orphan"] == 0
+        assert result["protected_unreachable"] == 1
+        assert (base / "store" / "projects" / f"{project_hash}.json").exists()
+
     def test_retention_prunes_stale_projects_and_legacy_archives(
         self, tmp_path, monkeypatch,
     ):
@@ -1051,6 +1074,39 @@ class TestPruneCheckpointsOrphanAllowlist:
         # The one that only went orphan mid-confirmation must survive.
         assert second_repo.exists()
 
+    def test_previewed_v2_orphan_that_becomes_live_is_not_deleted(
+        self, tmp_path, monkeypatch,
+    ):
+        import hermes_cli.checkpoints as checkpoints_cli
+
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+
+        parent = tmp_path / "projects"
+        workdir = parent / "previewed"
+        workdir.mkdir(parents=True)
+        (parent / "sibling").mkdir()
+        (workdir / "f").write_text("checkpointed")
+
+        m = CheckpointManager(enabled=True)
+        assert m.ensure_checkpoint(str(workdir), "initial") is True
+        project_hash = _project_hash(str(workdir))
+        shutil.rmtree(workdir)
+
+        def _confirm_after_workdir_returns(_prompt):
+            workdir.mkdir()
+            return "y"
+
+        monkeypatch.setattr("builtins.input", _confirm_after_workdir_returns)
+        args = argparse.Namespace(
+            retention_days=0, max_size_mb=0, keep_orphans=False, force=False,
+        )
+
+        rc = checkpoints_cli.cmd_prune(args)
+
+        assert rc == 0
+        assert (base / "store" / "projects" / f"{project_hash}.json").exists()
+
 
 class TestMaybeAutoPruneCheckpoints:
     def test_prunes_once_then_skips_within_interval(self, tmp_path):
@@ -1080,6 +1136,43 @@ class TestMaybeAutoPruneCheckpoints:
 # =========================================================================
 
 class TestStoreStatus:
+    def test_pre_v2_status_uses_pruner_state_classification(self, tmp_path):
+        base = tmp_path / "checkpoints"
+        alive = tmp_path / "alive"
+        alive.mkdir()
+        _seed_legacy_repo(base, "aaaa" * 4, alive)
+        _seed_legacy_repo(base, "bbbb" * 4, tmp_path / "gone")
+
+        info = store_status(base)
+
+        states = {
+            project["workdir"]: project["state"]
+            for project in info["pre_v2_projects"]
+        }
+        assert states[str(alive)] == "live"
+        assert states[str(tmp_path / "gone")] == "orphan"
+
+    def test_reports_missing_workdir_without_deletion_evidence_as_unreachable(
+        self, tmp_path, monkeypatch,
+    ):
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+
+        parent = tmp_path / "volume"
+        project = parent / "project"
+        project.mkdir(parents=True)
+        (project / "f").write_text("checkpointed")
+
+        m = CheckpointManager(enabled=True)
+        assert m.ensure_checkpoint(str(project), "initial") is True
+        shutil.rmtree(project)
+        assert not any(parent.iterdir())
+
+        info = store_status(base)
+
+        assert info["projects"][0]["exists"] is False
+        assert info["projects"][0]["state"] == "unreachable"
+
     def test_reports_projects_and_legacy(self, tmp_path, monkeypatch, work_dir):
         base = tmp_path / "checkpoints"
         monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)

@@ -699,6 +699,20 @@ class TestPromptBuilderConstants:
             assert "do not use markdown" not in hint.lower()
             assert "markdown" in hint.lower()
 
+    def test_telegram_hint_prefers_native_choices_over_copy_workarounds(self):
+        """Telegram should steer small decisions to the shipped clarify UI.
+
+        Without this surface guidance, the agent can invent copy-to-clipboard
+        pseudo-buttons even though clarify already renders native inline
+        choices and routes the selected value back into the session.
+        """
+        hint = PLATFORM_HINTS["telegram"].lower()
+        assert "clarify" in hint
+        assert "inline" in hint and "button" in hint
+        assert "copy" in hint and any(
+            marker in hint for marker in ("do not", "don't", "never")
+        )
+
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging
         # gateway platforms. On the CLI they render as literal text and

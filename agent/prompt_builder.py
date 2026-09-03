@@ -866,7 +866,9 @@ PLATFORM_HINTS = {
         "You are on Telegram. Standard Markdown auto-converts: **bold**, "
         "*italic*, ~~strikethrough~~, ||spoiler||, `code`, ```blocks```, "
         "[links](url), ## headers. Prefer bullets or labeled lines for "
-        "structured data (no tables). "
+        "structured data (no tables). For small decisions, use clarify: Telegram "
+        "renders inline buttons and routes the tap. Do not fake controls with "
+        "numbered or copy-text buttons. "
         + _MEDIA_NATIVE +
         "Images (.png, .jpg, .webp) send as photos, videos (.mp4) play "
         "inline; image URLs via ![alt](url) send as photos. Audio: add "

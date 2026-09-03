@@ -3,8 +3,9 @@
 Clarify Tool Module - Interactive Clarifying Questions
 
 Allows the agent to present structured multiple-choice questions or open-ended
-prompts to the user. In CLI mode, choices are navigable with arrow keys. On
-messaging platforms, choices are rendered as a numbered list.
+prompts to the user. In CLI mode, choices are navigable with arrow keys.
+Messaging adapters use native controls where available (for example, Telegram
+inline buttons) and fall back to numbered choices otherwise.
 
 Supports both single-select (radio) and multi-select (checkbox) modes via the
 ``multi_select`` parameter.

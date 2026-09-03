@@ -123,6 +123,18 @@ The first word filters the catalog; everything after it is carried into the sent
 
 Results are only served to users who pass your gateway allowlist — unauthorized users get an empty list, so your installed skill catalog is not exposed to strangers (inline queries can be sent from any chat, even ones the bot is not in).
 
+### Native interactions and capability boundaries
+
+Hermes uses Telegram-native controls when the gateway owns the full interaction:
+
+- `clarify` choices render as inline buttons and route the tap back to the waiting session.
+- Dangerous-command approvals and built-in pickers use gateway-owned inline keyboards.
+- The gateway acknowledges callback queries and removes or updates stale controls so Telegram does not leave a loading spinner.
+
+For a small decision, ask Hermes to use `clarify` rather than simulating controls with numbered prose or `copy_text` buttons. A copy button only places text on the clipboard; it does not send a decision to Hermes.
+
+Telegram's Bot API also offers pinning, message edits, polls, reactions, inline mode, and Mini Apps. Their presence in Telegram does **not** mean every capability is currently exposed as a generic agent action. Persistent custom buttons need a gateway-side callback owner because the same gateway owns polling or webhook updates and must call `answerCallbackQuery`. Generic agent-authored action buttons are tracked in [#15311](https://github.com/NousResearch/hermes-agent/issues/15311); platform-specific interaction logic belongs in the Telegram adapter or a gateway plugin, not in a prompt-only skill.
+
 ## Step 3: Privacy Mode (Critical for Groups)
 
 Telegram bots have a **privacy mode** that is **enabled by default**. This is the single most common source of confusion when using bots in groups.

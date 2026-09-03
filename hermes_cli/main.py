@@ -2366,6 +2366,19 @@ def _tui_need_npm_install(root: Path) -> bool:
         if selected:
             closure = _npm_lock_workspace_closure(wanted, selected)
 
+    # In a shared workspace checkout the launch install is scoped to the ui-tui
+    # workspace (plus its child packages/* workspaces on Termux), so only that
+    # dependency closure lands in the hidden lock.  Limit the comparison to the
+    # same selected-workspace closure so unrelated workspace deps (apps/desktop,
+    # web, …) don't force a reinstall every launch (#66978).  Standalone /
+    # own-lockfile layouts (ws_root == root) do a full install, so keep the full
+    # comparison; a missing/unlocatable workspace falls back to it too.
+    closure: Optional[set] = None
+    if ws_root != root:
+        selected = _tui_selected_workspace_keys(root, ws_root)
+        if selected:
+            closure = _npm_lock_workspace_closure(wanted, selected)
+
     for name, pkg in wanted.items():
         if not name:
             continue

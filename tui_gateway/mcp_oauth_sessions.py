@@ -39,6 +39,12 @@ provider redirect back via ``deliver_callback_flow`` /
 ``mcp.servers.oauth.callback``. State verification stays server-side in
 ``DashboardOAuthFlow.deliver_callback`` — a relayed code with the wrong
 ``state`` is rejected exactly like a forged loopback hit.
+
+A browser-based SaaS frontend cannot bind ``127.0.0.1``. That topology uses
+the same relay: ``client_redirect_uri`` is the backend's public HTTPS
+callback route, the provider redirects there, and the backend forwards
+``code`` / ``state`` / ``error`` through ``mcp.servers.oauth.callback``.
+The gateway still does not expose a public HTTP listener.
 """
 
 from __future__ import annotations
@@ -87,29 +93,65 @@ def _shutdown_listener(rec: Dict[str, Any]) -> None:
         rec["httpd"] = None
 
 
-def _validate_client_redirect_uri(uri: str) -> str:
-    """Validate a client-supplied loopback redirect URI.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
-    Only plain-http loopback URLs are accepted (``http://127.0.0.1:<port>/...``
-    or ``http://localhost:<port>/...``), mirroring RFC 8252 native-app rules —
-    the client hosts a one-shot listener on ITS machine, so anything else
-    (public hosts, https proxies, schemes) is rejected to keep the gateway from
-    pinning an attacker-controlled redirect into a DCR registration.
+_CLIENT_REDIRECT_URI_ERROR = (
+    "client_redirect_uri must be a loopback http URL like "
+    "http://127.0.0.1:<port>/callback, or an absolute https URL "
+    "with no credentials or fragment"
+)
+
+
+def _format_netloc(host: str, port: int | None) -> str:
+    hostname = f"[{host}]" if ":" in host else host
+    return f"{hostname}:{port}" if port is not None else hostname
+
+
+def _validate_client_redirect_uri(uri: str) -> str:
+    """Validate a client-supplied OAuth redirect URI.
+
+    Two shapes are accepted:
+
+    * Loopback HTTP for native clients (RFC 8252):
+      ``http://127.0.0.1:<port>/...``, ``http://localhost:<port>/...``,
+      or ``http://[::1]:<port>/...``.
+    * Public HTTPS for remote/SaaS backends that own a callback route and
+      relay ``code``/``state`` through ``mcp.servers.oauth.callback``:
+      an absolute ``https`` URL with a non-loopback host, no URL credentials,
+      and no fragment.
+
+    State verification and one-shot delivery stay server-side on
+    ``DashboardOAuthFlow.deliver_callback``.
     """
     parsed = urlparse(str(uri or "").strip())
     host = (parsed.hostname or "").lower()
-    if (
-        parsed.scheme != "http"
-        or host not in ("127.0.0.1", "localhost", "::1")
-        or not parsed.port
-        or parsed.username is not None
-        or parsed.password is not None
-    ):
-        raise ValueError(
-            "client_redirect_uri must be a loopback http URL like "
-            "http://127.0.0.1:<port>/callback"
+    has_userinfo = parsed.username is not None or parsed.password is not None
+
+    if parsed.scheme == "http":
+        if (
+            host not in _LOOPBACK_HOSTS
+            or not parsed.port
+            or has_userinfo
+        ):
+            raise ValueError(_CLIENT_REDIRECT_URI_ERROR)
+        return (
+            f"http://{_format_netloc(host, parsed.port)}"
+            f"{parsed.path or '/callback'}"
         )
-    return f"http://{'[' + host + ']' if ':' in host else host}:{parsed.port}{parsed.path or '/callback'}"
+
+    if parsed.scheme == "https":
+        if (
+            not host
+            or host in _LOOPBACK_HOSTS
+            or has_userinfo
+            or parsed.fragment
+        ):
+            raise ValueError(_CLIENT_REDIRECT_URI_ERROR)
+        path = parsed.path or "/"
+        query = f"?{parsed.query}" if parsed.query else ""
+        return f"https://{_format_netloc(host, parsed.port)}{path}{query}"
+
+    raise ValueError(_CLIENT_REDIRECT_URI_ERROR)
 
 
 def _start_loopback_listener(flow) -> "http.server.HTTPServer":
@@ -263,11 +305,14 @@ def start_flow(
     string. Blocks up to ``url_timeout`` for the worker to publish the browser
     authorization URL, then returns it.
 
-    ``client_redirect_uri`` (remote-backend variant): a loopback callback URL
-    the CLIENT hosts on its own machine. When set (and valid), no gateway-side
-    listener is bound — the OAuth ``redirect_uri`` is pinned to the client's
-    listener, and the client relays the redirect's ``code``/``state`` back via
-    ``deliver_callback_flow``. Invalid values raise ``ValueError``.
+    ``client_redirect_uri`` (remote-backend variant): a callback URL the
+    CLIENT owns. Native clients pass a loopback HTTP listener
+    (``http://127.0.0.1:<port>/callback``). Browser-based SaaS backends
+    pass their public HTTPS callback route. When set (and valid), no
+    gateway-side listener is bound — the OAuth ``redirect_uri`` is pinned
+    to the client's URL, and the client relays the redirect's
+    ``code``/``state`` back via ``deliver_callback_flow``. Invalid values
+    raise ``ValueError``.
     """
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 

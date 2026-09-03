@@ -2355,13 +2355,16 @@ def _(rid, params: dict) -> dict:
     (``_probe_single_server`` under ``force_interactive_oauth``), and a loopback
     listener captures the browser redirect — no FastAPI request object needed.
 
-    ``client_redirect_uri`` (remote backends): a loopback URL the CLIENT hosts
-    on its own machine (``http://127.0.0.1:<port>/callback``). When supplied,
-    the gateway binds NO listener — the provider redirects to the client's
-    listener and the client relays the code via ``mcp.servers.oauth.callback``.
-    This is the only flow that works when the desktop app and the gateway run
-    on different machines (SSH/Tailscale remote backend), where the gateway's
-    own 127.0.0.1 listener is unreachable from the user's browser.
+    ``client_redirect_uri`` (remote backends): a callback URL the CLIENT
+    owns. Native clients pass a loopback listener
+    (``http://127.0.0.1:<port>/callback``). Browser-based SaaS backends
+    pass an absolute public HTTPS callback route (no URL credentials or
+    fragment). When supplied, the gateway binds NO listener — the provider
+    redirects to the client's URL and the client relays the code via
+    ``mcp.servers.oauth.callback``. State verification stays server-side.
+    This is the flow that works when the client and the gateway run on
+    different machines (SSH/Tailscale remote backend, or a SaaS frontend
+    that cannot bind 127.0.0.1).
 
     Runs on the RPC thread pool (see _LONG_HANDLERS): start blocks briefly for
     the authorization URL to be published.

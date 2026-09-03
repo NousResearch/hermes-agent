@@ -1,10 +1,10 @@
 """Tests for the client-side callback (remote-backend) variant of the
 session-backed MCP OAuth flow (tui_gateway/mcp_oauth_sessions.py).
 
-Covers the three seams added for remote Desktop backends:
-  - _validate_client_redirect_uri: loopback-only allowlist for the
-    client-supplied redirect URI (rejects public hosts/schemes so a gateway
-    never pins an attacker-controlled redirect into a DCR registration);
+Covers the three seams added for remote Desktop / SaaS backends:
+  - _validate_client_redirect_uri: loopback HTTP for native clients, plus
+    absolute public HTTPS (no credentials/fragment) for SaaS backends that
+    relay through mcp.servers.oauth.callback;
   - start_flow(client_redirect_uri=...): no gateway-side listener is bound and
     the flow's redirect_uri is pinned to the client's listener;
   - deliver_callback_flow: relays a client-captured code/state into the flow
@@ -45,13 +45,41 @@ def test_validate_accepts_loopback_http(uri, expected):
 
 
 @pytest.mark.parametrize(
+    "uri,expected",
+    [
+        (
+            "https://demo.one.immo/api/agent/mcp/oauth/callback",
+            "https://demo.one.immo/api/agent/mcp/oauth/callback",
+        ),
+        (
+            "https://saas.example.com:8443/oauth/callback",
+            "https://saas.example.com:8443/oauth/callback",
+        ),
+        # Empty path becomes /
+        ("https://saas.example.com", "https://saas.example.com/"),
+        # Query is preserved; host is lowercased
+        (
+            "https://SaaS.Example.com/cb?next=mcp",
+            "https://saas.example.com/cb?next=mcp",
+        ),
+        ("  https://saas.example.com/cb  ", "https://saas.example.com/cb"),
+    ],
+)
+def test_validate_accepts_public_https(uri, expected):
+    assert _validate_client_redirect_uri(uri) == expected
+
+
+@pytest.mark.parametrize(
     "uri",
     [
         "https://127.0.0.1:8412/callback",  # https is not a native loopback
-        "http://evil.example.com:8412/callback",  # public host
-        "http://192.168.1.10:8412/callback",  # LAN host
+        "https://localhost:8412/callback",
+        "http://evil.example.com:8412/callback",  # public host over http
+        "http://192.168.1.10:8412/callback",  # LAN host over http
         "http://127.0.0.1/callback",  # no port
         "http://user:pass@127.0.0.1:8412/callback",  # credentials
+        "https://user:pass@saas.example.com/cb",  # credentials
+        "https://saas.example.com/cb#frag",  # fragment
         "javascript:alert(1)",
         "",
         "not a url",
@@ -134,12 +162,44 @@ def test_start_flow_rejects_bad_client_redirect(monkeypatch):
             "/tmp/hermes-test-home",
             "clicky2",
             {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
-            client_redirect_uri="https://evil.example.com/callback",
+            client_redirect_uri="http://evil.example.com/callback",
         )
     # No session must be left behind by a rejected start.
     assert all(
         r["server_name"] != "clicky2" for r in mcp_oauth_sessions._sessions.values()
     )
+
+
+def test_start_flow_public_https_skips_gateway_listener(monkeypatch):
+    _fake_worker_publishes_url(monkeypatch)
+
+    bound = []
+    real_listener = mcp_oauth_sessions._start_loopback_listener
+    monkeypatch.setattr(
+        mcp_oauth_sessions,
+        "_start_loopback_listener",
+        lambda flow: bound.append(flow) or real_listener(flow),
+    )
+
+    public = "https://demo.one.immo/api/agent/mcp/oauth/callback"
+    result = mcp_oauth_sessions.start_flow(
+        "/tmp/hermes-test-home",
+        "saas-relay",
+        {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        client_redirect_uri=public,
+    )
+
+    assert result["session_id"]
+    assert bound == [], "gateway listener must NOT be bound with a public HTTPS redirect"
+
+    rec = mcp_oauth_sessions._sessions[result["session_id"]]
+    assert rec["httpd"] is None
+    assert rec["flow"].redirect_uri == public
+
+    deliver_callback_flow(
+        result["session_id"], "saas-relay", code="authcode", state="teststate123"
+    )
+    rec["flow"]._worker_done.wait(5)
 
 
 # ---------------------------------------------------------------------------

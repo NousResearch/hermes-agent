@@ -7041,15 +7041,25 @@ def _is_version_only_difference(requested: str, candidate: str) -> bool:
     A newly released model (``gemini-3.8-flash``) is extremely close by
     difflib ratio to its predecessor (``gemini-3.6-flash``), but
     auto-correcting silently swaps pricing, context and capabilities — the
-    user's explicit version choice must be respected. Genuine typos
-    (missing dash, transposed letters) change non-digit characters and must
-    still auto-correct.
+    user's explicit version choice must be respected. Genuine typos must
+    still auto-correct: a missing dash changes the non-digit skeleton
+    (``gpt5.3-codex`` vs ``gpt-5.3-codex``), and a doubled digit changes
+    the digit-run structure (``gpt-5.44`` vs ``gpt-5.4``). Only when the
+    non-digit skeleton AND every digit run's length match — i.e. the two
+    ids differ purely by digit values in place — is it a version bump.
     """
     r = (requested or "").strip().lower()
     c = (candidate or "").strip().lower()
     if not r or not c or r == c:
         return False
-    return re.sub(r"[0-9]+", "#", r) == re.sub(r"[0-9]+", "#", c)
+    if re.sub(r"[0-9]+", "#", r) != re.sub(r"[0-9]+", "#", c):
+        return False
+    r_runs = re.findall(r"[0-9]+", r)
+    c_runs = re.findall(r"[0-9]+", c)
+    return (
+        len(r_runs) == len(c_runs)
+        and all(len(a) == len(b) for a, b in zip(r_runs, c_runs))
+    )
 
 
 def validate_requested_model(
@@ -7429,6 +7439,22 @@ def validate_requested_model(
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            if auto:
+                # Version-only difference from a catalog entry (e.g. a newly
+                # released model the curated list hasn't caught up with):
+                # respect the explicit choice with a warning instead of
+                # swapping pricing/context silently (#101975).
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": False,
+                    "message": (
+                        f"Note: `{requested}` was not found in the model listing. "
+                        "It may still work if your account has access to a newer "
+                        "model version."
+                        f"{suggestion_text}"
+                    ),
+                }
             provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
             # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists
             # for entitlement-gated *hidden* slugs the curated listing hasn't
@@ -7666,6 +7692,22 @@ def validate_requested_model(
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            if auto:
+                # Version-only difference from a listed model (e.g. a newly
+                # released version the listing hasn't caught up with):
+                # respect the explicit choice with a warning instead of
+                # swapping pricing/context silently (#101975).
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": False,
+                    "message": (
+                        f"Note: `{requested}` was not found in this provider's "
+                        "model listing. It may still work if your account has "
+                        "access to a newer model version."
+                        f"{suggestion_text}"
+                    ),
+                }
 
             # Model not in live /v1/models — check the curated catalog
             # before rejecting.  Providers may omit models from their live
@@ -7824,7 +7866,9 @@ def validate_requested_model(
         auto = get_close_matches(
             requested_for_lookup.lower(), catalog_lower_list, n=1, cutoff=0.9
         )
-        if auto:
+        if auto and not _is_version_only_difference(
+            requested_for_lookup.lower(), auto[0]
+        ):
             corrected = catalog_lower[auto[0]]
             corrected_with_suffix = _with_preset_suffix(corrected)
             return {

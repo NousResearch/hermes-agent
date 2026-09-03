@@ -572,7 +572,7 @@ def _resolve_max_message_length(config) -> int:
     extra = getattr(config, "extra", {}) or {}
     raw = extra.get("max_message_length")
     if raw is None:
-        raw = os.getenv("MATRIX_MAX_MESSAGE_LENGTH")
+        raw = _startup_env_secret("MATRIX_MAX_MESSAGE_LENGTH") or None
     if raw is None:
         try:
             from gateway.platform_registry import platform_registry
@@ -979,18 +979,22 @@ def _pre_sanitize_matrix_markdown(text: str) -> str:
     return result
 
 
-def _startup_env_secret(name: str) -> str:
-    """Read a Matrix credential at adapter-startup time, scope-aware.
+def _startup_env_secret(name: str, default: str = "") -> str:
+    """Read a Matrix credential/setting at adapter-startup time, scope-aware.
 
     Slack pattern (#59739): a scoped read honors the installed profile's
-    secret scope verdict (scoped miss ⇒ empty, no borrowing the process
-    env); only an UNSCOPED read under multiplex (default-profile startup
-    loop) falls back to ``os.environ``, which is that profile's own value.
+    secret scope verdict (scoped miss ⇒ ``default``, no borrowing the
+    process env); only an UNSCOPED read under multiplex (default-profile
+    startup loop) falls back to ``os.environ``, which is that profile's own
+    value. ``default`` also lets non-credential settings (require_mention,
+    process_notices, session_scope, ...) preserve their existing non-empty
+    defaults through this same scoped read.
     """
     try:
-        return (get_secret(name) or "").strip()
+        val = get_secret(name, default)
     except UnscopedSecretError:
-        return os.getenv(name, "").strip()
+        val = os.getenv(name, default)
+    return (val or "").strip()
 
 
 def matrix_deps_present() -> bool:
@@ -1305,27 +1309,34 @@ class MatrixAdapter(BasePlatformAdapter):
             self._allowed_rooms: Set[str] = {
                 r.strip() for r in str(allowed_rooms_raw).split(",") if r.strip()
             }
-        self._allow_room_mentions: bool = os.getenv(
+        # MATRIX_ALLOW_ROOM_MENTIONS/MATRIX_DM_AUTO_THREAD have no config.yaml
+        # counterpart (env-only knobs) -- scope the read itself so a secondary
+        # multiplex profile's own .env value wins over the shared process env.
+        self._allow_room_mentions: bool = _startup_env_secret(
             "MATRIX_ALLOW_ROOM_MENTIONS", "false"
         ).lower() in ("true", "1", "yes")
-        self._auto_thread: bool = os.getenv("MATRIX_AUTO_THREAD", "true").lower() in (
-            "true",
-            "1",
-            "yes",
-        )
-        self._dm_auto_thread: bool = os.getenv(
+        auto_thread_raw = config.extra.get("auto_thread")
+        if auto_thread_raw is None:
+            auto_thread_raw = _startup_env_secret("MATRIX_AUTO_THREAD", "true")
+        self._auto_thread: bool = str(auto_thread_raw).lower() in ("true", "1", "yes")
+        self._dm_auto_thread: bool = _startup_env_secret(
             "MATRIX_DM_AUTO_THREAD", "false"
         ).lower() in {"true", "1", "yes"}
-        self._dm_mention_threads: bool = os.getenv(
-            "MATRIX_DM_MENTION_THREADS", "false"
-        ).lower() in ("true", "1", "yes")
-        raw_session_scope = os.getenv("MATRIX_SESSION_SCOPE", "auto").strip().lower()
+        dm_mention_threads_raw = config.extra.get("dm_mention_threads")
+        if dm_mention_threads_raw is None:
+            dm_mention_threads_raw = _startup_env_secret("MATRIX_DM_MENTION_THREADS", "false")
+        self._dm_mention_threads: bool = str(dm_mention_threads_raw).lower() in ("true", "1", "yes")
+        session_scope_raw = config.extra.get("session_scope")
+        if session_scope_raw is None:
+            session_scope_raw = _startup_env_secret("MATRIX_SESSION_SCOPE", "auto")
+        raw_session_scope = str(session_scope_raw).strip().lower()
         self._matrix_session_scope = (
             raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         )
-        self._process_notices: bool = os.getenv(
-            "MATRIX_PROCESS_NOTICES", "false"
-        ).lower() in ("true", "1", "yes")
+        process_notices_raw = config.extra.get("process_notices")
+        if process_notices_raw is None:
+            process_notices_raw = _startup_env_secret("MATRIX_PROCESS_NOTICES", "false")
+        self._process_notices: bool = str(process_notices_raw).lower() in ("true", "1", "yes")
 
         # Reactions: configurable via MATRIX_REACTIONS (default: true).
         self._reactions_enabled: bool = os.getenv(
@@ -1428,7 +1439,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if isinstance(configured, str):
                 return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        return os.getenv(
+        return _startup_env_secret(
             "MATRIX_REQUIRE_MENTION", "true"
         ).lower() not in {"false", "0", "no", "off"}
 
@@ -1449,7 +1460,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 return configured.lower() not in {"false", "0", "no", "off"}
             # int, float, etc. — truthiness fallback
             return bool(configured)
-        return os.getenv(
+        return _startup_env_secret(
             "MATRIX_THREAD_REQUIRE_MENTION", "false"
         ).lower() in {"true", "1", "yes", "on"}
 
@@ -5394,15 +5405,53 @@ def interactive_setup() -> None:
                 print_info("Home room cleared.")
 
 
+def _profile_scoped_config_load() -> bool:
+    """True when running inside a multiplexed secondary profile's scope.
+
+    Secondary-profile adapters are constructed and connected inside
+    ``_profile_runtime_scope`` (secret scope installed + multiplex active) --
+    the same discriminator the Buzz/Discord/Telegram/WhatsApp/LINE/DingTalk/
+    Mattermost/IRC adapters use for this bug class (#98738 / #72348 /
+    #80099). The DEFAULT profile under multiplexing runs unscoped:
+    ``os.environ`` holds its own bridge output there and keeps its legacy
+    precedence.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        return False
+
+
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
-    """Translate config.yaml matrix: keys into MATRIX_* env vars.
+    """Translate config.yaml matrix: keys into MATRIX_* env vars and
+    ``PlatformConfig.extra`` entries.
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
-    matrix_cfg block from gateway/config.py::load_gateway_config(). Env vars
-    take precedence over YAML. Returns None — everything flows through env.
+    matrix_cfg block from gateway/config.py::load_gateway_config().
+
+    Env vars take precedence over YAML for single-profile deployments --
+    each env write below is guarded by ``not os.getenv(...)`` so an explicit
+    env var survives a config.yaml update. Under a multiplexed secondary
+    profile's scope, the env write is skipped entirely (it would otherwise
+    leak into the process-global ``os.environ`` and be inherited by every
+    other profile); instead the values are returned so the caller merges
+    them into this profile's own ``PlatformConfig.extra``, which the
+    require_mention/process_notices/session_scope/auto_thread/
+    dm_mention_threads/max_message_length read sites now check first
+    (mirroring the Mattermost/DingTalk apply_yaml_config_fn fix).
+
+    allowed_users/free_response_rooms/allowed_rooms/ignore_user_patterns are
+    intentionally left on the legacy always-env-write path here -- a
+    separate, allowlist-focused fix covers those fields.
     """
-    if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
-        os.environ["MATRIX_REQUIRE_MENTION"] = str(matrix_cfg["require_mention"]).lower()
+    _skip_env_bridge = _profile_scoped_config_load()
+    seeded: dict = {}
+    if "require_mention" in matrix_cfg:
+        seeded["require_mention"] = matrix_cfg["require_mention"]
+        if not _skip_env_bridge and not os.getenv("MATRIX_REQUIRE_MENTION"):
+            os.environ["MATRIX_REQUIRE_MENTION"] = str(matrix_cfg["require_mention"]).lower()
     au = matrix_cfg.get("allowed_users")
     if au is not None and not os.getenv("MATRIX_ALLOWED_USERS"):
         if isinstance(au, list):
@@ -5423,17 +5472,27 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
         if isinstance(ignore_patterns, list):
             ignore_patterns = ",".join(str(v) for v in ignore_patterns)
         os.environ["MATRIX_IGNORE_USER_PATTERNS"] = str(ignore_patterns)
-    if "process_notices" in matrix_cfg and not os.getenv("MATRIX_PROCESS_NOTICES"):
-        os.environ["MATRIX_PROCESS_NOTICES"] = str(matrix_cfg["process_notices"]).lower()
-    if "session_scope" in matrix_cfg and not os.getenv("MATRIX_SESSION_SCOPE"):
-        os.environ["MATRIX_SESSION_SCOPE"] = str(matrix_cfg["session_scope"]).lower()
-    if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
-        os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
-    if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
-        os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
-    if "max_message_length" in matrix_cfg and not os.getenv("MATRIX_MAX_MESSAGE_LENGTH"):
-        os.environ["MATRIX_MAX_MESSAGE_LENGTH"] = str(matrix_cfg["max_message_length"])
-    return None
+    if "process_notices" in matrix_cfg:
+        seeded["process_notices"] = matrix_cfg["process_notices"]
+        if not _skip_env_bridge and not os.getenv("MATRIX_PROCESS_NOTICES"):
+            os.environ["MATRIX_PROCESS_NOTICES"] = str(matrix_cfg["process_notices"]).lower()
+    if "session_scope" in matrix_cfg:
+        seeded["session_scope"] = matrix_cfg["session_scope"]
+        if not _skip_env_bridge and not os.getenv("MATRIX_SESSION_SCOPE"):
+            os.environ["MATRIX_SESSION_SCOPE"] = str(matrix_cfg["session_scope"]).lower()
+    if "auto_thread" in matrix_cfg:
+        seeded["auto_thread"] = matrix_cfg["auto_thread"]
+        if not _skip_env_bridge and not os.getenv("MATRIX_AUTO_THREAD"):
+            os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
+    if "dm_mention_threads" in matrix_cfg:
+        seeded["dm_mention_threads"] = matrix_cfg["dm_mention_threads"]
+        if not _skip_env_bridge and not os.getenv("MATRIX_DM_MENTION_THREADS"):
+            os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
+    if "max_message_length" in matrix_cfg:
+        seeded["max_message_length"] = matrix_cfg["max_message_length"]
+        if not _skip_env_bridge and not os.getenv("MATRIX_MAX_MESSAGE_LENGTH"):
+            os.environ["MATRIX_MAX_MESSAGE_LENGTH"] = str(matrix_cfg["max_message_length"])
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

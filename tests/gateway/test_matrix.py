@@ -1,5 +1,6 @@
 """Tests for Matrix platform adapter (mautrix-python backend)."""
 import asyncio
+import os
 import re
 import stat
 import sys
@@ -3342,3 +3343,204 @@ class TestCryptoPickleKeyMigration:
         # start still sees a legacy-key account and retries the migration.
         store.put_account.assert_not_awaited()
         assert "retried on the next start" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Multiplex secondary-profile scope
+# ---------------------------------------------------------------------------
+#
+# __init__'s require_mention/thread_require_mention/max_message_length
+# already checked config.extra first but fell back to raw os.getenv when
+# extra was absent; process_notices/session_scope/auto_thread/
+# dm_mention_threads never consulted config.extra at all (raw os.getenv
+# only); dm_auto_thread/allow_room_mentions have no config.yaml path and
+# read raw os.getenv unconditionally. _apply_yaml_config also wrote
+# MATRIX_REQUIRE_MENTION/MATRIX_PROCESS_NOTICES/MATRIX_SESSION_SCOPE/
+# MATRIX_AUTO_THREAD/MATRIX_DM_MENTION_THREADS/MATRIX_MAX_MESSAGE_LENGTH
+# into the process-global os.environ unconditionally (guarded only by
+# ``not os.getenv(...)``, first-writer-wins). Under gateway.multiplex_profiles,
+# os.environ holds the DEFAULT profile's YAML-to-env bridge output -- a
+# secondary profile with its own (different or absent) Matrix config would
+# silently inherit the default profile's mention-gating/session-scope/
+# threading/chunking settings for the adapter's entire runtime lifetime.
+# Mirrors the Mattermost/DingTalk/IRC fix for #98738 (the E2EE crypto-store
+# path for Matrix was already fixed separately -- see
+# test_matrix_crypto_store_per_profile.py / test_matrix_recovery_key_scope.py).
+
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("MATRIX_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("MATRIX_PROCESS_NOTICES", "true")
+    monkeypatch.setenv("MATRIX_SESSION_SCOPE", "room")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+    monkeypatch.setenv("MATRIX_DM_MENTION_THREADS", "true")
+    monkeypatch.setenv("MATRIX_MAX_MESSAGE_LENGTH", "9999")
+    monkeypatch.setenv("MATRIX_DM_AUTO_THREAD", "true")
+    monkeypatch.setenv("MATRIX_ALLOW_ROOM_MENTIONS", "true")
+
+
+def _scoped_matrix_config(extra=None):
+    from gateway.config import PlatformConfig
+
+    merged = {"homeserver": "https://matrix.example.org", "user_id": "@bot:example.org"}
+    merged.update(extra or {})
+    return PlatformConfig(enabled=True, token="syt_test_token", extra=merged)
+
+
+class TestMultiplexProfileScope:
+
+    def test_secondary_extra_wins_over_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        """The secondary profile's own config.yaml extra is authoritative,
+        not the default profile's bridged require_mention/
+        thread_require_mention/process_notices/session_scope/auto_thread/
+        dm_mention_threads/max_message_length."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        multiplex_scope()
+        cfg = _scoped_matrix_config({
+            "require_mention": False,
+            "thread_require_mention": True,
+            "process_notices": True,
+            "session_scope": "thread",
+            "auto_thread": False,
+            "dm_mention_threads": True,
+            "max_message_length": 4000,
+        })
+        adapter = MatrixAdapter(cfg)
+        assert adapter._require_mention is False
+        assert adapter._thread_require_mention is True
+        assert adapter._process_notices is True
+        assert adapter._matrix_session_scope == "thread"
+        assert adapter._auto_thread is False
+        assert adapter._dm_mention_threads is True
+        assert adapter.max_message_length == 4000
+
+    def test_secondary_missing_keys_fail_closed(
+        self, multiplex_scope, default_profile_env
+    ):
+        """Keys absent from the profile's own extra/scope must NOT borrow the
+        default profile's bridged env values -- that would silently drive a
+        secondary profile's mention-gating/session-scope/threading/chunking
+        decisions off the default profile's settings for its entire runtime
+        lifetime."""
+        from plugins.platforms.matrix.adapter import (
+            DEFAULT_MAX_MESSAGE_LENGTH,
+            MatrixAdapter,
+        )
+
+        multiplex_scope()
+        adapter = MatrixAdapter(_scoped_matrix_config({}))
+        assert adapter._require_mention is True  # hardcoded default, not the default profile's False
+        assert adapter._thread_require_mention is False  # hardcoded default, not True
+        assert adapter._process_notices is False  # hardcoded default, not True
+        assert adapter._matrix_session_scope == "auto"  # hardcoded default, not "room"
+        assert adapter._auto_thread is True  # hardcoded default, not False
+        assert adapter._dm_mention_threads is False  # hardcoded default, not True
+        assert adapter.max_message_length == DEFAULT_MAX_MESSAGE_LENGTH  # not 9999
+        assert adapter._dm_auto_thread is False  # not True
+        assert adapter._allow_room_mentions is False  # not True
+
+    def test_secondary_own_env_only_scope_wins_over_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        """dm_auto_thread/allow_room_mentions have no config.yaml path -- a
+        secondary profile's own value (installed via its secret scope, i.e.
+        its own ``.env`` file) must still win over the default profile's
+        bridged env, not just fall closed to the hardcoded default."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        # default_profile_env sets both of these to "true" in os.environ --
+        # the secondary profile's own scope disagrees (both "false"), which
+        # is the only way this test can tell a scoped read apart from a raw
+        # os.getenv that would silently borrow the default profile's "true".
+        multiplex_scope({
+            "MATRIX_DM_AUTO_THREAD": "false",
+            "MATRIX_ALLOW_ROOM_MENTIONS": "false",
+        })
+        adapter = MatrixAdapter(_scoped_matrix_config({}))
+        assert adapter._dm_auto_thread is False
+        assert adapter._allow_room_mentions is False
+
+    def test_apply_yaml_config_scoped_skips_env_write_and_seeds_extra(
+        self, multiplex_scope
+    ):
+        from plugins.platforms.matrix.adapter import _apply_yaml_config
+
+        multiplex_scope()
+        scoped_vars = (
+            "MATRIX_REQUIRE_MENTION",
+            "MATRIX_PROCESS_NOTICES",
+            "MATRIX_SESSION_SCOPE",
+            "MATRIX_AUTO_THREAD",
+            "MATRIX_DM_MENTION_THREADS",
+            "MATRIX_MAX_MESSAGE_LENGTH",
+        )
+        with patch.dict(os.environ, {}, clear=False):
+            for var in scoped_vars:
+                os.environ.pop(var, None)
+            seeded = _apply_yaml_config({}, {
+                "require_mention": False,
+                "process_notices": True,
+                "session_scope": "thread",
+                "auto_thread": False,
+                "dm_mention_threads": True,
+                "max_message_length": 4000,
+            })
+            assert seeded == {
+                "require_mention": False,
+                "process_notices": True,
+                "session_scope": "thread",
+                "auto_thread": False,
+                "dm_mention_threads": True,
+                "max_message_length": 4000,
+            }
+            # Under a secondary profile's scope the env bridge must be
+            # skipped -- writing here would leak into every other profile's
+            # os.environ.
+            for var in scoped_vars:
+                assert var not in os.environ
+
+    def test_apply_yaml_config_unscoped_default_profile_still_writes_env(self):
+        """Regression guard: the default (unscoped) profile keeps writing the
+        env bridge exactly as before -- passes with or without the fix, it
+        just guards single-profile deployments against a regression."""
+        from agent.secret_scope import set_multiplex_active
+
+        set_multiplex_active(False)
+        try:
+            from plugins.platforms.matrix.adapter import _apply_yaml_config
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("MATRIX_REQUIRE_MENTION", None)
+                os.environ.pop("MATRIX_AUTO_THREAD", None)
+                _apply_yaml_config({}, {"require_mention": True, "auto_thread": False})
+                assert os.environ["MATRIX_REQUIRE_MENTION"] == "true"
+                assert os.environ["MATRIX_AUTO_THREAD"] == "false"
+        finally:
+            set_multiplex_active(False)

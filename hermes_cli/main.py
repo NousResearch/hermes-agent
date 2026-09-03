@@ -12302,6 +12302,25 @@ def cmd_dashboard(args):
     if not _headless_backend:
         os.environ.pop("HERMES_SERVE_HEADLESS", None)
 
+    # ── Strip public-dashboard OAuth config from SSH-spawned backends ──
+    # load_hermes_dotenv() (called once at module import, before this
+    # function runs) reloads ~/.hermes/.env into os.environ unconditionally
+    # — including HERMES_DASHBOARD_OAUTH_CLIENT_ID / HERMES_DASHBOARD_PUBLIC_URL,
+    # which are meant only for the real public-facing dashboard service
+    # (e.g. hermes-mission-control.service). A Desktop-SSH isolated backend
+    # re-reads the same .env itself regardless of how it was launched, so
+    # process-environment inheritance was never the vector — this is not a
+    # sandboxing gap, just a stale config value with no scope of its own.
+    # A --ssh-session-token-file backend has its own token-only auth
+    # contract (see _read_ssh_session_token_file) and must never engage
+    # Portal OAuth on a loopback-bound port. Confirmed via FF-CL-20260831-009
+    # (env-scrubbed canary + strace) that this .env reload, not inherited
+    # env, was the actual trigger for the 401 unauthenticated/no_cookie loop
+    # in Desktop's SSH reconnect path.
+    if _token_file:
+        os.environ.pop("HERMES_DASHBOARD_OAUTH_CLIENT_ID", None)
+        os.environ.pop("HERMES_DASHBOARD_PUBLIC_URL", None)
+
     # ── Unified profile launch routing ────────────────────────────────
     # The dashboard is a MACHINE management surface: it can read/write any
     # profile via the per-request ?profile= scoping. Running one dashboard
@@ -12557,6 +12576,17 @@ def cmd_dashboard(args):
             )
 
     from hermes_cli.web_server import start_server
+
+    # ── Re-strip OAuth vars: web_server imports tui_gateway.server, whose
+    # own module-level load_hermes_dotenv() call reloads ~/.hermes/.env and
+    # re-populates HERMES_DASHBOARD_OAUTH_CLIENT_ID / HERMES_DASHBOARD_PUBLIC_URL
+    # after the strip above. Re-clear here, immediately before the auth gate
+    # (_maybe_setup_dashboard_auth_interactively / start_server) reads them,
+    # so an SSH-spawned isolated backend never picks up the public-dashboard's
+    # Portal OAuth config. See FF-CL-20260831-009/010.
+    if _token_file:
+        os.environ.pop("HERMES_DASHBOARD_OAUTH_CLIENT_ID", None)
+        os.environ.pop("HERMES_DASHBOARD_PUBLIC_URL", None)
 
     # Interactive auth setup: if this bind will engage the auth gate but no
     # provider is registered yet, offer to configure one here (TTY only)

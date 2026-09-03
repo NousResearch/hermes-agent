@@ -7,6 +7,9 @@ name: BassHUB companion image
 # scripts/hermes-user.sh refuses non-digest images).
 on:
   workflow_dispatch:
+  push:
+    branches: [integration/basshub-v0.2.27-modern]
+    paths: ['.github/workflows/basshub-companion-image.yml']
 
 permissions:
   contents: read

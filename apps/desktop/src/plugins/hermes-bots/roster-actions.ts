@@ -116,11 +116,11 @@ export function trackInboundActivity(roster: RosterRow[]) {
  *  session — a group room or another tab owning the center must not be
  *  yanked away by background activity — and never mid-turn, when the
  *  activity is the turn itself, already streaming. */
-function refreshOpenBotChat(bot: RosterRow) {
+function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowWhileBusy?: boolean } = {}) {
   const canonicalIds = [bot.canonical_session?.id, bot.canonical_session?.resolved_id].filter(Boolean).map(String)
   const focused = String(host.state.focusedStoredSessionId?.get?.() || '')
 
-  if (!focused || !canonicalIds.includes(focused) || host.state.busy.get()) {
+  if (!focused || !canonicalIds.includes(focused) || (!allowWhileBusy && host.state.busy.get())) {
     return
   }
 
@@ -252,7 +252,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     // message_agent). Force a registry open so forceResume re-pulls the
     // latest transcript instead of leaving a stale snapshot until the next
     // user turn (#99393 class; #95600 only covered the not-yet-open path).
-    refreshOpenBotChat(bot)
+    refreshOpenBotChat(bot, { allowWhileBusy: true })
 
     return true
   }

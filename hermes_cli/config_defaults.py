@@ -41,6 +41,13 @@ DEFAULT_CONFIG = {
         # most-recent one. Set false to restore the old latest-session
         # behavior everywhere.
         "terminal_continue": True,
+        # Startup crash-restore offers: each interactive CLI session keeps a
+        # liveness marker under $HERMES_HOME/runtime/cli-live/. When a CLI
+        # process dies without a clean exit (crash, SIGKILL, reboot, closed
+        # terminal window), the next interactive startup offers to restore
+        # the orphaned session(s) with a one-keystroke numbered pick.
+        # Set false to disable the markers and the offer entirely.
+        "crash_restore": True,
     },
     "agent": {
         # Unlimited by default. The agent turn cap caused more problems than

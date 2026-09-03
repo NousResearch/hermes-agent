@@ -1210,6 +1210,10 @@ class CLICommandsMixin:
         self._resumed = True
         self._pending_title = None
         _sync_process_session_id(target_id)
+        # Re-point the per-terminal breadcrumb AND the crash-restore liveness
+        # marker at the newly adopted session (the old one was just ended
+        # with "resumed_other", so its marker must not linger).
+        getattr(self, "_write_terminal_breadcrumb", lambda: None)()
 
         # Load conversation history (strip transcript-only metadata entries).
         # repair_alternation: this /resume feeds LIVE REPLAY — ``restored``

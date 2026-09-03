@@ -10669,7 +10669,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint("  Use /resume with no arguments to see available sessions.")
             return True
 
-        self._handle_resume_command(f"/resume {index}")
+        # Resolve against the ARMED list's own session id rather than
+        # re-numbering through _list_recent_sessions: the armed list may be a
+        # crash-restore offer (different ordering/contents), and even for the
+        # /resume list the DB contents can shift between display and reply.
+        selected_id = str((pending[index - 1] or {}).get("id") or "").strip()
+        if not selected_id:
+            _cprint(f"  Resume index {index} could not be resolved.")
+            return True
+        self._handle_resume_command(f"/resume {selected_id}")
         return True
 
 
@@ -13839,6 +13847,81 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             write_breadcrumb(self.session_id)
         except Exception:
             pass
+        # Keep the crash-restore liveness marker pointed at the current
+        # session id too — same trigger set (start + every reassignment).
+        self._update_crash_live_marker()
+
+    def _update_crash_live_marker(self) -> None:
+        """Point the crash-restore liveness marker at the current session.
+
+        Only active for interactive sessions (``run()`` arms it); one-shot
+        ``-q`` runs end their rows cleanly and never need a restore offer.
+        Best-effort — never raises.
+        """
+        if not getattr(self, "_crash_marker_armed", False):
+            return
+        try:
+            from hermes_cli.crash_restore import remove_live_marker, write_live_marker
+
+            previous = getattr(self, "_crash_marker_session", None)
+            if previous and previous != self.session_id:
+                remove_live_marker(previous)
+            write_live_marker(self.session_id)
+            self._crash_marker_session = self.session_id
+        except Exception:
+            logger.debug("crash-restore marker update failed", exc_info=True)
+
+    def _remove_crash_live_marker(self) -> None:
+        """Drop the crash-restore marker on clean exit. Never raises."""
+        try:
+            from hermes_cli.crash_restore import remove_live_marker
+
+            for sid in {getattr(self, "_crash_marker_session", None), self.session_id}:
+                if sid:
+                    remove_live_marker(sid)
+        except Exception:
+            pass
+
+    def _offer_crash_restore(self) -> None:
+        """Offer to restore CLI sessions whose owning process crashed.
+
+        Inspired by GitHub Copilot CLI's startup session-restore flow
+        (v1.0.81): a crash or machine restart no longer means digging the
+        session id out of ``hermes sessions list`` by hand. Shows up to a
+        few crashed sessions and arms the same one-shot numbered selection
+        that a bare ``/resume`` uses, so typing ``1`` restores immediately.
+        """
+        from hermes_cli.crash_restore import find_crashed_sessions
+
+        offers = find_crashed_sessions(
+            self._session_db, current_session_id=self.session_id
+        )
+        if not offers:
+            return
+
+        from hermes_cli.main import _relative_time
+
+        _cli_visible_print()
+        _cli_visible_print(
+            "  (o_o) Found session(s) that were still open when their CLI went away:"
+        )
+        _cli_visible_print()
+        for idx, row in enumerate(offers, start=1):
+            title = row.get("title") or "—"
+            msgs = row.get("message_count") or 0
+            last = _relative_time(row.get("last_activity_at") or row.get("started_at"))
+            _cli_visible_print(
+                f"  {idx:<3} {title:<32} {msgs:>4} msgs  {last:<13} {row['id']}"
+            )
+        _cli_visible_print()
+        _cli_visible_print(
+            "  Type a number to restore it, /resume <id> anytime, or just start chatting to ignore."
+        )
+        _cli_visible_print()
+        # Reuse the bare-/resume one-shot numbered selection (#34584): the
+        # consume path resolves against THIS list's ids, so numbering is
+        # exact even though the ordering differs from /resume's table.
+        self._pending_resume_sessions = offers
 
     def _transfer_session_yolo(self, old_session_id: str, new_session_id: str) -> None:
         """Move YOLO bypass state from an old session key to a new one.
@@ -18275,6 +18358,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if self._preload_resumed_session():
                 self._display_resumed_history()
 
+        # Arm the crash-restore liveness marker for this interactive session
+        # and offer to restore any sessions whose CLI process died without a
+        # clean exit (crash, SIGKILL, machine restart, closed window).
+        # Inspired by GitHub Copilot CLI v1.0.81's startup restore flow.
+        try:
+            self._crash_marker_armed = True
+            self._update_crash_live_marker()
+            self._offer_crash_restore()
+        except Exception:
+            logger.debug("crash-restore startup offer failed", exc_info=True)
+
         try:
             from hermes_cli.skin_engine import get_active_skin
             _welcome_skin = get_active_skin()
@@ -21650,6 +21744,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     pass
             _run_cleanup()
             self._print_exit_summary()
+            # Clean exit — drop the crash-restore liveness marker so the next
+            # startup doesn't offer to restore a session that ended normally.
+            self._remove_crash_live_marker()
             self._release_active_session()
 
         # Deferred relaunch: /update sets _pending_relaunch so the exec

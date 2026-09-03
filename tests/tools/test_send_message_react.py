@@ -14,6 +14,10 @@ import tools.send_message_tool as smt
 class _FakePhotonAdapter:
     """Adapter exposing add_reaction/remove_reaction coroutines."""
 
+    # Advertises reaction support via the unified capability flag (mirrors the
+    # real PhotonAdapter). The send_message tool gates on SUPPORTS_REACTIONS.
+    SUPPORTS_REACTIONS = True
+
     def __init__(self):
         self.calls = []
 
@@ -27,7 +31,9 @@ class _FakePhotonAdapter:
 
 
 class _NoReactionAdapter:
-    """Adapter with no reaction support at all."""
+    """Adapter with no reaction support (SUPPORTS_REACTIONS defaults False)."""
+
+    SUPPORTS_REACTIONS = False
 
 
 def _runner_with(adapter):

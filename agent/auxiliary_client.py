@@ -8279,7 +8279,13 @@ def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[
     with _client_cache_lock:
         old_entry = _client_cache.get(cache_key)
         if old_entry is not None and old_entry[0] is not client:
-            _close_cached_client(old_entry[0])
+            # Do NOT close the old client — another caller may be mid-request
+            # with it (see #96491). Closing an in-flight client tears down its
+            # socket, causing a spurious APIConnectionError on the concurrent
+            # caller. Instead, drop the cache reference and let normal refcount/
+            # GC cleanup happen after in-flight users release it — matching the
+            # eviction policy in _get_cached_client (lines ~8030-8034).
+            pass
         _client_cache[cache_key] = (client, default_model, bound_loop)
 
 

@@ -453,6 +453,89 @@ class TestStatusBarFieldConfig:
             text = cli_obj._build_status_bar_text(width=120)
         assert "Σ" not in text
 
+    def test_cost_when_explicitly_requested(self):
+        """cost field renders a $ label from session_estimated_cost_usd."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj.agent.session_estimated_cost_usd = 0.0046
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "cost"]}}}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "$0.0046" in text
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_cost_zero_renders_dollar_zero(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj.agent.session_estimated_cost_usd = 0.0
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "cost"]}}}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "$0.00" in text
+
+    def test_cost_sub_cent_under_threshold_shows_floor_label(self):
+        """A positive cost that rounds to $0.0000 at 4dp must not read as zero."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj.agent.session_estimated_cost_usd = 0.00001
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "cost"]}}}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "~$<0.0001" in text
+
+    def test_cost_normal_amount_two_dp(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj.agent.session_estimated_cost_usd = 1.234
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "cost"]}}}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "$1.23" in text
+
+    def test_cost_hidden_by_default(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj.agent.session_estimated_cost_usd = 0.0046
+        with patch.object(cli_mod, "CLI_CONFIG", {}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "$0.0046" not in text
+
     def test_narrow_terminal_drops_context_detail(self):
         """Narrow terminal (<76) ignores context_detail even if configured."""
         text = self._cli_with_fields(["model", "context_detail", "duration"], width=60)

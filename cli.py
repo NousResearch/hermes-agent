@@ -6667,6 +6667,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+        # Running estimated session cost (USD) — consumed by the opt-in
+        # "cost" status-bar field. Mirrors what /usage and state.db report.
+        snapshot["session_estimated_cost_usd"] = getattr(agent, "session_estimated_cost_usd", 0) or 0
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -7660,6 +7663,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             total_tokens = snapshot.get("session_total_tokens", 0)
             if total_tokens and field_set is not None and "total_tokens" in field_set:
                 parts.append(f"Σ{format_token_count_compact(total_tokens)}")
+            # Session cost ($) — same opt-in contract as total_tokens.
+            # Deferred import keeps the render path exception-isolated and the
+            # module import graph unchanged. Reuses format_cost_label so the
+            # sub-cent honesty rules from #79220 apply verbatim here.
+            if field_set is not None and "cost" in field_set:
+                try:
+                    from agent.usage_pricing import format_cost_label as _fcl
+                    from decimal import Decimal as _D
+                    parts.append(_fcl(_D(str(snapshot.get("session_estimated_cost_usd", 0) or 0))))
+                except Exception:
+                    pass
             if not parts:
                 parts = [f"⚕ {snapshot['model_short']}"]
             return self._right_align_status_title(" │ ".join(parts), session_title, width)
@@ -7826,6 +7840,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     total_tokens = snapshot.get("session_total_tokens", 0)
                     if total_tokens and field_set is not None and "total_tokens" in field_set:
                         _append(frags, " │ ", ("class:status-bar-dim", f"Σ{format_token_count_compact(total_tokens)}"))
+                    # Session cost ($) — same opt-in contract as total_tokens.
+                    if field_set is not None and "cost" in field_set:
+                        try:
+                            from agent.usage_pricing import format_cost_label as _fcl
+                            from decimal import Decimal as _D
+                            _cost_lbl = _fcl(_D(str(snapshot.get("session_estimated_cost_usd", 0) or 0)))
+                            _append(frags, " │ ", ("class:status-bar-dim", _cost_lbl))
+                        except Exception:
+                            pass
                     if not frags:
                         frags = [
                             ("class:status-bar", " ⚕ "),

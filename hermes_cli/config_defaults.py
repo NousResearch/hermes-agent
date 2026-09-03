@@ -1681,9 +1681,9 @@ DEFAULT_CONFIG = {
         # default set. Available: model, context_detail, context_pct,
         # cache_hit, latency, tps, compressions, bg_tasks, bg_processes,
         # bg_subagents, goal, duration, prompt_elapsed, idle_since, focus,
-        # yolo, stash, battery, title, total_tokens.
-        # total_tokens (session Σ) is opt-in only — it never shows unless
-        # listed here. Narrow terminals still drop wide-mode-only fields
+        # yolo, stash, battery, title, total_tokens, cost.
+        # total_tokens (session Σ) and cost (session $) are opt-in only —
+        # they never show unless listed here. Narrow terminals still drop wide-mode-only fields
         # (context_detail, prompt_elapsed, idle_since) regardless of config.
         "status_bar": {
             "fields": [],  # empty = built-in defaults (all fields)

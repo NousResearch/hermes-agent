@@ -492,6 +492,8 @@ def test_coalesced_format_bounds_details_and_reports_omitted_count():
     assert "proc_bound_10" not in text
     assert "proc_bound_11" not in text
     assert "and 2 more completion(s)" in text
+    assert "respond exactly NO_REPLY" in text
+    assert "Do not send a message merely to acknowledge receipt" in text
 
 
 def test_coalesced_format_force_redacts_output_when_redaction_disabled(monkeypatch):

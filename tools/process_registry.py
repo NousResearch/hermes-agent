@@ -3373,7 +3373,24 @@ def _delegation_attribution_line(evt: dict) -> "str | None":
     return line
 
 
-def format_process_notification(evt: dict) -> "str | None":
+PROCESS_NOTIFICATION_NO_REPLY_CONTRACT = (
+    "If this process event does not materially change or correct an answer "
+    "you have already delivered, respond exactly NO_REPLY so no redundant "
+    "follow-up is sent. Do not send a message merely to acknowledge receipt."
+)
+
+
+def _with_process_no_reply_contract(text: str) -> str:
+    """Add the live gateway's exact silence contract to process telemetry."""
+    return f"{text[:-1]}\n\n{PROCESS_NOTIFICATION_NO_REPLY_CONTRACT}]"
+
+
+def format_process_notification(
+    evt: dict,
+    *,
+    include_no_reply_contract: bool = False,
+    include_attribution: bool = True,
+) -> "str | None":
     """Format a process notification event into a [IMPORTANT: ...] message.
 
     Handles completion events (notify_on_complete), watch pattern matches,
@@ -3382,16 +3399,21 @@ def format_process_notification(evt: dict) -> "str | None":
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
     _cmd = evt.get("command", "unknown")
-    _attribution = _delegation_attribution_line(evt)
+    _attribution = _delegation_attribution_line(evt) if include_attribution else None
+
+    def _finalize(text: str) -> str:
+        if include_no_reply_contract:
+            return _with_process_no_reply_contract(text)
+        return text
 
     if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
+        return _finalize(f"[IMPORTANT: {evt.get('message', '')}]")
 
     # Overflow events carry their human-readable summary in `message` —
     # without this case they fall through to the completion formatter and
     # surface as a phantom "process exited (exit code ?)" notification.
     if evt_type in ("watch_overflow_tripped", "watch_overflow_released"):
-        return f"[IMPORTANT: {evt.get('message', '')}]"
+        return _finalize(f"[IMPORTANT: {evt.get('message', '')}]")
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
@@ -3410,7 +3432,7 @@ def format_process_notification(evt: dict) -> "str | None":
         if _sup:
             text += f"\n({_sup} earlier matches were suppressed by rate limit)"
         text += "]"
-        return text
+        return _finalize(text)
 
     if evt_type == "async_delegation":
         return _format_async_delegation(evt)
@@ -3451,7 +3473,7 @@ def format_process_notification(evt: dict) -> "str | None":
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
     )
-    return text
+    return _finalize(text)
 
 
 # ---------------------------------------------------------------------------

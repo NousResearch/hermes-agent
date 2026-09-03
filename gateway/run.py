@@ -4473,37 +4473,22 @@ def _format_concise_process_notification(
 def _format_gateway_process_notification(evt: dict) -> "str | None":
     """Format a watch pattern event from completion_queue into a [IMPORTANT:] message."""
     evt_type = evt.get("type", "completion")
-    _sid = evt.get("session_id", "unknown")
-    _cmd = evt.get("command", "unknown")
-
-    if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
-
-    # Overflow events carry their human-readable summary in `message`,
-    # like watch_disabled — see the shared formatter in
-    # tools/process_registry.py.
-    if evt_type in ("watch_overflow_tripped", "watch_overflow_released"):
-        return f"[IMPORTANT: {evt.get('message', '')}]"
-
-    if evt_type == "watch_match":
-        _pat = evt.get("pattern", "?")
-        _out = evt.get("output", "")
-        _sup = evt.get("suppressed", 0)
-        text = (
-            f"[IMPORTANT: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
-            f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
-        )
-        if _sup:
-            text += f"\n({_sup} earlier matches were suppressed by rate limit)"
-        text += "]"
-        return text
-
-    if evt_type == "async_delegation":
-        # Reuse the shared rich formatter (self-contained task-source block).
+    if evt_type in {
+        "watch_match",
+        "watch_disabled",
+        "watch_overflow_tripped",
+        "watch_overflow_released",
+        "async_delegation",
+    }:
+        # Keep every model-facing process notification on the shared formatter.
         from tools.process_registry import format_process_notification
-        return format_process_notification(evt)
+        return format_process_notification(
+            evt,
+            include_no_reply_contract=evt_type != "async_delegation",
+            # Preserve the gateway watch text exactly. The pre-refactor watch
+            # formatter did not expose subagent ownership attribution.
+            include_attribution=evt_type != "watch_match",
+        )
 
     return None
 
@@ -28653,6 +28638,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     @staticmethod
     def _format_coalesced_process_completions(entries: list[tuple[str, dict, asyncio.Future]]) -> str:
         """Build one bounded synthetic event from several redacted completions."""
+        from tools.process_registry import PROCESS_NOTIFICATION_NO_REPLY_CONTRACT
+
         lines = [
             f"[IMPORTANT: {len(entries)} background processes completed for this session.",
             "Treat these results as one completion batch and send at most one "
@@ -28685,9 +28672,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 f"\n- … and {omitted} more completion(s); inspect them with "
                 "the process tool if they affect the conclusion."
             )
-        lines.append(
-            "If a result does not change the current conclusion, absorb it silently.]"
-        )
+        lines.append(PROCESS_NOTIFICATION_NO_REPLY_CONTRACT + "]")
         return "\n".join(lines)
 
     def _record_coalesced_completion_siblings(self, events: list[dict]) -> None:
@@ -29157,7 +29142,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             or ""
                         ),
                     }
-                    synth_text = format_process_notification(completion_evt)
+                    synth_text = format_process_notification(
+                        completion_evt,
+                        include_no_reply_contract=True,
+                    )
                     if not synth_text:
                         break
                     delivered = await self._enqueue_process_completion_notification(

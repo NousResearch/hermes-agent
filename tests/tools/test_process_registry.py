@@ -1288,6 +1288,54 @@ class TestProcessToolHandler:
 from tools.process_registry import format_process_notification
 
 
+@pytest.mark.parametrize(
+    "event",
+    [
+        {
+            "type": "watch_match",
+            "session_id": "proc_ready",
+            "command": "python -m http.server 8767",
+            "pattern": "Serving HTTP",
+            "output": "Serving HTTP on 127.0.0.1 port 8767",
+        },
+        {"type": "watch_disabled", "message": "Watch disabled"},
+        {"type": "watch_overflow_tripped", "message": "Watch overflowed"},
+        {"type": "watch_overflow_released", "message": "Watch resumed"},
+        {
+            "type": "completion",
+            "session_id": "proc_done",
+            "command": "python build.py",
+            "exit_code": 0,
+            "output": "done",
+        },
+    ],
+    ids=["watch-match", "watch-disabled", "overflow", "overflow-released", "completion"],
+)
+def test_process_notification_allows_silent_no_news_reconciliation(event):
+    text = format_process_notification(
+        event,
+        include_no_reply_contract=True,
+    )
+
+    assert text is not None
+    assert "respond exactly NO_REPLY" in text
+    assert "Do not send a message merely to acknowledge" in text
+
+
+def test_process_notification_display_text_omits_model_control_contract():
+    text = format_process_notification({
+        "type": "watch_match",
+        "session_id": "proc_ready",
+        "command": "python -m http.server 8767",
+        "pattern": "Serving HTTP",
+        "output": "Serving HTTP on 127.0.0.1 port 8767",
+    })
+
+    assert text is not None
+    assert "NO_REPLY" not in text
+    assert "merely to acknowledge" not in text
+
+
 def test_drain_notifications_completion_callback_exception_fails_closed(registry):
     event = {
         "type": "completion",

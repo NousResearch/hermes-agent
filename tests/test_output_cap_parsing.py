@@ -191,3 +191,41 @@ class TestParseVllmTokenBasedOutputCap:
             cap = available
         assert real_input + cap <= window, f"did not converge: cap={cap}"
 
+
+class TestParseVllmTotalWindowOutputCap:
+    """vLLM rejects an oversized max_tokens by naming the total window.
+
+    Until this format was parsed, the 400 was misrouted to the compression
+    path (the classifier matches the bare "max_tokens"/"max_model_len"
+    words), every retry kept the same oversized cap, and the session
+    death-looped into "Cannot compress further" even though the input
+    (~76K) was far below the window (#102494)."""
+
+    # Verbatim 400 from a self-hosted vLLM server (max_model_len=262144)
+    # after /model switched the session to a provider whose configured
+    # max_tokens (393216) exceeded the window.
+    _VLLM_MSG = (
+        "max_tokens=393216 cannot be greater than "
+        "max_model_len=max_total_tokens=262144. Please request fewer output "
+        "tokens. (parameter=max_tokens, value=393216)"
+    )
+
+    def test_vllm_total_window_format(self):
+        # The message reports the total window but not the input size, so the
+        # window itself is the available-output upper bound; the caller
+        # clamps it against its own input estimate and safety margin.
+        assert parse_available_output_tokens_from_error(self._VLLM_MSG) == 262144
+
+    def test_vllm_total_window_is_output_cap(self):
+        assert is_output_cap_error(self._VLLM_MSG) is True
+
+    def test_vllm_prompt_overflow_stays_context_path(self):
+        # The input-overflow phrasing must keep routing to compression, not
+        # be mistaken for an output-cap rejection just because it mentions
+        # max_model_len.
+        assert is_output_cap_error(
+            "The decoder prompt (length 40000) is longer than the maximum "
+            "model length of 32768. Make sure that max_model_len is no "
+            "smaller than the model's context length (32768)."
+        ) is False
+

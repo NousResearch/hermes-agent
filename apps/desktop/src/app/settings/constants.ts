@@ -621,6 +621,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
       languageCode: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
     }
   },
+  telegram: {
+    replyToTranscript: 'Reply to the visible transcript echo instead of the original Telegram voice note.'
+  },
   updates: {
     nonInteractiveLocalChanges:
       'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.'
@@ -707,6 +710,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.provider',
       'stt.enabled',
       'stt.echo_transcripts',
+      'telegram.reply_to_transcript',
       'stt.provider',
       'voice.auto_tts',
       'tts.edge.voice',

@@ -81,6 +81,7 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
     adapter.send_voice.assert_awaited_once_with(
         chat_id="chat-1",
         audio_path=str(media_file),
+        reply_to="msg-1",
         metadata={"notify": True},
         is_voice=True,
     )
@@ -181,6 +182,38 @@ async def test_non_streaming_media_failure_notifies_user(tmp_path, monkeypatch):
     assert adapter.notices == ["⚠️ Couldn't deliver the video attachment."]
 
 
+@pytest.mark.asyncio
+async def test_media_failure_notice_replies_to_transcript_echo_in_telegram_dm(
+    tmp_path,
+    monkeypatch,
+):
+    """A failed attachment notice stays anchored to the echoed transcript."""
+    adapter = _MediaRoutingAdapter()
+    event = _event()
+    setattr(event, "_gateway_stt_reply_anchor", "transcript-echo-7")
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "clip.mp4")
+    adapter._message_handler = AsyncMock(return_value=f"MEDIA:{media_file}")
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="notice"))
+    adapter.send_video = AsyncMock(
+        return_value=SendResult(success=False, error="upload rejected")
+    )
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    adapter.send_video.assert_awaited_once_with(
+        chat_id="chat-1",
+        video_path=str(media_file),
+        reply_to="transcript-echo-7",
+        metadata={"notify": True},
+    )
+    adapter.send.assert_awaited_once_with(
+        chat_id="chat-1",
+        content="⚠️ Couldn't deliver the video attachment.",
+        reply_to="transcript-echo-7",
+        metadata={"notify": True},
+    )
+
+
 class _DiscordMediaFailureAdapter(BasePlatformAdapter):
     """Minimal adapter to exercise non-streaming MEDIA failure notification."""
 
@@ -236,11 +269,13 @@ async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_ima
     adapter.send.assert_awaited_once_with(
         "chat-1",
         "Quote here",
+        reply_to="msg-1",
         metadata={"thread_id": "topic-1"},
     )
     adapter.send_multiple_images.assert_awaited_once_with(
         chat_id="chat-1",
         images=[(f"file://{media_file.as_posix()}", "")],
+        reply_to="msg-1",
         metadata={"thread_id": "topic-1"},
     )
 
@@ -286,11 +321,13 @@ async def test_queued_followup_delivery_reuses_routing_metadata_for_media(
     adapter.send.assert_awaited_once_with(
         "chat-1",
         "Threaded image",
+        reply_to="msg-1",
         metadata=routing_metadata,
     )
     adapter.send_multiple_images.assert_awaited_once_with(
         chat_id="chat-1",
         images=[(f"file://{media_file.as_posix()}", "")],
+        reply_to="msg-1",
         metadata=routing_metadata,
     )
 
@@ -327,6 +364,7 @@ async def test_queued_followup_delivery_keeps_remote_image_url_in_text():
     adapter.send.assert_awaited_once_with(
         "chat-1",
         response,
+        reply_to="msg-1",
         metadata={"thread_id": "topic-1"},
     )
     adapter.send_multiple_images.assert_not_awaited()
@@ -370,6 +408,7 @@ async def test_queued_followup_delivery_keeps_bare_local_path_in_text(
     adapter.send.assert_awaited_once_with(
         "chat-1",
         response,
+        reply_to="msg-1",
         metadata={"thread_id": "topic-1"},
     )
     adapter.send_multiple_images.assert_not_awaited()
@@ -409,6 +448,7 @@ async def test_queued_followup_delivery_preserves_protected_media_example():
     adapter.send.assert_awaited_once_with(
         "chat-1",
         response,
+        reply_to="msg-1",
         metadata={"thread_id": "topic-1"},
     )
     adapter.send_multiple_images.assert_not_awaited()

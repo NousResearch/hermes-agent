@@ -298,6 +298,44 @@ def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
     }
 
 
+def test_base_gateway_metadata_preserves_explicit_none_reply_tombstone():
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        thread_id="20189",
+        message_id="stale-source-anchor",
+    )
+
+    metadata = _thread_metadata_for_source(source, None)
+
+    assert metadata == {
+        "thread_id": "20189",
+        "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "20189",
+    }
+
+
+def test_gateway_runner_metadata_preserves_explicit_none_reply_tombstone():
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id="20189",
+        message_id="stale-source-anchor",
+    )
+
+    metadata = runner._thread_metadata_for_source(source, None)
+
+    assert metadata == {
+        "thread_id": "20189",
+        "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "20189",
+    }
+
+
 @pytest.mark.asyncio
 async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegram_dm_topic(monkeypatch, tmp_path):
     """GatewayRunner's duplicate thread metadata must match the base helper."""
@@ -499,6 +537,28 @@ async def test_media_group_dm_topic_reply_not_found_retry_drops_thread_id(tmp_pa
     assert call_log[1]["reply_to_message_id"] is None
     assert "message_thread_id" not in call_log[1]
     assert "direct_messages_topic_id" not in call_log[1]
+
+
+@pytest.mark.asyncio
+async def test_media_group_uses_explicit_reply_anchor_in_ordinary_dm(tmp_path):
+    adapter = _make_adapter()
+    image_path = tmp_path / "photo.png"
+    image_path.write_bytes(b"png-data")
+    call_log = []
+
+    async def mock_send_media_group(**kwargs):
+        call_log.append(dict(kwargs))
+        return [SimpleNamespace(message_id=783)]
+
+    adapter._bot = SimpleNamespace(send_media_group=mock_send_media_group)
+
+    await adapter.send_multiple_images(
+        chat_id="123",
+        images=[(f"file://{image_path}", "caption")],
+        reply_to="462",
+    )
+
+    assert call_log[0]["reply_to_message_id"] == 462
 
 
 @pytest.mark.asyncio

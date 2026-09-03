@@ -1360,6 +1360,10 @@ platform_toolsets:
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
 #
+# Telegram-specific settings (top-level; configurable with `hermes config set telegram.*`):
+# telegram:
+#   reply_to_transcript: false  # Reply to the visible STT echo instead of the voice-note bubble
+#
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
 # discord:
@@ -1518,6 +1522,8 @@ platform_toolsets:
 # Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
 stt:
   enabled: true
+  # echo_transcripts: true        # show the recognized text in chat
+
   # provider: "local"          # auto-detected if omitted
   # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra) ---
   # Local whisper gets Silero VAD; cloud endpoints otherwise receive raw audio —

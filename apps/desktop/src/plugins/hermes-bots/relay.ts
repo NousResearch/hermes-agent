@@ -108,6 +108,7 @@ const relay: RelayLifecycle = {
 // leases. Local routes get a no-op release inside the host (idle-reaper
 // exemption). stopBotRelay releases everything.
 const relayRouteRetentions = new Map<string, () => void>()
+const relayRouteMissDiagnostics = new Map<string, string>()
 
 /** One reachable gateway plus a representative route onto it. The route comes
  *  from `host.profileRoutes()`, which carries identity only — the optional
@@ -295,7 +296,10 @@ async function waitForRelayConnection(
   connectionId: string,
   profile: string
 ): Promise<RelayConnection | undefined> {
+  relayRouteMissDiagnostics.delete(connectionId)
   const deadline = Date.now() + RELAY_ROUTE_RECONNECT_GRACE_MS
+  let registryIds: string[] = []
+  let unionSourceIds: string[] = []
 
   // profileRoutes is an inventory read; it does not itself re-open a dropped
   // SSH/backend socket. Ask the existing non-foregrounding warm path to dial
@@ -317,6 +321,9 @@ async function waitForRelayConnection(
   if (typeof host.connections === 'function') {
     try {
       const registered = await host.connections()
+      registryIds = (Array.isArray(registered) ? registered : [])
+        .map(connection => String(connection?.id || ''))
+        .filter(Boolean)
 
       let source = (Array.isArray(registered) ? registered : []).find(
         connection => String(connection?.id || '') === connectionId
@@ -330,6 +337,9 @@ async function waitForRelayConnection(
       if (!source && typeof host.agents === 'function') {
         try {
           const union = await host.agents()
+          unionSourceIds = (Array.isArray(union?.sources) ? union.sources : [])
+            .map(candidate => String(candidate?.connectionId || ''))
+            .filter(Boolean)
           const unionSource = (Array.isArray(union?.sources) ? union.sources : []).find(
             candidate => String(candidate?.connectionId || '') === connectionId
           )
@@ -407,6 +417,11 @@ async function waitForRelayConnection(
       return match
     }
   }
+
+  relayRouteMissDiagnostics.set(
+    connectionId,
+    `route_unavailable: relay_disposed=${String(relay.disposed)} registry_ids=${registryIds.join(',') || 'none'} union_source_ids=${unionSourceIds.join(',') || 'none'}`
+  )
 
   return undefined
 }
@@ -712,7 +727,8 @@ async function drainRelayOutboxes() {
 
         if (!target) {
           await postReply({
-            error: `connection '${envelope?.target_connection}' is not connected to this Desktop right now`
+            error: `connection '${envelope?.target_connection}' is not connected to this Desktop right now`,
+            reason: relayRouteMissDiagnostics.get(targetConnectionId) || 'route_unavailable: no diagnostic'
           })
 
           continue

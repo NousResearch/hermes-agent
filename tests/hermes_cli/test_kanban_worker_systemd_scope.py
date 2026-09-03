@@ -2038,6 +2038,61 @@ def test_join_scope_stop_service_cancels_inflight_stop(shims, monkeypatch):
     assert kb._pid_alive(stubborn)
 
 
+def test_scope_stop_service_unlatches_after_cancelled_join(
+    shims, monkeypatch,
+):
+    """Pass 10 (AL): a timed-out join used to leave the service cancel
+    event set forever — the thread stayed alive but every later drain
+    returned immediately, so each subsequent in-process stop request
+    queued behind a permanent latch. Cancellation must be per join/run:
+    after the cancelled join, a NEWLY enqueued stop is serviced (stop →
+    SIGKILL escalation → confirmed) by the same service thread."""
+    monkeypatch.setattr(kb, "_scope_stop_inline", False)  # real thread
+
+    # Unit 1: a slow stop the join's budget will cancel mid-flight.
+    stubborn1 = shims.stubborn_sleeper()
+    unit1 = kb._kanban_worker_scope_unit("t_latch1", 1)
+    shims.write_unit(unit1, [stubborn1])
+    shims.arm_slow_op(unit1, "stop", seconds=30)
+    with kb._scope_stop_lock:
+        kb._scope_stop_pending[unit1] = kb._ScopeStopRequest(unit=unit1)
+    kb._ensure_scope_stop_thread()
+    kb._scope_stop_wake.set()
+    assert shims.wait_for(lambda: kb._scope_stop_inflight == unit1)
+
+    leftover = kb.join_scope_stop_service(timeout=1.0)
+    assert unit1 in leftover, "the cancelled unit is reported as leftover"
+    # The cancelled drain requeued unit 1 and stood down.
+    assert shims.wait_for(
+        lambda: kb._scope_stop_pending.get(unit1) is not None
+        and kb._scope_stop_inflight is None
+    )
+    # Disarm the slow op so the requeued unit 1 can drain quickly later.
+    shims.arm_slow_op(unit1, "stop", seconds=0)
+
+    # Unit 2: requested AFTER the cancelled join — the latch test. With
+    # a per-run token the next drain serves it: TERM, SIGKILL
+    # escalation, verified dead.
+    stubborn2 = shims.stubborn_sleeper()
+    unit2 = kb._kanban_worker_scope_unit("t_latch2", 1)
+    shims.write_unit(unit2, [stubborn2])
+    with kb._scope_stop_lock:
+        kb._scope_stop_pending[unit2] = kb._ScopeStopRequest(unit=unit2)
+    kb._scope_stop_wake.set()
+
+    assert shims.wait_for(
+        lambda: unit2 in kb._scope_stop_confirmed, timeout=15.0,
+    ), "a stop enqueued after the cancelled join must still be serviced"
+    actions2 = [s["action"] for s in shims.stops() if s["unit"] == unit2]
+    assert actions2[:2] == ["stop", "kill"], (
+        "the new stop ran the full verified sequence, SIGKILL included"
+    )
+    assert shims.wait_for(lambda: not kb._pid_alive(stubborn2))
+
+    # The queue fully drains afterwards (unit 1's requeue included).
+    assert kb.join_scope_stop_service(timeout=15.0) == []
+
+
 def test_release_stale_claims_stops_worker_scope(shims, conn):
     """TTL-expired reclaim of a scoped worker stops the whole unit before
     the pid kill backstop, and clears the scope bookkeeping."""

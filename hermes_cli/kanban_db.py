@@ -9425,12 +9425,17 @@ _scope_stop_attempts: dict[str, int] = {}
 _scope_stop_warned: set[str] = set()
 _scope_stop_wake = threading.Event()
 _scope_stop_thread: Optional[threading.Thread] = None
-# Set by join_scope_stop_service when its shutdown budget expires (pass
-# 9, AH): the service thread threads this into every _stop_kanban_worker
-# scope call, so an in-flight verified stop — including its systemctl
-# stop/SIGKILL helper subprocesses — is abandoned the moment the caller
-# gives up, instead of signalling on past the budget and the dispatcher
-# lock release. Cleared at the start of each join and by the test reset.
+# The CURRENT cancel token for the scope-stop service (pass 9, AH /
+# pass 10, AL). A join whose shutdown budget expires SETS the token the
+# in-flight drain snapshotted — so an in-flight verified stop, including
+# its systemctl stop/SIGKILL helper subprocesses, is abandoned the
+# moment the caller gives up — and then REPLACES this global with a
+# fresh, unset token under the service lock. Cancellation is therefore
+# per join/run, never a process-global latch: each drain snapshots the
+# token at entry under the same lock, so a request enqueued after a
+# cancelled join is serviced by the next drain instead of queueing
+# forever behind a permanently set event. The test reset swaps in a
+# fresh token for the same reason.
 _scope_stop_service_cancel = threading.Event()
 # Set only by reset_scope_stop_service_for_tests: the service loop
 # exits at its next wake instead of draining, so a reset kills the
@@ -9473,13 +9478,20 @@ def _drain_scope_stop_requests() -> None:
     """Run every queued verified stop (service thread; inline in tests).
 
     A cancelled drain (pass 9, AH — a join whose shutdown budget expired
-    set the cancel event) stops before the next unit and requeues the
+    set the cancel token) stops before the next unit and requeues the
     one it was working on, so nothing is signalled after the caller has
-    moved on and the queue survives for re-adoption.
+    moved on and the queue survives for re-adoption. The drain
+    snapshots the CURRENT cancel token at entry (pass 10, AL): a join
+    that expires mid-drain sets the token this drain holds and swaps a
+    fresh one into the global, so THIS drain stands down while the NEXT
+    drain (a request enqueued after the join) runs clean — cancellation
+    is per join/run, never a latch the service never recovers from.
     """
     global _scope_stop_inflight
+    with _scope_stop_lock:
+        cancel_token = _scope_stop_service_cancel
     while True:
-        if _scope_stop_service_cancel.is_set():
+        if cancel_token.is_set():
             return
         with _scope_stop_lock:
             if not _scope_stop_pending:
@@ -9527,7 +9539,7 @@ def _drain_scope_stop_requests() -> None:
                 )
                 continue
             verified = _stop_kanban_worker_scope(
-                unit, cancel_event=_scope_stop_service_cancel,
+                unit, cancel_event=cancel_token,
             )
         finally:
             with _scope_stop_lock:
@@ -9547,7 +9559,7 @@ def _drain_scope_stop_requests() -> None:
                         unit, request.task_id, request.attempts + 1,
                     )
                 # Left unconfirmed: the next request re-enqueues it.
-        if not verified and _scope_stop_service_cancel.is_set():
+        if not verified and cancel_token.is_set():
             # Pass 9 (AH): the stop was cancelled mid-flight — put the
             # unit back so the queue reflects what is still stopping
             # (the join that cancelled reports it), and stand the drain
@@ -9715,18 +9727,21 @@ def join_scope_stop_service(
     the moment the queue is empty AND no stop is mid-flight.
 
     On budget expiry the join CANCELS the in-flight stop (pass 9, AH):
-    ``_scope_stop_service_cancel`` fires, the service's verified stop
+    the current cancel token fires, the service's verified stop
     abandons — its systemctl helper subprocesses are killed, the unit is
     requeued — so the old gateway stops signalling the moment its budget
     is gone instead of a full stop/SIGKILL/verify sequence past the
-    dispatcher lock release. ``cancel_event`` is the caller's own
-    shutdown event (the same one the direct cleanup propagates); it is
-    set alongside so both paths share one cancel signal.
+    dispatcher lock release. The cancellation is per join/run (pass 10,
+    AL): setting the token is immediately followed by swapping a fresh,
+    unset token into the global — under the same lock the drain
+    snapshots with — so the service thread (which keeps running) serves
+    any request enqueued after the join instead of latching cancelled
+    forever. ``cancel_event`` is the caller's own shutdown event (the
+    same one the direct cleanup propagates); it is set alongside so
+    both paths share one cancel signal.
     """
+    global _scope_stop_service_cancel
     deadline = time.monotonic() + max(0.0, timeout)
-    # A fresh join must drain for real: clear any cancel a previous
-    # (expired) join left behind.
-    _scope_stop_service_cancel.clear()
     while True:
         with _scope_stop_lock:
             pending = list(_scope_stop_pending)
@@ -9734,7 +9749,14 @@ def join_scope_stop_service(
         if not pending and inflight is None:
             return []
         if time.monotonic() >= deadline:
-            _scope_stop_service_cancel.set()
+            with _scope_stop_lock:
+                # Set the token the in-flight drain snapshotted, then
+                # swap in a fresh one — atomically w.r.t. the drain's
+                # snapshot, so no drain can start on a token that is
+                # already set (a latch) nor miss one that should abort
+                # it.
+                _scope_stop_service_cancel.set()
+                _scope_stop_service_cancel = threading.Event()
             if cancel_event is not None:
                 cancel_event.set()
             # Re-snapshot AFTER cancelling so the report lists the unit
@@ -9759,17 +9781,21 @@ def reset_scope_stop_service_for_tests() -> None:
     queue without its own thread races that daemon's drain — the
     assertions see an empty queue the moment it fills (pass 8b, found
     in the AE single-process run)."""
-    global _scope_stop_inflight, _scope_stop_thread
+    global _scope_stop_inflight, _scope_stop_thread, \
+        _scope_stop_service_cancel
     with _scope_stop_lock:
         _scope_stop_pending.clear()
         _scope_stop_confirmed.clear()
         _scope_stop_attempts.clear()
         _scope_stop_warned.clear()
         _scope_stop_inflight = None
+        # Swap in a fresh token (pass 10, AL): clearing the old one would
+        # un-abort a drain that is mid-stand-down; replacing it starts a
+        # clean epoch for the next test's drains.
+        _scope_stop_service_cancel = threading.Event()
     _scope_audit_first_seen.clear()
     global _scope_audit_cursor
     _scope_audit_cursor = 0
-    _scope_stop_service_cancel.clear()
     thread = _scope_stop_thread
     _scope_stop_thread = None
     if thread is not None and thread.is_alive() and thread is not threading.current_thread():

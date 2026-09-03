@@ -323,6 +323,7 @@ hermes profile push research-bot --to https://gateway.example --name team-resear
 Both commands authenticate with `GATEWAY_PROXY_KEY`, which must match the
 remote gateway's `API_SERVER_KEY`. `--from` / `--to` may be omitted when
 `gateway.proxy_url` is configured. The remote API server must be enabled.
+Non-loopback gateways must use HTTPS so the bearer key is never sent in cleartext.
 
 | Option | Meaning |
 |---|---|

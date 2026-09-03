@@ -698,7 +698,8 @@ hermes profile push research-bot --to https://gateway.example
 ```
 
 Clients authenticate with `GATEWAY_PROXY_KEY`; the remote server validates it
-against `API_SERVER_KEY`. A direct clone is intentionally narrower than a
+against `API_SERVER_KEY`. Non-loopback gateway URLs must use HTTPS. A direct
+clone is intentionally narrower than a
 profile export: it carries the runnable agent definition and desktop overlay,
 but never memories, sessions, credentials, databases, logs, or caches. Each
 shared bot receives a stable UUID. The receiver refuses both name collisions

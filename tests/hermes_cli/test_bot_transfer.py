@@ -181,3 +181,10 @@ def test_push_uploads_clone_with_requested_remote_name(profile_root, monkeypatch
 
     assert name == "remote-helper"
     assert bot_id == "a8c214f7-37ee-4f50-95a4-939a51631283"
+
+
+def test_remote_clone_refuses_cleartext_bearer_auth_off_loopback(monkeypatch):
+    monkeypatch.setenv("GATEWAY_PROXY_KEY", "remote-secret")
+
+    with pytest.raises(ValueError, match="must use HTTPS"):
+        pull_bot_profile("helper", remote="http://gateway.example")

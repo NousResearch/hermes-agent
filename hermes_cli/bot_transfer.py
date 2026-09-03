@@ -17,7 +17,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -286,6 +286,11 @@ def _remote_settings(remote: Optional[str]) -> tuple[str, str]:
         raise ValueError("Remote gateway URL is required (--from/--to or gateway.proxy_url).")
     if not base.startswith(("http://", "https://")):
         raise ValueError("Remote gateway URL must start with http:// or https://.")
+    parsed = urlsplit(base)
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Remote gateway URL cannot contain credentials, a query, or a fragment.")
+    if parsed.scheme == "http" and parsed.hostname not in {"127.0.0.1", "::1", "localhost"}:
+        raise ValueError("Remote gateway URL must use HTTPS (HTTP is allowed only on loopback).")
     try:
         key = str(get_secret("GATEWAY_PROXY_KEY", "") or "").strip()
     except UnscopedSecretError:

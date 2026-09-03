@@ -99,6 +99,7 @@ from agent.retry_utils import (
     jittered_backoff,
     zai_coding_overload_retry_ceiling,
 )
+from agent.message_content import flatten_message_text
 from agent.repetition_guard import is_repetition_dominated
 from agent.trajectory import has_incomplete_scratchpad
 # Bind before the turn starts so a source-tree swap cannot load a skewed
@@ -4178,6 +4179,11 @@ def run_conversation(
                     _trunc_msg = _trunc_result
 
                     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
+                    _trunc_text = (
+                        flatten_message_text(_trunc_content)
+                        if isinstance(_trunc_content, list)
+                        else (_trunc_content if isinstance(_trunc_content, str) else "")
+                    )
                     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
 
                     # ── Detect thinking-budget exhaustion ──────────────
@@ -4193,9 +4199,9 @@ def run_conversation(
                     # truncations that deserve continuation retries, not as
                     # thinking-budget exhaustion.
                     _has_think_tags = bool(
-                        _trunc_content and re.search(
+                        _trunc_text and re.search(
                             r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>',
-                            _trunc_content,
+                            _trunc_text,
                             re.IGNORECASE,
                         )
                     )
@@ -4203,8 +4209,8 @@ def run_conversation(
                         not _trunc_has_tool_calls
                         and _has_think_tags
                         and (
-                            (_trunc_content is not None and not agent._has_content_after_think_block(_trunc_content))
-                            or _trunc_content is None
+                            bool(_trunc_text and not agent._has_content_after_think_block(_trunc_text))
+                            or not _trunc_text
                         )
                     )
 
@@ -4253,9 +4259,9 @@ def run_conversation(
                     # stripped first (repeated scratchpad lines are not
                     # evidence of a degenerate visible response).
                     _visible_trunc = (
-                        agent._strip_think_blocks(_trunc_content)
-                        if isinstance(_trunc_content, str)
-                        else _trunc_content
+                        agent._strip_think_blocks(_trunc_text)
+                        if _trunc_text
+                        else ""
                     )
                     _repetition_dominated = (
                         not _trunc_has_tool_calls

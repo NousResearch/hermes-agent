@@ -97,3 +97,14 @@ class TestContinuationRepetitionGuard:
 
         assert result["partial"] is True
         assert loop_agent.client.chat.completions.create.call_count == 4
+
+    def test_multipart_list_repetition_aborts(self, loop_agent):
+        echo_list = [{"type": "text", "text": _INCIDENT_ECHO * 2000}]
+        loop_agent.client.chat.completions.create.side_effect = [_stub(echo_list)]
+
+        result = _run(loop_agent, "write me a long report")
+
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert "Repetition" in (result["final_response"] or "")
+        assert loop_agent.client.chat.completions.create.call_count == 1

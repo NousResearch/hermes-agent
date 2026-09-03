@@ -21,6 +21,9 @@ repeated, code with similar-looking lines) are never blocked.
 from __future__ import annotations
 
 import math
+from typing import Any
+
+from agent.message_content import flatten_message_text
 
 # A fragment must be at least this long before the repetition check runs at
 # all.  Short truncations (a sentence cut mid-word) can trivially contain
@@ -40,7 +43,7 @@ _MIN_REPEAT_COUNT = 5
 _DOMINANCE_RATIO = 0.5
 
 
-def is_repetition_dominated(text: str) -> bool:
+def is_repetition_dominated(text: Any) -> bool:
     """True when ``text`` is dominated by verbatim repeated fragments.
 
     A truncated response is "repetition-dominated" when a single 60+ char
@@ -50,9 +53,12 @@ def is_repetition_dominated(text: str) -> bool:
     continuation nudge would just stitch more repeated text into the final
     response.
 
+    Accepts plain string or multipart list content (which is flattened).
     Returns False for non-string / empty / short inputs (fail-open: never
     blocks a continuation the guard cannot confidently judge).
     """
+    if isinstance(text, list):
+        text = flatten_message_text(text)
     if not isinstance(text, str):
         return False
     n = len(text)

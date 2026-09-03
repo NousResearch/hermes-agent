@@ -130,9 +130,17 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
                    "(permanently approved)",
         )
 
-    # 7. Dangerous-pattern detection → would prompt.
+    # 7. Dangerous-pattern detection → class-key allowlist or prompt.
     is_dangerous, pattern_key, description = approval.detect_dangerous_command(command)
     if is_dangerous:
+        session_key = approval.get_current_session_key()
+        if approval.is_approved(session_key, pattern_key):
+            return result(
+                "allow",
+                detail=f"dangerous-pattern class key {pattern_key!r} (or a "
+                       "legacy alias) is already approved for this session or "
+                       "in command_allowlist",
+            )
         return result(
             "ask-approval", rule=description,
             detail="matches a dangerous-command pattern; the runtime would "

@@ -35,7 +35,9 @@ def isolated_approvals(monkeypatch):
     monkeypatch.setattr(A, "is_current_session_yolo_enabled", lambda: False)
     monkeypatch.setattr(A, "load_permanent_allowlist", lambda: set())
     saved = set(A._permanent_approved)
+    saved_sessions = {key: set(value) for key, value in A._session_approved.items()}
     A._permanent_approved.clear()
+    A._session_approved.clear()
     # The tester must NEVER prompt or persist — make any attempt explode.
     def _boom(*_a, **_kw):  # pragma: no cover - failure path
         raise AssertionError("read-only tester touched a prompt/persistence path")
@@ -45,6 +47,8 @@ def isolated_approvals(monkeypatch):
     yield A
     A._permanent_approved.clear()
     A._permanent_approved.update(saved)
+    A._session_approved.clear()
+    A._session_approved.update(saved_sessions)
 
 
 class TestVerdicts:
@@ -67,6 +71,63 @@ class TestVerdicts:
         assert rc == 2
         assert "ask-approval" in out
         assert "recursive delete" in out
+
+    def test_permanent_class_key_allows_like_runtime(self, isolated_approvals,
+                                                     capsys):
+        isolated_approvals._permanent_approved.add("recursive delete")
+
+        rc = at.approvals_test_command(_args(["rm", "-rf", "~/project/build"]))
+        out = capsys.readouterr().out
+
+        assert rc == 0
+        assert "recursive delete" in out
+        assert "already approved" in out
+
+    def test_session_class_key_allows_like_runtime(self, isolated_approvals,
+                                                   capsys):
+        session_key = isolated_approvals.get_current_session_key()
+        isolated_approvals._session_approved[session_key] = {"recursive delete"}
+
+        rc = at.approvals_test_command(_args(["rm", "-rf", "~/project/build"]))
+        out = capsys.readouterr().out
+
+        assert rc == 0
+        assert "already approved" in out
+
+    def test_other_session_class_key_does_not_allow(self, isolated_approvals,
+                                                    capsys):
+        isolated_approvals._session_approved["some-other-session"] = {
+            "recursive delete"}
+
+        rc = at.approvals_test_command(_args(["rm", "-rf", "~/project/build"]))
+        out = capsys.readouterr().out
+
+        assert rc == 2
+        assert "ask-approval" in out
+
+    def test_hardline_beats_permanent_class_key(self, isolated_approvals, capsys):
+        _dangerous, pattern_key, _description = (
+            isolated_approvals.detect_dangerous_command("rm -rf /"))
+        isolated_approvals._permanent_approved.add(pattern_key)
+
+        rc = at.approvals_test_command(_args(["rm", "-rf", "/"]))
+        out = capsys.readouterr().out
+
+        assert rc == 3
+        assert "hardline-deny" in out
+
+    def test_user_deny_beats_permanent_class_key(self, isolated_approvals, capsys,
+                                                 monkeypatch):
+        isolated_approvals._permanent_approved.add("recursive delete")
+        monkeypatch.setattr(
+            isolated_approvals, "_get_approval_config",
+            lambda: {"mode": "manual", "deny": ["rm -rf *"]})
+
+        rc = at.approvals_test_command(_args(["rm", "-rf", "~/project/build"]))
+        out = capsys.readouterr().out
+
+        assert rc == 3
+        assert "user-deny" in out
 
     def test_user_deny_rule_from_config_honored(self, isolated_approvals, capsys,
                                                 monkeypatch):

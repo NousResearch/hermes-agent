@@ -301,3 +301,175 @@ def test_format_reference_value_round_trips_through_the_parser(value):
 
     assert match is not None
     assert match.group("value").strip("`\"'") == value
+
+
+def test_non_utf8_text_file_is_not_dropped_from_context(tmp_path: Path, monkeypatch):
+    """A locale-encoded text file must reach the model as something actionable.
+
+    Regression test for #84206. `_is_binary_file` classifies a GB18030 CSV as
+    text — correctly: `text/csv` mime, no NUL bytes — so it fell through to a
+    strict UTF-8 `read_text`, and the resulting UnicodeDecodeError surfaced as a
+    bare warning. The file was on disk and readable, but the model never learned
+    it existed.
+
+    GB18030 is only the reproducible case; the same holds for Shift_JIS, Big5,
+    or any cp125x export from banking/accounting tooling.
+
+    Uses `.txt` rather than the issue's `.csv` on purpose: `mimetypes` consults
+    the Windows registry, where `.csv` resolves to `application/vnd.ms-excel`,
+    so `_is_binary_file` short-circuits to the binary block and the decode is
+    never reached. `.txt` is `text/plain` on every platform, so this exercises
+    the real path everywhere instead of passing vacuously on Windows.
+    """
+    from agent.context_references import preprocess_context_references
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    sample = tmp_path / "gb18030-sample.txt"
+    sample.write_bytes("交易时间,商户,金额\n2026-08-11,测试商户,19.80\n".encode("gb18030"))
+
+    result = preprocess_context_references(
+        f"Please summarize this CSV @file:{sample}",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    # It must not degrade into a raw codec error the model can do nothing with.
+    assert not any("codec can't decode" in warning for warning in result.warnings), (
+        result.warnings
+    )
+    # It must be told the file is text-but-not-decodable, and where to find it.
+    assert "does not decode as utf-8" in result.message.lower()
+    assert str(sample) in result.message
+    # The offending byte and its offset make the retry one-shot rather than a guess.
+    assert "0xbd" in result.message and "offset 0" in result.message
+    assert "no byte-order mark" in result.message.lower()
+    # Hints must stay hints, and the two lossy escapes must be named and refused.
+    assert "gb18030" in result.message
+    assert "not a detection result" in result.message
+    assert 'errors="replace"' in result.message
+
+
+def _bom_sample(encoding: str, text: str) -> bytes:
+    """Encode ``text`` with an explicit BOM for ``encoding``.
+
+    ``str.encode("utf-16")`` emits the *platform-native* BOM, so the big-endian
+    variants have to be assembled by hand to be tested at all.
+    """
+    import codecs
+
+    explicit = {
+        "utf-8-sig": codecs.BOM_UTF8 + text.encode("utf-8"),
+        "utf-16-le": codecs.BOM_UTF16_LE + text.encode("utf-16-le"),
+        "utf-16-be": codecs.BOM_UTF16_BE + text.encode("utf-16-be"),
+        "utf-32-le": codecs.BOM_UTF32_LE + text.encode("utf-32-le"),
+        "utf-32-be": codecs.BOM_UTF32_BE + text.encode("utf-32-be"),
+    }
+    return explicit[encoding]
+
+
+@pytest.mark.parametrize(
+    "encoding",
+    ["utf-8-sig", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"],
+)
+def test_bom_marked_unicode_files_are_inlined(tmp_path: Path, monkeypatch, encoding: str):
+    """A byte-order mark names the encoding, so these files inline normally.
+
+    Follow-up to #84206. Two separate bugs met here. `_is_binary_file` sniffs for
+    NUL bytes, and UTF-16/32 pad ASCII with NULs — so BOM-marked Unicode text was
+    classified binary and diverted to the binary block before any decoder saw it.
+    Anything that survived that then hit a hardcoded `encoding="utf-8"` read.
+
+    Neither needs guessing to fix: a BOM is a deterministic declaration, unlike
+    the locale encodings that legitimately fall through to the actionable block.
+    """
+    from agent.context_references import preprocess_context_references
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    sample = tmp_path / f"{encoding}-sample.txt"
+    sample.write_bytes(_bom_sample(encoding, "ledger total\n交易时间,19.80\n"))
+
+    result = preprocess_context_references(
+        f"Summarize @file:{sample}",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert not result.warnings, result.warnings
+    # Inlined as text — not diverted to the binary or undecodable block.
+    assert "ledger total" in result.message
+    assert "交易时间,19.80" in result.message
+    assert "not inlined" not in result.message
+    # The BOM is metadata, not content: the codec must consume it.
+    assert "﻿" not in result.message
+
+
+def test_utf32_le_bom_is_not_claimed_by_the_utf16_probe(tmp_path: Path, monkeypatch):
+    """UTF-32 must be probed before UTF-16, because the LE prefixes overlap.
+
+    `BOM_UTF32_LE` is b"\\xff\\xfe\\x00\\x00" and opens with `BOM_UTF16_LE`
+    (b"\\xff\\xfe"). Probing UTF-16 first therefore matches every UTF-32 LE file
+    and decodes it as UTF-16 — which does not raise, it just yields NUL-padded
+    mojibake. That is the silent-corruption failure this fix exists to avoid, so
+    it gets a test of its own rather than riding on the parametrized case.
+    """
+    from agent.context_references import _detect_bom_encoding, preprocess_context_references
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    sample = tmp_path / "utf32-sample.txt"
+    sample.write_bytes(_bom_sample("utf-32-le", "alpha\n"))
+
+    assert _detect_bom_encoding(sample) == "utf-32"
+
+    result = preprocess_context_references(
+        f"Summarize @file:{sample}",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert "alpha" in result.message
+    assert "\x00" not in result.message
+
+
+def test_bom_marked_file_honours_a_line_range(tmp_path: Path, monkeypatch):
+    """`@file:...:2-3` must slice BOM-marked text like any other text file."""
+    from agent.context_references import preprocess_context_references
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    sample = tmp_path / "ranged.txt"
+    sample.write_bytes(_bom_sample("utf-16-le", "one\ntwo\nthree\nfour\n"))
+
+    result = preprocess_context_references(
+        f"Read @file:`{sample}`:2-3",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert "two" in result.message and "three" in result.message
+    assert "one" not in result.message and "four" not in result.message
+
+
+def test_undecodable_block_reports_the_requested_line_range(tmp_path: Path, monkeypatch):
+    """The block must carry the line range forward so the retry is one-shot.
+
+    Without it the agent re-reads the whole file with an explicit encoding and
+    has to rediscover which lines were asked for — the range was in the original
+    reference and is lost the moment expansion fails.
+    """
+    from agent.context_references import preprocess_context_references
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    sample = tmp_path / "gb18030-ranged.txt"
+    sample.write_bytes("交易时间\n测试商户\n金额\n".encode("gb18030"))
+
+    result = preprocess_context_references(
+        f"Read @file:`{sample}`:2-3",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert "lines 2-3 requested" in result.message
+    assert "does not decode as utf-8" in result.message.lower()

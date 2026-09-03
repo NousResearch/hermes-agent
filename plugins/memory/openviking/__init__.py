@@ -367,7 +367,13 @@ class _VikingClient:
         API-key permission denials non-retriable.
         """
         message = str(exc)
-        if "Trusted mode requests must include" not in message:
+        # Two error shapes across OpenViking versions:
+        #   old: "Trusted mode requests must include X-OpenViking-Account..."
+        #   new: "ROOT requests to tenant-scoped APIs must include X-OpenViking-Account..."
+        if (
+            "Trusted mode requests must include" not in message
+            and "ROOT requests" not in message
+        ):
             return False
         if "X-OpenViking-Account" not in message and "X-OpenViking-User" not in message:
             return False

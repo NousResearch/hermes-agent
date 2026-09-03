@@ -8566,8 +8566,8 @@ def run_conversation(
                         # deterministic empties — e.g. unsignaled
                         # provider refusals with zero output tokens —
                         # stop burning paid retries reproducing the
-                        # same empty. Fails open: missing usage or
-                        # any generated tokens keep the full budget.
+                        # same empty. Fails open: mixed usage evidence
+                        # or any observed generation keeps the full budget.
                         _empty_guard.record_empty_attempt(
                             agent,
                             finish_reason=finish_reason,

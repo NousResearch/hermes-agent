@@ -13,7 +13,7 @@ empties: the provider reports a successful completion with zero output
 tokens and a generic finish reason (portal-proxied refusals commonly look
 like this).
 
-Two independent guards, both failing OPEN to today's behaviour:
+Two independent guards, both conservative when evidence is ambiguous:
 
 1. **Deterministic-empty detection** — two consecutive empty attempts from
    the same (model, provider, finish_reason) are treated as deterministic

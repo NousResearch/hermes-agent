@@ -5,9 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-import type { TipId } from '@/lib/tips/catalog'
-
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -100,9 +98,6 @@ export interface Translations {
     revealInSidebar: string
     copyPath: string
     copyRelativePath: string
-    download: string
-    downloadSaved: string
-    downloadFailed: string
     rename: string
     delete: string
     renameTitle: string
@@ -119,7 +114,6 @@ export interface Translations {
       connectingGateway: string
       loadingSettings: string
       loadingSessions: string
-      retryingRemoteBackend: string
       startingDesktopConnection: string
       startingHermesDesktop: string
     }
@@ -129,7 +123,6 @@ export interface Translations {
       backendStopped: string
       desktopBootFailed: string
       gatewayConnectionLost: string
-      gatewayConnectionLostDetail: string
       gatewaySignInRequired: string
       ipcBridgeUnavailable: string
     }
@@ -148,11 +141,6 @@ export interface Translations {
       remoteSignInHint: (signInLabel: string) => string
       signOutAndSignIn: string
       remoteFailureHint: string
-      cloudDownTitle: string
-      cloudDownDescription: string
-      cloudDownHint: string
-      cloudDownCheckPortal: string
-      cloudDownDiscord: string
       hideRecentLogs: string
       showRecentLogs: string
       signedInTitle: string
@@ -182,27 +170,16 @@ export interface Translations {
     updateHermes: string
     updateReadyTitle: string
     updateReadyMessage: (count: number) => string
-    updateReadyMessageUnknown: string
     seeWhatsNew: string
-    mcp: {
-      needsAuthTitle: string
-      needsAuthMessage: (name: string) => string
-      errorTitle: string
-      errorMessage: (name: string) => string
-      signIn: string
-      view: string
-    }
     errors: {
       elevenLabsNeedsKey: string
       elevenLabsRejectedKey: string
-      diskFull: string
       gatewayAuthFailed: string
       methodNotAllowed: string
       microphonePermission: string
       openaiRejectedApiKey: string
       openaiRejectedApiKeyWithStatus: (status: string) => string
       openaiTtsNeedsKey: string
-      codeSkewRestartRequired: string
     }
     voice: {
       configureSpeechToText: string
@@ -254,27 +231,6 @@ export interface Translations {
     dismiss: string
   }
 
-  sendDiagnostics: {
-    title: string
-    privacyNotice: string
-    upload: string
-    uploading: string
-    cancel: string
-    close: string
-    copyLink: string
-    uploadIdFallback: (id: string) => string
-    doneTitle: string
-    doneDescription: string
-    failedTitle: string
-    failedHint: string
-    handoffLead: string
-    links: {
-      discord: string
-      github: string
-      portal: string
-    }
-  }
-
   titlebar: {
     hideSidebar: string
     showSidebar: string
@@ -283,16 +239,13 @@ export interface Translations {
     swapSidebarSides: string
     hideRightSidebar: string
     showRightSidebar: string
-    unreadSessions: (count: number) => string
     muteHaptics: string
     unmuteHaptics: string
     openSettings: string
     openStarmap: string
-    enterHud: string
-    exitHud: string
-    resetHudLayout: string
+    openKeybinds: string
     layoutEditor: string
-    layoutEditorTitle: (modifier: string) => string
+    layoutEditorTitle: string
   }
 
   keybinds: {
@@ -338,7 +291,6 @@ export interface Translations {
       providerAccounts: string
       providerApiKeys: string
       providerCustomEndpoints: string
-      providerLocalModels: string
       gateway: string
       apiKeys: string
       keybinds: string
@@ -363,51 +315,6 @@ export interface Translations {
       failed: string
       empty: string
       kinds: { bundled: string; disk: string; runtime: string }
-      agent: {
-        title: string
-        blurb: string
-        appliesTo: string
-        empty: string
-        loadFailed: string
-        portable: string
-        search: string
-        noMatches: string
-        toggleFailed: (name: string) => string
-        updateBackendToManage: string
-        sources: Record<string, string>
-      }
-      installModal: {
-        title: string
-        description: string
-        repoLabel: string
-        includesHeading: string
-        agentLabel: string
-        desktopLabel: string
-        agentTargetLocal: (profile: string) => string
-        agentTargetRemote: (profile: string) => string
-        desktopTarget: string
-        desktopOnlyNote: string
-        insecureWarning: string
-        securityHeading: string
-        securityIntro: string
-        sourceHeading: string
-        viewRepository: string
-        viewPluginFiles: string
-        gitCloneLabel: string
-        enableAgent: string
-        forceReinstall: string
-        install: string
-        installing: string
-        probing: string
-        probeUnavailable: string
-        desktopUnavailable: string
-        selectComponent: string
-        agentSuccess: (name: string) => string
-        desktopSuccess: (name: string) => string
-        agentFailed: string
-        desktopFailed: string
-        missingEnv: (vars: string) => string
-      }
     }
     notifications: {
       title: string
@@ -416,7 +323,7 @@ export interface Translations {
       enableAllDesc: string
       focusedHint: string
       kinds: Record<
-        'approval' | 'backgroundDone' | 'credits' | 'input' | 'plugin' | 'turnDone' | 'turnError',
+        'approval' | 'backgroundDone' | 'credits' | 'input' | 'turnDone' | 'turnError',
         { label: string; description: string }
       >
       test: string
@@ -438,67 +345,20 @@ export interface Translations {
       colorModeDesc: string
       toolViewTitle: string
       toolViewDesc: string
-      reasoningCollapsedTitle: string
-      reasoningCollapsedDesc: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
-      sessionDensityTitle: string
-      sessionDensityDesc: string
-      sessionDensityCompact: string
-      sessionDensityComfortable: string
-      sessionDensityDetailed: string
-      tabStripTitle: string
-      tabStripDesc: string
-      tabStripAuto: string
-      tabStripAlways: string
-      tabStripNever: string
-      terminalFontTitle: string
-      terminalFontDesc: string
-      terminalFontPlaceholder: string
-      terminalFontPreview: string
-      terminalFontReset: string
       translucencyTitle: string
       translucencyDesc: string
-      translucencyGlassDesc: string
-      translucencyModeClear: string
-      translucencyModeGlass: string
-      translucencyTintTitle: string
-      translucencyFadeTitle: string
-      translucencyFrostTitle: string
-      translucencyFrost: {
-        'under-window': string
-        popover: string
-        titlebar: string
-        header: string
-      }
-      translucencyScopeTitle: string
-      translucencyScope: {
-        window: string
-        sidebar: string
-      }
       backdropTitle: string
       backdropDesc: string
-      introSplashTitle: string
-      introSplashDesc: string
       reactionsTitle: string
       reactionsDesc: string
-      tipsTitle: string
-      tipsDesc: string
-      tipsReset: (count: number) => string
-      toursTitle: string
-      toursDesc: string
-      composerPopoutTitle: string
-      composerPopoutDesc: string
-      vibeHeartsTitle: string
-      vibeHeartsDesc: string
       embedsTitle: string
       embedsDesc: string
       embedsAsk: string
       embedsAlways: string
       embedsOff: string
       embedsReset: (count: number) => string
-      resumeLastSessionTitle: string
-      resumeLastSessionDesc: string
       product: string
       productDesc: string
       technical: string
@@ -559,12 +419,6 @@ export interface Translations {
       heading: string
       version: (value: string) => string
       versionUnavailable: string
-      bundleOutOfSync: string
-      bundleOutOfSyncDesc: string
-      bundleOutOfSyncAction: string
-      bundleSwapPending: string
-      bundleSwapPendingDesc: string
-      bundleSwapPendingAction: string
       updates: string
       checkNow: string
       checking: string
@@ -577,7 +431,6 @@ export interface Translations {
       cantReach: string
       tapCheck: string
       updateReady: (count: number) => string
-      updateReadyUnknown: string
       lastChecked: (age: string) => string
       justNowSuffix: string
       automaticUpdates: string
@@ -605,11 +458,8 @@ export interface Translations {
       autosaveFailed: string
       imported: string
       invalidJson: string
-      toolsetsWipeConfirm: string
       keepAwakeTitle: string
       keepAwakeDesc: string
-      disableF12Title: string
-      disableF12Desc: string
       attachmentSizeTitle: string
       attachmentSizeDesc: string
       attachmentSizeUnit: string
@@ -644,82 +494,6 @@ export interface Translations {
       set: string
       clear: string
     }
-    // v2 multi-connection registry: Settings → Connections.
-    connections: {
-      title: string
-      intro: string
-      stagedNote: string
-      launchModeTitle: string
-      launchModeDesc: string
-      searchPlaceholder: string
-      noSearchResults: string
-      loadFailed: string
-      currentPill: string
-      primaryPill: string
-      managedPill: string
-      addConnection: string
-      editConnection: string
-      removeConnection: string
-      removeConfirmTitle: string
-      removeConfirmDesc: (label: string) => string
-      makePrimary: string
-      testConnection: string
-      testOk: string
-      testFailed: string
-      saveFailed: string
-      removeFailed: string
-      updateAll: string
-      updateAllRunning: string
-      updateAllDone: string
-      updateAllFailed: string
-      updateSkippedCloud: string
-      kindLocal: string
-      kindRemote: string
-      kindCloud: string
-      kindSsh: string
-      kindLocalDesc: string
-      kindRemoteDesc: string
-      kindCloudDesc: string
-      kindSshDesc: string
-      labelTitle: string
-      labelDesc: string
-      labelPlaceholder: string
-      urlTitle: string
-      sshHostTitle: string
-      headersTitle: string
-      headersDesc: string
-      headerValuePlaceholder: string
-      headerValueSaved: string
-      headerAdd: string
-      headerRemove: string
-      duplicateLocal: string
-      duplicateUrl: (label: string) => string
-      duplicateSsh: (label: string) => string
-      sameBackendHint: (label: string) => string
-      localAddHint: string
-      cloudAddHint: string
-      save: string
-      saving: string
-      cancel: string
-      empty: string
-    }
-    managedUpdates: {
-      title: string
-      intro: string
-      sshConnection: string
-      update: string
-      updating: string
-      progress: string
-      updated: string
-      partial: string
-      refused: string
-      failed: string
-      alreadyRunning: string
-      receipt: (id: string, outcome: string) => string
-      receiptVersions: (pre: string, post: string) => string
-      scopesRestored: (profiles: string) => string
-      scopeNotRestored: (profile: string, error: string) => string
-    }
     gateway: {
       loading: string
       unavailableTitle: string
@@ -727,11 +501,17 @@ export interface Translations {
       title: string
       envOverride: string
       intro: string
+      appliesTo: string
+      allProfiles: string
+      defaultConnection: string
+      profileConnection: (profile: string) => string
       envOverrideTitle: string
       envOverrideDesc: string
       modeTitle: string
       localTitle: string
       localDesc: string
+      inheritTitle: string
+      inheritDesc: string
       remoteTitle: string
       remoteDesc: string
       remoteAuthHint: string
@@ -780,14 +560,6 @@ export interface Translations {
       existingToken: (value: string) => string
       savedToken: string
       pasteSessionToken: string
-      plainTextConfirmTitle: string
-      plainTextConfirmDesc: string
-      plainTextConfirmAction: string
-      plainTextStoredTitle: string
-      plainTextStoredDesc: string
-      keychainEncryptionTitle: string
-      keychainEncryptionDesc: string
-      keychainEncryptionFailed: string
       testRemote: string
       saveForRestart: string
       saveAndReconnect: string
@@ -852,14 +624,6 @@ export interface Translations {
       failedLoad: string
       empty: string
     }
-    search: {
-      placeholder: string
-      pill: string
-    }
-    profileScope: {
-      appliesTo: string
-      editsProfile: (profile: string) => string
-    }
     mcp: {
       loading: string
       failedLoad: string
@@ -911,9 +675,6 @@ export interface Translations {
       catalogEnvPrompt: (name: string) => string
       catalogEnvRequired: string
       capabilitySummary: (tools: number, prompts: number, resources: number) => string
-      costTokens: (tokens: string) => string
-      usage30d: (uses: string) => string
-      unusedPill: string
       statusConnecting: string
       statusNeedsAuth: string
       statusError: string
@@ -927,23 +688,6 @@ export interface Translations {
       enableTool: (tool: string) => string
       disableTool: (tool: string) => string
       noOutput: string
-      deepLinkTitle: string
-      deepLinkDescription: string
-      deepLinkStdioWarning: string
-      deepLinkConfirm: string
-      deepLinkNameInvalid: string
-      deepLinkNameConflict: (name: string) => string
-      deepLinkErrorTitle: string
-      deepLinkErrorName: string
-      deepLinkErrorConfig: string
-      deepLinkErrorShape: string
-      deepLinkErrorUrl: string
-      deepLinkErrorTooLarge: string
-      importButton: string
-      importPlaceholder: string
-      importNoMatch: string
-      importConfirm: string
-      importConfirmMany: (count: number) => string
     }
     model: {
       loading: string
@@ -955,11 +699,6 @@ export interface Translations {
       reasoning: string
       reasoningOff: string
       defaultsFailed: string
-      loadFailed: string
-      restartRequired: string
-      restartBackend: string
-      restartingBackend: string
-      restartFailed: string
       auxiliaryTitle: string
       resetAllToMain: string
       auxiliaryDesc: string
@@ -971,107 +710,6 @@ export interface Translations {
       fallbackEmpty: string
       notInCatalog: string
       tasks: Record<string, AuxTaskCopy>
-    }
-    localModels: {
-      title: string
-      runtimeTitle: string
-      runtimeReady: (backend: string) => string
-      serverRunning: string
-      runtimeInstalled: string
-      runtimeInstalledDetail: (tag: string, backend: string) => string
-      installTitle: string
-      installDetail: string
-      installAction: string
-      installing: string
-      installFailed: string
-      hardwareTitle: string
-      hardwareLoading: string
-      vram: (label: string) => string
-      ram: (label: string) => string
-      unifiedMemory: string
-      modelsTitle: string
-      recommended: string
-      /** Recommended-badge tooltip by resolver branch; unknown keys (newer
-       *  backend) simply show no tooltip. */
-      recommendedReason: Record<string, string>
-      downloaded: string
-      downloadAction: (size: string) => string
-      downloadProgress: (done: string, total: string) => string
-      downloadDoneToast: (model: string) => string
-      installDoneToast: string
-      quickstartTitle: string
-      quickstartDetail: (model: string, size: string) => string
-      quickstartDetailReady: (model: string) => string
-      quickstartAction: string
-      quickstartConfigure: string
-      quickstartDoneToast: (model: string) => string
-      quickstartFailed: string
-      quickstartStageEngine: string
-      quickstartStageModel: string
-      quickstartStageFinish: string
-      useAction: string
-      activePill: string
-      updateTitle: string
-      updateDetail: (next: string, current: string) => string
-      updateAction: string
-      updating: string
-      upToDateTitle: string
-      upToDateDetail: (tag: string, backend: string) => string
-      updateToast: (next: string) => string
-      activeDetail: string
-      activeNotLoaded: string
-      loadedPill: string
-      placementResident: string
-      placementSpilled: string
-      placementResidentTip: string
-      placementSpilledTip: string
-      loadingPill: string
-      ejectTip: string
-      ejected: string
-      ejectFailed: string
-      stopServer: string
-      startServer: string
-      runtimeRunningDetail: string
-      serverStopped: string
-      serverStarted: string
-      serverStopFailed: string
-      serverStartFailed: string
-      activating: string
-      activateFailed: (model: string) => string
-      activateDoneToast: (model: string) => string
-      downloadFailed: (model: string) => string
-      pillFitsGpu: string
-      pillUsesRam: string
-      pillTooBig: string
-      browseTitle: string
-      browseHint: string
-      browsePlaceholder: string
-      browseSearching: string
-      browseListing: string
-      browseShowFiles: string
-      browseRefresh: string
-      browseDownloads: string
-      browseLikes: string
-      browseGated: string
-      browseNoGguf: string
-      browseFitUnknown: string
-      browseAlreadyDownloaded: string
-      addedByYou: string
-      browseDownloadStarted: string
-      browseDownloadAria: string
-      sideloadButton: string
-      sideloadTitle: string
-      sideloadDone: string
-      sideloadAlreadyPresent: string
-      pillFullContext: (max: string) => string
-      pillFullContextTip: string
-      pillUpTo: (max: string) => string
-      pillGrowsTip: string
-      pillVision: string
-      deleteAction: string
-      deleteConfirm: (model: string) => string
-      deleted: (model: string) => string
-      deleteFailed: string
     }
     providers: {
       connectAccount: string
@@ -1205,33 +843,14 @@ export interface Translations {
         failedSelect: (backend: string) => string
         needsSetupHint: string
       }
-      browserRealProfile: {
-        label: string
-        description: string
-        enabledTitle: string
-        enabledMessage: string
-        disabledTitle: string
-        disabledMessage: string
-        failedSave: string
-        prompt: {
-          title: string
-          body: string
-          bulletSnapshot: string
-          bulletLiveProfile: string
-          bulletLocal: string
-          dontShowAgain: string
-          notNow: string
-          enable: string
-        }
-      }
     }
   }
 
   skills: {
     tabSkills: string
     tabToolsets: string
-    configuringProfile: string
     tabMcp: string
+    tabHub: string
     all: string
     searchSkills: string
     searchToolsets: string
@@ -1278,8 +897,6 @@ export interface Translations {
     archive: string
     skillArchivedTitle: string
     skillArchivedMessage: string
-    officialCatalog: string
-    officialPill: string
     hub: {
       searchPlaceholder: string
       search: string
@@ -1318,11 +935,6 @@ export interface Translations {
       updateStarted: string
       actionFailed: string
       actionLog: string
-      alreadyInstalled: (name: string) => string
-      pickerTitle: string
-      pickerBrowse: string
-      pickerHide: string
-      pickerHint: string
       loadFailed: string
       previewFailed: string
       scanFailed: string
@@ -1484,10 +1096,8 @@ export interface Translations {
     gatewayStopped: string
     hermesActiveSessions: (version: string, count: number) => string
     restartGateway: string
-    openBrowser: string
     gatewayRestartFailed: string
     updateHermes: string
-    reloadWindow: string
     actionRunning: string
     actionDone: string
     actionFailed: string
@@ -1687,58 +1297,10 @@ export interface Translations {
     search: string
     loading: string
     newProfile: string
-    /** Verb + noun: the profiles-list button and the native file-dialog titles,
-     *  which stand alone. Per-profile menus use the bare `exportMenu`. */
-    importProfile: string
-    exportProfile: string
-    exportMenu: string
-    imported: string
-    exported: string
-    failedImport: string
-    failedExport: string
     allProfiles: string
     showAllProfiles: string
     switchToProfile: (name: string) => string
-    switchToConnection: (name: string) => string
-    switchConnectionFailed: (name: string) => string
     manageProfiles: string
-    connectGateway: string
-    fleet: {
-      allOnGateway: string
-      gateway: (gateway: string) => string
-      gatewayUnreachable: (gateway: string) => string
-      onGateway: (name: string, gateway: string) => string
-      switchTo: (name: string, gateway: string) => string
-      deleteOn: (gateway: string) => string
-    }
-    remoteOverride: {
-      menuItem: string
-      badge: (host: string) => string
-      title: (profile: string) => string
-      description: string
-      urlLabel: string
-      urlPlaceholder: string
-      urlInvalid: string
-      tokenLabel: string
-      tokenPlaceholder: string
-      tokenSavedHint: string
-      plainTextOptIn: string
-      collisionWarning: (label: string) => string
-      confirmTitle: string
-      confirmNote: (profile: string, host: string) => string
-      confirmBack: string
-      connect: string
-      connecting: string
-      disconnect: string
-      savedTitle: string
-      savedMessage: (profile: string, host: string) => string
-      removedTitle: string
-      removedMessage: (profile: string) => string
-      removeFailed: string
-      authFailedTitle: string
-      authFailedMessage: (profile: string, host: string) => string
-      updateToken: string
-    }
     actions: string
     color: string
     colorFor: string
@@ -1787,9 +1349,6 @@ export interface Translations {
     creating: string
     createAction: string
     renameTitle: string
-    displayNameTitle: string
-    displayNameDesc: string
-    displayNameLabel: string
     renameDescPrefix: string
     renameDescSuffix: string
     newNameLabel: string
@@ -1812,17 +1371,6 @@ export interface Translations {
     close: string
     title: string
     count: (count: number) => string
-    modelImpact: {
-      title: string
-      message: (count: number) => string
-      detailMore: (names: string, remaining: number) => string
-      review: string
-      saveFailed: string
-      confirmTitle: string
-      confirmDetail: string
-      confirmAction: string
-      declined: string
-    }
     search: string
     loading: string
     states: Record<string, string>
@@ -1990,7 +1538,6 @@ export interface Translations {
     noWorkspace: string
     projectEmpty: string
     noSessions: string
-    noFilterMatches: string
     projects: {
       sectionLabel: string
       home: string
@@ -2018,11 +1565,6 @@ export interface Translations {
       menuAddFolder: string
       menuSetActive: string
       menuDelete: string
-      moveToProject: string
-      movedTo: (name: string) => string
-      moveFailed: string
-      moveNoFolder: string
-      moveNoProjects: string
       reveal: string
       copyPath: string
       removeFromSidebar: string
@@ -2037,10 +1579,6 @@ export interface Translations {
       baseBranchPlaceholder: string
       baseBranchNone: string
       startWorkFailed: string
-      worktreeStaleBackend: string
-      worktreeProjectLabel: string
-      worktreeProjectPlaceholder: string
-      worktreeProjectNone: string
       convertBranch: string
       convertBranchTitle: string
       convertBranchDesc: string
@@ -2049,7 +1587,6 @@ export interface Translations {
       branchOpenExisting: string
       branchSwitchHome: string
       branchCreateWorktree: string
-      branchTrackRemote: string
       branchesLoading: string
       noBranches: string
       removeWorktree: string
@@ -2067,21 +1604,15 @@ export interface Translations {
     loading: string
     loadMore: string
     loadCount: (step: number) => string
-    messageCount: (count: number) => string
-    toolCallCount: (count: number) => string
     row: {
       pin: string
       unpin: string
-      markUnread: string
-      markRead: string
-      unreadFailed: string
       copyId: string
       export: string
       branchFrom: string
       rename: string
       archive: string
       newWindow: string
-      openInTerminal: string
       hideTabBar: string
       openInNewTab: string
       openInSplit: string
@@ -2092,7 +1623,6 @@ export interface Translations {
       waitingForAnswer: string
       finishedUnread: string
       backgroundRunning: string
-      draftSession: string
       handoffOrigin: (platform: string) => string
       ownedByProfile: (profile: string) => string
       renamed: string
@@ -2100,13 +1630,7 @@ export interface Translations {
       renameTitle: string
       renameDesc: string
       untitledPlaceholder: string
-      deleteTitle: string
-      deleteDesc: (title: string) => string
-      deleting: string
-      deleted: string
       untitledChat: (id: string) => string
-      messageCount: (count: number) => string
-      todoProgress: string
       ageNow: string
       ageDay: string
       ageHour: string
@@ -2119,11 +1643,6 @@ export interface Translations {
       lastWeek: string
       thisMonth: string
     }
-    statusDivider: {
-      working: string
-      done: string
-    }
-    markAllRead: string
   }
 
   composer: {
@@ -2135,7 +1654,6 @@ export interface Translations {
     newSessionPlaceholders: readonly string[]
     followUpPlaceholders: readonly string[]
     startVoice: string
-    openDirective: string
     queueMessage: string
     steer: string
     stop: string
@@ -2153,7 +1671,6 @@ export interface Translations {
     endShort: string
     stopDictation: string
     transcribingDictation: string
-    voiceControls: string
     voiceDictation: string
     speakReplies: string
     stopSpeakingReplies: string
@@ -2184,7 +1701,6 @@ export interface Translations {
     queueEdit: string
     queueSendNext: string
     queueSend: string
-    queueSteer: string
     queueDelete: string
     queueResume: string
     queueResumeTip: string
@@ -2216,43 +1732,6 @@ export interface Translations {
     snippets: Record<string, { label: string; description: string; text: string }>
     dropFiles: string
     dropSession: string
-    mcpSuggestions: {
-      label: (server: string) => string
-      tip: (keyword: string) => string
-      connecting: (server: string) => string
-      cancelTip: string
-      added: (server: string) => string
-      addedTip: string
-      connectFailed: (server: string) => string
-    }
-    skillSuggestions: {
-      label: (skill: string) => string
-      tip: (skill: string) => string
-      done: (skill: string) => string
-      doneTip: string
-    }
-    githubSuggestions: {
-      label: string
-      tip: string
-      done: string
-      doneTip: string
-    }
-    repairSuggestions: {
-      label: (server: string) => string
-      tip: (server: string) => string
-      working: (server: string) => string
-      workingTip: string
-      done: (server: string) => string
-      doneTip: string
-      failed: (server: string) => string
-    }
-    cronSuggestions: {
-      label: string
-      tip: (phrase: string) => string
-      prefix: string
-      done: string
-      doneTip: string
-    }
   }
 
   statusStack: {
@@ -2298,14 +1777,13 @@ export interface Translations {
       scopeLastTurn: string
       commit: string
       commitAndPush: string
-      commitPlaceholder: (shortcut: string) => string
+      commitPlaceholder: string
       generateCommitMessage: string
       stopGenerating: string
       createPr: string
       openPr: string
       ghMissing: string
       agentShip: string
-      agentShipUnavailable: string
       agentShipPrompt: string
       newBranch: string
       branchOffFrom: (base: string) => string
@@ -2349,27 +1827,7 @@ export interface Translations {
     applyingClose: string
     errorTitle: string
     errorBody: string
-    blockerTitle: string
-    blockerBody: string
-    foreignBlockerTitle: string
-    foreignBlockerBody: string
-    mixedBlockerBody: string
-    closePreviewsAndUpdate: string
-    closePreviewsAndCheckAgain: string
-    localPreview: string
-    portLabel: (port: number) => string
-    pidLabel: (pid: number) => string
-    technicalDetails: string
     notNow: string
-    /** Multi-target update flow: client nudge after a backend update, and
-     *  per-row fan-out outcomes when updating every registered instance. */
-    clientAlsoBehindTitle: string
-    clientAlsoBehindMessage: string
-    clientAlsoBehindAction: string
-    everythingDispatched: string
-    everythingSkipped: string
-    everythingRowFailed: string
-    everythingFanoutFailedTitle: string
     applyStatus: {
       preparing: string
       pulling: string
@@ -2457,8 +1915,6 @@ export interface Translations {
     connected: string
     featuredPitch: string
     fireworksPitch: string
-    localModelsTitle: string
-    localModelsPitch: string
     openRouterPitch: string
     apiKeyOptions: Record<string, { short: string; description: string }>
     backToSignIn: string
@@ -2475,7 +1931,6 @@ export interface Translations {
     connectedProvider: (provider: string) => string
     connectedPicking: (provider: string) => string
     signInFailed: string
-    signInExpired: string
     pickDifferentProvider: string
     signInWith: (provider: string) => string
     openedBrowser: (provider: string) => string
@@ -2509,9 +1964,6 @@ export interface Translations {
     noModels: string
     addProvider: string
     loadFailed: string
-    loadingIntoMemory: string
-    downloading: string
-    localDownloadsHeading: string
     noAuthenticatedProviders: string
     pro: string
     proNeedsSubscription: string
@@ -2564,7 +2016,6 @@ export interface Translations {
       inferenceNotReady: string
       checkingInference: string
       disconnected: string
-      reconnectGateway: string
       openSystem: string
       connection: (label: string) => string
       recentActivity: string
@@ -2606,7 +2057,6 @@ export interface Translations {
       gateway: string
       gatewayReady: string
       gatewayNeedsSetup: string
-      gatewayUnavailable: string
       gatewayChecking: string
       gatewayConnecting: string
       gatewayOffline: string
@@ -2614,20 +2064,15 @@ export interface Translations {
       gatewayTitle: string
       customizeTitle: string
       hideStatusbar: string
-      resetStatusbar: string
       toggleApprovalMode: string
       toggleBackendVersion: string
-      toggleCacheHitRate: string
       toggleCommandCenter: string
       toggleContextUsage: string
       toggleRunningTimer: string
       toggleSessionTimer: string
       toggleTerminal: string
-      toggleTokensPerSecond: string
       toggleVersion: string
       toggleWorkspace: string
-      cacheHitRateTitle: string
-      tokensPerSecondTitle: string
       agents: string
       closeAgents: string
       openAgents: string
@@ -2642,15 +2087,6 @@ export interface Translations {
       openStarmap: string
       turnRunning: string
       contextUsage: string
-      systemResources: {
-        title: string
-        loading: string
-        gpuUtilization: string
-        gpuMemory: string
-        ram: string
-        unifiedNote: string
-        toggle: string
-      }
       contextUsagePanel: {
         categories: {
           conversation: string
@@ -2720,6 +2156,10 @@ export interface Translations {
 
   preview: {
     tab: string
+    closeTab: (label: string) => string
+    closeOthers: string
+    closeToRight: string
+    closeAll: string
     closePane: string
     loading: string
     unavailable: string
@@ -2727,9 +2167,6 @@ export interface Translations {
     hide: string
     openPreview: string
     openInBrowser: string
-    openInExternal: string
-    popIn: string
-    popOut: string
     linkHint: string
     sourceLineTitle: string
     source: string
@@ -2775,7 +2212,6 @@ export interface Translations {
     web: {
       appFailedToBoot: string
       serverNotFound: string
-      remoteLoopback: string
       failedToLoad: string
       tryAgain: string
       restarting: string
@@ -2789,12 +2225,6 @@ export interface Translations {
       showConsole: string
       hideDevTools: string
       openDevTools: string
-      goBack: string
-      goForward: string
-      reload: string
-      address: string
-      addressPlaceholder: string
-      blankPageBody: string
       finishedRestarting: (message?: string) => string
       failedRestarting: (message: string) => string
       unknownError: string
@@ -2812,38 +2242,21 @@ export interface Translations {
       unreachableDescription: string
       openTarget: (url: string) => string
       fallbackTitle: string
-      annotate: string
-      annotateOn: string
-      annotateNeedPage: string
-      annotateFailed: string
-      commenting: string
-      addComments: (count: number) => string
-      commentPlaceholder: string
-      commentTitle: (n: number) => string
-      saveComment: string
-      cancelComment: string
     }
   }
 
   zones: {
-    showTabStrip: string
-    hideTabStrip: string
-    showStripTab: (title: string) => string
-    hideStripTab: (title: string) => string
-    lastTabKeptTitle: string
-    lastTabKeptBody: string
-    toggleStripTab: (title: string) => string
+    showHeader: string
+    hideHeader: string
     minimize: string
     restore: string
     closeRunningTitle: string
     closeRunningBody: string
     closeRunningConfirm: string
-    reload: string
     closeOthers: string
     closeToRight: string
     closeAll: string
     newSessionTab: string
-    newTab: string
     pluginDisabled: (pluginId: string) => string
     pluginDisabledBody: string
     missingPane: (paneId: string) => string
@@ -2870,31 +2283,6 @@ export interface Translations {
     saveApply: string
     notExpressible: string
     zoneCount: (count: number) => string
-    tabCount: (count: number) => string
-  }
-
-  contextMenu: {
-    link: {
-      openInApp: string
-      openExternal: string
-      copyUrl: string
-      copyResolvedUrl: string
-    }
-    image: {
-      copyImage: string
-      copyImageAddress: string
-      saveImageAs: string
-    }
-    edit: {
-      cut: string
-      paste: string
-      selectAll: string
-      addToDictionary: string
-    }
-    page: {
-      copyPageUrl: string
-      inspectElement: string
-    }
   }
 
   assistant: {
@@ -2902,14 +2290,11 @@ export interface Translations {
       loadingSession: string
       showEarlier: string
       loadingResponse: string
-      loadingLocalModel: (model: string) => string
-      processingPrompt: string
       resumeWhenBackgroundDone: (count: number) => string
       thinking: string
       thought: string
       thoughtBriefly: string
       thoughtFor: (duration: string) => string
-      turnDuration: (duration: string) => string
       today: (time: string) => string
       yesterday: (time: string) => string
       copy: string
@@ -2918,26 +2303,6 @@ export interface Translations {
       branchNewChat: string
       react: string
       dismissError: string
-      /** Layer titles for the structured error card (agent/error_surface.py).
-       *  `generic` is the fallback when the backend sent no descriptor. */
-      errorLayers: {
-        auth: string
-        billing: string
-        disk: string
-        endpoint: string
-        gateway: string
-        generic: string
-        provider: string
-        runtime: string
-        streaming: string
-      }
-      errorRetry: string
-      errorSwitchProvider: string
-      errorOpenLogs: string
-      errorOpenLogsFailed: string
-      errorOpenDesktopLogs: string
-      errorCopyDiagnostics: string
-      errorSendDiagnostics: string
       filesChanged: (count: number) => string
       reviewChanges: string
       readAloudFailed: string
@@ -2983,34 +2348,9 @@ export interface Translations {
       skip: string
       skipped: string
       continueLabel: string
-      confirmAndContinueLabel: string
-      answeredBadge: string
-      questionProgress: (answered: number, total: number) => string
       lateAnswer: (question: string, choice: string) => string
       lateAnswerTip: string
       lateAnswerHint: string
-    }
-    mcpSetup: {
-      installTitle: (server: string) => string
-      enableTitle: (server: string) => string
-      authorizeTitle: (server: string) => string
-      installAction: string
-      enableAction: string
-      authorizeAction: string
-      decline: string
-      declined: string
-      installed: (server: string) => string
-      enabled: (server: string) => string
-      authorized: (server: string) => string
-      failed: (server: string) => string
-      unanswered: string
-      toolCount: (count: number) => string
-      notInCatalog: (server: string) => string
-      catalogSource: string
-      envRequired: string
-      sendFailed: string
-      reloadFailed: string
-      gatewayDisconnected: string
     }
     tool: {
       copyCode: string
@@ -3101,11 +2441,7 @@ export interface Translations {
     stopFailed: string
     regenerateFailed: string
     editFailed: string
-    editTurnUnavailable: string
     resumeFailed: string
-    readOnlyTranscriptTitle: string
-    readOnlyTranscriptBody: string
-    readOnlyTranscriptSendBlocked: string
     resumeStrandedTitle: string
     resumeStrandedBody: string
     resumeRetry: string
@@ -3123,7 +2459,6 @@ export interface Translations {
     cwdStagedTitle: string
     cwdStagedMessage: string
     modelSwitchFailed: string
-    hydrationSyncing: (profile: string) => string
     sessionExported: string
     sessionExportFailed: string
     imageSaved: string
@@ -3149,16 +2484,6 @@ export interface Translations {
       systemNote: (platform: string) => string
       failed: (error: string) => string
       timedOut: string
-    }
-  }
-
-  tips: {
-    close: string
-    /** Keyed by `TipId`, so a new tip without copy is a type error. Plus the
-     *  campaign tips, which live outside the rotation's catalog: they carry
-     *  a button, and `action` is its label. */
-    items: Record<TipId, { title: string; text: string }> & {
-      'local-setup': { title: string; text: string; action: string }
     }
   }
 

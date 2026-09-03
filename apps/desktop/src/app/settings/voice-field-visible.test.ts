@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { voiceFieldVisible } from './helpers'
+import { voiceFieldVisible } from './config-settings'
 
 const cfg = (over: Record<string, unknown> = {}): HermesConfigRecord =>
   ({

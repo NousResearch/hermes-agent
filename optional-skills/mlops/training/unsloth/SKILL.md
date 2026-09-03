@@ -14,7 +14,7 @@ metadata:
 
 # Unsloth Skill
 
-Assistance with unsloth development, generated from official documentation.
+Comprehensive assistance with unsloth development, generated from official documentation.
 
 ## When to Use This Skill
 
@@ -33,7 +33,7 @@ This skill should be triggered when:
 
 ## Reference Files
 
-This skill includes full documentation in `references/`:
+This skill includes comprehensive documentation in `references/`:
 
 - **llms-txt.md** - Llms-Txt documentation
 

@@ -19,6 +19,10 @@
     "check": "npm run typecheck && npm run lint"
   },
   "devDependencies": {
-    "typescript": "6.0.3"
+    "@eslint/js": "^9.39.4",
+    "eslint": "^9.39.4",
+    "globals": "^17.4.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.56.1"
   }
 }

@@ -14,7 +14,6 @@ from typing import Optional
 
 WS_CLOSE_PROCESS_EXITED = 4410
 WS_CLOSE_SUPERSEDED = 4409
-TUI_FORCE_REDRAW = b"\x0c"
 
 
 class RingBuffer:
@@ -79,14 +78,7 @@ class PtySession:
                 except Exception:
                     pass                             # detached mid-send; keep buffering
 
-    async def attach(self, ws, *, force_redraw: bool = False) -> None:
-        """Attach a browser terminal and replay buffered PTY output.
-
-        The TUI uses an alternate screen and differential rendering, so a
-        bounded ANSI tail is not guaranteed to be a self-contained frame.
-        Reattaching a fresh xterm therefore asks the live TUI to emit one
-        complete redraw after the replay.
-        """
+    async def attach(self, ws) -> None:
         old = self._ws
         if old is not None and old is not ws:
             try:
@@ -99,8 +91,6 @@ class PtySession:
         snap = self.buffer.snapshot()
         if snap:
             await ws.send_bytes(snap)
-        if force_redraw:
-            self.bridge.write(TUI_FORCE_REDRAW)
 
     def detach(self, ws) -> None:
         # Only the currently-attached socket may mark the session detached.

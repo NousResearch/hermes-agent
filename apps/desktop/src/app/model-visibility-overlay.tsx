@@ -8,16 +8,10 @@ import { $activeSessionId, $gatewayState } from '@/store/session'
 interface ModelVisibilityOverlayProps {
   gateway?: HermesGateway
   onOpenProviders: () => void
-  ownerConnectionId?: string
   profile: string
 }
 
-export function ModelVisibilityOverlay({
-  gateway,
-  onOpenProviders,
-  ownerConnectionId,
-  profile
-}: ModelVisibilityOverlayProps) {
+export function ModelVisibilityOverlay({ gateway, onOpenProviders, profile }: ModelVisibilityOverlayProps) {
   const activeSessionId = useStore($activeSessionId)
   const gatewayOpen = useStore($gatewayState) === 'open'
   const open = useStore($modelVisibilityOpen)
@@ -32,7 +26,6 @@ export function ModelVisibilityOverlay({
       onOpenChange={setModelVisibilityOpen}
       onOpenProviders={onOpenProviders}
       open={open}
-      ownerConnectionId={ownerConnectionId}
       profile={profile}
       sessionId={activeSessionId}
     />

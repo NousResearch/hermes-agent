@@ -12,14 +12,11 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
-import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
+import { untombstoneSessions } from '@/store/projects'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
-import { untombstoneSessions } from '@/store/session-removal'
-import { forgetSessionUnread } from '@/store/session-unread'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
@@ -28,6 +25,22 @@ import { useDeepLinkHighlight } from './use-deep-link-highlight'
 const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
 const ARCHIVED_FETCH_LIMIT = 200
+
+function workspaceLabel(cwd: null | string | undefined): string {
+  const path = cwd?.trim()
+
+  if (!path) {
+    return ''
+  }
+
+  return (
+    path
+      .replace(/[/\\]+$/, '')
+      .split(/[/\\]/)
+      .filter(Boolean)
+      .pop() ?? path
+  )
+}
 
 export function SessionsSettings() {
   const { t } = useI18n()
@@ -77,13 +90,7 @@ export function SessionsSettings() {
 
   const remove = useCallback(
     async (session: SessionInfo) => {
-      const ok = await confirm({
-        confirmLabel: s.deletePermanently,
-        destructive: true,
-        title: s.deleteConfirm(sessionTitle(session))
-      })
-
-      if (!ok) {
+      if (!window.confirm(s.deleteConfirm(sessionTitle(session)))) {
         return
       }
 
@@ -91,9 +98,6 @@ export function SessionsSettings() {
 
       try {
         await deleteSession(session.id, session.profile)
-        // Permanent delete bypasses removeSession, so retire the persisted
-        // unread state here too rather than leaving it to rot.
-        forgetSessionUnread([session.id, session._lineage_root_id], session.profile)
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         triggerHaptic('warning')
       } catch (err) {
@@ -135,7 +139,7 @@ export function SessionsSettings() {
       ) : (
         <div className="grid gap-1">
           {sessions.map(session => {
-            const label = pathLeaf(session.cwd)
+            const label = workspaceLabel(session.cwd)
             const busy = busyId === session.id
 
             return (

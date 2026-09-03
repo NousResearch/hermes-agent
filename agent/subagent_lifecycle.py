@@ -21,7 +21,6 @@ from contextlib import contextmanager
 from concurrent.futures import Future, TimeoutError
 from typing import Any, Callable, Mapping, Optional
 
-from agent.interrupt_compat import request_hard_interrupt
 
 PUBLIC_CONTRACT_VERSION = 1
 _MAX_GOAL_CHARS = 16_000
@@ -301,21 +300,13 @@ class SubagentLifecycleService:
             agent = record.agent
             record.state = SubagentState.CANCEL_REQUESTED
             record.updated_at = time.time()
-        if agent is None:
+        if agent is None or not hasattr(agent, "interrupt"):
             return SubagentCancelResult(
                 False, unsupported=True, state=SubagentState.CANCEL_REQUESTED
             )
         try:
-            accepted = request_hard_interrupt(
-                agent,
-                f"Lifecycle cancellation requested: {reason[:500]}",
-                tool_reason="subagent cancellation requested",
-            )
+            agent.interrupt(f"Lifecycle cancellation requested: {reason[:500]}")
         except Exception:
-            return SubagentCancelResult(
-                False, unsupported=True, state=SubagentState.CANCEL_REQUESTED
-            )
-        if not accepted:
             return SubagentCancelResult(
                 False, unsupported=True, state=SubagentState.CANCEL_REQUESTED
             )

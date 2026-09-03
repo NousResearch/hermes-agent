@@ -77,7 +77,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
+from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
@@ -255,34 +255,22 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         # Allowlist: honor the *documented* WHATSAPP_CLOUD_ALLOWED_USERS (the
         # var the setup wizard writes) in addition to WHATSAPP_CLOUD_ALLOW_FROM.
-        # Precedence matches construction forever: explicit config (by key
-        # presence, including empty []), then legacy ALLOW_FROM, then
-        # ALLOWED_USERS. Track the winning source so live DM checks do not let
-        # a lower-precedence env broaden access.
-        if "allow_from" in extra:
-            self._dm_allowlist_source = "config"
-            allow_raw = extra.get("allow_from")
-        elif "allowFrom" in extra:
-            self._dm_allowlist_source = "config"
-            allow_raw = extra.get("allowFrom")
-        elif _get_wsecret("WHATSAPP_CLOUD_ALLOW_FROM"):
-            self._dm_allowlist_source = "WHATSAPP_CLOUD_ALLOW_FROM"
-            allow_raw = _get_wsecret("WHATSAPP_CLOUD_ALLOW_FROM")
-        elif _get_wsecret("WHATSAPP_CLOUD_ALLOWED_USERS"):
-            self._dm_allowlist_source = "WHATSAPP_CLOUD_ALLOWED_USERS"
-            allow_raw = _get_wsecret("WHATSAPP_CLOUD_ALLOWED_USERS")
-        else:
-            self._dm_allowlist_source = None
-            allow_raw = None
+        # The adapter historically read only ALLOW_FROM, so an allowlist
+        # configured via the documented var silently dropped every inbound.
         self._allow_from: set[str] = self._normalize_allow_ids(
-            self._coerce_allow_list(allow_raw)
+            self._coerce_allow_list(
+                extra.get("allow_from")
+                or extra.get("allowFrom")
+                or os.getenv("WHATSAPP_CLOUD_ALLOW_FROM")
+                or os.getenv("WHATSAPP_CLOUD_ALLOWED_USERS")
+            )
         )
         # DM policy: explicit config wins; otherwise choose a safe, working
         # default -- "open" if the operator opted into allow-all, else
         # "allowlist" when an allowlist is configured (so it is actually
         # enforced instead of silently dropping), else "open".
         _allow_all_optin = str(
-            _get_wsecret("WHATSAPP_CLOUD_ALLOW_ALL_USERS", default="") or ""
+            os.getenv("WHATSAPP_CLOUD_ALLOW_ALL_USERS", "")
         ).strip().lower() in {"true", "1", "yes"}
         _default_dm_policy = (
             "open" if _allow_all_optin
@@ -290,21 +278,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         self._dm_policy: str = str(
             extra.get("dm_policy")
-            or _get_wsecret("WHATSAPP_CLOUD_DM_POLICY")
-            or _get_wsecret("WHATSAPP_DM_POLICY")
+            or os.getenv("WHATSAPP_CLOUD_DM_POLICY")
+            or os.getenv("WHATSAPP_DM_POLICY")
             or _default_dm_policy
         ).strip().lower()
         self._group_policy: str = str(
             extra.get("group_policy")
-            or _get_wsecret("WHATSAPP_CLOUD_GROUP_POLICY")
-            or _get_wsecret("WHATSAPP_GROUP_POLICY", default="open")
-            or "open"
+            or os.getenv("WHATSAPP_CLOUD_GROUP_POLICY")
+            or os.getenv("WHATSAPP_GROUP_POLICY", "open")
         ).strip().lower()
         self._group_allow_from: set[str] = self._normalize_allow_ids(
             self._coerce_allow_list(
                 extra.get("group_allow_from")
                 or extra.get("groupAllowFrom")
-                or _get_wsecret("WHATSAPP_CLOUD_GROUP_ALLOW_FROM")
+                or os.getenv("WHATSAPP_CLOUD_GROUP_ALLOW_FROM")
             )
         )
         self._mention_patterns = self._compile_mention_patterns()
@@ -402,8 +389,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Allowlist check against the normalized bare wa_id."""
         if self._dm_policy == "allowlist":
             bare = re.sub(r"\D", "", str(sender_id).split("@", 1)[0])
-            allow_from = self._normalize_allow_ids(self._live_dm_allow_from())
-            return (bare or sender_id) in allow_from
+            return (bare or sender_id) in self._allow_from
         return super()._is_dm_allowed(sender_id)
 
     def _open_dm_opted_in(self) -> bool:
@@ -413,7 +399,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         WHATSAPP_ALLOW_ALL_USERS; the Cloud adapter's documented open-access
         opt-in is WHATSAPP_CLOUD_ALLOW_ALL_USERS, so honor it here too.
         """
-        if str(_get_wsecret("WHATSAPP_CLOUD_ALLOW_ALL_USERS", default="") or "").strip().lower() in {"true", "1", "yes"}:
+        if str(os.getenv("WHATSAPP_CLOUD_ALLOW_ALL_USERS", "")).strip().lower() in {"true", "1", "yes"}:
             return True
         return super()._open_dm_opted_in()
 
@@ -492,8 +478,6 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "incoming webhook POSTs will be refused with 503. Set "
                 "the app secret to enable inbound message delivery."
             )
-        # Plugin-registered native handlers (ctx.register_platform_handler).
-        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -554,7 +538,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 resp = await self._http_client.post(url, headers=headers, json=payload)
             except Exception as exc:
                 logger.exception("[whatsapp_cloud] send failed")
-                return SendResult(success=False, error=str(exc) or type(exc).__name__)
+                return SendResult(success=False, error=str(exc))
 
             if resp.status_code != 200:
                 # Meta returns structured errors in the body — surface them
@@ -712,7 +696,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             resp = await self._http_client.post(url, headers=headers, json=payload)
         except Exception as exc:
             logger.exception("[whatsapp_cloud] interactive send failed")
-            return SendResult(success=False, error=str(exc) or type(exc).__name__)
+            return SendResult(success=False, error=str(exc))
 
         if resp.status_code != 200:
             try:
@@ -1088,7 +1072,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             resp = await self._http_client.post(url, headers=headers, json=payload)
         except Exception as exc:
             logger.exception("[whatsapp_cloud] media send failed")
-            return SendResult(success=False, error=str(exc) or type(exc).__name__)
+            return SendResult(success=False, error=str(exc))
 
         if resp.status_code != 200:
             try:

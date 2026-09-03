@@ -1,5 +1,5 @@
 ---
-name: saelens
+name: sparse-autoencoder-training
 description: Train sparse autoencoders to interpret model features.
 version: 1.0.1
 author: Orchestra Research

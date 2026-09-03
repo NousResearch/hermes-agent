@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { useViewedInterval } from '@/hooks/use-viewed-interval'
-
 // Module-level registry so timers survive component unmount/remount (e.g.
 // when a tool row scrolls out and back). Keyed by caller-supplied timerKey;
 // anonymous timers (no key) start fresh each mount.
@@ -55,20 +53,24 @@ export function useElapsedSeconds(active = true, timerKey?: string, since?: numb
     lastKey.current = timerKey
   }
 
-  // eslint-disable-next-line no-restricted-syntax -- timer origin is imperative state, not an atom mirror
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
+    if (!active) {
+      return
+    }
+
     if (since !== undefined) {
       start.current = since
     } else if (timerKey) {
       start.current = startedAt(timerKey)
     }
 
-    if (active) {
-      setElapsed(Math.max(0, Math.floor((Date.now() - start.current) / 1000)))
-    }
-  }, [active, since, timerKey])
+    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - start.current) / 1000)))
+    tick()
+    const id = window.setInterval(tick, 1000)
 
-  useViewedInterval(() => setElapsed(Math.max(0, Math.floor((Date.now() - start.current) / 1000))), 1000, active)
+    return () => window.clearInterval(id)
+  }, [active, since, timerKey])
 
   return elapsed
 }
@@ -98,11 +100,9 @@ export function useMeasuredDuration(active: boolean, timerKey: string): null | n
     if (active) {
       setWatching(true)
     } else if (watching) {
-      const finalElapsed = Math.max(elapsed, Math.floor((Date.now() - startedAt(timerKey)) / 1000))
-
       setWatching(false)
-      durationByKey.set(timerKey, finalElapsed)
-      setMeasured(finalElapsed)
+      durationByKey.set(timerKey, elapsed)
+      setMeasured(elapsed)
     }
   }, [active, elapsed, timerKey, watching])
 

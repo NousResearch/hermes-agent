@@ -68,9 +68,6 @@ class _FakeGateway:
     def _update_runtime_status(self, *_a, **_kw):
         pass
 
-    def _clear_plugin_message_injector(self):
-        pass
-
     async def _run_in_executor_with_context(self, func, *args):
         # stop() offloads agent-resource cleanup off the loop (#53175); run
         # inline in tests so the bounded-cleanup path is exercised.
@@ -87,7 +84,7 @@ class _FakeGateway:
     async def _cancel_secondary_profile_reconnect_tasks(self):
         pass
 
-    async def _drain_active_agents(self, timeout, cron_timeout=None):
+    async def _drain_active_agents(self, timeout):
         return {}, False
 
     async def _finalize_shutdown_agents(self, agents):

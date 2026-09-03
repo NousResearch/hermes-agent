@@ -53,11 +53,6 @@ def summarize_manual_compression(
         compression_state is not None
         and getattr(compression_state, "_last_compress_aborted", False) is True
     )
-    refused_would_grow = (
-        compression_state is not None
-        and getattr(compression_state, "_last_compress_refused_would_grow", False)
-        is True
-    )
     fallback_used = (
         compression_state is not None
         and getattr(compression_state, "_last_summary_fallback_used", False) is True
@@ -70,12 +65,7 @@ def summarize_manual_compression(
     if not isinstance(failure_reason, str) or not failure_reason.strip():
         failure_reason = None
 
-    if refused_would_grow:
-        headline = (
-            f"Compression refused (summary would grow the conversation): "
-            f"{before_count} messages preserved"
-        )
-    elif aborted:
+    if aborted:
         headline = f"Compression aborted: {before_count} messages preserved"
     elif fallback_used:
         headline = (
@@ -88,8 +78,6 @@ def summarize_manual_compression(
 
     if noop and after_tokens == before_tokens:
         token_line = f"Approx request size: ~{before_tokens:,} tokens (unchanged)"
-    elif refused_would_grow:
-        token_line = f"Approx request size: ~{before_tokens:,} tokens (unchanged)"
     else:
         token_line = (
             f"Approx request size: ~{before_tokens:,} → "
@@ -97,12 +85,7 @@ def summarize_manual_compression(
         )
 
     note = None
-    if refused_would_grow:
-        note = (
-            "The generated summary was larger than what it would replace; "
-            "no messages were removed."
-        )
-    elif aborted:
+    if aborted:
         note = "Summary generation failed; no messages were removed."
     elif fallback_used:
         dropped_count = getattr(
@@ -130,7 +113,6 @@ def summarize_manual_compression(
     return {
         "noop": noop,
         "aborted": aborted,
-        "refused_would_grow": refused_would_grow,
         "fallback_used": fallback_used,
         "headline": headline,
         "token_line": token_line,

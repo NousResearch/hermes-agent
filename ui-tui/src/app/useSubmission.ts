@@ -2,15 +2,14 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import { expandTokens } from '../domain/attachments.js'
-import { completionToApplyOnSubmit, looksLikeSlashCommand, parseSlashCommand } from '../domain/slash.js'
+import { completionToApplyOnSubmit, looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
-import { queueItem, type QueueItem } from '../hooks/useQueue.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
-import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken } from './interfaces.js'
+import type { ComposerActions, ComposerRefs, ComposerState } from './interfaces.js'
 import { submitPrompt } from './submissionCore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -19,46 +18,6 @@ const DOUBLE_ENTER_MS = 450
 
 const spliceMatches = (text: string, matches: RegExpMatchArray[], results: string[]) =>
   matches.reduceRight((acc, m, i) => acc.slice(0, m.index!) + results[i] + acc.slice(m.index! + m[0].length), text)
-
-export const expandPasteTokens = (tokens: ComposerToken[]) =>
-  expandTokens(tokens.filter(token => token.kind === 'paste'))
-
-const slashArgument = (command: string) => /^\/\S+\s+([\s\S]+)$/.exec(command)?.[1] ?? ''
-
-export const queueItemFromSlash = (displayCommand: string, expandedCommand: string): QueueItem | undefined => {
-  const display = slashArgument(displayCommand)
-
-  if (!display.trim()) {
-    return undefined
-  }
-
-  return queueItem(slashArgument(expandedCommand), display)
-}
-
-export const prepareSubmission = (display: string, tokens: ComposerToken[]) => ({
-  display,
-  text: expandTokens(tokens)(display)
-})
-
-/**
- * Split a slash submission into the two things it has to be at once.
- *
- * A slash command's argument is ordinary user text, so a collapsed paste in it
- * must resolve BEFORE the command runs — otherwise `/pr-triage [[ … [412 lines]
- * … ]]` hands the skill the label and the agent faithfully reports that the
- * paste is truncated. The transcript still shows the compact form, because a
- * 412-line paste inlined into the scrollback is exactly what collapsing it was
- * for.
- *
- * Image tokens stay as labels: the gateway already holds those files in
- * `attached_images` and splices them in at submit.
- */
-export const prepareSlashSubmission = (display: string, tokens: ComposerToken[]) => ({
-  command: expandPasteTokens(tokens)(display),
-  display
-})
-
-export const shouldInterpolateSubmission = (display: string) => hasInterpolation(display)
 
 export function useSubmission(opts: UseSubmissionOptions) {
   const { appendMessage, composerActions, composerRefs, composerState, gw, setLastUserMsg, slashRef, submitRef, sys } =
@@ -97,16 +56,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
   }, [composerState.input, composerState.inputBuf])
 
   const send = useCallback(
-    (
-      text: string,
-      showUserMessage = true,
-      displayText?: string,
-      expandOverride?: (value: string) => string,
-      submitOpts: { skipDetectDrop?: boolean } = {}
-    ) => {
+    (text: string, showUserMessage = true, displayText?: string) => {
       // Read tokens off the ref, not render state: a paste immediately followed
       // by Enter submits before React has re-rendered with the new token.
-      const expand = expandOverride ?? expandTokens(composerRefs.tokensRef.current)
+      const expand = expandTokens(composerRefs.tokensRef.current)
 
       submitPrompt(
         text,
@@ -119,8 +72,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
           sys
         },
         showUserMessage,
-        displayText,
-        submitOpts
+        displayText
       )
     },
     [appendMessage, composerActions, composerRefs, gw, setLastUserMsg, sys]
@@ -205,15 +157,16 @@ export function useSubmission(opts: UseSubmissionOptions) {
   // `opts.fallbackToFront` re-inserts at the queue head (queue-edit picks keep
   // their position); the mainline submit path appends.
   const handleBusyInput = useCallback(
-    (item: QueueItem, opts: { fallbackToFront?: boolean } = {}) => {
+    (full: string, opts: { fallbackToFront?: boolean } = {}) => {
       const live = getUiState()
       const mode = live.busyInputMode
 
       const enqueueText = () => {
         if (opts.fallbackToFront) {
-          composerActions.prependQueue(item)
+          composerRefs.queueRef.current.unshift(full)
+          composerActions.syncQueue()
         } else {
-          composerActions.enqueue(item.text, item.display)
+          composerActions.enqueue(full)
         }
       }
 
@@ -223,11 +176,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       if (mode === 'queue') {
-        return enqueueText()
+        return composerActions.enqueue(full)
       }
 
       if (mode === 'steer' && live.sid) {
-        gw.request<SessionSteerResponse>('session.steer', { session_id: live.sid, text: item.text })
+        gw.request<SessionSteerResponse>('session.steer', { session_id: live.sid, text: full })
           .then(raw => {
             const r = asRpcResult<SessionSteerResponse>(raw)
 
@@ -244,9 +197,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
       // the agent is in model generation, tool execution, or an older runtime.
       // Reuse the normal submit pipeline so the correction gets its user bubble
       // and file-drop interpolation exactly once.
-      send(item.text)
+      send(full)
     },
-    [composerActions, gw, send, sys]
+    [composerActions, composerRefs, gw, send, sys]
   )
 
   const dispatchSubmission = useCallback(
@@ -260,28 +213,12 @@ export function useSubmission(opts: UseSubmissionOptions) {
       // nothing — a detached image can't be re-attached by recalling the text.
       // Idempotent on token-free text, so re-submitting a recalled entry is
       // stable.
-      const submissionTokens = [...composerRefs.tokensRef.current]
-      const submission = prepareSubmission(full, submissionTokens)
-      const toHistory = submission.text
+      const toHistory = expandTokens(composerRefs.tokensRef.current)(full)
 
       if (looksLikeSlashCommand(full)) {
-        const slash = prepareSlashSubmission(full, submissionTokens)
-
-        appendMessage({ kind: 'slash', role: 'system', text: slash.display })
+        appendMessage({ kind: 'slash', role: 'system', text: full })
         composerActions.pushHistory(toHistory)
-
-        const parsed = parseSlashCommand(full)
-
-        const queued =
-          parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(slash.display, slash.command) : undefined
-
-        if (queued) {
-          composerActions.enqueue(queued.text, queued.display)
-          sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
-        } else {
-          slashRef.current(slash.command)
-        }
-
+        slashRef.current(full)
         composerActions.clearIn()
 
         return
@@ -307,7 +244,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
       composerActions.clearIn()
 
       if (editIdx !== null) {
-        const picked = composerActions.takeQueue(editIdx, full)
+        composerActions.replaceQueue(editIdx, full)
+        const picked = composerRefs.queueRef.current.splice(editIdx, 1)[0]
+        composerActions.syncQueue()
         composerActions.setQueueEdit(null)
 
         if (!picked || !live.sid) {
@@ -319,30 +258,30 @@ export function useSubmission(opts: UseSubmissionOptions) {
           // silently going back to the queue.  handleBusyInput resolves
           // mode-specific behavior (interrupt-and-send, steer, or queue).
           if (getUiState().busyInputMode === 'queue') {
-            return composerActions.prependQueue(picked)
+            composerRefs.queueRef.current.unshift(picked)
+
+            return composerActions.syncQueue()
           }
 
           return handleBusyInput(picked, { fallbackToFront: true })
         }
 
-        return sendQueued(picked.text)
+        return sendQueued(picked)
       }
 
       composerActions.pushHistory(toHistory)
 
       if (getUiState().busy) {
-        return handleBusyInput(queueItem(full))
+        return handleBusyInput(full)
       }
 
-      if (shouldInterpolateSubmission(full)) {
+      if (hasInterpolation(full)) {
         patchUiState({ busy: true })
 
-        return interpolate(full, text =>
-          send(prepareSubmission(text, submissionTokens).text, true, text, value => value)
-        )
+        return interpolate(full, send)
       }
 
-      send(submission.text, true, submission.display, value => value)
+      send(full)
     },
     [
       appendMessage,
@@ -353,8 +292,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       send,
       sendQueued,
       shellExec,
-      slashRef,
-      sys
+      slashRef
     ]
   )
 
@@ -386,6 +324,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
         if (doubleTap && live.sid && composerRefs.queueRef.current.length) {
           const next = composerActions.dequeue()
 
+          composerActions.syncQueue()
+
           if (next) {
             composerActions.setQueueEdit(null)
             dispatchSubmission(next)
@@ -410,22 +350,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   submitRef.current = submit
 
-  // Literal submission: route text straight to the prompt pipeline, skipping
-  // slash-command routing, `!` shell dispatch, [[token]] expansion, and
-  // $(...) interpolation. Startup `-q` queries use this — they're arbitrary
-  // launcher/script text, and one-shot mode already treats them literally.
-  const submitLiteral = useCallback(
-    (value: string) => {
-      if (!value.trim()) {
-        return
-      }
-
-      send(value, true, value, v => v, { skipDetectDrop: true })
-    },
-    [send]
-  )
-
-  return { dispatchSubmission, send, sendQueued, submit, submitLiteral }
+  return { dispatchSubmission, send, sendQueued, submit }
 }
 
 export interface UseSubmissionOptions {

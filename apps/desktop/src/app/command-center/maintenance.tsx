@@ -23,7 +23,6 @@ import { useI18n } from '@/i18n'
 import { AlertCircle } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
-import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { ActionStatusResponse } from '@/types/hermes'
 
@@ -170,7 +169,7 @@ export function MaintenancePanel() {
 
   const doResetMemory = useCallback(
     async (target: 'all' | 'memory' | 'user', label: string) => {
-      if (!(await confirm({ destructive: true, title: mm.resetConfirm(label) }))) {
+      if (!window.confirm(mm.resetConfirm(label))) {
         return
       }
 

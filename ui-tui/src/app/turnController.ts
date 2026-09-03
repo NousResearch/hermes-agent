@@ -66,14 +66,10 @@ const parseTodos = (value: unknown): null | TodoItem[] => {
         return null
       }
 
-      const id = String(row.id ?? '').trim()
-      const parent = String(row.parent ?? '').trim()
-
       return {
         content: String(row.content ?? '').trim(),
-        id,
-        status,
-        ...(parent && parent !== id ? { parent } : {})
+        id: String(row.id ?? '').trim(),
+        status
       }
     })
     .filter((item): item is TodoItem => Boolean(item?.id && item.content))
@@ -270,14 +266,6 @@ class TurnController {
 
   endReasoningPhase() {
     this.reasoningStreamingTimer = clear(this.reasoningStreamingTimer)
-
-    // Seal any open reasoning segment so its isLiveReasoning flag drops the
-    // moment the reasoning phase ends — the panel must stop tracking the
-    // turn's global reasoningActive, not stay "live" for the rest of the turn.
-    if (this.reasoningSegmentIndex !== null) {
-      this.syncReasoningSegment(false)
-    }
-
     patchTurnState({ reasoningActive: false, reasoningStreaming: false })
   }
 
@@ -297,7 +285,7 @@ class TurnController {
       tools: [],
       turnTrail: []
     })
-    patchUiState({ busy: false, compacting: false })
+    patchUiState({ busy: false })
     resetFlowOverlays()
   }
 
@@ -371,7 +359,7 @@ class TurnController {
     })
   }
 
-  private syncReasoningSegment(live = true) {
+  private syncReasoningSegment() {
     const thinking = this.activeReasoningText.trim()
 
     if (!thinking) {
@@ -384,8 +372,7 @@ class TurnController {
       text: '',
       thinking,
       thinkingTokens: estimateTokensRough(thinking),
-      toolTokens: this.toolTokenAcc || undefined,
-      ...(live ? { isLiveReasoning: true } : {})
+      toolTokens: this.toolTokenAcc || undefined
     }
 
     if (this.reasoningSegmentIndex === null) {
@@ -399,7 +386,7 @@ class TurnController {
   }
 
   private closeReasoningSegment() {
-    this.syncReasoningSegment(false)
+    this.syncReasoningSegment()
     this.activeReasoningText = ''
     this.reasoningSegmentIndex = null
   }
@@ -1040,7 +1027,6 @@ class TurnController {
       }
 
       const base: SubagentProgress = existing ?? {
-        delegationId: p.delegation_id,
         depth: p.depth ?? 0,
         goal: p.goal,
         id,
@@ -1072,7 +1058,6 @@ class TurnController {
         ...base,
         apiCalls: p.api_calls ?? base.apiCalls,
         costUsd: p.cost_usd ?? base.costUsd,
-        delegationId: p.delegation_id ?? base.delegationId,
         depth: p.depth ?? base.depth,
         filesRead: p.files_read ?? base.filesRead,
         filesWritten: p.files_written ?? base.filesWritten,

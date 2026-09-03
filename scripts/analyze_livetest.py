@@ -38,20 +38,10 @@ def fmt_bridge_seq(calls):
             inner = (c.get("args") or {}).get("name", "?")
             parts.append(f"tool_call→{inner}")
         elif c["name"] == "tool_search":
-            args = c.get("args") or {}
-            qs = args.get("queries")
-            if isinstance(qs, list):
-                q = "; ".join(str(x) for x in qs)
-            else:  # legacy single-query transcripts
-                q = str(args["query"] if "query" in args else "?")
+            q = (c.get("args") or {}).get("query", "?")
             parts.append(f"search('{q[:30]}')")
         elif c["name"] == "tool_describe":
-            args = c.get("args") or {}
-            ns = args.get("names")
-            if isinstance(ns, list):
-                n = ", ".join(str(x) for x in ns)
-            else:  # legacy single-name transcripts
-                n = str(args.get("name", "?"))
+            n = (c.get("args") or {}).get("name", "?")
             parts.append(f"describe({n})")
     return " → ".join(parts)
 

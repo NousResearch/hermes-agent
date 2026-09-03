@@ -99,7 +99,7 @@ export function renderActionItem(
 
 interface ActionsMenuProps extends Pick<
   React.ComponentProps<typeof DropdownMenuContent>,
-  'align' | 'side' | 'sideOffset' | 'onCloseAutoFocus'
+  'align' | 'side' | 'sideOffset'
 > {
   /** The trigger (a kebab button). Wrapped in `DropdownMenuTrigger asChild`. */
   children: React.ReactNode
@@ -122,7 +122,6 @@ export function ActionsMenu({
   children,
   contentClassName,
   items,
-  onCloseAutoFocus,
   onOpenChange,
   open,
   side,
@@ -135,7 +134,6 @@ export function ActionsMenu({
         align={align}
         aria-label={ariaLabel}
         className={contentClassName}
-        onCloseAutoFocus={onCloseAutoFocus}
         side={side}
         sideOffset={sideOffset}
       >
@@ -154,7 +152,6 @@ interface ActionsContextMenuProps {
   contentClassName?: string
   /** Skip the wrapper (render children bare) — e.g. nothing is actionable yet. */
   disabled?: boolean
-  onCloseAutoFocus?: (event: Event) => void
 }
 
 /**
@@ -166,8 +163,7 @@ export function ActionsContextMenu({
   children,
   contentClassName,
   disabled,
-  items,
-  onCloseAutoFocus
+  items
 }: ActionsContextMenuProps) {
   if (disabled) {
     return <>{children}</>
@@ -176,7 +172,7 @@ export function ActionsContextMenu({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-      <ContextMenuContent aria-label={ariaLabel} className={contentClassName} onCloseAutoFocus={onCloseAutoFocus}>
+      <ContextMenuContent aria-label={ariaLabel} className={contentClassName}>
         {items(CONTEXT_KIT)}
       </ContextMenuContent>
     </ContextMenu>

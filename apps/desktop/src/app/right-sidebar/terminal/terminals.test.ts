@@ -4,13 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const STORAGE_KEY = 'hermes.desktop.terminals.v1'
 
 async function loadTerminalStore() {
-  const $currentCwd = atom('/workspace')
-
   vi.doMock('@/store/session', () => ({
-    $currentCwd
+    $currentCwd: atom('/workspace')
   }))
 
-  return { ...(await import('./terminals')), $currentCwd }
+  return import('./terminals')
 }
 
 describe('terminal store persistence', () => {
@@ -121,70 +119,5 @@ describe('terminal store persistence', () => {
 
     expect($terminals.get().find(term => term.id === agentId)?.restoreCwd).toBeUndefined()
     expect($terminals.get().find(term => term.id === userId)?.restoreCwd).toBeUndefined()
-  })
-})
-
-describe('session cwd → terminal tab linking', () => {
-  beforeEach(() => {
-    window.localStorage.clear()
-    vi.resetModules()
-  })
-
-  it('re-selects the tab already pointed at the new session cwd (trailing slash tolerated)', async () => {
-    const { $activeTerminalId, $currentCwd, createTerminal } = await loadTerminalStore()
-
-    const repoTab = createTerminal('/repo')
-    const otherTab = createTerminal('/elsewhere')
-    expect($activeTerminalId.get()).toBe(otherTab)
-
-    $currentCwd.set('/repo/')
-    expect($activeTerminalId.get()).toBe(repoTab)
-  })
-
-  it('matches the live shell cwd (restoreCwd) over the launch dir', async () => {
-    const { $activeTerminalId, $currentCwd, createTerminal, updateTerminalRestoreCwd } = await loadTerminalStore()
-
-    const movedTab = createTerminal('/repo')
-    updateTerminalRestoreCwd(movedTab, '/repo/packages/api')
-    const otherTab = createTerminal('/elsewhere')
-    expect($activeTerminalId.get()).toBe(otherTab)
-
-    $currentCwd.set('/repo/packages/api')
-    expect($activeTerminalId.get()).toBe(movedTab)
-
-    // The launch dir no longer describes where that shell lives.
-    $currentCwd.set('/repo')
-    expect($activeTerminalId.get()).toBe(movedTab)
-  })
-
-  it('leaves the active tab alone when no tab lives in the session cwd or the cwd is empty', async () => {
-    const { $activeTerminalId, $currentCwd, createTerminal } = await loadTerminalStore()
-
-    createTerminal('/repo')
-    const activeTab = createTerminal('/elsewhere')
-
-    $currentCwd.set('/unrelated')
-    expect($activeTerminalId.get()).toBe(activeTab)
-
-    $currentCwd.set('')
-    expect($activeTerminalId.get()).toBe(activeTab)
-  })
-
-  it('stays put when the active tab already lives in the target cwd, and never matches agent tabs', async () => {
-    const { $activeTerminalId, $currentCwd, createTerminal, ensureAgentTerminal, selectTerminal } =
-      await loadTerminalStore()
-
-    const first = createTerminal('/repo')
-    const second = createTerminal('/repo')
-    ensureAgentTerminal('proc-1', 'background task')
-    selectTerminal(second)
-
-    // Both tabs match; the one already active keeps focus (no first-match steal).
-    $currentCwd.set('/repo')
-    expect($activeTerminalId.get()).toBe(second)
-
-    selectTerminal(first)
-    $currentCwd.set('/repo')
-    expect($activeTerminalId.get()).toBe(first)
   })
 })

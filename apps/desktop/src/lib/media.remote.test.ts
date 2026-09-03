@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+// downloadGatewayMediaFile drives an <a download> click, so these need a DOM.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
@@ -9,7 +11,6 @@ import {
   isInlineMediaSrc,
   isRemoteGateway,
   mediaExternalUrl,
-  mediaGatewayStreamUrl,
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from './media'
@@ -74,35 +75,6 @@ describe('mediaExternalUrl', () => {
   it('falls back to file:// when remote connection lacks a token', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw' } as never)
     expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
-  })
-})
-
-describe('mediaGatewayStreamUrl', () => {
-  afterEach(() => {
-    $connection.set(null)
-  })
-
-  it('rewrites gateway-local media to the main-process remote stream proxy', () => {
-    $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 's e/cret' } as never)
-    expect(mediaGatewayStreamUrl('file:///tmp/a b.mp4')).toBe('hermes-media://remote/%2Ftmp%2Fa%20b.mp4')
-  })
-
-  it('supports OAuth remotes with no renderer-visible token and scopes pool profiles', () => {
-    $connection.set({ authMode: 'oauth', mode: 'remote', profile: 'voice reviewer', token: null } as never)
-    expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe('hermes-media://remote/%2Ftmp%2Fa.mp4?profile=voice%20reviewer')
-  })
-
-  it('pins remote streams to their registered connection and profile', () => {
-    $connection.set({
-      connectionId: 'studio-ssh',
-      mode: 'remote',
-      profile: 'voice reviewer',
-      remoteKind: 'ssh'
-    } as never)
-
-    expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe(
-      'hermes-media://remote/%2Ftmp%2Fa.mp4?connectionId=studio-ssh&profile=voice%20reviewer'
-    )
   })
 })
 
@@ -183,12 +155,12 @@ describe('resolveMediaPlaybackSrc', () => {
     )
   })
 
-  it('routes OAuth gateway-local video through the authenticated main-process proxy', async () => {
+  it('routes gateway-local video through the authenticated download endpoint', async () => {
     vi.stubGlobal('window', { hermesDesktop: { api: vi.fn() } })
-    $connection.set({ authMode: 'oauth', mode: 'remote', profile: 'default', token: null } as never)
+    $connection.set({ mode: 'remote', baseUrl: 'https://gateway.test', token: 's e/cret' } as never)
 
     await expect(resolveMediaPlaybackSrc('/root/outputs/render.mp4')).resolves.toBe(
-      'hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?profile=default'
+      'https://gateway.test/api/files/download?path=%2Froot%2Foutputs%2Frender.mp4&token=s%20e%2Fcret'
     )
   })
 
@@ -233,38 +205,49 @@ describe('gatewayMediaDataUrl', () => {
 })
 
 describe('downloadGatewayMediaFile', () => {
-  const saveGatewayFile = vi.fn(async () => ({ path: '/Users/me/Downloads/report.md', saved: true }))
+  const api = vi.fn(async ({ path }: { path: string }) => {
+    if (path.startsWith('/api/fs/read-data-url?')) {
+      return { dataUrl: 'data:text/markdown;base64,IyByZXBvcnQ=' }
+    }
+
+    throw new Error(`unexpected path ${path}`)
+  })
+
+  let clickSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
-    saveGatewayFile.mockClear()
-    vi.stubGlobal('window', { hermesDesktop: { saveGatewayFile } })
-    $connection.set({ connectionId: 'work-ssh', mode: 'remote', profile: 'docker-gw' } as never)
+    api.mockClear()
+    vi.stubGlobal('window', { hermesDesktop: { api }, setTimeout: vi.fn() })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ blob: async () => new Blob(['# report'], { type: 'text/markdown' }) }))
+    )
+    URL.createObjectURL = vi.fn(() => 'blob:remote-artifact')
+    URL.revokeObjectURL = vi.fn()
+    clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    $connection.set({ mode: 'remote' } as never)
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.clearAllMocks()
+    clickSpy.mockRestore()
     $connection.set(null)
   })
 
-  it('downloads gateway files through the native desktop save bridge', async () => {
-    await expect(downloadGatewayMediaFile('file:///Users/me/project/a%20b.md')).resolves.toEqual({
-      path: '/Users/me/Downloads/report.md',
-      saved: true
-    })
+  it('downloads gateway files through the desktop fs bridge', async () => {
+    await downloadGatewayMediaFile('file:///Users/me/project/report.md')
 
-    expect(saveGatewayFile).toHaveBeenCalledWith({
-      connectionId: 'work-ssh',
-      path: '/Users/me/project/a b.md',
-      profile: 'docker-gw',
-      suggestedName: 'a b.md'
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2Fproject%2Freport.md'
     })
+    expect(clickSpy).toHaveBeenCalledOnce()
   })
 
-  it('rejects when the desktop bridge is unavailable', async () => {
-    vi.stubGlobal('window', { hermesDesktop: {} })
+  it('rejects when the gateway refuses the file read', async () => {
+    api.mockRejectedValueOnce(new Error('403 File is not readable'))
 
-    await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow(
-      'Desktop file download bridge'
-    )
+    await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow('403')
+    expect(clickSpy).not.toHaveBeenCalled()
   })
 })

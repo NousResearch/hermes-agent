@@ -60,34 +60,6 @@ function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
   return ordered.join(delimiter)
 }
 
-/**
- * Hermes-managed Node.js directories, in preferred lookup order.
- *
- * There are two on-disk layouts. `scripts/install.ps1` unpacks portable Node
- * straight into `%LOCALAPPDATA%\hermes\node` (node.exe at the root, no `bin\`);
- * `scripts/install.sh` and the node-bootstrap helper use the POSIX
- * `$HERMES_HOME/node/bin`. Emit BOTH on every platform so mixed and migrated
- * installs resolve, leading with the layout native to the current platform.
- *
- * This is the single source of truth for the ordering rule on the Node side —
- * `main.ts` imports it rather than keeping its own copy. Mirrors
- * `iter_hermes_node_dirs()` in hermes_constants.py, which the Electron main
- * process cannot import.
- */
-function hermesManagedNodePathEntries(
-  hermesHome,
-  { platform = process.platform, pathModule = pathModuleForPlatform(platform) }: any = {}
-) {
-  if (!hermesHome) {
-    return []
-  }
-
-  const root = pathModule.join(hermesHome, 'node')
-  const bin = pathModule.join(root, 'bin')
-
-  return platform === 'win32' ? [root, bin] : [bin, root]
-}
-
 function buildDesktopBackendPath({
   hermesHome,
   venvRoot,
@@ -96,11 +68,11 @@ function buildDesktopBackendPath({
   pathModule = pathModuleForPlatform(platform)
 }: any = {}) {
   const delimiter = delimiterForPlatform(platform)
-  const hermesNodeDirs = hermesManagedNodePathEntries(hermesHome, { platform, pathModule })
+  const hermesNodeBin = hermesHome ? pathModule.join(hermesHome, 'node', 'bin') : null
   const venvBin = venvRoot ? pathModule.join(venvRoot, platform === 'win32' ? 'Scripts' : 'bin') : null
   const saneEntries = platform === 'win32' ? [] : POSIX_SANE_PATH_ENTRIES
 
-  return appendUniquePathEntries([hermesNodeDirs, venvBin, currentPath, saneEntries], { delimiter })
+  return appendUniquePathEntries([hermesNodeBin, venvBin, currentPath, saneEntries], { delimiter })
 }
 
 function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatform(process.platform) }: any = {}) {
@@ -154,7 +126,6 @@ export {
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
   delimiterForPlatform,
-  hermesManagedNodePathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
   POSIX_SANE_PATH_ENTRIES

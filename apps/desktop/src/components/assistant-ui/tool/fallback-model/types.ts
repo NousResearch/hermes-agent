@@ -3,10 +3,8 @@ export type ToolStatus = 'error' | 'running' | 'success' | 'warning'
 
 export interface ToolPart {
   args?: unknown
-  completedAt?: number
   isError?: boolean
   result?: unknown
-  timestamp?: number
   toolCallId?: string
   toolName: string
   type: 'tool-call'

@@ -103,13 +103,7 @@ export function PageSearchShell({
                 />
               )}
             </div>
-            {hasTabs ? (
-              <div className="flex min-w-0 items-center justify-center" data-tour="page-tabs">
-                <ShellTabs activeTab={activeTab} onTabChange={onTabChange} tabs={tabs!} />
-              </div>
-            ) : (
-              <span />
-            )}
+            {hasTabs ? <ShellTabs activeTab={activeTab} onTabChange={onTabChange} tabs={tabs!} /> : <span />}
             <div className="flex min-w-0 items-center justify-end">{searchTrailingAction}</div>
           </div>
         )}

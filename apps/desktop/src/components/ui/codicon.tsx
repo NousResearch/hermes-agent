@@ -14,7 +14,7 @@ export function Codicon({ className, name, size, spinning, style, ...props }: Co
     <i
       aria-hidden="true"
       className={cn('codicon', `codicon-${name}`, spinning && 'codicon-modifier-spin', className)}
-      style={{ ...(size != null && size !== '' ? { fontSize: size } : {}), ...style }}
+      style={{ fontSize: size, ...style }}
       {...props}
     />
   )

@@ -4,7 +4,6 @@ import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 
 import {
   blurComposerInput,
-  focusComposerInput,
   getActiveComposer,
   markActiveComposer,
   onComposerFocusRequest,
@@ -51,39 +50,6 @@ afterEach(() => {
   // would otherwise decide the next one.
   markActiveComposer('main')
   $hoveredTreeGroup.set(null)
-})
-
-describe('focusComposerInput', () => {
-  it('does not steal the caret from another live composer', () => {
-    const foreground = mountInput()
-    const background = mountInput()
-
-    foreground.focus()
-    focusComposerInput(background)
-
-    expect(document.activeElement).toBe(foreground)
-  })
-
-  it('still focuses when the caret is not already in a composer', () => {
-    const input = mountInput()
-    const outside = document.createElement('button')
-
-    document.body.append(outside)
-    outside.focus()
-    focusComposerInput(input)
-
-    expect(document.activeElement).toBe(input)
-  })
-
-  it('takes the caret from a hidden keep-alive composer on tab switch', () => {
-    const hidden = mountInput(true)
-    const visible = mountInput()
-
-    hidden.focus()
-    focusComposerInput(visible)
-
-    expect(document.activeElement).toBe(visible)
-  })
 })
 
 describe('blurComposerInput', () => {

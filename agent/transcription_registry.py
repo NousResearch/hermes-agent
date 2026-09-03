@@ -24,7 +24,6 @@ import threading
 from typing import Dict, List, Optional
 
 from agent.transcription_provider import TranscriptionProvider
-from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +50,10 @@ _BUILTIN_NAMES = frozenset({
 
 
 _providers: Dict[str, TranscriptionProvider] = {}
-_scoped_providers: Dict[str, Dict[str, TranscriptionProvider]] = {}
 _lock = threading.Lock()
 
 
-def register_provider(provider: TranscriptionProvider, *, scope: Optional[str] = None) -> None:
+def register_provider(provider: TranscriptionProvider) -> None:
     """Register a transcription provider.
 
     Rejects:
@@ -87,9 +85,8 @@ def register_provider(provider: TranscriptionProvider, *, scope: Optional[str] =
         )
         return
     with _lock:
-        target = _providers if scope is None else _scoped_providers.setdefault(scope, {})
-        existing = target.get(key)
-        target[key] = provider
+        existing = _providers.get(key)
+        _providers[key] = provider
     if existing is not None:
         logger.debug(
             "Transcription provider '%s' re-registered (was %r)",
@@ -102,16 +99,14 @@ def register_provider(provider: TranscriptionProvider, *, scope: Optional[str] =
         )
 
 
-def list_providers(*, scope: Optional[str] = None) -> List[TranscriptionProvider]:
+def list_providers() -> List[TranscriptionProvider]:
     """Return all registered providers, sorted by name."""
     with _lock:
-        merged = dict(_providers)
-        merged.update(_scoped_providers.get(scope or hermes_home_key(), {}))
-        items = list(merged.values())
+        items = list(_providers.values())
     return sorted(items, key=lambda p: p.name)
 
 
-def get_provider(name: str, *, scope: Optional[str] = None) -> Optional[TranscriptionProvider]:
+def get_provider(name: str) -> Optional[TranscriptionProvider]:
     """Return the provider registered under *name*, or None.
 
     Name matching is case-insensitive and whitespace-tolerant — mirrors
@@ -120,44 +115,10 @@ def get_provider(name: str, *, scope: Optional[str] = None) -> Optional[Transcri
     """
     if not isinstance(name, str):
         return None
-    key = name.strip().lower()
-    with _lock:
-        return _scoped_providers.get(scope or hermes_home_key(), {}).get(key) or _providers.get(key)
-
-
-def snapshot_registration(
-    name: str, *, scope: Optional[str] = None
-) -> Optional[TranscriptionProvider]:
-    key = name.strip().lower()
-    with _lock:
-        target = _providers if scope is None else _scoped_providers.get(scope, {})
-        return target.get(key)
-
-
-def restore_registration(
-    name: str,
-    current: TranscriptionProvider,
-    previous: Optional[TranscriptionProvider],
-    *,
-    scope: Optional[str] = None,
-) -> bool:
-    """Restore a plugin registration only when *current* is still installed."""
-    key = name.strip().lower()
-    with _lock:
-        target = _providers if scope is None else _scoped_providers.setdefault(scope, {})
-        if target.get(key) is not current:
-            return False
-        if previous is None:
-            target.pop(key, None)
-        else:
-            target[key] = previous
-        if scope is not None and not target:
-            _scoped_providers.pop(scope, None)
-    return True
+    return _providers.get(name.strip().lower())
 
 
 def _reset_for_tests() -> None:
     """Clear the registry. **Test-only.**"""
     with _lock:
         _providers.clear()
-        _scoped_providers.clear()

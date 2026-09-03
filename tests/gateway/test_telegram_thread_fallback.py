@@ -99,7 +99,6 @@ _fake_telegram_ext = types.ModuleType("telegram.ext")
 _fake_telegram_ext.Application = object
 _fake_telegram_ext.CommandHandler = object
 _fake_telegram_ext.CallbackQueryHandler = object
-_fake_telegram_ext.InlineQueryHandler = object
 _fake_telegram_ext.MessageHandler = object
 _fake_telegram_ext.TypeHandler = object
 _fake_telegram_ext.ContextTypes = SimpleNamespace(DEFAULT_TYPE=object)

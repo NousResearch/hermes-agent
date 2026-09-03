@@ -322,7 +322,7 @@ HERMES_LOG_LEVEL=debug hermes gateway
 在不阻塞会话的情况下运行长时间操作：
 
 ```
-/bg Analyze all files in the archive
+/background Analyze all files in the archive
 ```
 
 ### 跨平台消息

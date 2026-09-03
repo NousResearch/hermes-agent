@@ -15,10 +15,7 @@ Songwriting craft and Suno AI music prompts.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/creative\songwriting-and-ai-music` |
-| Version | `1.0.0` |
-| Author | Teknium (teknium1), Hermes Agent |
-| License | MIT |
+| Path | `skills/creative/songwriting-and-ai-music` |
 | Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md

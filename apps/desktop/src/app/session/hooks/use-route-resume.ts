@@ -1,8 +1,7 @@
 import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import { isNewChatRoute } from '@/app/routes'
-import { type SessionResumeRequest, setResumeExhaustedSessionId } from '@/store/session'
-import type { SessionProfileRoute } from '@/store/session-request-router'
+import { setResumeExhaustedSessionId } from '@/store/session'
 import { markSelectionRestore } from '@/store/session-states'
 
 interface RouteResumeOptions {
@@ -13,7 +12,7 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals
   // routedSessionId the window would otherwise latch on the loader forever, so
@@ -25,7 +24,6 @@ interface RouteResumeOptions {
   // armed->cleared edge is an unambiguous "give me a fresh backoff cycle"
   // signal the effect below uses to reset the attempt counter.
   resumeExhaustedSessionId: string | null
-  sessionResumeRequest: SessionResumeRequest | null
   routedSessionId: string | null
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
@@ -79,7 +77,6 @@ export function useRouteResume({
   resumeSession,
   resumeFailedSessionId,
   resumeExhaustedSessionId,
-  sessionResumeRequest,
   routedSessionId,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId,
@@ -105,7 +102,6 @@ export function useRouteResume({
   // for a fresh backoff cycle on the SAME session (the auto-retry loop itself
   // never touches this latch, so it can't spuriously trigger the reset).
   const prevResumeExhaustedRef = useRef<string | null>(null)
-  const handledResumeRequestRef = useRef(0)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -132,10 +128,6 @@ export function useRouteResume({
         Boolean(cachedRuntime) &&
         cachedRuntime === activeSessionIdRef.current
 
-      const explicitlyRequested =
-        sessionResumeRequest?.sessionId === routedSessionId &&
-        sessionResumeRequest.sequence > handledResumeRequestRef.current
-
       // Self-heal a desynced view: the route points at a session that isn't the
       // loaded one. A create/stream race can leave selected/active null while
       // the route stays on /:sid (symptom: brand-new chat shows "Thinking" then
@@ -156,19 +148,13 @@ export function useRouteResume({
       // we're stranded on a routed session that never loaded. The first two
       // guard against a transient /:sid re-resume during "new chat" state clears
       // before the pathname updates from /:sid -> /.
-      const shouldResume =
-        pathnameChanged || (gatewayBecameOpen && !freshDraftReady) || stuckOnRoutedSession || explicitlyRequested
+      const shouldResume = pathnameChanged || gatewayBecameOpen || stuckOnRoutedSession
 
       // On a reconnect (gatewayBecameOpen) re-resume even when the route looks
       // `alreadyActive`: the cached runtime id can be stale once the gateway
       // rebinds/reaps the session on its side, and trusting it strands Desktop on
-      // a dead id ("session not found"). An explicit plugin reselect similarly
-      // bypasses the warm-id skip when the focused transcript disappeared.
-      if ((gatewayBecameOpen || explicitlyRequested || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
-        if (explicitlyRequested) {
-          handledResumeRequestRef.current = sessionResumeRequest.sequence
-        }
-
+      // a dead id ("session not found"). Otherwise keep skipping when already active.
+      if ((gatewayBecameOpen || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
         // The window's FIRST resume re-attaches the pre-reload route rather
         // than navigating anywhere, so the selection listener must not home
         // focus/tabs to the workspace over the persisted layout (see
@@ -179,15 +165,7 @@ export function useRouteResume({
         }
 
         bootResumeRef.current = false
-
-        const ownerRoute =
-          sessionResumeRequest?.sessionId === routedSessionId ? sessionResumeRequest.ownerRoute : undefined
-
-        if (ownerRoute) {
-          void resumeSession(routedSessionId, true, ownerRoute)
-        } else {
-          void resumeSession(routedSessionId, true)
-        }
+        void resumeSession(routedSessionId, true)
       }
 
       return
@@ -212,7 +190,6 @@ export function useRouteResume({
     gatewayState,
     locationPathname,
     resumeSession,
-    sessionResumeRequest,
     routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,

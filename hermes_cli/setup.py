@@ -19,12 +19,9 @@ import re
 import shutil
 import sys
 import copy
-from contextlib import contextmanager
-from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any
 
-from hermes_cli.curses_ui import MenuNavigationEvent, MenuNavigationStart
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from hermes_constants import get_optional_skills_dir
@@ -102,7 +99,7 @@ _DEFAULT_PROVIDER_MODELS = {
         "google/gemini-3-flash-preview", "google/gemini-3.1-flash-lite-preview",
         "google/gemini-2.5-pro", "google/gemini-2.5-flash",
     ],
-    "zai": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
+    "zai": ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k3", "kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "kimi-coding-cn": ["kimi-k3", "kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "stepfun": ["step-3.5-flash", "step-3.5-flash-2603"],
@@ -111,9 +108,8 @@ _DEFAULT_PROVIDER_MODELS = {
     "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
-    "opencode-zen": ["x-preview-f-free", "gpt-5.6-sol", "gpt-5.4", "gpt-5.3-codex", "claude-opus-5", "claude-sonnet-5", "gemini-3.7-flash", "glm-5.2", "kimi-k3", "minimax-m3"],
-    "opencode-free": ["deepseek-v4-flash-free", "hy3-free", "mimo-v2.5-free", "laguna-s-2.1-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.2-contributor-free"],
-    "opencode-go": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "gpt-5.6-luna", "grok-4.5", "glm-5.3", "glm-5.3-flash", "glm-5.2", "mimo-v2.5-pro", "mimo-v2.5", "minimax-m3", "minimax-m2.7", "qwen3.8-max", "qwen3.7-max", "deepseek-v4-pro", "hy3"],
+    "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-5", "claude-sonnet-4-6", "gemini-3-flash", "glm-5", "kimi-k2.5", "minimax-m2.7"],
+    "opencode-go": ["kimi-k3", "kimi-k2.6", "kimi-k2.5", "glm-5.1", "glm-5", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "minimax-m2.7", "minimax-m2.5", "qwen3.7-max", "qwen3.6-plus", "qwen3.5-plus"],
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3-235B-A22B-Thinking-2507",
         "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
@@ -214,93 +210,13 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
         if password:
             value = masked_secret_prompt(color(display, Colors.YELLOW))
         else:
-            from hermes_cli.cli_output import line_input
-
-            value = line_input(color(display, Colors.YELLOW))
+            value = input(color(display, Colors.YELLOW))
 
         cleaned = _sanitize_pasted_input(value)
         return cleaned.strip() or default or ""
     except (KeyboardInterrupt, EOFError):
         print()
         sys.exit(1)
-
-
-class _SetupControlFlow(BaseException):
-    """Bypass provider error handlers that intentionally catch ``Exception``.
-
-    Provider setup contains broad compatibility boundaries around network,
-    plugin, and credential integrations. Navigation must cross those layers
-    unchanged so the outer setup state machine can replay the prior prompt.
-    """
-
-
-class _SetupCancelled(_SetupControlFlow):
-    """Internal control flow for cancelling the interactive setup wizard."""
-
-
-class _SetupGoBack(_SetupControlFlow):
-    """Internal control flow for returning to an earlier setup choice."""
-
-    def __init__(self, prompt_index: int):
-        super().__init__(prompt_index)
-        self.prompt_index = prompt_index
-
-
-class _SetupNavigationState:
-    """Per-invocation navigation state for the synchronous setup wizard."""
-
-    def __init__(self, *, section_index: int = -1, prompt_index: int = 0):
-        self.section_index = section_index
-        self.prompt_index = prompt_index
-        self.active_prompt_index = -1
-        self.resolved_choices: list[object] = []
-        self.replay_choices: list[object] = []
-
-
-_SETUP_NAVIGATION: ContextVar[_SetupNavigationState | None] = ContextVar(
-    "hermes_setup_navigation", default=None
-)
-
-
-def _handle_setup_menu_navigation(
-    event: MenuNavigationEvent,
-    value: object = None,
-) -> MenuNavigationStart | None:
-    """Translate shared curses menu events into setup control flow."""
-    state = _SETUP_NAVIGATION.get()
-    if state is None:
-        return None
-    if event is MenuNavigationEvent.BEGIN:
-        if state.section_index < 0:
-            state.active_prompt_index = -1
-            return MenuNavigationStart()
-        state.active_prompt_index = state.prompt_index
-        state.prompt_index += 1
-        allow_back = state.section_index > 0 or state.active_prompt_index > 0
-        if state.active_prompt_index < len(state.replay_choices):
-            return MenuNavigationStart(
-                allow_back=allow_back,
-                replay_value=copy.deepcopy(
-                    state.replay_choices[state.active_prompt_index]
-                ),
-            )
-        return MenuNavigationStart(allow_back=allow_back)
-    if event is MenuNavigationEvent.RESOLVE:
-        prompt_index = state.active_prompt_index
-        if prompt_index < 0:
-            return None
-        resolved = copy.deepcopy(value)
-        if prompt_index < len(state.resolved_choices):
-            state.resolved_choices[prompt_index] = resolved
-            del state.resolved_choices[prompt_index + 1 :]
-        else:
-            state.resolved_choices.append(resolved)
-        return None
-    if event is MenuNavigationEvent.CANCEL:
-        raise _SetupCancelled()
-    if event is MenuNavigationEvent.BACK:
-        raise _SetupGoBack(state.active_prompt_index)
-    return None
 
 
 _BRACKETED_PASTE_PATTERN = re.compile(r"\x1b\[\s*200~|\x1b\[\s*201~")
@@ -316,22 +232,14 @@ def _sanitize_pasted_input(value: str) -> str:
 def _curses_prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
     """Single-select menu using curses. Delegates to curses_radiolist."""
     from hermes_cli.curses_ui import curses_radiolist
-    return curses_radiolist(
-        question,
-        choices,
-        selected=default,
-        cancel_returns=-1,
-        description=description,
-    )
+    return curses_radiolist(question, choices, selected=default, cancel_returns=-1, description=description)
 
 
 
 def prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
     """Prompt for a choice from a list with arrow key navigation.
 
-    Escape cancels an active setup wizard. Outside setup it keeps the current
-    default. The curses component owns its own numbered fallback, so a cancel
-    result must never be mistaken for a request to open another prompt.
+    Escape keeps the current default (skips the question).
     Ctrl+C exits the wizard.
     """
     idx = _curses_prompt_choice(question, choices, default, description=description)
@@ -343,7 +251,32 @@ def prompt_choice(question: str, choices: list, default: int = 0, description: s
         print()
         return idx
 
-    return default
+    print(color(question, Colors.YELLOW))
+    for i, choice in enumerate(choices):
+        marker = "●" if i == default else "○"
+        if i == default:
+            print(color(f"  {marker} {choice}", Colors.GREEN))
+        else:
+            print(f"  {marker} {choice}")
+
+    print_info(f"  Enter for default ({default + 1})  Ctrl+C to exit")
+
+    while True:
+        try:
+            value = input(
+                color(f"  Select [1-{len(choices)}] ({default + 1}): ", Colors.DIM)
+            )
+            if not value:
+                return default
+            idx = int(value) - 1
+            if 0 <= idx < len(choices):
+                return idx
+            print_error(f"Please enter a number between 1 and {len(choices)}")
+        except ValueError:
+            print_error("Please enter a number")
+        except (KeyboardInterrupt, EOFError):
+            print()
+            sys.exit(1)
 
 
 def is_noninteractive() -> bool:
@@ -374,17 +307,6 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
     """
     if is_noninteractive():
         return default
-
-    # Setup owns a scoped curses navigation handler. Route binary selections
-    # through the same menu surface so ESC and left-arrow work consistently,
-    # while preserving the traditional line prompt for every other caller.
-    if _SETUP_NAVIGATION.get() is not None:
-        default_index = 0 if default else 1
-        return _curses_prompt_choice(
-            question,
-            ["Yes", "No"],
-            default_index,
-        ) == 0
 
     default_str = "Y/n" if default else "y/N"
 
@@ -473,25 +395,6 @@ def _prompt_api_key(var: dict):
 
 def _print_setup_summary(config: dict, hermes_home):
     """Print the setup completion summary."""
-    # Provider readiness — the one thing setup absolutely must produce.
-    # Previously a user could cancel the API-key prompt mid-wizard (Enter →
-    # "Cancelled."), watch the wizard continue through Terminal/Gateway/Tools,
-    # and exit "successfully" with NO working model — believing they were set
-    # up. Say so loudly instead (consumer-onboarding audit finding #7).
-    try:
-        from hermes_cli.auth import resolve_provider
-
-        resolve_provider()
-        _provider_ready = True
-    except Exception:
-        _provider_ready = False
-    if not _provider_ready:
-        print()
-        print_warning("No inference provider is configured — Hermes cannot chat yet.")
-        print_info("  Finish this one step with either of:")
-        print_info("    hermes model            (pick any provider/model)")
-        print_info("    hermes setup --portal   (Nous Portal OAuth, no API key)")
-
     # Tool availability summary
     print()
     print_header("Tool Availability Summary")
@@ -513,7 +416,7 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
 
 
-    # Web tools (Exa, Parallel, Firecrawl, Tavily, or Keenable)
+    # Web tools (Exa, Parallel, Firecrawl, or Tavily)
     if subscription_features.web.managed_by_nous:
         tool_status.append(("Web Search & Extract (Nous subscription)", True, None))
     elif subscription_features.web.available:
@@ -522,7 +425,7 @@ def _print_setup_summary(config: dict, hermes_home):
             label = f"Web Search & Extract ({subscription_features.web.current_provider})"
         tool_status.append((label, True, None))
     else:
-        tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, KEENABLE_API_KEY, or SEARXNG_URL"))
+        tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, or SEARXNG_URL"))
 
     # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
     browser_provider = subscription_features.browser.current_provider
@@ -1429,26 +1332,6 @@ def setup_terminal_backend(config: dict):
         backend_to_idx["singularity"] = next_idx
         next_idx += 1
 
-    # Plugin-registered terminal backends (standalone plugin repos installed
-    # under ~/.hermes/plugins/). Fail-soft: a broken plugin must not take the
-    # setup wizard down.
-    plugin_backend_names = []
-    try:
-        from hermes_cli.plugins import discover_plugins
-
-        discover_plugins()  # idempotent — plugin state may not be loaded yet
-        from agent.terminal_env_registry import list_providers
-
-        for _provider in list_providers():
-            _pname = _provider.name.strip().lower()
-            terminal_choices.append(f"{_provider.display_name} - {_provider.description}")
-            idx_to_backend[next_idx] = _pname
-            backend_to_idx[_pname] = next_idx
-            plugin_backend_names.append(_pname)
-            next_idx += 1
-    except Exception:
-        pass
-
     # Add keep current option
     keep_current_idx = next_idx
     terminal_choices.append(f"Keep current ({current_backend})")
@@ -1661,14 +1544,7 @@ def setup_terminal_backend(config: dict):
             print_info("Installing vercel SDK...")
             import subprocess
 
-            # Managed uv first: $HERMES_HOME/bin is never on PATH, so a bare
-            # which() misses the uv Hermes installed. Bootstrapping one is
-            # welcome here — this is the interactive setup wizard, already
-            # mid-install, and the alternative tier is a pip that a `uv venv`
-            # venv may not even have.
-            from hermes_cli.managed_uv import ensure_uv
-
-            uv_bin = ensure_uv()
+            uv_bin = shutil.which("uv")
             if uv_bin:
                 result = subprocess.run(
                     [uv_bin, "pip", "install", "--python", sys.executable, "vercel"],
@@ -1689,18 +1565,6 @@ def setup_terminal_backend(config: dict):
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
         _prompt_vercel_sandbox_settings(config)
-
-    elif selected_backend in plugin_backend_names:
-        try:
-            from agent.terminal_env_registry import get_provider
-
-            _provider = get_provider(selected_backend)
-            print_success(f"Terminal backend: {_provider.display_name}")
-            for _line in _provider.setup_instructions():
-                print_info(_line)
-            _provider.post_setup()
-        except Exception as exc:
-            print_warning(f"Backend plugin setup hook failed: {exc}")
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")
@@ -2285,9 +2149,10 @@ def setup_gateway(config: dict):
 
     if not selected:
         print_info("No platforms selected. Run 'hermes setup gateway' later to configure.")
-    else:
-        for idx in selected:
-            _configure_platform(platforms[idx])
+        return
+
+    for idx in selected:
+        _configure_platform(platforms[idx])
 
     # ── Gateway Service Setup ──
     # Count any platform (built-in or plugin) the user configured during this
@@ -2339,67 +2204,160 @@ def setup_gateway(config: dict):
                     f"     hermes config set {plat.upper()}_HOME_CHANNEL <channel_id>"
                 )
 
-    # ── Gateway Service Setup ──
-    # Runs UNCONDITIONALLY — even with zero platforms configured. A gateway
-    # without platforms is a supported mode (cron scheduler keeps running,
-    # and adapters come up automatically once tokens are added later, e.g.
-    # via `hermes import` or `hermes setup gateway`). Gating this on
-    # messaging config was the bug that left install-then-import machines
-    # with registered cron jobs and restored bot tokens but no process to
-    # serve them.
-    from hermes_cli.gateway import (
-        _is_service_running,
-        supports_systemd_services,
-        ensure_gateway_service,
-        systemd_restart,
-        launchd_restart,
-        UserSystemdUnavailableError,
-        SystemScopeRequiresRootError,
-        _system_scope_wizard_would_need_root,
-        _print_system_scope_remediation,
-    )
-    import platform as _platform
+        # Offer to install the gateway as a system service
+        import platform as _platform
 
-    _is_macos = _platform.system() == "Darwin"
-    _is_windows = _platform.system() == "Windows"
-    supports_systemd = supports_systemd_services()
+        _is_linux = _platform.system() == "Linux"
+        _is_macos = _platform.system() == "Darwin"
+        _is_windows = _platform.system() == "Windows"
 
-    print()
-    if _is_service_running():
-        # Already running: only offer a restart when this setup pass may
-        # have changed platform config — a restart interrupts any active
-        # session, so it stays behind a prompt.
-        if supports_systemd and _system_scope_wizard_would_need_root():
-            _print_system_scope_remediation("restart")
-        elif any_messaging and prompt_yes_no(
-            "  Restart the gateway to pick up changes?", True
-        ):
-            try:
-                if supports_systemd:
-                    systemd_restart()
-                elif _is_macos:
-                    launchd_restart()
-                elif _is_windows:
-                    from hermes_cli import gateway_windows
-                    gateway_windows.restart()
-            except UserSystemdUnavailableError as e:
-                print_error("  Restart failed — user systemd not reachable:")
-                for line in str(e).splitlines():
-                    print(f"  {line}")
-            except SystemScopeRequiresRootError as e:
-                # Defense in depth: the pre-check above should have
-                # caught this, but a race (unit file appearing mid-run)
-                # could still land here. Previously this exited the
-                # whole wizard via sys.exit(1).
-                print_error(f"  Restart failed: {e}")
+        from hermes_cli.gateway import (
+            _is_service_installed,
+            _is_service_running,
+            supports_systemd_services,
+            has_conflicting_systemd_units,
+            has_legacy_hermes_units,
+            install_linux_gateway_from_setup,
+            print_systemd_scope_conflict_warning,
+            print_legacy_unit_warning,
+            systemd_start,
+            systemd_restart,
+            launchd_install,
+            launchd_start,
+            launchd_restart,
+            UserSystemdUnavailableError,
+            SystemScopeRequiresRootError,
+            _system_scope_wizard_would_need_root,
+            _print_system_scope_remediation,
+        )
+
+        service_installed = _is_service_installed()
+        service_running = _is_service_running()
+        supports_systemd = supports_systemd_services()
+        supports_service_manager = supports_systemd or _is_macos or _is_windows
+
+        print()
+        if supports_systemd and has_conflicting_systemd_units():
+            print_systemd_scope_conflict_warning()
+            print()
+
+        if supports_systemd and has_legacy_hermes_units():
+            print_legacy_unit_warning()
+            print()
+
+        if service_running:
+            if supports_systemd and _system_scope_wizard_would_need_root():
                 _print_system_scope_remediation("restart")
-            except Exception as e:
-                print_error(f"  Restart failed: {e}")
-    else:
-        # Not running: install (if needed) and start, no questions asked.
-        ensure_gateway_service(context="setup")
+            elif prompt_yes_no("  Restart the gateway to pick up changes?", True):
+                try:
+                    if supports_systemd:
+                        systemd_restart()
+                    elif _is_macos:
+                        launchd_restart()
+                    elif _is_windows:
+                        from hermes_cli import gateway_windows
+                        gateway_windows.restart()
+                except UserSystemdUnavailableError as e:
+                    print_error("  Restart failed — user systemd not reachable:")
+                    for line in str(e).splitlines():
+                        print(f"  {line}")
+                except SystemScopeRequiresRootError as e:
+                    # Defense in depth: the pre-check above should have
+                    # caught this, but a race (unit file appearing mid-run)
+                    # could still land here. Previously this exited the
+                    # whole wizard via sys.exit(1).
+                    print_error(f"  Restart failed: {e}")
+                    _print_system_scope_remediation("restart")
+                except Exception as e:
+                    print_error(f"  Restart failed: {e}")
+        elif service_installed:
+            if supports_systemd and _system_scope_wizard_would_need_root():
+                _print_system_scope_remediation("start")
+            elif prompt_yes_no("  Start the gateway service?", True):
+                try:
+                    if supports_systemd:
+                        systemd_start()
+                    elif _is_macos:
+                        launchd_start()
+                    elif _is_windows:
+                        from hermes_cli import gateway_windows
+                        gateway_windows.start()
+                except UserSystemdUnavailableError as e:
+                    print_error("  Start failed — user systemd not reachable:")
+                    for line in str(e).splitlines():
+                        print(f"  {line}")
+                except SystemScopeRequiresRootError as e:
+                    print_error(f"  Start failed: {e}")
+                    _print_system_scope_remediation("start")
+                except Exception as e:
+                    print_error(f"  Start failed: {e}")
+        elif supports_service_manager:
+            if supports_systemd:
+                svc_name = "systemd"
+            elif _is_macos:
+                svc_name = "launchd"
+            else:
+                svc_name = "Scheduled Task"
+            if prompt_yes_no(
+                f"  Install the gateway as a {svc_name} service? (runs in background, starts on boot)",
+                True,
+            ):
+                try:
+                    installed_scope = None
+                    did_install = False
+                    started_inline = False
+                    if supports_systemd:
+                        installed_scope, did_install = install_linux_gateway_from_setup(force=False)
+                    elif _is_macos:
+                        launchd_install(force=False)
+                        did_install = True
+                    else:
+                        # gateway_windows.install() registers the Scheduled
+                        # Task AND starts it immediately (via schtasks /Run
+                        # or a direct spawn fallback), so no separate start
+                        # prompt is needed here.
+                        from hermes_cli import gateway_windows
+                        gateway_windows.install(force=False)
+                        did_install = True
+                        started_inline = True
+                    print()
+                    if did_install and not started_inline and prompt_yes_no("  Start the service now?", True):
+                        try:
+                            if supports_systemd:
+                                systemd_start(system=installed_scope == "system")
+                            elif _is_macos:
+                                launchd_start()
+                        except UserSystemdUnavailableError as e:
+                            print_error("  Start failed — user systemd not reachable:")
+                            for line in str(e).splitlines():
+                                print(f"  {line}")
+                        except SystemScopeRequiresRootError as e:
+                            print_error(f"  Start failed: {e}")
+                            _print_system_scope_remediation("start")
+                        except Exception as e:
+                            print_error(f"  Start failed: {e}")
+                except Exception as e:
+                    print_error(f"  Install failed: {e}")
+                    print_info("  You can try manually: hermes gateway install")
+            else:
+                print_info("  You can install later: hermes gateway install")
+                if supports_systemd and os.geteuid() == 0:  # windows-footgun: ok — guarded by supports_systemd (Linux only)
+                    print_info("  Or as a boot-time service: hermes gateway install --system")
+                print_info("  Or run in foreground:  hermes gateway")
+        else:
+            from hermes_constants import is_container
+            if is_container():
+                print_info("Start the gateway to bring your bots online:")
+                print_info("   hermes gateway run          # Run as container main process")
+                print_info("")
+                print_info("For automatic restarts, use a Docker restart policy:")
+                print_info("   docker run --restart unless-stopped ...")
+                print_info("   docker restart <container>  # Manual restart")
+            else:
+                print_info("Start the gateway to bring your bots online:")
+                print_info("   hermes gateway              # Run in foreground")
 
-    print_info("━" * 50)
+        print_info("━" * 50)
 
 
 # =============================================================================
@@ -2428,10 +2386,10 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 def setup_telemetry(config: dict):
-    """Configure the local shared-metrics subscriber and optional sending."""
+    """Configure the local, privacy-safe shared-metrics subscriber."""
     print_header("Shared Metrics")
     print_info("Shared metrics contain only bounded counters and histograms.")
-    print_info("Collection is local. Sending them to Nous is a separate opt-in.")
+    print_info("Packages stay under this Hermes profile and are not uploaded.")
 
     telemetry = config.get("telemetry")
     if not isinstance(telemetry, dict):
@@ -2447,67 +2405,10 @@ def setup_telemetry(config: dict):
         "Enable local shared metrics?",
         default=current,
     )
-    if not shared_metrics["enabled"]:
-        print_info("Local shared metrics disabled.")
-        # Sending cannot outlive collection: leaving send=true here would be a
-        # configuration that logs an error on every run and never transmits.
-        if shared_metrics.get("send") is True:
-            shared_metrics["send"] = False
-            print_info("Sending shared metrics disabled as well.")
-        # Turning collection off is also a withdrawal of send consent, and it
-        # has to close the window like any other. Recorded unconditionally:
-        # the send key may already be false in config while the consent window
-        # is still open, and that window must not survive to be reopened.
-        _record_send_consent_change(enabled=False)
-        return
-
-    print_success("Local shared metrics enabled.")
-    print_info("")
-    print_info("Sending uploads each daily package to the Nous telemetry")
-    print_info("service. Packages carry your profile-scoped install ID, a")
-    print_info("stable random UUID that identifies this profile across days")
-    print_info("(it contains no personal information and is reset by deleting")
-    print_info("the shared-metrics directory). Only packages whose entire")
-    print_info("collection period falls inside a recorded consent window are")
-    print_info("ever sent — data from before you opt in, or from any gap")
-    print_info("while sending was off, stays on this machine. Sending can be")
-    print_info("turned off again at any time.")
-    shared_metrics["send"] = prompt_yes_no(
-        "Send shared metrics to Nous?",
-        default=shared_metrics.get("send") is True,
-    )
-    if shared_metrics["send"]:
-        _record_send_consent_change(enabled=True)
-        print_success("Sending shared metrics enabled.")
+    if shared_metrics["enabled"]:
+        print_success("Local shared metrics enabled.")
     else:
-        _record_send_consent_change(enabled=False)
-        print_info("Sending shared metrics disabled (collection stays local).")
-
-
-def _record_send_consent_change(*, enabled: bool) -> None:
-    """Reconcile consent windows at the moment the user decides.
-
-    Same single writer as the relay and the sender — reconciliation derives
-    the window state from the observation, so wizard, relay, and mid-pass
-    callers cannot disagree. The relay's once-per-process reconcile would
-    catch this on the next hook fire anyway; running it here just makes the
-    wizard's effect immediate.
-    """
-    try:
-        from hermes_cli.observability.shared_metrics import SharedMetricsStore
-        from hermes_cli.observability.shared_metrics_sender import (
-            reconcile_send_consent,
-        )
-        from hermes_cli.sqlite_util import write_txn
-
-        store = SharedMetricsStore()
-        with store._connection() as connection:
-            with write_txn(connection):
-                reconcile_send_consent(connection, enabled)
-    except Exception:
-        # Never block the wizard on telemetry bookkeeping. The relay runs the
-        # same reconciliation on the next lifecycle hook.
-        logger.debug("Unable to record shared-metrics consent change", exc_info=True)
+        print_info("Local shared metrics disabled.")
 
 
 # =============================================================================
@@ -3007,122 +2908,7 @@ def _run_portal_one_shot(config: dict) -> None:
     print_info("  Run `hermes` to start chatting.")
 
 
-@contextmanager
-def _setup_navigation_scope():
-    """Install and reliably restore the setup menu navigation context."""
-    from hermes_cli.curses_ui import (
-        reset_menu_navigation_handler,
-        set_menu_navigation_handler,
-    )
-
-    token = _SETUP_NAVIGATION.set(_SetupNavigationState())
-    menu_token = set_menu_navigation_handler(_handle_setup_menu_navigation)
-    try:
-        yield
-    finally:
-        reset_menu_navigation_handler(menu_token)
-        _SETUP_NAVIGATION.reset(token)
-
-
 def run_setup_wizard(args):
-    """Run setup with navigation control scoped to this invocation."""
-    with _setup_navigation_scope():
-        try:
-            return _run_setup_wizard_impl(args)
-        except _SetupCancelled:
-            print()
-            print_info("Setup cancelled. Remaining sections were not changed.")
-            return None
-
-
-def _run_setup_steps(
-    steps: list[tuple[str, Callable[[], None]]],
-) -> None:
-    """Run setup sections with left-arrow navigation between choices.
-
-    Left arrow at a section's first choice returns to the previous section.
-    From a later, nested choice it replays earlier selections invisibly and
-    reopens only the immediately preceding prompt.
-    """
-    state = _SETUP_NAVIGATION.get()
-    section_index = 0
-    answers_by_section: dict[int, list[object]] = {}
-    replay_by_section: dict[int, list[object]] = {}
-    try:
-        while section_index < len(steps):
-            label, action = steps[section_index]
-            if state is not None:
-                state.section_index = section_index
-                state.prompt_index = 0
-                state.active_prompt_index = -1
-                state.resolved_choices = []
-                state.replay_choices = copy.deepcopy(
-                    replay_by_section.pop(section_index, [])
-                )
-            try:
-                action()
-            except _SetupGoBack as navigation:
-                if state is not None:
-                    answers_by_section[section_index] = copy.deepcopy(
-                        state.resolved_choices
-                    )
-                if navigation.prompt_index > 0:
-                    previous_index = section_index
-                    target_prompt = navigation.prompt_index - 1
-                    replay_by_section[previous_index] = copy.deepcopy(
-                        answers_by_section.get(previous_index, [])[:target_prompt]
-                    )
-                else:
-                    previous_index = max(0, section_index - 1)
-                    previous_answers = answers_by_section.get(previous_index, [])
-                    target_prompt = max(0, len(previous_answers) - 1)
-                    replay_by_section[previous_index] = copy.deepcopy(
-                        previous_answers[:target_prompt]
-                    )
-                previous_label = steps[previous_index][0]
-                print()
-                if previous_index == section_index:
-                    print_info(f"Returning to the previous choice in {label}...")
-                else:
-                    print_info(f"Returning to {previous_label}...")
-                section_index = previous_index
-                continue
-            if state is not None:
-                answers_by_section[section_index] = copy.deepcopy(
-                    state.resolved_choices
-                )
-            section_index += 1
-    finally:
-        if state is not None:
-            state.section_index = -1
-            state.prompt_index = 0
-            state.active_prompt_index = -1
-            state.resolved_choices = []
-            state.replay_choices = []
-
-
-def run_setup_action_with_navigation(
-    label: str,
-    action: Callable[[], None],
-    *,
-    cancelled_message: str = "Setup cancelled.",
-) -> None:
-    """Run a setup-style menu flow with Escape and nested Left navigation.
-
-    Shared commands such as ``hermes model`` use the same provider/model
-    pickers as the setup wizard, but run outside ``run_setup_wizard``.  This
-    installs the setup navigation context for that standalone command and
-    reuses the same prompt replay state machine.
-    """
-    with _setup_navigation_scope():
-        try:
-            _run_setup_steps([(label, action)])
-        except _SetupCancelled:
-            print()
-            print_info(cancelled_message)
-
-
-def _run_setup_wizard_impl(args):
     """Run the interactive setup wizard.
 
     Supports full, quick, and section-specific setup:
@@ -3202,9 +2988,7 @@ def _run_setup_wizard_impl(args):
                         Colors.MAGENTA,
                     )
                 )
-                _run_setup_steps(
-                    [(label, lambda setup_func=func: setup_func(config))]
-                )
+                func(config)
                 save_config(config)
                 print()
                 print_success(f"{label} configuration complete!")
@@ -3268,9 +3052,7 @@ def _run_setup_wizard_impl(args):
         # missing items" flow (useful after a partial OpenClaw migration
         # or when a required API key got cleared).
         if quick_requested:
-            _run_setup_steps(
-                [("Quick Setup", lambda: _run_quick_setup(config, hermes_home))]
-            )
+            _run_quick_setup(config, hermes_home)
             return
 
         print()
@@ -3310,28 +3092,10 @@ def _run_setup_wizard_impl(args):
         )
 
         if setup_mode == 0:
-            _run_setup_steps(
-                [
-                    (
-                        "Quick Setup",
-                        lambda: _run_first_time_quick_setup(
-                            config, hermes_home, is_existing
-                        ),
-                    )
-                ]
-            )
+            _run_first_time_quick_setup(config, hermes_home, is_existing)
             return
         if setup_mode == 2:
-            _run_setup_steps(
-                [
-                    (
-                        "Blank Slate",
-                        lambda: _run_blank_slate_setup(
-                            config, hermes_home, is_existing
-                        ),
-                    )
-                ]
-            )
+            _run_blank_slate_setup(config, hermes_home, is_existing)
             return
 
     # ── Full Setup — run all sections ──
@@ -3349,55 +3113,27 @@ def _run_setup_wizard_impl(args):
         print_info("Each section below will show what was imported — press Enter to keep,")
         print_info("or choose to reconfigure if needed.")
 
+    # Section 1: Model & Provider
+    if not (migration_ran and _skip_configured_section(config, "model", "Model & Provider")):
+        setup_model_provider(config)
+
+    # Section 2: Terminal Backend
+    if not (migration_ran and _skip_configured_section(config, "terminal", "Terminal Backend")):
+        setup_terminal_backend(config)
+
     # Section 3: Agent Settings — no longer prompted. First installs get the
     # recommended defaults silently; existing installs keep whatever they have.
     # Tune later with `hermes setup agent`.
     if not is_existing:
         _apply_default_agent_settings(config)
 
-    def _model_step() -> None:
-        if not (
-            migration_ran
-            and _skip_configured_section(config, "model", "Model & Provider")
-        ):
-            setup_model_provider(config)
+    # Section 4: Messaging Platforms
+    if not (migration_ran and _skip_configured_section(config, "gateway", "Messaging Platforms")):
+        setup_gateway(config)
 
-    def _terminal_step() -> None:
-        if not (
-            migration_ran
-            and _skip_configured_section(config, "terminal", "Terminal Backend")
-        ):
-            setup_terminal_backend(config)
-
-    def _gateway_step() -> None:
-        if not (
-            migration_ran
-            and _skip_configured_section(config, "gateway", "Messaging Platforms")
-        ):
-            setup_gateway(config)
-            return
-
-        # A migrated gateway section can be skipped, but its service still
-        # needs to exist so imported platforms and cron jobs become active.
-        from hermes_cli.gateway import ensure_gateway_service
-
-        ensure_gateway_service(context="setup")
-
-    def _tools_step() -> None:
-        if not (
-            migration_ran
-            and _skip_configured_section(config, "tools", "Tools")
-        ):
-            setup_tools(config, first_install=not is_existing)
-
-    _run_setup_steps(
-        [
-            ("Model & Provider", _model_step),
-            ("Terminal Backend", _terminal_step),
-            ("Messaging Platforms", _gateway_step),
-            ("Tools", _tools_step),
-        ]
-    )
+    # Section 5: Tools
+    if not (migration_ran and _skip_configured_section(config, "tools", "Tools")):
+        setup_tools(config, first_install=not is_existing)
 
     # Save and show summary
     save_config(config)
@@ -3469,12 +3205,6 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     if gateway_choice == 0:
         setup_gateway(config)
         save_config(config)
-    else:
-        # Messaging skipped — still install/start the gateway service so cron
-        # jobs run and platforms come alive as soon as tokens are added later
-        # (e.g. via `hermes import` from another machine).
-        from hermes_cli.gateway import ensure_gateway_service
-        ensure_gateway_service(context="setup")
 
     print()
     print_success("Setup complete! You're ready to go.")
@@ -3482,64 +3212,28 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     print_info("  Configure all settings:    hermes setup")
     if gateway_choice != 0:
         print_info("  Connect Telegram/Discord:  hermes setup gateway")
-    _print_macos_fda_tip()
     print()
 
     _print_setup_summary(config, hermes_home)
 
 
-def _print_macos_fda_tip() -> None:
-    """One-time macOS onboarding tip: a single Full Disk Access grant kills
-    every per-folder permission prompt, permanently (issue #52010 follow-up).
-
-    Uses the same prompt-free probe as doctor's check_macos_full_disk_access
-    (the TCC db dir is FDA-gated but probing it never triggers a dialog).
-    Silent on non-macOS and when FDA is already granted or indeterminate.
-    """
-    if sys.platform != "darwin":
-        return
-    tcc_dir = Path.home() / "Library" / "Application Support" / "com.apple.TCC"
-    try:
-        os.listdir(tcc_dir)
-        return  # already granted — nothing to teach
-    except PermissionError:
-        pass
-    except OSError:
-        return  # indeterminate — don't nag
-    print()
-    print_info("  macOS tip: silence ALL folder permission prompts with one switch —")
-    print_info("  System Settings → Privacy & Security → Full Disk Access → enable")
-    print_info("  your terminal (and Hermes.app if you use Desktop), or run:")
-    print_info("    open \"x-apple.systempreferences:com.apple.preference"
-               ".security?Privacy_AllFiles\"")
-    print_info("  The grant is permanent — it survives every Hermes update.")
-
-
 def _blank_slate_minimal_toolsets(config: dict):
     """Write the minimal toolset state for a Blank Slate install.
 
-    Only ``file``, ``terminal``, ``vision``, and ``skills`` are enabled.
-    Vision is part of
-    the core surface: ``read_file`` cannot read images and its own description
-    points at ``vision_analyze``, so an agent without it can't see screenshots
-    or image files at all. Skills stay on because the essential
-    ``hermes-agent`` skill (the agent's operating manual for driving,
-    configuring, and troubleshooting Hermes) is always seeded — without
-    ``skill_view`` it would be unloadable. Two layers enforce the selection:
+    Only ``file`` and ``terminal`` are enabled. Two layers enforce this:
 
-    1. ``platform_toolsets["cli"] = ["file", "skills", "terminal", "vision"]``
-       — an explicit list of
+    1. ``platform_toolsets["cli"] = ["file", "terminal"]`` — an explicit list of
        configurable keys, which the resolver treats as authoritative
        (``has_explicit_config``) so default toolsets aren't re-expanded.
     2. ``agent.disabled_toolsets`` — a global hard-suppression list (applied last
        in ``_get_platform_tools``, overriding every other path including the
        non-configurable platform-toolset recovery that would otherwise re-add
-       toolsets like ``kanban``). We list every known toolset except the ones we
+       toolsets like ``kanban``). We list every known toolset except the two we
        keep, guaranteeing a true blank slate regardless of platform/recovery
        quirks. The user re-enables any of them later via ``hermes tools`` (which
        rewrites ``platform_toolsets``) or by editing ``agent.disabled_toolsets``.
     """
-    keep = {"file", "terminal", "vision", "skills"}
+    keep = {"file", "terminal"}
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
 
     try:
@@ -3616,11 +3310,9 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
     print_info("to run an agent, then you choose whether to stop there or walk")
     print_info("through enabling more — opting in to exactly what you want.")
     print_info("")
-    print_info("Forced on: Provider & Model, File Operations, Terminal, Vision, Skills.")
-    print_info("Everything else (web, browser, code exec, memory,")
-    print_info("delegation, cron, plugins, MCP, …) starts disabled. The")
-    print_info("essential `hermes-agent` skill is always kept so the agent")
-    print_info("can help you drive and configure Hermes itself.")
+    print_info("Forced on: Provider & Model, File Operations, Terminal.")
+    print_info("Everything else (web, browser, code exec, vision, memory,")
+    print_info("delegation, cron, skills, plugins, MCP, …) starts disabled.")
     print()
 
     # ── Step 1: Provider & Model (REQUIRED — the agent cannot run without it) ──
@@ -3638,7 +3330,7 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
     save_config(config)
     print()
     print_success("Minimal baseline applied:")
-    print_info("  Toolsets: file, terminal, vision, skills (everything else off)")
+    print_info("  Toolsets: file, terminal (everything else off)")
     print_info("  Compression, memory, checkpoints, smart routing: off")
 
     # ── The fork: stop here, or walk through enabling things ──
@@ -3656,12 +3348,10 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
     if path == 0:
         save_config(config)
         # Blank Slate means no bundled skills; record the opt-out so future
-        # `hermes update` runs don't re-inject them. Essential skills (the
-        # `hermes-agent` operating manual) are still seeded by the sync.
+        # `hermes update` runs don't re-inject them.
         try:
-            from tools.skills_sync import set_bundled_skills_opt_out, sync_skills
+            from tools.skills_sync import set_bundled_skills_opt_out
             set_bundled_skills_opt_out(True)
-            sync_skills(quiet=True)
         except Exception as exc:
             logger.debug("blank-slate skill opt-out error: %s", exc)
         print()
@@ -3702,11 +3392,7 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
             print_success(f"Seeded {copied} bundled skills.")
         else:
             set_bundled_skills_opt_out(True)
-            # Essential skills (the `hermes-agent` operating manual) are
-            # still seeded even for an opted-out profile.
-            sync_skills(quiet=True)
-            print_info("No skills seeded (except the essential `hermes-agent`")
-            print_info("skill). A .no-bundled-skills marker keeps future")
+            print_info("No skills seeded. A .no-bundled-skills marker keeps future")
             print_info("`hermes update` runs from re-injecting them. Opt back in any")
             print_info("time with `hermes skills opt-in --sync`.")
     except Exception as exc:

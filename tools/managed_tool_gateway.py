@@ -38,7 +38,7 @@ def _read_nous_provider_state() -> Optional[dict]:
         path = auth_json_path()
         if not path.is_file():
             return None
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         providers = data.get("providers", {})
         if not isinstance(providers, dict):
             return None
@@ -73,28 +73,6 @@ def _access_token_is_expiring(expires_at: object, skew_seconds: int) -> bool:
     return remaining <= max(0, int(skew_seconds))
 
 
-def _read_user_token_override() -> Optional[str]:
-    """Read the TOOL_GATEWAY_USER_TOKEN env override through the secret scope.
-
-    Availability scans run both inside agent turns (scope installed) and in
-    unscoped CLI paths, so this uses the Slack pattern: honor the scope's
-    verdict when installed (a scoped miss does NOT borrow the process env
-    under multiplex), fall back to ``os.environ`` only when unscoped.
-    """
-    try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
-
-        try:
-            explicit = get_secret("TOOL_GATEWAY_USER_TOKEN")
-        except UnscopedSecretError:
-            explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
-    except Exception:
-        explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
-    return None
-
-
 def peek_nous_access_token() -> Optional[str]:
     """Cheap probe for a Nous gateway token without triggering refresh.
 
@@ -105,9 +83,9 @@ def peek_nous_access_token() -> Optional[str]:
     network calls. Truthful refresh handling stays in request/session paths
     that call :func:`read_nous_access_token`.
     """
-    explicit = _read_user_token_override()
-    if explicit:
-        return explicit
+    explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
 
     nous_provider = _read_nous_provider_state() or {}
     access_token = nous_provider.get("access_token")
@@ -118,9 +96,9 @@ def peek_nous_access_token() -> Optional[str]:
 
 def read_nous_access_token() -> Optional[str]:
     """Read a Nous Subscriber OAuth access token from auth store or env override."""
-    explicit = _read_user_token_override()
-    if explicit:
-        return explicit
+    explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
     nous_provider = _read_nous_provider_state() or {}
     cached_token = peek_nous_access_token()
 
@@ -249,25 +227,17 @@ def managed_vendor_endpoints(
     vendor: str,
     gateway_builder: Optional[Callable[[str], str]] = None,
 ) -> Optional[dict]:
-    """Absolute URLs for a managed vendor, or ``None`` when none resolves.
+    """Absolute URLs for a managed vendor, or ``None`` when unreachable.
 
-    Address resolution only: entitlement is deliberately not consulted here.
-    What an account may spend on a managed vendor is the gateway's own
-    decision, stated in its refusals, and re-deciding it on the client can only
-    ever disagree with the server. A caller that wants to hide its tools from
-    users who could not call them at all does that in its ``check_fn``.
-
-    ``None`` means no origin could be resolved — a misconfigured
-    ``TOOL_GATEWAY_SCHEME`` — so there is nothing to call.
+    ``None`` means managed Nous tools are disabled for this build, which is
+    what keeps a user who could never use the vendor from being shown its
+    tools.
     """
-    builder = gateway_builder or build_vendor_gateway_url
-    try:
-        origin = builder(_MANAGED_GATEWAY_VENDOR).rstrip("/")
-    except ValueError:
-        return None
-    if not origin:
+    if not managed_nous_tools_enabled():
         return None
 
+    builder = gateway_builder or build_vendor_gateway_url
+    origin = builder(_MANAGED_GATEWAY_VENDOR).rstrip("/")
     return {
         "origin": origin,
         "base_url": f"{origin}{managed_vendor_base_path(vendor)}",

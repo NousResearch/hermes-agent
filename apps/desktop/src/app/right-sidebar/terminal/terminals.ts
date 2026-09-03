@@ -17,8 +17,7 @@ export interface TerminalEntry {
   /** Working directory, snapshotted once at creation. Terminals live outside
    *  session/project state — the only thing they inherit is this initial cwd
    *  (the project root if opened in one, else the backend's default). Switching
-   *  sessions never moves or recreates a terminal; at most it re-SELECTS a tab
-   *  already pointed at the session's cwd (see the $currentCwd listener). */
+   *  sessions never moves or recreates a terminal. */
   cwd: string
   /** Last observed working directory of the live shell (tracked via the PTY
    *  cwd probe / OSC 7). Used to reopen the tab where the user last `cd`'d
@@ -223,45 +222,6 @@ export function selectTerminal(id: string): void {
     $activeTerminalId.set(id)
   }
 }
-
-// Compare-ready form of a directory path: trimmed, trailing separators dropped
-// (keeping a bare root intact) so `/repo/` and `/repo` are the same place.
-const normalizePath = (value: string) => {
-  const trimmed = value.trim()
-
-  return trimmed.length > 1 ? trimmed.replace(/[\\/]+$/, '') || trimmed : trimmed
-}
-
-/** The directory a tab points at right now — the live shell cwd once observed
- *  (survives a `cd`), else the launch dir. */
-const terminalCwd = (term: TerminalEntry) => normalizePath(term.restoreCwd || term.cwd)
-
-// Session ↔ terminal linking. Entering a session whose cwd already has a user
-// terminal pointed at it re-selects that tab, so the terminal pane follows the
-// workspace you're in. Selection ONLY — it never creates a shell, never closes
-// one, and never reveals the pane; a detached session (empty cwd) or a cwd no
-// tab lives in leaves the tabs exactly where they were. `listen` (not
-// `subscribe`) so boot keeps the persisted active tab.
-$currentCwd.listen(cwd => {
-  const target = normalizePath(cwd)
-
-  if (!target) {
-    return
-  }
-
-  const list = $terminals.get()
-  const active = list.find(term => term.id === $activeTerminalId.get())
-
-  if (active?.kind === 'user' && terminalCwd(active) === target) {
-    return
-  }
-
-  const match = list.find(term => term.kind === 'user' && terminalCwd(term) === target)
-
-  if (match) {
-    $activeTerminalId.set(match.id)
-  }
-})
 
 /** Move the active tab by `direction` (+1 next / -1 prev), wrapping around. */
 export function cycleTerminal(direction: 1 | -1): void {

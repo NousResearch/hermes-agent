@@ -36,7 +36,6 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import requests
 
-from agent.secret_scope import get_secret
 from hermes_cli.config import cfg_get, load_config, read_raw_config
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
@@ -83,7 +82,7 @@ def _get_command_timeout() -> int:
 
 def _auth_headers() -> Dict[str, str]:
     """Return Authorization header when CAMOFOX_API_KEY is set."""
-    key = (get_secret("CAMOFOX_API_KEY", "") or "").strip()
+    key = os.getenv("CAMOFOX_API_KEY", "").strip()
     if key:
         return {"Authorization": f"Bearer {key}"}
     return {}
@@ -91,7 +90,7 @@ def _auth_headers() -> Dict[str, str]:
 
 def get_camofox_url() -> str:
     """Return the configured Camofox server URL, or empty string."""
-    return (get_secret("CAMOFOX_URL", "") or "").rstrip("/")
+    return os.getenv("CAMOFOX_URL", "").rstrip("/")
 
 
 def _config_cdp_url() -> str:
@@ -113,38 +112,20 @@ def _config_cdp_url() -> str:
 
 
 def is_camofox_mode() -> bool:
-    """True when the Camofox backend is selected and no CDP override is active.
-
-    Camofox is a selection: ``browser.cloud_provider: camofox`` (set via
-    ``hermes tools``). ``CAMOFOX_URL`` is the server ADDRESS only — its
-    presence no longer selects the backend when a different
-    ``browser.cloud_provider`` is stored. Legacy read-time interpretation:
-    when NO cloud provider selection was ever written, a set ``CAMOFOX_URL``
-    keeps activating Camofox exactly as before (nothing is migrated/written
-    to config).
+    """True when Camofox backend is configured and no CDP override is active.
 
     A CDP override takes priority over Camofox so the browser tools operate on
     the real CDP browser (and a CDP backend is treated as non-local for SSRF
     checks) instead of being silently routed to Camofox. The override may come
     from the ``BROWSER_CDP_URL`` env var (set by ``/browser connect``) OR a
     persistent ``browser.cdp_url`` in config.yaml — both are honored, matching
-    ``browser_tool._get_cdp_override()``'s precedence.
+    ``browser_tool._get_cdp_override()``'s precedence. (Previously only the env
+    var suppressed Camofox, so ``CAMOFOX_URL`` + a config CDP override still
+    routed navigation through Camofox.)
     """
     if os.getenv("BROWSER_CDP_URL", "").strip():
         return False
     if _config_cdp_url():
-        return False
-    try:
-        from tools.tool_backend_helpers import read_selection
-
-        selected = read_selection("browser")
-    except Exception:  # pragma: no cover — helpers are in-repo
-        selected = None
-    if selected == "camofox":
-        return True
-    if selected is not None:
-        # An explicit different browser selection wins: CAMOFOX_URL is just
-        # an address, not a choice.
         return False
     return bool(get_camofox_url())
 
@@ -210,15 +191,12 @@ def _camofox_identity_override(task_id: Optional[str], camofox_cfg: Dict[str, An
     so Hermes operates in the same browser profile instead of creating a
     separate private session.
     """
-    user_id = (
-        (get_secret("CAMOFOX_USER_ID", "") or "").strip()
-        or str(camofox_cfg.get("user_id") or "").strip()
-    )
+    user_id = os.getenv("CAMOFOX_USER_ID", "").strip() or str(camofox_cfg.get("user_id") or "").strip()
     if not user_id:
         return None
 
     session_key = (
-        (get_secret("CAMOFOX_SESSION_KEY", "") or "").strip()
+        os.getenv("CAMOFOX_SESSION_KEY", "").strip()
         or str(camofox_cfg.get("session_key") or "").strip()
         or f"task_{(task_id or 'default')[:16]}"
     )
@@ -568,12 +546,11 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             )
             snapshot_text = snap_data.get("snapshot", "")
             from tools.browser_tool import (
-                get_browser_snapshot_threshold,
+                SNAPSHOT_SUMMARIZE_THRESHOLD,
                 _truncate_snapshot,
             )
-            threshold = get_browser_snapshot_threshold()
-            if len(snapshot_text) > threshold:
-                snapshot_text = _truncate_snapshot(snapshot_text, max_chars=threshold)
+            if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+                snapshot_text = _truncate_snapshot(snapshot_text)
             result["snapshot"] = snapshot_text
             result["element_count"] = snap_data.get("refsCount", 0)
         except Exception:
@@ -629,11 +606,7 @@ def _camofox_private_page_block(session: Dict[str, Any], task_id: Optional[str],
 
 def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
                      user_task: Optional[str] = None) -> str:
-    """Get accessibility tree snapshot from Camofox.
-
-    ``user_task`` is deprecated and ignored — oversized snapshots always
-    truncate-and-store (no LLM summarization), same as the main browser tool.
-    """
+    """Get accessibility tree snapshot from Camofox."""
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
@@ -651,17 +624,18 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
         snapshot = data.get("snapshot", "")
         refs_count = data.get("refsCount", 0)
 
-        # Same truncate-and-store handling as the main browser tool: cut at
-        # line boundaries, store the full tree to cache/web, append a
-        # read_file pointer.
+        # Apply same summarization logic as the main browser tool
         from tools.browser_tool import (
-            get_browser_snapshot_threshold,
+            SNAPSHOT_SUMMARIZE_THRESHOLD,
+            _extract_relevant_content,
             _truncate_snapshot,
         )
 
-        threshold = get_browser_snapshot_threshold()
-        if len(snapshot) > threshold:
-            snapshot = _truncate_snapshot(snapshot, max_chars=threshold)
+        if len(snapshot) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+            if user_task:
+                snapshot = _extract_relevant_content(snapshot, user_task)
+            else:
+                snapshot = _truncate_snapshot(snapshot)
 
         return json.dumps({
             "success": True,
@@ -970,5 +944,6 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
         "note": "Console log capture is not available with the Camofox backend. "
                 "Use browser_snapshot or browser_vision to inspect page state.",
     })
+
 
 

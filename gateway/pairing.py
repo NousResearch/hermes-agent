@@ -56,37 +56,7 @@ LOCKOUT_SECONDS = 3600              # Lockout duration after too many failures
 MAX_PENDING_PER_PLATFORM = 3        # Max pending codes per platform
 MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
 
-# Default (non-profile-scoped) pairing directory. Left unresolved (``None``)
-# here rather than computed eagerly: this module is imported once by the
-# long-lived gateway process at container/process boot, and computing the
-# path eagerly freezes it to whatever HERMES_HOME/profile context existed
-# at that exact import moment for the rest of the process's lifetime --
-# even if a context-local override (see hermes_constants.set_hermes_home_override)
-# is established afterward. A freshly-started, short-lived process (e.g. the
-# ``hermes pairing`` CLI) re-imports this module later with the final
-# environment already in place, so it never observes the stale value -- the
-# resulting asymmetry is what made pending pairing codes issued by the
-# gateway unrecoverable while CLI-side writes to the same directory kept
-# working (NousResearch/hermes-agent#93449).
-#
-# ``_default_pairing_dir()`` below resolves this fresh on every call in
-# production. Tests patch this attribute directly to a concrete path for
-# isolation (e.g. ``patch("gateway.pairing.PAIRING_DIR", tmp_path)``); that
-# continues to work unchanged, since a patched (non-``None``) value takes
-# precedence over recomputing.
-PAIRING_DIR = None
-
-
-def _default_pairing_dir() -> Path:
-    """Resolve the default (non-profile-scoped) pairing directory.
-
-    Recomputed on every call rather than cached at import time -- see the
-    ``PAIRING_DIR`` comment above for why. Honors ``PAIRING_DIR`` when a
-    caller (typically a test) has explicitly set it to a concrete path.
-    """
-    if PAIRING_DIR is not None:
-        return PAIRING_DIR
-    return get_hermes_dir("platforms/pairing", "pairing")
+PAIRING_DIR = get_hermes_dir("platforms/pairing", "pairing")
 
 
 # Platform value -> its per-platform allowlist env var. When an operator has
@@ -143,66 +113,6 @@ def _split_allowlist(raw: str) -> list:
     return [uid.strip() for uid in raw.split(",") if uid.strip()]
 
 
-def _platform_uses_whatsapp_identity(platform: str) -> bool:
-    """True for Baileys WhatsApp and Meta Cloud — same phone/JID identity rules."""
-    return (platform or "").strip().lower() in {"whatsapp", "whatsapp_cloud"}
-
-
-def _normalize_user_id(platform: str, user_id: str) -> str:
-    """Normalize platform-specific user IDs before persisting / comparing them."""
-    raw_user_id = str(user_id or "").strip()
-    if _platform_uses_whatsapp_identity(platform):
-        return normalize_whatsapp_identifier(raw_user_id) or raw_user_id
-    return raw_user_id
-
-
-def _user_id_aliases(platform: str, user_id: str) -> set[str]:
-    """Return all known equivalent user IDs for auth / allowlist matching."""
-    raw_user_id = str(user_id or "").strip()
-    if not raw_user_id:
-        return set()
-
-    aliases = {raw_user_id, _normalize_user_id(platform, raw_user_id)}
-    if _platform_uses_whatsapp_identity(platform):
-        aliases.update(expand_whatsapp_aliases(raw_user_id))
-    aliases.discard("")
-    return aliases
-
-
-def _user_ids_match(platform: str, left: str, right: str) -> bool:
-    """Return True when two user IDs represent the same principal."""
-    left_aliases = _user_id_aliases(platform, left)
-    right_aliases = _user_id_aliases(platform, right)
-    return bool(left_aliases and right_aliases and (left_aliases & right_aliases))
-
-
-def _read_allowlist_env(env_var: str) -> str:
-    """Read a platform allowlist env var through the profile secret scope.
-
-    Under multiplexing the process env may hold ANOTHER profile's allowlist
-    (first-writer-wins YAML→env bridges), so reads must honor the installed
-    scope's verdict — including a scoped miss returning empty rather than
-    borrowing the process value.  Unscoped callers (single-profile CLI /
-    admin endpoints) keep the legacy ``os.getenv`` read.
-
-    The grant mirror below writes through ``hermes_cli.config.save_env_value``
-    / ``remove_env_value``: the file target is the active profile's ``.env``
-    (``get_env_path()`` honors the profile-home override) and, under
-    multiplexing, the in-process publish updates the installed scope mapping
-    rather than the shared ``os.environ`` (#88441).
-    """
-    try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
-
-        try:
-            return (get_secret(env_var) or "").strip()
-        except UnscopedSecretError:
-            pass
-    except Exception:
-        pass
-    return (os.getenv(env_var) or "").strip()
-
-
 def _sync_allowlist_add(platform: str, user_id: str) -> None:
     """Add ``user_id`` to the platform allowlist env var IF one is configured.
 
@@ -215,7 +125,7 @@ def _sync_allowlist_add(platform: str, user_id: str) -> None:
     env_var = _allowlist_env_for_platform(platform)
     if not env_var:
         return
-    current = _read_allowlist_env(env_var)
+    current = os.getenv(env_var, "").strip()
     if not current:
         return  # No allowlist configured — leave the gateway open (option i).
     ids = _split_allowlist(current)
@@ -232,118 +142,16 @@ def _sync_allowlist_add(platform: str, user_id: str) -> None:
         pass
 
 
-def _iter_live_gateway_adapters():
-    """Yield adapters from the in-process GatewayRunner, if one is running."""
-    try:
-        from gateway.run import _gateway_runner_ref
-
-        runner = _gateway_runner_ref()
-    except Exception:
-        return
-    if runner is None:
-        return
-    adapters = getattr(runner, "adapters", None) or {}
-    for adapter in adapters.values():
-        if adapter is not None:
-            yield adapter
-    profile_adapters = getattr(runner, "_profile_adapters", None) or {}
-    for mapping in profile_adapters.values():
-        for adapter in (mapping or {}).values():
-            if adapter is not None:
-                yield adapter
-
-
-def _adapter_platform_name(adapter) -> str:
-    platform = getattr(adapter, "platform", None)
-    if platform is not None:
-        value = getattr(platform, "value", None)
-        if value:
-            return str(value).strip().lower()
-    name = getattr(adapter, "name", None)
-    return str(name or "").strip().lower()
-
-
-def _purge_allowlist_entries(entries, platform: str, user_id: str):
-    """Drop alias-equivalent allowlist entries while preserving ``*``."""
-    if entries is None:
-        return entries
-    if isinstance(entries, str):
-        parts = _split_allowlist(entries)
-        remaining = [
-            part for part in parts
-            if part == "*" or not _user_ids_match(platform, part, str(user_id))
-        ]
-        return ",".join(remaining)
-    if isinstance(entries, (set, frozenset)):
-        return {
-            entry for entry in entries
-            if str(entry).strip() == "*"
-            or not _user_ids_match(platform, str(entry), str(user_id))
-        }
-    if isinstance(entries, (list, tuple)):
-        return [
-            entry for entry in entries
-            if str(entry).strip() == "*"
-            or not _user_ids_match(platform, str(entry), str(user_id))
-        ]
-    return entries
-
-
-def _sync_live_adapter_allowlist_remove(platform: str, user_id: str) -> None:
-    """Clear revoked principals from in-process adapter allowlist snapshots.
-
-    ``WhatsAppAdapter`` (and Cloud) snapshot ``_allow_from`` at construction.
-    Pairing revoke updates ``WHATSAPP_ALLOWED_USERS`` / cloud env, but when the
-    revoked principal was the sole entry the env key is removed entirely.
-    Intake must not keep authorizing from the stale snapshot until restart.
-    """
-    platform_name = (platform or "").strip().lower()
-    if not platform_name or not str(user_id or "").strip():
-        return
-    for adapter in _iter_live_gateway_adapters():
-        if _adapter_platform_name(adapter) != platform_name:
-            continue
-        if hasattr(adapter, "_allow_from"):
-            try:
-                adapter._allow_from = _purge_allowlist_entries(
-                    set(adapter._allow_from or ()), platform_name, user_id
-                )
-            except Exception:
-                pass
-        extra = getattr(getattr(adapter, "config", None), "extra", None)
-        if isinstance(extra, dict) and "allow_from" in extra:
-            try:
-                extra["allow_from"] = _purge_allowlist_entries(
-                    extra.get("allow_from"), platform_name, user_id
-                )
-            except Exception:
-                pass
-
-
 def _sync_allowlist_remove(platform: str, user_id: str) -> None:
-    """Remove ``user_id`` (and WhatsApp alias equivalents) from the allowlist.
-
-    Matching must mirror PairingStore / authz WhatsApp alias rules: approve
-    mirrors a normalized phone into ``WHATSAPP_ALLOWED_USERS``, while revoke
-    is often invoked with a JID or device-suffix form. Exact-string delete
-    would leave the allowlist entry and keep the sender authorized.
-
-    Also clears matching entries from any in-process platform adapter
-    ``_allow_from`` snapshot so sole-entry revocation is effective without a
-    gateway restart.
-    """
+    """Remove ``user_id`` from the platform allowlist env var if present."""
     env_var = _allowlist_env_for_platform(platform)
     if not env_var:
         return
-    current = _read_allowlist_env(env_var)
+    current = os.getenv(env_var, "").strip()
     if not current:
-        return  # No allowlist configured — do not touch config-only snapshots.
+        return
     ids = _split_allowlist(current)
-    # Never strip a wildcard grant; drop every entry that aliases-matches.
-    remaining = [
-        i for i in ids
-        if i == "*" or not _user_ids_match(platform, i, str(user_id))
-    ]
+    remaining = [i for i in ids if i != str(user_id)]
     if len(remaining) == len(ids):
         return  # Not present.
     try:
@@ -355,7 +163,6 @@ def _sync_allowlist_remove(platform: str, user_id: str) -> None:
             remove_env_value(env_var)
     except Exception:
         pass
-    _sync_live_adapter_allowlist_remove(platform, user_id)
 
 
 def _load_json_file(path: Path) -> dict:
@@ -402,7 +209,7 @@ def _migrate_split_pairing_dirs(
     home = home or get_hermes_home()
     old_dir = home / "pairing"
     new_dir = home / "platforms" / "pairing"
-    active = active if active is not None else _default_pairing_dir()
+    active = active or PAIRING_DIR
     alternate = new_dir if active.resolve() == old_dir.resolve() else old_dir
     _merge_pairing_dir(active, alternate)
 
@@ -465,7 +272,7 @@ class PairingStore:
                 home=profile_home,
             )
         else:
-            self._dir = _default_pairing_dir()
+            self._dir = PAIRING_DIR
         self._dir.mkdir(parents=True, exist_ok=True)
         if profile:
             # Explicit stores must resolve exactly as a standalone
@@ -532,15 +339,28 @@ class PairingStore:
 
     def _normalize_user_id(self, platform: str, user_id: str) -> str:
         """Normalize platform-specific user IDs before persisting them."""
-        return _normalize_user_id(platform, user_id)
+        raw_user_id = str(user_id or "").strip()
+        if platform == "whatsapp":
+            return normalize_whatsapp_identifier(raw_user_id) or raw_user_id
+        return raw_user_id
 
     def _user_id_aliases(self, platform: str, user_id: str) -> set[str]:
         """Return all known equivalent user IDs for auth/rate-limit checks."""
-        return _user_id_aliases(platform, user_id)
+        raw_user_id = str(user_id or "").strip()
+        if not raw_user_id:
+            return set()
+
+        aliases = {raw_user_id, self._normalize_user_id(platform, raw_user_id)}
+        if platform == "whatsapp":
+            aliases.update(expand_whatsapp_aliases(raw_user_id))
+        aliases.discard("")
+        return aliases
 
     def _user_ids_match(self, platform: str, left: str, right: str) -> bool:
         """Return True when two user IDs represent the same principal."""
-        return _user_ids_match(platform, left, right)
+        left_aliases = self._user_id_aliases(platform, left)
+        right_aliases = self._user_id_aliases(platform, right)
+        return bool(left_aliases and right_aliases and (left_aliases & right_aliases))
 
     # ----- Approved users -----
 

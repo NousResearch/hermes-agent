@@ -365,14 +365,15 @@ If the model emits tool-call-shaped text instead of a structured call, it usuall
 
 ### STT (voice note transcription) returns empty / "could not transcribe"
 
-The default `stt.provider: local` requires `pip install faster-whisper`.  If you're a Nous subscriber, you can route STT through the managed gateway instead — select **Nous Subscription** for speech-to-text in `hermes tools`, or set it directly:
+The default `stt.provider: local` requires `pip install faster-whisper`.  If you're a Nous subscriber, you can route STT through Meta's managed audio gateway instead:
 
 ```bash
-hermes config set stt.provider nous
+hermes config set stt.provider openai
+hermes config set stt.use_gateway true
 hermes gateway restart
 ```
 
-This uses your Nous Portal access token instead of needing a separate OpenAI key. (Older docs suggested `stt.use_gateway true` — that flag is legacy; the provider selection alone controls routing now.)
+This uses your Nous Portal access token instead of needing a separate OpenAI key.
 
 ---
 

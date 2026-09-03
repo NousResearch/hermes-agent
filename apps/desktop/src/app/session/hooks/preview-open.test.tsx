@@ -35,27 +35,17 @@ function Harness() {
   return null
 }
 
-async function emitPreviewOpen(url = '/tmp/artifact-test.html', sessionId = RUNTIME_SESSION_ID) {
+async function emitPreviewOpen(url = '/tmp/artifact-test.html') {
   await act(async () => {
     handleEvent({
       payload: { label: 'hi bestie', url },
-      session_id: sessionId,
+      session_id: RUNTIME_SESSION_ID,
       type: 'preview.open'
     } as unknown as RpcEvent)
   })
 }
 
-async function emitPreviewClose(url?: string, sessionId = RUNTIME_SESSION_ID) {
-  await act(async () => {
-    handleEvent({
-      payload: url === undefined ? {} : { url },
-      session_id: sessionId,
-      type: 'preview.close'
-    } as unknown as RpcEvent)
-  })
-}
-
-describe('preview routing', () => {
+describe('open_preview', () => {
   beforeEach(() => {
     // A live session always has a runtime id; only the STORED id lags.
     $activeSessionId.set(RUNTIME_SESSION_ID)
@@ -80,195 +70,108 @@ describe('preview routing', () => {
     vi.restoreAllMocks()
   })
 
-  describe('open_preview', () => {
-    // The rail used to hold a session-keyed singleton alongside its tabs, written
-    // under one session-id rule and reconciled under another. A live session with
-    // no stored id yet resolved to '' on the write side, so the target was set and
-    // then immediately reconciled back to null — the pane flashed and vanished.
-    it('opens a tab for a session that has no stored id yet', async () => {
-      $selectedStoredSessionId.set(null)
-      render(<Harness />)
+  // The rail used to hold a session-keyed singleton alongside its tabs, written
+  // under one session-id rule and reconciled under another. A live session with
+  // no stored id yet resolved to '' on the write side, so the target was set and
+  // then immediately reconciled back to null — the pane flashed and vanished.
+  it('opens a tab for a session that has no stored id yet', async () => {
+    $selectedStoredSessionId.set(null)
+    render(<Harness />)
 
-      await emitPreviewOpen()
+    await emitPreviewOpen()
 
-      await waitFor(() => expect($previewTarget.get()?.path).toBe('/tmp/artifact-test.html'))
-      expect($previewTabs.get()).toHaveLength(1)
-    })
-
-    it('keeps the tab when the stored session id arrives afterwards', async () => {
-      $selectedStoredSessionId.set(null)
-      render(<Harness />)
-
-      await emitPreviewOpen()
-      await waitFor(() => expect($previewTarget.get()?.path).toBe('/tmp/artifact-test.html'))
-
-      await act(async () => {
-        $selectedStoredSessionId.set('stored-1')
-      })
-
-      expect($previewTarget.get()?.path).toBe('/tmp/artifact-test.html')
-    })
-
-    it('ignores an open from a session that is not the one on screen', async () => {
-      render(<Harness />)
-
-      await act(async () => {
-        handleEvent({
-          payload: { url: '/tmp/other.html' },
-          session_id: 'some-other-session',
-          type: 'preview.open'
-        } as unknown as RpcEvent)
-      })
-
-      expect($previewTabs.get()).toHaveLength(0)
-    })
-
-    // The turn that calls open_preview is often a TILE's session while focus
-    // sits on main (the user asked, then clicked elsewhere). On-screen is the
-    // bar — gating on focus made an explicit "open reddit" silently vanish.
-    it('honors an open from an open tile session even when main holds focus', async () => {
-      const { $sessionTiles } = await import('@/store/session-states')
-      const tiles = $sessionTiles.get()
-
-      $sessionTiles.set([{ dir: 'right', runtimeId: 'tile-runtime', storedSessionId: 'stored-tile' }])
-      render(<Harness />)
-
-      try {
-        await emitPreviewOpen('/tmp/from-tile.html', 'tile-runtime')
-
-        await waitFor(() => expect($previewTarget.get()?.path).toBe('/tmp/from-tile.html'))
-      } finally {
-        $sessionTiles.set(tiles)
-      }
-    })
-
-    it('opens a second target as its own tab rather than replacing the first', async () => {
-      render(<Harness />)
-
-      await emitPreviewOpen('/tmp/one.html')
-      await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
-
-      await emitPreviewOpen('/tmp/two.html')
-      await waitFor(() => expect($previewTabs.get()).toHaveLength(2))
-
-      expect($previewTarget.get()?.path).toBe('/tmp/two.html')
-    })
-
-    it('re-fronts the existing tab when the same target opens twice', async () => {
-      render(<Harness />)
-
-      await emitPreviewOpen('/tmp/one.html')
-      await emitPreviewOpen('/tmp/one.html')
-
-      await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
-    })
-
-    it('renders a tool-opened html file rather than showing its source', async () => {
-      render(<Harness />)
-
-      await emitPreviewOpen()
-
-      await waitFor(() => expect($previewTarget.get()?.renderMode).toBe('preview'))
-    })
-
-    // Offer, don't hijack: only an explicit open_preview call opens the rail.
-    it('does not infer a preview from assistant prose', async () => {
-      render(<Harness />)
-
-      await act(async () => {
-        $messages.set([
-          assistantMessage('a1', 'Preview: http://localhost:5173/'),
-          assistantMessage('a2', 'Open /work/demo.html')
-        ])
-      })
-
-      expect($previewTabs.get()).toHaveLength(0)
-      expect(window.hermesDesktop.normalizePreviewTarget).not.toHaveBeenCalled()
-    })
-
-    it('does not open a preview off the back of a tool result', async () => {
-      render(<Harness />)
-
-      await act(async () => {
-        handleEvent({
-          payload: { inline_diff: 'a/preview-demo.html -> b/preview-demo.html\n' },
-          session_id: RUNTIME_SESSION_ID,
-          type: 'tool.complete'
-        } as unknown as RpcEvent)
-        handleEvent({
-          payload: { path: './dist/index.html' },
-          session_id: RUNTIME_SESSION_ID,
-          type: 'tool.complete'
-        } as unknown as RpcEvent)
-      })
-
-      expect($previewTabs.get()).toHaveLength(0)
-    })
+    await waitFor(() => expect($previewTarget.get()?.path).toBe('/tmp/artifact-test.html'))
+    expect($previewTabs.get()).toHaveLength(1)
   })
 
-  describe('close_preview', () => {
-    it('closes the whole pane when no url is given', async () => {
-      render(<Harness />)
+  it('keeps the tab when the stored session id arrives afterwards', async () => {
+    $selectedStoredSessionId.set(null)
+    render(<Harness />)
 
-      await emitPreviewOpen('/tmp/one.html')
-      await emitPreviewOpen('/tmp/two.html')
-      await waitFor(() => expect($previewTabs.get()).toHaveLength(2))
+    await emitPreviewOpen()
+    await waitFor(() => expect($previewTarget.get()?.path).toBe('/tmp/artifact-test.html'))
 
-      await emitPreviewClose('')
-
-      expect($previewTabs.get()).toHaveLength(0)
-      expect($previewTarget.get()).toBeNull()
+    await act(async () => {
+      $selectedStoredSessionId.set('stored-1')
     })
 
-    it('closes only the matching tab when a url is given', async () => {
-      render(<Harness />)
+    expect($previewTarget.get()?.path).toBe('/tmp/artifact-test.html')
+  })
 
-      await emitPreviewOpen('/tmp/keep.html')
-      await emitPreviewOpen('/tmp/drop.html')
-      await waitFor(() => expect($previewTabs.get()).toHaveLength(2))
+  it('ignores an open from a session that is not the one on screen', async () => {
+    render(<Harness />)
 
-      await emitPreviewClose('/tmp/drop.html')
-
-      await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
-      expect($previewTarget.get()?.path).toBe('/tmp/keep.html')
+    await act(async () => {
+      handleEvent({
+        payload: { url: '/tmp/other.html' },
+        session_id: 'some-other-session',
+        type: 'preview.open'
+      } as unknown as RpcEvent)
     })
 
-    it('ignores a close from a session that is not the one on screen', async () => {
-      render(<Harness />)
+    expect($previewTabs.get()).toHaveLength(0)
+  })
 
-      await emitPreviewOpen('/tmp/stay.html')
-      await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
+  it('opens a second target as its own tab rather than replacing the first', async () => {
+    render(<Harness />)
 
-      await emitPreviewClose('/tmp/stay.html', 'some-other-session')
+    await emitPreviewOpen('/tmp/one.html')
+    await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
 
-      expect($previewTabs.get()).toHaveLength(1)
+    await emitPreviewOpen('/tmp/two.html')
+    await waitFor(() => expect($previewTabs.get()).toHaveLength(2))
+
+    expect($previewTarget.get()?.path).toBe('/tmp/two.html')
+  })
+
+  it('re-fronts the existing tab when the same target opens twice', async () => {
+    render(<Harness />)
+
+    await emitPreviewOpen('/tmp/one.html')
+    await emitPreviewOpen('/tmp/one.html')
+
+    await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
+  })
+
+  it('renders a tool-opened html file rather than showing its source', async () => {
+    render(<Harness />)
+
+    await emitPreviewOpen()
+
+    await waitFor(() => expect($previewTarget.get()?.renderMode).toBe('preview'))
+  })
+
+  // Offer, don't hijack: only an explicit open_preview call opens the rail.
+  it('does not infer a preview from assistant prose', async () => {
+    render(<Harness />)
+
+    await act(async () => {
+      $messages.set([
+        assistantMessage('a1', 'Preview: http://localhost:5173/'),
+        assistantMessage('a2', 'Open /work/demo.html')
+      ])
     })
 
-    it('honors a close from an open tile session even when main holds focus', async () => {
-      const { $sessionTiles } = await import('@/store/session-states')
-      const tiles = $sessionTiles.get()
+    expect($previewTabs.get()).toHaveLength(0)
+    expect(window.hermesDesktop.normalizePreviewTarget).not.toHaveBeenCalled()
+  })
 
-      $sessionTiles.set([{ dir: 'right', runtimeId: 'tile-runtime', storedSessionId: 'stored-tile' }])
-      render(<Harness />)
+  it('does not open a preview off the back of a tool result', async () => {
+    render(<Harness />)
 
-      try {
-        await emitPreviewOpen('/tmp/from-tile.html', 'tile-runtime')
-        await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
-
-        await emitPreviewClose('/tmp/from-tile.html', 'tile-runtime')
-
-        await waitFor(() => expect($previewTabs.get()).toHaveLength(0))
-      } finally {
-        $sessionTiles.set(tiles)
-      }
+    await act(async () => {
+      handleEvent({
+        payload: { inline_diff: 'a/preview-demo.html -> b/preview-demo.html\n' },
+        session_id: RUNTIME_SESSION_ID,
+        type: 'tool.complete'
+      } as unknown as RpcEvent)
+      handleEvent({
+        payload: { path: './dist/index.html' },
+        session_id: RUNTIME_SESSION_ID,
+        type: 'tool.complete'
+      } as unknown as RpcEvent)
     })
 
-    it('is a no-op when nothing is open', async () => {
-      render(<Harness />)
-
-      await emitPreviewClose()
-
-      expect($previewTabs.get()).toHaveLength(0)
-    })
+    expect($previewTabs.get()).toHaveLength(0)
   })
 })

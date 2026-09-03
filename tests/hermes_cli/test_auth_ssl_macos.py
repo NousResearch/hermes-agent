@@ -13,6 +13,7 @@ bundle and refuses stubs.
 import shutil
 import ssl
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -48,14 +49,15 @@ def real_bundle_file(tmp_path: Path) -> str:
 
 
 class TestDefaultVerify:
-    @pytest.mark.macos_only
-    def test_returns_ssl_context_on_darwin(self):
+    def test_returns_ssl_context_on_darwin(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
         result = _default_verify()
         assert isinstance(result, ssl.SSLContext)
 
 
-    @pytest.mark.macos_only
     def test_darwin_falls_back_to_true_when_certifi_missing(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+
         real_import = __import__
 
         def fake_import(name, *args, **kwargs):
@@ -71,8 +73,8 @@ class TestResolveVerifyIntegration:
     """_resolve_verify should defer to _default_verify in the no-CA path."""
 
 
-    @pytest.mark.linux_only
     def test_no_ca_uses_default_verify_on_linux(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
         for var in ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
             monkeypatch.delenv(var, raising=False)
         assert _resolve_verify() is True

@@ -337,8 +337,7 @@ class TestFileSync:
 
         result = env.execute("echo hello")
 
-        assert result["output"] == "hello\n"
-        assert result["returncode"] == 0
+        assert result == {"output": "hello\n", "returncode": 0}
         assert vercel_sdk.current.write_files_calls[-1] == [
             {
                 "path": "/home/vercel/.hermes/credentials/token.txt",
@@ -481,8 +480,7 @@ class TestExecute:
 
         result = env.execute("echo hello")
 
-        assert result["output"] == "hello\n", label
-        assert result["returncode"] == 0, label
+        assert result == {"output": "hello\n", "returncode": 0}, label
         assert original.closed == 1
         assert vercel_sdk.current is replacement
 

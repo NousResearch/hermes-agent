@@ -76,10 +76,8 @@ export const StreamingAssistant = memo(function StreamingAssistant({
             detailsModeCommandOverride={detailsModeCommandOverride}
             isStreaming={block.isStreaming}
             key={block.key}
-            liveDetails
             msg={block.msg}
             prev={prev}
-            reasoningActive={block.msg.isLiveReasoning === true}
             sections={sections}
             t={ui.theme}
             {...(block.tools ? { tools: block.tools } : {})}

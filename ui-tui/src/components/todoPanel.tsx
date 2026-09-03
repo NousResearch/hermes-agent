@@ -2,7 +2,7 @@ import { Box, Text } from '@hermes/ink'
 import { memo, useState } from 'react'
 
 import { countPendingTodos } from '../lib/liveProgress.js'
-import { todoGlyph, todoTone, todoTree } from '../lib/todo.js'
+import { todoGlyph, todoTone } from '../lib/todo.js'
 import type { Theme } from '../theme.js'
 import type { TodoItem } from '../types.js'
 
@@ -75,17 +75,15 @@ export const TodoPanel = memo(function TodoPanel({
 
       {!effectiveCollapsed && (
         <Box flexDirection="column" marginLeft={2}>
-          {todoTree(todos).map(([todo, depth]) => {
+          {todos.map(todo => {
             const tone = todoTone(todo.status)
             const color = rowColor(t, todo.status)
 
             return (
-              <Box key={todo.id} marginLeft={Math.min(depth, 4) * 2}>
-                <Text color={color} dim={tone === 'dim'}>
-                  <Text color={color}>{todoGlyph(todo.status)} </Text>
-                  {todo.content}
-                </Text>
-              </Box>
+              <Text color={color} dim={tone === 'dim'} key={todo.id}>
+                <Text color={color}>{todoGlyph(todo.status)} </Text>
+                {todo.content}
+              </Text>
             )
           })}
         </Box>

@@ -135,8 +135,6 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     # the env var and write to ~/.hermes/kanban.db.
     "kanban_complete",
     "kanban_block",
-    "kanban_request_review",
-    "kanban_request_changes",
     "kanban_comment",
     "kanban_heartbeat",
     "kanban_show",
@@ -152,13 +150,11 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 
 
 def _build_server() -> Any:
-    """Create the MCP server with Hermes tools attached. Lazy imports
+    """Create the FastMCP server with Hermes tools attached. Lazy imports
     so the module can be imported without the mcp package installed
     (we degrade to a clear error only when actually run)."""
     try:
-        # mcp 2.0 removed `mcp.server.fastmcp`; `mcp.server.MCPServer` is the
-        # same decorator/add_tool surface under the new name.
-        from mcp.server import MCPServer
+        from mcp.server.fastmcp import FastMCP
     except ImportError as exc:  # pragma: no cover - install hint
         raise ImportError(
             f"hermes-tools MCP server requires the 'mcp' package: {exc}"
@@ -170,7 +166,7 @@ def _build_server() -> Any:
         handle_function_call,
     )
 
-    mcp = MCPServer(
+    mcp = FastMCP(
         "hermes-tools",
         instructions=(
             "Hermes Agent's tool surface, exposed for use inside a Codex "
@@ -202,12 +198,11 @@ def _build_server() -> Any:
         description = spec.get("description") or f"Hermes {name} tool"
         params_schema = spec.get("parameters") or {"type": "object", "properties": {}}
 
-        # The SDK wants a Python callable and derives the input schema from
-        # its signature — there is no inputSchema parameter on either the
-        # decorator or add_tool(). So build a closure that takes the arguments
-        # dict, dispatches via handle_function_call, returns the result
-        # string, and carries a __signature__ synthesized from the Hermes
-        # JSON Schema (see _signature_from_schema) for the SDK to read.
+        # FastMCP wants a Python callable. Build a closure that takes the
+        # arguments dict, dispatches via handle_function_call, and returns
+        # the result string. We use add_tool() for full control over the
+        # input schema (FastMCP's @tool() decorator inspects type hints,
+        # which we can't get from a JSON schema at runtime).
         def _make_handler(tool_name: str, schema: dict | None):
             sig, annots = _signature_from_schema(schema)
 
@@ -272,8 +267,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         sys.stderr.write(f"hermes-tools MCP server cannot start: {exc}\n")
         return 2
 
-    # MCPServer.run() defaults to stdio transport, which is what codex
-    # spawns us on.
+    # FastMCP runs with stdio transport by default when launched as a
+    # subprocess.
     try:
         server.run()
     except KeyboardInterrupt:

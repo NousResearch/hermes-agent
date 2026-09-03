@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate } from "react-router-dom";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import {
   AlignLeft,
@@ -26,7 +26,6 @@ import spinners from "unicode-animations";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type { ActiveProfileInfo, ProfileInfo } from "@/lib/api";
-import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -710,9 +709,10 @@ export default function ProfilesPage() {
       showToast(`${t.status.error}: ${e}`, "error");
       return;
     }
-    if (await copyTextToClipboard(cmd)) {
+    try {
+      await navigator.clipboard.writeText(cmd);
       showToast(`${t.profiles.commandCopied}: ${cmd}`, "success");
-    } else {
+    } catch {
       showToast(`${t.profiles.copyFailed}: ${cmd}`, "error");
     }
   };
@@ -1092,7 +1092,7 @@ export default function ProfilesPage() {
                       <div className="flex items-start gap-2">
                         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
                           <span className="font-medium text-sm truncate">
-                            {p.display_name?.trim() ? `${p.display_name.trim()} (${p.name})` : p.name}
+                            {p.name}
                           </span>
 
                           {active && (

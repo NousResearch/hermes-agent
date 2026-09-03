@@ -138,10 +138,10 @@ GOOGLE_CHAT_MAX_BYTES=16777216                  # 16 MiB — 在途消息字节�
 
 项目 ID 也可回退到 `GOOGLE_CLOUD_PROJECT`，SA 路径可回退到 `GOOGLE_APPLICATION_CREDENTIALS`——使用你偏好的约定即可。
 
-通过适配器维护的安装程序安装 Google Chat 依赖。该程序会应用与运行时检查相同的固定安全版本：
+安装 Google Chat 适配器所需的依赖（目前没有发布 Hermes extra，请直接安装）：
 
 ```bash
-python -m plugins.platforms.google_chat.oauth --install-deps
+pip install google-cloud-pubsub google-api-python-client google-auth google-auth-oauthlib
 ```
 
 启动 gateway（网关）：

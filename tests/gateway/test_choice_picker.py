@@ -126,7 +126,7 @@ class TestFastChoicePicker:
 
         assert result is None
         values = [c["value"] for c in adapter.calls[0]["choices"]]
-        assert values == ["fast", "normal", "auto", "cold"]
+        assert values == ["fast", "normal"]
 
     @pytest.mark.asyncio
     async def test_fast_picker_selection_is_session_scoped(self, tmp_path, monkeypatch):

@@ -1,5 +1,5 @@
 ---
-name: stable-diffusion
+name: stable-diffusion-image-generation
 description: Text-to-image generation, inpainting, and img2img.
 version: 1.0.0
 author: Orchestra Research
@@ -14,7 +14,7 @@ metadata:
 
 # Stable Diffusion Image Generation
 
-Guide to generating images with Stable Diffusion using the HuggingFace Diffusers library.
+Comprehensive guide to generating images with Stable Diffusion using the HuggingFace Diffusers library.
 
 ## When to use Stable Diffusion
 

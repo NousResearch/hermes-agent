@@ -70,24 +70,12 @@ export function getScrollbarSnapshot(s?: ScrollBoxHandle | null): ScrollbarSnaps
   }
 
   const viewportHeight = Math.max(0, s.getViewportHeight())
-  const top = Math.max(0, s.getScrollTop())
-  const cachedScrollHeight = Math.max(viewportHeight, s.getScrollHeight())
-  let scrollHeight = cachedScrollHeight
-  let maxTop = Math.max(0, scrollHeight - viewportHeight)
-
-  if (top < maxTop) {
-    const freshScrollHeight = Math.max(viewportHeight, s.getFreshScrollHeight?.() ?? cachedScrollHeight)
-    const freshMaxTop = Math.max(0, freshScrollHeight - viewportHeight)
-
-    if (top >= freshMaxTop) {
-      scrollHeight = freshScrollHeight
-      maxTop = freshMaxTop
-    }
-  }
+  const scrollHeight = Math.max(viewportHeight, s.getScrollHeight())
+  const maxTop = Math.max(0, scrollHeight - viewportHeight)
 
   return {
     scrollHeight,
-    top: Math.max(0, Math.min(maxTop, top)),
+    top: Math.max(0, Math.min(maxTop, s.getScrollTop())),
     viewportHeight
   }
 }

@@ -1,4 +1,4 @@
-import { Link } from "react-router";
+import { Link } from "react-router-dom";
 import type { StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";

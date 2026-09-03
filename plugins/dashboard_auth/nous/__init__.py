@@ -85,7 +85,6 @@ from hermes_cli.dashboard_auth import (
     LoginStart,
     ProviderError,
     RefreshExpiredError,
-    classify_jwks_lookup_error,
     Session,
 )
 
@@ -421,10 +420,6 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
                 self._jwks_url,
                 cache_keys=True,
                 lifespan=_JWKS_CACHE_SECONDS,
-                headers={
-                    "Accept": "application/json",
-                    "User-Agent": "HermesAgent/1.0",
-                },
             )
         return self._jwks_client
 
@@ -437,11 +432,10 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
             signing_key = self._get_jwks_client().get_signing_key_from_jwt(
                 access_token
             )
-        except Exception as exc:
-            # Unreachable JWKS -> ProviderError (503); a bearer that is not
-            # one of our JWTs (opaque peer key, foreign kid) -> InvalidCodeError
-            # (None / next provider). Folding both into 503 produced #94558.
-            raise classify_jwks_lookup_error(exc) from exc
+        except jwt.PyJWKClientError as exc:
+            raise ProviderError(f"JWKS lookup failed: {exc}") from exc
+        except Exception as exc:  # pragma: no cover - defensive
+            raise ProviderError(f"JWKS lookup failed: {exc!r}") from exc
 
         try:
             claims = jwt.decode(

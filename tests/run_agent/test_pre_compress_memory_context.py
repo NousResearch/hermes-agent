@@ -77,12 +77,7 @@ def test_on_pre_compress_result_reaches_compressor_with_existing_options():
         force=True,
     )
 
-    # Positional arg is the raw transcript (the historical v1 provider
-    # contract); evidence_messages carries the normalized handoff for
-    # checkpoint API v2+ providers. All-user messages normalize to themselves.
-    manager.on_pre_compress.assert_called_once_with(
-        messages, evidence_messages=messages
-    )
+    manager.on_pre_compress.assert_called_once_with(messages)
     assert received == {
         "current_tokens": 100_000,
         "focus_topic": "checkpoint continuity",

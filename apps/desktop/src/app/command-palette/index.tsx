@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate } from 'react-router-dom'
 
 import {
   HUD_HEADING,
@@ -13,12 +13,12 @@ import {
   HUD_SURFACE,
   HUD_TEXT
 } from '@/app/floating-hud'
+import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { KbdCombo } from '@/components/ui/kbd'
 import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
-import { useMediaQuery } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -52,11 +52,11 @@ import {
   SlidersHorizontal,
   Starmap,
   Sun,
+  Terminal,
   Users,
   Wrench,
   Zap
 } from '@/lib/icons'
-import { getServers } from '@/lib/mcp-servers'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -64,14 +64,12 @@ import { $repoWorktrees } from '@/store/coding-status'
 import {
   $commandPaletteOpen,
   $commandPalettePage,
-  $commandPaletteSeed,
   closeCommandPalette,
   setCommandPaletteOpen
 } from '@/store/command-palette'
-import { $bindings, bindingsFor } from '@/store/keybinds'
+import { $bindings } from '@/store/keybinds'
 import { $dismissedAutoProjectIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
-import { openBrowserTab } from '@/store/preview'
 import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession } from '@/store/projects'
 import { $connection } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -102,12 +100,11 @@ import {
   SKILLS_ROUTE,
   STARMAP_ROUTE
 } from '../routes'
-import { SECTIONS } from '../settings/constants'
-import { type SettingsSearchEntry, settingsSearchTargetQuery } from '../settings/settings-search'
-import { useSettingsSearchCatalog } from '../settings/use-settings-search'
+import { FIELD_LABELS, SECTIONS } from '../settings/constants'
+import { fieldCopyForSchemaKey } from '../settings/field-copy'
+import { prettyName } from '../settings/helpers'
 
 import { usePaletteContributions } from './contrib'
-import { HighlightWatcher } from './highlight-watcher'
 import { MarketplaceThemePage } from './marketplace-theme-page'
 import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 
@@ -130,11 +127,6 @@ interface PaletteItem {
   label: string
   /** Label shown while ⌘/⌃ is held — previews the modifier-variant action. */
   modLabel?: string
-  /**
-   * Runs when the row becomes the cmdk highlight (arrow keys or hover). When
-   * a row has no onHighlight, a highlight on it clears the live preview.
-   */
-  onHighlight?: () => void
   /**
    * When set, ⌘/⌃-select (or ⌘-Enter) opens a new tab and ⇧⌘-select pops a
    * window — matching sidebar session rows. Plain select stays in-place.
@@ -250,8 +242,8 @@ const rankGroups = (groups: PaletteGroup[], search: string): PaletteGroup[] => {
     .map(entry => entry.group)
 }
 
-// cmdk selection values must be unique; labels alone can repeat (a settings
-// field and a session can share a title). The id suffix disambiguates.
+// cmdk selection values must be unique; labels alone can repeat (the same
+// theme lists under both Light and Dark). The id suffix disambiguates.
 const paletteValue = (item: PaletteItem): string => `${item.label}\u0001${item.id}`
 
 const EMPTY_GROUPS: PaletteGroup[] = []
@@ -336,9 +328,7 @@ const PaletteRow = memo(function PaletteRow({
   const Icon = item.icon
   // The row's live keybind, else a static modifier-variant hint (⌘↵). One slot,
   // so every downstream `ml-auto` fallback below keeps working unchanged.
-  // `bindingsFor`, not a raw lookup: a plugin's action is contributed after
-  // $bindings was seeded, so its combo only resolves through the fallback chain.
-  const combo = (item.action ? bindingsFor(item.action, bindings)[0] : undefined) ?? item.comboHint
+  const combo = (item.action ? bindings[item.action]?.[0] : undefined) ?? item.comboHint
   // While ⌘/⌃ is held, a row with a modifier variant previews it: the label
   // swaps to the variant's copy so Enter reads as what it will actually do.
   const modPreview = modHeld && Boolean(item.modLabel)
@@ -399,7 +389,6 @@ type NonConfigSettingsLabel =
   | 'keysSettings'
   | 'keysTools'
   | 'mcp'
-  | 'plugins'
   | 'providerAccounts'
   | 'providerApiKeys'
 
@@ -421,24 +410,7 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
     labelKey: 'providerApiKeys',
     tab: 'providers&pview=keys'
   },
-  {
-    icon: Globe,
-    // The Connections registry merged into the unified Gateways page.
-    keywords: [
-      'connection',
-      'connections',
-      'messaging',
-      'remote',
-      'multi',
-      'instances',
-      'ssh',
-      'cloud',
-      'add gateway',
-      'registry'
-    ],
-    labelKey: 'gateway',
-    tab: 'gateway'
-  },
+  { icon: Globe, keywords: ['connection', 'messaging'], labelKey: 'gateway', tab: 'gateway' },
   {
     icon: KeyRound,
     keywords: ['api', 'secrets', 'tokens', 'credentials', 'browser', 'search'],
@@ -450,12 +422,6 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
     keywords: ['gateway', 'proxy', 'server', 'webhook', 'env', 'egress proxy', 'iron proxy'],
     labelKey: 'keysSettings',
     tab: 'keys&kview=settings'
-  },
-  {
-    icon: Package,
-    keywords: ['plugins', 'extensions', 'desktop plugins', 'addon', 'add-on'],
-    labelKey: 'plugins',
-    tab: 'plugins'
   },
   { icon: Archive, keywords: ['history', 'archived'], labelKey: 'archivedChats', tab: 'sessions' },
   { icon: Info, keywords: ['version', 'about'], labelKey: 'about', tab: 'about' }
@@ -551,29 +517,14 @@ export function CommandPalette() {
 function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const { t } = useI18n()
   const pendingPage = useStore($commandPalettePage)
-  const pendingSeed = useStore($commandPaletteSeed)
   const bindings = useStore($bindings)
   const worktrees = useStore($repoWorktrees)
   const projectTree = useStore($projectTree)
   const dismissedAutoProjects = useStore($dismissedAutoProjectIds)
   const navigate = useNavigate()
-
-  const { availableThemes, clearThemePreview, mode, previewTheme, resolvedMode, setMode, setTheme, themeName } =
-    useTheme()
-
-  // Mode rows preview like theme rows do: paint the committed skin at the
-  // highlighted brightness. `system` has to be resolved here — previewTheme
-  // paints a concrete light/dark.
-  const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
-
-  const resolveThemeMode = useCallback(
-    (target: ThemeMode): 'light' | 'dark' => (target === 'system' ? (systemDark ? 'dark' : 'light') : target),
-    [systemDark]
-  )
-
+  const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
 
   // The Update row names the same install the statusbar names — same target
   // selection, same resolver. Reduced to the label string: an in-flight apply
@@ -647,7 +598,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // reopen paints from cache and revalidates in the background.
   const configQuery = useQuery({
     queryKey: ['command-palette', 'config'],
-    queryFn: () => getHermesConfigRecord()
+    queryFn: getHermesConfigRecord
   })
 
   const sessionsQuery = useQuery({
@@ -660,9 +611,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     queryFn: () => listAllProfileSessions(200, 0, 'only')
   })
 
-  // getServers is the shared choke point that also drops malformed (null/
-  // scalar) entries, so the palette never lists a server the MCP tab dropped.
-  const mcpServers = useMemo(() => Object.keys(getServers(configQuery.data ?? null)).sort(), [configQuery.data])
+  const mcpServers = useMemo(() => {
+    const raw = configQuery.data?.mcp_servers
+
+    return raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? Object.keys(raw as Record<string, unknown>).sort()
+      : []
+  }, [configQuery.data])
 
   const sessions = useMemo(() => (sessionsQuery.data?.sessions ?? []).map(toSessionEntry), [sessionsQuery.data])
   const archivedSessions = useMemo(() => (archivedQuery.data?.sessions ?? []).map(toSessionEntry), [archivedQuery.data])
@@ -677,24 +632,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       $commandPalettePage.set(null)
     }
   }, [pendingPage])
-
-  // Landing on a page (deep-link open onto Settings, drilling into a submenu,
-  // stepping back out) must leave the filter typeable immediately — the whole
-  // point of the pill/⌘K hand-off is "just start typing". Radix only
-  // autofocuses on mount; a page swap re-renders the same input, and the
-  // back-button click moves focus to the button.
-  useEffect(() => {
-    inputRef.current?.focus()
-  }, [page])
-
-  // Type-to-search hand-off: the keystroke that opened the palette (typing on
-  // the Settings page) prefills the filter so the first character isn't lost.
-  useEffect(() => {
-    if (pendingSeed !== null) {
-      setSearch(pendingSeed)
-      $commandPaletteSeed.set(null)
-    }
-  }, [pendingSeed])
 
   const go = useCallback((path: string) => () => navigateToWorkspacePage(navigate, path), [navigate])
 
@@ -719,6 +656,14 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const settingsSectionLabel = useCallback(
     (section: (typeof SECTIONS)[number]) => t.settings.sections[section.id] ?? section.label,
     [t.settings.sections]
+  )
+
+  const configFieldLabel = useCallback(
+    (key: string) =>
+      fieldCopyForSchemaKey(t.settings.fieldLabels, key) ??
+      fieldCopyForSchemaKey(FIELD_LABELS, key) ??
+      prettyName(key.split('.').pop() ?? key),
+    [t.settings.fieldLabels]
   )
 
   // Running a keepOpen row (a toggle) changes state the rows themselves report,
@@ -817,6 +762,14 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
                 }
               ]
             : []),
+          {
+            action: 'view.showTerminal',
+            icon: Terminal,
+            id: 'nav-terminal',
+            keywords: ['terminal', 'shell', 'console'],
+            label: t.keybinds.actions['view.showTerminal'],
+            run: () => setTerminalTakeover(true)
+          },
           {
             action: 'nav.settings',
             icon: Settings,
@@ -926,21 +879,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             keywords: ['update', 'upgrade', 'hermes', 'version', 'system', 'restart'],
             label: cc.updateHermes,
             run: () => requestActiveUpdate()
-          },
-          {
-            icon: RefreshCw,
-            id: 'cc-reload-window',
-            keywords: ['reload', 'window', 'refresh', 'restart', 'ui', 'stuck'],
-            label: cc.reloadWindow,
-            run: () => window.location.reload()
-          },
-          {
-            action: 'view.showBrowser',
-            icon: codiconIcon('globe'),
-            id: 'cc-open-browser',
-            keywords: ['browser', 'web', 'url', 'address', 'open', 'navigate', 'internet', 'site'],
-            label: cc.openBrowser,
-            run: () => openBrowserTab()
           }
         ]
       },
@@ -1018,26 +956,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the
   // navigation entries on an empty palette.
-  //
-  // Settings results are the DEEP catalog (schema-driven config fields,
-  // appearance controls, stored credentials — the same entries the Settings
-  // page serves), not a hardcoded key list: ⌘K is the de-facto settings
-  // search everywhere, so root and the settings page must agree. The body
-  // mounts per open, so the catalog queries fire on open and stay warm.
-  const settingsCatalog = useSettingsSearchCatalog(true)
-
-  const settingsEntryItem = useCallback(
-    (entry: SettingsSearchEntry): PaletteItem => ({
-      detail: entry.context,
-      icon: entry.icon,
-      id: `sp-${entry.id}`,
-      keywords: [entry.context, entry.description ?? '', ...entry.keywords],
-      label: entry.label,
-      run: go(`${SETTINGS_ROUTE}?${settingsSearchTargetQuery(entry.target)}`)
-    }),
-    [go]
-  )
-
   const searchGroups = useMemo<PaletteGroup[]>(() => {
     if (!search.trim()) {
       return []
@@ -1117,32 +1035,21 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     // can't render the current light/dark mode, flip to the one it supports.
     result.push({
       heading: t.settings.appearance.themeTitle,
-      items: availableThemes.map(theme => {
-        // Same mode fixup as run(): if a theme cannot render the current
-        // light/dark, preview (and commit) in the one mode it supports.
-        const previewMode = themeSupportsMode(theme.name, resolvedMode)
-          ? resolvedMode
-          : resolvedMode === 'dark'
-            ? 'light'
-            : 'dark'
+      items: availableThemes.map(theme => ({
+        active: themeName === theme.name,
+        icon: Palette,
+        id: `search-theme-${theme.name}`,
+        keepOpen: true,
+        keywords: ['theme', 'appearance', 'color', 'skin', theme.name, theme.description],
+        label: theme.label,
+        run: () => {
+          setTheme(theme.name)
 
-        return {
-          active: themeName === theme.name,
-          icon: Palette,
-          id: `search-theme-${theme.name}`,
-          keepOpen: true,
-          keywords: ['theme', 'appearance', 'color', 'skin', theme.name, theme.description],
-          label: theme.label,
-          onHighlight: () => previewTheme(theme.name, previewMode),
-          run: () => {
-            setTheme(theme.name)
-
-            if (!themeSupportsMode(theme.name, resolvedMode)) {
-              setMode(previewMode)
-            }
+          if (!themeSupportsMode(theme.name, resolvedMode)) {
+            setMode(resolvedMode === 'dark' ? 'light' : 'dark')
           }
         }
-      })
+      }))
     })
 
     // Switch light/dark/system directly (typing "dark" shouldn't require the
@@ -1156,7 +1063,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         keepOpen: true,
         keywords: ['appearance', 'color mode', 'brightness', entry.mode, t.settings.modeOptions[entry.mode].label],
         label: t.settings.modeOptions[entry.mode].label,
-        onHighlight: () => previewTheme(themeName, resolveThemeMode(entry.mode)),
         run: () => setMode(entry.mode)
       }))
     })
@@ -1179,25 +1085,17 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       })
     }
 
-    const fieldItems = [...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
+    const fieldItems = SECTIONS.flatMap(section =>
+      section.keys.map(key => ({
+        icon: section.icon,
+        id: `field-${key}`,
+        keywords: ['settings', key, section.label, settingsSectionLabel(section)],
+        label: `${settingsSectionLabel(section)}: ${configFieldLabel(key)}`,
+        run: go(`${SETTINGS_ROUTE}?tab=config:${section.id}&field=${encodeURIComponent(key)}`)
+      }))
+    )
 
-    if (fieldItems.length > 0) {
-      result.push({ heading: t.commandCenter.settingsFields, items: fieldItems })
-    }
-
-    if (settingsCatalog.pluginEntries.length > 0) {
-      result.push({
-        heading: t.settings.nav.plugins,
-        items: settingsCatalog.pluginEntries.map(settingsEntryItem)
-      })
-    }
-
-    if (settingsCatalog.credentialEntries.length > 0) {
-      result.push({
-        heading: t.settings.nav.apiKeys,
-        items: settingsCatalog.credentialEntries.map(settingsEntryItem)
-      })
-    }
+    result.push({ heading: t.commandCenter.settingsFields, items: fieldItems })
 
     if (mcpServers.length > 0) {
       result.push({
@@ -1235,19 +1133,17 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   }, [
     archivedSessions,
     availableThemes,
+    configFieldLabel,
     go,
     goSession,
     mcpServers,
     mode,
-    previewTheme,
     resolvedMode,
-    resolveThemeMode,
     search,
     sessions,
     setMode,
     setTheme,
-    settingsCatalog,
-    settingsEntryItem,
+    settingsSectionLabel,
     t,
     themeName
   ])
@@ -1260,60 +1156,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     () => [...baseGroups, ...searchGroups, ...branchGroup],
     [baseGroups, branchGroup, searchGroups]
   )
-
-  // Settings-scoped page (⌘K on the Settings overlay, or its search pill):
-  // the same catalog as root, minus everything that isn't settings. Pages
-  // always list; the granular entries surface on type, same contract as the
-  // root.
-  const settingsPageGroups = useMemo<PaletteGroup[]>(() => {
-    const settingsTab = (tab: string) => `${SETTINGS_ROUTE}?tab=${tab}`
-    const cc = t.commandCenter
-
-    const result: PaletteGroup[] = [
-      {
-        heading: cc.settings,
-        items: [
-          ...SECTIONS.map(section => ({
-            icon: section.icon,
-            id: `sp-config-${section.id}`,
-            keywords: ['settings', section.label, settingsSectionLabel(section)],
-            label: settingsSectionLabel(section),
-            run: go(settingsTab(`config:${section.id}`))
-          })),
-          ...NON_CONFIG_SETTINGS.map(entry => ({
-            icon: entry.icon,
-            id: `sp-${entry.tab}`,
-            keywords: ['settings', ...(entry.keywords ?? [])],
-            label: t.settings.nav[entry.labelKey],
-            run: go(settingsTab(entry.tab))
-          }))
-        ]
-      }
-    ]
-
-    if (search.trim()) {
-      result.push({
-        heading: cc.settingsFields,
-        items: [...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
-      })
-
-      if (settingsCatalog.pluginEntries.length > 0) {
-        result.push({
-          heading: t.settings.nav.plugins,
-          items: settingsCatalog.pluginEntries.map(settingsEntryItem)
-        })
-      }
-
-      if (settingsCatalog.credentialEntries.length > 0) {
-        result.push({
-          heading: t.settings.nav.apiKeys,
-          items: settingsCatalog.credentialEntries.map(settingsEntryItem)
-        })
-      }
-    }
-
-    return result
-  }, [go, search, settingsCatalog, settingsEntryItem, settingsSectionLabel, t])
 
   // Nested palette pages (VS Code-style submenus). Reusable: add an entry here
   // and point a root item at it via `to`.
@@ -1335,51 +1177,26 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
               }
             ]
           },
-          // Brightness lives with the palettes: one mode toggle for the whole
-          // list instead of splitting every theme across a Light and a Dark group.
-          {
-            heading: t.settings.appearance.colorMode,
-            items: THEME_MODES.map(entry => ({
-              active: mode === entry.mode,
-              icon: entry.icon,
-              id: `theme-mode-${entry.mode}`,
-              keepOpen: true,
-              keywords: ['appearance', 'brightness', 'color mode', t.settings.modeOptions[entry.mode].label],
-              label: t.settings.modeOptions[entry.mode].label,
-              onHighlight: () => previewTheme(themeName, resolveThemeMode(entry.mode)),
-              run: () => setMode(entry.mode)
-            }))
-          },
-          // Every palette once, applied on top of the selected mode. An import
-          // that only ships one variant (Dracula) flips the mode to the side it
-          // can actually render.
-          {
-            heading: t.settings.appearance.themeTitle,
-            items: availableThemes.map(theme => {
-              const previewMode = themeSupportsMode(theme.name, resolvedMode)
-                ? resolvedMode
-                : resolvedMode === 'dark'
-                  ? 'light'
-                  : 'dark'
-
-              return {
-                active: themeName === theme.name,
-                icon: Palette,
-                id: `theme-${theme.name}`,
+          // Built-ins and imported families list under the mode(s) they support;
+          // picking sets skin + mode at once. A multi-variant import (GitHub,
+          // Solarized) appears in both groups and switches variants with the mode.
+          ...(['light', 'dark'] as const).map(groupMode => ({
+            heading: groupMode === 'light' ? t.settings.modeOptions.light.label : t.settings.modeOptions.dark.label,
+            items: availableThemes
+              .filter(theme => themeSupportsMode(theme.name, groupMode))
+              .map(theme => ({
+                active: themeName === theme.name && resolvedMode === groupMode,
+                icon: groupMode === 'light' ? Sun : Moon,
+                id: `theme-${theme.name}-${groupMode}`,
                 keepOpen: true,
-                keywords: ['theme', 'appearance', 'palette', theme.label, theme.description ?? ''],
+                keywords: ['theme', 'appearance', 'palette', groupMode, theme.label, theme.description ?? ''],
                 label: theme.label,
-                onHighlight: () => previewTheme(theme.name, previewMode),
                 run: () => {
                   setTheme(theme.name)
-
-                  if (previewMode !== resolvedMode) {
-                    setMode(previewMode)
-                  }
+                  setMode(groupMode)
                 }
-              }
-            })
-          }
+              }))
+          }))
         ]
       },
       'color-mode': {
@@ -1395,7 +1212,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
               keepOpen: true,
               keywords: ['appearance', 'brightness', t.settings.modeOptions[entry.mode].label],
               label: t.settings.modeOptions[entry.mode].label,
-              onHighlight: () => previewTheme(themeName, resolveThemeMode(entry.mode)),
               run: () => setMode(entry.mode)
             }))
           }
@@ -1413,82 +1229,15 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         title: t.commandCenter.installTheme.pageTitle,
         placeholder: t.commandCenter.installTheme.placeholder,
         groups: []
-      },
-      // Settings-scoped search (⌘K while the Settings overlay is up, or the
-      // search pill beside its close button).
-      settings: {
-        title: t.commandCenter.nav.settings.title,
-        placeholder: t.settings.search.placeholder,
-        groups: settingsPageGroups
       }
     }),
-    [
-      availableThemes,
-      mode,
-      previewTheme,
-      resolvedMode,
-      resolveThemeMode,
-      setMode,
-      setTheme,
-      settingsPageGroups,
-      t,
-      themeName
-    ]
+    [availableThemes, mode, resolvedMode, setMode, setTheme, t, themeName]
   )
 
   const activePage = page ? subPages[page] : null
   const unrankedGroups = activePage ? activePage.groups : groups
   const visibleGroups = useMemo(() => rankGroups(unrankedGroups, search), [unrankedGroups, search])
   const placeholder = activePage ? activePage.placeholder : t.commandCenter.searchPlaceholder
-
-  // The HighlightWatcher inside <Command> reports the highlighted row (arrows
-  // or hover) from the cmdk store. Resolve it back to its PaletteItem so
-  // preview-capable rows (the theme pickers) can paint live. Any other
-  // highlight clears the preview.
-  const itemByValue = useMemo(() => {
-    const map = new Map<string, PaletteItem>()
-
-    for (const group of visibleGroups) {
-      for (const item of group.items) {
-        map.set(paletteValue(item), item)
-      }
-    }
-
-    return map
-  }, [visibleGroups])
-
-  const handleHighlight = useCallback(
-    (value: string) => {
-      const item = itemByValue.get(value)
-
-      if (item?.onHighlight) {
-        item.onHighlight()
-      } else {
-        clearThemePreview()
-      }
-    },
-    [clearThemePreview, itemByValue]
-  )
-
-  // A preview lives only while its rows show. If the page changes, give the
-  // paint back to the committed appearance.
-  useEffect(() => {
-    clearThemePreview()
-  }, [page, clearThemePreview])
-
-  // Clear at close START, not at unmount. The body stays mounted through the
-  // whole exit animation (see CommandPalette), so an unmount clear would
-  // revert the theme only after the fade. The unmount return is the backstop
-  // for a body that dies without a close (a remount on reopen).
-  const paletteOpen = useStore($commandPaletteOpen)
-
-  useEffect(() => {
-    if (!paletteOpen) {
-      clearThemePreview()
-    }
-  }, [paletteOpen, clearThemePreview])
-
-  useEffect(() => clearThemePreview, [clearThemePreview])
 
   const handleSelect = (item: PaletteItem) => {
     if (item.to) {
@@ -1541,7 +1290,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       >
         <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
         <Command className="bg-transparent" loop shouldFilter={false}>
-          <HighlightWatcher onValue={handleHighlight} />
           {activePage && (
             <button
               className="flex w-full items-center gap-1.5 border-b border-border px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
@@ -1577,7 +1325,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             }}
             onValueChange={setSearch}
             placeholder={placeholder}
-            ref={inputRef}
             right={page === 'pets' ? <PetInlineToggle /> : undefined}
             value={search}
           />

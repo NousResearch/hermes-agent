@@ -20,7 +20,7 @@ function seedValues(config: MemoryProviderConfig): Record<string, string> {
   )
 }
 
-export function ProviderConfigPanel({ profile, provider }: { profile?: string; provider: string }) {
+export function ProviderConfigPanel({ provider }: { provider: string }) {
   const [config, setConfig] = useState<MemoryProviderConfig | null>(null)
   const [loadError, setLoadError] = useState<null | string>(null)
   const [values, setValues] = useState<Record<string, string>>({})
@@ -30,7 +30,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
 
   const refresh = useCallback(async () => {
     try {
-      const next = await getMemoryProviderConfig(provider, profile)
+      const next = await getMemoryProviderConfig(provider)
       const seed = seedValues(next)
       setConfig(next)
       setValues(seed)
@@ -40,7 +40,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
       setConfig(null)
       setLoadError(err instanceof Error ? err.message : 'Memory provider settings failed to load')
     }
-  }, [profile, provider])
+  }, [provider])
 
   useEffect(() => {
     setConfig(null)
@@ -56,7 +56,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
       }
 
       try {
-        await saveMemoryProviderConfig(provider, { [field.key]: value }, profile)
+        await saveMemoryProviderConfig(provider, { [field.key]: value })
 
         if (field.kind === 'secret') {
           setValues(current => ({ ...current, [field.key]: '' }))
@@ -74,7 +74,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
         notifyError(err, `Failed to save ${field.label}`)
       }
     },
-    [profile, provider, saved]
+    [provider, saved]
   )
 
   // Providers without a declared config surface (e.g. builtin) render nothing.
@@ -155,7 +155,6 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
           onOpenChange={setShowModal}
           onSaved={refresh}
           open={showModal}
-          profile={profile}
           provider={provider}
         />
       )}

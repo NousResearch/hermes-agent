@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
-from agent.secret_scope import get_secret, is_multiplex_active
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -573,7 +572,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         # Docker venv the package isn't present until ensure() runs, but
         # ensure() only runs once the provider is loaded — which this gates.
         # Mirrors honcho/mem0, which check config only. No network calls.
-        return bool(get_secret("SUPERMEMORY_API_KEY", ""))
+        return bool(os.environ.get("SUPERMEMORY_API_KEY", ""))
 
     def get_config_schema(self):
         # Only prompt for the API key during `hermes memory setup`.
@@ -596,11 +595,13 @@ class SupermemoryMemoryProvider(MemoryProvider):
 
         del provider_config
         hermes_home = str(get_hermes_home())
-        api_key = get_secret("SUPERMEMORY_API_KEY", "") or ""
+        api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
         status = _probe_supermemory_connection(api_key, hermes_home)
         return {"summary": _format_connection_summary(status)}
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
+        from pathlib import Path
+
         from hermes_cli.config import save_config
         from hermes_cli.memory_setup import _prompt, _write_env_vars
 
@@ -623,21 +624,13 @@ class SupermemoryMemoryProvider(MemoryProvider):
         save_config(config)
 
         if env_writes:
-            _write_env_vars(env_writes, hermes_home=hermes_home)
+            _write_env_vars(Path(hermes_home) / ".env", env_writes)
 
         api_key = env_writes.get("SUPERMEMORY_API_KEY") or existing
         # Make the freshly-entered key visible to the connection probe below.
         # (Checks the VALUE of SUPERMEMORY_API_KEY, not whether the key string
         # happens to name some unrelated env var.)
-        # Single-profile convenience only: never write a profile's key into
-        # the process-global environ under a multiplexed gateway — sibling
-        # profiles' turns (and any subprocess spawned with env=os.environ)
-        # would inherit it.
-        if (
-            api_key
-            and not is_multiplex_active()
-            and os.environ.get("SUPERMEMORY_API_KEY") != api_key
-        ):
+        if api_key and os.environ.get("SUPERMEMORY_API_KEY") != api_key:
             os.environ["SUPERMEMORY_API_KEY"] = api_key
 
         status = _probe_supermemory_connection(api_key, hermes_home)
@@ -654,7 +647,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._session_id = session_id
         self._turn_count = 0
         self._config = _load_supermemory_config(self._hermes_home)
-        self._api_key = get_secret("SUPERMEMORY_API_KEY", "") or ""
+        self._api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
 
         # Resolve container tag: env var > config > default.
         # Supports {identity} template for profile-scoped containers.

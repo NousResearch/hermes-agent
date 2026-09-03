@@ -323,7 +323,7 @@ Results are delivered to your home channel.
 Run long operations without blocking the conversation:
 
 ```
-/bg Analyze all files in the archive
+/background Analyze all files in the archive
 ```
 
 ### Cross-Platform Messages

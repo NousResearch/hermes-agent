@@ -39,7 +39,7 @@ export interface VersionStatusInput {
   /** Client only: short commit sha of the running build. */
   sha?: null | string
   target: UpdateTarget
-  /** An update the commit count can't express (shallow clones, pip installs). */
+  /** Backend only: an update the commit count can't express (pip installs). */
   updateAvailable?: boolean
   version?: null | string
 }
@@ -70,12 +70,7 @@ export function resolveVersionStatus({
 }: VersionStatusInput): VersionStatusResult {
   const client = target === 'client'
   const busy = applying || restarting
-  // updateAvailable covers every "behind but uncountable" shape: shallow
-  // installer clones (behind === null upstream, coalesced to 0 by callers),
-  // SSH-official presence-only checks, and pip installs. It applies to BOTH
-  // targets — the client statusbar item is how a shallow desktop install
-  // learns it's stale at all.
-  const available = behind > 0 || !!updateAvailable
+  const available = behind > 0 || (!client && !!updateAvailable)
 
   // A client with no version still identifies itself by sha; a backend can't.
   const named = version ?? (client ? sha : null) ?? copy.unknown

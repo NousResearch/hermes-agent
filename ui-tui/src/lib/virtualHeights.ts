@@ -74,7 +74,6 @@ export const estimatedMsgHeight = (
     details,
     leadGap = false,
     thinkingVisible = details,
-    thinkingExpanded = thinkingVisible,
     toolsVisible = details,
     userPrompt = '',
     withSeparator = false
@@ -82,7 +81,6 @@ export const estimatedMsgHeight = (
     compact: boolean
     details: boolean
     leadGap?: boolean
-    thinkingExpanded?: boolean
     thinkingVisible?: boolean
     toolsVisible?: boolean
     userPrompt?: string
@@ -126,7 +124,7 @@ export const estimatedMsgHeight = (
     if (hasVisibleDetails) {
       h +=
         (hasVisibleTools ? (msg.tools?.length ?? 0) : 0) +
-        (hasVisibleThinking ? (thinkingExpanded ? wrappedLines(msg.thinking ?? '', bodyWidth) : 1) : 0)
+        (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)
 
       if (msg.role === 'assistant' && /\S/.test(msg.text)) {
         h += 2

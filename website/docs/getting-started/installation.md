@@ -82,10 +82,6 @@ hermes setup --portal
 That logs you in, sets Nous as your provider, and turns on the Tool Gateway in one command.
 :::
 
-:::tip Already running Hermes on another machine?
-You don't need to rebuild your setup from scratch. Restore a full backup with `hermes import` (see [Exporting Hermes to another machine](/reference/faq#exporting-hermes-to-another-machine)), or bring over a single agent with `hermes profile import` (see [Moving a single profile to another machine](/reference/faq#moving-a-single-profile-to-another-machine)). Note that a profile export excludes credentials by design, so an export alone is not a full backup — [`hermes backup` vs `hermes profile export`](/reference/faq#hermes-backup-vs-hermes-profile-export) explains which to use.
-:::
-
 ---
 
 ## Prerequisites
@@ -94,7 +90,7 @@ You don't need to rebuild your setup from scratch. Restore a full backup with `h
 
 - **uv** (fast Python package manager)
 - **Python 3.11** (via uv, no sudo needed)
-- **Node.js v26** (for browser automation and WhatsApp bridge; existing system Node 22.22+, 24.11+, or 26+ is used as-is)
+- **Node.js v22** (for browser automation and WhatsApp bridge)
 - **ripgrep** (fast file search)
 - **ffmpeg** (audio format conversion for TTS)
 
@@ -136,8 +132,6 @@ Running Hermes as a dedicated unprivileged user (e.g. a `hermes` systemd service
    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser
    ```
 
-   The installer also pre-installs [`cua-driver`](../user-guide/features/computer-use.md) so the Computer Use toolset works the moment you enable it; pass `--skip-computer-use` to opt out (it will then install on demand when you enable the tool).
-
 3. **Make `hermes` available to the service user's shells.** The installer writes the launcher to `~/.local/bin/hermes`. System service accounts often have a minimal PATH that doesn't include `~/.local/bin`. Either add it to the user's environment, or symlink the launcher into a system location:
    ```bash
    # Option A — add to the service user's profile
@@ -148,14 +142,6 @@ Running Hermes as a dedicated unprivileged user (e.g. a `hermes` systemd service
    ```
 
 4. **Verify:** `hermes doctor` should now run cleanly. If you get `ModuleNotFoundError: No module named 'dotenv'`, you're invoking the repo source `hermes` file (`~/.hermes/hermes-agent/hermes`) with system Python instead of the venv launcher (`~/.hermes/hermes-agent/venv/bin/hermes`) — fix step 3.
-
-5. **Running the messaging gateway from this account?** A user-level service stops at logout and does not start at boot until you enable lingering for the service user:
-
-   ```bash
-   sudo loginctl enable-linger <service-user>
-   ```
-
-   See [Messaging Gateway](/user-guide/messaging/) for the service setup itself.
 
 The same pattern works on Arch (the installer uses pacman with the same sudo-detection logic), Fedora/RHEL, and openSUSE — those distros don't support `--with-deps` at all, so an administrator always installs the system libraries separately. The relevant `dnf`/`zypper` commands are printed by the installer.
 

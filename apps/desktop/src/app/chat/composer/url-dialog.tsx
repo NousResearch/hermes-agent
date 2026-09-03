@@ -37,7 +37,7 @@ export function UrlDialog({
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent bodyClassName="gap-5" className="max-w-md">
+      <DialogContent className="max-w-md gap-5">
         <DialogHeader>
           <DialogTitle icon={Globe}>{c.attachUrlTitle}</DialogTitle>
           <DialogDescription>{c.attachUrlDesc}</DialogDescription>

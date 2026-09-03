@@ -1,5 +1,5 @@
 ---
-name: modal
+name: modal-serverless-gpu
 description: Serverless GPU cloud for ML jobs and model APIs.
 version: 1.0.1
 author: Orchestra Research
@@ -14,7 +14,7 @@ metadata:
 
 # Modal Serverless GPU
 
-Guide to running ML workloads on Modal's serverless GPU cloud platform.
+Comprehensive guide to running ML workloads on Modal's serverless GPU cloud platform.
 
 ## When to use Modal
 

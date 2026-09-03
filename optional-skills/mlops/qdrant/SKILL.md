@@ -1,5 +1,5 @@
 ---
-name: qdrant
+name: qdrant-vector-search
 description: Vector search engine for production RAG systems.
 version: 1.0.1
 author: Orchestra Research

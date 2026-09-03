@@ -12,7 +12,6 @@ import type {
   SubscriptionStateResponse,
   SubscriptionUpgradeResponse
 } from '../gatewayTypes.js'
-import type { QueueItem } from '../hooks/useQueue.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { ActiveWidget } from '../sdk/types.js'
@@ -322,10 +321,6 @@ export interface UiState {
   busy: boolean
   busyInputMode: BusyInputMode
   compact: boolean
-  // Context compaction in progress (idle/preflight/auto). Distinct from
-  // `compact`, which is the /compact layout-density flag.
-  compacting: boolean
-  destructiveSlashConfirm: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
   // Focus view (/focus) — display-only reduced-output mode. Drives the
@@ -346,15 +341,8 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: StatusBarMode
-  // display.status_bar.fields — visibility filter for status-rule segments,
-  // shared with the classic CLI bar. null = user has not customized (show
-  // the default set).
-  statusBarFields: null | ReadonlySet<string>
   streaming: boolean
   theme: Theme
-  // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
-  // rows, the same config key the classic CLI honors (#41531).
-  timestamps: boolean
   usage: Usage
 }
 
@@ -381,19 +369,19 @@ export interface ComposerActions {
   attachImagePath: (path: string) => void
   clearIn: () => void
   dequeue: () => string | undefined
-  enqueue: (text: string, display?: string) => void
+  enqueue: (text: string) => void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
-  prependQueue: (item: QueueItem) => void
   pushHistory: (text: string) => void
   removeQueue: (index: number) => void
+  replaceQueue: (index: number, text: string) => void
   setCompIdx: StateSetter<number>
   setComposerTokens: StateSetter<ComposerToken[]>
   setHistoryIdx: StateSetter<null | number>
   setInput: StateSetter<string>
   setInputBuf: StateSetter<string[]>
   setQueueEdit: (index: null | number) => void
-  takeQueue: (index: number, editedDisplay?: string) => QueueItem | undefined
+  syncQueue: () => void
   /** Reconcile attached payloads against tokens still present in the text. */
   syncTokens: (value: string) => void
 }
@@ -402,7 +390,7 @@ export interface ComposerRefs {
   historyDraftRef: MutableRefObject<string>
   historyRef: MutableRefObject<string[]>
   queueEditRef: MutableRefObject<null | number>
-  queueRef: MutableRefObject<QueueItem[]>
+  queueRef: MutableRefObject<string[]>
   submitRef: MutableRefObject<(value: string) => void>
   tokensRef: MutableRefObject<ComposerToken[]>
 }
@@ -490,15 +478,10 @@ export interface GatewayEventHandlerContext {
     setCatalog: StateSetter<null | SlashCatalog>
   }
   submission: {
-    /** Submit text literally as a prompt — no slash/!/interpolation dispatch.
-     *  Used for `-q` startup queries, which are arbitrary launcher-provided
-     *  text (parity with one-shot's literal prompt handling). */
-    submitLiteralRef: MutableRefObject<(value: string) => void>
     submitRef: MutableRefObject<(value: string) => void>
   }
   system: {
     bellOnComplete: boolean
-    bellOnPrompt?: boolean
     stdout?: NodeJS.WriteStream
     sys: (text: string) => void
   }
@@ -519,10 +502,10 @@ export interface SlashHandlerContext {
   composer: {
     attachClipboardImage: () => void
     attachImagePath: (path: string) => void
-    enqueue: (text: string, display?: string) => void
+    enqueue: (text: string) => void
     hasSelection: boolean
     openEditor: () => Promise<void>
-    queueRef: MutableRefObject<QueueItem[]>
+    queueRef: MutableRefObject<string[]>
     selection: SelectionApi
     setInput: StateSetter<string>
   }
@@ -564,7 +547,6 @@ export interface SlashHandlerContext {
 export interface AppLayoutActions {
   answerApproval: (choice: string) => void
   answerClarify: (answer: string) => void
-  answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   clearSelection: () => void
@@ -602,7 +584,6 @@ export interface AppLayoutStatusProps {
   goodVibesTick: number
   lastTurnEndedAt: null | number
   sessionStartedAt: null | number
-  sessionTitle: string
   showStickyPrompt: boolean
   statusColor: string
   stickyPrompt: string
@@ -632,7 +613,6 @@ export interface AppOverlaysProps {
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
   onClarifyAnswer: (value: string) => void
-  onClarifyQuestionAnswer: (qid: string, value: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onModelSelect: (value: string) => void

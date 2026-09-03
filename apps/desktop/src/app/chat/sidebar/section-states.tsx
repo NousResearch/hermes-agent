@@ -4,22 +4,19 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
-import { SidebarRowCluster, SidebarRowShell, SidebarRowStack } from './chrome'
-
-// Stands in for session rows, so it borrows their chrome instead of copying
-// the grid — a placeholder on a different edge than the rows it resolves into
-// makes the list step sideways on load.
 export function SidebarSessionSkeletons() {
   return (
-    <SidebarRowStack aria-hidden="true">
+    <div aria-hidden="true" className="grid gap-px">
       {['w-32', 'w-40', 'w-28', 'w-36', 'w-24'].map((width, i) => (
-        <SidebarRowShell actions={<Skeleton className="size-3.5 rounded-sm opacity-60" />} key={`${width}-${i}`}>
-          <SidebarRowCluster>
-            <Skeleton className={cn('h-3 rounded-sm', width)} />
-          </SidebarRowCluster>
-        </SidebarRowShell>
+        <div
+          className="grid min-h-[1.625rem] grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md pl-2"
+          key={`${width}-${i}`}
+        >
+          <Skeleton className={cn('h-3 rounded-sm', width)} />
+          <Skeleton className="mx-auto size-3.5 rounded-sm opacity-60" />
+        </div>
       ))}
-    </SidebarRowStack>
+    </div>
   )
 }
 

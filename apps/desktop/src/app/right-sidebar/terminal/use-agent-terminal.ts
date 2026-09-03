@@ -5,19 +5,14 @@ import { Terminal } from '@xterm/xterm'
 import { useEffect, useRef } from 'react'
 
 import { writeClipboardText } from '@/components/ui/copy-button'
-import { markRightPanePerf } from '@/debug/right-pane-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { useTheme } from '@/themes/context'
 
-import { observeActiveTerminalResize } from './active-resize'
 import { registerAgentTerminalWriter } from './agent-terminal-stream'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import { isMacPlatform, resolveSurfaceColor, terminalTheme } from './selection'
-import { registerTerminalContextMenu } from './terminal-context-menu'
-import { prepareTerminalFontFamily } from './terminal-font'
-import { useTerminalFontController } from './use-terminal-font'
 
 // Read-only terminal for an agent background process: a write-only xterm (no PTY,
 // no input) fed live by the backend output stream, keyed by process id. Shares
@@ -27,19 +22,13 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
   const hostRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const webglRef = useRef<WebglAddon | null>(null)
-  const fitRef = useRef<((visible: boolean) => void) | null>(null)
-  const initialActiveFitRef = useRef(false)
-  const { latestFontFamilyRef, mountedRef } = useTerminalFontController({ fitRef, termRef, webglRef })
+  const fitRef = useRef<(() => void) | null>(null)
 
   const surfaceTheme = () => {
     const ansi = renderedMode === 'dark' ? (theme.darkTerminal ?? theme.terminal) : theme.terminal
-    const base = terminalTheme(renderedMode, ansi)
-    // Fall back to the palette's own background, not white — a hardcoded
-    // '#ffffff' flashes a white slab in dark mode whenever the probe can't read
-    // the token (pre-paint mount). Same contract as the user terminal.
-    const surface = resolveSurfaceColor(base.background ?? '#ffffff')
+    const surface = resolveSurfaceColor('#ffffff')
 
-    return { ...base, background: surface, cursorAccent: surface }
+    return { ...terminalTheme(renderedMode, ansi), background: surface, cursorAccent: surface }
   }
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
@@ -50,19 +39,13 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       return
     }
 
-    let disposed = false
-
-    let unregister = () => {}
-
-    let unregisterReader = () => {}
-
     const term = new Terminal({
       allowProposedApi: true,
       allowTransparency: false,
       convertEol: true,
       cursorBlink: false,
       disableStdin: true,
-      fontFamily: latestFontFamilyRef.current,
+      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
       fontSize: 11,
       fontWeight: 'normal',
       fontWeightBold: 'bold',
@@ -79,19 +62,12 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     term.loadAddon(new Unicode11Addon())
     term.loadAddon(terminalWebLinksAddon())
     term.unicode.activeVersion = '11'
+    term.open(host)
+    termRef.current = term
 
     // Read-only mirror, but the output is exactly what people want to copy.
     // No paste path: this terminal has no PTY to paste into.
     const selectionDisposable = term.onSelectionChange(() => mirrorSelection(host, term.getSelection()))
-
-    // Right-clicks resolve through the app context menu; the handle carries
-    // the xterm selection the DOM resolver cannot see. paste stays null —
-    // there is nothing to paste into.
-    const contextMenuDisposable = registerTerminalContextMenu(host, {
-      getSelection: () => term.getSelection(),
-      paste: null,
-      selectAll: () => term.selectAll()
-    })
 
     term.attachCustomKeyEventHandler(event => {
       const intent = terminalClipboardIntent(event, {
@@ -113,66 +89,41 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       return false
     })
 
-    fitRef.current = visible => {
+    fitRef.current = () => {
       if (host.clientWidth > 0 && host.clientHeight > 0) {
         try {
           fit.fit()
-          markRightPanePerf(visible ? 'terminal-fit-active' : 'terminal-fit-hidden', id)
         } catch {
           // Mid-transition layout — the next observer tick refits.
         }
       }
     }
 
-    const mount = () => {
-      if (disposed || !host.isConnected) {
-        return
-      }
-
-      term.open(host)
-      termRef.current = term
-      mountedRef.current = true
-
-      try {
-        const webgl = new WebglAddon()
-        webgl.onContextLoss(() => {
-          webgl.dispose()
-          webglRef.current = null
-        })
-        term.loadAddon(webgl)
-        webglRef.current = webgl
-      } catch {
-        // No WebGL — xterm falls back to the DOM renderer.
-      }
-
-      fitRef.current?.(active)
-      initialActiveFitRef.current = active
-
-      // Stream live output straight into the terminal (replays backlog on attach).
-      unregister = registerAgentTerminalWriter(procId, chunk => term.write(chunk))
-      unregisterReader = registerTerminalReader(id, makeTerminalReader(term))
+    try {
+      const webgl = new WebglAddon()
+      webgl.onContextLoss(() => {
+        webgl.dispose()
+        webglRef.current = null
+      })
+      term.loadAddon(webgl)
+      webglRef.current = webgl
+    } catch {
+      // No WebGL — xterm falls back to the DOM renderer.
     }
 
-    void prepareTerminalFontFamily(
-      () => latestFontFamilyRef.current,
-      () => !disposed && host.isConnected
-    ).then(fontFamily => {
-      if (!fontFamily) {
-        return
-      }
+    fitRef.current()
+    const observer = new ResizeObserver(() => fitRef.current?.())
+    observer.observe(host)
 
-      term.options.fontFamily = fontFamily
-      mount()
-    })
+    // Stream live output straight into the terminal (replays backlog on attach).
+    const unregister = registerAgentTerminalWriter(procId, chunk => term.write(chunk))
+    const unregisterReader = registerTerminalReader(id, makeTerminalReader(term))
 
     return () => {
-      disposed = true
-      mountedRef.current = false
       unregister()
       unregisterReader()
       selectionDisposable.dispose()
-      contextMenuDisposable()
-      fitRef.current = null
+      observer.disconnect()
       term.dispose()
       termRef.current = null
       webglRef.current = null
@@ -196,39 +147,25 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renderedMode, themeName])
 
-  // Keep inactive agent terminals mounted for their backlog, but do not observe
-  // or fit them until they become the visible tab.
-  // eslint-disable-next-line no-restricted-syntax -- lifecycle flag prevents a duplicate first-mount fit
+  // A visibility:hidden xterm doesn't paint — refit + redraw on re-activation.
   useEffect(() => {
     if (!active) {
-      initialActiveFitRef.current = false
-
       return
     }
 
-    const host = hostRef.current
+    const frame = requestAnimationFrame(() => {
+      const term = termRef.current
 
-    if (!host) {
-      return
-    }
-
-    const fitOnActivate = !initialActiveFitRef.current
-    initialActiveFitRef.current = false
-
-    return observeActiveTerminalResize(host, {
-      fitOnActivate,
-      onFit: () => fitRef.current?.(true),
-      onActivate: () => {
-        const term = termRef.current
-
-        webglRef.current?.clearTextureAtlas()
-        term?.refresh(0, term.rows - 1)
-        // Take focus on activation (parity with the user terminal) so the active
-        // agent tab holds focus and ⌘W's isFocusWithin('[data-terminal]') routes
-        // the close to this tab rather than to a preview.
-        term?.focus()
-      }
+      fitRef.current?.()
+      webglRef.current?.clearTextureAtlas()
+      term?.refresh(0, term.rows - 1)
+      // Take focus on activation (parity with the user terminal) so the active
+      // agent tab holds focus and ⌘W's isFocusWithin('[data-terminal]') routes
+      // the close to this tab rather than to a preview.
+      term?.focus()
     })
+
+    return () => cancelAnimationFrame(frame)
   }, [active])
 
   return { hostRef }

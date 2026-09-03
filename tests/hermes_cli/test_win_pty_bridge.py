@@ -25,11 +25,10 @@ import pytest
 # must never raise, otherwise the web_server import branch becomes a trap.
 from hermes_cli.win_pty_bridge import PtyUnavailableError, WinPtyBridge
 
-# ``pytest.mark.windows_only`` rather than a local ``skipif`` alias: the
-# dedicated Windows CI job selects its files by grepping for the marker name
-# and then filters with ``-m windows_only``. A file-local skipif alias matched
-# the grep (so the file was listed) but carried no marker, so every test below
-# was deselected — the lane looked like it covered ConPTY and ran none of it.
+windows_only = pytest.mark.skipif(
+    not sys.platform.startswith("win"),
+    reason="ConPTY bridge is Windows-only",
+)
 
 
 def _read_until(bridge: WinPtyBridge, needle: bytes, timeout: float = 10.0) -> bytes:
@@ -81,7 +80,7 @@ class TestWinPtyBridgeUnavailable:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.windows_only
+@windows_only
 class TestWinPtyBridgeSpawn:
 
     def test_spawn_returns_bridge_with_pid(self):
@@ -98,7 +97,7 @@ class TestWinPtyBridgeSpawn:
             WinPtyBridge.spawn([bogus])
 
 
-@pytest.mark.windows_only
+@windows_only
 class TestWinPtyBridgeIO:
 
     def test_write_sends_to_child_stdin(self):
@@ -137,7 +136,7 @@ class TestWinPtyBridgeIO:
             bridge.close()
 
 
-@pytest.mark.windows_only
+@windows_only
 class TestWinPtyBridgeResize:
     def test_resize_does_not_raise_on_live_child(self):
         # ConPTY exposes no ioctl-equivalent for reading the child's current
@@ -165,7 +164,7 @@ class TestWinPtyBridgeResize:
         bridge.resize(cols=100, rows=40)
 
 
-@pytest.mark.windows_only
+@windows_only
 class TestClampDimension:
     """The clamp helper is the load-bearing piece — the dashboard sends
     untrusted winsize values straight from xterm.js, and pywinpty's
@@ -187,7 +186,7 @@ class TestClampDimension:
         assert _clamp(float("inf"), _MAX_COLS) == 1  # type: ignore[arg-type]
 
 
-@pytest.mark.windows_only
+@windows_only
 class TestWinPtyBridgeClose:
 
     def test_close_terminates_long_running_child(self):
@@ -209,7 +208,7 @@ class TestWinPtyBridgeClose:
         )
 
 
-@pytest.mark.windows_only
+@windows_only
 class TestWinPtyBridgeEnv:
     def test_cwd_is_respected(self, tmp_path):
         bridge = WinPtyBridge.spawn(

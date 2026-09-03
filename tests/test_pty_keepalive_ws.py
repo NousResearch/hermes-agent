@@ -8,13 +8,12 @@ from hermes_cli import web_server
 class FakeBridge:
     def __init__(self):
         self.alive = True
-        self.written = bytearray()
 
     def read(self, timeout):
         return b""        # idle forever
 
     def write(self, data):
-        self.written.extend(data)
+        pass
 
     def resize(self, cols, rows):
         pass
@@ -25,16 +24,11 @@ class FakeBridge:
 
 @pytest.fixture
 def pty_keepalive_harness(monkeypatch):
-    class Spawned(list):
-        pass
-
-    spawned = Spawned()
-    spawned.bridges = []
+    spawned = []
 
     def fake_spawn(argv, cwd=None, env=None):
         b = FakeBridge()
         spawned.append(argv)
-        spawned.bridges.append(b)
         return b
 
     monkeypatch.setattr(web_server.PtyBridge, "spawn", staticmethod(fake_spawn))
@@ -66,7 +60,6 @@ async def test_attach_token_reuses_same_session(pty_keepalive_harness):
     with client.websocket_connect("/api/pty?attach=TOK1") as ws2:
         ws2.send_bytes(b"again")
     assert len(pty_keepalive_harness) == 1                # reattached, did not respawn
-    assert bytes(pty_keepalive_harness.bridges[0].written) == b"hi\x0cagain"
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,7 @@ import {
 import { Tip, TipHintLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
-import { isMetaClose, middleClickHandlers } from '@/lib/middle-click'
+import { middleClickHandlers } from '@/lib/middle-click'
 import { cn } from '@/lib/utils'
 import { $bindings } from '@/store/keybinds'
 
@@ -29,7 +29,7 @@ import {
 } from './terminals'
 
 const RAIL_ACTION =
-  'grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring [-webkit-app-region:no-drag]'
+  'grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring [-webkit-app-region:no-drag]'
 
 /** Thin icon "bookmark" strip blended into the terminal surface, shown whenever a
  *  terminal exists. Each square is a tab (name + hotkey on hover); close via the
@@ -44,7 +44,7 @@ export function TerminalRail() {
 
   return (
     <div
-      className="group/rail relative z-40 flex h-full w-9 shrink-0 flex-col items-center border-l border-(--ui-stroke-quaternary) bg-(--ui-terminal-surface-background)"
+      className="group/rail relative z-40 flex h-full w-9 shrink-0 flex-col items-center border-l border-(--ui-stroke-quaternary) bg-(--ui-editor-surface-background)"
       // The rail sits at the pane's outer edge, under the collapsed sidebars'
       // hover-reveal triggers; mark it so those triggers go pointer-transparent
       // while it's hovered (see the suppression rules in styles.css) and a reach
@@ -132,8 +132,7 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
                   : 'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
               )}
               {...middleClickHandlers(() => closeTerminal(term.id))}
-              // ⌘-click closes (the pane-tab gesture); a plain click selects.
-              onClick={event => (isMetaClose(event) ? closeTerminal(term.id) : selectTerminal(term.id))}
+              onClick={() => selectTerminal(term.id)}
               role="tab"
               type="button"
             >

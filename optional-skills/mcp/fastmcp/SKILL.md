@@ -11,7 +11,7 @@ metadata:
     homepage: https://gofastmcp.com
     related_skills: [hermes-agent, mcporter]
 prerequisites:
-  commands: [python]
+  commands: [python3]
 ---
 
 # FastMCP

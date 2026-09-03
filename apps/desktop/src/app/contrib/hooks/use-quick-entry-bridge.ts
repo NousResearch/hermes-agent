@@ -9,7 +9,7 @@ import {
 } from '@/store/quick-entry'
 import { $gatewayState, $sessions } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
-import { isAuxiliaryWindow } from '@/store/windows'
+import { isSecondaryWindow } from '@/store/windows'
 
 interface QuickEntryBridgeParams {
   startFreshSessionDraft: () => void
@@ -57,7 +57,7 @@ export function useQuickEntryBridge({ startFreshSessionDraft, submitText }: Quic
   startFreshRef.current = startFreshSessionDraft
 
   useEffect(() => {
-    if (isAuxiliaryWindow()) {
+    if (isSecondaryWindow()) {
       return
     }
 
@@ -101,7 +101,7 @@ export function useQuickEntryBridge({ startFreshSessionDraft, submitText }: Quic
   // Push gateway truth into the quick window whenever it changes: connection
   // state gates its input; the recent-session list feeds its target picker.
   useEffect(() => {
-    if (isAuxiliaryWindow()) {
+    if (isSecondaryWindow()) {
       return
     }
 

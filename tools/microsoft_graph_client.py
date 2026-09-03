@@ -181,7 +181,7 @@ class MicrosoftGraphClient:
             )
             request_headers = {
                 "Authorization": f"Bearer {token}",
-                "Accept": "*/*",
+                "Accept": "application/json",
                 "User-Agent": self.user_agent,
             }
             if headers:

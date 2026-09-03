@@ -2,11 +2,7 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-import { isElementInHiddenPane, PANE_HIDDEN_ATTR } from '@/components/pane-shell/pane-visibility'
-import { $layoutTree } from '@/components/pane-shell/tree/store'
-import { markRightPanePerf } from '@/debug/right-pane-events'
 import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
-import { $paneStates } from '@/store/panes'
 
 import { $terminalTakeover } from '../store'
 
@@ -43,7 +39,7 @@ export function TerminalSlot({ className = SLOT_CLASS }: { className?: string })
     }
   }, [])
 
-  return <div className={className} data-terminal-slot="" ref={ref} />
+  return <div className={className} ref={ref} />
 }
 
 interface PersistentTerminalProps {
@@ -51,7 +47,6 @@ interface PersistentTerminalProps {
 }
 
 interface Rect {
-  hidden: boolean
   top: number
   left: number
   width: number
@@ -59,7 +54,7 @@ interface Rect {
 }
 
 const sameRect = (a: Rect | null, b: Rect) =>
-  !!a && a.hidden === b.hidden && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height
+  !!a && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height
 
 export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalProps) {
   const slot = useStore($slot)
@@ -91,7 +86,6 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
     let prev: Rect | null = null
     let frame = 0
     let stopped = false
-    let pendingReason = 'initial'
     let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
 
     const rendererPaused = () => pauseController?.isPaused() ?? document.visibilityState === 'hidden'
@@ -103,44 +97,17 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
       }
     }
 
-    // Visibility is CORRECTNESS, not perf. The rect chase below forces layout,
-    // so it stays gated on the renderer pause — but `hidden` is a cheap
-    // attribute walk, and skipping it while paused strands the overlay over a
-    // tab the user has already switched away from: the terminal keeps covering
-    // the chat, opaque and pointer-interactive, until something refocuses the
-    // window. Sample it on every wake, paused or not.
-    const syncHidden = () => {
-      const hidden = isElementInHiddenPane(slot)
-
-      if (prev && prev.hidden !== hidden) {
-        prev = { ...prev, hidden }
-        setRect(prev)
-      }
-    }
-
-    const measure = (reason: string): boolean => {
+    const measure = (): boolean => {
       if (rendererPaused()) {
-        syncHidden()
-
         return false
       }
 
-      markRightPanePerf('terminal-measure', reason)
       const r = slot.getBoundingClientRect()
       // floor top/left + ceil right/bottom: overlay always covers the slot's
       // full pixel footprint, so half-pixel rects can't leak page bg through.
       const top = Math.floor(r.top)
       const left = Math.floor(r.left)
-
-      // Inactive keep-alive panes deliberately retain the same rect as the
-      // foreground pane, so visibility must be sampled independently.
-      const next: Rect = {
-        hidden: isElementInHiddenPane(slot),
-        top,
-        left,
-        width: Math.ceil(r.right) - left,
-        height: Math.ceil(r.bottom) - top
-      }
+      const next: Rect = { top, left, width: Math.ceil(r.right) - left, height: Math.ceil(r.bottom) - top }
 
       if (!sameRect(prev, next)) {
         prev = next
@@ -156,31 +123,16 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
       return false
     }
 
-    const scheduleMeasure = (reason = 'unknown') => {
-      if (stopped) {
+    const scheduleMeasure = () => {
+      if (stopped || rendererPaused() || frame !== 0) {
         return
       }
 
-      // Paused: no frame is coming (and none is wanted — the rect chase is the
-      // expensive half). Still settle visibility synchronously so a tab switch
-      // while the window is unfocused can't leave the overlay stranded.
-      if (rendererPaused()) {
-        syncHidden()
-
-        return
-      }
-
-      if (frame !== 0) {
-        return
-      }
-
-      pendingReason = reason
       frame = window.requestAnimationFrame(() => {
         frame = 0
-        const reason = pendingReason
 
-        if (measure(reason)) {
-          scheduleMeasure('settle')
+        if (measure()) {
+          scheduleMeasure()
         }
       })
     }
@@ -188,79 +140,59 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
     const handleVisibilityChange = () => {
       if (rendererPaused()) {
         cancelFrame()
-        syncHidden()
 
         return
       }
 
-      scheduleMeasure('visibility')
+      scheduleMeasure()
     }
 
     const observer =
       typeof ResizeObserver === 'undefined'
         ? null
         : new ResizeObserver(() => {
-            scheduleMeasure('resize-observer')
+            scheduleMeasure()
           })
 
     const positionObserver =
       typeof MutationObserver === 'undefined'
         ? null
         : new MutationObserver(() => {
-            scheduleMeasure('ancestor-mutation')
+            scheduleMeasure()
           })
 
     pauseController = createRendererLoopPauseController(handleVisibilityChange)
 
-    if (measure('initial')) {
-      scheduleMeasure('settle')
+    if (measure()) {
+      scheduleMeasure()
     }
 
     observer?.observe(slot)
 
-    const handleScroll = () => scheduleMeasure('scroll')
-    const scrollTargets: Array<HTMLElement | Window> = [window]
-    window.addEventListener('scroll', handleScroll)
-
     for (let node: HTMLElement | null = slot; node; node = node.parentElement) {
       positionObserver?.observe(node, {
-        attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'data-state', PANE_HIDDEN_ATTR],
+        attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'data-state'],
         attributes: true,
         childList: true,
-        subtree: false
+        subtree: true
       })
-      // Scroll does not bubble. Listen only on the slot's own ancestor chain,
-      // so a transcript/file-tree/xterm viewport scroll elsewhere cannot wake
-      // terminal positioning.
-      node.addEventListener('scroll', handleScroll)
-      scrollTargets.push(node)
     }
 
-    // Nested layout-tree and pane-state commits can move the slot without
-    // changing its own size. Subscribe to the actual layout authorities instead
-    // of observing every descendant mutation under every ancestor (chat stream
-    // and file-tree updates are unrelated and used to wake this tracker).
-    const unsubscribeLayout = $layoutTree.listen(() => scheduleMeasure('layout-tree'))
-    const unsubscribePanes = $paneStates.listen(() => scheduleMeasure('pane-state'))
-
-    const handleResize = () => scheduleMeasure('window-resize')
-
-    window.addEventListener('resize', handleResize)
+    window.addEventListener('resize', scheduleMeasure)
+    window.addEventListener('scroll', scheduleMeasure, true)
 
     return () => {
       stopped = true
       cancelFrame()
       observer?.disconnect()
       positionObserver?.disconnect()
-      unsubscribeLayout()
-      unsubscribePanes()
-      window.removeEventListener('resize', handleResize)
-      scrollTargets.forEach(target => target.removeEventListener('scroll', handleScroll))
+      window.removeEventListener('resize', scheduleMeasure)
+      window.removeEventListener('scroll', scheduleMeasure, true)
       pauseController?.dispose()
     }
   }, [slot])
 
-  const visible = Boolean(rect && !rect.hidden && rect.width > 0 && rect.height > 0)
+  const visible = Boolean(rect && rect.width > 0 && rect.height > 0)
 
   const style: CSSProperties = {
     position: 'fixed',
@@ -271,15 +203,11 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
     display: 'flex',
     flexDirection: 'column',
     visibility: visible ? 'visible' : 'hidden',
-    // Electron may keep xterm's WebGL canvas visually composited after an
-    // ancestor becomes visibility:hidden. Opacity clears that compositor layer
-    // while preserving the mounted DOM, terminal dimensions, and live PTY.
-    opacity: visible ? 1 : 0,
     pointerEvents: visible ? 'auto' : 'none',
     zIndex: 4,
     // Match the live skin surface so the header strip (transparent) and body
     // read as one cohesive pane instead of revealing a near-black slab behind.
-    backgroundColor: 'var(--ui-terminal-surface-background)',
+    backgroundColor: 'var(--ui-editor-surface-background)',
     contain: 'layout size paint'
   }
 
@@ -287,7 +215,7 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
   // booting xterm/node-pty at 0×0 starts the shell at 80×24 and spawns a visible
   // conhost on Windows. After that `mounted` latches: shells persist while hidden.
   return (
-    <div aria-hidden={!visible} data-persistent-terminal="" style={style}>
+    <div aria-hidden={!visible} style={style}>
       {mounted && <TerminalWorkspace onAddSelectionToChat={onAddSelectionToChat} />}
     </div>
   )

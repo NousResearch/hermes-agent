@@ -3,8 +3,6 @@
 import os
 import subprocess
 import sys
-import tarfile
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -71,26 +69,4 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
     result = _build_artifact(kind, tmp_path, nix_build=True)
 
     assert result.returncode == 0, result.stderr
-    artifacts = list(tmp_path.glob(artifact_glob))
-    assert artifacts
-
-    expected = {
-        path.relative_to(PROJECT_ROOT).as_posix()
-        for pattern in ("plugin.yaml", "plugin.yml")
-        for path in (PROJECT_ROOT / "plugins").rglob(pattern)
-    }
-    assert expected, "expected bundled plugin manifests under plugins/"
-
-    if kind == "wheel":
-        with zipfile.ZipFile(artifacts[0]) as wheel:
-            shipped = set(wheel.namelist())
-    else:
-        with tarfile.open(artifacts[0]) as sdist:
-            shipped = {
-                name.split("/", 1)[1]
-                for name in sdist.getnames()
-                if "/" in name
-            }
-
-    missing = sorted(expected - shipped)
-    assert not missing, f"{kind} omits bundled plugin manifests: {missing}"
+    assert list(tmp_path.glob(artifact_glob))

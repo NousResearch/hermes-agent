@@ -31,7 +31,6 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from agent.secret_scope import get_secret
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
@@ -139,7 +138,7 @@ class DeepInfraImageGenProvider(ImageGenProvider):
         return "DeepInfra"
 
     def is_available(self) -> bool:
-        return bool((get_secret("DEEPINFRA_API_KEY", "") or "").strip())
+        return bool(os.environ.get("DEEPINFRA_API_KEY", "").strip())
 
     def list_models(self) -> List[Dict[str, Any]]:
         live = _live_models()
@@ -200,7 +199,7 @@ class DeepInfraImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        api_key = (get_secret("DEEPINFRA_API_KEY", "") or "").strip()
+        api_key = os.environ.get("DEEPINFRA_API_KEY", "").strip()
         if not api_key:
             return error_response(
                 error=(

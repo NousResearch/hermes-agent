@@ -2,12 +2,19 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useMemo, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { displayPath } from '@/lib/display-path'
 import { $dismissedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { removeWorktreePath } from '@/store/projects'
@@ -182,26 +189,43 @@ function RepoFlatSection({
     destructiveLabel: string,
     onDestructive: (group: SidebarSessionGroup) => void
   ) => (
-    <ConfirmDialog
-      confirmLabel={destructiveLabel}
-      description={description}
-      destructive
-      // removeViaGit finishes on its own: it either dismisses the lane, escalates
-      // to the force prompt, or toasts. Nothing left for the dialog to wait on.
-      dismissOnConfirm
-      onClose={() => setTarget(null)}
-      onConfirm={() => {
-        if (target) {
-          onDestructive(target)
-        }
-      }}
-      open={Boolean(target)}
-      secondaryAction={{
-        label: s.projects.removeFromSidebar,
-        onClick: () => target && dismissWorktree(target.id)
-      }}
-      title={`${s.projects.removeWorktree} "${target?.label ?? ''}"?`}
-    />
+    <Dialog onOpenChange={isOpen => !isOpen && setTarget(null)} open={Boolean(target)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{`${s.projects.removeWorktree} "${target?.label ?? ''}"?`}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button onClick={() => setTarget(null)} variant="ghost">
+            {t.common.cancel}
+          </Button>
+          <Button
+            onClick={() => {
+              if (target) {
+                dismissWorktree(target.id)
+              }
+
+              setTarget(null)
+            }}
+            variant="secondary"
+          >
+            {s.projects.removeFromSidebar}
+          </Button>
+          <Button
+            onClick={() => {
+              setTarget(null)
+
+              if (target) {
+                onDestructive(target)
+              }
+            }}
+            variant="destructive"
+          >
+            {destructiveLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 
   const removeDialog = (
@@ -253,7 +277,7 @@ function RepoFlatSection({
         label={repo.label}
         onToggle={toggleOpen}
         open={open}
-        title={repo.path ? displayPath(repo.path) : undefined}
+        title={repo.path ?? undefined}
       />
       {open && <SidebarRowStack className="pl-2.5">{body}</SidebarRowStack>}
       {removeDialog}

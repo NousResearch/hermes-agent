@@ -1,4 +1,4 @@
-import { useLocation } from 'react-router'
+import { useLocation } from 'react-router-dom'
 
 import { appViewForPath, isOverlayView } from '@/app/routes'
 

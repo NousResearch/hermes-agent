@@ -2,7 +2,6 @@ import { type FC, useCallback, useEffect, useRef } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { onThemeRepaint } from '@/hooks/use-theme-epoch'
-import { createBudgetedLoop } from '@/lib/budgeted-loop'
 
 type Rgb = { r: number; g: number; b: number }
 
@@ -249,13 +248,6 @@ const drawAsciiDiffusion = (
   ctx.fillRect(0, 0, width, height)
 }
 
-// Cap concurrent animated instances — each rAF loop redraws the full canvas
-// every frame, so N instances multiply the CPU/GPU cost linearly (#79077).
-// Beyond the cap the canvas still mounts (so layout/layout is unchanged) but
-// the animation loop is skipped, giving a zero-cost static placeholder.
-const MAX_ANIMATED_INSTANCES = 2
-let activeAnimatedCount = 0
-
 export const DiffusionCanvas: FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sizeRef = useRef({ width: 0, height: 0 })
@@ -307,33 +299,15 @@ export const DiffusionCanvas: FC = () => {
 
     sizeRef.current = fitCanvas(canvas, ctx)
 
-    // Over the concurrent cap — draw one static frame, skip the loop so
-    // extra instances are zero-cost (#79077). Each animated instance redraws
-    // its full canvas per frame, so N instances multiply cost linearly.
-    if (activeAnimatedCount >= MAX_ANIMATED_INSTANCES) {
+    let frame = requestAnimationFrame(function draw(now) {
       const { width, height } = sizeRef.current
-      drawAsciiDiffusion(ctx, themeRef.current, width, height, 0)
-
-      return
-    }
-
-    activeAnimatedCount++
-
-    // 15fps is visually equivalent for this placeholder shimmer and does 4x
-    // fewer full-canvas redraws than display cadence (#79077). The loop also
-    // pauses while the window is hidden/minimized/unfocused (#88396).
-    const loop = createBudgetedLoop(
-      now => {
-        const { width, height } = sizeRef.current
-        ctx.clearRect(0, 0, width, height)
-        drawAsciiDiffusion(ctx, themeRef.current, width, height, now / 1000)
-      },
-      { fps: 15 }
-    )
+      ctx.clearRect(0, 0, width, height)
+      drawAsciiDiffusion(ctx, themeRef.current, width, height, now / 1000)
+      frame = requestAnimationFrame(draw)
+    })
 
     return () => {
-      loop.dispose()
-      activeAnimatedCount--
+      cancelAnimationFrame(frame)
     }
   }, [])
 

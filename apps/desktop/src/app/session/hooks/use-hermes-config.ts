@@ -1,10 +1,8 @@
 import { type MutableRefObject, useCallback, useRef, useState } from 'react'
 
-import { setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
-import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
 import {
   getComposerSelectionGeneration,
   getCurrentModelSource,
@@ -56,7 +54,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
   const profileRefreshEpochRef = useRef(0)
 
   const refreshHermesConfig = useCallback(
-    async (force = false, shouldPublish: () => boolean = () => true) => {
+    async (force = false) => {
       if (force) {
         profileRefreshEpochRef.current += 1
       }
@@ -67,19 +65,13 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
       try {
         const [config, defaults] = await Promise.all([getHermesConfig(), getHermesConfigDefaults().catch(() => ({}))])
 
-        const canPublish = () => profileRefreshEpochRef.current === profileRefreshEpoch && shouldPublish()
-
-        if (!canPublish()) {
+        if (profileRefreshEpochRef.current !== profileRefreshEpoch) {
           return
         }
 
         const personality = normalizePersonalityValue(
           typeof config.display?.personality === 'string' ? config.display.personality : ''
         )
-
-        if (!canPublish()) {
-          return
-        }
 
         setIntroPersonality(personality)
         // Active sessions keep their per-session value; standalone falls back to config.
@@ -100,10 +92,6 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         // reseeded below: picker rows and preset application resolve "the
         // default" from here, so a manual model pick must not leave them
         // rendering/applying Hermes' built-in medium over the user's config.
-        if (!canPublish()) {
-          return
-        }
-
         setDefaultReasoningEffort(reasoning)
 
         const shouldSeedComposer =
@@ -112,38 +100,14 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
           (force || getCurrentModelSource() !== 'manual')
 
         if (shouldSeedComposer) {
-          if (!canPublish()) {
-            return
-          }
-
           setCurrentReasoningEffort(reasoning)
           setCurrentFastMode(FAST_TIERS.has(tier.toLowerCase()))
         }
 
-        if (!canPublish()) {
-          return
-        }
-
         setCurrentServiceTier(prev => (activeSessionIdRef.current ? prev : tier))
-
-        if (!canPublish()) {
-          return
-        }
 
         setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
         setSttEnabled(config.stt?.enabled !== false)
-
-        if (!canPublish()) {
-          return
-        }
-
-        setDisplayTimestampsFromConfig(config.display?.timestamps)
-        setTerminalFontFamilyFromConfig(config.terminal?.font_family)
-
-        if (!canPublish()) {
-          return
-        }
-
         applyAutoSpeakFromConfig(config)
         applyVoiceStopPhraseFromConfig(config)
         applyThinkingSoundFromConfig(config)

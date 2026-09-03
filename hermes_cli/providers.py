@@ -41,7 +41,6 @@ class HermesOverlay:
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
     base_url_override: str = ""           # override if models.dev URL is wrong/missing
     base_url_env_var: str = ""            # env var for user-custom base URL
-    keyless: bool = False                 # served anonymously — no credential exists to configure
 
 
 HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
@@ -157,12 +156,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="OPENCODE_GO_BASE_URL",
     ),
-    "opencode-free": HermesOverlay(
-        transport="openai_chat",
-        is_aggregator=True,
-        base_url_override="https://opencode.ai/zen/v1",
-        keyless=True,
-    ),
     "kilo": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -196,11 +189,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="TOKENHUB_BASE_URL",
     ),
-    "tencent-tokenplan": HermesOverlay(
-        transport="anthropic_messages",
-        base_url_override="https://api.lkeap.cloud.tencent.com/plan/anthropic",
-        base_url_env_var="TOKENPLAN_BASE_URL",
-    ),
     "arcee": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://api.arcee.ai/api/v1",
@@ -217,23 +205,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("FIREWORKS_API_KEY",),
         base_url_override="https://api.fireworks.ai/inference/v1",
     ),
-    "actual": HermesOverlay(
-        transport="codex_responses",
-        extra_env_vars=("ACTUAL_API_KEY", "ACTUAL_BASE_URL"),
-        base_url_override="https://api.actual.inc/v1",
-        base_url_env_var="ACTUAL_BASE_URL",
-    ),
     "upstage": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("UPSTAGE_API_KEY",),
         base_url_override="https://api.upstage.ai/v1",
         base_url_env_var="UPSTAGE_BASE_URL",
-    ),
-    "nebius-token-factory": HermesOverlay(
-        transport="openai_chat",
-        extra_env_vars=("NEBIUS_API_KEY", "NEBIUS_TOKEN_FACTORY_API_KEY"),
-        base_url_override="https://api.tokenfactory.nebius.com/v1",
-        base_url_env_var="NEBIUS_BASE_URL",
     ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
@@ -350,10 +326,6 @@ ALIASES: Dict[str, str] = {
     "go": "opencode-go",
     "opencode-go-sub": "opencode-go",
 
-    # opencode-free
-    "free": "opencode-free",
-    "opencode_free": "opencode-free",
-
     # kilo (models.dev ID for KiloCode)
     "kilocode": "kilo",
     "kilo-code": "kilo",
@@ -389,8 +361,6 @@ ALIASES: Dict[str, str] = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
-    "tokenplan": "tencent-tokenplan",
-    "tencent-lkeap": "tencent-tokenplan",
 
     # bedrock
     "aws": "bedrock",
@@ -413,17 +383,6 @@ ALIASES: Dict[str, str] = {
     # upstage
     "solar": "upstage",
 
-    # Actual Computer
-    "actual-computer": "actual",
-    "actualcomputer": "actual",
-    "aci": "actual",
-    # Nebius Token Factory
-    "nebius": "nebius-token-factory",
-    "nebius-tokenfactory": "nebius-token-factory",
-    "nebius-tf": "nebius-token-factory",
-    "token-factory": "nebius-token-factory",
-    "tokenfactory": "nebius-token-factory",
-
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -443,23 +402,19 @@ ALIASES: Dict[str, str] = {
 _LABEL_OVERRIDES: Dict[str, str] = {
     "moa": "Mixture of Agents",
     "nous": "Nous Portal",
-    "openai-codex": "ChatGPT or Codex Subscription",
+    "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
     "upstage": "Upstage Solar",
-    "actual": "Actual Computer",
     "tencent-tokenhub": "Tencent TokenHub",
-    "nebius-token-factory": "Nebius Token Factory",
-    "tencent-tokenplan": "Tencent TokenPlan",
     "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "vertex": "Google Vertex AI",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
-    "opencode-free": "OpenCode Free",
 }
 
 
@@ -558,37 +513,6 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
             source="hermes",
         )
 
-    # Plugin-registered provider profiles (plugins/model-providers/<name>/).
-    # Providers that ship only as plugin profiles (e.g. commandcode,
-    # tencent-tokenhub) are absent from models.dev and HERMES_OVERLAYS, so
-    # without this fallback they resolve as "Unknown provider" in /model,
-    # --provider, and the model-switch path even though the picker lists them
-    # (CANONICAL_PROVIDERS auto-extends from the same plugin registry).
-    try:
-        from providers import get_provider_profile as _profile
-
-        _prof = _profile(canonical)
-        # Only profiles with a concrete endpoint resolve here. Placeholder
-        # profiles like ``custom`` (aliases: ollama/local/vllm) ship with an
-        # empty base_url and are completed by config.yaml custom_providers —
-        # resolving them here would preempt resolve_provider_full's
-        # custom-provider step and collapse keyed IDs
-        # (``custom:local-...``) back to a bare, endpoint-less ``custom``.
-        if _prof is not None and (_prof.base_url or "").strip():
-            _api_mode_to_transport = {v: k for k, v in TRANSPORT_TO_API_MODE.items()}
-            _transport = _api_mode_to_transport.get(_prof.api_mode, "openai_chat")
-            return ProviderDef(
-                id=canonical,
-                name=_prof.display_name or _prof.name or canonical,
-                transport=_transport,
-                api_key_env_vars=tuple(_prof.env_vars or ()),
-                base_url=_prof.base_url or "",
-                auth_type=_prof.auth_type or "api_key",
-                source="plugin-profile",
-            )
-    except Exception:
-        pass
-
     return None
 
 
@@ -654,40 +578,12 @@ def is_routing_aggregator(provider: str) -> bool:
     return is_aggregator(provider_norm)
 
 
-def is_official_openai_host(base_url: str) -> bool:
-    """True when *base_url* points at OpenAI's official API host family.
-
-    Matches the canonical host (``api.openai.com``) and OpenAI's documented
-    data-residency / regional hosts (``us.api.openai.com``,
-    ``eu.api.openai.com``, and any future ``<region>.api.openai.com``) —
-    those serve the same API surface with the same transport requirements
-    and the same access-scoped ``/v1/models`` listing.
-
-    Hostname-parsed matching only — never substring — so lookalike hosts
-    (``api.openai.com.attacker.test``) and path-segment spoofs
-    (``proxy.test/api.openai.com/v1``) are rejected. A genuine
-    ``*.api.openai.com`` subdomain requires control of openai.com DNS, so
-    the dot-suffix match does not reopen the #32243 spoofing hole.
-    Delegates to ``utils.base_url_host_matches``, which owns the
-    exact-or-dot-suffix hostname contract (userinfo/port stripped,
-    lowercased, trailing dot removed) — one implementation, not two.
-    """
-    return base_url_host_matches(base_url, "api.openai.com")
-
-
 def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
     """Return the wire protocol a specific endpoint *requires*, or None.
 
     Some hosts only accept one API mode and reject the others outright:
       - api.openai.com only accepts the Responses API for its (reasoning)
         models when tools + reasoning are in play (chat/completions 400s).
-      - api.meta.ai only achieves KV-cache hits on /v1/responses with
-        prompt_cache_retention; /v1/chat/completions returns 0 cached
-        tokens (measured 0% vs 93-99% on /responses with retention).
-      - api.router.com (Ramp Router) is Responses-native: per-model
-        reasoning-effort validation, reasoning summaries, and prompt
-        caching live on /v1/responses; /v1/chat/completions is only a
-        minimal compatibility shim translated onto it.
       - api.anthropic.com / ``…/anthropic`` suffixes speak native Messages.
       - Kimi's ``/coding`` endpoint speaks native Messages.
       - AWS Bedrock runtime hosts speak Converse.
@@ -709,23 +605,7 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
         return "anthropic_messages"
     if hostname == "api.anthropic.com" or url_lower.endswith("/anthropic"):
         return "anthropic_messages"
-    # Official OpenAI host family: canonical + data-residency regional hosts
-    # (us./eu.api.openai.com) all mandate the Responses API for reasoning
-    # models with tools. Shared predicate keeps this lane in lockstep with
-    # catalog filtering and listing authority.
-    if is_official_openai_host(base_url):
-        return "codex_responses"
-    # Meta Model API (api.meta.ai) only achieves prompt-cache hits on the
-    # Responses API with prompt_cache_retention; chat/completions stays
-    # cache-cold (0% vs 93-99% measured). Exact-hostname match per #32243.
-    if hostname == "api.meta.ai":
-        return "codex_responses"
-    # Ramp Router (api.router.com) is Responses-native: reasoning-effort
-    # validation, reasoning summaries, and prompt caching live on
-    # /v1/responses, and /v1/chat/completions is only a minimal
-    # compatibility shim (docs.router.com/api/endpoint). Exact-hostname
-    # match per #32243.
-    if hostname == "api.router.com":
+    if hostname == "api.openai.com":
         return "codex_responses"
     if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
         return "bedrock_converse"
@@ -809,7 +689,7 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     # Extract fields
     display_name = entry.get("name", "") or name
     api_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""
-    key_env = entry.get("key_env") or entry.get("api_key_env") or ""
+    key_env = entry.get("key_env", "") or ""
     transport = entry.get("transport", "openai_chat") or "openai_chat"
 
     env_vars: List[str] = []
@@ -828,36 +708,14 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     )
 
 
-def custom_provider_slug(display_name: str, provider_key: str = "") -> str:
-    """Build the stable ``custom:`` identity for a configured provider.
+def custom_provider_slug(display_name: str) -> str:
+    """Build a canonical slug for a custom_providers entry.
 
-    Keyed ``providers:`` entries keep their config key as the durable
-    identity even when their display name changes. Legacy
-    ``custom_providers:`` entries have no key, so their normalized display
-    name remains the identity.
+    Matches the convention used by runtime_provider and credential_pool
+    (``custom:<normalized-name>``).  Centralised here so all call-sites
+    produce identical slugs.
     """
-    identity = str(provider_key or "").strip() or str(display_name or "").strip()
-    normalized = identity.lower().replace(" ", "-")
-    return normalized if normalized.startswith("custom:") else f"custom:{normalized}"
-
-
-def custom_provider_aliases(
-    display_name: str,
-    provider_key: str = "",
-) -> frozenset[str]:
-    """Return every current and legacy identity accepted for one endpoint."""
-    aliases: set[str] = set()
-    for value in (display_name, provider_key):
-        raw = str(value or "").strip().lower()
-        if not raw:
-            continue
-        normalized = raw.replace(" ", "-")
-        aliases.update({raw, normalized, custom_provider_slug(normalized)})
-        if normalized.startswith("custom:"):
-            suffix = normalized.split(":", 1)[1]
-            if suffix:
-                aliases.update({suffix, f"custom:{normalized}"})
-    return frozenset(aliases)
+    return "custom:" + display_name.strip().lower().replace(" ", "-")
 
 
 def resolve_custom_provider(
@@ -876,7 +734,7 @@ def resolve_custom_provider(
     # from a prior model-switch bug), fall back to the first custom
     # provider entry so existing configs self-heal.  (GH #17478)
     bare_custom_fallback = requested == "custom"
-    first_valid: Optional[Tuple[str, str, Tuple[str, ...], str]] = None
+    first_valid: Optional[Tuple[str, str, Tuple[str, ...]]] = None
 
     for entry in custom_providers:
         if not isinstance(entry, dict):
@@ -893,22 +751,16 @@ def resolve_custom_provider(
             continue
 
         key_env = (entry.get("key_env") or "").strip()
-        provider_key = (entry.get("provider_key") or "").strip()
         env_vars: List[str] = []
         if key_env:
             env_vars.append(key_env)
 
         # Stash the first valid entry for bare-"custom" fallback
         if first_valid is None:
-            first_valid = (
-                display_name,
-                api_url,
-                tuple(env_vars),
-                custom_provider_slug(display_name, provider_key),
-            )
+            first_valid = (display_name, api_url, tuple(env_vars))
 
-        slug = custom_provider_slug(display_name, provider_key)
-        if requested not in custom_provider_aliases(display_name, provider_key):
+        slug = custom_provider_slug(display_name)
+        if requested not in {display_name.lower(), slug}:
             continue
 
         return ProviderDef(
@@ -924,7 +776,8 @@ def resolve_custom_provider(
 
     # Self-heal: bare "custom" matched nothing — return first valid entry
     if bare_custom_fallback and first_valid:
-        dname, aurl, denv, slug = first_valid
+        dname, aurl, denv = first_valid
+        slug = custom_provider_slug(dname)
         return ProviderDef(
             id=slug,
             name=dname,
@@ -1022,29 +875,6 @@ def resolve_provider_full(
     custom_pdef = resolve_custom_provider(name, custom_providers)
     if custom_pdef is not None:
         return custom_pdef
-
-    # 2c. Managed local runtime: the llamacpp aliases are a real provider
-    # whenever the managed server (or a detected external one) resolves —
-    # no credential and no providers: entry required, the credential is
-    # reachability. Without this rung the model-switch path rejected the
-    # very provider the Local Models 'Use' flow writes to config
-    # ("Unknown provider 'llamacpp'" from the desktop dropdown).
-    if raw in ("llamacpp", "llama.cpp", "llama-cpp"):
-        try:
-            from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
-
-            endpoint = resolve_llamacpp_endpoint(wait_for_boot_s=0)
-        except Exception:
-            endpoint = None
-        if endpoint:
-            return ProviderDef(
-                id="llamacpp",
-                name="Local",
-                transport="openai_chat",
-                api_key_env_vars=(),
-                base_url=endpoint["base_url"],
-                source="local-runtime",
-            )
 
     # 3. Try models.dev directly (for providers not in our ALIASES)
     try:

@@ -57,7 +57,7 @@ def test_voice_toggle_still_leaks_the_env_var_but_speech_is_stubbed(monkeypatch)
     )
     monkeypatch.setenv("HERMES_VOICE", "1")
 
-    resp = server.handle_request(
+    resp = server.dispatch(
         {"id": "tts", "method": "voice.toggle", "params": {"action": "tts"}}
     )
 

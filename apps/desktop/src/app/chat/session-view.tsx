@@ -13,8 +13,7 @@ import {
   $currentProvider,
   $currentReasoningEffort,
   $messages,
-  $selectedStoredSessionId,
-  $turnStartedAt
+  $selectedStoredSessionId
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
@@ -49,10 +48,6 @@ export interface SessionView {
   $awaitingResponse: ReadableAtom<boolean>
   $messagesEmpty: ReadableAtom<boolean>
   $lastVisibleIsUser: ReadableAtom<boolean>
-  /** Epoch ms this surface's current turn began, null when idle. Per-surface
-   *  for the same reason $busy is: a tile's activity timer must count its own
-   *  turn, not whichever session the global mirror last reflected. */
-  $turnStartedAt: ReadableAtom<number | null>
   $cwd: ReadableAtom<string>
   $model: ReadableAtom<string>
   $provider: ReadableAtom<string>
@@ -81,21 +76,10 @@ function primaryField<T>(select: (state: ClientSessionState) => T, $draft: Reada
 
 const $primaryMessages = primaryField<ChatMessage[]>(state => state.messages, $messages)
 
-/**
- * Turn-busy for the workspace pane. A selected stored session that has no
- * slice yet (cold resume) must stay idle — the global `$busy` atom is a
- * leftover from whichever session last published, and inheriting it is how
- * focusing B while A runs marked B busy. The draft atom is only for a true
- * new chat (no stored id) so the first-send optimistic lock still paints.
- */
-const $primaryBusy = computed([$primaryState, $busy, $selectedStoredSessionId], (state, draftBusy, selected) =>
-  state ? state.busy : selected ? false : draftBusy
-)
-
 export const PRIMARY_SESSION_VIEW: SessionView = {
   kind: 'primary',
   $awaitingResponse: primaryField<boolean>(state => state.awaitingResponse, $awaitingResponse),
-  $busy: $primaryBusy,
+  $busy: primaryField<boolean>(state => state.busy, $busy),
   $cwd: primaryField<string>(state => state.cwd, $currentCwd),
   $fast: primaryField<boolean>(state => state.fast, $currentFastMode),
   $lastVisibleIsUser: computed($primaryMessages, lastVisibleMessageIsUser),
@@ -105,8 +89,7 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $provider: primaryField<string>(state => state.provider, $currentProvider),
   $reasoningEffort: primaryField<string>(state => state.reasoningEffort, $currentReasoningEffort),
   $runtimeId: $activeSessionId,
-  $storedId: $selectedStoredSessionId,
-  $turnStartedAt: primaryField<number | null>(state => state.turnStartedAt, $turnStartedAt)
+  $storedId: $selectedStoredSessionId
 }
 
 const SessionViewContext = createContext<SessionView>(PRIMARY_SESSION_VIEW)

@@ -69,42 +69,6 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt2, ["hermes-telegram"], "")
         assert sig1 != sig2
 
-    def test_capability_change_different_signature(self):
-        from gateway.run import GatewayRunner
-
-        runtime = {"api_key": "sk-test12345678", "base_url": "https://proxy.example/v1", "provider": "custom"}
-        native = {**runtime, "capabilities": {"openai_native_compaction": True}}
-        plain = {**runtime, "capabilities": {"openai_native_compaction": False}}
-        assert GatewayRunner._agent_config_signature("gpt-5.6", native, [], "") != (
-            GatewayRunner._agent_config_signature("gpt-5.6", plain, [], "")
-        )
-
-
-    def test_default_gateway_runtime_forwards_filtered_capabilities(self, monkeypatch):
-        """Configured provider capabilities must reach a newly created gateway agent."""
-        from gateway.run import _resolve_runtime_agent_kwargs
-        from hermes_cli import runtime_provider
-
-        monkeypatch.setattr(
-            runtime_provider,
-            "resolve_runtime_provider",
-            lambda: {
-                "api_key": "test-key",
-                "base_url": "https://trusted-proxy.example/v1",
-                "provider": "custom",
-                "requested_provider": "custom:trusted-proxy",
-                "api_mode": "responses",
-                "capabilities": {
-                    "openai_native_compaction": True,
-                    "ignore-me": "not-a-bool",
-                },
-            },
-        )
-        monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: {})
-
-        runtime = _resolve_runtime_agent_kwargs()
-
-        assert runtime["capabilities"] == {"openai_native_compaction": True}
 
     # ---------------------------------------------------------------
     # cache_keys (compression/context config cache-busting)
@@ -156,13 +120,6 @@ class TestExtractCacheBustingConfig:
                     "enabled": False,
                     "threshold": 0.6,
                     "codex_gpt55_autoraise": False,
-                    "codex_responses_native": True,
-                    "codex_responses_compact_threshold": 120_000,
-                    "in_place": False,
-                    "checkpoint_required": True,
-                    "micro_compact": True,
-                    "micro_compact_every_n_turns": 2,
-                    "micro_compact_defrag_threshold_tokens": 4000,
                     "target_ratio": 0.3,
                     "protect_last_n": 25,
                     "codex_app_server_auto": "hermes",
@@ -173,13 +130,6 @@ class TestExtractCacheBustingConfig:
         assert out["compression.enabled"] is False
         assert out["compression.threshold"] == 0.6
         assert out["compression.codex_gpt55_autoraise"] is False
-        assert out["compression.codex_responses_native"] is True
-        assert out["compression.codex_responses_compact_threshold"] == 120_000
-        assert out["compression.in_place"] is False
-        assert out["compression.checkpoint_required"] is True
-        assert out["compression.micro_compact"] is True
-        assert out["compression.micro_compact_every_n_turns"] == 2
-        assert out["compression.micro_compact_defrag_threshold_tokens"] == 4000
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
         assert out["compression.codex_app_server_auto"] == "hermes"
@@ -750,13 +700,10 @@ class TestCachedAgentInactivityReset:
     """
 
     def _fake_agent(self, stale_seconds: float = 1800.0):
-        from agent.session_activity import ActivityProvenance
-
         m = MagicMock()
         m._last_activity_ts = _FAKE_NOW - stale_seconds
         m._api_call_count = 10
         m._last_activity_desc = "previous turn activity"
-        m._last_activity_provenance = ActivityProvenance.AGENT_COMPRESSION
         return m
 
     def test_fresh_turn_resets_idle_clock(self):
@@ -779,20 +726,6 @@ class TestCachedAgentInactivityReset:
         )
 
 
-    def test_fresh_turn_resets_provenance(self):
-        """interrupt_depth=0: provenance resets with ts/desc (#72039)."""
-        from agent.session_activity import ActivityProvenance
-        from gateway.run import GatewayRunner
-
-        agent = self._fake_agent()
-        assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
-
-        with patch("gateway.run.time") as mock_time:
-            mock_time.time.return_value = _FAKE_NOW
-            GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
-
-        assert agent._last_activity_provenance is ActivityProvenance.UNKNOWN
-
     def test_interrupt_turn_preserves_idle_clock(self):
         """interrupt_depth=1: clock preserved so accumulated stuck-turn
         idle time is not discarded by an interrupt-recursive re-entry (#15654)."""
@@ -808,40 +741,6 @@ class TestCachedAgentInactivityReset:
             "(interrupt_depth>0) — the watchdog needs the accumulated idle time"
         )
 
-    def test_interrupt_turn_preserves_desc(self):
-        """interrupt_depth=1: desc preserved — it is semantically paired with ts."""
-        from gateway.run import GatewayRunner
-
-        agent = self._fake_agent(stale_seconds=1200.0)
-
-        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=1)
-
-        assert agent._last_activity_desc == "previous turn activity", (
-            "_last_activity_desc must not change on interrupt-recursive turns; "
-            "it describes the activity *at* _last_activity_ts"
-        )
-
-    def test_interrupt_turn_preserves_provenance(self):
-        """interrupt_depth=1: provenance preserved with ts/desc."""
-        from agent.session_activity import ActivityProvenance
-        from gateway.run import GatewayRunner
-
-        agent = self._fake_agent(stale_seconds=1200.0)
-
-        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=1)
-
-        assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
-
-    def test_deep_interrupt_recursion_preserves_idle_clock(self):
-        """interrupt_depth=MAX-1: clock still preserved at any non-zero depth."""
-        from gateway.run import GatewayRunner
-
-        agent = self._fake_agent(stale_seconds=600.0)
-        old_ts = agent._last_activity_ts
-
-        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=4)
-
-        assert agent._last_activity_ts == old_ts
 
     def test_fresh_turn_resets_flush_cursor(self):
         """interrupt_depth=0: _last_flushed_db_idx resets so new-turn

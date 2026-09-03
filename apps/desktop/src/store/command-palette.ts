@@ -8,22 +8,13 @@ export const $commandPaletteOpen = atom(false)
 /** Optional nested page to open when the palette next opens (e.g. `pets`). */
 export const $commandPalettePage = atom<string | null>(null)
 
-/** Optional search text to prefill when the palette next opens (type-to-search
- *  from a surface: the keystroke that opened the palette must not be lost). */
-export const $commandPaletteSeed = atom<string | null>(null)
-
 export function openCommandPalette(): void {
   $commandPaletteOpen.set(true)
 }
 
 /** Open the palette directly on a nested page (`theme`, `pets`, …). */
-export function openCommandPalettePage(page: string, seed?: string): void {
+export function openCommandPalettePage(page: string): void {
   $commandPalettePage.set(page)
-
-  if (seed) {
-    $commandPaletteSeed.set(seed)
-  }
-
   $commandPaletteOpen.set(true)
 }
 
@@ -38,7 +29,6 @@ function setOpen(open: boolean): void {
 
   if (!open) {
     $commandPalettePage.set(null)
-    $commandPaletteSeed.set(null)
 
     if (wasOpen) {
       releaseTypingFocus()

@@ -2,19 +2,16 @@ import { useCallback } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
-import { reachablePreviewUrl } from '@/lib/preview-reach'
 import {
   $previewTabs,
   beginPreviewServerRestart,
-  closePreviewMatching,
-  closeRightRail,
   completePreviewServerRestart,
   openPreview,
   progressPreviewServerRestart,
   requestPreviewReload
 } from '@/store/preview'
-import { $activeSessionId, $currentCwd } from '@/store/session'
-import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
+import { $currentCwd } from '@/store/session'
+import { $focusedRuntimeId } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
 type EventHandler = (event: RpcEvent) => void
@@ -27,14 +24,6 @@ interface PreviewRoutingOptions {
 
 function asRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
-}
-
-function sessionIsOnScreen(sessionId: string): boolean {
-  return (
-    sessionId === $focusedRuntimeId.get() ||
-    sessionId === $activeSessionId.get() ||
-    $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
-  )
 }
 
 export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestGateway }: PreviewRoutingOptions) {
@@ -74,76 +63,23 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
 
       if (event.type === 'preview.open') {
         // Agent-driven open in response to an explicit user request ("show
-        // cnn.com in the preview pane"). Honor it for any session that's ON
-        // SCREEN — the primary chat or an open tile — not only the focused
-        // one: the turn's window routing already scoped the event to this
-        // window, and gating on focus made the open silently vanish whenever
-        // the user's click had moved focus to a different zone by the time
-        // the tool ran (an "open reddit" they explicitly asked for). A
-        // session that is NOT visible anywhere still can't yank the pane
-        // open (offer, don't hijack). Routes through the same normalizer as
-        // the file browser so URLs, localhost, and file paths all resolve.
+        // cnn.com in the preview pane"). Honor it only for the session the user
+        // is actually looking at — a background turn must not yank the pane open
+        // (see desktop AGENTS.md: offer, don't hijack). That session is the
+        // focused one, which is a TILE's runtime whenever a tile is fronted, not
+        // the primary chat's. Routes through the same normalizer as the file
+        // browser so URLs, localhost, and file paths all resolve correctly.
         const { url, label } = asRecord(event.payload)
         const target = typeof url === 'string' ? url.trim() : ''
 
-        if (target && (!event.session_id || sessionIsOnScreen(event.session_id))) {
-          void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
-            async resolved => {
-              if (!resolved) {
-                return
-              }
-
-              const trimmedLabel = typeof label === 'string' ? label.trim() : ''
-              // The agent's loopback is the GATEWAY's loopback. Give the pane a
-              // URL this machine can load, keeping the original as the label so
-              // the user still sees the address the agent named.
-              const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
-              const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
-
-              openPreview(trimmedLabel ? { ...reached, label: trimmedLabel } : reached, 'tool-result')
-            }
-          )
-        }
-
-        return
-      }
-
-      if (event.type === 'preview.close') {
-        // Agent-driven close via close_preview. Same on-screen gate as open:
-        // a session the user can see may tidy the pane it opened; a hidden
-        // background turn must not dismiss the user's preview.
-        const { url } = asRecord(event.payload)
-        const target = typeof url === 'string' ? url.trim() : ''
-
-        if (event.session_id && !sessionIsOnScreen(event.session_id)) {
-          return
-        }
-
-        if (!target) {
-          closeRightRail()
-
-          return
-        }
-
-        if (closePreviewMatching(target)) {
-          return
-        }
-
-        void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
-          async resolved => {
-            const candidates = [target]
-
+        if (target && (!event.session_id || event.session_id === $focusedRuntimeId.get())) {
+          void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(resolved => {
             if (resolved) {
-              candidates.push(resolved.source, resolved.url)
-
-              if (resolved.kind === 'url') {
-                candidates.push(await reachablePreviewUrl(resolved.url))
-              }
+              const trimmedLabel = typeof label === 'string' ? label.trim() : ''
+              openPreview(trimmedLabel ? { ...resolved, label: trimmedLabel } : resolved, 'tool-result')
             }
-
-            closePreviewMatching(...candidates)
-          }
-        )
+          })
+        }
 
         return
       }

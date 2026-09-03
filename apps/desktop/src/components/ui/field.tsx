@@ -23,11 +23,7 @@ export function Field({
 }) {
   return (
     <div className="grid gap-1.5">
-      <label
-        className="flex items-baseline gap-2 text-xs font-medium text-foreground"
-        htmlFor={htmlFor}
-        id={htmlFor ? `${htmlFor}-label` : undefined}
-      >
+      <label className="flex items-baseline gap-2 text-xs font-medium text-foreground" htmlFor={htmlFor}>
         {label}
         {optional && optionalLabel && (
           <span className="text-[0.65rem] font-normal text-muted-foreground">{optionalLabel}</span>

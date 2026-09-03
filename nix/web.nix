@@ -1,13 +1,21 @@
 # nix/web.nix — Hermes Web Dashboard (Vite/React) frontend build
-{ hermesNpmLib, ... }:
-hermesNpmLib.buildNpmPackage {
-  dirs = [
-    "web"
+{ pkgs, hermesNpmLib, ... }:
+let
+  # @hermes/shared ships as a file: workspace dep of web, so its source
+  # must be in the filtered src tree too.
+  npm = hermesNpmLib.mkNpmPassthru {
+    dirs = [
+      "web"
+      "apps/shared"
+    ];
+  };
 
-    # @hermes/shared ships as a file: workspace dep of web, so its source
-    # must be in the filtered src tree too.
-    "apps/shared"
-  ];
+  packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/web/package.json"));
+  version = packageJson.version;
+in
+pkgs.buildNpmPackage (npm // {
+  pname = "hermes-web";
+  inherit version;
 
   doCheck = false;
 
@@ -30,4 +38,4 @@ hermesNpmLib.buildNpmPackage {
     cp -r web/dist $out
     runHook postInstall
   '';
-}
+})

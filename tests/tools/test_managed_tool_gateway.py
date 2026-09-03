@@ -110,53 +110,31 @@ def test_managed_vendor_endpoints_pin_the_deployed_gateway_url():
     typo'd pseudo-vendor to a non-existent host while every other test stubbed
     it): default builder, real deployed host, pinned vendor path.
     """
-    with patch.dict(
-        os.environ,
-        {"TOOL_GATEWAY_DOMAIN": "nousresearch.com", "TOOL_GATEWAY_SCHEME": "https"},
-        clear=False,
-    ):
+    with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True), \
+         patch.dict(
+             os.environ,
+             {"TOOL_GATEWAY_DOMAIN": "nousresearch.com", "TOOL_GATEWAY_SCHEME": "https"},
+             clear=False,
+         ):
         os.environ.pop("TOOL_GATEWAY_URL", None)
-        endpoints = managed_tool_gateway.managed_vendor_endpoints("vendorx")
+        endpoints = managed_tool_gateway.managed_vendor_endpoints("bfl")
 
     assert endpoints == {
         "origin": "https://tool-gateway.nousresearch.com",
-        "base_url": "https://tool-gateway.nousresearch.com/api/vendorx",
-        "upload_path": "/api/uploads/vendorx",
+        "base_url": "https://tool-gateway.nousresearch.com/api/bfl",
+        "upload_path": "/api/uploads/bfl",
     }
 
 
-def test_managed_vendor_endpoints_do_not_consult_entitlement():
-    """Address resolution, not a policy decision.
-
-    What an account may spend is the gateway's ruling, stated in its refusals.
-    Guessing at it here would hide the address from a caller the server would
-    have served, so entitlement must not be read on this path at all.
-    """
-    with patch.dict(os.environ, {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"}, clear=False), \
-         patch.object(
-             managed_tool_gateway,
-             "managed_nous_tools_enabled",
-             side_effect=AssertionError("entitlement must not gate address resolution"),
-         ):
-        os.environ.pop("TOOL_GATEWAY_URL", None)
-        endpoints = managed_tool_gateway.managed_vendor_endpoints("vendorx")
-
-    assert endpoints is not None
-    assert endpoints["base_url"] == "https://tool-gateway.nousresearch.com/api/vendorx"
-
-
-def test_managed_vendor_endpoints_are_none_when_no_origin_resolves():
-    # A misconfigured scheme leaves nothing to call, and the caller reports
-    # that rather than building a URL out of a broken setting.
-    with patch.dict(os.environ, {"TOOL_GATEWAY_SCHEME": "ftp"}, clear=False):
-        os.environ.pop("TOOL_GATEWAY_URL", None)
-        assert managed_tool_gateway.managed_vendor_endpoints("vendorx") is None
+def test_managed_vendor_endpoints_unreachable_when_managed_tools_disabled():
+    with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=False):
+        assert managed_tool_gateway.managed_vendor_endpoints("bfl") is None
 
 
 def test_managed_gateway_auth_headers_carry_the_bearer():
     with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
         headers = managed_tool_gateway.managed_gateway_auth_headers(
-            "https://tool-gateway.example.com/api/vendorx/generations",
+            "https://tool-gateway.example.com/api/bfl/generations",
             gateway_builder=lambda vendor: f"https://{vendor}-gateway.example.com",
             token_reader=lambda: "nous-token",
         )
@@ -169,7 +147,7 @@ def test_managed_gateway_auth_headers_reflect_a_rotated_token():
     # and a long session must not keep presenting a dead bearer.
     tokens = iter(["first-token", "second-token"])
     builder = lambda vendor: f"https://{vendor}-gateway.example.com"
-    url = "https://tool-gateway.example.com/api/vendorx/generations"
+    url = "https://tool-gateway.example.com/api/bfl/generations"
 
     with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
         first = managed_tool_gateway.managed_gateway_auth_headers(url, builder, lambda: next(tokens))
@@ -184,7 +162,7 @@ def test_managed_gateway_auth_headers_refuse_a_url_off_the_gateway_origin():
     # host that merely looks managed.
     with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
         assert managed_tool_gateway.managed_gateway_auth_headers(
-            "https://attacker.example/api/vendorx/generations",
+            "https://attacker.example/api/bfl/generations",
             gateway_builder=lambda vendor: f"https://{vendor}-gateway.example.com",
             token_reader=lambda: "nous-token",
         ) == {}
@@ -195,7 +173,7 @@ def test_managed_gateway_auth_headers_empty_without_a_token():
     # sending an unauthenticated request.
     with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
         assert managed_tool_gateway.managed_gateway_auth_headers(
-            "https://tool-gateway.example.com/api/vendorx/generations",
+            "https://tool-gateway.example.com/api/bfl/generations",
             gateway_builder=lambda vendor: f"https://{vendor}-gateway.example.com",
             token_reader=lambda: None,
         ) == {}
@@ -211,8 +189,8 @@ class TestManagedMediaUploader:
     """
 
     GATEWAY = "https://tool-gateway.example.com"
-    BASE_URL = f"{GATEWAY}/api/vendorx"
-    UPLOAD_PATH = "/api/uploads/vendorx"
+    BASE_URL = f"{GATEWAY}/api/bfl"
+    UPLOAD_PATH = "/api/uploads/bfl"
 
     def _uploader(self, **kwargs):
         return managed_tool_gateway.build_managed_media_uploader(
@@ -314,9 +292,9 @@ class TestManagedMediaUploader:
         # Refusing to build is what makes the caller say "pass a URL instead"
         # rather than forwarding a raw local path to a third party.
         with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-            assert self._uploader(server_url="https://attacker.example/api/vendorx") is None
+            assert self._uploader(server_url="https://attacker.example/api/bfl") is None
 
-    @pytest.mark.parametrize("upload_path", [None, "", "api/uploads/vendorx", 42])
+    @pytest.mark.parametrize("upload_path", [None, "", "api/uploads/bfl", 42])
     def test_no_uploader_without_a_rooted_upload_path(self, upload_path):
         with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
             assert self._uploader(upload_path=upload_path) is None

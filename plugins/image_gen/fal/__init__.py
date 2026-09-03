@@ -87,7 +87,7 @@ class FalImageGenProvider(ImageGenProvider):
         return {
             "name": "FAL.ai",
             "badge": "paid",
-            "tag": "Pick from flux-2-klein, flux-2-pro, gpt-image, nano-banana-2, nano-banana-pro, etc. — text-to-image & image editing",
+            "tag": "Pick from flux-2-klein, flux-2-pro, gpt-image, nano-banana, etc. — text-to-image & image editing",
             "env_vars": [
                 {
                     "key": "FAL_KEY",
@@ -108,18 +108,12 @@ class FalImageGenProvider(ImageGenProvider):
             _model_id, meta = _it._resolve_fal_model()
         except Exception:  # noqa: BLE001
             return {"modalities": ["text"], "max_reference_images": 0}
-        # Clarity Upscaler chains on explicit request for any FAL model.
         if meta.get("edit_endpoint"):
             return {
                 "modalities": ["text", "image"],
                 "max_reference_images": int(meta.get("max_reference_images") or 1),
-                "supports_upscale": True,
             }
-        return {
-            "modalities": ["text"],
-            "max_reference_images": 0,
-            "supports_upscale": True,
-        }
+        return {"modalities": ["text"], "max_reference_images": 0}
 
     def generate(
         self,
@@ -149,7 +143,6 @@ class FalImageGenProvider(ImageGenProvider):
                 "num_images",
                 "output_format",
                 "seed",
-                "upscale",
             )
             if key in kwargs and kwargs[key] is not None
         }

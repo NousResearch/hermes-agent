@@ -39,19 +39,13 @@ def _permission_option_supports_kind(kind: str) -> bool:
 
 
 def _build_permission_options(
-    *, allow_permanent: bool, allow_session: bool = True,
-    smart_denied: bool = False,
+    *, allow_permanent: bool, smart_denied: bool = False,
 ) -> list[PermissionOption]:
     """Return ACP options that match Hermes approval semantics."""
-    # A gate that re-asks every time (allow_session=False, e.g. protected
-    # agent-instruction writes) collapses to the same two options as a
-    # Smart DENY override — the editor must not offer a scope Hermes
-    # discards, or every subsequent write re-prompts (#81887).
-    once_only = smart_denied or not allow_session
     options = [PermissionOption(
         option_id="allow_once", kind="allow_once", name="Allow once",
     )]
-    if not once_only:
+    if not smart_denied:
         options.append(PermissionOption(
             option_id="allow_session",
             # ACP has no session-scoped kind, so use the closest persistent
@@ -59,7 +53,7 @@ def _build_permission_options(
             kind="allow_always",
             name="Allow for session",
         ))
-    if allow_permanent and not once_only:
+    if allow_permanent and not smart_denied:
         options.append(
             PermissionOption(
                 option_id="allow_always",
@@ -68,7 +62,7 @@ def _build_permission_options(
             ),
         )
     options.append(PermissionOption(option_id="deny", kind="reject_once", name="Deny"))
-    if not once_only and _permission_option_supports_kind("reject_always"):
+    if not smart_denied and _permission_option_supports_kind("reject_always"):
         options.append(
             PermissionOption(
                 option_id="deny_always",
@@ -138,7 +132,6 @@ def make_approval_callback(
         description: str,
         *,
         allow_permanent: bool = True,
-        allow_session: bool = True,
         smart_denied: bool = False,
         **_: object,
     ) -> str:
@@ -146,7 +139,6 @@ def make_approval_callback(
 
         options = _build_permission_options(
             allow_permanent=allow_permanent,
-            allow_session=allow_session,
             smart_denied=smart_denied,
         )
 
@@ -166,16 +158,9 @@ def make_approval_callback(
 
         try:
             response = future.result(timeout=timeout)
-        except FutureTimeout:
+        except (FutureTimeout, Exception) as exc:
             future.cancel()
-            logger.warning("Permission request timed out after %ss", timeout)
-            # Distinct from an explicit deny: the client never answered.
-            # tools.approval callers report this as "timed out without user
-            # response" instead of a user denial.
-            return "timeout"
-        except Exception as exc:
-            future.cancel()
-            logger.warning("Permission request failed: %s", exc)
+            logger.warning("Permission request timed out or failed: %s", exc)
             return "deny"
 
         if response is None:

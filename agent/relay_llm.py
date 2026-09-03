@@ -8,7 +8,6 @@ import inspect
 import json
 import logging
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
@@ -23,51 +22,6 @@ _PROVIDER_MESSAGE_EXTENSION_KEYS = frozenset(
 _RELAY_INTERNAL_PROVIDER_HEADERS = frozenset(
     {"x-dynamo-parent-session-id", "x-dynamo-session-id"}
 )
-@dataclass(frozen=True, slots=True)
-class _RelayProtocol:
-    operation: str
-    codec_class: str
-
-
-_RELAY_PROTOCOL_BY_API_MODE = {
-    "chat_completions": _RelayProtocol(
-        operation="openai.chat_completions",
-        codec_class="OpenAIChatCodec",
-    ),
-    "codex_responses": _RelayProtocol(
-        operation="openai.responses",
-        codec_class="OpenAIResponsesCodec",
-    ),
-    "anthropic_messages": _RelayProtocol(
-        operation="anthropic.messages",
-        codec_class="AnthropicMessagesCodec",
-    ),
-}
-
-
-def _relay_protocol(metadata: dict[str, Any] | None) -> _RelayProtocol | None:
-    """Return Relay's operation and codec descriptor for an API mode."""
-    api_mode = (metadata or {}).get("api_mode")
-    if not isinstance(api_mode, str):
-        return None
-    return _RELAY_PROTOCOL_BY_API_MODE.get(api_mode)
-
-
-def _relay_operation_name(provider_name: str, metadata: dict[str, Any] | None) -> str:
-    """Return Relay's canonical operation name when Hermes knows the API mode."""
-    protocol = _relay_protocol(metadata)
-    return protocol.operation if protocol is not None else provider_name
-
-
-def _relay_metadata(
-    provider_name: str, metadata: dict[str, Any] | None
-) -> dict[str, Any]:
-    """Preserve the physical provider when the operation name is canonicalized."""
-    relay_metadata = _jsonable(metadata or {})
-    if not isinstance(relay_metadata, dict):
-        relay_metadata = {}
-    relay_metadata.setdefault("hermes.provider", provider_name)
-    return relay_metadata
 
 
 def execute(
@@ -101,13 +55,6 @@ def execute(
 
     def invoke(next_request: Any) -> Any:
         nonlocal callback_error
-
-        def guarded(final: dict[str, Any]) -> Any:
-            # Nested relay calls inside a managed provider callback must run
-            # unmanaged (#77244) — see relay_runtime.managed_callback_guard.
-            with relay_runtime.managed_callback_guard():
-                return callback(final)
-
         try:
             final_request = _provider_request(
                 request,
@@ -116,7 +63,7 @@ def execute(
                 codec_baseline_body=codec_baseline_body,
                 metadata=metadata,
             )
-            raw = callback_context.copy().run(guarded, final_request)
+            raw = callback_context.copy().run(callback, final_request)
         except BaseException as exc:
             callback_error = exc
             raise
@@ -129,11 +76,11 @@ def execute(
             runtime.run_in_session_async(
                 session,
                 runtime.relay.llm.execute,
-                _relay_operation_name(name, metadata),
+                name,
                 relay_request,
                 invoke,
                 handle=parent,
-                metadata=_relay_metadata(name, metadata),
+                metadata=_jsonable(metadata or {}),
                 model_name=model_name,
                 codec=_codec(runtime.relay, metadata),
                 response_codec=_codec(runtime.relay, metadata),
@@ -202,10 +149,7 @@ async def execute_async(
                 metadata=metadata,
             )
             async def call_provider() -> Any:
-                # Nested relay calls inside a managed provider callback must
-                # run unmanaged (#77244).
-                with relay_runtime.managed_callback_guard():
-                    return await callback(final_request)
+                return await callback(final_request)
 
             task = callback_context.copy().run(
                 asyncio.create_task,
@@ -223,11 +167,11 @@ async def execute_async(
         managed = await runtime.run_in_session_async(
             session,
             runtime.relay.llm.execute,
-            _relay_operation_name(name, metadata),
+            name,
             relay_request,
             invoke,
             handle=parent,
-            metadata=_relay_metadata(name, metadata),
+            metadata=_jsonable(metadata or {}),
             model_name=model_name,
             codec=_codec(runtime.relay, metadata),
             response_codec=_codec(runtime.relay, metadata),
@@ -303,14 +247,6 @@ async def execute_current_async(
     )
 
 
-def _has_running_event_loop() -> bool:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return False
-    return True
-
-
 def stream_current(
     request: dict[str, Any],
     stream_factory: Callable[[dict[str, Any]], Any],
@@ -320,40 +256,12 @@ def stream_current(
     finalizer: Callable[[], Any],
     metadata: dict[str, Any] | None = None,
     defer_logical_completion: bool = False,
-    completed_response_predicate: Callable[[Any], bool] | None = None,
 ) -> Any:
-    """Run a provider stream under the inherited Hermes turn when present.
-
-    When ``completed_response_predicate`` is set and the stream_factory returns
-    a complete response instead of an iterator (e.g. AnthropicAuxiliaryClient
-    and other shims that ignore ``stream=True``), unwrap and return the
-    completed response directly. This mirrors the pre-Relay behavior where
-    ``call_llm(stream=True)`` returned the raw response and the consumer's
-    own ``hasattr(stream, "choices")`` check handled it (#11732, #55933) —
-    without the unwrap the response stays trapped as ``final_response`` on the
-    inner ManagedLlmStream and the outer consumer sees an empty stream.
-
-    Determining that return shape requires starting the lazy managed pipeline,
-    and Relay may read ahead internally while satisfying that first pull. A
-    genuine first returned chunk remains buffered, while provider work,
-    latency, and pre-first-yield errors may surface before this function
-    returns.
-    """
+    """Run a provider stream under the inherited Hermes turn when present."""
     turn = relay_runtime.active_turn()
     if turn is None:
         return stream_factory(request)
-    if _has_running_event_loop():
-        # Managed provider callbacks execute on the Relay session's event
-        # loop. A nested ManagedLlmStream built here would be synchronously
-        # iterated on that same loop thread, which asyncio forbids
-        # ("Cannot run the event loop while another loop is running").
-        # Return the raw factory result instead: the outer managed stream
-        # already provides Relay tracking for the enclosing attempt, and its
-        # own completed_response_predicate traps a completed response (e.g.
-        # the MoA facade's auxiliary ``call_llm(stream=True)`` returning a
-        # full response when an adapter ignores ``stream=True``).
-        return stream_factory(request)
-    managed = stream(
+    return stream(
         request,
         stream_factory,
         session_id=turn.lease.session_id,
@@ -362,17 +270,7 @@ def stream_current(
         finalizer=finalizer,
         metadata=metadata,
         defer_logical_completion=defer_logical_completion,
-        completed_response_predicate=completed_response_predicate,
     )
-    if completed_response_predicate is not None:
-        # Relay may defer the provider callback until the first stream pull.
-        # Prime once so adapters that ignore stream=True can still return their
-        # completed response directly. A real first chunk is buffered.
-        managed._prime_completed_response()
-        completed = getattr(managed, "final_response", None)
-        if completed is not None:
-            return completed
-    return managed
 
 
 def stream(
@@ -434,40 +332,23 @@ class ManagedLlmStream(Iterator[Any]):
         self._stream: Any = None
         self._raw_stream_resource: Any = None
         self._closed = False
-        self._runtime_lease: relay_runtime.RelayOperationLease | None = None
         self._close_error: BaseException | None = None
         self._callback_error: BaseException | None = None
         self._logical: tuple[relay_runtime.RelayTurnContext, Any, str] | None = None
         self._defer_logical_completion = defer_logical_completion
-        if str((metadata or {}).get("call_role") or "").startswith("auxiliary:"):
-            self._logical_model_name: str | None = model_name
-            self._logical_provider_name: str | None = name
-            self._logical_response_model_name: str | None = None
-        else:
-            self._logical_model_name = None
-            self._logical_provider_name = None
-            self._logical_response_model_name = None
         self._on_chunk = on_chunk
         self._chunk_adapter = chunk_adapter or _namespace
         self._accept_chunk = accept_chunk
         self._relay_observes_chunks = False
         self._provider_completed = False
         self._raw_chunks: list[tuple[Any, Any]] = []
-        self._prefetched_chunks: list[Any] = []
         self.output_modified = False
         callback_context = contextvars.copy_context()
 
         def run_callback(callback: Callable[..., Any], *args: Any) -> Any:
             # Relay can invoke stream surfaces while another callback still
             # owns the captured Context. A fresh copy is safe to enter.
-            def guarded() -> Any:
-                # Hermes-side callbacks run while the native pipeline drives
-                # this stream; nested relay calls they make must bypass
-                # managed execution (#77244).
-                with relay_runtime.managed_callback_guard():
-                    return callback(*args)
-
-            return callback_context.copy().run(guarded)
+            return callback_context.copy().run(callback, *args)
 
         runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
         if (
@@ -564,22 +445,13 @@ class ManagedLlmStream(Iterator[Any]):
                 return None
             try:
                 if self.final_response is not None:
-                    response = self.final_response
-                else:
-                    response = run_callback(finalizer)
-                if self._logical_model_name is not None:
-                    self._logical_response_model_name = _response_model_name(response)
-                return _jsonable(response)
+                    return _jsonable(self.final_response)
+                return _jsonable(run_callback(finalizer))
             except BaseException as exc:
                 self._callback_error = exc
                 raise
 
-        self._runtime_lease = runtime.acquire_operation_lease()
-        try:
-            loop = asyncio.new_event_loop()
-        except BaseException:
-            self._release_runtime_lease()
-            raise
+        loop = asyncio.new_event_loop()
         self._loop = loop
         self._relay_observes_chunks = True
         try:
@@ -587,13 +459,13 @@ class ManagedLlmStream(Iterator[Any]):
                 runtime.run_in_session_async(
                     session,
                     runtime.relay.llm.stream_execute,
-                    _relay_operation_name(name, metadata),
+                    name,
                     relay_request,
                     provider_stream,
                     observe_chunk,
                     relay_finalizer,
                     handle=parent,
-                    metadata=_relay_metadata(name, metadata),
+                    metadata=_jsonable(metadata or {}),
                     model_name=model_name,
                     codec=_codec(runtime.relay, metadata),
                     response_codec=_codec(runtime.relay, metadata),
@@ -616,36 +488,18 @@ class ManagedLlmStream(Iterator[Any]):
                 _complete_logical(
                     self._logical,
                     outcome="cancelled" if _is_cancellation(exc) else "failed",
-                    model_name=self._logical_model_name,
-                    provider_name=self._logical_provider_name,
-                    response_model_name=self._logical_response_model_name,
-                    operation_lease=self._runtime_lease,
                 )
                 self._logical = None
-            try:
-                loop.close()
-            finally:
-                self._loop = None
-                self._release_runtime_lease()
+            loop.close()
+            self._loop = None
             raise
 
     def __iter__(self) -> "ManagedLlmStream":
         return self
 
-    def _prime_completed_response(self) -> None:
-        """Advance once while preserving a genuine first chunk."""
-        if self._closed or self._prefetched_chunks:
-            return
-        try:
-            self._prefetched_chunks.append(next(self))
-        except StopIteration:
-            pass
-
     def __next__(self) -> Any:
         if self._closed:
             raise StopIteration
-        if self._prefetched_chunks:
-            return self._prefetched_chunks.pop()
         if self._loop is None:
             try:
                 chunk = next(self._stream)
@@ -666,14 +520,7 @@ class ManagedLlmStream(Iterator[Any]):
             if self._raw_chunks:
                 self.output_modified = True
             if not self._defer_logical_completion:
-                _complete_logical(
-                    self._logical,
-                    outcome="success",
-                    model_name=self._logical_model_name,
-                    provider_name=self._logical_provider_name,
-                    response_model_name=self._logical_response_model_name,
-                    operation_lease=self._runtime_lease,
-                )
+                _complete_logical(self._logical, outcome="success")
                 self._logical = None
             self._close(logical_outcome="cancelled")
             raise StopIteration from None
@@ -730,75 +577,8 @@ class ManagedLlmStream(Iterator[Any]):
         self._stream = iter(pending)
         self._raw_stream_resource = None
         self._accept_chunk = None
-        try:
-            if loop is not None:
-                close = getattr(relay_stream, "aclose", None)
-                if callable(close):
-
-                    async def close_stream() -> None:
-                        await close()
-
-                    try:
-                        loop.run_until_complete(close_stream())
-                    except Exception:
-                        logger.debug(
-                            "Relay stream cleanup failed during provider fallback",
-                            exc_info=True,
-                        )
-                loop.close()
-            if not self._defer_logical_completion:
-                _complete_logical(
-                    self._logical,
-                    outcome="success",
-                    model_name=self._logical_model_name,
-                    provider_name=self._logical_provider_name,
-                    response_model_name=self._logical_response_model_name,
-                    operation_lease=self._runtime_lease,
-                )
-                self._logical = None
-        finally:
-            self._release_runtime_lease()
-
-    def _close(self, *, logical_outcome: str) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._prefetched_chunks.clear()
-        try:
-            loop = self._loop
-            self._loop = None
-            if loop is None:
-                resources = (self._stream, self._raw_stream_resource)
-                self._stream = None
-                self._raw_stream_resource = None
-                closed_ids: set[int] = set()
-                for resource in resources:
-                    if resource is None or id(resource) in closed_ids:
-                        continue
-                    closed_ids.add(id(resource))
-                    close = getattr(resource, "close", None)
-                    if callable(close):
-                        try:
-                            close()
-                        except Exception as exc:
-                            if self._close_error is None:
-                                self._close_error = exc
-                            logger.debug(
-                                "Provider stream cleanup failed",
-                                exc_info=True,
-                            )
-                if not self._defer_logical_completion:
-                    _complete_logical(
-                        self._logical,
-                        outcome=logical_outcome,
-                        model_name=self._logical_model_name,
-                        provider_name=self._logical_provider_name,
-                        response_model_name=self._logical_response_model_name,
-                        operation_lease=self._runtime_lease,
-                    )
-                    self._logical = None
-                return
-            close = getattr(self._stream, "aclose", None)
+        if loop is not None:
+            close = getattr(relay_stream, "aclose", None)
             if callable(close):
 
                 async def close_stream() -> None:
@@ -806,28 +586,61 @@ class ManagedLlmStream(Iterator[Any]):
 
                 try:
                     loop.run_until_complete(close_stream())
-                except Exception as exc:
-                    if self._close_error is None:
-                        self._close_error = exc
-            if not self._defer_logical_completion:
-                _complete_logical(
-                    self._logical,
-                    outcome=logical_outcome,
-                    model_name=self._logical_model_name,
-                    provider_name=self._logical_provider_name,
-                    response_model_name=self._logical_response_model_name,
-                    operation_lease=self._runtime_lease,
-                )
-                self._logical = None
+                except Exception:
+                    logger.debug(
+                        "Relay stream cleanup failed during provider fallback",
+                        exc_info=True,
+                    )
             loop.close()
-        finally:
-            self._release_runtime_lease()
+        if not self._defer_logical_completion:
+            _complete_logical(self._logical, outcome="success")
+            self._logical = None
 
-    def _release_runtime_lease(self) -> None:
-        lease = self._runtime_lease
-        self._runtime_lease = None
-        if lease is not None:
-            lease.release()
+    def _close(self, *, logical_outcome: str) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        loop = self._loop
+        self._loop = None
+        if loop is None:
+            resources = (self._stream, self._raw_stream_resource)
+            self._stream = None
+            self._raw_stream_resource = None
+            closed_ids: set[int] = set()
+            for resource in resources:
+                if resource is None or id(resource) in closed_ids:
+                    continue
+                closed_ids.add(id(resource))
+                close = getattr(resource, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception as exc:
+                        if self._close_error is None:
+                            self._close_error = exc
+                        logger.debug(
+                            "Provider stream cleanup failed",
+                            exc_info=True,
+                        )
+            if not self._defer_logical_completion:
+                _complete_logical(self._logical, outcome=logical_outcome)
+                self._logical = None
+            return
+        close = getattr(self._stream, "aclose", None)
+        if callable(close):
+
+            async def close_stream() -> None:
+                await close()
+
+            try:
+                loop.run_until_complete(close_stream())
+            except Exception as exc:
+                if self._close_error is None:
+                    self._close_error = exc
+        if not self._defer_logical_completion:
+            _complete_logical(self._logical, outcome=logical_outcome)
+            self._logical = None
+        loop.close()
 
     def __del__(self) -> None:
         self._close(logical_outcome="cancelled")
@@ -964,10 +777,6 @@ def _complete_logical(
     logical: tuple[relay_runtime.RelayTurnContext, Any, str] | None,
     *,
     outcome: str,
-    model_name: str | None = None,
-    provider_name: str | None = None,
-    response_model_name: str | None = None,
-    operation_lease: relay_runtime.RelayOperationLease | None = None,
 ) -> None:
     if logical is None:
         return
@@ -982,20 +791,11 @@ def _complete_logical(
         if lease.session is None:
             return
         try:
-            output = {"outcome": outcome}
-            if model_name is not None and provider_name is not None:
-                output.update({"model": model_name, "provider": provider_name})
-                if response_model_name is not None:
-                    output["response_model"] = response_model_name
-            callback = lease.host.run_in_session
-            if operation_lease is not None:
-                callback = operation_lease.run_in_session
-            callback(
+            lease.host.run_in_session(
                 lease.session,
-                relay_runtime.pop_relay_scope,
-                lease.host.relay,
+                lease.host.relay.scope.pop,
                 handle,
-                output=output,
+                output={"outcome": outcome},
                 metadata={
                     relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
                     relay_runtime.RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
@@ -1045,14 +845,7 @@ def _is_cancellation(error: BaseException) -> bool:
     )
 
 
-def complete_logical_call(
-    api_request_id: str,
-    *,
-    outcome: str,
-    model_name: str | None = None,
-    provider_name: str | None = None,
-    response_model_name: str | None = None,
-) -> None:
+def complete_logical_call(api_request_id: str, *, outcome: str) -> None:
     """Complete the active turn's logical LLM call after caller validation."""
     turn = relay_runtime.active_turn()
     if turn is None or not api_request_id:
@@ -1060,22 +853,7 @@ def complete_logical_call(
     with turn.logical_llm_lock:
         handle = turn.logical_llm_calls.get(api_request_id)
     if handle is not None:
-        _complete_logical(
-            (turn, handle, api_request_id),
-            outcome=outcome,
-            model_name=model_name,
-            provider_name=provider_name,
-            response_model_name=response_model_name,
-        )
-
-
-def _response_model_name(response: Any) -> str | None:
-    """Return a provider-reported model name when one is available."""
-    if isinstance(response, dict):
-        value = response.get("model")
-    else:
-        value = getattr(response, "model", None)
-    return value if isinstance(value, str) and value.strip() else None
+        _complete_logical((turn, handle, api_request_id), outcome=outcome)
 
 
 def _provider_request(
@@ -1119,19 +897,6 @@ def _provider_request(
             for key, value in headers.items()
             if str(key).lower() not in _RELAY_INTERNAL_PROVIDER_HEADERS
         }
-    # Relay's managed-call trace header maps to ``extra_headers`` for known SDK
-    # adapters and custom requests that already use that container. Other
-    # native transports receive protocol kwargs directly and may reject a new
-    # SDK-only argument. Preserve non-trace middleware headers as before.
-    supports_extra_headers = (
-        _relay_protocol(metadata) is not None or "extra_headers" in original
-    )
-    if headers and not supports_extra_headers:
-        headers = {
-            key: value
-            for key, value in headers.items()
-            if str(key).lower() != "traceparent"
-        }
     if headers:
         final["extra_headers"] = {
             **dict(final.get("extra_headers") or {}),
@@ -1146,10 +911,6 @@ def _relay_request_body(
     body = _jsonable(request)
     if not isinstance(body, dict):
         return {}
-    # ``timeout`` configures the provider SDK client, not a provider wire
-    # protocol. Preserve it for the original callback request, but never pass
-    # it to Relay intercepts or routed transports.
-    body.pop("timeout", None)
     # The Responses SDK accepts ``tools=None`` as "no tools", while Relay's
     # typed Responses codec correctly expects either an array or an absent
     # field. Normalize only the codec-facing copy; the original provider
@@ -1299,11 +1060,18 @@ def _provider_request_body(
 
 
 def _codec(relay: Any, metadata: dict[str, Any] | None) -> Any:
-    protocol = _relay_protocol(metadata)
+    api_mode = str((metadata or {}).get("api_mode") or "")
     codecs = getattr(relay, "codecs", None)
-    if protocol is None or codecs is None:
+    if codecs is None:
         return None
-    codec = getattr(codecs, protocol.codec_class, None)
+    if api_mode == "chat_completions":
+        codec = getattr(codecs, "OpenAIChatCodec", None)
+    elif api_mode == "anthropic_messages":
+        codec = getattr(codecs, "AnthropicMessagesCodec", None)
+    elif api_mode == "codex_responses":
+        codec = getattr(codecs, "OpenAIResponsesCodec", None)
+    else:
+        codec = None
     return codec() if callable(codec) else None
 
 
@@ -1317,15 +1085,7 @@ def _jsonable(value: Any) -> Any:
     model_dump = getattr(type(value), "model_dump", None)
     if callable(model_dump):
         try:
-            # warnings=False: SDK stream events (e.g. the Anthropic
-            # ParsedMessage inside message_stop) carry generic-union content
-            # blocks that pydantic serializes fine but warns about — and the
-            # warning leaks to the user's terminal mid-response (#82xxx).
-            try:
-                return _jsonable(value.model_dump(mode="json", warnings=False))
-            except TypeError:
-                # Duck-typed model_dump without pydantic's signature.
-                return _jsonable(value.model_dump())
+            return _jsonable(value.model_dump(mode="json"))
         except Exception:
             pass
     try:

@@ -124,11 +124,7 @@ class TestFalRouting:
         capture: dict = {}
         self._patch_submit(monkeypatch, image_tool, capture)
 
-        # Routing test — disable the (default-on) upscale pass so the captured
-        # endpoint is the generation submit, not the upscaler.
-        raw = image_tool.image_generate_tool(
-            prompt="a cat", aspect_ratio="square", upscale=False,
-        )
+        raw = image_tool.image_generate_tool(prompt="a cat", aspect_ratio="square")
         out = json.loads(raw)
         assert out["success"] is True
         assert out["modality"] == "text"
@@ -276,14 +272,9 @@ class TestDynamicSchema:
         from tools.image_generation_tool import _build_dynamic_image_schema
 
         _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/nano-banana-pro"}})
-        schema = _build_dynamic_image_schema()
-        # Edit capability now surfaces as ADVERTISED PARAMS, not prose
-        # (#95681 diet): image_url + reference_image_urls present with the
-        # catalog's per-model cap; description states the edit path.
-        props = schema["parameters"]["properties"]
-        assert "image_url" in props
-        assert "reference_image_urls" in props
-        assert "edit / transform" in schema["description"]
+        desc = _build_dynamic_image_schema()["description"]
+        assert "text-to-image" in desc and "image-to-image" in desc
+        assert "routes automatically" in desc
 
 
     def test_builder_wired_into_registry(self):

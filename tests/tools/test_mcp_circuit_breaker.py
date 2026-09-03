@@ -116,11 +116,11 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
     async def _call_tool_success(*a, **kw):
         call_count["n"] += 1
         result = MagicMock()
-        result.is_error = False
+        result.isError = False
         block = MagicMock()
         block.text = "ok"
         result.content = [block]
-        result.structured_content = None
+        result.structuredContent = None
         return result
 
     _install_stub_server(mcp_tool, "srv", _call_tool_success)
@@ -279,11 +279,11 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
 
     async def _call_tool_success(*a, **kw):
         result = MagicMock()
-        result.is_error = False
+        result.isError = False
         block = MagicMock()
         block.text = "ok"
         result.content = [block]
-        result.structured_content = None
+        result.structuredContent = None
         return result
 
     server = _install_stub_server(mcp_tool, "srv", _call_tool_success)

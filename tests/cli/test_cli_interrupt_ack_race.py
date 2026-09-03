@@ -411,9 +411,7 @@ def test_chat_clears_previous_turn_persistence_override_before_staging():
     assert agent.staged_override is None
     assert agent._persist_user_message_idx is None
     assert agent._persist_user_message_timestamp is None
-    assert agent.staged_message["role"] == "user"
-    assert agent.staged_message["content"] == "new prompt"
-    assert isinstance(agent.staged_message["timestamp"], float)
+    assert agent.staged_message == {"role": "user", "content": "new prompt"}
 
 
 

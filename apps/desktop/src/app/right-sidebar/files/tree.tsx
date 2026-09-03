@@ -1,14 +1,12 @@
 import { useStore } from '@nanostores/react'
 import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useRef, useState } from 'react'
-import { useMemo } from 'react'
 import { type NodeApi, type NodeRendererProps, type RowRendererProps, Tree, type TreeApi } from 'react-arborist'
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { Codicon } from '@/components/ui/codicon'
-import { markRightPanePerf } from '@/debug/right-pane-events'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { cn } from '@/lib/utils'
-import { type RepoChangeKind, repoChangeKindForPath } from '@/store/coding-status'
+import { $repoChangeByPath, type RepoChangeKind } from '@/store/coding-status'
 import { $renamingPath, beginInlineRename } from '@/store/file-actions'
 import { $revealInTreeRequest } from '@/store/layout'
 
@@ -57,20 +55,19 @@ export function ProjectTree({
   onPreviewFile,
   openState
 }: ProjectTreeProps) {
-  markRightPanePerf('project-tree-render')
-
   const containerRef = useRef<HTMLDivElement | null>(null)
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
   const [size, setSize] = useState({ height: 0, width: 0 })
+  const changeByPath = useStore($repoChangeByPath)
 
-  const syncTreeSize = useCallback((entries: readonly ResizeObserverEntry[]) => {
+  const syncTreeSize = useCallback(() => {
     const el = containerRef.current
 
     if (!el) {
       return
     }
 
-    const { height, width } = projectTreeViewportSize(entries, el)
+    const { height, width } = el.getBoundingClientRect()
 
     setSize(prev => {
       if (prev.height === height && prev.width === width) {
@@ -178,12 +175,7 @@ export function ProjectTree({
   }, [])
 
   return (
-    <div
-      className="min-h-0 flex-1 overflow-hidden"
-      data-project-tree=""
-      onKeyDownCapture={handleRenameShortcut}
-      ref={containerRef}
-    >
+    <div className="min-h-0 flex-1 overflow-hidden" onKeyDownCapture={handleRenameShortcut} ref={containerRef}>
       {size.height > 0 && size.width > 0 ? (
         <Tree<TreeNode>
           childrenAccessor={node => (node?.isDirectory ? (node.children ?? []) : null)}
@@ -208,6 +200,7 @@ export function ProjectTree({
           {props => (
             <ProjectTreeRow
               {...props}
+              changeKind={props.node.data ? changeByPath.get(props.node.data.id) : undefined}
               onAttachFile={onActivateFile}
               onAttachFolder={onActivateFolder}
               onPreviewFile={onPreviewFile}
@@ -220,16 +213,6 @@ export function ProjectTree({
       )}
     </div>
   )
-}
-
-export function projectTreeViewportSize(
-  entries: readonly ResizeObserverEntry[],
-  element: HTMLElement
-): { height: number; width: number } {
-  const entry = entries.find(item => item.target === element)
-  const box = entry?.contentRect ?? element.getBoundingClientRect()
-
-  return { height: box.height, width: box.width }
 }
 
 function TreeSizingState() {
@@ -261,6 +244,7 @@ const CHANGE_TINT: Record<RepoChangeKind, string> = {
 }
 
 function ProjectTreeRow({
+  changeKind,
   dragHandle,
   node,
   onAttachFile,
@@ -269,17 +253,13 @@ function ProjectTreeRow({
   relativeTo,
   style
 }: NodeRendererProps<TreeNode> & {
+  changeKind?: RepoChangeKind
   onAttachFile: (path: string) => void
   onAttachFolder: (path: string) => void
   onPreviewFile?: (path: string) => void
   relativeTo?: null | string
 }) {
   const renamingPath = useStore($renamingPath)
-  const path = node.data?.id ?? ''
-  const changeStore = useMemo(() => repoChangeKindForPath(path), [path])
-  const changeKind: RepoChangeKind | undefined = useStore(changeStore)
-
-  markRightPanePerf('project-tree-row-render', path)
 
   if (!node.data) {
     return <div style={style} />

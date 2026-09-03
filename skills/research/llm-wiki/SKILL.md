@@ -456,7 +456,7 @@ Wants=network-online.target
 
 [Service]
 ExecStart=/path/to/ob sync --continuous
-WorkingDirectory=%h/wiki
+WorkingDirectory=/home/user/wiki
 Restart=on-failure
 RestartSec=10
 

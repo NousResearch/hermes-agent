@@ -4,7 +4,6 @@ description: "Debug REST/GraphQL APIs: status codes, auth, schemas, repro."
 version: 1.2.0
 author: eren-karakus0
 license: MIT
-platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [api, rest, graphql, http, debugging, testing, curl, integration]
@@ -59,7 +58,7 @@ terminal("""curl -X POST https://api.example.com/users \\
 terminal('curl -sI https://api.example.com/health')
 
 # Pretty-print JSON
-terminal('curl -s https://api.example.com/users | python -m json.tool')
+terminal('curl -s https://api.example.com/users | python3 -m json.tool')
 ```
 
 ### GraphQL via terminal

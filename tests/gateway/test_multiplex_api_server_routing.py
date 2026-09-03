@@ -6,8 +6,6 @@ owns the port, and secondary profiles are reached via a URL prefix when
 """
 from __future__ import annotations
 
-from typing import Any, cast
-
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
@@ -16,17 +14,12 @@ from gateway.platforms.api_server import (
 )
 
 
-def _make_adapter(
-    multiplex: bool = True, allowlist: list[str] | None = None
-) -> APIServerAdapter:
+def _make_adapter(multiplex: bool = True) -> APIServerAdapter:
     cfg = PlatformConfig(enabled=True, extra={"host": "127.0.0.1", "port": 8642, "key": "test-key"})
     adapter = APIServerAdapter(cfg)
 
     class _Runner:
-        config = GatewayConfig(
-            multiplex_profiles=multiplex,
-            multiplex_profile_allowlist=allowlist,
-        )
+        config = GatewayConfig(multiplex_profiles=multiplex)
 
     adapter.gateway_runner = _Runner()
     return adapter
@@ -41,25 +34,6 @@ class TestApiServerProfileResolution:
     def test_no_prefix_returns_none(self):
         adapter = _make_adapter(multiplex=True)
         assert adapter._resolve_request_profile(_FakeReq(None)) is None
-
-    def test_unserved_prefix_is_rejected(self, monkeypatch):
-        adapter = _make_adapter(multiplex=True, allowlist=["worker"])
-        monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex, profile_allowlist=None: [
-                ("default", "/profiles/default"),
-                ("worker", "/profiles/worker"),
-            ],
-        )
-
-        assert (
-            adapter._resolve_request_profile(cast(Any, _FakeReq("worker")))
-            == "worker"
-        )
-        assert (
-            adapter._resolve_request_profile(cast(Any, _FakeReq("restricted")))
-            is _PROFILE_REJECTED
-        )
 
 
 class TestApiServerRouteTable:

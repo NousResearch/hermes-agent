@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -18,12 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from tools.environments.base import (
-    BaseEnvironment,
-    EnvironmentConnectionError,
-    _popen_bash,
-)
-from tools.environments.path_utils import sanitize_task_id_for_path
+from tools.environments.base import BaseEnvironment, _popen_bash
 from tools.environments.local import (
     _HERMES_PROVIDER_ENV_BLOCKLIST,
     _is_hermes_internal_secret,
@@ -131,13 +125,6 @@ def _sanitize_label_value(value: str) -> str:
     return cleaned
 
 
-# The task_id -> host-directory-name mapping is shared with every backend
-# that persists per-task state on the host filesystem (Singularity overlays
-# use the same helper), so the whole bug class is fixed in one place:
-# tools.environments.base.sanitize_task_id_for_path.
-_sandbox_dir_name = sanitize_task_id_for_path
-
-
 def _get_active_profile_name() -> str:
     """Return the active Hermes profile name, or ``"default"`` on any error.
 
@@ -151,29 +138,6 @@ def _get_active_profile_name() -> str:
         return get_active_profile_name() or "default"
     except Exception:
         return "default"
-
-
-def _container_identity(shared_key: str = "") -> str:
-    """Return the profile label used for reuse and orphan reaping.
-
-    Profiles remain isolated by default. An explicit shared key lets trusted
-    profiles that intentionally share a workspace use one Docker identity.
-
-    Shared keys are made collision-resistant the same way
-    :func:`sanitize_task_id_for_path` is: label sanitization is lossy
-    (``team/workspace`` and ``team_workspace`` both sanitize to
-    ``team_workspace``, and >63-char keys truncate), and since container
-    reuse is label-keyed, two DIFFERENT keys colliding after sanitization
-    would silently attach to the same running container. A digest of the
-    raw key disambiguates; identical raw keys still map to identical
-    labels across processes. Plain profile names keep their historical
-    un-suffixed labels for backward compatibility with existing containers.
-    """
-    if not shared_key:
-        return _sanitize_label_value(_get_active_profile_name())
-    digest = hashlib.sha256(shared_key.encode("utf-8")).hexdigest()[:12]
-    stem = _sanitize_label_value(shared_key)[:50]
-    return f"{stem}-{digest}"
 
 
 def reap_orphan_containers(
@@ -384,29 +348,6 @@ _BASE_SECURITY_ARGS = [
 # Default per-container PID limit. Applied as ``--pids-limit`` only when the
 # cgroup ``pids`` controller is available (see ``_cgroup_limits_available``).
 _DEFAULT_PIDS_LIMIT = "256"
-
-# Default /dev/shm size. Docker's built-in default is a tiny 64 MB, which
-# silently breaks shared-memory-hungry workloads inside the sandbox: Chromium /
-# Playwright renderers crash tabs, and PyTorch DataLoader workers die with
-# "bus error" / "insufficient shared memory" once they exceed it. tmpfs is
-# lazily allocated, so a 1g ceiling costs nothing until actually used (and
-# usage still counts against the container's --memory cgroup limit).
-# Configurable via ``terminal.docker_shm_size`` in config.yaml; an empty value
-# (or "0") omits the flag and falls back to Docker's 64 MB default.
-# Ported from nanocoai/nanoclaw#2748.
-_DEFAULT_SHM_SIZE = "1g"
-
-
-def _extra_args_set_shm_size(extra_args: list) -> bool:
-    """True when user-supplied docker_extra_args already set ``--shm-size``.
-
-    In that case we skip our default so the user's value is unambiguous
-    (rather than relying on flag-ordering / last-wins behavior).
-    """
-    return any(
-        isinstance(a, str) and (a == "--shm-size" or a.startswith("--shm-size="))
-        for a in (extra_args or [])
-    )
 
 # /run is split out from _BASE_SECURITY_ARGS because s6-overlay images need it
 # mounted ``exec``: s6 stage0 later runs ``exec /run/s6/basedir/bin/init``, which
@@ -813,13 +754,9 @@ def _ensure_docker_available() -> None:
             "or known install locations. Install Docker Desktop and ensure the "
             "CLI is available."
         )
-        raise EnvironmentConnectionError(
+        raise RuntimeError(
             "Docker executable not found in PATH or known install locations. "
-            "Install Docker and ensure the 'docker' command is available.",
-            retry_hint=(
-                "Install Docker (or fix PATH) and retry, or switch "
-                "terminal.backend to 'local'."
-            ),
+            "Install Docker and ensure the 'docker' command is available."
         )
 
     try:
@@ -837,9 +774,8 @@ def _ensure_docker_available() -> None:
             docker_exe,
             exc_info=True,
         )
-        raise EnvironmentConnectionError(
-            "Docker executable could not be executed. Check your Docker installation.",
-            retry_hint="Repair the Docker installation and retry.",
+        raise RuntimeError(
+            "Docker executable could not be executed. Check your Docker installation."
         )
     except subprocess.TimeoutExpired:
         logger.error(
@@ -848,12 +784,8 @@ def _ensure_docker_available() -> None:
             docker_exe,
             exc_info=True,
         )
-        raise EnvironmentConnectionError(
-            "Docker daemon is not responding. Ensure Docker is running and try again.",
-            retry_hint=(
-                "Start the Docker daemon (e.g. `systemctl start docker` or "
-                "launch Docker Desktop), then retry the same command."
-            ),
+        raise RuntimeError(
+            "Docker daemon is not responding. Ensure Docker is running and try again."
         )
     except Exception:
         logger.error(
@@ -870,13 +802,9 @@ def _ensure_docker_available() -> None:
                 result.returncode,
                 result.stderr.strip(),
             )
-            raise EnvironmentConnectionError(
+            raise RuntimeError(
                 "Docker command is available but 'docker version' failed. "
-                "Check your Docker installation.",
-                retry_hint=(
-                    "The Docker daemon may be down or the current user lacks "
-                    "permission (docker group). Fix and retry."
-                ),
+                "Check your Docker installation."
             )
 
 
@@ -892,12 +820,6 @@ class DockerEnvironment(BaseEnvironment):
     across container restarts.
     """
 
-    _profile_scoped_passthrough = True
-
-    def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
-        """Keep explicit docker_forward_env values out of shared snapshots."""
-        return tuple(self._forward_env)
-
     def __init__(
         self,
         image: str,
@@ -912,39 +834,30 @@ class DockerEnvironment(BaseEnvironment):
         forward_env: list[str] | None = None,
         env: dict | None = None,
         network: bool = True,
-        host_cwd: Optional[str] = None,
+        host_cwd: str = None,
         auto_mount_cwd: bool = False,
         run_as_host_user: bool = False,
         extra_args: list = None,
         persist_across_processes: bool = True,
-        shm_size: str = _DEFAULT_SHM_SIZE,
-        shared_container_key: str = "",
     ):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes
-        # Set by terminal_tool._create_environment when this container is
-        # scoped to a single session (docker + container_persistent: false):
-        # survives between turns, removed at session close / idle timeout.
-        self._session_scoped = False
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
-        self._init_unset_passthrough_names: tuple[str, ...] = ()
         self._container_id: Optional[str] = None
         self._labels: dict[str, str] = {}
         self._image: str = ""
         self._container_name: str = ""
         self._image_uses_s6_init: bool = False
         self._all_run_args: list[str] = []
-        self._run_env_values: dict[str, str] = {}
-        self._init_env_values: dict[str, str] = {}
-        logger.info("DockerEnvironment volumes: %s", volumes)
+        logger.info(f"DockerEnvironment volumes: {volumes}")
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
-            logger.warning("docker_volumes config is not a list: %r", volumes)
+            logger.warning(f"docker_volumes config is not a list: {volumes!r}")
             volumes = []
 
         # Fail fast if Docker is not available.
@@ -961,12 +874,6 @@ class DockerEnvironment(BaseEnvironment):
             resource_args.extend(["--memory", f"{memory}m"])
         if _cgroup_limits_available(image):
             resource_args.extend(["--pids-limit", _DEFAULT_PIDS_LIMIT])
-        # /dev/shm size (not cgroup-gated: --shm-size is a tmpfs mount option,
-        # no controller delegation required). Skip when the user already sets
-        # it via docker_extra_args, or opted out with an empty/"0" value.
-        shm = str(shm_size or "").strip()
-        if shm and shm != "0" and not _extra_args_set_shm_size(extra_args):
-            resource_args.extend(["--shm-size", shm])
         if disk > 0 and sys.platform != "darwin":
             if self._storage_opt_supported():
                 resource_args.extend(["--storage-opt", f"size={disk}m"])
@@ -988,7 +895,7 @@ class DockerEnvironment(BaseEnvironment):
         workspace_explicitly_mounted = False
         for vol in (volumes or []):
             if not isinstance(vol, str):
-                logger.warning("Docker volume entry is not a string: %r", vol)
+                logger.warning(f"Docker volume entry is not a string: {vol!r}")
                 continue
             vol = vol.strip()
             if not vol:
@@ -998,7 +905,7 @@ class DockerEnvironment(BaseEnvironment):
                 if ":/workspace" in vol:
                     workspace_explicitly_mounted = True
             else:
-                logger.warning("Docker volume '%s' missing colon, skipping", vol)
+                logger.warning(f"Docker volume '{vol}' missing colon, skipping")
 
         host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
         bind_host_cwd = (
@@ -1008,15 +915,13 @@ class DockerEnvironment(BaseEnvironment):
             and not workspace_explicitly_mounted
         )
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
-            logger.debug("Skipping docker cwd mount: host_cwd is not a valid directory: %s", host_cwd)
+            logger.debug(f"Skipping docker cwd mount: host_cwd is not a valid directory: {host_cwd}")
 
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
         writable_args = []
         if self._persistent:
-            # _sandbox_dir_name(): a raw session-key task_id carries colons,
-            # which `-v` reads as extra spec fields (exit 125).
-            sandbox = get_sandbox_dir() / "docker" / _sandbox_dir_name(task_id)
+            sandbox = get_sandbox_dir() / "docker" / task_id
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([
@@ -1039,7 +944,7 @@ class DockerEnvironment(BaseEnvironment):
             ])
 
         if bind_host_cwd:
-            logger.info("Mounting configured host cwd to /workspace: %s", host_cwd_abs)
+            logger.info(f"Mounting configured host cwd to /workspace: {host_cwd_abs}")
             volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
@@ -1310,16 +1215,9 @@ class DockerEnvironment(BaseEnvironment):
             if not merged_env["NODE_OPTIONS"]:
                 merged_env.pop("NODE_OPTIONS", None)
 
-        # Name-only -e flags: the docker CLI resolves a valueless `--env KEY`
-        # from its own process environment, so the secret values travel via
-        # the spawned client's env (owner-readable /proc/*/environ) instead of
-        # its argv (world-readable /proc/*/cmdline). See issue #96268.
         env_args = []
         for key in sorted(merged_env):
-            env_args.extend(["-e", key])
-        # Values injected into the docker-client subprocess env at run time
-        # (also reused verbatim by the container-recreation recovery path).
-        self._run_env_values = dict(merged_env)
+            env_args.extend(["-e", f"{key}={merged_env[key]}"])
 
         # Optional: run the container as the host user so files written into
         # bind-mounted dirs (/workspace, /root, docker_volumes entries) are
@@ -1362,7 +1260,7 @@ class DockerEnvironment(BaseEnvironment):
             run_exec=image_uses_s6_init,
         )
 
-        logger.info("Docker volume_args: %s", volume_args)
+        logger.info(f"Docker volume_args: {volume_args}")
         # User-supplied extra docker run flags (docker_extra_args in config.yaml).
         # Appended last so they can override defaults if needed.
         validated_extra = []
@@ -1400,7 +1298,7 @@ class DockerEnvironment(BaseEnvironment):
             + env_args
             + validated_extra
         )
-        logger.info("Docker run_args: %s", all_run_args)
+        logger.info(f"Docker run_args: {all_run_args}")
 
         # Start the container directly via `docker run -d`.
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
@@ -1409,9 +1307,9 @@ class DockerEnvironment(BaseEnvironment):
         #   * future cross-process reuse (`hermes-task-id`, `hermes-profile`)
         #   * operators running `docker ps --filter label=hermes-agent=1`
         # Values are limited to the safe character set defined by
-        # _sanitize_label_value(); the configured reuse identity is captured at
+        # _sanitize_label_value(); the active Hermes profile is captured at
         # container-start time and never changes for the container's lifetime.
-        profile_name = _container_identity(shared_container_key)
+        profile_name = _sanitize_label_value(_get_active_profile_name())
         task_label = _sanitize_label_value(task_id)
         label_args = [
             "--label", "hermes-agent=1",
@@ -1529,7 +1427,7 @@ class DockerEnvironment(BaseEnvironment):
                 image,
                 "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
             ]
-            logger.debug("Starting container: %s", ' '.join(run_cmd))
+            logger.debug(f"Starting container: {' '.join(run_cmd)}")
             try:
                 result = subprocess.run(
                     run_cmd,
@@ -1538,7 +1436,6 @@ class DockerEnvironment(BaseEnvironment):
                     timeout=120,  # image pull may take a while
                     check=True,
                     stdin=subprocess.DEVNULL,
-                    env=self._docker_client_env(self._run_env_values),
                 )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 # Docker may create the container object before `docker run`
@@ -1559,71 +1456,28 @@ class DockerEnvironment(BaseEnvironment):
                 )
                 raise
             self._container_id = result.stdout.strip()
-            logger.info("Started container %s (%s)", container_name, self._container_id[:12])
+            logger.info(f"Started container {container_name} ({self._container_id[:12]})")
 
-        # Build the init-time env forwarding args used to seed the snapshot.
+        # Build the init-time env forwarding args (used only by init_session
+        # to inject host env vars into the snapshot; subsequent commands get
+        # them from the snapshot file).
         self._init_env_args = self._build_init_env_args()
 
         # Initialize session snapshot inside the container
         self.init_session()
 
-    def _docker_client_env(self, values: dict[str, str]) -> dict[str, str] | None:
-        """Env for a spawned docker-client subprocess carrying forwarded values.
-
-        Name-only ``-e KEY`` flags make the docker CLI read each value from
-        its own process environment, keeping secrets out of the client's
-        world-readable ``/proc/<pid>/cmdline`` (issue #96268). Values live in
-        ``/proc/<pid>/environ`` instead, which is owner/root-only.
-        Returns ``None`` (inherit as before) when there is nothing to add.
-        """
-        if not values:
-            return None
-        client_env = dict(os.environ)
-        client_env.update(values)
-        return client_env
-
     def _build_init_env_args(self) -> list[str]:
-        """Build name-only -e args for injecting host env vars into init_session.
+        """Build -e KEY=VALUE args for injecting host env vars into init_session.
 
-        These are used during init_session() so that export -p captures the
-        configured environment and the current profile's forwarded values.
-        The VALUES intentionally do not appear in the argv — they are passed
-        via the docker client subprocess env (see _docker_client_env and
-        issue #96268); the flags here are name-only ``-e KEY``.
+        These are used once during init_session() so that export -p captures
+        them into the snapshot.  Subsequent execute() calls don't need -e flags.
         """
-        passthrough_env, unset_names = self._resolve_passthrough_env()
         exec_env: dict[str, str] = dict(self._env)
-        exec_env.update(passthrough_env)
-        for name in unset_names:
-            exec_env.pop(name, None)
-        self._init_unset_passthrough_names = tuple(sorted(unset_names))
-        self._init_env_values = dict(exec_env)
 
-        args = []
-        for key in sorted(exec_env):
-            args.extend(["-e", key])
-        return args
-
-    def _build_passthrough_env(self) -> dict[str, str]:
-        """Resolve forwarded host variables through the active profile scope."""
-        return self._resolve_passthrough_env()[0]
-
-    def _resolve_passthrough_env(self) -> tuple[dict[str, str], set[str]]:
-        """Return forwarded values and scoped names that must be unset."""
-        exec_env: dict[str, str] = {}
         explicit_forward_keys = set(self._forward_env)
         passthrough_keys: set[str] = set()
-        resolve_passthrough_value = None
-        multiplex_active = False
-        is_global_env = lambda _name: False  # noqa: E731
         try:
-            from tools.env_passthrough import (
-                get_all_passthrough,
-                resolve_passthrough_value,
-            )
-            from agent.secret_scope import _is_global_env, is_multiplex_active as _is_multiplex_active
-            is_global_env = _is_global_env
-            multiplex_active = _is_multiplex_active()
+            from tools.env_passthrough import get_all_passthrough
             passthrough_keys = set(get_all_passthrough())
         except Exception:
             pass
@@ -1637,34 +1491,17 @@ class DockerEnvironment(BaseEnvironment):
         }
         forward_keys = explicit_forward_keys | (_implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
-        unset_names: set[str] = set()
         for key in sorted(forward_keys):
-            value = os.getenv(key) or hermes_env.get(key)
-            if resolve_passthrough_value is not None:
-                value = resolve_passthrough_value(key, value)
-            if value is not None:
+            value = os.getenv(key)
+            if not value:
+                value = hermes_env.get(key)
+            if value:
                 exec_env[key] = value
-            elif multiplex_active and not is_global_env(key) and _ENV_VAR_NAME_RE.fullmatch(key):
-                unset_names.add(key)
-        return exec_env, unset_names
 
-    def _build_runtime_env_args_with_unsets(
-        self,
-    ) -> tuple[list[str], tuple[str, ...], dict[str, str]]:
-        """Build runtime forwarding args, names absent from scope, and values.
-
-        The returned args are name-only ``-e KEY`` flags (issue #96268); the
-        values dict must be injected into the docker client subprocess env.
-        """
-        passthrough_env, unset_names = self._resolve_passthrough_env()
         args = []
-        for key in sorted(passthrough_env):
-            args.extend(["-e", key])
-        return args, tuple(sorted(unset_names)), dict(passthrough_env)
-
-    def _build_runtime_env_args(self) -> list[str]:
-        """Build only dynamic forwarded names for a non-login command."""
-        return self._build_runtime_env_args_with_unsets()[0]
+        for key in sorted(exec_env):
+            args.extend(["-e", f"{key}={exec_env[key]}"])
+        return args
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
@@ -1675,27 +1512,10 @@ class DockerEnvironment(BaseEnvironment):
         if stdin_data is not None:
             cmd.append("-i")
 
-        # Init seeds the snapshot. Profile-scoped passthrough values are also
-        # injected on every later command because this container can be shared
-        # by multiple routed profiles in one gateway process.
-        # Env flags are name-only; values travel via the client subprocess
-        # env so they never hit world-readable /proc/*/cmdline (#96268).
-        unset_names: tuple[str, ...] = ()
-        env_values: dict[str, str] = {}
+        # Only inject -e env args during init_session (login=True).
+        # Subsequent commands get env vars from the snapshot.
         if login:
             cmd.extend(self._init_env_args)
-            env_values = dict(getattr(self, "_init_env_values", {}))
-        elif self._profile_scoped_passthrough:
-            runtime_args, unset_names, env_values = (
-                self._build_runtime_env_args_with_unsets()
-            )
-            cmd.extend(runtime_args)
-
-        if login:
-            unset_names = getattr(self, "_init_unset_passthrough_names", ())
-        if unset_names:
-            quoted_names = " ".join(shlex.quote(name) for name in unset_names)
-            cmd_string = f"unset {quoted_names} 2>/dev/null || true\n{cmd_string}"
 
         cmd.extend([self._container_id])
 
@@ -1704,9 +1524,6 @@ class DockerEnvironment(BaseEnvironment):
         else:
             cmd.extend(["bash", "-c", cmd_string])
 
-        client_env = self._docker_client_env(env_values)
-        if client_env is not None:
-            return _popen_bash(cmd, stdin_data, env=client_env)
         return _popen_bash(cmd, stdin_data)
 
     # ------------------------------------------------------------------
@@ -1785,7 +1602,6 @@ class DockerEnvironment(BaseEnvironment):
                 result = subprocess.run(
                     run_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120, check=True,
                     stdin=subprocess.DEVNULL,
-                    env=self._docker_client_env(self._run_env_values),
                 )
                 self._container_id = result.stdout.strip()
                 self._container_name = new_name

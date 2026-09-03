@@ -221,15 +221,9 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
         return ""
 
     if src == "clawhub":
-        # identifier is a bare slug (the "clawhub/" prefix is added at install time).
-        # ClawHub URLs require the owner handle: https://clawhub.ai/{owner}/skills/{slug}.
-        # Without the owner we cannot build a valid URL — return "" rather than
-        # a broken link (the card will simply omit the "View source" button).
+        # identifier is a bare slug (the "clawhub/" prefix is added at install time)
         slug = identifier[len("clawhub/"):] if identifier.startswith("clawhub/") else identifier
-        owner = extra.get("owner", "") if isinstance(extra, dict) else ""
-        if owner:
-            return f"https://clawhub.ai/{owner}/skills/{slug}"
-        return ""
+        return f"https://clawhub.ai/skills/{slug}"
 
     if src in {"skills.sh", "skills-sh"}:
         # "skills-sh/owner/repo/skill" -> the skills.sh detail page

@@ -29,7 +29,6 @@ import os
 import shutil
 import subprocess
 import sys
-from importlib.metadata import version as _distribution_version
 from pathlib import Path
 
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
@@ -55,20 +54,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/documents",
 ]
 
-# Exact pins: keep in sync with pyproject.toml [project.optional-dependencies].google
-# and tools/lazy_deps.py LAZY_DEPS['skill.google_workspace'].
-# Pinning all protects against version drift and ensures the security floors
-# (httplib2 GHSA-j5g9-f88f-gfj3, stale pyasn1/google-auth) are honoured
-# regardless of install path.
-REQUIRED_PACKAGES = [
-    "google-api-python-client==2.194.0",
-    "google-auth==2.55.1",
-    "google-auth-oauthlib==1.3.1",
-    "google-auth-httplib2==0.3.1",
-    # GHSA-j5g9-f88f-gfj3 — Decompression Bomb DoS via unbounded gzip/deflate
-    "httplib2==0.32.0",
-    "pyasn1==0.6.4",
-]
+REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
 
 # OAuth redirect for "out of band" manual code copy flow.
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
@@ -107,43 +93,24 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
     )
 
 
-def _missing_required_packages() -> list[str]:
-    """Return exact requirements absent or stale in this interpreter.
-
-    All REQUIRED_PACKAGES entries are exact ``name==version`` pins, so a
-    direct version comparison is sufficient — no ``packaging`` dependency
-    needed in this standalone script.
-    """
-    missing = []
-    for spec in REQUIRED_PACKAGES:
-        name, _, wanted = spec.partition("==")
-        try:
-            if _distribution_version(name) != wanted:
-                missing.append(spec)
-        except Exception:
-            missing.append(spec)
-    return missing
-
-
 def install_deps():
-    """Install missing or stale Google API packages. Returns True on success."""
-    missing = _missing_required_packages()
-    if not missing:
+    """Install Google API packages if missing. Returns True on success."""
+    try:
+        import googleapiclient  # noqa: F401
+        import google_auth_oauthlib  # noqa: F401
         print("Dependencies already installed.")
         return True
+    except ImportError:
+        pass
 
     print("Installing Google API dependencies...")
 
     # First choice: pip in the current interpreter. Works for most installs.
     try:
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet"] + missing,
+            [sys.executable, "-m", "pip", "install", "--quiet"] + REQUIRED_PACKAGES,
             stdout=subprocess.DEVNULL,
         )
-        remaining = _missing_required_packages()
-        if remaining:
-            print(f"ERROR: Dependencies remain stale after pip install: {' '.join(remaining)}")
-            return False
         print("Dependencies installed.")
         return True
     except subprocess.CalledProcessError as e:
@@ -159,13 +126,9 @@ def install_deps():
         try:
             subprocess.check_call(
                 [uv, "pip", "install", "--python", sys.executable, "--quiet"]
-                + missing,
+                + REQUIRED_PACKAGES,
                 stdout=subprocess.DEVNULL,
             )
-            remaining = _missing_required_packages()
-            if remaining:
-                print(f"ERROR: Dependencies remain stale after uv install: {' '.join(remaining)}")
-                return False
             print("Dependencies installed.")
             return True
         except subprocess.CalledProcessError as e:
@@ -184,9 +147,13 @@ def install_deps():
 
 
 def _ensure_deps():
-    """Check exact dependency versions, install if stale, exit on failure."""
-    if _missing_required_packages() and not install_deps():
-        sys.exit(1)
+    """Check deps are available, install if not, exit on failure."""
+    try:
+        import googleapiclient  # noqa: F401
+        import google_auth_oauthlib  # noqa: F401
+    except ImportError:
+        if not install_deps():
+            sys.exit(1)
 
 
 def check_auth_live():

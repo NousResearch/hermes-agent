@@ -30,36 +30,11 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
 )
-
-from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
-from agent.secret_scope import get_secret as _scoped_get_secret
-
-
-def _get_scoped_secret(name, default=None):
-    """Scope-aware credential read with the default-profile startup fallback.
-
-    Secondary profiles construct their adapters under a profile secret
-    scope -- the scope is authoritative and a scoped miss returns ``default``
-    (no cross-profile borrow from ``os.environ``, which may hold another
-    profile's value). The DEFAULT profile's adapter constructs and sends
-    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
-    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
-    profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and
-    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    """
-    try:
-        val = _scoped_get_secret(name, default)
-    except _UnscopedSecretError:
-        val = os.getenv(name)
-    return val if val is not None else default
-
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +46,7 @@ def check_ha_requirements() -> bool:
 
 def validate_ha_config(config: PlatformConfig) -> bool:
     """Return True when Home Assistant has enough credential config to connect."""
-    token = (getattr(config, "token", None) or _get_scoped_secret("HASS_TOKEN", "")).strip()
+    token = (getattr(config, "token", None) or os.getenv("HASS_TOKEN", "")).strip()
     return bool(token)
 
 
@@ -101,7 +76,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
         # Configuration from extra
         extra = config.extra or {}
-        token = config.token or _get_scoped_secret("HASS_TOKEN", "")
+        token = config.token or os.getenv("HASS_TOKEN", "")
         url = extra.get("url") or os.getenv("HASS_URL", "http://homeassistant.local:8123")
         self._hass_url: str = url.rstrip("/")
         self._hass_token: str = token
@@ -142,8 +117,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
             # Dedicated REST session for send() calls
             self._rest_session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=30),
-                trust_env=gateway_trust_env(),
+                timeout=aiohttp.ClientTimeout(total=30)
             )
 
             # Warn if no event filters are configured
@@ -159,8 +133,6 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._running = True
             logger.info("[%s] Connected to %s", self.name, self._hass_url)
-            # Plugin-registered native handlers (ctx.register_platform_handler).
-            self._wire_plugin_handlers(None)
             return True
 
         except Exception as e:
@@ -173,8 +145,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         ws_url = f"{ws_url}/api/websocket"
 
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=gateway_trust_env(),
+            timeout=aiohttp.ClientTimeout(total=30)
         )
         self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
 
@@ -450,7 +421,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                         body = await resp.text()
                         return SendResult(success=False, error=f"HTTP {resp.status}: {body}")
             else:
-                async with aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
+                async with aiohttp.ClientSession() as session:
                     async with session.post(
                         url,
                         headers=headers,
@@ -517,7 +488,7 @@ async def _standalone_send(
 
     extra = getattr(pconfig, "extra", {}) or {}
     hass_url = (extra.get("url") or os.getenv("HASS_URL", "")).rstrip("/")
-    token = (getattr(pconfig, "token", None) or _get_scoped_secret("HASS_TOKEN", "")).strip()
+    token = (getattr(pconfig, "token", None) or os.getenv("HASS_TOKEN", "")).strip()
     if not hass_url or not token:
         return {
             "error": (
@@ -535,8 +506,7 @@ async def _standalone_send(
 
     try:
         async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=gateway_trust_env(),
+            timeout=aiohttp.ClientTimeout(total=30)
         ) as session:
             async with session.post(url, headers=headers, json=payload) as resp:
                 if resp.status not in {200, 201}:

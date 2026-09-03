@@ -118,17 +118,15 @@ class TestOllamaCloudReasoningEffort:
         )
         assert top_level == {}
 
-    def test_minimal_effort_clamps_to_low(self, ollama_cloud_profile):
-        """``minimal`` is a real Hermes effort level but is rejected by
-        Ollama Cloud's /v1/chat/completions. The shared clamp degrades it to
-        ``low`` — the nearest supported level — instead of silently dropping
-        the user's ask (old behavior left the server default, i.e. MORE
-        thinking than requested: a ladder inversion)."""
+    def test_minimal_effort_omitted(self, ollama_cloud_profile):
+        """``minimal`` is a real Hermes effort level but is not documented for
+        Ollama Cloud's /v1/chat/completions, so it is omitted rather than sent
+        verbatim (which could trigger a 400)."""
         _, top_level = ollama_cloud_profile.build_api_kwargs_extras(
             supports_reasoning=True,
             reasoning_config={"enabled": True, "effort": "minimal"},
         )
-        assert top_level == {"reasoning_effort": "low"}
+        assert top_level == {}
 
 
 class TestOllamaCloudFullKwargsIntegration:

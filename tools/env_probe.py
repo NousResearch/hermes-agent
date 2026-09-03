@@ -78,18 +78,6 @@ _REMOTE_BACKENDS = frozenset({
 })
 
 
-def _plugin_backend_is_remote(backend: str) -> bool:
-    """Whether a plugin-registered terminal backend is remote (fail-soft)."""
-    if not backend or backend in _REMOTE_BACKENDS or backend == "local":
-        return False
-    try:
-        from agent.terminal_env_registry import provider_flag
-
-        return bool(provider_flag(backend, "is_remote", False))
-    except Exception:
-        return False
-
-
 def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
     """Run a short subprocess.  Returns (returncode, stdout, stderr).
 
@@ -198,34 +186,23 @@ def _pip_python_version() -> Optional[str]:
     return None
 
 
-def _resolve_terminal_backend() -> str:
-    """Scope-aware terminal backend name (``local`` when unresolvable)."""
-    try:
-        from tools.terminal_scope import terminal_env
-
-        return (terminal_env("TERMINAL_ENV") or "local").strip().lower()
-    except Exception:  # never let policy resolution break prompt building
-        logger.debug("terminal backend resolution failed", exc_info=True)
-        return "local"
-
-
 def _build_probe_line() -> str:
     """Build the one-liner.  Returns "" when nothing notable is detected.
 
     Emit only when SOMETHING is off — the goal is to save the model from
     hitting an avoidable wall, not to narrate a healthy environment.
     """
+    # Bail out if a remote terminal backend is configured; the host's
+    # Python state isn't where the agent's tools run.
+    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    if backend in _REMOTE_BACKENDS:
+        return ""
+
     py3_ver = _python_version_of("python3")
     py_ver = _python_version_of("python")  # for systems with a `python` alias
     py3_has_pip = _has_pip_module("python3") if py3_ver else False
     pip_bound_to = _pip_python_version()
     py3_pep668 = _detect_pep668("python3") if py3_ver else False
-    # Bare which() is correct here, unlike Hermes's own uv call sites: this
-    # reports the environment *the model will see* in the terminal tool, and
-    # what the model can type is exactly what is on that subshell's PATH.
-    # local.py puts the Hermes-managed $HERMES_HOME/bin there, so a managed-only
-    # install answers yes — without that, claiming uv the model cannot invoke
-    # would be worse than claiming none.
     has_uv = shutil.which("uv") is not None
 
     # If python3 exists, has pip, has uv (or no PEP 668), and there's no
@@ -309,15 +286,6 @@ def get_environment_probe_line(*, force_refresh: bool = False) -> str:
             _PROBE_THREAD = None
             _PROBE_GEN += 1
             _WAIT_ALREADY_TIMED_OUT = False
-
-    # Resolve the backend HERE, in the caller's context: under gateway
-    # multiplexing the routed profile's backend lives in the per-turn terminal
-    # scope, which the bare probe worker thread does not inherit (#68559). A
-    # remote backend answers "" without consulting the cache — the cached line
-    # describes the HOST toolchain, not where that profile's tools run.
-    backend = _resolve_terminal_backend()
-    if backend in _REMOTE_BACKENDS or _plugin_backend_is_remote(backend):
-        return ""
 
     if _PROBE_DONE.is_set():
         return _CACHED_LINE or ""

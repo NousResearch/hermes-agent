@@ -6,16 +6,27 @@
  * floating-rect.test.ts).
  */
 
-import { act } from 'react'
+import { act, type ReactNode } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
-import { reactRoot } from '@/test/react-root'
 
 import { FloatingPanes } from './floating-panes'
 
-const mount = reactRoot()
+let root: null | Root = null
+let container: HTMLDivElement | null = null
 let disposers: (() => void)[] = []
+
+function render(ui: ReactNode) {
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+
+  act(() => {
+    root!.render(ui)
+  })
+}
 
 const card = () => document.querySelector<HTMLElement>('[data-floating-pane="hud"]')
 
@@ -63,14 +74,20 @@ describe('FloatingPanes (live DOM)', () => {
   })
 
   afterEach(() => {
-    mount.unmount()
+    if (root) {
+      act(() => root!.unmount())
+    }
+
+    container?.remove()
+    root = null
+    container = null
     disposers.forEach(dispose => dispose())
     disposers = []
   })
 
   it('mounts a fixed card in the anchored corner with the pane body inside', () => {
     registerHud({ anchor: 'top-right', height: '132px', placement: 'floating', width: '224px' })
-    mount.render(<FloatingPanes />)
+    render(<FloatingPanes />)
 
     const el = card()!
 
@@ -85,14 +102,14 @@ describe('FloatingPanes (live DOM)', () => {
 
   it('renders nothing for a non-floating placement', () => {
     registerHud({ placement: 'right', width: '224px' })
-    mount.render(<FloatingPanes />)
+    render(<FloatingPanes />)
 
     expect(card()).toBeNull()
   })
 
   it('moves with a real pointer drag on the header', () => {
     registerHud({ anchor: 'top-left', height: '132px', placement: 'floating', width: '224px' })
-    mount.render(<FloatingPanes />)
+    render(<FloatingPanes />)
 
     expect(card()!.style.left).toBe('12px')
 
@@ -106,7 +123,7 @@ describe('FloatingPanes (live DOM)', () => {
 
   it('persists the dragged position across a remount', () => {
     registerHud({ anchor: 'top-left', height: '132px', placement: 'floating', width: '224px' })
-    mount.render(<FloatingPanes />)
+    render(<FloatingPanes />)
 
     pointer(grab(), 'pointerdown', 100, 100)
     pointer(grab(), 'pointermove', 300, 300)
@@ -114,15 +131,16 @@ describe('FloatingPanes (live DOM)', () => {
 
     const moved = card()!.style.left
 
-    mount.unmount()
-    mount.render(<FloatingPanes />)
+    act(() => root!.unmount())
+    container!.remove()
+    render(<FloatingPanes />)
 
     expect(card()!.style.left).toBe(moved)
   })
 
   it('rides the right edge when the window shrinks', () => {
     registerHud({ anchor: 'top-right', height: '132px', placement: 'floating', width: '224px' })
-    mount.render(<FloatingPanes />)
+    render(<FloatingPanes />)
 
     expect(card()!.style.left).toBe('1204px')
 
@@ -134,7 +152,7 @@ describe('FloatingPanes (live DOM)', () => {
 
   it('never lets a drag push the card under the titlebar', () => {
     registerHud({ anchor: 'top-left', height: '132px', placement: 'floating', width: '224px' })
-    mount.render(<FloatingPanes />)
+    render(<FloatingPanes />)
 
     pointer(grab(), 'pointerdown', 100, 100)
     pointer(grab(), 'pointermove', 100, -900)
@@ -145,14 +163,10 @@ describe('FloatingPanes (live DOM)', () => {
 
   it('collapses to the header and drops the body, and does not drag from the button', () => {
     registerHud({ anchor: 'top-left', height: '132px', placement: 'floating', width: '224px' })
-    mount.render(<FloatingPanes />)
+    render(<FloatingPanes />)
 
     const before = card()!.style.left
     const toggle = card()!.querySelector('button')!
-    const chevron = () => toggle.querySelector('i')!
-
-    // Expanded: down chevron (fold). Collapsed: up chevron (restore).
-    expect(chevron().className).toContain('codicon-chevron-down')
 
     // The button is inside the drag handle — [data-floating-no-drag] must
     // stop it starting a drag.
@@ -168,7 +182,6 @@ describe('FloatingPanes (live DOM)', () => {
 
     expect(document.querySelector('[data-testid="hud-body"]')).toBeNull()
     expect(card()!.style.height).toBe('')
-    expect(chevron().className).toContain('codicon-chevron-up')
   })
 
   it('renders one card per floating contribution', () => {
@@ -183,7 +196,7 @@ describe('FloatingPanes (live DOM)', () => {
       })
     )
 
-    mount.render(<FloatingPanes />)
+    render(<FloatingPanes />)
 
     expect(document.querySelectorAll('[data-floating-pane]').length).toBe(2)
   })

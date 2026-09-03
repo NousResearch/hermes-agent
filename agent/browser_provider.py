@@ -26,7 +26,6 @@ Session metadata contract (preserved from the legacy ``CloudBrowserProvider``)::
         "session_name": str,        # unique name for agent-browser --session
         "bb_session_id": str,       # provider session ID (for close/cleanup)
         "cdp_url": str,             # CDP websocket URL
-        "expires_at": str,          # optional provider-authoritative ISO timestamp
         "features": dict,           # feature flags that were enabled
         "external_call_id": str,    # optional, managed-gateway billing key
     }
@@ -39,7 +38,7 @@ which provider is in use.
 from __future__ import annotations
 
 import abc
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +96,6 @@ class BrowserProvider(abc.ABC):
                 "session_name": str,    # unique name for agent-browser --session
                 "bb_session_id": str,   # provider session ID (for close/cleanup)
                 "cdp_url": str,         # CDP websocket URL
-                "expires_at": str,      # optional provider-authoritative ISO timestamp
                 "features": dict,       # feature flags that were enabled
             }
 
@@ -126,7 +124,7 @@ class BrowserProvider(abc.ABC):
         credentials, network errors, etc. — log and move on. Must not raise.
         """
 
-    def get_setup_schema(self) -> Optional[Dict[str, Any]]:
+    def get_setup_schema(self) -> Dict[str, Any]:
         """Return provider metadata for the ``hermes tools`` picker.
 
         Used by :mod:`hermes_cli.tools_config` to inject this provider as a

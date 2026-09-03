@@ -1,7 +1,6 @@
 import { summarizeShellCommand } from '@/lib/summarize-command'
-import { firstStringField } from '@/lib/text'
 
-import { fileEditBasename, isFileEditTool, parseMaybeObject } from './fallback-model'
+import { fileEditBasename, firstStringField, isFileEditTool, parseMaybeObject } from './fallback-model'
 
 /**
  * The little a summary needs from a tool call, stated structurally so both

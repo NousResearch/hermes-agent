@@ -248,23 +248,6 @@ def test_compress_returns_valid_messages():
 
 See `tests/agent/test_context_engine.py` for the full ABC contract test suite.
 
-## Thread safety
-
-When `compression.context_timeout_seconds > 0` (the default), Hermes runs the
-whole compression pass — including your engine's `compress()` and boundary
-callbacks, and any memory provider's `on_pre_compress` /
-`on_session_switch` — on a pooled daemon thread with a host-side timeout.
-Your engine must therefore assume:
-
-- Calls may arrive on an arbitrary pooled thread. Do not rely on thread
-  affinity or `threading.local` state shared with the conversation thread.
-- The message list you receive is a private deep snapshot; mutating it in
-  place is allowed (legacy contract), but the mutation only becomes visible
-  if the pass commits. After a host timeout your still-running work is
-  discarded — never publish to external/durable state outside the commit.
-- Passes for *different* sessions can run concurrently on pool siblings; a
-  single engine/provider instance shared across sessions must be thread-safe.
-
 ## See also
 
 - [Context Compression and Caching](/developer-guide/context-compression-and-caching) — how the built-in compressor works

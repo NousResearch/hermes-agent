@@ -165,15 +165,20 @@ export function textWithoutEmbeddedImages(text: string): string {
 // (see tui_gateway/server.py's persist-time rewrite), prepended before the
 // user's own text. The composer's own optimistic/local turn never carries
 // this prefix — it keeps the attachment as separate `attachmentRefs`
-// metadata, not inline text. The turn-equality comparisons in
-// preserveLocalPendingTurnMessages / appendLiveSessionProjection strip ALL
-// reference-directive lines (not just images) via
-// `textWithoutReferenceLines` in components/assistant-ui/reference-kinds.ts;
-// IMAGE_REF_LINE_RE remains here for extractImageRefs below, which moves the
-// image directives into attachmentRefs metadata.
+// metadata, not inline text. Comparing raw chatMessageText between the
+// optimistic turn and the authoritative (persisted) turn therefore always
+// mismatches whenever an image was attached, which defeats the "is this the
+// same turn" checks in preserveLocalPendingTurnMessages / appendLiveSessionProjection
+// and re-appends the optimistic row as if it were a distinct, unconfirmed
+// turn — a duplicated user bubble. Strip the directive line(s) before any
+// such equality comparison so both sides reduce to the same visible text.
 const IMAGE_REF_LINE_RE = /^@image:[^\n]*\n?/gm
 
-// Same directive lines as IMAGE_REF_LINE_RE, but keeps them instead of
+export function textWithoutImageRefs(text: string): string {
+  return text.replace(IMAGE_REF_LINE_RE, '').trim()
+}
+
+// Same directive lines as textWithoutImageRefs, but keeps them instead of
 // discarding — used when converting persisted server messages into
 // ChatMessage/ThreadMessageLike shape, where `@image:<path>` refs need to
 // move from inline text into the `attachmentRefs` metadata field (mirroring

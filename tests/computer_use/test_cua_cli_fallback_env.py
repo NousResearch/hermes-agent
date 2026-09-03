@@ -53,8 +53,6 @@ def test_cli_fallback_strips_provider_secret_from_subprocess_env(monkeypatch):
     assert captured["env"] is not None, "subprocess.run must receive an explicit env="
     assert "ANTHROPIC_API_KEY" not in captured["env"]
     # Sanitization filters secrets, not everything — an ordinary var survives.
-    # Original PATH entries are preserved; the hermes console-script dir may
-    # be prepended (see _sanitize_subprocess_env, issue #92998).
-    assert captured["env"].get("PATH", "").endswith("/usr/bin:/bin")
+    assert captured["env"].get("PATH") == "/usr/bin:/bin"
 
 

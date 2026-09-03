@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router";
+import { Link } from "react-router-dom";
 import {
   Activity,
   Brain,
@@ -45,7 +45,6 @@ import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
-import { copyTextToClipboard } from "@/lib/clipboard";
 import type {
   StatusResponse,
   MemoryStatus,
@@ -475,13 +474,14 @@ export default function SystemPage() {
 
   const copyToClipboard = useCallback(
     async (text: string, label: string) => {
-      if (await copyTextToClipboard(text)) {
+      try {
+        await navigator.clipboard.writeText(text);
         setCopiedLabel(label);
         setTimeout(
           () => setCopiedLabel((cur) => (cur === label ? null : cur)),
           1500,
         );
-      } else {
+      } catch {
         showToast("Couldn't copy to clipboard", "error");
       }
     },

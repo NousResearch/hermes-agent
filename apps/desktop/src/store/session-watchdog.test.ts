@@ -10,13 +10,10 @@ import {
   $workingSessionIds,
   clearAllSessionStates,
   getRecentlySettledSessionIds,
-  publishSessionState,
-  SESSION_WATCHDOG_TIMEOUT_MS
+  publishSessionState
 } from './session-states'
 
-// Read from the store rather than restated here: these assert what happens on
-// either side of the threshold, not what the threshold is.
-const WATCHDOG_MS = SESSION_WATCHDOG_TIMEOUT_MS
+const WATCHDOG_MS = 8 * 60 * 1000
 
 function state(over: Partial<ClientSessionState> = {}): ClientSessionState {
   return { ...createClientSessionState(null), storedSessionId: 's1', ...over }
@@ -216,14 +213,12 @@ describe('computed $workingSessionIds', () => {
     expect($workingSessionIds.get()).toEqual([])
   })
 
-  it('reflects busy sessions under the id their surfaces key on', () => {
+  it('reflects sessions with busy=true and a storedSessionId', () => {
     publishSessionState('rt1', state({ busy: true, storedSessionId: 's1' }))
     publishSessionState('rt2', state({ busy: false, storedSessionId: 's2' }))
-    // Not yet persisted, so the runtime id is the only id it has — and the one
-    // the row is keyed by until the backend hands a stored id back.
     publishSessionState('rt3', state({ busy: true, storedSessionId: null }))
 
-    expect($workingSessionIds.get()).toEqual(['s1', 'rt3'])
+    expect($workingSessionIds.get()).toEqual(['s1'])
   })
 
   it('updates when session state changes', () => {

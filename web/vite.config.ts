@@ -1,16 +1,5 @@
 import { defineConfig, type Plugin } from "vite";
-import babel from "@rolldown/plugin-babel";
-import react, { reactCompilerPreset } from "@vitejs/plugin-react";
-
-/** React Compiler preset scoped to modules that can actually contain
- *  components/hooks (JSX syntax or a react-ish import). The preset's default
- *  code filter matches any PascalCase/use* declaration — effectively every TS
- *  module — which made the babel pass parse the whole codebase. */
-function compilerPreset() {
-  const preset = reactCompilerPreset();
-  preset.rolldown.filter.code = /\/>|<\/|from\s*['"][^'"]*react/;
-  return preset;
-}
+import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 
@@ -69,12 +58,7 @@ function hermesDevToken(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [
-    react(),
-    babel({ presets: [compilerPreset()] }),
-    tailwindcss(),
-    hermesDevToken(),
-  ],
+  plugins: [react(), tailwindcss(), hermesDevToken()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -117,7 +101,7 @@ export default defineConfig({
           groups: [
             {
               name: "react-vendor",
-              test: /node_modules[\\/](react|react-dom|scheduler|react-router|react-router)([\\/]|$)/,
+              test: /node_modules[\\/](react|react-dom|scheduler|react-router|react-router-dom)([\\/]|$)/,
             },
             {
               name: "xterm",

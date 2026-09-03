@@ -18,7 +18,10 @@
         map (p: p.passthru.packageJsonPath or null) packages
       );
 
-      hermesAgentDevShellHook = self'.packages.default.passthru.devShellHook;
+      # Non-npm packages may have their own devShellHook (e.g. hermes-agent
+      # stamps pyproject.toml + uv.lock for Python venv setup).
+      nonNpmHooks = map (p: p.passthru.devShellHook or "") packages;
+      combinedNonNpm = pkgs.lib.concatStringsSep "\n" (builtins.filter (h: h != "") nonNpmHooks);
     in
     {
       devShells.default = pkgs.mkShell {
@@ -27,7 +30,10 @@
             mkdir -p $out/bin
             install -Dm755 ${../hermes} $out/bin/hermes
           '')
-          self'.packages.sandbox
+          (pkgs.runCommand "dev-sandbox" { } ''
+            mkdir -p $out/bin
+            install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
+          '')
           uv
           # Headless Wayland compositor for E2E tests (test:e2e:visual).
           # cage renders a single client with no window management, so
@@ -43,7 +49,7 @@
         ]
         ++ self'.packages.default.passthru.devDeps;
         shellHook = ''
-          ${hermesAgentDevShellHook}
+          ${combinedNonNpm}
           ${hermesNpmLib.mkNpmDevShellHook npmPackageJsonPaths}
 
           # Force Node to use Nix's playwright-test binary instead of node_modules/.bin

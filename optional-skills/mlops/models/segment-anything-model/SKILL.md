@@ -14,7 +14,7 @@ metadata:
 
 # Segment Anything Model (SAM)
 
-Guide to using Meta AI's Segment Anything Model for zero-shot image segmentation.
+Comprehensive guide to using Meta AI's Segment Anything Model for zero-shot image segmentation.
 
 ## When to use SAM
 

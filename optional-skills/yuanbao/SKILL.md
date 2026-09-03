@@ -2,8 +2,6 @@
 name: yuanbao
 description: "Yuanbao (元宝) groups: @mention users, query info/members."
 version: 1.0.0
-author: Teknium (teknium1), Hermes Agent
-license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:

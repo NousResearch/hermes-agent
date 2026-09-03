@@ -112,9 +112,7 @@ async def test_in_band_drain_does_not_grow_stack():
     # Drain the chain.  Each turn schedules the next via the in-band
     # drain block, so we wait until N handler runs have completed and
     # the session has been released.
-    # 2000 * 0.01s = 20s budget: the old 4s budget flaked on loaded CI
-    # runners (11/12 turns completed; main run 33455779041).
-    for _ in range(2000):
+    for _ in range(400):
         if len(depths) >= N and sk not in adapter._active_sessions:
             break
         await asyncio.sleep(0.01)
@@ -280,9 +278,7 @@ async def test_late_arrival_drain_still_fires_when_no_in_band_drain():
     await adapter.handle_message(_make_event(text="first"))
 
     # Wait for the late-arrival drain task to finish the second event.
-    # 2000 * 0.01s = 20s budget: the old 4s budget flaked on loaded CI
-    # runners (11/12 turns completed; main run 33455779041).
-    for _ in range(2000):
+    for _ in range(400):
         if "late" in results and sk not in adapter._active_sessions:
             break
         await asyncio.sleep(0.01)

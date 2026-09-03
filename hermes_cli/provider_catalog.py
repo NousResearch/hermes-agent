@@ -66,7 +66,6 @@ class ProviderDescriptor:
     base_url_env_var: str          # base-URL override env var (may be "")
     signup_url: str                # signup / console URL (may be "")
     order: int                     # CANONICAL_PROVIDERS index — mirrors `hermes model`
-    keyless: bool = False          # served anonymously — no credential exists to configure
 
 
 def tab_for_auth_type(auth_type: str) -> str:
@@ -172,10 +171,6 @@ def provider_catalog() -> list[ProviderDescriptor]:
                 base_url_env_var=base_url_var,
                 signup_url=signup_url,
                 order=order,
-                # Keyless providers (e.g. opencode-free) are served
-                # anonymously: there is no credential to configure, so the
-                # GUI renders no key card and contract tests exempt them.
-                keyless=bool(getattr(overlay, "keyless", False)),
             )
         )
     return out

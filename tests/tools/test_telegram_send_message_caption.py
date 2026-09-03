@@ -48,13 +48,7 @@ def _no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None, raising=False)
-    # Neutralize macOS system-proxy auto-detection at its probe rather than by
-    # claiming the host is Linux: this keeps the test honest on the macOS
-    # runner (and on a developer's Mac), where a real scutil-configured proxy
-    # would otherwise leak into the assertion.
-    monkeypatch.setattr(
-        "gateway.platforms.base._detect_macos_system_proxy", lambda: None
-    )
+    monkeypatch.setattr(sys, "platform", "linux")
 
 
 def _tmpfile(suffix: str) -> str:

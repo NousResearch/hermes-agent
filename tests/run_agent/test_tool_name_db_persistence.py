@@ -27,8 +27,7 @@ def _make_agent(session_db):
 
 def test_tool_name_persisted_to_session_db():
     """tool_name set by make_tool_result_message must be passed through to
-    the batched flush so the column is populated on first write to the
-    session DB."""
+    append_message so the column is populated on first flush to the session DB."""
     session_db = MagicMock()
     agent = _make_agent(session_db)
 
@@ -38,8 +37,9 @@ def test_tool_name_persisted_to_session_db():
     ]
     agent._flush_messages_to_session_db(messages)
 
-    assert session_db.append_messages_batch.call_count == 1
-    batch = session_db.append_messages_batch.call_args.kwargs["messages"]
-    tool_rows = [m for m in batch if m.get("role") == "tool"]
-    assert len(tool_rows) == 1
-    assert tool_rows[0]["tool_name"] == "terminal"
+    tool_appends = [
+        c for c in session_db.append_message.call_args_list
+        if c.kwargs.get("role") == "tool"
+    ]
+    assert len(tool_appends) == 1
+    assert tool_appends[0].kwargs["tool_name"] == "terminal"

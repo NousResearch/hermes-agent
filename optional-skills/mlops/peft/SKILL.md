@@ -1,5 +1,5 @@
 ---
-name: peft
+name: peft-fine-tuning
 description: Fine-tune large LLMs with LoRA on limited GPU memory.
 version: 1.0.0
 author: Orchestra Research

@@ -154,7 +154,6 @@ class TestCustomProviderModelSwitch:
         mock_fetch.assert_called_once_with(
             "sk-live-example-provider",
             "https://api.example-provider.test/v1",
-            headers=None,
             timeout=8.0,
         )
         config = yaml.safe_load(config_path.read_text()) or {}
@@ -328,7 +327,6 @@ class TestCustomProviderModelSwitch:
         saved_text = config_path.read_text()
         saved = yaml.safe_load(saved_text) or {}
         entry = saved["providers"]["crs-henkee"]
-        assert saved["model"]["provider"] == "custom:crs-henkee"
         assert "api_key" not in entry, (
             f"providers.crs-henkee gained an api_key field: {entry.get('api_key')!r}"
         )
@@ -339,53 +337,6 @@ class TestCustomProviderModelSwitch:
         assert "cr_live_secret_xyz" not in saved_text
         # The synthesized template is also redundant here — key_env owns it.
         assert "${HERMES_CRS_HENKEE_KEY}" not in saved_text
-
-    @pytest.mark.parametrize(
-        "stored_provider",
-        [
-            "local-127.0.0.1:11434",
-            "custom:local-ollama",
-            "custom:local-127.0.0.1:11434",
-        ],
-    )
-    def test_picker_recognizes_current_provider_alias_when_name_differs(
-        self, config_home, monkeypatch, stored_provider
-    ):
-        """The classic picker maps legacy and stable IDs to the keyed row."""
-        from hermes_cli.main import select_provider_and_model
-
-        config_path = config_home / "config.yaml"
-        config_path.write_text(
-            "model:\n"
-            f"  provider: {stored_provider}\n"
-            "  default: qwen3.5:9b\n"
-            "providers:\n"
-            "  local-127.0.0.1:11434:\n"
-            "    name: Local Ollama\n"
-            "    base_url: http://127.0.0.1:11434/v1\n"
-            "    default_model: qwen3.5:9b\n"
-            "    models:\n"
-            "      qwen3.5:9b: {}\n"
-            "custom_providers: []\n",
-            encoding="utf-8",
-        )
-
-        captured = {}
-
-        def _capture_and_cancel(labels, default=0):
-            captured["labels"] = labels
-            captured["default"] = default
-            return len(labels) - 1
-
-        with patch(
-            "hermes_cli.main._prompt_provider_choice",
-            side_effect=_capture_and_cancel,
-        ), patch("builtins.print"):
-            select_provider_and_model()
-
-        active_label = captured["labels"][captured["default"]]
-        assert "Local Ollama" in active_label
-        assert "currently active" in active_label
 
     def test_key_env_providers_dict_preserves_existing_api_key(
         self, config_home, monkeypatch
@@ -445,28 +396,6 @@ class TestCustomProviderDiscoverModels:
     named-custom flow so the picker shows the configured ``models:`` subset
     instead of the endpoint's full live catalog."""
 
-
-    def test_discover_false_with_only_singular_model_skips_probe(self, config_home):
-        """An active singular model is not an implicit discovery catalog."""
-        from hermes_cli.main import _model_flow_named_custom
-
-        provider_info = {
-            "name": "Headered Ollama",
-            "base_url": "http://127.0.0.1:11434",
-            "api_key": "no-key-required",
-            "discover_models": False,
-            "model": "qwen3:8b",
-        }
-
-        with patch("hermes_cli.models.fetch_api_models") as mock_fetch, \
-             patch("hermes_cli.models.fetch_ollama_local_models") as mock_ollama, \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="1"), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        mock_fetch.assert_not_called()
-        mock_ollama.assert_not_called()
 
     def test_discover_false_saves_choice_from_configured_list(self, config_home):
         """User picks the 2nd configured model; it persists, list-driven."""

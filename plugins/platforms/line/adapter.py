@@ -80,30 +80,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
 
-from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
-from agent.secret_scope import get_secret as _scoped_get_secret
-
-
-def _get_scoped_secret(name, default=None):
-    """Scope-aware credential read with the default-profile startup fallback.
-
-    Secondary profiles construct their adapters under a profile secret
-    scope -- the scope is authoritative and a scoped miss returns ``default``
-    (no cross-profile borrow from ``os.environ``, which may hold another
-    profile's value). The DEFAULT profile's adapter constructs and sends
-    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
-    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
-    profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and
-    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    """
-    try:
-        val = _scoped_get_secret(name, default)
-    except _UnscopedSecretError:
-        val = os.getenv(name)
-    return val if val is not None else default
-
-
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -113,15 +89,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 from gateway.platforms.base import (
-    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
-    cache_audio_from_bytes_async,
-    cache_document_from_bytes_async,
-    cache_image_from_bytes_async,
-    cache_video_from_bytes_async,
+    cache_audio_from_bytes,
+    cache_document_from_bytes,
+    cache_image_from_bytes,
+    cache_video_from_bytes,
 )
 from gateway.config import Platform
 
@@ -515,7 +490,7 @@ class _LineClient:
     async def reply(self, reply_token: str, messages: List[Dict[str, Any]]) -> None:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=self._timeout)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             async with session.post(
                 LINE_REPLY_URL,
                 headers=self._headers,
@@ -528,7 +503,7 @@ class _LineClient:
     async def push(self, chat_id: str, messages: List[Dict[str, Any]]) -> None:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=self._timeout)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             async with session.post(
                 LINE_PUSH_URL,
                 headers=self._headers,
@@ -547,7 +522,7 @@ class _LineClient:
         clamped = max(5, min(60, (seconds // 5) * 5 or 5))
         try:
             timeout = aiohttp.ClientTimeout(total=5.0)
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
                 await session.post(
                     LINE_LOADING_URL,
                     headers=self._headers,
@@ -561,7 +536,7 @@ class _LineClient:
         import aiohttp
         url = LINE_CONTENT_URL_FMT.format(message_id=message_id)
         timeout = aiohttp.ClientTimeout(total=30.0)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             async with session.get(url, headers={"Authorization": f"Bearer {self._token}"}) as resp:
                 if resp.status >= 400:
                     raise RuntimeError(f"LINE content {resp.status}")
@@ -572,7 +547,7 @@ class _LineClient:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=10.0)
         try:
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
                 async with session.get(LINE_BOT_INFO_URL, headers=self._headers) as resp:
                     if resp.status >= 400:
                         return None
@@ -703,11 +678,11 @@ class LineAdapter(BasePlatformAdapter):
 
         # Credentials
         self.channel_access_token = (
-            _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN")
+            os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
             or extra.get("channel_access_token", "")
         )
         self.channel_secret = (
-            _get_scoped_secret("LINE_CHANNEL_SECRET")
+            os.getenv("LINE_CHANNEL_SECRET")
             or extra.get("channel_secret", "")
         )
 
@@ -855,10 +830,6 @@ class LineAdapter(BasePlatformAdapter):
             f"{DEFAULT_MEDIA_PATH_PREFIX}/{{token}}/{{filename}}",
             self._handle_media,
         )
-
-        # Plugin-registered native handlers (aiohttp web.Application —
-        # router routes). Wired before AppRunner.setup() freezes the router.
-        self._wire_plugin_handlers(self._app)
 
         self._runner = web.AppRunner(self._app)
         try:
@@ -1154,16 +1125,16 @@ class LineAdapter(BasePlatformAdapter):
         }.get(msg_type, ".bin")
         try:
             if msg_type == "image":
-                return await cache_image_from_bytes_async(data, ext=ext), "image/jpeg"
+                return cache_image_from_bytes(data, ext=ext), "image/jpeg"
             if msg_type == "audio":
                 media_type = mimetypes.guess_type(f"audio{ext}")[0] or "audio/mp4"
-                return await cache_audio_from_bytes_async(data, ext=ext), media_type
+                return cache_audio_from_bytes(data, ext=ext), media_type
             if msg_type == "video":
                 media_type = mimetypes.guess_type(f"video{ext}")[0] or "video/mp4"
-                return await cache_video_from_bytes_async(data, ext=ext), media_type
+                return cache_video_from_bytes(data, ext=ext), media_type
             document_name = filename or f"line_file{ext}"
             return (
-                await cache_document_from_bytes_async(data, document_name),
+                cache_document_from_bytes(data, document_name),
                 mimetypes.guess_type(document_name)[0] or "application/octet-stream",
             )
         except Exception as exc:
@@ -1590,9 +1561,9 @@ def _is_relative_to(child: Path, parent: Path) -> bool:
 
 def check_requirements() -> bool:
     """Plugin gate: require credentials AND aiohttp at runtime."""
-    if not _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN"):
+    if not os.getenv("LINE_CHANNEL_ACCESS_TOKEN"):
         return False
-    if not _get_scoped_secret("LINE_CHANNEL_SECRET"):
+    if not os.getenv("LINE_CHANNEL_SECRET"):
         return False
     try:
         import aiohttp  # noqa: F401
@@ -1604,10 +1575,10 @@ def check_requirements() -> bool:
 def validate_config(config) -> bool:
     extra = getattr(config, "extra", {}) or {}
     has_token = bool(
-        _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token")
+        os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token")
     )
     has_secret = bool(
-        _get_scoped_secret("LINE_CHANNEL_SECRET") or extra.get("channel_secret")
+        os.getenv("LINE_CHANNEL_SECRET") or extra.get("channel_secret")
     )
     return has_token and has_secret
 
@@ -1624,7 +1595,7 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     in ``.env`` without a ``platforms.line`` block in ``config.yaml``.
     Mirrors the IRC plugin's pattern.
     """
-    if not (_get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") and _get_scoped_secret("LINE_CHANNEL_SECRET")):
+    if not (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") and os.getenv("LINE_CHANNEL_SECRET")):
         return None
     seeded: Dict[str, Any] = {}
     if os.getenv("LINE_PORT"):
@@ -1664,7 +1635,7 @@ async def _standalone_send(
     """
     extra = getattr(pconfig, "extra", {}) or {}
     token = (
-        _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN")
+        os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
         or extra.get("channel_access_token", "")
     )
     if not token or not chat_id:
@@ -1700,13 +1671,13 @@ def interactive_setup() -> None:
     print()
 
     try:
-        from hermes_cli.config import get_env_value as _get_env, save_env_value as _set_env
+        from hermes_cli.config import get_env_var, set_env_var
     except ImportError:
         print("hermes_cli.config not available; set LINE_* vars manually in ~/.hermes/.env")
         return
 
     def _prompt(var: str, prompt: str, *, secret: bool = False) -> None:
-        existing = _get_env(var) if callable(_get_env) else None
+        existing = get_env_var(var) if callable(get_env_var) else None
         suffix = " [keep current]" if existing else ""
         try:
             if secret:
@@ -1718,7 +1689,7 @@ def interactive_setup() -> None:
             print()
             return
         if value:
-            _set_env(var, value)
+            set_env_var(var, value)
 
     _prompt("LINE_CHANNEL_ACCESS_TOKEN", "Channel access token", secret=True)
     _prompt("LINE_CHANNEL_SECRET", "Channel secret", secret=True)

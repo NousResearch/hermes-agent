@@ -13,8 +13,6 @@ from __future__ import annotations
 import argparse
 import sys
 
-from utils import is_truthy_value
-
 
 def _print(msg: str = "") -> None:
     print(msg)
@@ -251,7 +249,7 @@ def _cmd_doctor(args) -> int:
     from agent.pet.render import detect_terminal_graphics, resolve_mode
 
     cfg = _pet_config()
-    enabled = is_truthy_value(cfg.get("enabled"), default=False)
+    enabled = bool(cfg.get("enabled"))
     configured_slug = str(cfg.get("slug", "") or "")
     mode_cfg = str(cfg.get("render_mode", "auto") or "auto")
 
@@ -302,9 +300,7 @@ def _pet_config() -> dict:
 
 
 def _has_active_pet() -> bool:
-    return is_truthy_value(_pet_config().get("enabled"), default=False) and bool(
-        _pet_config().get("slug")
-    )
+    return bool(_pet_config().get("enabled")) and bool(_pet_config().get("slug"))
 
 
 def _set_active(slug: str) -> None:
@@ -368,7 +364,7 @@ def toggle_pet_display() -> tuple[bool, str | None, str | None]:
     slug = str(cfg.get("slug", "") or "")
     pet = store.resolve_active_pet(slug)
 
-    if is_truthy_value(cfg.get("enabled"), default=False):
+    if bool(cfg.get("enabled")):
         _set_enabled(False)
         return False, pet.display_name if pet else None, None
 

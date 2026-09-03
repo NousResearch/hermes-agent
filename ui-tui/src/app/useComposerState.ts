@@ -135,10 +135,10 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     queueEditIdx,
     enqueue,
     dequeue,
-    prependQ,
     removeQ,
+    replaceQ,
     setQueueEdit,
-    takeQ
+    syncQueue
   } = useQueue()
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
@@ -309,7 +309,13 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   )
 
   const handleTextPaste = useCallback(
-    ({ bracketed, cursor, hotkey, text, value }: PasteEvent): MaybePromise<ComposerPasteResult | null> => {
+    ({
+      bracketed,
+      cursor,
+      hotkey,
+      text,
+      value
+    }: PasteEvent): MaybePromise<ComposerPasteResult | null> => {
       if (hotkey) {
         const preferOsc52 = isRemoteShellSession(process.env)
 
@@ -429,16 +435,16 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       enqueue,
       handleTextPaste,
       openEditor,
-      prependQueue: prependQ,
       pushHistory,
       removeQueue: removeQ,
+      replaceQueue: replaceQ,
       setCompIdx,
       setComposerTokens,
       setHistoryIdx,
       setInput,
       setInputBuf,
       setQueueEdit,
-      takeQueue: takeQ,
+      syncQueue,
       syncTokens
     }),
     [
@@ -449,15 +455,15 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       enqueue,
       handleTextPaste,
       openEditor,
-      prependQ,
       pushHistory,
       removeQ,
+      replaceQ,
       setCompIdx,
       setComposerTokens,
       setHistoryIdx,
       setInput,
       setQueueEdit,
-      takeQ,
+      syncQueue,
       syncTokens
     ]
   )

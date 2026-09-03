@@ -208,21 +208,12 @@ def spill_if_oversized(
     saved_path: Optional[str] = None
     try:
         spill_dir = _resolve_spill_dir(directory_override, session_id)
-        from tools.spill_safety import ensure_spill_dir, write_text_exclusive
-
-        # Hook context may embed raw secrets: private dir/file perms, and an
-        # exclusive symlink-refusing create so a planted link can't redirect
-        # the write (predictable per-session directory).
-        ensure_spill_dir(spill_dir, private=True)
+        spill_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{uuid.uuid4().hex}.txt"
         spill_path = spill_dir / filename
         # Write the raw text plus a trailing newline so tail readers
         # (``tail -f``, editors) don't report "missing newline".
-        write_text_exclusive(
-            spill_path,
-            text if text.endswith("\n") else text + "\n",
-            private=True,
-        )
+        spill_path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
         saved_path = str(spill_path)
     except Exception as exc:
         logger.warning("hook output spill failed: %s", exc)

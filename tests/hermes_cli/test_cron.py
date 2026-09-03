@@ -443,6 +443,33 @@ class TestCronRunBackgroundDispatch:
         rc = cron_command(Namespace(cron_command="run", job_id="job-1"))
         return rc, capsys.readouterr().out
 
+    def test_direct_cli_requests_detached_run_and_prints_execution_receipt(
+        self, monkeypatch, capsys
+    ):
+        observed = {}
+
+        def fake_cron_api(**kwargs):
+            observed.update(kwargs)
+            return {
+                "success": True,
+                "job": {
+                    "id": "job-1",
+                    "name": "Watchdog",
+                    "executed": True,
+                    "execution_mode": "detached",
+                    "execution_id": "exec-123",
+                },
+            }
+
+        monkeypatch.setattr(cron_cli, "_cron_api", fake_cron_api)
+
+        rc, out = self._run_cmd(capsys)
+
+        assert rc == 0
+        assert observed["detach_run"] is True
+        assert "Running in detached worker (execution exec-123)." in out
+        assert "Ran now" not in out
+
     def test_background_dispatch_with_delegation_id_does_not_report_failed(
         self, monkeypatch, capsys
     ):

@@ -17,6 +17,7 @@ import threading
 from unittest.mock import patch
 
 from tools.cronjob_tools import (
+    _try_dispatch_detached_run,
     _try_dispatch_background_run,
     cronjob,
 )
@@ -195,6 +196,46 @@ class TestSyncFallbacks:
         m_run.assert_called_once()   # ran inline on this thread
 
 
+class TestDetachedCliDispatch:
+    def test_claims_creates_receipt_and_hands_ownership_to_worker(self):
+        claimed = {
+            **_job("job-direct-helper"),
+            "fire_claim": {"by": "direct-owner"},
+        }
+        launch_observed = {}
+
+        def launch(job, **kwargs):
+            launch_observed["job"] = job
+            launch_observed["kwargs"] = kwargs
+            return True
+
+        with patch(
+            "tools.cronjob_tools.claim_job_for_fire", return_value=claimed
+        ) as claim, patch(
+            "cron.executions.create_execution",
+            return_value={"id": "exec-direct-helper"},
+        ) as create, patch(
+            "cron.scheduler._launch_external_cron_worker", side_effect=launch
+        ):
+            result = _try_dispatch_detached_run(
+                _job("job-direct-helper"), extra_prompt="one fire"
+            )
+
+        assert result == {
+            "claimed": True,
+            "dispatched": True,
+            "execution_id": "exec-direct-helper",
+        }
+        claim.assert_called_once_with("job-direct-helper", return_job=True)
+        create.assert_called_once_with("job-direct-helper", source="direct")
+        assert launch_observed["job"]["execution_id"] == "exec-direct-helper"
+        assert launch_observed["kwargs"] == {
+            "detach": True,
+            "allow_unscoped": True,
+            "extra_prompt": "one fire",
+        }
+
+
 class TestInFlightDedupe:
     """Manual runs must not double-fire a job that is already mid-run
     (salvaged from #53395 by @izumi0uu): the fire claim's 300s TTL is
@@ -296,6 +337,30 @@ class TestInFlightDedupe:
 
 
 class TestCronjobRunToolIntegration:
+    def test_direct_cli_detach_returns_durable_execution_receipt(self):
+        detached = {
+            "claimed": True,
+            "dispatched": True,
+            "execution_id": "exec-direct-1",
+        }
+        with patch("tools.cronjob_tools.resolve_job_ref", return_value=_job("job-direct-1")), \
+             patch("tools.cronjob_tools._try_dispatch_detached_run", return_value=detached) as dispatch, \
+             patch("tools.cronjob_tools._try_dispatch_background_run") as background, \
+             patch("tools.cronjob_tools._execute_job_now") as inline, \
+             patch("tools.cronjob_tools.get_job", return_value={
+                 "id": "job-direct-1", "name": "direct run",
+             }):
+            out = json.loads(cronjob(
+                action="run", job_id="job-direct-1", detach_run=True
+            ))
+
+        assert out["success"] is True
+        assert out["job"]["execution_mode"] == "detached"
+        assert out["job"]["execution_id"] == "exec-direct-1"
+        dispatch.assert_called_once()
+        background.assert_not_called()
+        inline.assert_not_called()
+
     def test_run_action_returns_background_note(self):
         """cronjob(action='run') surfaces the handle + do-not-wait note."""
         with _bound_session_key():

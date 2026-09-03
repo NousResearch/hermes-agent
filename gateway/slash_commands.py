@@ -1812,8 +1812,6 @@ class GatewaySlashCommandsMixin:
         user_provs = None
         custom_provs = None
         excluded_provs = []
-        _explicit_only = True
-        _picker_providers = None
         _quick_switch_models = None
         config_path = (_command_profile_home or _hermes_home) / "config.yaml"
         try:
@@ -1833,12 +1831,6 @@ class GatewaySlashCommandsMixin:
                 _excl = cfg.get("model_catalog", {}).get("excluded_providers")
                 if isinstance(_excl, list):
                     excluded_provs = _excl
-                _explicit_only = bool(
-                    cfg.get("model_catalog", {}).get("explicit_only_pickers", True)
-                )
-                _pp = cfg.get("model_catalog", {}).get("picker_providers")
-                if isinstance(_pp, list) and _pp:
-                    _picker_providers = [str(s) for s in _pp]
                 _qs = cfg.get("model_catalog", {}).get("quick_switch_models")
                 if isinstance(_qs, list) and _qs:
                     _quick_switch_models = [str(s) for s in _qs]
@@ -1886,8 +1878,6 @@ class GatewaySlashCommandsMixin:
                         max_models=50,
                         include_moa=True,
                         excluded_providers=excluded_provs,
-                        explicit_only=_explicit_only,
-                        picker_providers=_picker_providers,
                         quick_switch_models=_quick_switch_models,
                     )
                 except Exception:
@@ -2202,8 +2192,6 @@ class GatewaySlashCommandsMixin:
                     custom_providers=custom_provs,
                     max_models=5,
                     excluded_providers=excluded_provs,
-                    explicit_only=_explicit_only,
-                    picker_providers=_picker_providers,
                     quick_switch_models=_quick_switch_models,
                 )
                 for p in providers:

@@ -3139,19 +3139,6 @@ DEFAULT_CONFIG = {
         #     openrouter:
         #       url: https://example.com/my-curation.json
         "providers": {},
-        # When True, chat-surface /model pickers (Telegram/Discord) list only
-        # providers the user explicitly configured for Hermes — the same
-        # narrowing the desktop ModelPickerDialog applies (explicit_only,
-        # #56974). Ambient credentials (e.g. GitHub CLI -> Copilot) stay hidden
-        # from the inline picker; set False to surface every provider that has
-        # credentials.
-        "explicit_only_pickers": True,
-        # Hard allow-list for chat-surface /model pickers: when non-empty,
-        # only these provider slugs are listed (the current provider is always
-        # kept as a safety net). Stricter than explicit_only_pickers — use it
-        # to pin /model to the providers you actually cycle through.
-        # Example: ["deepseek", "openrouter"]
-        "picker_providers": [],
         # Quick-switch allow-list mirroring the desktop model pill's
         # "Edit models..." selection (localStorage hermes.desktop.visible-
         # models). When non-empty, chat-surface /model pickers show ONLY

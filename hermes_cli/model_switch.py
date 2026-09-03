@@ -3002,8 +3002,6 @@ def list_authenticated_providers(
     probe_current_custom_provider: bool = False,
     for_picker: bool = False,
     excluded_providers: list | None = None,
-    explicit_only: bool = False,
-    picker_providers: list | None = None,
     quick_switch_models: list | None = None,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
@@ -3022,12 +3020,6 @@ def list_authenticated_providers(
       - source: str — "built-in", "models.dev", "user-config"
 
     Only includes providers that have API keys set or are user-defined endpoints.
-    ``explicit_only`` further narrows the list to providers the user explicitly
-    configured for Hermes (config ``providers:``, the current provider, OAuth /
-    external-process sign-ins, keyless providers, or a provider-specific API-key
-    env var) — the same semantic desktop chat pickers apply (#56974). Ambient
-    credentials such as GitHub CLI's Copilot token stay hidden unless the flag
-    is off.
     ``force_fresh_nous_tier`` bypasses the short Nous tier cache for explicit
     account-sensitive flows. UI picker opens should leave it false so they do
     not block on fresh Portal/account checks every time.
@@ -4398,52 +4390,6 @@ def list_authenticated_providers(
 
     results = _apply_quick_switch_filter(results, quick_switch_models)
 
-    if picker_providers:
-        # Hard allow-list: when the user names specific providers, the picker
-        # shows only those (plus the current provider as a safety net so the
-        # active model stays visible). This is stricter than explicit_only —
-        # it hides even explicitly-configured providers the user does not
-        # want to cycle through on chat surfaces.
-        wanted = {
-            str(slug).strip().lower()
-            for slug in picker_providers
-            if str(slug).strip()
-        }
-        if current_provider:
-            wanted.add(str(current_provider).strip().lower())
-        results = [
-            row
-            for row in results
-            if str(row.get("slug", "")).strip().lower() in wanted
-        ]
-    elif explicit_only:
-        # Narrow to providers the user explicitly configured — the same
-        # semantic the desktop ModelPickerDialog applies via inventory's
-        # _filter_explicit_provider_rows (#56974). Ambient / auto-seeded
-        # credentials (e.g. GitHub CLI -> Copilot) stay hidden from /model
-        # pickers unless the user opts into the full list. Best-effort:
-        # a filter failure falls back to the full list rather than breaking
-        # the picker.
-        try:
-            from hermes_cli.inventory import (
-                ConfigContext,
-                _filter_explicit_provider_rows,
-            )
-
-            results = _filter_explicit_provider_rows(
-                results,
-                ConfigContext(
-                    current_provider=current_provider,
-                    current_model=current_model,
-                    current_base_url=current_base_url,
-                    user_providers=user_providers or {},
-                    custom_providers=custom_providers or [],
-                    excluded_providers=excluded_providers,
-                ),
-            )
-        except Exception:
-            pass
-
     return results
 
 
@@ -4476,8 +4422,6 @@ def list_picker_providers(
     current_model: str = "",
     include_moa: bool = False,
     excluded_providers: list | None = None,
-    explicit_only: bool = False,
-    picker_providers: list | None = None,
     quick_switch_models: list | None = None,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
@@ -4510,8 +4454,6 @@ def list_picker_providers(
         current_model=current_model,
         for_picker=True,
         excluded_providers=excluded_providers,
-        explicit_only=explicit_only,
-        picker_providers=picker_providers,
     )
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)

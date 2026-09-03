@@ -293,3 +293,60 @@ class TestSkillGist:
         assert wa.skill_gist("remove_file", "demo", file_path="a.py") == "remove a.py from 'demo'"
         assert wa.skill_gist("delete", "demo") == "delete skill 'demo'"
         assert wa.skill_gist("unknown", "demo") == "unknown 'demo'"
+
+
+# ---------------------------------------------------------------------------
+# skill_pending_diff
+# ---------------------------------------------------------------------------
+
+_WA_DIFF_SKILL = "wa-diff-demo"
+
+
+def _make_wa_diff_skill(home, body):
+    from pathlib import Path
+    skill_dir = Path(home) / "skills" / _WA_DIFF_SKILL
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
+
+
+class TestSkillPendingDiff:
+    def test_batch_record_renders_each_op_diff(self, hermes_home):
+        """A staged batch (the multi-op shape _skill_manage_batch stages) must
+        render real per-op diffs, not fall through to the unknown-action stub
+        and show an empty preview while approve still applies real changes
+        (#99704)."""
+        from tools import write_approval as wa
+        _make_wa_diff_skill(hermes_home, "---\ndescription: demo\n---\nline one\nline two\n")
+        record = {
+            "id": "s1",
+            "payload": {
+                "action": "batch",
+                "operations": [
+                    {"action": "patch", "name": _WA_DIFF_SKILL,
+                     "old_string": "line one", "new_string": "LINE ONE"},
+                    {"action": "write_file", "name": _WA_DIFF_SKILL,
+                     "file_path": "refs.md", "file_content": "hello refs\n"},
+                ],
+            },
+        }
+        out = wa.skill_pending_diff(record)
+        assert "=== op[0] patch on 'wa-diff-demo' ===" in out
+        assert "=== op[1] write_file on 'wa-diff-demo' ===" in out
+        assert "-line one" in out
+        assert "+LINE ONE" in out
+        assert "+hello refs" in out
+        assert "(batch on '')" not in out
+
+    def test_single_patch_record_still_diffs(self, hermes_home):
+        from tools import write_approval as wa
+        _make_wa_diff_skill(hermes_home, "alpha\nbeta\n")
+        record = {
+            "id": "s2",
+            "payload": {
+                "action": "patch", "name": _WA_DIFF_SKILL,
+                "old_string": "beta", "new_string": "gamma",
+            },
+        }
+        out = wa.skill_pending_diff(record)
+        assert "-beta" in out
+        assert "+gamma" in out

@@ -426,16 +426,14 @@ def _frontmatter_description(content: str) -> str:
     return desc[:140]
 
 
-def skill_pending_diff(record: Dict[str, Any]) -> str:
-    """Build a full unified diff (or full content) for a staged skill write.
+def _pending_op_diff(payload: Dict[str, Any]) -> str:
+    """Render the diff text for ONE staged operation payload (no header).
 
-    Used by /skills diff <id> on a surface that can render it (CLI pager, web
-    dashboard, or by opening the pending JSON file). For create this is the new
-    file content; for edit/patch it is a unified diff against the current
-    on-disk skill.
+    ``payload`` carries the staged ``skill_manage`` kwargs verbatim, so each
+    entry of a staged batch (same keys, plus its own ``name``) renders through
+    here unchanged.
     """
     import difflib
-    payload = record.get("payload", {})
     action = payload.get("action", "")
     name = payload.get("name", "")
 
@@ -491,3 +489,27 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
     )
     text = "".join(diff)
     return text or "(no textual change)"
+
+
+def skill_pending_diff(record: Dict[str, Any]) -> str:
+    """Build a full unified diff (or full content) for a staged skill write.
+
+    Used by /skills diff <id> on a surface that can render it (CLI pager, web
+    dashboard, or by opening the pending JSON file). For create this is the new
+    file content; for edit/patch it is a unified diff against the current
+    on-disk skill. A staged batch (``action: "batch"`` — the shape
+    ``_skill_manage_batch`` stages when the gate intercepts a multi-op write)
+    renders each operation's diff under its own heading; without it the batch
+    fell through to the unknown-action stub and the preview showed no
+    reviewable content at all (#99704).
+    """
+    payload = record.get("payload", {})
+    if payload.get("action") == "batch":
+        ops = payload.get("operations") or []
+        parts = [
+            f"=== op[{i}] {op.get('action', '?')} on '{op.get('name', '')}' ===\n"
+            + _pending_op_diff(op)
+            for i, op in enumerate(ops)
+        ]
+        return "\n".join(parts) if parts else "(empty batch)"
+    return _pending_op_diff(payload)

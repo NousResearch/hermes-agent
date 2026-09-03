@@ -866,13 +866,25 @@ class WebhookAdapter(BasePlatformAdapter):
                 except Exception as e:
                     logger.warning("[webhook] Skill loading failed: %s", e)
 
-        # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get(
-                "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-            ),
+        # Build a unique delivery ID. WhatsApp's bridge can emit the same
+        # native message more than once with a different HTTP request ID; its
+        # stable messageId is therefore the only safe idempotency key for this
+        # route. Other providers retain their documented delivery headers.
+        whatsapp_message_id = (
+            payload.get("messageId")
+            if route_name == "whatsapp-inbound" and isinstance(payload, dict)
+            else None
+        )
+        delivery_id = (
+            f"whatsapp:{whatsapp_message_id}"
+            if isinstance(whatsapp_message_id, str) and whatsapp_message_id
+            else request.headers.get(
+                "X-GitHub-Delivery",
+                request.headers.get(
+                    "svix-id",
+                    request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+                ),
+            )
         )
 
         # ── Idempotency ─────────────────────────────────────────

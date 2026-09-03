@@ -1117,6 +1117,11 @@ DEFAULT_CONFIG = {
         "response_cache": True,
         "response_cache_ttl": 300,
         "min_coding_score": 0.65,
+        # When True, the OpenRouter picker lists every live-catalog model that
+        # advertises tool support instead of the curated subset. Intended for
+        # power users who want the full catalog reachable from /model and the
+        # CLI picker; leave False for the hand-picked agentic list.
+        "show_all_models": False,
     },
 
     # AWS Bedrock provider configuration.
@@ -3134,6 +3139,13 @@ DEFAULT_CONFIG = {
         #     openrouter:
         #       url: https://example.com/my-curation.json
         "providers": {},
+        # When True, chat-surface /model pickers (Telegram/Discord) list only
+        # providers the user explicitly configured for Hermes — the same
+        # narrowing the desktop ModelPickerDialog applies (explicit_only,
+        # #56974). Ambient credentials (e.g. GitHub CLI -> Copilot) stay hidden
+        # from the inline picker; set False to surface every provider that has
+        # credentials.
+        "explicit_only_pickers": True,
     },
 
     # Per-model metadata overrides — manually declare context_window,

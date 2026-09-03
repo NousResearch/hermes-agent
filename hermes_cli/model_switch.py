@@ -2964,6 +2964,7 @@ def list_authenticated_providers(
     probe_current_custom_provider: bool = False,
     for_picker: bool = False,
     excluded_providers: list | None = None,
+    explicit_only: bool = False,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -2981,6 +2982,12 @@ def list_authenticated_providers(
       - source: str — "built-in", "models.dev", "user-config"
 
     Only includes providers that have API keys set or are user-defined endpoints.
+    ``explicit_only`` further narrows the list to providers the user explicitly
+    configured for Hermes (config ``providers:``, the current provider, OAuth /
+    external-process sign-ins, keyless providers, or a provider-specific API-key
+    env var) — the same semantic desktop chat pickers apply (#56974). Ambient
+    credentials such as GitHub CLI's Copilot token stay hidden unless the flag
+    is off.
     ``force_fresh_nous_tier`` bypasses the short Nous tier cache for explicit
     account-sensitive flows. UI picker opens should leave it false so they do
     not block on fresh Portal/account checks every time.
@@ -4329,6 +4336,34 @@ def list_authenticated_providers(
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
+    if explicit_only:
+        # Narrow to providers the user explicitly configured — the same
+        # semantic the desktop ModelPickerDialog applies via inventory's
+        # _filter_explicit_provider_rows (#56974). Ambient / auto-seeded
+        # credentials (e.g. GitHub CLI -> Copilot) stay hidden from /model
+        # pickers unless the user opts into the full list. Best-effort:
+        # a filter failure falls back to the full list rather than breaking
+        # the picker.
+        try:
+            from hermes_cli.inventory import (
+                ConfigContext,
+                _filter_explicit_provider_rows,
+            )
+
+            results = _filter_explicit_provider_rows(
+                results,
+                ConfigContext(
+                    current_provider=current_provider,
+                    current_model=current_model,
+                    current_base_url=current_base_url,
+                    user_providers=user_providers or {},
+                    custom_providers=custom_providers or [],
+                    excluded_providers=excluded_providers,
+                ),
+            )
+        except Exception:
+            pass
+
     return results
 
 
@@ -4361,6 +4396,7 @@ def list_picker_providers(
     current_model: str = "",
     include_moa: bool = False,
     excluded_providers: list | None = None,
+    explicit_only: bool = False,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -4392,6 +4428,7 @@ def list_picker_providers(
         current_model=current_model,
         for_picker=True,
         excluded_providers=excluded_providers,
+        explicit_only=explicit_only,
     )
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)

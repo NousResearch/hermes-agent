@@ -624,3 +624,37 @@ export function createVersionResolver(fetchVersionFn, {
     return cachedVersion;
   };
 }
+
+/**
+ * Last-resort process guards (#97108).
+ *
+ * The awaited-rejection half of inbound media download failures is already
+ * contained in saveMedia(), but downloadMediaMessage() consumes an HTTP
+ * stream internally: under undici/HTTP2 the underlying Readable can emit
+ * 'error' *outside* the awaited promise chain (e.g. the socket resets after
+ * the buffering consumer detached). An 'error' event with no listener throws
+ * at the event-loop level, and with no uncaughtException / unhandledRejection
+ * handler the bridge process dies — taking the in-memory inbound queue
+ * (bridge.js messageQueue) with it, and WhatsApp does not redeliver.
+ *
+ * Log the failure and keep the process alive: the emitter is already gone
+ * and the rest of the bridge is unaffected. The log line also gives
+ * operators the post-mortem trail #58936 asked for.
+ */
+export function installProcessGuards({
+  log = console.error,
+  target = process,
+} = {}) {
+  const report = (kind, value) => {
+    try {
+      const detail = value?.stack ? `${value.stack}` : String(value);
+      log(`⚠️  ${kind} contained — bridge kept alive: ${detail}`);
+    } catch {
+      // The guard itself must never become the thing that kills the process.
+    }
+  };
+  target.on('uncaughtException', (err) => report('uncaught exception', err));
+  target.on('unhandledRejection', (reason) =>
+    report('unhandled rejection', reason)
+  );
+}

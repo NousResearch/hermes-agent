@@ -37,6 +37,7 @@ import {
   buildPollPayload,
   createReconnectScheduler,
   createVersionResolver,
+  installProcessGuards,
   buildLocationPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
@@ -266,6 +267,12 @@ function buildLidMap() {
 let lidToPhone = buildLidMap();
 
 const logger = pino({ level: 'warn' });
+
+// Install before anything can throw at the event-loop level: a listener-less
+// 'error' from a Baileys media stream must not kill the bridge and lose the
+// in-memory inbound queue (#97108). Route guard output through pino so it
+// lands in the adapter-captured bridge log (#58936).
+installProcessGuards({ log: (line) => logger.warn(line) });
 
 // Message queue for polling
 const messageQueue = [];

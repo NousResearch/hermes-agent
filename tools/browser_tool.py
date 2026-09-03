@@ -971,11 +971,18 @@ def _browser_install_hint() -> str:
 # changes.
 NPX_AGENT_BROWSER_SENTINEL = "npx agent-browser"
 
-# Pinned to match scripts/install.sh / scripts/install.ps1's
-# "agent-browser@^0.26.0" managed install so a git-clone install resolving
-# agent-browser via bare npx gets the same version as a managed install,
-# instead of floating latest with no integrity check. Update both together.
-AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.26.0"
+# The single source of truth for the agent-browser version: the install
+# scripts no longer install it (it resolves lazily via npx), so nothing else
+# pins it.
+#
+# Caret on a 0.x floats patches only: ^0.36.0 is >=0.36.0 <0.37.0, not "0.36
+# or newer". Upstream minors need a deliberate bump here — that is how this
+# sat on 0.26 while agent-browser shipped through 0.36.
+#
+# 0.36 is the floor for the Lightpanda engine: 0.26 passes `serve --timeout`,
+# which Lightpanda removed, so `--engine lightpanda` cannot launch on it
+# (vercel-labs/agent-browser#1750).
+AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.36.0"
 
 
 def _is_npx_agent_browser_sentinel(browser_cmd: str) -> bool:
@@ -1354,8 +1361,8 @@ def _run_chrome_fallback_command(
     # WinError 193.
     if _is_npx_agent_browser_sentinel(browser_cmd):
         _npx_bin = _resolve_npx_bin() or "npx"
-        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.26.0 range,
-        # not an exact pin — a compromised future 0.26.x patch must not get to
+        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.36.0 range,
+        # not an exact pin — a compromised future 0.36.x patch must not get to
         # run its own install-time lifecycle scripts on this machine.
         cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
     else:
@@ -3555,8 +3562,8 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
 
     cmd = [
         npx_bin,
-        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.26.0
-        # range, not an exact pin — a compromised future 0.26.x patch must
+        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.36.0
+        # range, not an exact pin — a compromised future 0.36.x patch must
         # not get to run its own install-time lifecycle scripts here.
         "--ignore-scripts",
         # --prefer-offline: once cached, repeat `hermes update`/`doctor

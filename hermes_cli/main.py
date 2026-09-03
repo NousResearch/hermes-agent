@@ -8801,6 +8801,15 @@ def cmd_gui(args: argparse.Namespace):
             sys.exit(1)
         else:
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
+            # A rebuild recreates Electron's chrome-sandbox helper without its
+            # standard root:root 4755 setuid config (#58593). The launch path
+            # repairs this just before launching, but --build-only returns
+            # without launching — leaving the artifact unlaunchable for flows
+            # that exec it directly (the desktop-update relaunch gate checks
+            # exactly this and refuses to auto-relaunch). Best-effort: repair
+            # when sudo allows; the fixup prints its own diagnostics on
+            # failure, and the launch path remains a second chance.
+            _desktop_linux_sandbox_fixup(packaged_executable)
         return
 
     if source_mode:

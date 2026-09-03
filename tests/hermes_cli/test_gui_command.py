@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -1024,6 +1026,51 @@ def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatc
         assert launched == [str(packaged_exe), "--disable-setuid-sandbox"]
     else:
         assert launched == [str(packaged_exe)]
+
+
+@pytest.mark.linux_only
+def test_gui_build_only_repairs_chrome_sandbox(tmp_path, monkeypatch):
+    """--build-only must leave a launchable artifact, not just a built one.
+
+    A rebuild recreates chrome-sandbox without its root:root 4755 setuid
+    config (#58593); the launch path repairs it, but --build-only returns
+    before ever reaching that code. Headless update flows exec the artifact
+    directly and gate the relaunch on these exact perms, so the repair has
+    to happen here too.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    # Exercise the real fixup against a hermetic artifact.  The sudo shim
+    # performs the harmless chmod for this unprivileged test process and logs
+    # both commands; production still discovers and executes real sudo.
+    sandbox = packaged_exe.parent / "chrome-sandbox"
+    sandbox.chmod(0o644)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    sudo_log = tmp_path / "sudo.log"
+    sudo = fake_bin / "sudo"
+    sudo.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> {sudo_log}\n"
+        "if [ \"$1\" = chmod ]; then /bin/chmod \"$2\" \"$3\"; fi\n",
+        encoding="utf-8",
+    )
+    sudo.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+    with patch("hermes_cli.main._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"):
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    sandbox_stat = sandbox.stat()
+    assert stat.S_IMODE(sandbox_stat.st_mode) == 0o4755
+    assert sudo_log.read_text(encoding="utf-8").splitlines() == [
+        f"chown root:root {sandbox}",
+        f"chmod 4755 {sandbox}",
+    ]
 
 
 @pytest.mark.macos_only

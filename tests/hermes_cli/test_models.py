@@ -5,6 +5,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
@@ -477,6 +479,50 @@ class TestCodexSoftAcceptPlausibilityGate:
         r = validate_requested_model("gpt-5.5", "openai-codex")
         assert r["accepted"] is True
         assert r["recognized"] is True
+
+
+class TestStaticModelProviderPairValidation:
+    @pytest.mark.parametrize(
+        ("model", "provider"),
+        [
+            ("deepseek/deepseek-v4-flash-0731", "openai-codex"),
+            ("gpt-5.5", "xai-oauth"),
+            ("private-preview-model", "openai-codex"),
+            ("private-preview-model", "xai-oauth"),
+        ],
+    )
+    def test_rejects_unlisted_nonfamily_models(self, model, provider):
+        from hermes_cli.models import validate_static_model_provider_pair
+
+        result = validate_static_model_provider_pair(model, provider)
+
+        assert result["accepted"] is False
+        assert result["recognized"] is False
+        assert result["suggestions"]
+
+    @pytest.mark.parametrize(
+        ("model", "provider", "recognized"),
+        [
+            ("gpt-5.5", "openai-codex", True),
+            ("gpt-5.7-internal", "openai-codex", False),
+            ("grok-5-internal", "xai-oauth", False),
+            ("private-preview-model", "openrouter", False),
+            ("private-preview-model", "nous", False),
+            ("private-preview-model", "auto", False),
+            ("private-preview-model", "custom", False),
+            ("private-preview-model", "custom:local", False),
+        ],
+    )
+    def test_accepts_valid_hidden_unknown_and_unrestricted_pairs(
+        self, model, provider, recognized
+    ):
+        from hermes_cli.models import validate_static_model_provider_pair
+
+        result = validate_static_model_provider_pair(model, provider)
+
+        assert result["accepted"] is True
+        assert result["recognized"] is recognized
+        assert result["suggestions"] == []
 
 
 class TestClaudeSonnet5InCuratedLists:

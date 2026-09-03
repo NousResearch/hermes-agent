@@ -7035,6 +7035,55 @@ def fetch_ollama_cloud_models(
     return []
 
 
+_STATIC_PROVIDER_FAMILY_PREFIXES: dict[str, tuple[str, ...]] = {
+    "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
+    "xai-oauth": ("grok-",),
+}
+
+def validate_static_model_provider_pair(
+    model_name: str,
+    provider: Optional[str],
+) -> dict[str, Any]:
+    """Validate model/provider coherence using local catalogs and families only."""
+    requested = (model_name or "").strip()
+    normalized = normalize_provider(provider)
+    accepted = {
+        "accepted": True,
+        "recognized": False,
+        "provider": normalized,
+        "suggestions": [],
+        "message": None,
+    }
+    family_prefixes = _STATIC_PROVIDER_FAMILY_PREFIXES.get(normalized)
+    if not requested or family_prefixes is None:
+        return accepted
+
+    requested_lower = requested.lower()
+    catalog_models = list(_PROVIDER_MODELS.get(normalized, ()))
+    if any(requested_lower == model.lower() for model in catalog_models):
+        return {**accepted, "recognized": True}
+    if any(requested_lower.startswith(prefix) for prefix in family_prefixes):
+        return accepted
+
+    suggestions = get_close_matches(requested, catalog_models, n=3, cutoff=0.5)
+    if not suggestions:
+        suggestions = catalog_models[:3]
+    suggestion_text = ""
+    if suggestions:
+        suggestion_text = " Try one of: " + ", ".join(f"`{model}`" for model in suggestions) + "."
+    return {
+        "accepted": False,
+        "recognized": False,
+        "provider": normalized,
+        "suggestions": suggestions,
+        "message": (
+            f"`{requested}` does not match provider `{normalized}`'s model family. Switch "
+            f"with `--provider <slug>` or select a model from the `/model` picker."
+            f"{suggestion_text}"
+        ),
+    }
+
+
 def validate_requested_model(
     model_name: str,
     provider: Optional[str],
@@ -7405,38 +7454,18 @@ def validate_requested_model(
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
-            provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
-            # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists
-            # for entitlement-gated *hidden* slugs the curated listing hasn't
-            # caught up with — but those are always the provider's own family
-            # (openai-codex -> gpt-*; xai-oauth -> grok-*). Accepting an
-            # unrelated typed name (e.g. `qwen3.5-4b`, `llama-3.1-8b`) here turns
-            # what should be an actionable "did you mean --provider <x>?" error
-            # into a confusing success that 400s on the next turn. Only soft-
-            # accept names that share the provider's family prefix; reject the
-            # rest with guidance to pin the right provider.
-            _family_prefixes = {
-                "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
-                "xai-oauth": ("grok-",),
-            }.get(normalized, ())
-            _lower = requested_for_lookup.strip().lower()
-            _plausible = (not _family_prefixes) or any(
-                _lower.startswith(p) for p in _family_prefixes
+            static_pair = validate_static_model_provider_pair(
+                requested_for_lookup,
+                normalized,
             )
-            if not _plausible:
+            if not static_pair["accepted"]:
                 return {
                     "accepted": False,
                     "persist": False,
                     "recognized": False,
-                    "message": (
-                        f"`{requested}` doesn't look like a {provider_label} model "
-                        f"and isn't in its listing, so it was not accepted. If it "
-                        f"belongs to another configured provider, switch with "
-                        f"`--provider <slug>` (or select it from the `/model` "
-                        f"picker)."
-                        f"{suggestion_text}"
-                    ),
+                    "message": static_pair["message"],
                 }
+            provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
             return {
                 "accepted": True,
                 "persist": True,

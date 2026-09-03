@@ -19260,6 +19260,142 @@ def test_session_create_records_ui_model_as_session_override(monkeypatch):
         server._sessions.clear()
 
 
+@pytest.mark.parametrize(
+    ("model", "provider"),
+    [
+        ("deepseek/deepseek-v4-flash-0731", "openai-codex"),
+        ("gpt-5.5", "xai-oauth"),
+    ],
+)
+def test_session_create_rejects_incoherent_explicit_model_provider_before_side_effects(
+    monkeypatch, model, provider
+):
+    events = []
+    monkeypatch.setattr(server.uuid, "uuid4", lambda: events.append("uuid"))
+    monkeypatch.setattr(server, "_new_session_key", lambda: events.append("key"))
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: events.append("prompts"))
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: events.append("build"))
+    monkeypatch.setattr(
+        server,
+        "_schedule_session_cap_enforcement",
+        lambda: events.append("cap"),
+    )
+    server._sessions.clear()
+
+    response = server._methods["session.create"](
+        "r1", {"model": model, "provider": provider}
+    )
+
+    assert response["error"]["code"] == -32602
+    assert model in response["error"]["message"]
+    assert provider in response["error"]["message"]
+    assert response["error"]["data"] == {
+        "model": model,
+        "provider": provider,
+        "suggestions": response["error"]["data"]["suggestions"],
+    }
+    assert response["error"]["data"]["suggestions"]
+    assert events == []
+    assert server._sessions == {}
+
+
+def test_session_create_rejects_model_incoherent_with_profile_provider(
+    monkeypatch, tmp_path
+):
+    profile_home = tmp_path / "coder"
+    profile_home.mkdir()
+    (profile_home / "config.yaml").write_text(
+        "model:\n  default: gpt-5.5\n  provider: openai-codex\n",
+        encoding="utf-8",
+    )
+    events = []
+    monkeypatch.setattr(
+        server,
+        "_profile_home",
+        lambda profile: profile_home if profile == "coder" else None,
+    )
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: events.append("prompts"))
+    monkeypatch.setattr(server.uuid, "uuid4", lambda: events.append("uuid"))
+    monkeypatch.setattr(server, "_new_session_key", lambda: events.append("key"))
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: events.append("build"))
+    monkeypatch.setattr(
+        server,
+        "_schedule_session_cap_enforcement",
+        lambda: events.append("cap"),
+    )
+    server._sessions.clear()
+
+    response = server._methods["session.create"](
+        "r1",
+        {
+            "model": "deepseek/deepseek-v4-flash-0731",
+            "profile": "coder",
+        },
+    )
+
+    assert response["error"]["code"] == -32602
+    assert "deepseek/deepseek-v4-flash-0731" in response["error"]["message"]
+    assert "openai-codex" in response["error"]["message"]
+    assert response["error"]["data"]["provider"] == "openai-codex"
+    assert response["error"]["data"]["suggestions"]
+    assert events == []
+    assert server._sessions == {}
+
+
+def test_session_create_rejects_model_incoherent_with_env_provider(
+    monkeypatch, tmp_path
+):
+    events = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "xai-oauth")
+    monkeypatch.setattr(server.uuid, "uuid4", lambda: events.append("uuid"))
+    monkeypatch.setattr(server, "_new_session_key", lambda: events.append("key"))
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: events.append("prompts"))
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: events.append("build"))
+    monkeypatch.setattr(
+        server,
+        "_schedule_session_cap_enforcement",
+        lambda: events.append("cap"),
+    )
+    server._sessions.clear()
+
+    response = server._methods["session.create"]("r1", {"model": "gpt-5.5"})
+
+    assert response["error"]["code"] == -32602
+    assert "gpt-5.5" in response["error"]["message"]
+    assert "xai-oauth" in response["error"]["message"]
+    assert response["error"]["data"]["provider"] == "xai-oauth"
+    assert response["error"]["data"]["suggestions"]
+    assert events == []
+    assert server._sessions == {}
+
+
+@pytest.mark.parametrize(
+    ("model", "provider"),
+    [
+        ("gpt-5.5", "openai-codex"),
+        ("private-preview-model", "custom:local"),
+    ],
+)
+def test_session_create_accepts_coherent_and_custom_model_provider_pairs(
+    monkeypatch, model, provider
+):
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    server._sessions.clear()
+    try:
+        response = server._methods["session.create"](
+            "r1", {"model": model, "provider": provider}
+        )
+
+        assert "error" not in response
+        session = server._sessions[response["result"]["session_id"]]
+        assert session["model_override"] == {"model": model, "provider": provider}
+    finally:
+        server._sessions.clear()
+
+
 @pytest.mark.parametrize("service_tier_override", ["priority", ""])
 def test_start_agent_build_passes_session_model_override(
     monkeypatch, service_tier_override

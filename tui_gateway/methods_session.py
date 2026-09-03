@@ -12,7 +12,34 @@ _profile_scoped = _registry.profile_scoped
 
 
 @method("session.create")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
+    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    create_model = str(params.get("model") or "").strip()
+    explicit_provider = str(params.get("provider") or "").strip()
+    if create_model:
+        from hermes_cli.models import validate_static_model_provider_pair
+        from hermes_cli.runtime_provider import resolve_requested_provider
+
+        resolved_provider = resolve_requested_provider(explicit_provider or None)
+        validation = validate_static_model_provider_pair(
+            create_model,
+            resolved_provider,
+        )
+        if not validation["accepted"]:
+            suggestions = validation["suggestions"]
+            return _err(
+                rid,
+                -32602,
+                f"invalid model/provider pair: {validation['message']}",
+                {
+                    "model": create_model,
+                    "provider": validation["provider"],
+                    "suggestions": suggestions,
+                },
+            )
+
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
     cols = int(params.get("cols", 80))
@@ -39,15 +66,11 @@ def _(rid, params: dict) -> dict:
     # profile must build its agent + persist against THAT profile's home/state.db,
     # not the dashboard's launch profile. Stored on the session so _start_agent_build
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
-    profile = (params.get("profile") or "").strip() or None
-    profile_home = _profile_home(profile)
-
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
     # the agent below) — never a global config write, so picking a model/effort
     # for a new chat can't mutate the profile default. provider is optional
     # (resolved at build).
-    create_model = str(params.get("model") or "").strip()
     session_model_override = (
         {"model": create_model, "provider": str(params.get("provider") or "").strip() or None}
         if create_model

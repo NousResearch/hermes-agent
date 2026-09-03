@@ -140,6 +140,17 @@ class TurnContext:
     _event_callback_sync: Optional[Callable] = None
     _status_callback_sync: Optional[Callable] = None
 
+    # --- provider-error duplicate-delivery dedup (#72131) ------------------
+    # Canonical provider-error reply texts already delivered to the chat as
+    # PERSISTENT status messages this turn — recorded by the status bridge
+    # only after a successful plain-``send()`` fallback (adapters without
+    # ``send_or_update_status``), consumed by the final-delivery
+    # normalization path to suppress a byte-identical final response.
+    # Per-turn by construction: concurrent turns own separate TurnContext
+    # instances. Appends happen in event-loop-thread done-callbacks and the
+    # read happens on the same loop after the worker finishes, so no lock.
+    _provider_error_statuses_delivered: List[str] = field(default_factory=list)
+
     # --- Slack-native task-card progress (opt-in; #29483) ------------------
     # True when the Slack adapter's ``native_task_cards_enabled()`` opt-in is
     # set for this turn's platform. The ID-bearing lifecycle callbacks are

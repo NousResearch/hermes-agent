@@ -929,29 +929,79 @@ def _format_exec_approval_fallback(
         + ", ".join(choices[:-1]) + f", or {choices[-1]}."
     )
 
+_GATEWAY_PROVIDER_ERROR_AUTH_REPLY = (
+    "⚠️ Provider authentication failed. Check the configured credentials; "
+    "raw provider details are in the gateway logs."
+)
+_GATEWAY_PROVIDER_ERROR_POLICY_REPLY = (
+    "⚠️ The model provider rejected the request. I kept the raw provider "
+    "error out of chat; check gateway logs for details or try rephrasing."
+)
+_GATEWAY_PROVIDER_ERROR_RATE_LIMIT_REPLY = (
+    "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
+)
+_GATEWAY_PROVIDER_ERROR_CONNECTION_REPLY = (
+    "⚠️ The model server is not responding — it looks like the configured "
+    "model endpoint is not running or is unreachable."
+)
+_GATEWAY_PROVIDER_ERROR_GENERIC_REPLY = (
+    "⚠️ The model provider failed after retries. I kept raw provider details "
+    "out of chat; check gateway logs for diagnostics."
+)
+
+# The closed set of user-safe replies _gateway_provider_error_reply can
+# produce. Membership in this set — not _looks_like_gateway_provider_error —
+# is how already-rewritten text must be recognized: the replies are written
+# for users, and e.g. the rate-limit reply ("rate-limiting requests") does
+# not match the raw-envelope shapes ("rate limited after N retries").
+_GATEWAY_PROVIDER_ERROR_REPLIES = frozenset({
+    _GATEWAY_PROVIDER_ERROR_AUTH_REPLY,
+    _GATEWAY_PROVIDER_ERROR_POLICY_REPLY,
+    _GATEWAY_PROVIDER_ERROR_RATE_LIMIT_REPLY,
+    _GATEWAY_PROVIDER_ERROR_CONNECTION_REPLY,
+    _GATEWAY_PROVIDER_ERROR_GENERIC_REPLY,
+})
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
-        return (
-            "⚠️ Provider authentication failed. Check the configured credentials; "
-            "raw provider details are in the gateway logs."
-        )
+        return _GATEWAY_PROVIDER_ERROR_AUTH_REPLY
     if _GATEWAY_PROVIDER_POLICY_RE.search(text):
-        return (
-            "⚠️ The model provider rejected the request. I kept the raw provider "
-            "error out of chat; check gateway logs for details or try rephrasing."
-        )
+        return _GATEWAY_PROVIDER_ERROR_POLICY_REPLY
     if _GATEWAY_RATE_LIMIT_RE.search(text):
-        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
+        return _GATEWAY_PROVIDER_ERROR_RATE_LIMIT_REPLY
     if _GATEWAY_CONNECTION_ERROR_RE.search(text):
-        return (
-            "⚠️ The model server is not responding — it looks like the configured "
-            "model endpoint is not running or is unreachable."
-        )
-    return (
-        "⚠️ The model provider failed after retries. I kept raw provider details "
-        "out of chat; check gateway logs for diagnostics."
-    )
+        return _GATEWAY_PROVIDER_ERROR_CONNECTION_REPLY
+    return _GATEWAY_PROVIDER_ERROR_GENERIC_REPLY
+
+
+def _is_gateway_provider_error_reply(text: Any) -> bool:
+    """True when text is byte-identical to a canonical provider-error reply."""
+    return str(text or "").strip() in _GATEWAY_PROVIDER_ERROR_REPLIES
+
+
+def _should_suppress_provider_error_final(response: Any, delivered_statuses: Any) -> bool:
+    """#72131: the sanitized final response duplicates an already-sent status.
+
+    A provider failure is legitimately surfaced through two channels: the
+    mid-run status callback (rewritten by _prepare_gateway_status_message and,
+    on adapters without ``send_or_update_status``, delivered as a PERSISTENT
+    chat message by the plain-send fallback) and the failed turn's final
+    response, which _sanitize_gateway_final_response rewrites to the same
+    canonical text. ``delivered_statuses`` carries the reply texts whose
+    fallback send succeeded this turn (per-turn state from TurnContext), so a
+    byte-identical final response would be the second copy of the same error.
+    """
+    if not response:
+        return False
+    body = str(response).strip()
+    if body not in _GATEWAY_PROVIDER_ERROR_REPLIES:
+        return False
+    try:
+        return any(str(s or "").strip() == body for s in (delivered_statuses or ()))
+    except TypeError:
+        return False
 
 
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
@@ -5930,6 +5980,32 @@ class TurnRunner:
                 if getattr(res, "success", False) and mid:
                     ctx._cleanup_msg_ids.append(str(mid))
             _fut.add_done_callback(_track_status_id)
+
+        # #72131: on adapters without send_or_update_status this status just
+        # went through the plain-send fallback, where it becomes a PERSISTENT
+        # chat message. When it is a rewritten provider-error reply, record
+        # the delivered text on the turn context — only after a successful
+        # send — so the final-delivery path can suppress a byte-identical
+        # final response instead of showing the user the same error twice.
+        # Adapters WITH send_or_update_status are excluded: their bubble
+        # semantics (edited in place, ephemeral, cleaned up post-run) are
+        # adapter-defined, so the gateway cannot assume a persistent copy
+        # remains and must keep delivering the final response.
+        if (
+            not callable(getattr(ctx._status_adapter, "send_or_update_status", None))
+            and _is_gateway_provider_error_reply(prepared_message)
+        ):
+            _reply_text = prepared_message
+
+            def _record_provider_error_status(fut) -> None:
+                try:
+                    res = fut.result()
+                except Exception:
+                    return
+                if getattr(res, "success", False):
+                    ctx._provider_error_statuses_delivered.append(_reply_text)
+
+            _fut.add_done_callback(_record_provider_error_status)
 
     def run_sync(self):
         ctx = self._ctx
@@ -23308,11 +23384,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
+            _provider_error_status_dup = False
             if not _intentional_silence:
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )
                 response = _sanitize_gateway_final_response(source.platform, response)
+                # #72131: decide HERE, while `response` is exactly the
+                # canonical reply text (before reasoning/footer decoration),
+                # whether it duplicates a provider-error status this turn
+                # already delivered persistently. The suppression itself is
+                # applied at the delivery seam below, after transcript
+                # persistence — a delivery decision, not a transcript
+                # mutation, mirroring intentional silence. Deciding at this
+                # level (not inside run_sync) matters: this path re-derives
+                # the sanitized text from the raw result, so an inner-only
+                # suppression would be reconstructed right back.
+                _provider_error_status_dup = _should_suppress_provider_error_final(
+                    response,
+                    agent_result.get("provider_error_statuses_delivered"),
+                )
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -23764,6 +23855,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _intentional_silence:
                 logger.info(
                     "Suppressing intentional silence marker for session %s",
+                    session_entry.session_id,
+                )
+                response = ""
+
+            # #72131: the identical provider-error text already reached this
+            # chat as a persistent status message during the run — delivering
+            # the final response too would show the user the same error twice.
+            # Like intentional silence above, this only suppresses outbound
+            # delivery; the transcript writes above are untouched.
+            if _provider_error_status_dup and response:
+                logger.info(
+                    "Suppressing duplicate provider-error final response for "
+                    "session %s: identical status already delivered this turn "
+                    "(#72131)",
                     session_entry.session_id,
                 )
                 response = ""
@@ -33183,6 +33288,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception as _rpe:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
+
+        # #72131: expose this turn's successfully delivered provider-error
+        # status texts to the outer delivery path, which decides whether the
+        # sanitized final response would be a byte-identical second copy.
+        # Attached at this single seam so every run_sync return shape carries
+        # it; only reads TurnContext state, so it is per-turn by construction.
+        if isinstance(response, dict) and turn_ctx._provider_error_statuses_delivered:
+            response.setdefault(
+                "provider_error_statuses_delivered",
+                list(turn_ctx._provider_error_statuses_delivered),
+            )
 
         return response
 

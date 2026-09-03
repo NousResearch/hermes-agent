@@ -224,20 +224,59 @@ def _get_mcp_stderr_log() -> Any:
         return _mcp_stderr_log_fh
 
 
-def _write_stderr_log_header(server_name: str) -> None:
+def _write_stderr_log_header(server_name: str) -> Optional[int]:
     """Write a human-readable session marker before launching a server.
 
     Gives operators a way to find each server's output in the shared
     ``mcp-stderr.log`` file without needing per-line prefixes (which would
     require a pipe + reader thread and complicate shutdown).
+
+    Returns the byte offset just past the header so callers can later read
+    back what THIS launch wrote (see :func:`_read_mcp_stderr_tail`), or
+    ``None`` when the marker could not be written.
     """
     fh = _get_mcp_stderr_log()
     try:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         fh.write(f"\n===== [{ts}] starting MCP server '{server_name}' =====\n")
         fh.flush()
+        return fh.tell()
     except Exception:
-        pass
+        return None
+
+
+def _read_mcp_stderr_tail(
+    start_offset: Optional[int],
+    max_bytes: int = 2048,
+    max_lines: int = 5,
+) -> str:
+    """Return the last non-empty stderr lines a server launch wrote (#98763).
+
+    Reads ``~/.hermes/logs/mcp-stderr.log`` from ``start_offset`` (the value
+    :func:`_write_stderr_log_header` handed back before the spawn) and keeps
+    at most ``max_lines`` trailing non-empty lines within ``max_bytes``. When
+    a stdio server crashes at startup, its traceback (e.g.
+    ``ModuleNotFoundError``) lands here — the actionable diagnostic a bare
+    "unhandled errors in a TaskGroup" park log otherwise hides.
+
+    Best-effort: any failure (offset ``None``, file rotated away, decode
+    error, ...) returns ``""`` — diagnostics must never break error handling.
+    """
+    if start_offset is None:
+        return ""
+    try:
+        from hermes_constants import get_hermes_home
+        log_path = get_hermes_home() / "logs" / "mcp-stderr.log"
+        with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+            fh.seek(start_offset)
+            chunk = fh.read(max_bytes)
+        lines = [line.strip() for line in chunk.splitlines() if line.strip()]
+        return "\n".join(lines[-max_lines:])
+    except Exception:
+        logger.debug(
+            "mcp stderr tail unavailable (offset=%s)", start_offset, exc_info=True
+        )
+        return ""
 
 # ---------------------------------------------------------------------------
 # Graceful import -- MCP SDK is an optional dependency
@@ -1662,6 +1701,27 @@ class NonMcpEndpointError(ConnectionError):
     """
 
 
+class StdioStartupCrashError(Exception):
+    """Raised when a stdio MCP subprocess dies before the handshake (#98763).
+
+    A server that exits non-zero at startup (missing module under the
+    shebang-resolved interpreter, any import-time error, bad wrapper script)
+    is deterministic: every retry respawns a child that dies the same way.
+    The crash happens in a separate process, so the parent only observes a
+    closed stdio pipe — an EOF/TaskGroup drop that exception-type
+    classification would call "transient". :meth:`MCPServerTask._run_stdio`
+    detects the dead child at teardown time and raises this instead, so
+    :func:`_classify_mcp_failure` parks the server immediately (like the
+    existing ``FileNotFoundError``/ENOENT handling) instead of burning the
+    retry ladder.
+
+    The message carries the unwrapped root cause and, best-effort, the tail
+    of the child's stderr (where e.g. ``ModuleNotFoundError`` lands) — the
+    actionable diagnostic the raw TaskGroup wrapper hides. The server stays
+    revivable via the parked self-probe once the operator fixes the command.
+    """
+
+
 def _unwrap_exception_group(exc: BaseException) -> BaseException:
     """Extract the root-cause exception from anyio TaskGroup wrappers.
 
@@ -1717,7 +1777,9 @@ def _classify_mcp_failure(exc: BaseException) -> str:
     - auth failures (401/403) — need new credentials, not a retry;
     - :class:`NonMcpEndpointError` — the URL serves a web page, not MCP;
     - :class:`InvalidMcpUrlError` — unusable config;
-    - ``FileNotFoundError`` / ``ENOENT`` — the stdio command doesn't exist.
+    - ``FileNotFoundError`` / ``ENOENT`` — the stdio command doesn't exist;
+    - :class:`StdioStartupCrashError` — the stdio subprocess died before the
+      MCP handshake completed (deterministic crash-at-startup).
 
     Everything else (network blips, EOF, ``ClosedResourceError``, transport
     TaskGroup drops, timeouts) is transient and keeps the normal
@@ -1730,6 +1792,8 @@ def _classify_mcp_failure(exc: BaseException) -> str:
         return "permanent"
     # Stdio command missing: FileNotFoundError, or an OSError carrying ENOENT.
     if isinstance(root, FileNotFoundError):
+        return "permanent"
+    if isinstance(root, StdioStartupCrashError):
         return "permanent"
     if isinstance(root, OSError) and getattr(root, "errno", None) == errno.ENOENT:
         return "permanent"
@@ -3600,7 +3664,7 @@ class MCPServerTask:
         # (FastMCP banners, slack-mcp startup JSON, etc.) don't dump onto
         # the user's TTY and corrupt the TUI.  Preserves debuggability via
         # ~/.hermes/logs/mcp-stderr.log.
-        _write_stderr_log_header(self.name)
+        stderr_log_offset = _write_stderr_log_header(self.name)
         _errlog = _get_mcp_stderr_log()
         try:
             async with stdio_client(server_params, errlog=_errlog) as (
@@ -3710,6 +3774,37 @@ class MCPServerTask:
                     # _reconnect_event (e.g. future manual /mcp refresh) for
                     # consistency with _run_http.
                     return await self._wait_for_lifecycle_event()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Startup-crash detection (#98763): the child exited before the
+            # MCP handshake ever completed. Checked here — after the
+            # ``stdio_client`` context has unwound and reaped the process —
+            # so a dead PID is reliable evidence. ``new_pids`` gates on a
+            # successful spawn this round (a failed ``stdio_client`` entry
+            # would leave ``_stdio_child_pids`` holding stale PIDs from the
+            # previous attempt). ``_ever_connected`` is set only after a
+            # completed handshake and never cleared, so it separates
+            # "crashed at startup" (retrying respawns the same dying child)
+            # from "ran fine, then dropped" (a reconnect may still recover).
+            # Everything else (child alive, PIDs unknown, psutil missing)
+            # falls through as before.
+            if (
+                new_pids
+                and not self._ever_connected
+                and self._stdio_children_dead()
+            ):
+                root = _unwrap_exception_group(exc)
+                detail = f"{type(root).__name__}: {root}".rstrip(": ")
+                tail = _read_mcp_stderr_tail(stderr_log_offset)
+                message = (
+                    "stdio process exited before the MCP handshake "
+                    f"completed (caused by {detail})"
+                )
+                if tail:
+                    message += f"; recent stderr:\n{tail}"
+                raise StdioStartupCrashError(message) from exc
+            raise
         finally:
             # Runs on clean exit, exceptions, AND asyncio cancellation.
             # If any of the spawned PIDs are still alive, the SDK's

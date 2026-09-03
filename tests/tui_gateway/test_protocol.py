@@ -313,6 +313,32 @@ def test_block_and_respond(capture):
     assert result[0] == "my_answer"
 
 
+def test_block_outcome_distinguishes_interrupt_from_timeout(capture):
+    server, _ = capture
+    interrupted = [None]
+    thread = threading.Thread(
+        target=lambda: interrupted.__setitem__(
+            0,
+            server._block(
+                "preview.act.request", "s1", {}, timeout=5, with_outcome=True
+            ),
+        )
+    )
+    thread.start()
+    for _ in range(100):
+        if server._pending:
+            break
+        threading.Event().wait(0.01)
+    server._clear_pending("s1")
+    thread.join(2)
+
+    assert not thread.is_alive()
+    assert interrupted[0] == ("", False)
+    assert server._block(
+        "preview.act.request", "s1", {}, timeout=0, with_outcome=True
+    ) == ("", True)
+
+
 @pytest.mark.parametrize(
     "event",
     ["secret.request", "sudo.request", "clarify.request", "terminal.read.request"],
@@ -352,6 +378,19 @@ def test_late_prompt_response_is_idempotent(server, method, value_key):
     )
 
     assert response["result"] == {"status": "expired"}
+
+
+def test_late_preview_action_response_does_not_retain_answer(server):
+    response = server.handle_request(
+        {
+            "id": "late-preview-response",
+            "method": "preview.act.respond",
+            "params": {"request_id": "expired-preview", "text": "late"},
+        }
+    )
+
+    assert response["result"] == {"status": "expired"}
+    assert "expired-preview" not in server._answers
 
 
 # ── clarify batch (multi-question) bridge ────────────────────────────

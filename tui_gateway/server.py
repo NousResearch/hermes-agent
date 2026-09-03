@@ -4876,7 +4876,8 @@ def _block(
     payload: dict,
     timeout: float | None = 300,
     batch_qids: list[str] | None = None,
-) -> str:
+    with_outcome: bool = False,
+) -> str | tuple[str, bool]:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
     with _prompt_lock:
@@ -4949,6 +4950,8 @@ def _block(
             sid,
             {"request_id": rid},
         )
+    if with_outcome:
+        return answer, not answered and not answer_present
     return answer
 
 
@@ -5075,6 +5078,84 @@ def _tour_request(sid: str, payload: dict) -> str:
         session["tour_bridge"] = "unanswered"
 
     return answer or _TOUR_BRIDGE_UNAVAILABLE
+
+
+_PREVIEW_ACTION_TIMEOUT_S = 45
+_PREVIEW_ACTION_PROBE_TIMEOUT_S = 10
+_PREVIEW_ACTION_REPROBE_COOLDOWN_S = 30
+
+_PREVIEW_ACTION_BRIDGE_UNAVAILABLE = json.dumps(
+    {
+        "success": False,
+        "error": (
+            "No Hermes Desktop window answered the preview action request. "
+            "The Desktop renderer bridge is temporarily unavailable for this session. "
+            "Check that Hermes Desktop is open; another preview action can "
+            "probe the bridge again after a short cooldown."
+        ),
+    }
+)
+
+
+def _preview_action_request(sid: str, payload: dict) -> str:
+    """Bridge preview actions without repeatedly waiting on an absent renderer."""
+    with _sessions_lock:
+        session = _sessions.get(sid)
+    if session is None:
+        return _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
+
+    now = time.monotonic()
+    reprobe_token = None
+    with _prompt_lock:
+        state = session.get("preview_action_bridge")
+        if state == "unanswered":
+            retry_at = session.get("preview_action_bridge_retry_at")
+            if retry_at is None:
+                retry_at = now + _PREVIEW_ACTION_REPROBE_COOLDOWN_S
+                session["preview_action_bridge_retry_at"] = retry_at
+            if now < retry_at or session.get("preview_action_bridge_reprobe") is not None:
+                return _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
+            reprobe_token = object()
+            session["preview_action_bridge_reprobe"] = reprobe_token
+
+    try:
+        block_result = _block(
+            "preview.act.request",
+            sid,
+            dict(payload),
+            timeout=(
+                _PREVIEW_ACTION_TIMEOUT_S
+                if state == "answered"
+                else _PREVIEW_ACTION_PROBE_TIMEOUT_S
+            ),
+            with_outcome=True,
+        )
+    except BaseException:
+        if reprobe_token is not None:
+            with _prompt_lock:
+                if session.get("preview_action_bridge_reprobe") is reprobe_token:
+                    session.pop("preview_action_bridge_reprobe", None)
+        raise
+
+    if isinstance(block_result, tuple):
+        answer, timed_out = block_result
+    else:
+        # Compatibility for tests and embedders that replace the bridge callback.
+        answer, timed_out = block_result, not bool(block_result)
+
+    with _prompt_lock:
+        if session.get("preview_action_bridge_reprobe") is reprobe_token:
+            session.pop("preview_action_bridge_reprobe", None)
+        if answer:
+            session["preview_action_bridge"] = "answered"
+            session.pop("preview_action_bridge_retry_at", None)
+        elif timed_out and session.get("preview_action_bridge") != "answered":
+            session["preview_action_bridge"] = "unanswered"
+            session["preview_action_bridge_retry_at"] = (
+                time.monotonic() + _PREVIEW_ACTION_REPROBE_COOLDOWN_S
+            )
+
+    return answer or _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -8534,12 +8615,7 @@ def _agent_cbs(sid: str) -> dict:
         # annotate_preview rides this same callback: it resolves a target
         # through the same engine and differs only in the verb it sends, so it
         # needs a tool of its own but not a channel of its own.
-        "drive_preview_callback": lambda payload: _block(
-            "preview.act.request",
-            sid,
-            dict(payload),
-            timeout=45,
-        ),
+        "drive_preview_callback": lambda payload: _preview_action_request(sid, payload),
         # read_window_below tool (desktop GUI): the renderer asks its main
         # process (which owns native window enumeration) which OS window sits
         # directly underneath the Hermes window, and answers

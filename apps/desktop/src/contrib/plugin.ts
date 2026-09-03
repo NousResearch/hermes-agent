@@ -62,6 +62,14 @@ export interface PluginOs {
   /** Native open dialog, single file. Resolves the chosen path, or null on
    *  cancel / when unavailable. */
   pickOpenPath: (options?: PluginFileDialogOptions) => Promise<null | string>
+  /** Guarded local filesystem access to Desktop, Documents, and Downloads.
+   *  Paths are local to the Electron workstation; unsupported shells resolve
+   *  `{ ok: false, error: 'unavailable' }` instead of throwing. */
+  workstationFolders: (
+    action: PluginWorkstationFoldersAction,
+    payload?: PluginWorkstationFoldersPayload
+  ) => Promise<PluginWorkstationFoldersResult>
+
   /** Write text to the system clipboard. Resolves false when unavailable. */
   writeClipboard: (text: string) => Promise<boolean>
 }
@@ -70,6 +78,55 @@ export interface PluginFileDialogOptions {
   defaultPath?: string
   filters?: Array<{ extensions: string[]; name: string }>
   title?: string
+}
+
+export type PluginWorkstationRoot = 'desktop' | 'documents' | 'downloads'
+
+export type PluginWorkstationFoldersAction =
+  | 'roots'
+  | 'stat'
+  | 'list'
+  | 'read'
+  | 'mkdir'
+  | 'create'
+  | 'write'
+  | 'chmod'
+  | 'utimes'
+  | 'rename'
+  | 'trash'
+
+export type PluginWorkstationFoldersPayload = Record<string, unknown>
+
+export interface PluginWorkstationMetadata {
+  dev: number
+  ino: number
+  mode: number
+  mtimeMs: number
+  path: string
+  size: number
+}
+
+export interface PluginWorkstationSource extends PluginWorkstationMetadata {
+  sha256: string
+}
+
+export interface PluginWorkstationEntry extends PluginWorkstationMetadata {
+  isDirectory: boolean
+  name: string
+}
+
+export interface PluginWorkstationFoldersResult {
+  ok: boolean
+  error?: string
+  roots?: Partial<Record<PluginWorkstationRoot, string>>
+  entries?: PluginWorkstationEntry[]
+  entry?: PluginWorkstationEntry
+  totalEntries?: number
+  nextOffset?: number
+  truncated?: boolean
+  contentBase64?: string
+  source?: PluginWorkstationSource
+  originalPath?: string
 }
 
 export interface PluginContext {
@@ -145,52 +202,50 @@ function createPluginStorage(pluginId: string): PluginStorage {
 // Electron shell (or run in a plain browser), so every door degrades to a
 // false result the plugin can branch on.
 function createPluginOs(pluginId: string): PluginOs {
-  const attempt = async (run: (bridge: NonNullable<typeof window.hermesDesktop>) => Promise<boolean>) => {
+  const attempt = async <T>(
+    fallback: T,
+    run: (bridge: NonNullable<typeof window.hermesDesktop>) => Promise<T>
+  ): Promise<T> => {
     const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop
 
     if (!bridge) {
-      return false
+      return fallback
     }
 
     try {
       return await run(bridge)
     } catch {
-      return false
+      return fallback
     }
   }
 
-  // Same shape as `attempt`, for the pickers that answer with a path.
-  const attemptPath = async (run: (bridge: NonNullable<typeof window.hermesDesktop>) => Promise<null | string>) => {
-    const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop
-
-    if (!bridge) {
-      return null
-    }
-
-    try {
-      return await run(bridge)
-    } catch {
-      return null
-    }
-  }
 
   return {
     notify: input => dispatchPluginNativeNotification(pluginId, input),
     openExternal: url =>
-      attempt(async bridge => {
+      attempt(false, async bridge => {
         await bridge.openExternal(url)
 
         return true
       }),
     pickOpenPath: options =>
-      attemptPath(async bridge => {
+      attempt<null | string>(null, async bridge => {
         const picked = await bridge.selectPaths?.({ ...options, multiple: false })
 
         return picked?.[0] ?? null
       }),
-    pickSavePath: options => attemptPath(async bridge => (await bridge.selectSavePath?.(options)) ?? null),
-    revealPath: path => attempt(async bridge => (bridge.revealPath ? bridge.revealPath(path) : false)),
-    writeClipboard: text => attempt(bridge => bridge.writeClipboard(text))
+    pickSavePath: options =>
+      attempt<null | string>(null, async bridge => (await bridge.selectSavePath?.(options)) ?? null),
+    revealPath: path => attempt(false, async bridge => (bridge.revealPath ? bridge.revealPath(path) : false)),
+    workstationFolders: (action, payload) =>
+      attempt<PluginWorkstationFoldersResult>({ ok: false, error: 'unavailable' }, async bridge => {
+        if (!bridge.workstationFolders) {
+          return { ok: false, error: 'unavailable' }
+        }
+
+        return bridge.workstationFolders(action, payload)
+      }),
+    writeClipboard: text => attempt(false, bridge => bridge.writeClipboard(text))
   }
 }
 

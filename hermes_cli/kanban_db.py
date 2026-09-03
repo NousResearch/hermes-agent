@@ -124,6 +124,12 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
+# Kinds accepted by ``create_task(initial_status="blocked")``. ``dependency``
+# is excluded on purpose: ``block_task`` routes that kind to ``todo``, so
+# accepting it at create time would turn "create this card blocked" into
+# "create this card runnable".
+VALID_INITIAL_BLOCK_KINDS = VALID_BLOCK_KINDS - {"dependency"}
+
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
 # unblocker (usually a cron) and routes the task to ``triage`` instead of back
@@ -3190,6 +3196,8 @@ def create_task(
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
+    initial_block_kind: str = "needs_input",
+    initial_block_reason: Optional[str] = None,
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
@@ -3202,6 +3210,14 @@ def create_task(
     If ``triage=True``, status is forced to ``triage`` regardless of
     parents — a specifier/triager is expected to promote the task to
     ``todo`` once the spec is fleshed out.
+
+    ``initial_status="blocked"`` parks the card for a human straight away.
+    The block is recorded the same way ``block_task`` records one (a
+    ``blocked`` event plus ``block_kind``), so the dispatcher treats it as a
+    sticky handoff and does not auto-promote it on the next tick.
+    ``initial_block_kind`` types that block (``needs_input`` by default;
+    ``dependency`` is refused because it would route the card to ``todo``)
+    and ``initial_block_reason`` is stored on the event.
 
     If ``idempotency_key`` is provided and a non-archived task with the
     same key already exists, returns the existing task's id instead of
@@ -3245,6 +3261,11 @@ def create_task(
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
+        )
+    if initial_block_kind not in VALID_INITIAL_BLOCK_KINDS:
+        raise ValueError(
+            "initial_block_kind must be one of "
+            f"{sorted(VALID_INITIAL_BLOCK_KINDS)}"
         )
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
@@ -3565,6 +3586,37 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                # A card created as ``blocked`` is a deliberate handoff to a
+                # human. Writing only the status is not enough to make it
+                # hold: ``_has_sticky_block`` looks for a ``blocked`` event
+                # row, and without one the block reads as a circuit-breaker
+                # block that ``recompute_ready`` auto-promotes on the next
+                # dispatcher tick — spawning a worker on a card whose brief
+                # says "wait for the human". Record the block the way
+                # ``block_task`` does so the handoff is the one the caller
+                # asked for.
+                #
+                # ``kanban_swarm`` also creates its root blocked and flips it
+                # to ``done`` in the same transaction; a sticky row on a done
+                # card is inert, and if that flip ever fails, staying blocked
+                # is the right outcome rather than a silent promotion.
+                if task_status == "blocked":
+                    conn.execute(
+                        "UPDATE tasks SET block_kind = ? WHERE id = ?",
+                        (initial_block_kind, task_id),
+                    )
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": initial_block_reason,
+                            "kind": initial_block_kind,
+                            "recurrences": 0,
+                            "source_status": "ready",
+                            "at_create": True,
+                        },
+                    )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:

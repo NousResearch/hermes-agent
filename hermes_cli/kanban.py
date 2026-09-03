@@ -770,6 +770,36 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit machine-readable JSON result",
     )
 
+    p_reopen = sub.add_parser(
+        "reopen",
+        help="Recover a task stuck in 'done' back to the active queue "
+             "(done -> ready/todo); requires --reason",
+    )
+    p_reopen.add_argument("task_id")
+    p_reopen.add_argument(
+        "--ids",
+        nargs="+",
+        default=None,
+        help="Additional 'done' task ids to reopen with the same reason (bulk mode)",
+    )
+    p_reopen.add_argument(
+        "--reason",
+        required=True,
+        help="Required audit reason — recorded on a 'reopened' event so the "
+             "recovery is not silent. Quote multi-word reasons.",
+    )
+    p_reopen.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate the reopen without mutating state",
+    )
+    p_reopen.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        help="Emit machine-readable JSON result",
+    )
+
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
     p_archive.add_argument("task_ids", nargs="*",
                            help="Task ids to archive (default mode)")
@@ -1172,6 +1202,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "request-changes": _cmd_request_changes,
             "reopen-review":  _cmd_reopen_review,
             "promote":  _cmd_promote,
+            "reopen":  _cmd_reopen,
             "archive":  _cmd_archive,
             "tail":     _cmd_tail,
             "dispatch": _cmd_dispatch,
@@ -2690,6 +2721,55 @@ def _cmd_promote(args: argparse.Namespace) -> int:
             print(f"{label} {r['task_id']} -> ready{tag}{suffix}")
         else:
             print(f"cannot promote {r['task_id']}: {r['error']}", file=sys.stderr)
+    return 0 if not failed else 1
+
+
+def _cmd_reopen(args: argparse.Namespace) -> int:
+    reason = (args.reason or "").strip()
+    author = _profile_author()
+    as_json = getattr(args, "json", False)
+    dry_run = bool(getattr(args, "dry_run", False))
+    extra_ids = list(getattr(args, "ids", None) or [])
+    # Dedupe while preserving order; positional task_id always first.
+    ids: list[str] = []
+    seen: set[str] = set()
+    for tid in [args.task_id, *extra_ids]:
+        if tid not in seen:
+            ids.append(tid)
+            seen.add(tid)
+
+    results: list[dict[str, object]] = []
+    with kb.connect_closing() as conn:
+        for tid in ids:
+            ok, err = kb.reopen_task(
+                conn,
+                tid,
+                actor=author,
+                reason=reason,
+                dry_run=dry_run,
+            )
+            results.append({
+                "task_id": tid,
+                "reopened": ok,
+                "dry_run": dry_run,
+                "reason": reason,
+                "error": err,
+            })
+
+    failed = [r for r in results if not r["reopened"]]
+    if as_json:
+        # Single-id stays a flat object for back-compat; bulk emits a list.
+        payload: object = results[0] if len(results) == 1 else results
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if not failed else 1
+
+    tag = " (dry)" if dry_run else ""
+    label = "Would reopen" if dry_run else "Reopened"
+    for r in results:
+        if r["reopened"]:
+            print(f"{label} {r['task_id']}{tag}: {reason}")
+        else:
+            print(f"cannot reopen {r['task_id']}: {r['error']}", file=sys.stderr)
     return 0 if not failed else 1
 
 

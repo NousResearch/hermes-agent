@@ -7197,6 +7197,104 @@ def invalidate_descendants_for_parent_reopen(
     return {"invalidated": invalidated, "terminations": terminations}
 
 
+def reopen_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: str,
+    reason: str,
+    dry_run: bool = False,
+) -> tuple[bool, Optional[str]]:
+    """Reopen a ``done`` task back into the active queue with an audit trail.
+
+    The recovery verb for a task that reached ``done`` in error — a reviewer
+    rejection that never got recorded, or a forged ``UPDATE ... SET
+    status='done'`` — where ``reopen-review`` / ``unblock`` / ``promote`` all
+    refuse because the task is not in their source lane (#99577). Without it
+    the only way back was a raw ``sqlite3`` write, leaving the board carrying a
+    bogus ``done`` with no path out.
+
+    Semantics mirror the dashboard drag-drop reopen (``_set_status_direct``):
+
+    * lands the task at its parent-gated status (``ready`` when every parent is
+      ``done``/``archived``, else ``todo``) via
+      :func:`_landing_status_after_parents`;
+    * closes any run still open under the bogus completion — the stale
+      dead-PID ``running`` run reported in the issue's follow-up — via
+      :func:`_reclaim_dangling_run`, restoring the runs invariant;
+    * clears ``completed_at`` and the claim fields (the task is no longer
+      complete) while preserving ``result`` as history;
+    * re-gates every descendant dispatched on the now-retracted result through
+      the single shared :func:`invalidate_descendants_for_parent_reopen`, so a
+      CLI reopen and a dashboard reopen can never drift.
+
+    The mandatory ``reason`` (recorded on a ``reopened`` event with ``actor``)
+    is the guard the issue asks for: a completed task cannot be reopened
+    silently or by accident.
+
+    Returns ``(True, None)`` on success, ``(False, message)`` when the task is
+    missing, not ``done``, or the reason is empty. ``dry_run=True`` validates
+    without mutating.
+    """
+    reason = (reason or "").strip()
+    if not reason:
+        return False, "a reason is required to reopen a completed task"
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False, f"task {task_id} not found"
+    if row["status"] != "done":
+        return False, (
+            f"task {task_id} is {row['status']!r}; reopen only applies to "
+            "'done' tasks (use unblock / reopen-review / promote for other lanes)"
+        )
+    if dry_run:
+        return True, None
+
+    now = int(time.time())
+    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    with write_txn(conn):
+        # Close a run still open under the bogus completion before the status
+        # flip, restoring the ``current_run_id IS NULL`` <=> run-terminal
+        # invariant (mirrors reopen_review_task / unblock_task).
+        _reclaim_dangling_run(
+            conn, task_id, statuses=("done",), now=now,
+            note="invariant recovery on done reopen",
+        )
+        new_status = _landing_status_after_parents(conn, task_id)
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, completed_at = NULL, "
+            "current_run_id = NULL, claim_lock = NULL, claim_expires = NULL, "
+            "worker_pid = NULL "
+            "WHERE id = ? AND status = 'done'",
+            (new_status, task_id),
+        )
+        if cur.rowcount != 1:
+            return False, f"task {task_id} is no longer 'done'"
+        _append_event(
+            conn, task_id, "reopened",
+            {
+                "actor": actor,
+                "reason": reason,
+                "from_status": "done",
+                "status": new_status,
+            },
+        )
+        # Descendants dispatched on the retracted result must be re-gated —
+        # identical semantics to the dashboard reopen surface. Composes under
+        # this txn (allow_nested) and defers worker kills to us post-commit.
+        invalidation = invalidate_descendants_for_parent_reopen(
+            conn, task_id, author=actor,
+        )
+        terminations.extend(invalidation.get("terminations", []))
+    # Events are durable now — safe to kill the reclaimed/retracted workers.
+    for pid, claim_lock in terminations:
+        _terminate_reclaimed_worker(pid, claim_lock)
+    recompute_ready(conn)
+    return True, None
+
+
 def specify_triage_task(
     conn: sqlite3.Connection,
     task_id: str,

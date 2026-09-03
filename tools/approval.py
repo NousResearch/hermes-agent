@@ -1207,6 +1207,18 @@ DANGEROUS_PATTERNS = [
     # anywhere in the args, not just the first token — `perl -e '...'` (code
     # eval, no -i) does not trip because it has no `-...i` flag token.
     (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
+    # In-place edit of ANY .yaml/.yml file — sed/perl on YAML files can break
+    # indentation, quoting, or flow sequences silently. Use yaml.safe_load +
+    # atomic_yaml_write instead.  Covers all paths, not just config.yaml.
+    # The -i flag can appear as its own token (`-i`), combined with other
+    # short flags (`-ni`), after other flags (`-e ... -i`), or with an
+    # attached backup suffix (`-ibak`, `-i.bak`). Match any single-dash
+    # flag token containing `i`, anywhere in the args — long flags
+    # (`--posix`, `--silent`) are excluded by requiring the token to start
+    # with a single dash followed by lowercase letters.
+    (r'\bsed\b.*(?:^|\s)-[a-z]*i[a-z.]*(?=\s|$).*\.ya?ml\b', "in-place edit of YAML file (sed -i)"),
+    (r'\bsed\b.*(?:^|\s)--in-place(?:=\S+)?(?=\s|$).*\.ya?ml\b', "in-place edit of YAML file (sed --in-place)"),
+    (r'\b(?:perl|ruby)\b.*(?:^|\s)-[a-z]*i[a-z.]*(?=\s|$).*\.ya?ml\b', "in-place edit of YAML file (perl/ruby -i)"),
     # Interpreter heredocs are handled by _execution_flag_findings() alongside
     # inline-exec flags; keep only shell heredocs regex-based here.
     # Shell execution via heredoc — `bash <<'EOF' ... EOF` runs arbitrary

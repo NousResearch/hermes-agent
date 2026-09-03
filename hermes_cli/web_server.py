@@ -4696,6 +4696,40 @@ def _terminate_desktop_managed_gateway() -> None:
         pass
 
 
+def _gateway_restart_child_hosts_the_gateway(proc: subprocess.Popen) -> bool:
+    """True when a live ``gateway restart`` child has *become* the gateway.
+
+    On a host with no service manager the restart's manual fallback runs
+    ``run_gateway()`` in that same process, so the child never exits: its argv
+    stays ``gateway restart`` while it owns the runtime and the PID record
+    (``gateway.status.looks_like_gateway_runtime_command_line`` exists for
+    exactly this shape — #51325/#51468).  To the action layer that is
+    indistinguishable from a restart still in flight, and the difference
+    matters: a child that never exits pins
+    ``/api/actions/gateway-restart/status`` at ``running`` forever and makes
+    :func:`_spawn_gateway_restart` coalesce every later request onto a restart
+    that already finished, so the dashboard's restart button turns into a
+    permanent no-op.
+
+    Owning the PID record is the observable that separates the two: by the time
+    it names this PID, the fallback has stopped the old gateway and started the
+    new one in-process.
+    """
+    try:
+        if proc.poll() is not None:
+            return False
+
+        # Module-level probe reference on purpose: it keeps this file's
+        # established `monkeypatch.setattr(web_server, "get_running_pid", ...)`
+        # seam working.  Profile-scoped by construction too — get_running_pid()
+        # reads this profile's record, so a restart hosting some *other*
+        # profile's gateway never matches and keeps the in-flight semantics.
+        return get_running_pid(cleanup_stale=False) == proc.pid
+    except Exception:
+        # Best effort — on any doubt keep treating the child as in-flight.
+        return False
+
+
 def _record_completed_action(name: str, message: str, exit_code: int = 1) -> None:
     """Record a non-spawned action result and write it to the action log."""
     log_file_name = _ACTION_LOG_FILES[name]
@@ -4974,6 +5008,14 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
     within ``GATEWAY_RESTART_COOLDOWN_SECONDS`` of the last spawn for the
     same profile are coalesced onto that spawn as well.
 
+    Reusing the live child is also *too much* on a host with no service
+    manager: there the restart's manual fallback hosts the new gateway in that
+    same process, so the child never exits and the reuse latches forever —
+    every later restart request rides a restart that already finished, which is
+    what makes the dashboard's restart button a permanent no-op. Such a child
+    is excluded by :func:`_gateway_restart_child_hosts_the_gateway`; the
+    cooldown above remains the guard against repeat-request storms.
+
     Before spawning, sweep for orphaned gateway processes whose parent has
     exited (e.g. desktop-app restarts leaving a reparented gateway child
     under launchd/PPID=1).  Without this the orphan keeps its platform
@@ -4993,7 +5035,11 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
 
     subcommand = _gateway_subcommand(profile, "restart")
     existing = _ACTION_PROCS.get("gateway-restart")
-    if existing is not None and existing.poll() is None:
+    if (
+        existing is not None
+        and existing.poll() is None
+        and not _gateway_restart_child_hosts_the_gateway(existing)
+    ):
         existing_command = _ACTION_COMMANDS.get("gateway-restart")
         if existing_command is None or existing_command == tuple(subcommand):
             return existing, True
@@ -5964,6 +6010,18 @@ async def get_action_status(name: str, lines: int = 200):
             _ACTION_PROCS.pop(name, None)
             _ACTION_COMMANDS.pop(name, None)
             _ACTION_IDS.pop(name, None)
+        elif name == "gateway-restart" and _gateway_restart_child_hosts_the_gateway(
+            proc
+        ):
+            # No-supervisor manual fallback: this child completed the restart by
+            # *becoming* the gateway, so it will never exit.  Report the action
+            # as finished — otherwise clients poll a ``running`` that never
+            # clears and the restart control stays disabled for the life of the
+            # gateway.  The handle intentionally stays in ``_ACTION_PROCS``:
+            # ``_terminate_desktop_managed_gateway()`` needs it to stop the
+            # gateway its Desktop backend owns.
+            running = False
+            exit_code = 0
 
     response = {
         "name": name,

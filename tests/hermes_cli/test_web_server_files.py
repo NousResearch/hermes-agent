@@ -319,6 +319,12 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
         "webhook_subscriptions.json",
         "bws_cache.json",
         "bws_cache.enc.json",
+        ".git-credentials",
+        ".netrc",
+        "_netrc",
+        ".pgpass",
+        ".npmrc",
+        ".pypirc",
     ):
         p = root / name
         p.write_text("SECRET=abc123")
@@ -329,6 +335,48 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
     listing = client.get("/api/files", params={"path": str(root)})
     names = [e["name"] for e in listing.json()["entries"]]
     assert names == []
+
+
+def test_third_party_credential_dotfiles_blocked(forced_files_client):
+    """Regression for #98161: pattern-based backstop for third-party credential dotfiles
+    (e.g. .discord_token, .discord_bot_token, .openai_key, .stripe_secret, .*credentials*)
+    commonly written to user home directories."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    # Safe dotfiles should NOT be blocked:
+    safe_files = (".gitignore", ".gitconfig", ".editorconfig", ".prettierrc")
+    for name in safe_files:
+        (root / name).write_text("safe=true")
+
+    # Sensitive credential dotfiles must be blocked:
+    blocked_files = (
+        ".discord_token",
+        ".discord_bot_token",
+        ".openai_key",
+        ".service_keys",
+        ".stripe_secret",
+        ".app_secrets",
+        ".custom_apikey",
+        ".custom_api_key",
+        ".token",
+        ".secret",
+        ".my_credentials",
+        ".aws_credentials_backup",
+    )
+    for name in blocked_files:
+        p = root / name
+        p.write_text("SECRET=secret123")
+        assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403, name
+        assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403, name
+        assert client.get("/api/files/stream", params={"path": str(p)}).status_code == 403, name
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    names = [e["name"] for e in listing.json()["entries"]]
+    for safe in safe_files:
+        assert safe in names
+    for blocked in blocked_files:
+        assert blocked not in names
 
 
 

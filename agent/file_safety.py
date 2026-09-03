@@ -60,6 +60,7 @@ def build_write_denied_paths(home: str) -> set[str]:
             str(hermes_home / "cache" / "bws_cache.enc.json"),
             str(hermes_root / "cache" / "bws_cache.enc.json"),
             os.path.join(home, ".netrc"),
+            os.path.join(home, "_netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),
             os.path.join(home, ".pypirc"),

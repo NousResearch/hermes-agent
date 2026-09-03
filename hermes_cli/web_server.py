@@ -2305,6 +2305,12 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "bws_cache.enc.json",
     # git's credential-store helper cache (agent.file_safety blocks this too).
     ".git-credentials",
+    # Canonical user-home credential stores mirrored from agent.file_safety (#98161):
+    ".netrc",
+    "_netrc",
+    ".pgpass",
+    ".npmrc",
+    ".pypirc",
 })
 
 # Directory names whose entire subtree is credential material. Both canonical
@@ -2327,7 +2333,9 @@ def _is_sensitive_filename(name: str) -> bool:
 
     Covers ``.env`` / ``.env.<suffix>`` / ``.envrc`` variants plus the
     canonical Hermes credential-store basenames (see
-    ``_SENSITIVE_MANAGED_FILE_BASENAMES`` above).
+    ``_SENSITIVE_MANAGED_FILE_BASENAMES`` above) and third-party credential
+    dotfiles commonly placed in user home directories (e.g. ``.discord_token``,
+    ``.*_key``, ``.*_secret``, ``.*credentials*``).
 
     Case-insensitive so ``.ENV`` / ``.Env.local`` / ``Auth.JSON`` on
     case-insensitive filesystems (macOS/Windows mounts) can't slip past
@@ -2340,7 +2348,28 @@ def _is_sensitive_filename(name: str) -> bool:
     lowered = name.lower()
     if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
         return True
-    return lowered in _SENSITIVE_MANAGED_FILE_BASENAMES
+    if lowered in _SENSITIVE_MANAGED_FILE_BASENAMES:
+        return True
+    # Pattern-based backstop for third-party credential dotfiles commonly stored in $HOME
+    # (e.g. .discord_token, .discord_bot_token, .service_key, .api_secret, .*credentials*).
+    # Guard applied to dotfiles (starting with '.') to avoid false-positives on ordinary files.
+    if lowered.startswith("."):
+        if (
+            lowered.endswith((
+                "_token",
+                "_tokens",
+                "_secret",
+                "_secrets",
+                "_key",
+                "_keys",
+                "_apikey",
+                "_api_key",
+            ))
+            or lowered in (".token", ".secret", ".tokens", ".secrets", ".apikey", ".api_key")
+            or "credential" in lowered
+        ):
+            return True
+    return False
 
 
 def _is_sensitive_path(path: Path) -> bool:

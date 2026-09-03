@@ -457,7 +457,7 @@ def _is_descendant_of(child_agent: Any, parent_agent: Any, max_hops: int = 8) ->
 
 # Model-facing control actions accepted by delegate_task(action=...).
 # "spawn" (or omitted) keeps the historical spawn semantics.
-_CONTROL_ACTIONS = frozenset({"list", "steer", "stop"})
+_CONTROL_ACTIONS = frozenset({"list", "steer", "wait", "stop"})
 
 
 def _resolve_session_lineage(session_id: Optional[str], parent_agent: Any) -> str:
@@ -525,8 +525,12 @@ def _handle_control_action(
     subagent_id: Optional[str],
     message: Optional[str],
     parent_agent: Any,
+    *,
+    delegation_ids: Optional[List[str]] = None,
+    return_when: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
 ) -> str:
-    """Synchronous control plane for delegate_task: list/steer/stop.
+    """Synchronous control plane for delegate_task: list/steer/wait/stop.
 
     Runs in-turn (never backgrounded) and only over subagents descended from
     *parent_agent* — the same registry the TUI overlay drives, but scoped so
@@ -569,6 +573,76 @@ def _handle_control_action(
                 "completion messages — there is nothing to steer or stop."
             )
         return json.dumps(payload, ensure_ascii=False)
+
+    if action == "wait":
+        ids = delegation_ids if isinstance(delegation_ids, list) else []
+        ids = list(
+            dict.fromkeys(str(item or "").strip() for item in ids if str(item or "").strip())
+        )
+        if not ids:
+            return tool_error(
+                "action='wait' requires non-empty delegation_ids from a spawn "
+                "dispatch response."
+            )
+        if len(ids) > 50:
+            return tool_error("action='wait' accepts at most 50 delegation_ids.")
+        mode = str(return_when or "all").strip().lower()
+        if mode not in {"all", "any"}:
+            return tool_error("return_when must be 'all' or 'any'.")
+        raw_timeout = 30 if timeout_seconds is None else timeout_seconds
+        try:
+            timeout = float(raw_timeout)
+        except (TypeError, ValueError):
+            return tool_error("timeout_seconds must be a number from 10 to 3600.")
+        if not 10 <= timeout <= 3600:
+            return tool_error("timeout_seconds must be from 10 to 3600.")
+        parent_session_id = str(getattr(parent_agent, "session_id", "") or "")
+        if not parent_session_id:
+            return tool_error(
+                "action='wait' requires a durable parent session identity."
+            )
+        parent_session_lineage = [parent_session_id]
+        session_db = getattr(parent_agent, "_session_db", None)
+        get_lineage = getattr(session_db, "get_compression_lineage", None)
+        if callable(get_lineage):
+            try:
+                lineage = get_lineage(parent_session_id)
+                if isinstance(lineage, (list, tuple)):
+                    parent_session_lineage = [str(item) for item in lineage if item]
+            except Exception:
+                pass
+
+        def _interrupted() -> bool:
+            return bool(getattr(parent_agent, "_interrupt_requested", False))
+
+        def _progress(info: Dict[str, Any]) -> None:
+            touch = getattr(parent_agent, "_touch_activity", None)
+            if callable(touch):
+                touch("waiting for delegated results")
+            callback = getattr(parent_agent, "tool_progress_callback", None)
+            if callable(callback):
+                remaining = len(info.get("still_running") or [])
+                preview = (
+                    f"Waiting for {remaining} delegated result"
+                    f"{'s' if remaining != 1 else ''} "
+                    f"({info.get('elapsed_seconds', 0):g}s elapsed)"
+                )
+                callback("tool.progress", "delegate_task", preview, info)
+
+        from tools.async_delegation import wait_for_delegations
+
+        result = wait_for_delegations(
+            ids,
+            parent_session_id=parent_session_id,
+            parent_session_lineage=parent_session_lineage,
+            return_when=mode,
+            timeout_seconds=timeout,
+            interrupt_fn=_interrupted,
+            progress_fn=_progress,
+        )
+        if result.get("error"):
+            return tool_error(result.pop("error"), **result)
+        return json.dumps(result, ensure_ascii=False)
 
     # steer / stop need a resolvable, owned target.
     sid = (subagent_id or "").strip()
@@ -636,7 +710,9 @@ def _handle_control_action(
             "message; re-delegate a follow-up task if more work is needed."
         )
 
-    return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, or stop.")
+    return tool_error(
+        f"Unknown action '{action}'. Use spawn, list, steer, wait, or stop."
+    )
 
 
 def _extract_output_tail(
@@ -3932,6 +4008,9 @@ def delegate_task(
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
+    delegation_ids: Optional[List[str]] = None,
+    return_when: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
     parent_agent=None,
     credentials_cfg: Optional[Dict[str, Any]] = None,
 ) -> str:
@@ -3947,6 +4026,7 @@ def delegate_task(
       - action='list'  -> live children of this conversation's spawn tree
       - action='steer' -> queue course-correction text into a running child
                           (subagent_id + message)
+      - action='wait'  -> wait for durable delegation results needed by this turn
       - action='stop'  -> interrupt a running child early (subagent_id)
 
     The 'role' parameter controls whether a child can further delegate:
@@ -3959,17 +4039,23 @@ def delegate_task(
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
-    # ── Control plane: list/steer/stop run synchronously and return here.
+    # ── Control plane: list/steer/wait/stop run synchronously and return here.
     # They never spawn, so they bypass the pause gate, depth limit, and the
     # async dispatch machinery entirely.
     normalized_action = (action or "").strip().lower()
     if normalized_action in _CONTROL_ACTIONS:
         return _handle_control_action(
-            normalized_action, subagent_id, message, parent_agent
+            normalized_action,
+            subagent_id,
+            message,
+            parent_agent,
+            delegation_ids=delegation_ids,
+            return_when=return_when,
+            timeout_seconds=timeout_seconds,
         )
     if normalized_action and normalized_action != "spawn":
         return tool_error(
-            f"Unknown action '{action}'. Use spawn (default), list, steer, or stop."
+            f"Unknown action '{action}'. Use spawn (default), list, steer, wait, or stop."
         )
 
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
@@ -4632,21 +4718,24 @@ def delegate_task(
             n = len(_goals)
             note = (
                 "Subagent is running in the background. You and the user can "
-                "keep working; its full result re-enters the conversation as a "
-                "new message when it finishes. Do not wait or poll — just "
-                "continue."
+                "keep working. If its result is required for this turn, finish "
+                "independent work and call action='wait' once with this "
+                "delegation_id; otherwise its result re-enters later as a new "
+                "completion message."
                 if n == 1 else
                 f"{n} subagents are running in parallel in the background. You "
-                f"and the user can keep working; they wait on each other and "
-                f"their consolidated results re-enter the conversation as a "
-                f"single message once ALL of them finish. Do not wait or poll "
-                f"— just continue."
+                f"and the user can keep working; they join inside this durable "
+                f"delegation group. Call action='wait' once with this "
+                f"delegation_id before dependent synthesis, or let the "
+                f"consolidated result re-enter later as a completion message."
             )
             payload = {
                 "status": "dispatched",
                 "mode": "background",
                 "count": n,
                 "delegation_id": dispatch["delegation_id"],
+                "state": "running",
+                "result_policy": "wait_or_notify",
                 "goals": _goals,
                 "note": note,
             }
@@ -4660,7 +4749,8 @@ def delegate_task(
                     "same tool: delegate_task(action='list') to see live "
                     "children, action='steer' with subagent_id + message to "
                     "redirect one, action='stop' with subagent_id to end one "
-                    "early."
+                    "early, or action='wait' with delegation_ids to consume "
+                    "required results before dependent synthesis."
                 )
             if live_paths:
                 payload["live_transcripts"] = list(live_paths)
@@ -5127,12 +5217,12 @@ def _build_top_level_description() -> str:
         "terminal session, and toolset, and only its final summary returns to "
         "you. Pass every task in `tasks` — one entry spawns one subagent, "
         "several run in parallel (limit in the tasks description).\n\n"
-        "Runs in the background: dispatch returns immediately with live "
-        "transcript paths, and the completed result (one consolidated message, "
-        "results in task order) re-enters the conversation on its own. Do NOT "
-        "wait or poll; continue other work. While children run, `action` "
-        "(list/steer/stop) controls them live — steer when a transcript shows "
-        "a child drifting.\n\n"
+        "Runs in the background: dispatch returns immediately with a durable "
+        "delegation id and live transcript paths. Continue independent work, "
+        "then use action='wait' once if the result is required for this turn; "
+        "do not repeatedly wait or poll. Otherwise the completed result "
+        "re-enters later on its own. While "
+        "children run, `action` (list/steer/wait/stop) controls them live.\n\n"
         "USE FOR: reasoning-heavy subtasks, work that would flood your context "
         "with intermediate data, or independent parallel workstreams.\n"
         "DO NOT USE FOR (use these instead):\n"
@@ -5289,16 +5379,40 @@ DELEGATE_TASK_SCHEMA = {
             # re-add to the schema.
             "action": {
                 "type": "string",
-                "enum": ["spawn", "list", "steer", "stop"],
+                "enum": ["spawn", "list", "steer", "wait", "stop"],
                 "description": (
                     "Default 'spawn'. Live control of running children: "
                     "'list' = ids/goals/status/transcripts; 'steer' = queue "
                     "course-correction text into one child (subagent_id + "
-                    "message) without stopping it; 'stop' = end one child "
+                    "message) without stopping it; 'wait' = consume durable "
+                    "delegation results needed by this turn (delegation_ids); "
+                    "'stop' = end one child "
                     "early (subagent_id; partial result still returns). "
-                    "Control actions return immediately; goal/tasks are "
+                    "Wait is bounded; other control actions return immediately; goal/tasks are "
                     "ignored unless spawning."
                 ),
+            },
+            "delegation_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 50,
+                "description": (
+                    "Durable delegation ids for action='wait', returned by spawn. "
+                    "Results are visible only to their owning parent session."
+                ),
+            },
+            "return_when": {
+                "type": "string",
+                "enum": ["all", "any"],
+                "default": "all",
+                "description": "For action='wait', return after all or any supplied result is ready.",
+            },
+            "timeout_seconds": {
+                "type": "number",
+                "minimum": 10,
+                "maximum": 3600,
+                "default": 30,
+                "description": "Bounded action='wait' duration; unfinished results remain available.",
             },
             "subagent_id": {
                 "type": "string",
@@ -5379,6 +5493,9 @@ registry.register(
         action=args.get("action"),
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),
+        delegation_ids=args.get("delegation_ids"),
+        return_when=args.get("return_when"),
+        timeout_seconds=args.get("timeout_seconds"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

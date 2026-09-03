@@ -9154,6 +9154,9 @@ class AIAgent:
             action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"),
             message=function_args.get("message"),
+            delegation_ids=function_args.get("delegation_ids"),
+            return_when=function_args.get("return_when"),
+            timeout_seconds=function_args.get("timeout_seconds"),
             parent_agent=self,
         )
 

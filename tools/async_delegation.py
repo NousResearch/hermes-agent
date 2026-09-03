@@ -90,6 +90,20 @@ _MAX_DELIVERY_ATTEMPTS = 8
 _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
 _DB_LOCK = threading.Lock()
 
+# Same-process completions wake model-facing waiters without model turns or
+# hot SQLite polling. A periodic durable re-check still covers completions
+# written by another process and restart recovery.
+_wait_condition = threading.Condition()
+_wait_generation = 0
+_WAIT_CLAIM_TTL_SECONDS = 300.0
+
+
+def _notify_waiters() -> None:
+    global _wait_generation
+    with _wait_condition:
+        _wait_generation += 1
+        _wait_condition.notify_all()
+
 # ---------------------------------------------------------------------------
 # Stale-delegation detection (progress-based, on by default)
 # ---------------------------------------------------------------------------
@@ -330,6 +344,7 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
             (event.get("status", "completed"), event.get("completed_at", now), now,
              json.dumps(event), json.dumps(result), event["delegation_id"]),
         )
+    _notify_waiters()
 
 
 def _note_delivery_attempt(delegation_id: str) -> None:
@@ -394,6 +409,8 @@ def recover_abandoned_delegations() -> int:
                 (now, now, json.dumps(event), json.dumps(result), delegation_id),
             )
             recovered += 1
+    if recovered:
+        _notify_waiters()
     return recovered
 
 
@@ -461,7 +478,10 @@ def mark_completion_delivered(delegation_id: str) -> bool:
                WHERE delegation_id=? AND delivery_state!='delivered'""",
             (now, now, delegation_id),
         )
-        return cur.rowcount == 1
+        changed = cur.rowcount == 1
+    if changed:
+        _notify_waiters()
+    return changed
 
 
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -520,15 +540,19 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                 "marking terminally dropped (result remains queryable).",
                 delegation_id, _MAX_DELIVERY_ATTEMPTS,
             )
-            return True
-        cur = conn.execute(
-            """UPDATE async_delegations SET delivery_claim=NULL,
-                      delivery_claimed_at=NULL, updated_at=?
-               WHERE delegation_id=? AND delivery_state='pending'
-                 AND delivery_claim=?""",
-            (now, delegation_id, claim_id),
-        )
-        return cur.rowcount == 1
+            changed = True
+        else:
+            cur = conn.execute(
+                """UPDATE async_delegations SET delivery_claim=NULL,
+                          delivery_claimed_at=NULL, updated_at=?
+                   WHERE delegation_id=? AND delivery_state='pending'
+                     AND delivery_claim=?""",
+                (now, delegation_id, claim_id),
+            )
+            changed = cur.rowcount == 1
+    if changed:
+        _notify_waiters()
+    return changed
 
 
 def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -550,7 +574,10 @@ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                  AND delivery_claim=?""",
             (now, delegation_id, claim_id),
         )
-        return cur.rowcount == 1
+        changed = cur.rowcount == 1
+    if changed:
+        _notify_waiters()
+    return changed
 
 
 def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -565,7 +592,10 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                  AND delivery_claim=?""",
             (now, now, delegation_id, claim_id),
         )
-        return cur.rowcount == 1
+        changed = cur.rowcount == 1
+    if changed:
+        _notify_waiters()
+    return changed
 
 
 def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
@@ -595,6 +625,244 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
         "delivery_state": row[5], "delivery_attempts": row[6],
         "origin_session_id": row[7] or "",
     }
+
+
+_ACTIVE_DURABLE_STATES = frozenset({"running", "finalizing"})
+
+
+def _consume_wait_results(
+    delegation_ids: List[str],
+    *,
+    parent_session_ids: set[str],
+    return_when: str,
+) -> Dict[str, Any]:
+    """Atomically arbitrate in-loop consumption against callback delivery."""
+    placeholders = ",".join("?" for _ in delegation_ids)
+    now = time.time()
+    stale_before = now - _WAIT_CLAIM_TTL_SECONDS
+    with _DB_LOCK:
+        conn = _connect()
+        try:
+            # Schema initialization may run idempotent DDL. Start the ownership
+            # and consumption decision in a fresh immediate transaction.
+            conn.commit()
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                f"""SELECT delegation_id, parent_session_id, origin_session,
+                           state, result_json, delivery_state,
+                           delivery_claim, delivery_claimed_at
+                      FROM async_delegations
+                     WHERE delegation_id IN ({placeholders})""",
+                tuple(delegation_ids),
+            ).fetchall()
+            by_id = {row[0]: row for row in rows}
+            missing = [item for item in delegation_ids if item not in by_id]
+            if missing:
+                conn.rollback()
+                return {
+                    "error": "Unknown delegation id(s); no result was consumed.",
+                    "unknown_delegation_ids": missing,
+                }
+
+            foreign = []
+            for item in delegation_ids:
+                row = by_id[item]
+                owner = str(row[1] or row[2] or "")
+                if not owner or owner not in parent_session_ids:
+                    foreign.append(item)
+            if foreign:
+                conn.rollback()
+                return {
+                    "error": (
+                        "Delegation id(s) are not owned by this parent session; "
+                        "no result was consumed."
+                    ),
+                    "foreign_delegation_ids": foreign,
+                }
+
+            def _claim_in_flight(row) -> bool:
+                return (
+                    row[5] == "pending"
+                    and bool(row[6])
+                    and (row[7] or 0) >= stale_before
+                )
+
+            terminal = [
+                item
+                for item in delegation_ids
+                if by_id[item][3] not in _ACTIVE_DURABLE_STATES
+                and not _claim_in_flight(by_id[item])
+            ]
+            ready = (
+                len(terminal) == len(delegation_ids)
+                if return_when == "all"
+                else bool(terminal)
+            )
+            if not ready:
+                conn.commit()
+                return {
+                    "_ready": False,
+                    "still_running": [
+                        item for item in delegation_ids if item not in terminal
+                    ],
+                }
+
+            selected = list(delegation_ids) if return_when == "all" else terminal
+            entries: List[Dict[str, Any]] = []
+            for item in selected:
+                row = by_id[item]
+                entry: Dict[str, Any] = {
+                    "delegation_id": item,
+                    "state": row[3],
+                }
+                if row[5] == "delivered":
+                    # The callback path or an earlier wait already exposed the
+                    # full payload. Never replay it into the model.
+                    entry["already_delivered"] = True
+                else:
+                    cur = conn.execute(
+                        """UPDATE async_delegations
+                              SET delivery_state='delivered', delivered_at=?,
+                                  updated_at=?, delivery_claim=NULL,
+                                  delivery_claimed_at=NULL
+                            WHERE delegation_id=?
+                              AND (delivery_state='dropped'
+                                   OR (delivery_state='pending'
+                                       AND (delivery_claim IS NULL
+                                            OR delivery_claimed_at < ?)))""",
+                        (now, now, item, stale_before),
+                    )
+                    if cur.rowcount != 1:
+                        conn.rollback()
+                        return {
+                            "_ready": False,
+                            "still_running": list(delegation_ids),
+                        }
+                    entry["result"] = json.loads(row[4]) if row[4] else None
+                entries.append(entry)
+
+            conn.commit()
+            return {
+                "_ready": True,
+                "results": entries,
+                "still_running": [
+                    item for item in delegation_ids if item not in selected
+                ],
+            }
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def wait_for_delegations(
+    delegation_ids: List[str],
+    *,
+    parent_session_id: str,
+    parent_session_lineage: Optional[List[str]] = None,
+    return_when: str = "all",
+    timeout_seconds: float = 30.0,
+    interrupt_fn: Optional[Callable[[], bool]] = None,
+    progress_fn: Optional[Callable[[Dict[str, Any]], None]] = None,
+    heartbeat_seconds: float = 5.0,
+) -> Dict[str, Any]:
+    """Wait once at a dependency boundary and consume durable results."""
+    ids = list(
+        dict.fromkeys(
+            str(item or "").strip()
+            for item in delegation_ids or []
+            if str(item or "").strip()
+        )
+    )
+    if not ids:
+        return {"error": "action='wait' requires at least one delegation_id."}
+    if not parent_session_id:
+        return {"error": "action='wait' requires a durable parent session."}
+    parent_session_ids = {
+        str(item or "").strip()
+        for item in [parent_session_id, *(parent_session_lineage or [])]
+        if str(item or "").strip()
+    }
+    if return_when not in {"all", "any"}:
+        return {"error": "return_when must be 'all' or 'any'."}
+    try:
+        timeout = max(0.0, float(timeout_seconds))
+    except (TypeError, ValueError):
+        return {"error": "timeout_seconds must be a number."}
+
+    started = time.monotonic()
+    deadline = started + timeout
+    heartbeat = max(0.01, float(heartbeat_seconds))
+    next_heartbeat = started + heartbeat
+    with _wait_condition:
+        generation = _wait_generation
+
+    while True:
+        if interrupt_fn is not None and interrupt_fn():
+            return {
+                "status": "interrupted",
+                "timed_out": False,
+                "results": [],
+                "still_running": ids,
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+            }
+
+        snapshot = _consume_wait_results(
+            ids,
+            parent_session_ids=parent_session_ids,
+            return_when=return_when,
+        )
+        if snapshot.get("error"):
+            return snapshot
+        if snapshot.get("_ready"):
+            snapshot.pop("_ready", None)
+            snapshot.update(
+                {
+                    "status": "ready",
+                    "timed_out": False,
+                    "elapsed_seconds": round(time.monotonic() - started, 3),
+                }
+            )
+            _notify_waiters()
+            return snapshot
+
+        now_mono = time.monotonic()
+        if now_mono >= deadline:
+            return {
+                "status": "waiting",
+                "timed_out": True,
+                "results": [],
+                "still_running": snapshot.get("still_running", ids),
+                "elapsed_seconds": round(now_mono - started, 3),
+            }
+
+        # Condition notifications give same-process completions immediate
+        # wakeup. The one-second ceiling rechecks the durable ledger for a
+        # writer in another process without involving another model turn.
+        wake_at = min(deadline, next_heartbeat, now_mono + 1.0)
+        with _wait_condition:
+            _wait_condition.wait_for(
+                lambda: _wait_generation != generation,
+                timeout=max(0.0, wake_at - time.monotonic()),
+            )
+            generation = _wait_generation
+
+        now_mono = time.monotonic()
+        if now_mono >= next_heartbeat:
+            if progress_fn is not None:
+                try:
+                    progress_fn(
+                        {
+                            "delegation_ids": list(ids),
+                            "return_when": return_when,
+                            "elapsed_seconds": round(now_mono - started, 1),
+                            "still_running": snapshot.get("still_running", ids),
+                        }
+                    )
+                except Exception:
+                    logger.debug("delegate wait progress callback failed", exc_info=True)
+            next_heartbeat = now_mono + heartbeat
 
 
 def _get_executor(max_workers: int) -> ThreadPoolExecutor:

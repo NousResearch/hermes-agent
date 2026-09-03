@@ -147,12 +147,13 @@ import type { SidebarNavItem } from '../../types'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
 import { SidebarLoadMoreRow } from './load-more-row'
-import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
+import { orderByIds, rankSessions, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
 import {
   excludeProjectSessions,
+  latestProjectSessions,
   liveSessionProjectId,
   orderProjectsByIds,
   overlayLiveLanes,
@@ -941,6 +942,43 @@ export function ChatSidebar({
   // so scoping is consistent across views.
   const agentProjectTree = worktreeGroupingActive ? projectModel : undefined
 
+  // The overview tree intentionally carries only three lightweight preview
+  // rows per project. Expanding a project lazily hydrates its full authoritative
+  // session set and caches that raw node for as long as this profile/connection
+  // remains selected. The derived rows below re-apply live overlays, filters,
+  // pins, and tombstones on every relevant change instead of freezing a stale
+  // filtered snapshot in local state.
+  const [hydratedOverviewProjects, setHydratedOverviewProjects] = useState<Record<string, SidebarProjectTree>>({})
+  const hydratedOverviewProjectIdsRef = useRef(new Set<string>())
+
+  useEffect(() => {
+    hydratedOverviewProjectIdsRef.current.clear()
+    setHydratedOverviewProjects({})
+  }, [activeConnectionId, profileScope])
+
+  const loadOverviewProjectSessions = useCallback(async (projectId: string) => {
+    const hydrated = await fetchProjectSessions(projectId)
+
+    if (hydrated) {
+      hydratedOverviewProjectIdsRef.current.add(projectId)
+      setHydratedOverviewProjects(current => ({ ...current, [projectId]: hydrated }))
+    }
+  }, [])
+
+  // Keep already-expanded projects authoritative after an archive/delete or an
+  // out-of-band session change refreshes the lightweight tree. Otherwise the
+  // cached hydrated node could resurrect a row after its optimistic tombstone
+  // is pruned from the fresh overview snapshot.
+  useEffect(() => {
+    if (!gatewayReady) {
+      return
+    }
+
+    for (const projectId of hydratedOverviewProjectIdsRef.current) {
+      void loadOverviewProjectSessions(projectId)
+    }
+  }, [projectTree, gatewayReady, loadOverviewProjectSessions])
+
   // ── Project switcher (drill-in) ────────────────────────────────────────────
   // Grouped, single-profile view is a project switcher: ALL_PROJECTS shows the
   // overview (a list you click into); a concrete scope means you've "entered" a
@@ -1123,16 +1161,46 @@ export function ChatSidebar({
   // most-recent sessions), overlaid with live $sessions so a just-created
   // session shows under its project instantly (and with its working arc),
   // matching the flat Recents list. Keyed by project id for the rows.
-  const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
-    () =>
-      overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_COUNT, {
+  const hydratedOverviewSessions = useMemo<Record<string, SessionInfo[]>>(() => {
+    const rows: Record<string, SessionInfo[]> = {}
+
+    for (const [projectId, hydrated] of Object.entries(hydratedOverviewProjects)) {
+      const overview = projectModel.find(project => project.id === projectId)
+
+      if (!overview) {
+        continue
+      }
+
+      const filtered = excludeProjectSessions(
+        { ...hydrated, label: overview.label, repos: orderRepos(hydrated.repos) },
+        isHiddenFromProjects
+      )
+
+      const live = overlayLiveLanes(filtered, agentSessions, removedSessionIds)
+      rows[projectId] = rankSessions(latestProjectSessions(live, Number.MAX_SAFE_INTEGER), sortOrderIds)
+    }
+
+    return rows
+  }, [
+    hydratedOverviewProjects,
+    projectModel,
+    orderRepos,
+    isHiddenFromProjects,
+    agentSessions,
+    removedSessionIds,
+    sortOrderIds
+  ])
+
+  const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(() => {
+    const previews = overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_COUNT, {
         removed: removedSessionIds,
         // Rank before the trim, so "3 priciest in this project" isn't "3 most
         // recent, priciest first".
         rankIds: sortOrderIds
-      }),
-    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds]
-  )
+      })
+
+    return { ...previews, ...hydratedOverviewSessions }
+  }, [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, hydratedOverviewSessions])
 
   const onEnterProject = useCallback(
     (id: string) => {
@@ -1814,6 +1882,7 @@ export function ChatSidebar({
                   ) : undefined
                 }
                 liveSessions={inProject ? enteredProjectOverlaySessions : undefined}
+                loadProjectSessions={loadOverviewProjectSessions}
                 manualOrderIds={agentOrderManual ? agentOrderIds : sortOrderIds}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}

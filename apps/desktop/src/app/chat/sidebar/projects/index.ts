@@ -1,6 +1,7 @@
 // Public surface of the project/worktree sidebar, consumed by the sidebar root.
 export { EnteredProjectContent } from './entered-content'
 export {
+  latestProjectSessions,
   orderProjectsByIds,
   PROJECT_PREVIEW_COUNT,
   projectTreeCwd,

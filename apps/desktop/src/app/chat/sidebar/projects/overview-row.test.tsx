@@ -7,7 +7,14 @@ import type { SessionInfo } from '@/hermes'
 import { ProjectOverviewRow } from './overview-row'
 import type { SidebarProjectTree } from './workspace-groups'
 
-afterEach(cleanup)
+let workspaceNodeOpen = false
+const toggleWorkspaceNodeOpen = vi.fn()
+
+afterEach(() => {
+  cleanup()
+  workspaceNodeOpen = false
+  toggleWorkspaceNodeOpen.mockReset()
+})
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
@@ -27,7 +34,7 @@ vi.mock('@/i18n', () => ({
 vi.mock('./model', () => ({
   PROJECT_PREVIEW_COUNT: 3,
   latestProjectSessions: () => [],
-  useWorkspaceNodeOpen: () => [false, vi.fn()]
+  useWorkspaceNodeOpen: () => [workspaceNodeOpen, toggleWorkspaceNodeOpen]
 }))
 
 // ProjectMenu (the kebab) has its own dedicated test file — stub it here so
@@ -39,7 +46,7 @@ vi.mock('./project-menu', () => ({
   ProjectMenu: () => null
 }))
 
-const project = { id: 'p1', label: 'Test D' } as unknown as SidebarProjectTree
+const project = { id: 'p1', label: 'Test D', sessionCount: 5 } as unknown as SidebarProjectTree
 
 const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
 
@@ -69,6 +76,32 @@ describe('ProjectOverviewRow', () => {
     render(<ProjectOverviewRow project={project} />)
 
     expect(screen.queryByRole('button', { name: 'Show Test D sessions' })).toBeNull()
+  })
+
+  it('renders every hydrated session when the project is expanded', () => {
+    workspaceNodeOpen = true
+    const sessions = Array.from({ length: 5 }, (_, index) => ({ id: `s${index + 1}` }) as unknown as SessionInfo)
+    const renderRows = vi.fn(() => null)
+
+    render(<ProjectOverviewRow previewSessions={sessions} project={project} renderRows={renderRows} />)
+
+    expect(renderRows).toHaveBeenCalledWith(sessions)
+  })
+
+  it('lazily loads the full project when its preview is already expanded on first paint', () => {
+    workspaceNodeOpen = true
+    const loadProjectSessions = vi.fn().mockResolvedValue(undefined)
+
+    render(
+      <ProjectOverviewRow
+        loadProjectSessions={loadProjectSessions}
+        previewSessions={[{ id: 's1' } as unknown as SessionInfo]}
+        project={project}
+        renderRows={() => null}
+      />
+    )
+
+    expect(loadProjectSessions).toHaveBeenCalledWith('p1')
   })
 
   it('offers the "new session" add button on Home, which starts one with no folder', () => {

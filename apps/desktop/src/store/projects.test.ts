@@ -815,6 +815,27 @@ describe('project tree profile isolation', () => {
     expect($projects.get().map(project => project.id)).toEqual(['profile-b'])
   })
 
+  it('allows different projects to hydrate concurrently in the same context', async () => {
+    const first = deferred<unknown>()
+    const second = deferred<unknown>()
+
+    const request = vi.fn((_method: string, params: Record<string, unknown>) =>
+      params.project_id === 'p1' ? first.promise : second.promise
+    )
+
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    const pendingFirst = fetchProjectSessions('p1')
+    const pendingSecond = fetchProjectSessions('p2')
+    second.resolve({ project: { id: 'p2', label: 'Two', path: null, repos: [], sessionCount: 0 } })
+    first.resolve({ project: { id: 'p1', label: 'One', path: null, repos: [], sessionCount: 0 } })
+
+    await expect(pendingFirst).resolves.toMatchObject({ id: 'p1' })
+    await expect(pendingSecond).resolves.toMatchObject({ id: 'p2' })
+  })
+
   it('does not publish a late projects.tree response from the previous profile', async () => {
     const { promise: defaultResponse, resolve: resolveDefault } = deferred<unknown>()
 

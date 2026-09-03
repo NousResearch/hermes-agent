@@ -506,12 +506,14 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
 }
 
 // Fully hydrated lanes (repo -> lane -> session rows) for one project, fetched
-// when the user enters it. Same backend grouping as `projects.tree`, so ids and
-// membership match exactly.
-let projectSessionsRefreshGeneration = 0
+// lazily when a project is expanded or entered. Same backend grouping as
+// `projects.tree`, so ids and membership match exactly. Generations are scoped
+// per project so expanding one row never cancels another row's in-flight load.
+const projectSessionsRefreshGenerations = new Map<string, number>()
 
 export async function fetchProjectSessions(projectId: string): Promise<SidebarProjectTree | null> {
-  const generation = ++projectSessionsRefreshGeneration
+  const generation = (projectSessionsRefreshGenerations.get(projectId) ?? 0) + 1
+  projectSessionsRefreshGenerations.set(projectId, generation)
 
   try {
     const context = await activeProjectsContext()
@@ -522,7 +524,7 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
       projectParams({ project_id: projectId }, context.profile)
     )
 
-    if (generation !== projectSessionsRefreshGeneration || !stillOnProjectsContext(context)) {
+    if (generation !== projectSessionsRefreshGenerations.get(projectId) || !stillOnProjectsContext(context)) {
       return null
     }
 

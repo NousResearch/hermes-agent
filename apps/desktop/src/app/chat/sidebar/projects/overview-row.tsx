@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
@@ -64,6 +64,7 @@ interface ProjectOverviewRowProps {
   project: SidebarProjectTree
   onEnter?: (id: string) => void
   onNewSession?: (path: null | string) => void
+  loadProjectSessions?: (id: string) => Promise<void> | void
   renderRows?: (sessions: SessionInfo[]) => React.ReactNode
   activeProjectId?: null | string
   previewSessions?: SessionInfo[]
@@ -78,6 +79,7 @@ export function ProjectOverviewRow({
   project,
   onEnter,
   onNewSession,
+  loadProjectSessions,
   renderRows,
   activeProjectId,
   previewSessions,
@@ -94,8 +96,18 @@ export function ProjectOverviewRow({
   // The appearance popover anchors here (the full row) so it opens flush with
   // the sidebar's content edge regardless of which side the sidebar is on.
   const rowRef = useRef<HTMLDivElement>(null)
-  const fetched = (previewSessions ?? []).slice(0, PROJECT_PREVIEW_COUNT)
+  const fetched = previewSessions ?? []
   const preview = renderRows ? (fetched.length ? fetched : latestProjectSessions(project, PROJECT_PREVIEW_COUNT)) : []
+
+  // Projects default open, so loading only inside the disclosure click misses
+  // the exact first-paint case: the row already shows its three previews and no
+  // transition ever fires. Hydrate whenever this row is open; stable props keep
+  // the effect to one request per open transition.
+  useEffect(() => {
+    if (open && project.sessionCount > fetched.length) {
+      void loadProjectSessions?.(project.id)
+    }
+  }, [open, loadProjectSessions, project.id, project.sessionCount, fetched.length])
 
   const lead = reorderable ? (
     <SidebarRowGrab

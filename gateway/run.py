@@ -3231,6 +3231,24 @@ def _build_media_placeholder(event) -> str:
     return "\n".join(parts)
 
 
+def _build_reply_to_disambiguation_prefix(event) -> str:
+    """Build the ``[Replying to: ...]`` pointer prefix for an event, or ''.
+
+    Always inject the reply-to pointer — even when the quoted text already
+    appears in history. The prefix isn't deduplication, it's disambiguation:
+    it tells the agent *which* prior message the user is referencing. History
+    can contain the same or similar text multiple times, and without an
+    explicit pointer the agent has to guess (or answer for both subjects).
+    Token overhead is minimal.
+    """
+    if not (getattr(event, "reply_to_text", None) and event.reply_to_message_id):
+        return ""
+    reply_snippet = event.reply_to_text[:500]
+    if getattr(event, "reply_to_is_own_message", False):
+        return f'[Replying to your previous message: "{reply_snippet}"]\n\n'
+    return f'[Replying to: "{reply_snippet}"]\n\n'
+
+
 def _build_document_context_note(display_name: str, agent_path: str, mtype: str) -> str:
     """Context note prepended to a user turn when they attach a document.
 
@@ -10397,22 +10415,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         echo respects the count-based ledger.  If steering later falls back
         to queue mode, the drain path reuses the cached transcript instead of
         paying for a second STT call or re-echoing the same line.
+
+        A steered follow-up bypasses ``_prepare_inbound_message_text``, so the
+        same enrichment that path applies must happen here: the shared-session
+        sender label (#97569) and the reply-to disambiguation pointer (#101866)
+        — otherwise a mid-turn reply-quote reaches the agent as bare text and
+        the agent has to guess which prior message is being referenced. The
+        prefix ordering matches the normal inbound path (reply-to pointer
+        outermost, sender label inside). Enrichment only applies to a non-empty
+        payload: an empty steer text must keep falling back to queue semantics.
         """
         text = (event.text or "").strip()
         if not self._pending_event_audio_paths(event):
-            return text
-
-        adapter = self._adapter_for_source(event.source)
-        enriched_text, successful_transcripts = await self._transcribe_and_echo_pending_voice(
-            event,
-            adapter,
-            event.source,
-            text,
-            log_context="Busy-steer",
+            steer_text = text
+        else:
+            adapter = self._adapter_for_source(event.source)
+            enriched_text, successful_transcripts = await self._transcribe_and_echo_pending_voice(
+                event,
+                adapter,
+                event.source,
+                text,
+                log_context="Busy-steer",
+            )
+            steer_text = (enriched_text or text).strip() if successful_transcripts else text
+        if not steer_text:
+            return steer_text
+        # Steered text skips the normal inbound pipeline (and its
+        # "inbound message:" log line), so log the injection here instead.
+        logger.debug(
+            "inbound message (busy-steer): platform=%s user=%s chat=%s msg=%r reply_to_id=%s",
+            getattr(getattr(event, "source", None), "platform", None),
+            getattr(getattr(event, "source", None), "user_name", None),
+            getattr(getattr(event, "source", None), "chat_id", None),
+            steer_text[:80],
+            getattr(event, "reply_to_message_id", None),
         )
-        if not successful_transcripts:
-            return text
-        return (enriched_text or text).strip()
+        labeled = self._label_shared_session_sender_text(steer_text, event.source)
+        return f"{_build_reply_to_disambiguation_prefix(event)}{labeled}"
 
     def _label_shared_session_sender_text(
         self, text: str, source: SessionSource
@@ -10677,13 +10716,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             if can_steer:
                 try:
-                    steered = bool(
-                        running_agent.steer(
-                            self._label_shared_session_sender_text(
-                                steer_text, event.source
-                            )
-                        )
-                    )
+                    steered = bool(running_agent.steer(steer_text))
                 except Exception as exc:
                     logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
                     steered = False
@@ -10701,13 +10734,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and hasattr(running_agent, "redirect")
         ):
             try:
-                redirected = bool(
-                    running_agent.redirect(
-                        self._label_shared_session_sender_text(
-                            (event.text or "").strip(), event.source
-                        )
+                # Active-turn redirect bypasses _prepare_inbound_message_text,
+                # so the reply-to disambiguation prefix wraps the labeled
+                # payload here too — same ordering as the steer path (#101866).
+                _redirect_text = (event.text or "").strip()
+                if _redirect_text:
+                    _redirect_text = (
+                        f"{_build_reply_to_disambiguation_prefix(event)}"
+                        f"{self._label_shared_session_sender_text(_redirect_text, event.source)}"
                     )
-                )
+                redirected = bool(running_agent.redirect(_redirect_text))
             except Exception as exc:
                 logger.warning("Gateway redirect failed for session %s: %s", session_key, exc)
                 redirected = False
@@ -19351,21 +19387,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"{message_text}"
                 )
 
-        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            # Always inject the reply-to pointer — even when the quoted text
-            # already appears in history. The prefix isn't deduplication, it's
-            # disambiguation: it tells the agent *which* prior message the user
-            # is referencing. History can contain the same or similar text
-            # multiple times, and without an explicit pointer the agent has to
-            # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
-            if getattr(event, "reply_to_is_own_message", False):
-                message_text = (
-                    f'[Replying to your previous message: "{reply_snippet}"]\n\n'
-                    f"{message_text}"
-                )
-            else:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+        message_text = (
+            f"{_build_reply_to_disambiguation_prefix(event)}{message_text}"
+        )
 
         if "@" in message_text:
             try:

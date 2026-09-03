@@ -136,6 +136,56 @@ class TestBusySenderLabeling:
         agent.steer.assert_called_once_with("[Alice] also check the tests")
 
     @pytest.mark.asyncio
+    async def test_steer_reply_quote_orders_prefix_outside_label(self, monkeypatch):
+        """A mid-turn reply-quote carries both the reply-to pointer and the
+        sender label, ordered like the normal inbound path: pointer
+        outermost, sender label inside (#101866)."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner = _make_runner(group_sessions_per_user=False)
+        runner._busy_input_mode = "steer"
+        event = _make_event("yes, send the same")
+        event.reply_to_message_id = "42"
+        event.reply_to_text = "Draft A: ready to send to alice@example.com"
+        event.reply_to_is_own_message = True
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = _make_adapter(event.source.platform)
+        agent = _register_agent(runner, sk)
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_called_once_with(
+            '[Replying to your previous message: '
+            '"Draft A: ready to send to alice@example.com"]\n\n'
+            "[Alice] yes, send the same"
+        )
+
+    @pytest.mark.asyncio
+    async def test_redirect_reply_quote_orders_prefix_outside_label(self, monkeypatch):
+        """Active-turn redirect payloads get the same reply-to + label
+        treatment as steer (#101866)."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner = _make_runner(group_sessions_per_user=False)
+        runner._busy_input_mode = "interrupt"
+        event = _make_event("yes, send the same")
+        event.reply_to_message_id = "42"
+        event.reply_to_text = "Draft A: ready to send to alice@example.com"
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = _make_adapter(event.source.platform)
+        agent = _register_agent(runner, sk)
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.redirect.assert_called_once_with(
+            '[Replying to: "Draft A: ready to send to alice@example.com"]\n\n'
+            "[Alice] yes, send the same"
+        )
+
+    @pytest.mark.asyncio
     async def test_redirect_labels_shared_group_followup(self, monkeypatch):
         """Active-turn redirect mid-turn follow-ups carry the sender label."""
         import gateway.run as _gr

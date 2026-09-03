@@ -258,9 +258,34 @@ TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
 
 TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 
-# Resolved tool names from the last get_tool_definitions() call.
-# Used by code_execution_tool to know which tools are available in this session.
+# Resolved tool names for the active execution context. get_tool_definitions()
+# populates this before a turn can dispatch execute_code, so concurrent gateway
+# turns cannot overwrite each other's sandbox allowlist.
+_resolved_tool_names: ContextVar[Tuple[str, ...]] = ContextVar(
+    "resolved_tool_names", default=()
+)
+
+# Deprecated compatibility mirror for integrations that imported this private
+# name. Never use it to authorize a tool call: it remains process-global.
 _last_resolved_tool_names: List[str] = []
+
+
+def _get_resolved_tool_names() -> List[str]:
+    """Return the active execution context's resolved tool names."""
+    return list(_resolved_tool_names.get())
+
+
+def _set_current_resolved_tool_names(tool_names: List[str]) -> None:
+    """Set tool names only for the active execution context."""
+    _resolved_tool_names.set(tuple(tool_names))
+
+
+def _set_resolved_tool_names(tool_names: List[str]) -> None:
+    """Record tool names in the current execution context and legacy mirror."""
+    names = tuple(tool_names)
+    _set_current_resolved_tool_names(list(names))
+    global _last_resolved_tool_names
+    _last_resolved_tool_names = list(names)
 
 
 # =============================================================================
@@ -378,16 +403,18 @@ def get_tool_definitions(
         with _tool_defs_cache_lock:
             cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
         if cached is not None:
-            # Update _last_resolved_tool_names so downstream callers see
-            # consistent state even on a cache hit.
-            global _last_resolved_tool_names
-            _last_resolved_tool_names = [t["function"]["name"] for t in cached]
+            if not skip_tool_search_assembly:
+                _set_resolved_tool_names(
+                    [t["function"]["name"] for t in cached]
+                )
             # Return a shallow copy of the list but share the dict references —
             # schemas are treated as read-only by all known callers.
             return list(cached)
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
                                        skip_tool_search_assembly=skip_tool_search_assembly)
+    if not skip_tool_search_assembly:
+        _set_resolved_tool_names([t["function"]["name"] for t in result])
     if quiet_mode and cache_key is not None:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -646,9 +673,6 @@ def _compute_tool_definitions(
             print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
-
-    global _last_resolved_tool_names
-    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
     # Sanitize schemas for broad backend compatibility. llama.cpp's
     # json-schema-to-grammar converter (used by its OAI server to build
@@ -1273,10 +1297,8 @@ def handle_function_call(
         function_args: Arguments for the function.
         task_id: Unique identifier for terminal/browser session isolation.
         user_task: The user's original task (for browser_snapshot context).
-        enabled_tools: Tool names enabled for this session.  When provided,
-                       execute_code uses this list to determine which sandbox
-                       tools to generate.  Falls back to the process-global
-                       ``_last_resolved_tool_names`` for backward compat.
+        enabled_tools: Tool names enabled for this session. When omitted,
+                       execute_code uses the active turn's resolved tool names.
         enabled_toolsets: The session's enabled toolsets.  Used to scope the
                        Tool Search bridge catalog so ``tool_search`` /
                        ``tool_describe`` / ``tool_call`` only see and invoke
@@ -1557,9 +1579,14 @@ def handle_function_call(
             reset_current_observability_context = None
         try:
             if function_name == "execute_code":
-                # Prefer the caller-provided list so subagents can't overwrite
-                # the parent's tool set via the process-global.
-                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+                # Prefer the caller-provided list. The fallback is scoped to
+                # this turn, so concurrent resolution cannot change the
+                # execute_code sandbox allowlist.
+                sandbox_enabled = (
+                    enabled_tools
+                    if enabled_tools is not None
+                    else list(_resolved_tool_names.get())
+                )
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
                     return registry.dispatch(
                         function_name, next_args,

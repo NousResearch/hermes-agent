@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -472,17 +473,15 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_mode"], "anthropic_messages")
 
 class TestToolNamePreservation(unittest.TestCase):
-    """Verify _last_resolved_tool_names is restored after subagent runs."""
+    """Verify delegation preserves the caller's turn-local tool names."""
 
-    def test_global_tool_names_restored_after_delegation(self):
-        """The process-global _last_resolved_tool_names must be restored
-        after a subagent completes so the parent's execute_code sandbox
-        generates correct imports."""
+    def test_turn_local_tool_names_preserved_after_delegation(self):
+        """Delegation must not alter the parent's execute_code fallback."""
         import model_tools
 
         parent = _make_mock_parent(depth=0)
         original_tools = ["terminal", "read_file", "web_search", "execute_code", "delegate_task"]
-        model_tools._last_resolved_tool_names = list(original_tools)
+        model_tools._set_resolved_tool_names(original_tools)
 
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
@@ -493,17 +492,16 @@ class TestToolNamePreservation(unittest.TestCase):
 
             delegate_task(goal="Test tool preservation", parent_agent=parent)
 
-        self.assertEqual(model_tools._last_resolved_tool_names, original_tools)
+        self.assertEqual(model_tools._get_resolved_tool_names(), original_tools)
 
 
     def test_saved_tool_names_set_on_child_before_run(self):
-        """_run_single_child must set _delegate_saved_tool_names on the child
-        from model_tools._last_resolved_tool_names before run_conversation."""
+        """The child receives the caller's names before run_conversation."""
         import model_tools
 
         parent = _make_mock_parent(depth=0)
         expected_tools = ["read_file", "web_search", "execute_code"]
-        model_tools._last_resolved_tool_names = list(expected_tools)
+        model_tools._set_resolved_tool_names(expected_tools)
 
         captured = {}
 
@@ -520,6 +518,39 @@ class TestToolNamePreservation(unittest.TestCase):
             delegate_task(goal="capture test", parent_agent=parent)
 
         self.assertEqual(captured["saved"], expected_tools)
+
+    def test_concurrent_child_construction_uses_each_turns_context(self):
+        """Concurrent parents must not snapshot the legacy global mirror."""
+        import model_tools
+        import tools.delegate_tool as delegate_tool
+
+        alpha_ready = threading.Event()
+        beta_resolved = threading.Event()
+
+        def build_child(**_kwargs):
+            return MagicMock()
+
+        def alpha_turn():
+            model_tools._set_resolved_tool_names(["alpha"])
+            alpha_ready.set()
+            self.assertTrue(beta_resolved.wait(timeout=2))
+            return delegate_tool._build_child_preserving_parent_tools()
+
+        def beta_turn():
+            self.assertTrue(alpha_ready.wait(timeout=2))
+            model_tools._set_resolved_tool_names(["beta"])
+            beta_resolved.set()
+            return delegate_tool._build_child_preserving_parent_tools()
+
+        with patch.object(delegate_tool, "_build_child_agent", side_effect=build_child):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                alpha = pool.submit(alpha_turn)
+                beta = pool.submit(beta_turn)
+                alpha_child = alpha.result(timeout=2)
+                beta_child = beta.result(timeout=2)
+
+        self.assertEqual(getattr(alpha_child, "_delegate_saved_tool_names"), ["alpha"])
+        self.assertEqual(getattr(beta_child, "_delegate_saved_tool_names"), ["beta"])
 
 
 class TestDelegateObservability(unittest.TestCase):

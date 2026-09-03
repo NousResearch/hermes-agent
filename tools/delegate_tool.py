@@ -2659,13 +2659,15 @@ def _run_single_child(
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
 
-    # Restore parent tool names using the value saved before child construction
-    # mutated the global. This is the correct parent toolset, not the child's.
+    # A child runs in a fresh thread, so seed that thread's ContextVar from the
+    # parent names captured during construction. Never infer authorization from
+    # the deprecated process-global compatibility mirror.
     import model_tools
 
     _saved_tool_names = getattr(
-        child, "_delegate_saved_tool_names", list(model_tools._last_resolved_tool_names)
+        child, "_delegate_saved_tool_names", model_tools._get_resolved_tool_names()
     )
+    model_tools._set_current_resolved_tool_names(_saved_tool_names)
 
     child_pool = getattr(child, "_credential_pool", None)
     leased_cred_id = None
@@ -3638,14 +3640,6 @@ def _run_single_child(
             except Exception as exc:
                 logger.debug("Failed to release credential lease: %s", exc)
 
-        # Restore the parent's tool names so the process-global is correct
-        # for any subsequent execute_code calls or other consumers.
-        import model_tools
-
-        saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
-        if isinstance(saved_tool_names, list):
-            model_tools._last_resolved_tool_names = list(saved_tool_names)
-
         # Remove child from active tracking
 
         # Unregister child from interrupt propagation
@@ -3699,11 +3693,11 @@ def _build_child_preserving_parent_tools(**kwargs):
     import model_tools
 
     with _CHILD_CONSTRUCTION_LOCK:
-        parent_tool_names = list(model_tools._last_resolved_tool_names)
+        parent_tool_names = model_tools._get_resolved_tool_names()
         try:
             child = _build_child_agent(**kwargs)
         finally:
-            model_tools._last_resolved_tool_names = parent_tool_names
+            model_tools._set_current_resolved_tool_names(parent_tool_names)
     child._delegate_saved_tool_names = parent_tool_names
     return child
 

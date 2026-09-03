@@ -1018,6 +1018,78 @@ def _item_field(item: Any, name: str, default: Any = None) -> Any:
     return value if value is not None else default
 
 
+def _completed_reasoning_text(item: Any) -> str:
+    """Extract displayable text from a completed Responses ``reasoning`` item.
+
+    Some backends deliver a turn's reasoning ONLY on
+    ``response.output_item.done`` — no ``reasoning*.delta`` frames at all — so a
+    consumer that reads deltas alone shows an empty thinking block for a turn
+    that did reason. Joining the summary parts with ``\n\n`` mirrors how the
+    delta path separates them via ``summary_index``.
+    """
+    if _item_field(item, "type", "") != "reasoning":
+        return ""
+
+    summary = _item_field(item, "summary")
+    if isinstance(summary, list):
+        parts = []
+        for part in summary:
+            text = _item_field(part, "text", "")
+            if isinstance(text, str) and text:
+                parts.append(text)
+        if parts:
+            return "\n\n".join(parts).strip()
+
+    text = _item_field(item, "text", "")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _reasoning_tail_ignoring_whitespace(completed: str, streamed: str) -> str | None:
+    """Match ``streamed`` against ``completed`` ignoring whitespace differences.
+
+    The delta path only inserts a blank line between summary parts when the wire
+    carries ``summary_index``; a backend that streams unindexed reasoning
+    concatenates its parts with no separator while the completed item joins them
+    with ``\n\n``. The visible characters are identical, so compare those and
+    slice the tail out of the ORIGINAL ``completed`` to keep its separators.
+
+    Returns ``None`` when the streamed text is not a whitespace-insensitive
+    prefix, leaving the byte-exact caller to decide.
+    """
+    position = 0
+    for char in streamed:
+        if char.isspace():
+            continue
+        while position < len(completed) and completed[position].isspace():
+            position += 1
+        if position >= len(completed) or completed[position] != char:
+            return None
+        position += 1
+    return completed[position:]
+
+
+def _missing_reasoning_tail(completed: str, streamed: str) -> str:
+    """Return the part of ``completed`` not already delivered as deltas.
+
+    Four cases, in order: nothing streamed (send it all), the summary extends
+    what streamed (send only the tail), the summary is a rewrite that shares no
+    prefix (send it all), or it was already fully delivered (send nothing).
+
+    The extends-check runs byte-exact first and then whitespace-insensitively,
+    because the two paths do not always agree on part separators.
+    """
+    if not streamed:
+        return completed
+    if completed.startswith(streamed):
+        return completed[len(streamed):]
+    tail = _reasoning_tail_ignoring_whitespace(completed, streamed)
+    if tail is not None:
+        return tail
+    if completed not in streamed:
+        return completed
+    return ""
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise a ``_StreamErrorEvent`` from a ``type=error`` SSE frame.
 
@@ -1130,6 +1202,12 @@ def _consume_codex_event_stream(
     # parts by this index and gives each part no separator of its own, so a
     # change of index is where the blank line belongs.
     active_summary_index: Any = None
+    # Reasoning deltas delivered for the CURRENTLY OPEN reasoning item, so a
+    # completed summary can be diffed against what the user already saw. Reset
+    # when a reasoning item closes: a reason -> tool_call -> reason turn emits
+    # several items, and comparing the second summary against the first item's
+    # deltas would either re-emit it whole or suppress it as a false duplicate.
+    current_reasoning_deltas: list[str] = []
     terminal_status: str = "completed"
     terminal_usage: Any = None
     terminal_response_id: str = None
@@ -1283,6 +1361,7 @@ def _consume_codex_event_stream(
                     reasoning_text = f"\n\n{reasoning_text}"
                 if summary_index is not None:
                     active_summary_index = summary_index
+                current_reasoning_deltas.append(reasoning_text)
                 try:
                     on_reasoning_delta(reasoning_text)
                 except Exception:
@@ -1293,6 +1372,22 @@ def _consume_codex_event_stream(
             done_item = _event_field(event, "item")
             if done_item is not None:
                 collected_output_items.append(done_item)
+                completed_reasoning = _completed_reasoning_text(done_item)
+                if completed_reasoning and on_reasoning_delta is not None:
+                    missing_reasoning = _missing_reasoning_tail(
+                        completed_reasoning,
+                        "".join(current_reasoning_deltas).strip(),
+                    )
+                    if missing_reasoning:
+                        try:
+                            on_reasoning_delta(missing_reasoning)
+                        except Exception:
+                            logger.debug(
+                                "Codex completed reasoning callback raised",
+                                exc_info=True,
+                            )
+                if _item_field(done_item, "type", "") == "reasoning":
+                    current_reasoning_deltas = []
                 # Reuse the first-observed position when this item was
                 # announced earlier via output_item.added; a fresh tail
                 # sequence is allocated only for genuinely unannounced items.

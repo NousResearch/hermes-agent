@@ -2410,6 +2410,242 @@ def test_consume_codex_stream_leaves_unindexed_reasoning_untouched():
     assert "".join(reasoning_streamed) == "Need to inspect files."
 
 
+def test_completed_reasoning_item_emits_summary_when_no_deltas():
+    """Responses can provide reasoning only in the completed output item."""
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    reasoning_streamed = []
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        summary=[
+            SimpleNamespace(type="summary_text", text="Inspect the request."),
+            SimpleNamespace(type="summary_text", text="Check the relevant files."),
+        ],
+    )
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=reasoning_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    assert reasoning_streamed == ["Inspect the request.\n\nCheck the relevant files."]
+
+
+def test_completed_reasoning_item_does_not_duplicate_streamed_summary():
+    """A completed summary may repeat text already delivered as deltas."""
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    reasoning_streamed = []
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        summary=[SimpleNamespace(type="summary_text", text="Inspect the request.")],
+    )
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                delta="Inspect the ",
+                summary_index=0,
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                delta="request.",
+                summary_index=0,
+            ),
+            SimpleNamespace(type="response.output_item.done", item=reasoning_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    assert "".join(reasoning_streamed) == "Inspect the request."
+
+
+def test_completed_reasoning_item_emits_only_the_missing_tail():
+    """Deltas can stop mid-summary; the completed item carries the remainder.
+
+    This is the case that pins the implementation from both sides: emitting
+    nothing loses the tail, and emitting the whole summary duplicates the
+    prefix the user already watched stream in.
+    """
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    reasoning_streamed = []
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        summary=[
+            SimpleNamespace(
+                type="summary_text",
+                text="Inspect the request. Then check the files.",
+            )
+        ],
+    )
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                delta="Inspect the request.",
+                summary_index=0,
+            ),
+            SimpleNamespace(type="response.output_item.done", item=reasoning_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    assert "".join(reasoning_streamed) == "Inspect the request. Then check the files."
+    assert reasoning_streamed[-1] == " Then check the files."
+
+
+def test_completed_reasoning_baseline_resets_per_item():
+    """Each reasoning item is compared against its OWN streamed deltas.
+
+    A reason -> tool_call -> reason turn emits two reasoning items. Comparing
+    the second summary against the first item's deltas would find no overlap
+    and re-emit it in full, or (with a turn-wide buffer) suppress it as an
+    apparent duplicate. The baseline has to reset when a reasoning item closes.
+    """
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    reasoning_streamed = []
+    first = SimpleNamespace(
+        type="reasoning",
+        summary=[SimpleNamespace(type="summary_text", text="First thought.")],
+    )
+    second = SimpleNamespace(
+        type="reasoning",
+        summary=[SimpleNamespace(type="summary_text", text="Second thought.")],
+    )
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            # First item streams in full, so nothing is backfilled for it.
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                delta="First thought.",
+                summary_index=0,
+            ),
+            SimpleNamespace(type="response.output_item.done", item=first),
+            # Second item arrives with no deltas at all.
+            SimpleNamespace(type="response.output_item.done", item=second),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    assert reasoning_streamed == ["First thought.", "Second thought."]
+
+
+def test_completed_reasoning_dedup_tolerates_separator_mismatch():
+    """Unindexed deltas concatenate with no blank line; the summary joins with one.
+
+    A backend that streams ``reasoning_text.delta`` without ``summary_index``
+    gets no part separator inserted (see the unindexed test above), so the
+    streamed text is ``"onetwo"`` while the completed item joins its parts into
+    ``"one\n\ntwo"``. A byte-exact prefix check fails there and re-prints the
+    whole summary the user just watched stream in.
+    """
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    reasoning_streamed = []
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        summary=[
+            SimpleNamespace(type="summary_text", text="Inspect the request."),
+            SimpleNamespace(type="summary_text", text="Check the relevant files."),
+        ],
+    )
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.reasoning_text.delta",
+                delta="Inspect the request.",
+            ),
+            SimpleNamespace(
+                type="response.reasoning_text.delta",
+                delta="Check the relevant files.",
+            ),
+            SimpleNamespace(type="response.output_item.done", item=reasoning_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    assert "".join(reasoning_streamed) == "Inspect the request.Check the relevant files."
+
+
+def test_completed_reasoning_separator_tolerance_still_emits_missing_tail():
+    """Whitespace tolerance must not swallow a genuinely undelivered tail."""
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    reasoning_streamed = []
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        summary=[
+            SimpleNamespace(type="summary_text", text="Inspect the request."),
+            SimpleNamespace(type="summary_text", text="Check the relevant files."),
+        ],
+    )
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.reasoning_text.delta",
+                delta="Inspect the request.",
+            ),
+            SimpleNamespace(type="response.output_item.done", item=reasoning_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    assert reasoning_streamed[-1] == "\n\nCheck the relevant files."
+    assert "".join(reasoning_streamed) == (
+        "Inspect the request.\n\nCheck the relevant files."
+    )
+
+
+def test_completed_non_reasoning_item_does_not_emit_text_as_reasoning():
+    """Only Responses items of type reasoning can backfill the callback."""
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    reasoning_streamed = []
+    message_item = SimpleNamespace(
+        type="message",
+        content=[SimpleNamespace(type="output_text", text="Visible answer.")],
+    )
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    assert reasoning_streamed == []
+
+
 def _codex_compaction_checkpoint_response(blob: str = "compaction_blob_1"):
     """A turn that returns ONLY a server-side native-compaction checkpoint.
 

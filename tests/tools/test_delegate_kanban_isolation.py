@@ -170,6 +170,33 @@ def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
     assert "HERMES_KANBAN_CLAIM_LOCK" not in env
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
+def test_delegated_child_marker_does_not_persist_in_parent_terminal_snapshot(
+    monkeypatch,
+    tmp_path,
+):
+    """A child command must not poison later parent commands on the same backend."""
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+
+    from agent.delegation_context import delegated_child_context
+    from tools.environments.local import LocalEnvironment
+
+    command = 'printf "%s" "${HERMES_DELEGATED_CHILD_CONTEXT-unset}"'
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+    try:
+        with delegated_child_context():
+            child = env.execute(command, timeout=15)
+        parent = env.execute(command, timeout=15)
+
+        assert child["output"] == "1"
+        assert parent["output"] == "unset"
+        assert "HERMES_DELEGATED_CHILD_CONTEXT" not in Path(
+            env._snapshot_path
+        ).read_text(encoding="utf-8")
+    finally:
+        env.cleanup()
+
+
 def test_delegate_child_kanban_cli_cannot_delete_parent_board(
     monkeypatch,
     tmp_path,

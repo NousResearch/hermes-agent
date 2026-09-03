@@ -197,6 +197,35 @@ def test_exec_flag_payload_reaches_hardline_floor(command):
 @pytest.mark.parametrize(
     "command",
     [
+        'eval "rm -rf --no-preserve-root /"',
+        "eval 'rm -rf --no-preserve-root /'",
+        'eval "sudo rm -rf --no-preserve-root /"',
+    ],
+)
+def test_eval_payload_reaches_hardline_floor(command):
+    """#102317: eval hands its arguments to another shell to execute,
+    exactly like sh -c — the payload must face the hardline floor."""
+    hardline, description = detect_hardline_command(command)
+    assert hardline is True
+    assert description == "recursive delete of root filesystem"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'eval "$(ssh-agent -s)"',
+        'eval "export PATH=$PATH:/opt/bin"',
+    ],
+)
+def test_benign_eval_payloads_stay_clean(command):
+    """Payloads without a hardline trigger must not trip the floor."""
+    hardline, _ = detect_hardline_command(command)
+    assert hardline is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "node -c script.js",
         "node --check script.js",
         "ruby -c script.rb",

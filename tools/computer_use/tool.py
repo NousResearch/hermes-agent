@@ -234,8 +234,8 @@ def _warn_bypass_escalation(session_id: str) -> None:
     )
 
 
-def _cua_permission_mode(session_id: str) -> str:
-    """Map Hermes's explicit approval bypass onto Cua's immutable mode.
+def _approval_bypass_active(session_id: str) -> bool:
+    """Resolve Hermes approval bypass across both session namespaces.
 
     Hermes has TWO session-identity namespaces: the tool-dispatch path passes
     the DB ``session_id`` (``agent.session_id``), while gateway ``/yolo``
@@ -245,7 +245,10 @@ def _cua_permission_mode(session_id: str) -> str:
     gateway ``/yolo`` toggle silently invisible to computer_use (works in
     CLI, dead on messaging platforms), so we consult both namespaces —
     bypass in either means the user explicitly opted out of approvals for
-    this run. Fails closed on any resolution error.
+    this run. This resolver is shared by BOTH the Hermes prompt gate and the
+    cua-driver permission-mode selection; otherwise ``approvals.mode: off``
+    can start an unrestricted driver while the CLI callback still opens a
+    computer-use prompt. Fails closed on any resolution error.
     """
     try:
         from tools.approval import (
@@ -254,15 +257,21 @@ def _cua_permission_mode(session_id: str) -> str:
         )
 
         if is_approval_bypass_active_for_session(session_id):
-            _warn_bypass_escalation(session_id)
-            return "unrestricted"
+            return True
         current_key = get_current_session_key(default="")
         if current_key and is_approval_bypass_active_for_session(current_key):
-            _warn_bypass_escalation(session_id)
-            return "unrestricted"
+            return True
     except Exception:
         # Approval state must fail closed if it cannot be resolved.
         pass
+    return False
+
+
+def _cua_permission_mode(session_id: str) -> str:
+    """Map Hermes's explicit approval bypass onto Cua's immutable mode."""
+    if _approval_bypass_active(session_id):
+        _warn_bypass_escalation(session_id)
+        return "unrestricted"
     try:
         # Without YOLO, honor the configured mode (standard | bounded).
         # bounded requires computer_use.capability_manifest; the backend
@@ -601,6 +610,14 @@ def _request_approval(action: str, args: Dict[str, Any],
     operation. State is keyed on session_id so concurrent runs don't leak
     unlocks into one another.
     """
+    # Keep computer-use aligned with the canonical Hermes approval policy.
+    # In particular, approvals.mode=off / --yolo / session /yolo must bypass
+    # the CLI callback for foreground escalation too. The driver permission
+    # mode already honored this policy; omitting it here produced a second,
+    # contradictory prompt which could then sit for the full approval timeout
+    # and trip the turn-liveness watchdog.
+    if _approval_bypass_active(session_id):
+        return None
     is_foreground = args.get("delivery_mode") == "foreground"
     scope_key = (action, "foreground" if is_foreground else "background")
     with _approval_lock:

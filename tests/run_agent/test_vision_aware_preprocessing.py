@@ -13,6 +13,8 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
+import time
 from unittest.mock import MagicMock, patch
 
 
@@ -133,6 +135,32 @@ class TestPrepareMessagesForNonVision:
         assert out[1]["content"] == "ack"
         assert isinstance(out[2]["content"], str)
         assert "[Image: thing]" in out[2]["content"]
+
+
+class TestImageFallbackLiveness:
+    def test_auxiliary_vision_has_outer_wall_clock_timeout(self, tmp_path):
+        """A stuck pre-API image fallback must not reach turn liveness abort."""
+        agent = _make_agent()
+        image_path = tmp_path / "screen.png"
+        image_path.write_bytes(b"not-read-by-mock")
+
+        async def stuck_vision(**_kwargs):
+            await asyncio.sleep(60)
+
+        started = time.monotonic()
+        with patch(
+            "tools.vision_tools.vision_analyze_tool", side_effect=stuck_vision
+        ), patch(
+            "hermes_cli.config.load_config",
+            return_value={"auxiliary": {"vision": {"timeout": 0.01}}},
+        ):
+            result = agent._describe_image_for_anthropic_fallback(
+                str(image_path), "tool"
+            )
+
+        assert time.monotonic() - started < 1.0
+        assert "Image analysis timed out after 0.01s" in result
+        assert "continuing without a visual description" in result
 
 
 # ─── _model_supports_vision ──────────────────────────────────────────────────

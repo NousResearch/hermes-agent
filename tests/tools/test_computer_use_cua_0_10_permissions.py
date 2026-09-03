@@ -38,6 +38,39 @@ def test_any_explicit_hermes_bypass_maps_to_unrestricted_mode():
         assert computer_use._cua_permission_mode("session-a") == "unrestricted"
 
 
+def test_explicit_bypass_skips_foreground_and_focus_approval_callbacks():
+    """The prompt gate and driver mode must honor the same bypass policy.
+
+    Regression: approvals.mode=off selected an unrestricted cua-driver but
+    computer_use still called the CLI approval callback for foreground input
+    (and again for bring_to_front), leaving the turn blocked until its approval
+    timeout and then the liveness watchdog fired.
+    """
+    from tools.computer_use import tool as computer_use
+
+    callback = Mock(return_value="deny")
+    computer_use.set_approval_callback(callback)
+    try:
+        with patch(
+            "tools.approval.is_approval_bypass_active_for_session",
+            return_value=True,
+        ):
+            args = {
+                "action": "type",
+                "text": "foreground approval probe",
+                "delivery_mode": "foreground",
+                "bring_to_front": True,
+            }
+            assert computer_use._request_approval("type", args, "session-a") is None
+            assert computer_use._request_approval(
+                "bring_to_front", args, "session-a"
+            ) is None
+    finally:
+        computer_use.set_approval_callback(None)
+
+    callback.assert_not_called()
+
+
 def test_gateway_session_key_yolo_maps_to_unrestricted_mode():
     """Gateway /yolo keys bypass off the gateway session_key contextvar,
     not the DB session_id the tool path passes. Mode resolution must consult
@@ -48,11 +81,14 @@ def test_gateway_session_key_yolo_maps_to_unrestricted_mode():
     gateway_key = "agent:main:telegram:private:12345"
     token = approval.set_current_session_key(gateway_key)
     try:
-        approval.enable_session_yolo(gateway_key)
-        # Tool dispatch passes the (different) DB session id.
-        assert computer_use._cua_permission_mode("db-sid-xyz") == "unrestricted"
-        approval.disable_session_yolo(gateway_key)
-        assert computer_use._cua_permission_mode("db-sid-xyz") == "standard"
+        with patch("tools.approval._get_approval_mode", return_value="manual"), patch(
+            "tools.approval._YOLO_MODE_FROZEN", False
+        ):
+            approval.enable_session_yolo(gateway_key)
+            # Tool dispatch passes the (different) DB session id.
+            assert computer_use._cua_permission_mode("db-sid-xyz") == "unrestricted"
+            approval.disable_session_yolo(gateway_key)
+            assert computer_use._cua_permission_mode("db-sid-xyz") == "standard"
     finally:
         approval.disable_session_yolo(gateway_key)
         try:

@@ -7751,11 +7751,42 @@ class AIAgent:
         try:
             from tools.vision_tools import vision_analyze_tool
 
+            # This preprocessing happens before the main provider request is
+            # opened, so the normal API TTFB watchdog cannot protect it. The
+            # auxiliary vision client receives its own timeout, but a provider
+            # adapter or blocking recovery path can fail to unwind promptly.
+            # Add an outer wall-clock bound so one historical screenshot cannot
+            # leave the turn at "starting API call" until the 10-minute turn
+            # liveness watchdog kills the whole session.
+            fallback_timeout = 120.0
+            try:
+                from hermes_cli.config import cfg_get, load_config
+
+                vision_cfg = cfg_get(
+                    load_config(), "auxiliary", "vision", default={}
+                )
+                configured_timeout = float(vision_cfg.get("timeout", 120.0))
+                if configured_timeout > 0:
+                    fallback_timeout = configured_timeout
+            except Exception:
+                pass
+
             result_json = asyncio.run(
-                vision_analyze_tool(image_url=vision_source, user_prompt=analysis_prompt)
+                asyncio.wait_for(
+                    vision_analyze_tool(
+                        image_url=vision_source,
+                        user_prompt=analysis_prompt,
+                    ),
+                    timeout=fallback_timeout,
+                )
             )
             result = json.loads(result_json) if isinstance(result_json, str) else {}
             description = (result.get("analysis") or "").strip()
+        except asyncio.TimeoutError:
+            description = (
+                "Image analysis timed out after "
+                f"{fallback_timeout:g}s; continuing without a visual description."
+            )
         except Exception as e:
             description = f"Image analysis failed: {e}"
         finally:

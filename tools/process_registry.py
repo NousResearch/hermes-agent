@@ -131,7 +131,6 @@ def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
         binary, "--user", "--scope", "--quiet", "--unit", unit_name, "--collect",
         "--property", "MemoryAccounting=yes",
         "--property", f"MemoryMax={_worker_memory_max_bytes()}",
-        "--property", "OOMPolicy=kill",
         "--", *argv,
     ]
 

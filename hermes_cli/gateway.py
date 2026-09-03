@@ -3945,16 +3945,28 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
             return False
 
     candidates = []
+    active_venv = Path(sys.prefix) if sys.prefix != sys.base_prefix else None
 
     venv_bin = project_root / "venv" / "bin"
     if _is_dir(venv_bin):
         candidates.append(str(venv_bin))
-    elif sys.prefix != sys.base_prefix:
-        candidates.append(str(Path(sys.prefix) / "bin"))
+    elif active_venv is not None:
+        candidates.append(str(active_venv / "bin"))
 
-    node_bin = project_root / "node_modules" / ".bin"
-    if _is_dir(node_bin):
-        candidates.append(str(node_bin))
+    # A service can deliberately import Python from a PYTHONPATH overlay while
+    # still executing from another checkout's virtualenv. Keep that runtime
+    # checkout's Node shims available too; otherwise the exact service-env
+    # stale check drops them and falsely reports the installed unit as old.
+    node_roots = [project_root]
+    if active_venv is not None and active_venv.name in {".venv", "venv"}:
+        runtime_project_root = active_venv.parent
+        if runtime_project_root != project_root:
+            node_roots.append(runtime_project_root)
+
+    for node_root in node_roots:
+        node_bin = node_root / "node_modules" / ".bin"
+        if _is_dir(node_bin):
+            candidates.append(str(node_bin))
 
     hermes_home = get_hermes_home()
     hermes_node = hermes_home / "node" / "bin"

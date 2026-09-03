@@ -58,6 +58,11 @@ def multi_board_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    # Hermetic vs ambient operator env: the simulated worker has path pins
+    # only (HERMES_KANBAN_BOARD is set per-test where the scenario needs it;
+    # HERMES_KANBAN_HOME would re-anchor kanban_home() outside tmp_path).
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
     monkeypatch.setenv("HERMES_KANBAN_DB", str(home / "kanban.db"))
     monkeypatch.setenv(
         "HERMES_KANBAN_WORKSPACES_ROOT", str(home / "kanban" / "workspaces")
@@ -247,3 +252,94 @@ def test_cli_board_flag_engages_explicit_scope_even_when_guard_denies(
             for r in conn.execute("SELECT title FROM tasks").fetchall()
         ]
     assert "child-mutation card" not in titles
+
+
+# ---------------------------------------------------------------------------
+# boards surface under the explicit scope (critic round 1, t_4eff74eb):
+# `boards list --json` enrichment (per-board db_path + task totals) must
+# resolve through the same explicit scope as every other subcommand.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_boards_list_json_with_board_flag_reports_truth(
+    multi_board_home, capsys
+):
+    """Pinned worker + `--board alpha boards list --json`: alpha's entry must
+    show alpha's OWN db_path and its own task total — not the pinned DB's."""
+    from hermes_cli import kanban as kc
+
+    home, default_task_id = multi_board_home
+    with kb.scoped_explicit_board("alpha"):
+        with kb.connect() as conn:
+            alpha_task = kb.create_task(
+                conn, title="alpha-board task", assignee="a"
+            )
+    alpha_db = str(
+        (home / "kanban" / "boards" / "alpha" / "kanban.db").resolve()
+    )
+
+    args = _parse_kanban_args(
+        ["kanban", "--board", "alpha", "boards", "list", "--json"]
+    )
+    assert kc.kanban_command(args) == 0
+    boards = {b["slug"]: b for b in _read_json(capsys)}
+
+    assert boards["alpha"]["db_path"] == alpha_db
+    assert boards["alpha"]["total"] == 1  # alpha's own task, not the pin's
+    assert boards["alpha"]["is_current"] is True  # inside the --board scope
+    assert boards["default"]["total"] == 1
+    assert boards["default"]["is_current"] is False
+
+    # Negative control: with NO flag, the pinned worker view is unchanged —
+    # pins win, so the default board reads the pinned DB and stays current.
+    args = _parse_kanban_args(["kanban", "boards", "list", "--json"])
+    assert kc.kanban_command(args) == 0
+    boards = {b["slug"]: b for b in _read_json(capsys)}
+    assert boards["default"]["is_current"] is True
+    assert boards["default"]["db_path"] == str(
+        (home / "kanban.db").expanduser()
+    )
+    assert boards["alpha"]["total"] == 1
+    assert boards["alpha"]["is_current"] is False
+    assert default_task_id and alpha_task  # keep both ids alive
+
+
+def test_cli_boards_show_with_board_flag_shows_flagged_board(
+    multi_board_home, capsys
+):
+    """`--board alpha boards show` must describe alpha (its db_path and its
+    own counts), not the pinned board the worker env points at."""
+    from hermes_cli import kanban as kc
+
+    home, _ = multi_board_home
+    with kb.scoped_explicit_board("alpha"):
+        with kb.connect() as conn:
+            kb.create_task(conn, title="alpha-board task", assignee="a")
+
+    args = _parse_kanban_args(
+        ["kanban", "--board", "alpha", "boards", "show"]
+    )
+    assert kc.kanban_command(args) == 0
+    out = capsys.readouterr().out
+    alpha_db = str(
+        (home / "kanban" / "boards" / "alpha" / "kanban.db").resolve()
+    )
+    assert "Current board: alpha" in out
+    assert alpha_db in out
+    assert "Tasks:        1 total" in out
+
+
+def test_cli_boards_list_json_no_flag_worker_parity(multi_board_home, capsys):
+    """No-flag `boards list --json` from a pinned worker is byte-identical to
+    the pre-fix resolution: pinned DB answers, default stays current."""
+    from hermes_cli import kanban as kc
+
+    home, _ = multi_board_home
+    args = _parse_kanban_args(["kanban", "boards", "list", "--json"])
+    assert kc.kanban_command(args) == 0
+    boards = {b["slug"]: b for b in _read_json(capsys)}
+    assert boards["default"]["db_path"] == str(
+        (home / "kanban.db").expanduser()
+    )
+    assert boards["default"]["total"] == 1
+    assert boards["default"]["is_current"] is True

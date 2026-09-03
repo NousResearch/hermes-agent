@@ -919,6 +919,31 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 # bytes previously sent for the pre-merge message) — drop it
                 # so replay can't substitute stale bytes.
                 drop_stale_api_content(prev)
+                # A display-marker row (e.g. a model-switch marker persisted
+                # as role=user on purpose, #48338) merging with a plain user
+                # row must not bury the plain row's addressable identity.
+                # Keeping the marker's display_kind hides the merged pair
+                # from every user-turn index used for rewind/submit
+                # addressing (display rows are excluded), so the plain
+                # row's durable id becomes unresolvable and the client's
+                # next prompt.submit fails closed with the input silently
+                # dropped (#94486). Keep the pair addressable instead:
+                # drop the display classification and carry the plain row's
+                # id. display_kind never reaches providers (stripped from
+                # every outgoing copy), so the merged turn's wire payload
+                # is unchanged.
+                #
+                # Deliberate scope: when both rows carry display_kind (two
+                # consecutive model-switch markers) the pair keeps the first
+                # marker's classification and id — no plain row is swallowed
+                # there, so no addressable turn is lost. prev.pop() relies on
+                # prev being the live object already held in merged (never
+                # copied); a refactor that appends a copy instead would
+                # silently drop the repair.
+                if prev.get("display_kind") and not msg.get("display_kind"):
+                    prev.pop("display_kind", None)
+                    if msg.get("_row_id") is not None:
+                        prev["_row_id"] = msg["_row_id"]
                 repairs += 1
                 continue
         merged.append(msg)

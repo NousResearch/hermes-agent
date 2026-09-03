@@ -6804,6 +6804,100 @@ def test_prompt_submit_row_id_not_found(monkeypatch):
         server._sessions.pop("missing-row-sid", None)
 
 
+def test_prompt_submit_resolves_row_id_absorbed_into_marker_merge(monkeypatch):
+    """#94486: after a mid-session model switch, the marker is persisted as
+    role=user (#48338) and the next real user row merges into it under
+    repair. The merged row must stay addressable (plain row's _row_id kept,
+    display classification dropped) so prompt.submit with
+    truncate_before_row_id resolves instead of failing closed with the
+    user's input silently dropped.
+    """
+    import copy
+
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    verbatim = [
+        {"_row_id": 12131, "role": "user", "content": "first"},
+        {"_row_id": 12133, "role": "assistant", "content": "reply 1"},
+        {
+            "_row_id": 12134,
+            "role": "user",
+            "display_kind": "model_switch",
+            "content": "[System: The active model for this chat has changed to ds4.]",
+        },
+        {"_row_id": 12135, "role": "user", "content": "the dropped prompt"},
+    ]
+    repaired = copy.deepcopy(verbatim)
+    assert repair_message_sequence(None, repaired) == 1
+    # The merged pair survives as ONE addressable user row carrying the
+    # plain row's durable id — this is the property the gateway relies on.
+    assert len(repaired) == 3
+    assert repaired[2]["_row_id"] == 12135
+    assert not repaired[2].get("display_kind")
+
+    replaced = []
+
+    class _FakeDB:
+        def get_messages_as_conversation(
+            self, key, include_ancestors=False, repair_alternation=False,
+            include_row_ids=False, **_kwargs
+        ):
+            assert key == "session-key"
+            assert include_row_ids is True
+            return copy.deepcopy(repaired if repair_alternation else verbatim)
+
+        def replace_messages(self, key, messages, active_only=False, archive_dropped=False, **_kwargs):
+            replaced.append((key, list(messages)))
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield _FakeDB()
+
+    # Live history as it looks after a session restore: the durable
+    # transcript reloaded WITHOUT row-id stamps (restore doesn't request
+    # them), so resolution must go through the durable fallback.
+    live = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply 1"},
+        {"role": "user", "content": repaired[2]["content"]},
+    ]
+    server._sessions["merged-marker-sid"] = _session(history=list(live))
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "merged-marker-sid",
+                    "text": "new turn",
+                    "truncate_before_row_id": 12135,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp.get("error") is None, resp.get("error")
+        # The cut lands before the merged marker+prompt pair: everything the
+        # pair would have buried is kept, the pair itself is replaced by the
+        # freshly submitted turn. (Rows carry _row_id stamps because the
+        # durable fallback healed the live list's missing stamps first.)
+        assert len(replaced) == 1
+        assert replaced[0][0] == "session-key"
+        assert replaced[0][1] == [
+            {"role": "user", "content": "first", "_row_id": 12131},
+            {"role": "assistant", "content": "reply 1", "_row_id": 12133},
+        ]
+        assert len(server._sessions["merged-marker-sid"]["history"]) == 2
+    finally:
+        server._sessions.pop("merged-marker-sid", None)
+
+
 def test_prompt_submit_row_id_ignores_platform_id_fallback(monkeypatch):
     """truncate_before_row_id must not match string platform IDs."""
     history = [

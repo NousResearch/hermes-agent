@@ -3286,6 +3286,26 @@ def list_authenticated_providers(
         # disk caching to keep the picker open snappy. Falls back to the
         # curated static list when the live fetcher returns nothing.
         model_ids = cached_provider_model_ids(hermes_id)
+        if hermes_id == "openrouter":
+            # [openrouter.show_all_models] Optional expansion for every
+            # surface that reads list_authenticated_providers (CLI, desktop
+            # /model.options, text /model fallback): list the full live
+            # catalog instead of the curated subset.
+            # fetch_openrouter_models applies the expansion and falls back
+            # to the curated snapshot when the live catalog is unreachable.
+            try:
+                from hermes_cli.config import load_config
+
+                if bool(
+                    (load_config().get("openrouter") or {}).get("show_all_models", False)
+                ):
+                    from hermes_cli.models import fetch_openrouter_models
+
+                    _expanded = [mid for mid, _ in fetch_openrouter_models()]
+                    if _expanded:
+                        model_ids = _expanded
+            except Exception:
+                pass
         if not model_ids:
             model_ids = curated.get(hermes_id, [])
             if hermes_id in _MODELS_DEV_PREFERRED:

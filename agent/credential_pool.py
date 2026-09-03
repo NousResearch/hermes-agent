@@ -42,6 +42,8 @@ from hermes_cli.auth import (
     _store_provider_state,
     read_credential_pool,
     write_credential_pool,
+    CODEX_LINEAGE_KEY,
+    CODEX_LINEAGE_SINGLETON_ALIAS,
 )
 
 logger = logging.getLogger(__name__)
@@ -116,6 +118,22 @@ AUTH_TYPE_API_KEY = "api_key"
 SOURCE_MANUAL = "manual"
 SOURCE_MANUAL_DEVICE_CODE = f"{SOURCE_MANUAL}:device_code"
 
+
+def _codex_entry_shares_singleton_lineage(entry: PooledCredential) -> bool:
+    """True when a Codex pool entry may adopt or write singleton tokens.
+
+    ``device_code`` is always the singleton mirror.  ``manual:device_code`` is
+    a singleton alias only when durable ``codex_lineage=singleton_alias`` was
+    previously proven by the write-side previous-access-token equality rule.
+    Unmarked or already-diverged manuals stay independent.
+    """
+    if entry.source == "device_code":
+        return True
+    if entry.source == SOURCE_MANUAL_DEVICE_CODE:
+        return entry.extra.get(CODEX_LINEAGE_KEY) == CODEX_LINEAGE_SINGLETON_ALIAS
+    return False
+
+
 STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
 STRATEGY_RANDOM = "random"
@@ -186,6 +204,10 @@ _EXTRA_KEYS = frozenset({
     # with the entry so a restart doesn't downgrade a billing bench back to a
     # 60s transient cooldown.
     "failure_reason",
+    # Codex-only durable role for a proven legacy singleton alias.  Must be
+    # listed here so from_dict()/to_dict() persist it; a nested-only marker
+    # is discarded on reload.
+    CODEX_LINEAGE_KEY,
 })
 
 
@@ -1271,11 +1293,17 @@ class CredentialPool:
         though fresh credentials are sitting on disk — and every request
         fails with "no available entries (all exhausted or empty)".
 
-        Mirrors the Nous/Anthropic resync paths above.  Only applies to
-        device_code-sourced entries; env/API-key-sourced entries have no
-        auth.json shadow to sync from.
+        Mirrors the Nous/Anthropic resync paths above.  Applies to
+        device_code singleton mirrors and to manual:device_code entries
+        with proven durable singleton-alias lineage.  Independent manuals
+        must not adopt singleton tokens.
         """
-        if self.provider != "openai-codex" or entry.source not in ("device_code", "manual:device_code"):
+        if self.provider != "openai-codex" or entry.source not in (
+            "device_code",
+            SOURCE_MANUAL_DEVICE_CODE,
+        ):
+            return entry
+        if not _codex_entry_shares_singleton_lineage(entry):
             return entry
         try:
             with _auth_store_lock():
@@ -1537,11 +1565,15 @@ class CredentialPool:
         whatever provider happened to refresh last, not whatever the
         user actually chose.
         """
-        # Only sync entries that were seeded *from* a singleton.  Manually
-        # added pool entries (source="manual:*") are independent credentials
-        # and must not write back to the singleton.  All singleton-seeded
-        # device-code sources (nous, openai-codex, xAI) use ``device_code``.
-        if entry.source != "device_code":
+        # Only sync entries that share singleton lineage.  Independent
+        # ``manual:*`` credentials must not write back to the singleton.
+        # Codex ``manual:device_code`` entries with proven durable alias
+        # lineage may write through so a consumed rotating refresh token
+        # lands in the owning singleton store.
+        if entry.source != "device_code" and not (
+            self.provider == "openai-codex"
+            and _codex_entry_shares_singleton_lineage(entry)
+        ):
             return
         try:
             with _auth_store_lock():
@@ -2153,11 +2185,14 @@ class CredentialPool:
                     self._persist()
                     return updated
                 # Terminal error: auth.json has no newer tokens — the stored
-                # refresh_token is dead.  Clear it from auth.json so the next
-                # session does not re-seed the same revoked credentials, and
-                # remove all singleton-seeded (device_code) entries from the
-                # in-memory pool.  Mirrors the xAI and Nous quarantine paths.
+                # refresh_token is dead.  Independent manuals must not
+                # quarantine the unrelated singleton.  Only singleton-lineage
+                # entries (device_code or proven alias) may clear the owning
+                # store and drop singleton-seeded pool rows.
                 if auth_mod._is_terminal_codex_oauth_refresh_error(exc):
+                    if not _codex_entry_shares_singleton_lineage(entry):
+                        self._mark_exhausted(entry, None)
+                        return None
                     logger.debug(
                         "Codex OAuth refresh token is terminally invalid; clearing local token state"
                     )

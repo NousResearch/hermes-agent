@@ -103,10 +103,7 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
         status = body.get("status")
         if status in {"completed", "failed", "cancelled", "timeout"}:
             return ModalExecStart(
-                immediate_result=self._result(
-                    body.get("output", ""),
-                    body.get("returncode", 1),
-                )
+                immediate_result=self._result_for_remote_status(body)
             )
 
         if body.get("execId") != exec_id:
@@ -139,17 +136,22 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
         status_body = status_response.json()
         status = status_body.get("status")
         if status in {"completed", "failed", "cancelled", "timeout"}:
-            return self._result(
-                status_body.get("output", ""),
-                status_body.get("returncode", 1),
-            )
+            return self._result_for_remote_status(status_body)
         return None
+
+    def _result_for_remote_status(self, body: dict) -> dict:
+        result = self._result(body.get("output", ""), body.get("returncode", 1))
+        if body.get("status") == "timeout":
+            result["timed_out"] = True
+        return result
 
     def _cancel_modal_exec(self, handle: _ManagedModalExecHandle) -> None:
         self._cancel_exec(handle.exec_id)
 
     def _timeout_result_for_modal(self, timeout: int) -> dict:
-        return self._result(f"Managed Modal exec timed out after {timeout}s", 124)
+        result = self._result(f"Managed Modal exec timed out after {timeout}s", 124)
+        result["timed_out"] = True
+        return result
 
     def cleanup(self):
         if not getattr(self, "_sandbox_id", None):

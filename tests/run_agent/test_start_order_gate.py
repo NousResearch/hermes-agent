@@ -101,8 +101,8 @@ def _make_agent(monkeypatch):
 
 
 class _FakeToolCall:
-    def __init__(self, name, call_id):
-        self.function = MagicMock(name=name, arguments="{}")
+    def __init__(self, name, call_id, arguments="{}"):
+        self.function = MagicMock(name=name, arguments=arguments)
         self.function.name = name
         self.id = call_id
 
@@ -249,3 +249,73 @@ def test_abandoned_batch_does_not_dispatch_late(monkeypatch):
     assert agent._current_tool is None, (
         f"_current_tool left pointing at a dead tool: {agent._current_tool!r}"
     )
+
+
+def test_concurrent_deadline_records_only_terminal_calls_that_dispatched(monkeypatch):
+    import agent.tool_executor as te
+    import tools.daemon_pool as daemon_pool
+
+    agent = _make_agent(monkeypatch)
+    agent.session_id = "session-a"
+    agent._tool_guardrails = MagicMock()
+    agent._tool_guardrails.before_call.return_value = MagicMock(allows_execution=True)
+    monkeypatch.setattr(te, "_START_ORDER_GATE_TIMEOUT_S", 30.0)
+    monkeypatch.setattr(te, "_resolve_concurrent_tool_timeout", lambda: 3.0)
+
+    real_executor = daemon_pool.DaemonThreadPoolExecutor
+
+    class _FirstEightStartSyncedExecutor(real_executor):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._submit_count = 0
+
+        def submit(self, fn, *args, **kwargs):
+            self._submit_count += 1
+            if self._submit_count > 8:
+                return super().submit(fn, *args, **kwargs)
+            begun = threading.Event()
+
+            def _traced(*fa, **fk):
+                begun.set()
+                return fn(*fa, **fk)
+
+            future = super().submit(_traced, *args, **kwargs)
+            assert begun.wait(timeout=10), "concurrent terminal worker never started"
+            return future
+
+    monkeypatch.setattr(
+        daemon_pool, "DaemonThreadPoolExecutor", _FirstEightStartSyncedExecutor
+    )
+    monkeypatch.setattr(
+        "agent.tool_timeout_circuit.is_tool_timeout_blocked", lambda *_args: False
+    )
+    recorded = []
+    monkeypatch.setattr(
+        "agent.tool_timeout_circuit.record_tool_timeout",
+        lambda name, args, session_id: recorded.append((name, args, session_id)),
+    )
+
+    dispatched = []
+    stop = threading.Event()
+
+    def _invoke(name, args, _task_id, tool_call_id, **_kwargs):
+        dispatched.append(tool_call_id)
+        stop.wait(30)
+        return json.dumps({"ok": name})
+
+    agent._invoke_tool = MagicMock(side_effect=_invoke)
+    calls = [
+        _FakeToolCall("terminal", f"tc_{index}", json.dumps({"command": str(index)}))
+        for index in range(9)
+    ]
+    msg = _FakeAssistantMsg(calls)
+
+    try:
+        agent._execute_tool_calls_concurrent(msg, [], "task")
+    finally:
+        stop.set()
+
+    assert set(dispatched) == {f"tc_{index}" for index in range(8)}
+    assert len(recorded) == 8
+    assert {entry[1]["command"] for entry in recorded} == {str(index) for index in range(8)}
+    assert all(entry[2] == "session-a" for entry in recorded)

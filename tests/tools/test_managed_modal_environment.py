@@ -145,6 +145,44 @@ def test_managed_modal_execute_polls_until_completed(monkeypatch):
     assert any(call[0] == "POST" and call[1].endswith("/execs") for call in calls)
 
 
+@pytest.mark.parametrize(
+    ("status", "timed_out"),
+    [("timeout", True), ("completed", False)],
+)
+def test_managed_modal_remote_status_distinguishes_timeout_from_exit_124(
+    monkeypatch, status, timed_out
+):
+    _install_fake_tools_package()
+    managed_modal = _load_tool_module(
+        "tools.environments.managed_modal", "environments/managed_modal.py"
+    )
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        if method == "POST" and url.endswith("/v1/sandboxes"):
+            return _FakeResponse(200, {"id": "sandbox-1"})
+        if method == "POST" and url.endswith("/execs"):
+            return _FakeResponse(
+                200,
+                {
+                    "execId": json["execId"],
+                    "status": status,
+                    "output": "remote result",
+                    "returncode": 124,
+                },
+            )
+        if method == "POST" and url.endswith("/terminate"):
+            return _FakeResponse(200, {"status": "terminated"})
+        raise AssertionError(f"Unexpected request: {method} {url}")
+
+    monkeypatch.setattr(managed_modal.requests, "request", fake_request)
+    env = managed_modal.ManagedModalEnvironment(image="python:3.11")
+    result = env.execute("exit 124")
+    env.cleanup()
+
+    assert result["returncode"] == 124
+    assert (result.get("timed_out") is True) is timed_out
+
+
 def test_managed_modal_rejects_host_credential_passthrough():
     _install_fake_tools_package(
         credential_mounts=[{
@@ -191,5 +229,6 @@ def test_managed_modal_execute_times_out_and_cancels(monkeypatch):
     assert result == {
         "output": "Managed Modal exec timed out after 2s",
         "returncode": 124,
+        "timed_out": True,
     }
     assert any(call[0] == "POST" and call[1].endswith("/cancel") for call in calls)

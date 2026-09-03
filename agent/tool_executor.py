@@ -61,6 +61,21 @@ def _pairing_tool_call_id(tool_call: Any) -> str:
     return coalesce_tool_call_id(tool_call)
 
 
+def _is_terminal_timeout_result(function_name: str, result: Any) -> bool:
+    """Recognize only Hermes' structured terminal timeout contract."""
+    if function_name != "terminal" or not isinstance(result, str):
+        return False
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("status") == "timeout"
+        and payload.get("error_type") == "terminal_timeout"
+    )
+
+
 def _record_persisted_path_for_stub(agent, tool_call_id: str, function_result) -> None:
     """Tell the stall guards where a persisted result's full content lives.
 
@@ -592,6 +607,7 @@ def _run_agent_tool_execution_middleware(
     middleware_trace: list[dict[str, Any]] | None = None,
     begin_execution=None,
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
+    dispatch_args_sink=None,
 ) -> _ManagedToolResult:
     """Run Relay rewrites before Hermes policy and dispatch exactly once."""
     from agent import relay_tools
@@ -628,6 +644,8 @@ def _run_agent_tool_execution_middleware(
                 tool_call_id=tool_call_id,
                 display_index=display_index,
             )
+            if dispatch_args_sink is not None:
+                dispatch_args_sink(final_args)
 
         def _advance_start_order(callback=None) -> None:
             if begin_execution is None:
@@ -669,6 +687,27 @@ def _run_agent_tool_execution_middleware(
                 if authorization_gate is None
                 else authorization_gate.run(_resolve_pre_tool_block)
             )
+
+        # Timeout retry admission runs after request middleware and pre-tool
+        # hook rewrites, immediately before guardrails/dispatch. Restrict it to
+        # terminal: read-only tool retries are useful and have no shell side
+        # effects. Exact same-session retries are blocked even in the same turn.
+        if block_message is None and function_name == "terminal":
+            from agent.tool_timeout_circuit import is_tool_timeout_blocked
+
+            if is_tool_timeout_blocked(
+                function_name,
+                final_args,
+                getattr(agent, "session_id", "") or "",
+            ):
+                block_error_type = "tool_timeout_retry_circuit"
+                block_message = (
+                    "Identical terminal call timed out recently in this session "
+                    "and is temporarily circuit-broken. Its prior side effects "
+                    "may be UNKNOWN. Do NOT retry unchanged; inspect external "
+                    "state first, then use a different bounded approach or wait "
+                    "for the circuit to expire."
+                )
 
         guardrail_decision = None
         if block_message is None:
@@ -729,7 +768,19 @@ def _run_agent_tool_execution_middleware(
         )
         _hb_thread.start()
         try:
-            return execute(final_args)
+            result = execute(final_args)
+            if _is_terminal_timeout_result(function_name, result):
+                try:
+                    from agent.tool_timeout_circuit import record_tool_timeout
+
+                    record_tool_timeout(
+                        function_name,
+                        final_args,
+                        getattr(agent, "session_id", "") or "",
+                    )
+                except Exception:
+                    logger.exception("could not record terminal timeout circuit")
+            return result
         finally:
             _hb_stop.set()
             _hb_thread.join(timeout=2.0)
@@ -854,6 +905,7 @@ def _run_sequential_tool_execution_middleware(
 
     authorization_gate = _ConcurrentToolAuthorizationGate()
     worker_tid: list[int] = []
+    dispatched_args: list[dict[str, Any] | None] = [None]
 
     def _run() -> _ManagedToolResult:
         tid = threading.current_thread().ident
@@ -862,7 +914,10 @@ def _run_sequential_tool_execution_middleware(
             agent._tool_worker_threads.add(tid)
         try:
             return _run_agent_tool_execution_middleware(
-                agent, authorization_gate=authorization_gate, **kwargs
+                agent,
+                authorization_gate=authorization_gate,
+                dispatch_args_sink=lambda args: dispatched_args.__setitem__(0, args),
+                **kwargs,
             )
         finally:
             with agent._tool_worker_threads_lock:
@@ -970,6 +1025,17 @@ def _run_sequential_tool_execution_middleware(
         logger.warning(
             "sequential tool %s timed out after %.1fs", function_name, timeout_s
         )
+        try:
+            from agent.tool_timeout_circuit import record_tool_timeout
+
+            if function_name == "terminal" and dispatched_args[0] is not None:
+                record_tool_timeout(
+                    function_name,
+                    dispatched_args[0],
+                    getattr(agent, "session_id", "") or "",
+                )
+        except Exception:
+            logger.exception("could not record sequential tool timeout circuit")
         future.cancel()
         for tid in worker_tid:
             try:
@@ -1226,6 +1292,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
     results = [None] * num_tools
+    dispatched_args_by_index: list[dict[str, Any] | None] = [None] * num_tools
     for i, (tc, name, args, middleware_trace, block_result, _scope_block) in enumerate(parsed_calls):
         if block_result is not None:
             results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
@@ -1402,6 +1469,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     middleware_trace=middleware_trace,
                     begin_execution=_advance_start,
                     authorization_gate=authorization_gate,
+                    dispatch_args_sink=lambda args: dispatched_args_by_index.__setitem__(
+                        index, args
+                    ),
                 )
                 result = managed.result
                 function_args = managed.args
@@ -1720,6 +1790,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             suffix = f"{timeout_s:.1f}s" if timeout_s is not None else "the configured timeout"
             function_result = f"Error executing tool '{name}': timed out after {suffix}"
             effect_disposition = "unknown"
+            try:
+                from agent.tool_timeout_circuit import record_tool_timeout
+
+                if name == "terminal" and dispatched_args_by_index[i] is not None:
+                    record_tool_timeout(
+                        name,
+                        dispatched_args_by_index[i],
+                        getattr(agent, "session_id", "") or "",
+                    )
+            except Exception:
+                logger.exception("could not record concurrent tool timeout circuit")
             _emit_terminal_post_tool_call(
                 agent,
                 function_name=name,

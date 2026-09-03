@@ -1261,6 +1261,7 @@ class BaseEnvironment(ABC):
                         if output.total_chars == 0
                         else output.render(suffix=timeout_msg),
                         124,
+                        timed_out=True,
                     )
                 # Periodic activity touch so the gateway knows we're alive
                 touch_activity_if_due(_activity_state, "terminal command running")
@@ -1353,10 +1354,17 @@ class BaseEnvironment(ABC):
         return result
 
     @staticmethod
-    def _finalize_wait_result(collector: "_BoundedOutputCollector",
-                              rendered: str, returncode: int | None) -> dict:
+    def _finalize_wait_result(
+        collector: "_BoundedOutputCollector",
+        rendered: str,
+        returncode: int | None,
+        *,
+        timed_out: bool = False,
+    ) -> dict:
         """Assemble a wait result, attaching spill metadata when overflow occurred."""
         result = {"output": rendered, "returncode": returncode}
+        if timed_out:
+            result["timed_out"] = True
         spill = collector.close_spill()
         if spill:
             result["output_total_chars"] = collector.total_chars
@@ -1574,7 +1582,11 @@ class BaseEnvironment(ABC):
 
         if bounded.timed_out:
             timeout_msg = f"\n[Command timed out after {effective_timeout}s]"
-            result = {"output": timeout_msg.lstrip(), "returncode": 124}
+            result = {
+                "output": timeout_msg.lstrip(),
+                "returncode": 124,
+                "timed_out": True,
+            }
         else:
             result = bounded.value
         self._update_cwd(result)

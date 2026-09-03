@@ -195,7 +195,9 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
         return self._result(output, 1)
 
     def _timeout_result_for_modal(self, timeout: int) -> dict:
-        return self._result(f"Command timed out after {timeout}s", 124)
+        result = self._result(f"Command timed out after {timeout}s", 124)
+        result["timed_out"] = True
+        return result
 
     @abstractmethod
     def _start_modal_exec(self, prepared: PreparedModalExec) -> ModalExecStart:

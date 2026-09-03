@@ -1128,7 +1128,9 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     and always-replayed provider fields. Always-replayed fields are charged because the preflight estimator sees
     the full shape; a mismatched size class protects blob-heavy rows as "small" and compaction re-fires.
     ``charge_stale_thinking=False`` skips newest-turn-only thinking keys. Accounting only; never mutates."""
-    content = msg.get("content") or ""
+    # Charge the wire substitute, not both it and the clean display content.
+    sidecar = msg.get("api_content")
+    content = sidecar if isinstance(sidecar, str) and sidecar and msg.get("role") in ("user", "assistant") else msg.get("content") or ""
     text_tokens = estimate_tokens_rough(content) if isinstance(content, str) else _content_length_for_budget(content) // _CHARS_PER_TOKEN
     tokens = text_tokens + 10  # +10 for role/key overhead
     tokens += sum(estimate_tokens_rough(str(tc)) for tc in msg.get("tool_calls") or [] if isinstance(tc, dict))

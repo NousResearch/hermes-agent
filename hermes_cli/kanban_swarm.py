@@ -121,6 +121,10 @@ def _activate_root_inline(
         "completed",
         {"result_len": 0, "summary": summary[:400] or None},
         run_id=run_id,
+        # The guarded CAS above matched exactly one row (rowcount != 1 returned
+        # early), so 'done' was honestly established here — report it rather
+        # than leaving the generic observer to reconstruct it after commit.
+        status_to="done",
     )
     return True
 

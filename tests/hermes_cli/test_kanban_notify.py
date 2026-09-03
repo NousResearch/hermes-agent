@@ -333,7 +333,8 @@ async def test_notifier_notify_wake_does_not_wake_on_status_event(kanban_home):
             conn, task_id=tid, platform="telegram", chat_id="chat1",
             delivery_mode="notify+wake",
         )
-        kb._append_event(conn, tid, kind="status", payload={"status": "review"})
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, kind="status", payload={"status": "review"})
     finally:
         conn.close()
 
@@ -508,7 +509,8 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     try:
         tid = kb.create_task(conn, title=f"test {kind} task", assignee="worker1")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
-        kb._append_event(conn, tid, kind=kind)
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, kind=kind)
     finally:
         conn.close()
 

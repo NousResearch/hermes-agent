@@ -990,6 +990,43 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
+def _stored_prompt_reflects_builtin_memory(agent, stored_prompt: str) -> bool:
+    """Whether a stored system prompt already embeds the store's current blocks.
+
+    The gateway restores the persisted system prompt verbatim on every turn
+    (fresh ``AIAgent`` per turn, byte-stable prefix cache). The stored bytes
+    are only rejected when the runtime identity (model/provider/cwd/platform)
+    drifts — memory content was never part of that check, so a prompt
+    persisted while ``USER.md``/``MEMORY.md`` were empty (or before memory was
+    enabled, or by an older build) was reused forever, even across restarts:
+    the gateway resolves the same session_id from its SessionDB, so the
+    memory blocks never entered the system prompt again (issue #96134).
+
+    Reuse the compression path's retention check
+    (``_cached_prompt_reflects_builtin_memory``): it renders the CURRENT
+    frozen blocks from the agent's store and verifies they appear verbatim in
+    the stored prompt (and that no block header lingers for a now-empty or
+    disabled target). A mismatch means the stored prompt would silently miss
+    memory the fresh build would inject — the restore must rebuild once; the
+    rebuilt prompt is persisted, so the check converges and the cache stays
+    warm from the next turn.
+
+    Agents without a built-in memory store (or test fakes whose store is not
+    a real ``MemoryStore``) pass through unchanged — the check only fires for
+    real stores, and any unexpected render failure fails OPEN to reuse so a
+    probe hiccup can never force a per-turn cache miss.
+    """
+    store = getattr(agent, "_memory_store", None)
+    if store is None:
+        return True
+    try:
+        from agent.conversation_compression import _cached_prompt_reflects_builtin_memory
+
+        return _cached_prompt_reflects_builtin_memory(agent, stored_prompt)
+    except Exception:
+        return True
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -1040,7 +1077,11 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 agent.session_id, exc,
             )
 
-    if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
+    if (
+        stored_prompt
+        and _stored_prompt_matches_runtime(agent, stored_prompt)
+        and _stored_prompt_reflects_builtin_memory(agent, stored_prompt)
+    ):
         # Bot Chat capability epoch: an eternal bot session must adopt
         # user-initiated capability changes (skills/toolsets/MCP/SOUL/roster)
         # on the next message, not at /new or compression. The stored prompt
@@ -1155,14 +1196,25 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         reconstruct_static_prefix(agent, system_message=system_message)
         return
     if stored_prompt:
-        stored_state = "stale_runtime"
-        logger.info(
-            "Stored system prompt for session %s has stale runtime identity; "
-            "rebuilding for model=%s provider=%s.",
-            agent.session_id,
-            getattr(agent, "model", "") or "",
-            getattr(agent, "provider", "") or "",
-        )
+        if not _stored_prompt_reflects_builtin_memory(agent, stored_prompt):
+            stored_state = "stale_memory"
+            logger.info(
+                "Stored system prompt for session %s is missing built-in memory "
+                "blocks that the current MemoryStore would inject (USER.md/"
+                "MEMORY.md changed or became non-empty since the prompt was "
+                "persisted); rebuilding once. Prefix cache will miss for this "
+                "turn only (#96134).",
+                agent.session_id,
+            )
+        else:
+            stored_state = "stale_runtime"
+            logger.info(
+                "Stored system prompt for session %s has stale runtime identity; "
+                "rebuilding for model=%s provider=%s.",
+                agent.session_id,
+                getattr(agent, "model", "") or "",
+                getattr(agent, "provider", "") or "",
+            )
 
     if conversation_history and stored_state in ("null", "empty"):
         # Continuing session whose stored prompt is unusable.  The

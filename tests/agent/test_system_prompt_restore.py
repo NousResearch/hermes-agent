@@ -115,6 +115,124 @@ class TestStoredPromptReuse:
 
 
 # ---------------------------------------------------------------------------
+# #96134: stored prompts that miss built-in memory blocks must rebuild once
+# ---------------------------------------------------------------------------
+
+
+class TestStoredPromptMemoryRefresh:
+    """Regression for #96134 — gateway restores stale memory-less prompts.
+
+    The gateway persists the built system prompt in the SessionDB and
+    restores it byte-for-byte on every turn (fresh ``AIAgent`` per turn). The
+    runtime-identity check (model/provider/cwd/platform) never looked at
+    memory, so a prompt persisted while ``USER.md``/``MEMORY.md`` were empty
+    (or before memory was enabled) was reused forever — even across gateway
+    restarts, because the same session_id resolves from the same DB. The
+    fresh build *would* inject the blocks; the restore just never noticed.
+    """
+
+    @staticmethod
+    def _memory_store(tmp_path, monkeypatch, user_text: str, memory_text: str):
+        """A real MemoryStore loaded from a profile home with real files."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        mem_dir = tmp_path / "memories"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        (mem_dir / "USER.md").write_text(user_text, encoding="utf-8")
+        (mem_dir / "MEMORY.md").write_text(memory_text, encoding="utf-8")
+        from tools.memory_tool import MemoryStore
+
+        store = MemoryStore(memory_enabled=True, user_profile_enabled=True)
+        store.load_from_disk()
+        return store
+
+    def test_stored_prompt_missing_memory_blocks_rebuilds(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """#96134: stored prompt without memory blocks → rebuild, don't reuse.
+
+        Pre-fix this reused the stale stored bytes verbatim (the bug); the
+        fresh build embeds USER.md/MEMORY.md content, so the rebuilt prompt
+        is persisted and the next turn restores byte-stable again.
+        """
+        store = self._memory_store(
+            tmp_path, monkeypatch,
+            user_text="Preferred name: Jackie\n",
+            memory_text="User likes concise answers.\n",
+        )
+        db = MagicMock()
+        db.get_session.return_value = {
+            "system_prompt": "Stale prompt persisted before USER.md existed."
+        }
+        agent = _make_agent(session_db=db, prebuilt_prompt="FRESH_BUILT_PROMPT")
+        agent._memory_store = store
+        agent._memory_enabled = True
+        agent._user_profile_enabled = True
+
+        with caplog.at_level(logging.INFO, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+
+        assert agent._cached_system_prompt == "FRESH_BUILT_PROMPT"
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.update_system_prompt.assert_called_once_with(
+            agent.session_id, agent._cached_system_prompt
+        )
+        assert any(
+            "missing built-in memory blocks" in r.getMessage()
+            for r in caplog.records
+        ), "rebuild must be logged distinctly from runtime staleness"
+
+    def test_stored_prompt_with_current_memory_blocks_still_reused_verbatim(
+        self, tmp_path, monkeypatch
+    ):
+        """Byte-stable restore still wins when the blocks are current.
+
+        The prefix-cache contract must survive the fix: a stored prompt that
+        already embeds the store's rendered blocks is reused byte-for-byte.
+        """
+        store = self._memory_store(
+            tmp_path, monkeypatch,
+            user_text="Preferred name: Jackie\n",
+            memory_text="User likes concise answers.\n",
+        )
+        mem_block = store.format_for_system_prompt("memory")
+        user_block = store.format_for_system_prompt("user")
+        assert mem_block and user_block, "precondition: blocks render"
+
+        stored = f"HEADER\n\n{mem_block}\n\n{user_block}"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent._memory_store = store
+        agent._memory_enabled = True
+        agent._user_profile_enabled = True
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+        db.update_system_prompt.assert_not_called()
+
+    def test_no_memory_store_keeps_reusing_stored_prompt(self):
+        """Agents without a built-in store are untouched by the new gate."""
+        stored = "Plain stored prompt, no memory surface anywhere"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent._memory_store = None
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Legitimate fresh-build paths (no history, no DB)
 # ---------------------------------------------------------------------------
 

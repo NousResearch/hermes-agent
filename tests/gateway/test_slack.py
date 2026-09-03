@@ -1307,6 +1307,72 @@ class TestSendDocument:
         sleep_mock.assert_awaited_once()
 
 
+class TestUploadFailureReportsFailure:
+    """A failed attachment upload must not be reported to callers as success.
+
+    When the upload raises, the fallback posts a notice telling the user the
+    attachment did not arrive — but it returned that notice's own SendResult,
+    which is ``success=True``.  Callers therefore recorded the delivery as
+    complete, and agents went on to tell users to open an attachment that was
+    never uploaded.
+    """
+
+    @pytest.mark.asyncio
+    async def test_send_document_upload_failure_returns_failure(
+        self, adapter, tmp_path
+    ):
+        test_file = tmp_path / "report.pdf"
+        test_file.write_bytes(b"%PDF-1.4 fake content")
+        adapter._app.client.files_upload_v2 = AsyncMock(
+            side_effect=RuntimeError("missing_scope")
+        )
+
+        result = await adapter.send_document(
+            chat_id="C123", file_path=str(test_file)
+        )
+
+        assert not result.success
+        assert result.error
+        # The user-facing notice is still delivered.
+        adapter._app.client.chat_postMessage.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_upload_failure_returns_failure(
+        self, adapter, tmp_path
+    ):
+        test_file = tmp_path / "shot.png"
+        test_file.write_bytes(b"png bytes")
+        adapter._app.client.files_upload_v2 = AsyncMock(
+            side_effect=RuntimeError("missing_scope")
+        )
+
+        result = await adapter.send_image_file(
+            chat_id="C123", image_path=str(test_file)
+        )
+
+        assert not result.success
+        assert result.error
+        adapter._app.client.chat_postMessage.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_video_upload_failure_returns_failure(
+        self, adapter, tmp_path
+    ):
+        test_file = tmp_path / "clip.mp4"
+        test_file.write_bytes(b"mp4 bytes")
+        adapter._app.client.files_upload_v2 = AsyncMock(
+            side_effect=RuntimeError("missing_scope")
+        )
+
+        result = await adapter.send_video(
+            chat_id="C123", video_path=str(test_file)
+        )
+
+        assert not result.success
+        assert result.error
+        adapter._app.client.chat_postMessage.assert_called_once()
+
+
 class TestSendPrivateNotice:
     @pytest.mark.asyncio
     async def test_send_private_notice_uses_ephemeral_api(self, adapter):

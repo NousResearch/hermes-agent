@@ -210,6 +210,39 @@ except ImportError:
         DEFAULT_TYPE = Any
     ContextTypes = _MockContextTypes
 
+if TELEGRAM_AVAILABLE and getattr(filters, "MessageFilter", None) is not None:
+    class _RichMessageFilter(filters.MessageFilter):
+        """Match inbound Telegram messages that carry rich_message payloads."""
+
+        def filter(self, message: Any) -> bool:
+            if getattr(message, "text", None):
+                return False
+            # Attachment-bearing messages (photo/document/... often carry a rich
+            # caption) must fall through to the media handler so the attachment is
+            # not consumed by the rich text path (#94899). Cheap attribute checks
+            # also keep the to_dict() serialization off the dispatch hot path.
+            # NOTE: generic `caption` is intentionally NOT checked — every supported
+            # media type with a caption also carries its truthy media attr, and an
+            # unsupported caption-bearing type (e.g. animation) must NOT be excluded
+            # here or it would match no handler at all.
+            if any(
+                getattr(message, attr, None)
+                for attr in ("photo", "document", "video", "audio", "voice", "sticker")
+            ):
+                return False
+            rp = getattr(message, "rich_message", None)
+            if rp is not None:
+                return True
+            try:
+                rp = message.to_dict().get("rich_message")
+            except Exception:
+                return False
+            return rp is not None
+else:
+    class _RichMessageFilter:
+        def filter(self, message: Any) -> bool:
+            return False
+
 import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
@@ -234,6 +267,7 @@ from gateway.platforms.base import (
     _TEXT_INJECT_EXTENSIONS,
     utf16_len,
 )
+from plugins.platforms.telegram.rich_messages import rich_message_to_markdown
 from plugins.platforms.telegram.telegram_ids import (
     normalize_telegram_chat_id,
 )
@@ -706,6 +740,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
+        self._rich_inbound_handling: bool = self._coerce_bool_extra("rich_inbound_handling", True)
         # Bot API 10.1 Rich Messages: render constructs the legacy MarkdownV2
         # path degrades (tables → bullet lists, task lists, <details>, block
         # math) via sendRichMessage / editMessageText's rich_message param using
@@ -4509,6 +4544,15 @@ class TelegramAdapter(BasePlatformAdapter):
         the ``gateway_platform_event`` observer (group 99) in lockstep with the
         core handlers.
         """
+        # Kill-switch: when rich inbound handling is disabled, do NOT register
+        # the rich filter at all — otherwise it would claim the update and the
+        # message would vanish with no fallback and no log (#94899). The flag is
+        # set once in __init__ before every _register_handlers call site.
+        if self._rich_inbound_handling:
+            app.add_handler(TelegramMessageHandler(
+                _RichMessageFilter(),
+                self._handle_rich_message
+            ))
         app.add_handler(TelegramMessageHandler(
             filters.TEXT & ~filters.COMMAND,
             self._handle_text_message
@@ -10015,6 +10059,42 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        await self._cache_replied_media(msg, event)
+        event = self._apply_telegram_group_observe_attribution(event)
+        self._enqueue_text_event(event)
+
+    async def _handle_rich_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle inbound rich messages as markdown text."""
+        if not self._rich_inbound_handling:
+            return
+        msg = self._effective_update_message(update)
+        if not msg or getattr(msg, "text", None):
+            return
+        if not self._is_user_authorized_from_message(msg):
+            logger.warning(
+                "[Telegram] Blocked unauthorized user %s in chat %s",
+                getattr(getattr(msg, "from_user", None), "id", None),
+                getattr(getattr(msg, "chat", None), "id", None),
+            )
+            return
+        if not self._should_process_message(msg):
+            if self._should_observe_unmentioned_group_message(msg):
+                self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
+            return
+        await self._ensure_forum_commands(update.message)
+
+        raw = getattr(msg, "rich_message", None)
+        if raw is None:
+            try:
+                raw = msg.to_dict().get("rich_message")
+            except Exception:
+                raw = None
+        text = rich_message_to_markdown(raw) if raw is not None else ""
+        if not text:
+            return
+
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        event.text = self._clean_bot_trigger_text(text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)

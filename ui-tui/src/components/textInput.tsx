@@ -502,6 +502,25 @@ export function isLineKillModifier(key: { ctrl: boolean; meta: boolean; super?: 
 }
 
 /**
+ * Decide whether a ctrl-modified keypress that matched no composer
+ * binding should be dropped instead of falling through to the text
+ * path. hermes-ink assigns `keypress.name` as the input when ctrl is
+ * set, so e.g. \x0c — the byte the dashboard PTY bridge writes on
+ * every reattach to force a redraw — decodes as ctrl+'l' with input
+ * "l" and would type a stray "l" into the composer (#99277).
+ *
+ * Pastes are exempt: they legitimately carry control bytes alongside
+ * text. ctrl+meta is exempt too: Windows maps AltGr to Ctrl+Alt, and
+ * those keypresses are real text for European layouts.
+ */
+export function shouldDropUnboundCtrlKeypress(
+  key: { ctrl: boolean; meta: boolean },
+  isPasted: boolean
+): boolean {
+  return key.ctrl && !key.meta && !isPasted
+}
+
+/**
  * Pure computation for the fast-echo backspace bypass: given the
  * current value/cursor (already validated by `canFastBackspaceShape`),
  * returns what the new value/cursor should be, the exact stdout write
@@ -1574,6 +1593,13 @@ export function TextInput({
         } else {
           ;({ cursor: c, value: v } = killToLineEnd(v, c))
         }
+      } else if (shouldDropUnboundCtrlKeypress(k, event.keypress.isPasted === true)) {
+        // Every real ctrl binding has been checked above; what is left
+        // is a ctrl-modified keypress with no binding, and its input is
+        // the literal key name — never text.
+        flushKeyBurst()
+
+        return
       } else if (event.keypress.isPasted || inp.length > 0) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
         const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')

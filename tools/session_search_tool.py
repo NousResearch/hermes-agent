@@ -790,6 +790,7 @@ def _discover(
             offset=0,
             sort=sort,
             fields=_DISCOVER_SEARCH_FIELDS,
+            natural_language=True,
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)

@@ -1,0 +1,666 @@
+{
+  "version": 2,
+  "description": "Privacy-safe multilingual NL session-search evaluation: synthetic pack-aware mechanism cases and adversarial relevance cases, independently materialized in temporary SQLite databases.",
+  "cases": [
+    {
+      "id": "en-01",
+      "lang": "default",
+      "query": "what did we decide about cluster backups",
+      "target": "cluster backup decision",
+      "packs": [
+        "default"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "en-02",
+      "lang": "default",
+      "query": "how are proxy services configured",
+      "target": "proxy service configuration",
+      "packs": [
+        "default"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "en-03",
+      "lang": "default",
+      "query": "where were deployment logs running",
+      "target": "deployment log runner",
+      "packs": [
+        "default"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "es-01",
+      "lang": "es",
+      "query": "dónde están las configuraciones del proxy",
+      "target": "configuración proxy",
+      "packs": [
+        "default",
+        "es"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "es-02",
+      "lang": "es",
+      "query": "cómo quedaron los servidores configurados",
+      "target": "servidor configurado",
+      "packs": [
+        "default",
+        "es"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "es-03",
+      "lang": "es",
+      "query": "cuándo ejecutaron las copias nocturnas",
+      "target": "copia nocturna ejecución",
+      "packs": [
+        "default",
+        "es"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "fr-01",
+      "lang": "fr",
+      "query": "où sont les configurations du serveur",
+      "target": "configuration serveur",
+      "packs": [
+        "default",
+        "fr"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "fr-02",
+      "lang": "fr",
+      "query": "comment les sauvegardes fonctionnent-elles",
+      "target": "sauvegarde fonctionnement",
+      "packs": [
+        "default",
+        "fr"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "fr-03",
+      "lang": "fr",
+      "query": "pourquoi les déploiements échouaient",
+      "target": "déploiement échec",
+      "packs": [
+        "default",
+        "fr"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "de-01",
+      "lang": "de",
+      "query": "wo sind die Konfigurationen des Servers",
+      "target": "Konfiguration Server",
+      "packs": [
+        "default",
+        "de"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "de-02",
+      "lang": "de",
+      "query": "wie laufen die Sicherungen nachts",
+      "target": "Sicherung Nachtlauf",
+      "packs": [
+        "default",
+        "de"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "de-03",
+      "lang": "de",
+      "query": "warum wurden die Dienste gestartet",
+      "target": "Dienst Start",
+      "packs": [
+        "default",
+        "de"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "pt-01",
+      "lang": "pt",
+      "query": "onde estão as configurações do servidor",
+      "target": "configuração servidor",
+      "packs": [
+        "default",
+        "pt"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "pt-02",
+      "lang": "pt",
+      "query": "como funcionam os backups noturnos",
+      "target": "backup noturno funcionamento",
+      "packs": [
+        "default",
+        "pt"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "pt-03",
+      "lang": "pt",
+      "query": "quando os serviços reiniciaram",
+      "target": "serviço reinício",
+      "packs": [
+        "default",
+        "pt"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "it-01",
+      "lang": "it",
+      "query": "dov'è la configurazione del server",
+      "target": "configurazione server",
+      "packs": [
+        "default",
+        "it"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "it-02",
+      "lang": "it",
+      "query": "quando girano i backup notturni",
+      "target": "backup notturno giro",
+      "packs": [
+        "default",
+        "it"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "it-03",
+      "lang": "it",
+      "query": "come funzionano i servizi distribuiti",
+      "target": "servizio distribuzione funzionamento",
+      "packs": [
+        "default",
+        "it"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "ru-01",
+      "lang": "ru",
+      "query": "где находятся конфигурации серверов",
+      "target": "конфигурация сервер",
+      "packs": [
+        "default",
+        "ru"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "ru-02",
+      "lang": "ru",
+      "query": "как работают ночные резервные копии",
+      "target": "резервная копия ночь",
+      "packs": [
+        "default",
+        "ru"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "ru-03",
+      "lang": "ru",
+      "query": "когда перезапускали развернутые сервисы",
+      "target": "сервис перезапуск развертывание",
+      "packs": [
+        "default",
+        "ru"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "be-01",
+      "lang": "be",
+      "query": "колькі сервераў з канфігурацыяй запушчана",
+      "target": "сервер канфігурацыя запуск",
+      "packs": [
+        "default",
+        "be"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "be-02",
+      "lang": "be",
+      "query": "дзе знаходзяцца рэзервовыя копіі",
+      "target": "рэзервовая копія знаходжанне",
+      "packs": [
+        "default",
+        "be"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "be-03",
+      "lang": "be",
+      "query": "калі працуюць начныя сэрвісы",
+      "target": "начны сэрвіс праца",
+      "packs": [
+        "default",
+        "be"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "uk-01",
+      "lang": "uk",
+      "query": "скільки серверів конфігурації запущено",
+      "target": "сервер конфігурація запуск",
+      "packs": [
+        "default",
+        "uk"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "uk-02",
+      "lang": "uk",
+      "query": "де знаходяться резервні копії",
+      "target": "резервна копія знаходження",
+      "packs": [
+        "default",
+        "uk"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "uk-03",
+      "lang": "uk",
+      "query": "коли працюють нічні сервіси",
+      "target": "нічний сервіс робота",
+      "packs": [
+        "default",
+        "uk"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "sr-01",
+      "lang": "sr",
+      "query": "где су конфигурације сервера",
+      "target": "конфигурација сервер",
+      "packs": [
+        "default",
+        "sr"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "sr-02",
+      "lang": "sr",
+      "query": "како раде ноћне копије",
+      "target": "ноћна копија рад",
+      "packs": [
+        "default",
+        "sr"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "sr-03",
+      "lang": "sr",
+      "query": "када су сервиси покренути",
+      "target": "сервис покретање",
+      "packs": [
+        "default",
+        "sr"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "bg-01",
+      "lang": "bg",
+      "query": "къде са конфигурациите на сървъра",
+      "target": "конфигурация сървър",
+      "packs": [
+        "default",
+        "bg"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "bg-02",
+      "lang": "bg",
+      "query": "как работят нощните копия",
+      "target": "нощно копие работа",
+      "packs": [
+        "default",
+        "bg"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "bg-03",
+      "lang": "bg",
+      "query": "кога услугите стартираха",
+      "target": "услуга стартиране",
+      "packs": [
+        "default",
+        "bg"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "mk-01",
+      "lang": "mk",
+      "query": "каде се конфигурациите на серверот",
+      "target": "конфигурација сервер",
+      "packs": [
+        "default",
+        "mk"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "mk-02",
+      "lang": "mk",
+      "query": "како работат ноќните копии",
+      "target": "ноќна копија работа",
+      "packs": [
+        "default",
+        "mk"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "mk-03",
+      "lang": "mk",
+      "query": "кога сервисите стартуваа",
+      "target": "сервис стартување",
+      "packs": [
+        "default",
+        "mk"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "hr-01",
+      "lang": "hr",
+      "query": "gdje su konfiguracije poslužitelja",
+      "target": "konfiguracija poslužitelj",
+      "packs": [
+        "default",
+        "hr"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "hr-02",
+      "lang": "hr",
+      "query": "kako rade noćne kopije",
+      "target": "noćna kopija rad",
+      "packs": [
+        "default",
+        "hr"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "hr-03",
+      "lang": "hr",
+      "query": "kada su servisi pokrenuti",
+      "target": "servis pokretanje",
+      "packs": [
+        "default",
+        "hr"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "cs-01",
+      "lang": "cs",
+      "query": "kde jsou konfigurace serveru",
+      "target": "konfigurace server",
+      "packs": [
+        "default",
+        "cs"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "cs-02",
+      "lang": "cs",
+      "query": "jak fungují noční zálohy",
+      "target": "noční záloha fungování",
+      "packs": [
+        "default",
+        "cs"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "cs-03",
+      "lang": "cs",
+      "query": "kdy byly služby spuštěny",
+      "target": "služba spuštění",
+      "packs": [
+        "default",
+        "cs"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "sk-01",
+      "lang": "sk",
+      "query": "kde sú konfigurácie servera",
+      "target": "konfigurácia server",
+      "packs": [
+        "default",
+        "sk"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "sk-02",
+      "lang": "sk",
+      "query": "ako fungujú nočné zálohy",
+      "target": "nočná záloha fungovanie",
+      "packs": [
+        "default",
+        "sk"
+      ],
+      "scenario": "morphology_stopwords"
+    },
+    {
+      "id": "sk-03",
+      "lang": "sk",
+      "query": "kedy boli služby spustené",
+      "target": "služba spustenie",
+      "packs": [
+        "default",
+        "sk"
+      ],
+      "scenario": "morphology_stopwords"
+    }
+  ],
+  "adversarial_cases": [
+    {
+      "id": "adv-en-exact",
+      "lang": "default",
+      "packs": [
+        "default"
+      ],
+      "scenario": "exact_hit",
+      "query": "backup policy",
+      "relevant": [
+        "backup policy retained for cluster"
+      ],
+      "distractors": [
+        "backup policy obsolete draft",
+        "release policy note"
+      ]
+    },
+    {
+      "id": "adv-en-adjacent",
+      "lang": "default",
+      "packs": [
+        "default"
+      ],
+      "scenario": "adjacent_turns",
+      "query": "why flux cluster backups",
+      "relevant": [
+        "flux reconciles deployments",
+        "cluster backups run nightly"
+      ],
+      "distractors": [
+        "flux capacitor note",
+        "calendar backup entry"
+      ]
+    },
+    {
+      "id": "adv-en-absent",
+      "lang": "default",
+      "packs": [
+        "default"
+      ],
+      "scenario": "absent",
+      "query": "luminous manganese theorem",
+      "relevant": [],
+      "distractors": [
+        "generic scheduling record",
+        "unrelated visual dashboard",
+        "temporary document archive"
+      ]
+    },
+    {
+      "id": "adv-en-syntax",
+      "lang": "default",
+      "packs": [
+        "default"
+      ],
+      "scenario": "fts_syntax",
+      "query": "backup NOT obsolete",
+      "relevant": [
+        "backup policy retained"
+      ],
+      "distractors": [
+        "backup obsolete draft",
+        "ordinary status note"
+      ]
+    },
+    {
+      "id": "adv-es-near",
+      "lang": "es",
+      "packs": [
+        "default",
+        "es"
+      ],
+      "scenario": "lexical_near_miss",
+      "query": "dónde están las configuraciones del proxy",
+      "relevant": [
+        "configuración proxy vigente"
+      ],
+      "distractors": [
+        "configuración temporal de monitor",
+        "proxy visual sin configuración"
+      ]
+    },
+    {
+      "id": "adv-fr-near",
+      "lang": "fr",
+      "packs": [
+        "default",
+        "fr"
+      ],
+      "scenario": "lexical_near_miss",
+      "query": "comment fonctionnent les sauvegardes",
+      "relevant": [
+        "sauvegarde fonctionnement validé"
+      ],
+      "distractors": [
+        "fonctionnement visuel",
+        "sauvegarde temporaire supprimée"
+      ]
+    },
+    {
+      "id": "adv-it-route",
+      "lang": "it",
+      "packs": [
+        "default",
+        "it"
+      ],
+      "scenario": "routing",
+      "query": "quando girano i backup notturni",
+      "relevant": [
+        "backup notturno giro"
+      ],
+      "distractors": [
+        "backup diurno giro",
+        "notturno calendario"
+      ]
+    },
+    {
+      "id": "adv-ru-near",
+      "lang": "ru",
+      "packs": [
+        "default",
+        "ru"
+      ],
+      "scenario": "lexical_near_miss",
+      "query": "где конфигурации прокси",
+      "relevant": [
+        "конфигурация прокси сохранена"
+      ],
+      "distractors": [
+        "конфигурация мониторинга",
+        "прокси временно удалён"
+      ]
+    },
+    {
+      "id": "adv-be-route",
+      "lang": "be",
+      "packs": [
+        "default",
+        "be"
+      ],
+      "scenario": "routing",
+      "query": "колькі сервераў запушчана",
+      "relevant": [
+        "сервер запуск завершаны"
+      ],
+      "distractors": [
+        "сервер русская заметка",
+        "запуск календаря"
+      ]
+    },
+    {
+      "id": "adv-sk-near",
+      "lang": "sk",
+      "packs": [
+        "default",
+        "sk"
+      ],
+      "scenario": "cross_language",
+      "query": "ako fungujú nočné zálohy",
+      "relevant": [
+        "nočná záloha fungovanie"
+      ],
+      "distractors": [
+        "noční záloha česká poznámka",
+        "záloha vizuálneho návrhu"
+      ]
+    }
+  ]
+}

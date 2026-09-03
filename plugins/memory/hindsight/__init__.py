@@ -885,6 +885,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_retain_mission: str | None = None
         self._bank_id_template = ""
 
+        # Mental model injection
+        self._mental_model_id = ""
+        self._mental_model_content = ""
+
     @property
     def name(self) -> str:
         return "hindsight"
@@ -1853,27 +1857,63 @@ class HindsightMemoryProvider(MemoryProvider):
             )
             t.start()
 
+        # Mental model: fetch content at init when configured.
+        # Positioned after the daemon start block so local_embedded mode has
+        # a running daemon before the fetch fires. Uses _run_hindsight_operation
+        # for event-loop safety and embedded-daemon reconnection.
+        self._mental_model_id = str(self._config.get("mental_model_id") or "").strip()
+        if self._mental_model_id:
+            try:
+                resp = self._run_hindsight_operation(
+                    lambda client: client.mental_models.get_mental_model(
+                        self._bank_id, self._mental_model_id, detail="content",
+                        _request_timeout=5.0,
+                    )
+                )
+                content = str(getattr(resp, "content", None) or "")
+            except Exception as exc:
+                logger.debug("Hindsight mental model fetch failed (%s/%s): %s",
+                             self._bank_id, self._mental_model_id, exc)
+                content = ""
+            if content:
+                self._mental_model_content = content
+                logger.info("Hindsight mental model '%s' loaded (%d chars)",
+                            self._mental_model_id, len(content))
+            else:
+                logger.warning("Hindsight mental model '%s' configured but returned no content",
+                               self._mental_model_id)
+
     def system_prompt_block(self) -> str:
         if self._memory_mode == "context":
-            return (
+            header = (
                 f"# Hindsight Memory\n"
                 f"Active (context mode). Bank: {self._bank_id}, budget: {self._budget}.\n"
                 f"Relevant memories are automatically injected into context."
             )
-        if self._memory_mode == "tools":
-            return (
+        elif self._memory_mode == "tools":
+            header = (
                 f"# Hindsight Memory\n"
                 f"Active (tools mode). Bank: {self._bank_id}, budget: {self._budget}.\n"
                 f"Use hindsight_recall to search, hindsight_reflect for synthesis, "
                 f"hindsight_retain to store facts."
             )
-        return (
-            f"# Hindsight Memory\n"
-            f"Active. Bank: {self._bank_id}, budget: {self._budget}.\n"
-            f"Relevant memories are automatically injected into context. "
-            f"Use hindsight_recall to search, hindsight_reflect for synthesis, "
-            f"hindsight_retain to store facts."
-        )
+        else:
+            header = (
+                f"# Hindsight Memory\n"
+                f"Active. Bank: {self._bank_id}, budget: {self._budget}.\n"
+                f"Relevant memories are automatically injected into context. "
+                f"Use hindsight_recall to search, hindsight_reflect for synthesis, "
+                f"hindsight_retain to store facts."
+            )
+        if self._mental_model_id and self._mental_model_content:
+            header += (
+                f"\n\n<memory-context>\n"
+                f"# Hindsight Mental Model (synthesized cross-session context)\n"
+                f"ID: {self._mental_model_id}\n\n"
+                f"{self._mental_model_content}\n"
+                f"</memory-context>"
+            )
+        return header
 
     def _recall_disabled(self) -> bool:
         """Guards shared by the async and synchronous recall paths."""

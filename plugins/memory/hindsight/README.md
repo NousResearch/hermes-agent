@@ -64,6 +64,16 @@ Config file: `~/.hermes/hindsight/config.json`
 | `bank_mission` | — | Reflect mission (identity/framing for reflect reasoning). Applied via Banks API. |
 | `bank_retain_mission` | — | Retain mission (steers what gets extracted). Applied via Banks API. |
 
+### Mental Model
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `mental_model_id` | — | ID of a pre-created Hindsight mental model to inject into the system prompt at session start. The model's content is fetched once (database read, no LLM call) and persists for the session lifetime. Leave empty to disable. |
+
+When set, the named mental model's content is fetched from the Hindsight API during initialization and included in the system prompt alongside the memory status block. This provides stable, synthesized context from the first turn, complementing the per-turn recall injection.
+
+Create the mental model via the Hindsight dashboard, CLI, or API before setting this key. The mental model must exist in the configured `bank_id`. See [Mental Models](https://hindsight.vectorize.io/developer/api/mental-models) in the Hindsight docs.
+
 ### Recall
 
 | Key | Default | Description |

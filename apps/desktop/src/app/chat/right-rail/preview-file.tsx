@@ -34,14 +34,21 @@ import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
+import { isNotebookPath } from '@/lib/notebook-preview'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
+import { NotebookPreview } from './preview-notebook'
+
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
+// Notebooks embed base64 figures; the 512 KB source cap would truncate JSON
+// mid-object and the rendered view would fail closed. Same 16 MB ceiling as
+// the local data-URL / plugin-source reads.
+const NOTEBOOK_PREVIEW_MAX_BYTES = 16 * 1024 * 1024
 const SOURCE_CHUNK_LINES = 200
 const SOURCE_LINE_PX = 20
 const SOURCE_OVERSCAN_LINES = 400
@@ -416,11 +423,14 @@ const MARKDOWN_COMPONENTS = {
   a: MarkdownLink
 }
 
-export function MarkdownPreview({ text }: { text: string }) {
+export function MarkdownPreview({ className, text }: { className?: string; text: string }) {
   const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
 
   return (
-    <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
+    <div
+      className={cn('preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground', className)}
+      data-selectable-text="true"
+    >
       <Streamdown
         components={MARKDOWN_COMPONENTS}
         controls={false}
@@ -693,6 +703,8 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
   const isPdf = target.previewKind === 'pdf'
+  const isNotebook = isNotebookPath(filePath)
+  const textCap = isNotebook ? NOTEBOOK_PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -711,7 +723,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
-  const blockedByTarget = !isImage && !isPdf && !forcePreview && (target.binary || target.large)
+  const blockedByTarget =
+    !isImage &&
+    !isPdf &&
+    !forcePreview &&
+    (target.binary || (target.byteSize ?? 0) > textCap || (!isNotebook && target.large))
 
   useEffect(() => {
     let active = true
@@ -747,7 +763,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         const result = await readTextPreview(filePath)
 
         if (active) {
-          const shouldBlock = !forcePreview && (result.binary || (result.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
+          const shouldBlock = !forcePreview && (result.binary || (result.byteSize ?? 0) > textCap)
 
           setState({
             binary: result.binary,
@@ -797,6 +813,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     isImage,
     isPdf,
     isText,
+    textCap,
     reloadKey,
     selfReload,
     target.dataUrl,
@@ -1030,7 +1047,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     !isImage &&
     !isPdf &&
     !forcePreview &&
-    (target.binary || target.large || state.binary || (state.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
+    (target.binary || state.binary || (state.byteSize ?? 0) > textCap || (!isNotebook && target.large))
   ) {
     const binary = target.binary || state.binary
     const size = target.byteSize || state.byteSize
@@ -1081,7 +1098,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     // Order the toggle reads left→right; default lands on the most useful view.
     const modes: PreviewViewMode[] = []
 
-    if (isMarkdown) {
+    if (isMarkdown || isNotebook) {
       modes.push('rendered')
     }
 
@@ -1091,7 +1108,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       modes.push('diff')
     }
 
-    const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
+    const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown || isNotebook ? 'rendered' : 'source'
     const mode = userMode && modes.includes(userMode) ? userMode : autoMode
 
     return (
@@ -1131,7 +1148,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         />
         <div className="min-h-0 flex-1 overflow-auto">
           {mode === 'rendered' ? (
-            <MarkdownPreview text={state.text} />
+            isNotebook ? (
+              <NotebookPreview text={state.text} />
+            ) : (
+              <MarkdownPreview text={state.text} />
+            )
           ) : mode === 'diff' ? (
             <FileDiffPanel
               className="mx-0 mb-0 h-full max-h-none"

@@ -2368,10 +2368,17 @@ def _is_sensitive_path(path: Path) -> bool:
 _FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 _FS_TEXT_PREVIEW_MAX_BYTES = 512 * 1024
+_FS_NOTEBOOK_PREVIEW_MAX_BYTES = 16 * 1024 * 1024
 # Upper bound for the in-app spot editor's save. The editor only opens
 # non-truncated text (<= the preview cap), so this is a safety ceiling against
 # a pasted-in megablob, not the expected payload size.
 _FS_TEXT_WRITE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _fs_text_preview_max_bytes(path: Path) -> int:
+    return _FS_NOTEBOOK_PREVIEW_MAX_BYTES if path.suffix.lower() == ".ipynb" else _FS_TEXT_PREVIEW_MAX_BYTES
+
+
 _FS_PREVIEW_LANGUAGE_BY_EXT = {
     ".c": "c",
     ".conf": "ini",
@@ -2383,6 +2390,7 @@ _FS_PREVIEW_LANGUAGE_BY_EXT = {
     ".h": "c",
     ".hpp": "cpp",
     ".html": "html",
+    ".ipynb": "json",
     ".java": "java",
     ".js": "javascript",
     ".json": "json",
@@ -3201,7 +3209,7 @@ async def fs_read_text(path: str):
     target, st = _fs_regular_file(_fs_path(path))
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
-    bytes_to_read = min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES)
+    bytes_to_read = min(st.st_size, _fs_text_preview_max_bytes(target))
     try:
         with target.open("rb") as handle:
             data = handle.read(bytes_to_read)
@@ -3216,7 +3224,7 @@ async def fs_read_text(path: str):
         "mimeType": _fs_mime_type(target),
         "path": str(target),
         "text": data.decode("utf-8", errors="replace"),
-        "truncated": st.st_size > _FS_TEXT_PREVIEW_MAX_BYTES,
+        "truncated": st.st_size > _fs_text_preview_max_bytes(target),
     }
 
 

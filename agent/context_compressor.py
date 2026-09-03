@@ -1058,9 +1058,25 @@ def _compact_fallback_turn(value: Any) -> str:
     """One-line, redacted, length-capped rendering of a turn's content for the static fallback."""
     text = _redact_compaction_text(_content_text_for_contains(value))
     text = re.sub(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b", "[REDACTED]", text)
+    # Raw blobs and repeated fixture markers commonly arrive as one enormous token;
+    # retaining the whole token adds no recovery value, but keep a non-periodic suffix
+    # because tool errors are often appended there.
+    text = re.sub(r"([A-Za-z0-9_])\1{999,}", "[long run omitted]", text)
+
+    def _compact_long_token(match: re.Match[str]) -> str:
+        token = match.group(0)
+        period = (token + token).find(token, 1)
+        if 0 < period < len(token) and len(token) % period == 0:
+            return "[repeated token omitted]"
+        return "[long token omitted]" + token[-200:]
+
+    text = re.sub(r"[A-Za-z0-9_]{1000,}", _compact_long_token, text)
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > _FALLBACK_TURN_MAX_CHARS:
-        text = text[: _FALLBACK_TURN_MAX_CHARS - 15].rstrip() + " ...[truncated]"
+        marker = " ...[truncated]... "
+        tail_chars = 220
+        head_chars = _FALLBACK_TURN_MAX_CHARS - len(marker) - tail_chars
+        text = text[:head_chars].rstrip() + marker + text[-tail_chars:].lstrip()
     return re.sub(r"\bgh[pousr]_[A-Za-z0-9_.-]+", "[REDACTED]", text)
 
 
@@ -2982,7 +2998,11 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             elif role == "tool":
                 tool_name, tool_args = call_id_to_tool.get(str(msg.get("tool_call_id") or ""), ("unknown", ""))
                 tool_actions.append(_summarize_tool_result(tool_name, tool_args, text or ""))
-                if re.search(r"\b(error|failed|exception|traceback|timeout|timed out|fatal)\b", text, re.I):
+                if re.search(
+                    r"(?:\b(?:failed|exception|traceback|timeout|timed out|fatal)\b|\b\w*error\b)",
+                    text,
+                    re.I,
+                ):
                     blockers.append(text[:500])
         return {
             "user_asks": user_asks,
@@ -2999,7 +3019,19 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         actions, files, errors) in the normal summary structure so downstream prompts recover gracefully."""
         anchors = self._fallback_anchors(turns_to_summarize)
         user_asks = anchors["user_asks"]
-        completed = anchors["completed"]
+        def _bounded(items: list[str], *, count: int, chars: int) -> list[str]:
+            marker = " ... "
+            bounded = []
+            for item in items[:count]:
+                if len(item) > chars:
+                    head = chars - len(marker) - 120
+                    item = item[:head].rstrip() + marker + item[-120:].lstrip()
+                bounded.append(item)
+            return bounded
+
+        completed = _bounded(anchors["completed"], count=6, chars=260)
+        blockers = _bounded(anchors["blockers"], count=4, chars=380)
+        last_dropped_turns = _bounded(anchors["last_dropped_turns"], count=6, chars=320)
         active_task = f"User asked: {user_asks[-1]!r}" if user_asks else _NO_USER_TASK_SENTINEL
         previous_summary_note = ""
         if self._previous_summary:
@@ -3033,7 +3065,7 @@ Recovered from a deterministic fallback because the LLM context summarizer was u
 Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
 ## Blocked
-{_bullets(anchors["blockers"], limit=5)}
+{_bullets(blockers, limit=4)}
 
 ## Key Decisions
 None recoverable from deterministic fallback.
@@ -3045,7 +3077,7 @@ None recoverable from deterministic fallback.
 {_bullets(anchors["relevant_files"], limit=12)}
 
 ## Last Dropped Turns
-{_bullets(anchors["last_dropped_turns"], limit=8)}
+{_bullets(last_dropped_turns, limit=6)}
 
 ## Critical Context
 Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
@@ -3057,11 +3089,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _pruned_names = _collect_ghosted_skill_names(turns_to_summarize)
         del _pruned_names[_MAX_PRUNED_SKILL_MARKERS:]
         summary = self._with_summary_prefix(_redact_compaction_text(body.strip()))
-        if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
-            summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
-        # Re-inject AFTER the size cap: markers live at the end, where truncation cuts.
+        summary = self._augment_summary_lean(summary, turns_to_summarize)
         summary = _reinject_pruned_skill_markers(summary, _pruned_names)
-        return self._augment_summary_lean(summary, turns_to_summarize)
+        if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
+            marker = "\n...[fallback summary middle truncated]...\n"
+            tail_chars = 5_000
+            head_chars = _FALLBACK_SUMMARY_MAX_CHARS - len(marker) - tail_chars
+            summary = summary[:head_chars].rstrip() + marker + summary[-tail_chars:].lstrip()
+        return summary
 
     def _demote_stale_tail_tools(self, messages: List[Dict[str, Any]], tail_start: int) -> List[Dict[str, Any]]:
         """Lean mode: demote tail tool results older than the newest ``_LEAN_TAIL_KEEP_TOOL_ROUNDS`` rounds to
@@ -4894,6 +4929,17 @@ def reference_handoff_would_drive_next_model_call(messages: Optional[List[Dict[s
 def is_user_originated_turn(message: Any) -> bool:
     """True for human-authored user turns (not compaction scaffolding); dispatchers must use this, not a bare role check."""
     return user_originated_turn_view(message) is not None
+
+
+def build_static_handoff(
+    turns_to_summarize: List[Dict[str, Any]],
+    reason: str | None = None,
+) -> str:
+    """Build the bounded deterministic handoff without initializing a provider."""
+    compressor = object.__new__(ContextCompressor)
+    compressor._previous_summary = None
+    compressor.tail_mode = "legacy"
+    return compressor._build_static_fallback_summary(turns_to_summarize, reason)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

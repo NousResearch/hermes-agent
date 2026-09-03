@@ -13,6 +13,7 @@ import {
   useState
 } from 'react'
 
+import { EDITOR_SUPPRESSION_ATTRS } from '@/app/chat/composer/autofill-suppression'
 import { ComposerDirectiveActions } from '@/app/chat/composer/directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
 import {
@@ -28,7 +29,6 @@ import { rebuildAroundCaret, triggerKeyUpHandler } from '@/app/chat/composer/hoo
 import { useComposerUndo } from '@/app/chat/composer/hooks/use-composer-undo'
 import { useEmojiCompletions } from '@/app/chat/composer/hooks/use-emoji-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
-import { EDITOR_SUPPRESSION_ATTRS } from '@/app/chat/composer/autofill-suppression'
 import {
   dragHasAttachments,
   droppedFileInlineRefs,

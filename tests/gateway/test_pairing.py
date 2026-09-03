@@ -703,3 +703,333 @@ class TestProfileScopedStorage:
         )
 
 
+
+# ---------------------------------------------------------------------------
+# Profile-scoped allowlist env writes (#77490 regression tests)
+# ---------------------------------------------------------------------------
+
+
+class TestProfileScopedAllowlistWrites:
+    """_sync_allowlist_add/remove with profile= writes to the profile's own
+    .env instead of the root .env, preventing cross-profile credential
+    leakage under multiplexing (issue #77490).
+
+    Follow-up review (#77519): the READ must resolve the same profile scope as
+    the WRITE. The dashboard approval path does not install the profile's
+    secret scope, so an unscoped read falls back to the process/root
+    allowlist and would copy root grants into the profile .env, clobbering
+    the profile's own entries. These tests use deliberately distinct process
+    and profile values to prove the boundary holds.
+    """
+
+    def _setup_root_and_profile_env(self, tmp_path, monkeypatch):
+        """Create root .env (owner1) and coder profile .env (owner2) with
+        deliberately distinct allowlist values, and point HERMES_HOME at the
+        root so get_default_hermes_root() resolves to tmp_path."""
+        root_env = tmp_path / ".env"
+        root_env.write_text("TELEGRAM_ALLOWED_USERS=owner1\n", encoding="utf-8")
+
+        profile_env_dir = tmp_path / "profiles" / "coder"
+        profile_env_dir.mkdir(parents=True)
+        profile_env = profile_env_dir / ".env"
+        profile_env.write_text("TELEGRAM_ALLOWED_USERS=owner2\n", encoding="utf-8")
+
+        # Process env also carries the ROOT value — the dashboard process env
+        # is the leak vector the scoped read must ignore.
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        return root_env, profile_env
+
+    def test_sync_allowlist_add_scopes_read_and_write_to_profile_env(
+        self, tmp_path, monkeypatch
+    ):
+        """Approving into a profile must read the PROFILE allowlist and write
+        the result into the profile .env — never copy the process/root value
+        across the boundary. Regression for the #77519 review finding."""
+        from gateway.pairing import _sync_allowlist_add
+
+        root_env, profile_env = self._setup_root_and_profile_env(tmp_path, monkeypatch)
+
+        _sync_allowlist_add("telegram", "newuser", profile="coder")
+
+        # Profile .env: profile's own owner2 preserved, newuser appended.
+        content = profile_env.read_text(encoding="utf-8")
+        assert "owner2,newuser" in content, f"profile .env = {content!r}"
+        assert "owner1" not in content, f"root value leaked into profile: {content!r}"
+        # Root .env untouched.
+        assert root_env.read_text(encoding="utf-8") == "TELEGRAM_ALLOWED_USERS=owner1\n"
+
+    def test_sync_allowlist_add_no_profile_uses_root_env(self, tmp_path, monkeypatch):
+        from gateway.pairing import _sync_allowlist_add
+
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
+
+        saved = {}
+        import hermes_cli.config as cfg
+
+        monkeypatch.setattr(cfg, "save_env_value", lambda k, v: saved.__setitem__(k, v))
+
+        # No profile passed — should read the root/process env.
+        _sync_allowlist_add("telegram", "newuser")
+        assert saved.get("TELEGRAM_ALLOWED_USERS") == "owner1,newuser"
+
+    def test_sync_allowlist_remove_scopes_read_and_write_to_profile_env(
+        self, tmp_path, monkeypatch
+    ):
+        """Revoking from a profile must read the PROFILE allowlist and remove
+        from the profile .env only — root entries untouched."""
+        from gateway.pairing import _sync_allowlist_remove
+
+        root_env, profile_env = self._setup_root_and_profile_env(tmp_path, monkeypatch)
+        # Give the profile its own user to remove.
+        profile_env.write_text(
+            "TELEGRAM_ALLOWED_USERS=owner2,newuser\n", encoding="utf-8"
+        )
+
+        _sync_allowlist_remove("telegram", "newuser", profile="coder")
+
+        content = profile_env.read_text(encoding="utf-8")
+        assert "owner2" in content and "newuser" not in content, (
+            f"profile .env = {content!r}"
+        )
+        # Root .env untouched.
+        assert root_env.read_text(encoding="utf-8") == "TELEGRAM_ALLOWED_USERS=owner1\n"
+
+    def test_sync_allowlist_remove_env_var_when_list_empties_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """Removing the last profile entry removes the var from the PROFILE
+        .env — and a profile with no allowlist at all is left untouched
+        (scoped read must not borrow the process value)."""
+        from gateway.pairing import _sync_allowlist_remove
+
+        root_env, profile_env = self._setup_root_and_profile_env(tmp_path, monkeypatch)
+        # Only the profile has a single entry to remove.
+        profile_env.write_text("TELEGRAM_ALLOWED_USERS=onlyuser\n", encoding="utf-8")
+
+        _sync_allowlist_remove("telegram", "onlyuser", profile="coder")
+        # The profile allowlist is empty after removal: the var is gone.
+        assert "TELEGRAM_ALLOWED_USERS" not in profile_env.read_text(encoding="utf-8")
+        # Root .env untouched (process value must not be borrowed).
+        assert root_env.read_text(encoding="utf-8") == "TELEGRAM_ALLOWED_USERS=owner1\n"
+
+    def test_sync_allowlist_remove_profile_without_env_is_noop(
+        self, tmp_path, monkeypatch
+    ):
+        """A profile with no .env / no allowlist is a no-op even when the
+        process env has a value — the scoped read must not fall back."""
+        from gateway.pairing import _sync_allowlist_remove
+
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "profiles" / "coder").mkdir(parents=True)
+
+        removed = []
+        import hermes_cli.config as cfg
+
+        monkeypatch.setattr(cfg, "remove_env_value", lambda k: removed.append(k))
+
+        _sync_allowlist_remove("telegram", "owner1", profile="coder")
+        assert removed == []
+
+    def test_profile_approve_invokes_sync_with_profile(self, tmp_path, monkeypatch):
+        """PairingStore.approve() passes profile to _sync_allowlist_add."""
+        from hermes_constants import get_hermes_home
+        from gateway.pairing import PairingStore
+
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
+
+        profiles_seen = []
+
+        import gateway.pairing as pairing_mod
+
+        orig_add = pairing_mod._sync_allowlist_add
+
+        def spy_add(platform, user_id, *, profile=None):
+            profiles_seen.append(profile)
+            orig_add(platform, user_id, profile=profile)
+
+        monkeypatch.setattr(pairing_mod, "_sync_allowlist_add", spy_add)
+
+        store = PairingStore(profile="coder")
+        store._approve_user("telegram", "newuser", "")
+        assert "coder" in profiles_seen
+
+
+class TestProfileScopedProcessIsolation:
+    """#77519 follow-up review: profile-scoped allowlist writes must not
+    mutate the shared process allowlist state.
+
+    P1: the previous fix redirected the FILESYSTEM write only; save_env_value()
+    / remove_env_value() also update os.environ + invalidate the global env
+    cache, so an approval in one profile leaked into sibling profiles' process
+    allowlist and live adapter checks. The writer must be file-only.
+    """
+
+    def _setup_root_and_profile_env(self, tmp_path, monkeypatch):
+        root_env = tmp_path / ".env"
+        root_env.write_text("TELEGRAM_ALLOWED_USERS=owner1\n", encoding="utf-8")
+
+        profile_env_dir = tmp_path / "profiles" / "coder"
+        profile_env_dir.mkdir(parents=True)
+        profile_env = profile_env_dir / ".env"
+        profile_env.write_text("TELEGRAM_ALLOWED_USERS=owner2\n", encoding="utf-8")
+
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        return root_env, profile_env
+
+    def test_profile_approve_does_not_mutate_process_env(self, tmp_path, monkeypatch):
+        """Approving into a profile must not change os.environ — a sibling
+        profile's process allowlist stays untouched (P1)."""
+        from gateway.pairing import _sync_allowlist_add
+
+        self._setup_root_and_profile_env(tmp_path, monkeypatch)
+        before = os.environ.get("TELEGRAM_ALLOWED_USERS")
+
+        _sync_allowlist_add("telegram", "newuser", profile="coder")
+
+        # Process env unchanged: the grant lives only in the profile .env.
+        assert os.environ.get("TELEGRAM_ALLOWED_USERS") == before
+        # The profile .env itself got the grant.
+        profile_env = tmp_path / "profiles" / "coder" / ".env"
+        content = profile_env.read_text(encoding="utf-8")
+        assert "owner2,newuser" in content
+
+    def test_profile_revoke_does_not_mutate_process_env(self, tmp_path, monkeypatch):
+        """Revoking from a profile must not purge the process-global allowlist
+        (P1) — the shared carrier sibling profiles read stays intact."""
+        from gateway.pairing import _sync_allowlist_remove
+
+        root_env, profile_env = self._setup_root_and_profile_env(tmp_path, monkeypatch)
+        profile_env.write_text(
+            "TELEGRAM_ALLOWED_USERS=owner2,newuser\n", encoding="utf-8"
+        )
+        before = os.environ.get("TELEGRAM_ALLOWED_USERS")
+
+        _sync_allowlist_remove("telegram", "newuser", profile="coder")
+
+        assert os.environ.get("TELEGRAM_ALLOWED_USERS") == before
+        content = profile_env.read_text(encoding="utf-8")
+        assert "owner2" in content and "newuser" not in content
+
+    def test_profile_approve_writes_do_not_invalidate_env_cache(
+        self, tmp_path, monkeypatch
+    ):
+        """The file-only writer must not call save_env_value (which invalidates
+        the shared env cache). Patch it to raise if touched."""
+        from gateway.pairing import _sync_allowlist_add
+
+        self._setup_root_and_profile_env(tmp_path, monkeypatch)
+
+        import hermes_cli.config as cfg
+
+        def boom(*a, **k):
+            raise AssertionError("save_env_value must not be called for profiles")
+
+        monkeypatch.setattr(cfg, "save_env_value", boom)
+
+        # Must not raise — profile path bypasses save_env_value entirely.
+        _sync_allowlist_add("telegram", "newuser", profile="coder")
+
+    def test_profile_revoke_does_not_call_remove_env_value(
+        self, tmp_path, monkeypatch
+    ):
+        """Sole-entry revoke in a profile must NOT call remove_env_value (which
+        removes the process-global key) — the file-only writer handles it."""
+        from gateway.pairing import _sync_allowlist_remove
+
+        root_env, profile_env = self._setup_root_and_profile_env(tmp_path, monkeypatch)
+        profile_env.write_text("TELEGRAM_ALLOWED_USERS=onlyuser\n", encoding="utf-8")
+
+        import hermes_cli.config as cfg
+
+        def boom(*a, **k):
+            raise AssertionError("remove_env_value must not be called for profiles")
+
+        monkeypatch.setattr(cfg, "remove_env_value", boom)
+
+        _sync_allowlist_remove("telegram", "onlyuser", profile="coder")
+
+        # File-only removal: var gone from profile .env, process env intact.
+        assert "TELEGRAM_ALLOWED_USERS" not in profile_env.read_text(encoding="utf-8")
+        assert os.environ.get("TELEGRAM_ALLOWED_USERS") == "owner1"
+
+
+class TestProfileScopedLivePurge:
+    """#77519 follow-up review, P2: a profile-scoped revoke must purge ONLY
+    the target profile's live adapter allowlist, not every adapter on the
+    platform (sibling profiles' live authorization must survive)."""
+
+    def _fake_adapter(self, platform_value: str, allow_from):
+        adapter = type(
+            "FakeAdapter",
+            (),
+            {"platform": type("P", (), {"value": platform_value})(),
+             "_allow_from": set(allow_from)},
+        )()
+        return adapter
+
+    def test_revoke_purges_only_target_profile_adapter(self, monkeypatch):
+        """Two profiles with adapters for the same platform: revoking profile
+        'coder' must clear coder's snapshot and leave 'work''s untouched."""
+        import gateway.pairing as pairing_mod
+
+        coder_adapter = self._fake_adapter("telegram", {"owner2", "newuser"})
+        work_adapter = self._fake_adapter("telegram", {"owner2", "newuser"})
+
+        runner = type(
+            "FakeRunner",
+            (),
+            {
+                "adapters": {},
+                "_profile_adapters": {
+                    "coder": {"telegram": coder_adapter},
+                    "work": {"telegram": work_adapter},
+                },
+            },
+        )()
+
+        monkeypatch.setattr(
+            "gateway.run._gateway_runner_ref", lambda: runner
+        )
+
+        pairing_mod._sync_live_adapter_allowlist_remove(
+            "telegram", "newuser", profile="coder"
+        )
+
+        assert coder_adapter._allow_from == {"owner2"}
+        assert work_adapter._allow_from == {"owner2", "newuser"}, (
+            "sibling profile live allowlist must survive"
+        )
+
+    def test_revoke_default_profile_purges_primary_adapters(self, monkeypatch):
+        """profile='default' targets runner.adapters (primary), not secondary
+        profile mappings."""
+        import gateway.pairing as pairing_mod
+
+        primary = self._fake_adapter("telegram", {"owner1", "newuser"})
+        secondary = self._fake_adapter("telegram", {"owner2", "newuser"})
+
+        runner = type(
+            "FakeRunner",
+            (),
+            {
+                "adapters": {"telegram": primary},
+                "_profile_adapters": {"coder": {"telegram": secondary}},
+            },
+        )()
+
+        monkeypatch.setattr(
+            "gateway.run._gateway_runner_ref", lambda: runner
+        )
+
+        pairing_mod._sync_live_adapter_allowlist_remove(
+            "telegram", "newuser", profile="default"
+        )
+
+        assert primary._allow_from == {"owner1"}
+        assert secondary._allow_from == {"owner2", "newuser"}
+
+

@@ -1,7 +1,9 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
 
-import logging
 import json
+import logging
+import os
+import subprocess
 import sys
 import threading
 import types
@@ -350,6 +352,161 @@ class TestPluginDiscovery:
         assert tool_result.trace == []
         assert run_tool_execution_middleware("terminal", args, lambda payload: payload) is args
         assert has_middleware("tool_request") is False
+
+    def test_llm_request_middleware_chains_effective_request_with_original_isolated(
+        self, monkeypatch
+    ):
+        seen = []
+
+        def first(**kwargs):
+            kwargs["original_request"]["tampered"] = True
+            return {
+                "request": {**kwargs["request"], "first": True},
+                "source": "first",
+            }
+
+        def second(**kwargs):
+            seen.append((kwargs["request"], kwargs["original_request"]))
+            return {
+                "request": {**kwargs["request"], "second": True},
+                "source": "second",
+            }
+
+        manager = PluginManager()
+        manager._middleware = {"llm_request": [first, second]}
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        request = {"messages": []}
+        result = apply_llm_request_middleware(request)
+
+        assert seen == [({"messages": [], "first": True}, request)]
+        assert result.payload == {"messages": [], "first": True, "second": True}
+        assert result.original_payload == request
+        assert result.trace == [{"source": "first"}, {"source": "second"}]
+        assert request == {"messages": []}
+
+    def test_request_middleware_failure_keeps_prior_rewrite_isolated(
+        self, monkeypatch, caplog
+    ):
+        seen = []
+
+        def first(**kwargs):
+            return {
+                "request": {**kwargs["request"], "first": True},
+                "source": "first",
+            }
+
+        def failing(**kwargs):
+            kwargs["request"]["failed_mutation"] = True
+            raise RuntimeError("broken plugin")
+
+        def malformed(**kwargs):
+            seen.append(kwargs["request"])
+            return {"request": "not-a-dict", "source": "malformed"}
+
+        manager = PluginManager()
+        manager._middleware = {"llm_request": [first, failing, malformed]}
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        with caplog.at_level(logging.WARNING):
+            result = apply_llm_request_middleware({"messages": []})
+
+        assert seen == [{"messages": [], "first": True}]
+        assert result.payload == {"messages": [], "first": True}
+        assert result.trace == [{"source": "first"}]
+        assert "Middleware 'llm_request' callback failing raised: broken plugin" in caplog.text
+
+    def test_tool_request_middleware_runs_relay_before_sequential_plugins(
+        self, monkeypatch
+    ):
+        seen = []
+        monkeypatch.setattr(
+            "agent.relay_runtime.apply_tool_request_intercepts",
+            lambda **kwargs: {**kwargs["args"], "relay": True},
+        )
+
+        def first(**kwargs):
+            seen.append(("first", kwargs["args"], kwargs["original_args"]))
+            return {"args": {**kwargs["args"], "first": True}, "source": "first"}
+
+        def second(**kwargs):
+            seen.append(("second", kwargs["args"], kwargs["original_args"]))
+            return {"args": {**kwargs["args"], "second": True}, "source": "second"}
+
+        manager = PluginManager()
+        manager._middleware = {"tool_request": [first, second]}
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        args = {"path": "README.md"}
+        result = apply_tool_request_middleware("read_file", args, session_id="s1")
+
+        assert seen == [
+            ("first", {"path": "README.md", "relay": True}, args),
+            ("second", {"path": "README.md", "relay": True, "first": True}, args),
+        ]
+        assert result.payload == {
+            "path": "README.md",
+            "relay": True,
+            "first": True,
+            "second": True,
+        }
+        assert result.original_payload == args
+        assert result.trace == [
+            {"source": "nemo_relay"},
+            {"source": "first"},
+            {"source": "second"},
+        ]
+
+    def test_request_middleware_composes_discovered_plugins_in_fresh_process(
+        self, tmp_path
+    ):
+        home = tmp_path / "home"
+        plugins = home / "plugins"
+        _make_plugin_dir(
+            plugins,
+            "first",
+            register_body=(
+                "ctx.register_middleware('llm_request', "
+                "lambda **kw: {'request': {**kw['request'], 'first': True}})"
+            ),
+            auto_enable=False,
+        )
+        _make_plugin_dir(
+            plugins,
+            "second",
+            register_body=(
+                "ctx.register_middleware('llm_request', "
+                "lambda **kw: {'request': {**kw['request'], "
+                "'saw_first': kw['request'].get('first')}})"
+            ),
+            auto_enable=False,
+        )
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["first", "second"]}})
+        )
+        script = """
+import json
+from hermes_cli.middleware import apply_llm_request_middleware
+from hermes_cli.plugins import get_plugin_manager
+
+get_plugin_manager().discover_and_load()
+result = apply_llm_request_middleware({"base": True})
+print(json.dumps({"payload": result.payload, "original": result.original_payload}))
+"""
+        env = dict(os.environ, HERMES_HOME=str(home))
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[2],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+        assert json.loads(completed.stdout) == {
+            "payload": {"base": True, "first": True, "saw_first": True},
+            "original": {"base": True},
+        }
 
 
 

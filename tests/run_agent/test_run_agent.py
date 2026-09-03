@@ -6,6 +6,7 @@ are made.
 """
 
 import ast
+import copy
 import inspect
 import io
 import json
@@ -2375,6 +2376,86 @@ class TestConcurrentToolExecution:
 
 
 
+
+    def test_managed_relay_request_chain_keeps_pre_relay_original_isolated(
+        self,
+        agent,
+        monkeypatch,
+    ):
+        from agent import relay_tools, tool_executor
+
+        seen = []
+        dispatched = []
+
+        def first(**kwargs):
+            seen.append(
+                (
+                    "first",
+                    copy.deepcopy(kwargs["args"]),
+                    copy.deepcopy(kwargs["original_args"]),
+                )
+            )
+            kwargs["original_args"]["nested"]["value"] = "tampered"
+            return {"args": {**kwargs["args"], "first": True}, "source": "first"}
+
+        def second(**kwargs):
+            seen.append(
+                (
+                    "second",
+                    copy.deepcopy(kwargs["args"]),
+                    copy.deepcopy(kwargs["original_args"]),
+                )
+            )
+            return {"args": {**kwargs["args"], "second": True}, "source": "second"}
+
+        manager = SimpleNamespace(
+            _middleware={
+                "tool_request": [first, second],
+                "tool_execution": [],
+            }
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
+
+        def relay_execute(name, args, callback, **kwargs):
+            del name, kwargs
+            relay_args = {**args, "relay": True}
+            return callback(relay_args), relay_args
+
+        monkeypatch.setattr(relay_tools, "execute", relay_execute)
+        original_args = {"command": "true", "nested": {"value": "original"}}
+
+        outcome = tool_executor._run_agent_tool_execution_middleware(
+            agent,
+            function_name="terminal",
+            function_args=original_args,
+            effective_task_id="task-1",
+            tool_call_id="call-1",
+            execute=lambda args: dispatched.append(args) or "ok",
+        )
+
+        pristine_original = {"command": "true", "nested": {"value": "original"}}
+        assert seen == [
+            (
+                "first",
+                {**pristine_original, "relay": True},
+                pristine_original,
+            ),
+            (
+                "second",
+                {**pristine_original, "relay": True, "first": True},
+                pristine_original,
+            ),
+        ]
+        assert dispatched == [
+            {**pristine_original, "relay": True, "first": True, "second": True}
+        ]
+        assert outcome.args == dispatched[0]
+        assert original_args == pristine_original
 
     def test_managed_tool_pipeline_rejects_second_dispatch(self, agent, monkeypatch):
         from agent import relay_tools, tool_executor

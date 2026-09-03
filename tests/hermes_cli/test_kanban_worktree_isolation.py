@@ -99,6 +99,126 @@ def test_decompose_worktree_children_get_own_workspace(kanban_home):
             assert row["workspace_path"] is None
 
 
+def test_decompose_worktree_children_inherit_root_repo_anchor(kanban_home, tmp_path):
+    """A worktree child with no explicit path gets the root's REPO as its
+    anchor — not NULL.
+
+    Dispatch resolves an anchorless worktree task against the board's
+    ``default_workdir`` and fails the spawn outright when the board has
+    none ("no default_workdir set"). Real decompose roots usually ARE
+    dispatcher-materialized worktrees under ``<repo>/.worktrees/<id>``, so
+    the repo is recoverable from the root row — children must inherit it
+    explicitly so each spawns a fresh worktree in the same repository
+    (live failure class: t_ab2a7ce8 / t_2dd0f5b7, 2026-09-02).
+    """
+    repo = _make_repo(tmp_path)
+    root_wt = _add_worktree(repo, repo / ".worktrees" / "rootx", "wt/rootx")
+
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="build the feature", triage=True)
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='worktree', "
+            "workspace_path=? WHERE id = ?",
+            (str(root_wt), root),
+        )
+        conn.commit()
+
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "review it", "assignee": "alice", "parents": []},
+                {"title": "qa it", "assignee": "bob", "parents": []},
+                {"title": "verify live", "assignee": "carol", "parents": [0, 1]},
+            ],
+            author="decomposer",
+        )
+        assert child_ids is not None and len(child_ids) == 3
+
+        for cid in child_ids:
+            row = conn.execute(
+                "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+                (cid,),
+            ).fetchone()
+            assert row["workspace_kind"] == "worktree"
+            # The anchor is the root's REPO, never the root's checkout.
+            assert row["workspace_path"] == str(repo.resolve())
+
+        # Every child actually spawns: dispatch materializes a distinct
+        # worktree per child inside the inherited repo (no default_workdir
+        # configured on this board — the exact condition that used to
+        # raise "no default_workdir set").
+        import os
+
+        os.environ.pop("HERMES_KANBAN_DB", None)
+        for cid in child_ids:
+            task = kb.get_task(conn, cid)
+            assert task is not None
+            workspace, branch = kb._resolve_worktree_workspace(task)
+            assert workspace == (repo / ".worktrees" / cid).resolve()
+            assert branch == f"wt/{cid}"
+        # Sibling isolation still holds: distinct paths, distinct branches.
+        resolved = {cid: str((repo / ".worktrees" / cid).resolve()) for cid in child_ids}
+        assert len(set(resolved.values())) == len(child_ids)
+
+
+def test_decompose_worktree_children_without_recoverable_root_stay_unset(kanban_home):
+    """A root whose path points nowhere git-recognizable cannot supply an
+    anchor; children keep the anchorless row (dispatch's board-default
+    path) instead of storing a bogus path."""
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="build the feature", triage=True)
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='worktree', "
+            "workspace_path='/nonexistent/repo/.worktrees/root' WHERE id = ?",
+            (root,),
+        )
+        conn.commit()
+
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "spec it", "assignee": "alice", "parents": []}],
+            author="decomposer",
+        )
+        assert child_ids is not None and len(child_ids) == 1
+        row = conn.execute(
+            "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+            (child_ids[0],),
+        ).fetchone()
+        assert row["workspace_kind"] == "worktree"
+        assert row["workspace_path"] is None
+
+
+def test_decompose_scratch_root_children_stay_scratch(kanban_home):
+    """Scratch-only decomposition is unchanged: no worktree kind or repo
+    path leaks into children of a scratch root."""
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="plan the offsite", triage=True)
+        conn.commit()
+
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "book venue", "assignee": "alice", "parents": []},
+                {"title": "write agenda", "assignee": "bob", "parents": []},
+            ],
+            author="decomposer",
+        )
+        assert child_ids is not None and len(child_ids) == 2
+        for cid in child_ids:
+            row = conn.execute(
+                "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+                (cid,),
+            ).fetchone()
+            assert row["workspace_kind"] == "scratch"
+            assert row["workspace_path"] is None
+
+
 
 
 def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):

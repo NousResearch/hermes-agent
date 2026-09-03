@@ -69,6 +69,24 @@ def tmp_hermes_home(tmp_path):
             shutil.copy2(cfg, dst / "profiles" / prof.name / "config.yaml")
         if (prof / ".env").exists():
             shutil.copy2(prof / ".env", dst / "profiles" / prof.name / ".env")
+    # Deterministic pre-migration state: reset content-strategist to its
+    # pre-migration main and strip the route_model_id annotations the live
+    # apply added, so the migration-planning tests exercise the migration
+    # path regardless of whether the live tree has already been migrated
+    # (the generator is idempotent either way).
+    content_cfg = dst / "profiles" / "content-strategist" / "config.yaml"
+    if content_cfg.exists():
+        doc = yaml.safe_load(content_cfg.read_text())
+        pre = next(
+            (s for s in generator.load_surfaces(SURFACES)
+             if s["surface"] == "content-strategist"), None)
+        mig = pre.get("primary_model_migration") if pre else None
+        if mig is not None:
+            doc.setdefault("model", {})["default"] = mig["expected_old_main"]
+            for entry in doc.get("fallback_providers") or []:
+                if isinstance(entry, dict):
+                    entry.pop("route_model_id", None)
+            content_cfg.write_text(yaml.safe_dump(doc, sort_keys=False))
     return dst
 
 
@@ -94,7 +112,7 @@ def _chain_entries(plan, surface):
     for e in plan["entries"]:
         if e["surface"] == surface and e["changes"]:
             for ch in e["changes"]:
-                if ch.get("new"):
+                if ch.get("field") == "fallback_providers" and ch.get("new") is not None:
                     return ch["new"]
     return None
 
@@ -578,6 +596,22 @@ class TestPlan:
         )
         assert change["new"]["context_length"] == 131072
         assert change["new"]["operator_note"] == "preserve-me"
+
+    def test_content_migration_is_idempotent_after_apply(self, tmp_hermes_home, by_id, surfaces):
+        """Re-planning on an already-migrated surface is a model no-op, not an error."""
+        plan = generator.build_plan(tmp_hermes_home, REGISTRY, SURFACES)
+        # simulate the applied state: live main now equals the primary model
+        cfg = tmp_hermes_home / "profiles" / "content-strategist" / "config.yaml"
+        doc = yaml.safe_load(cfg.read_text())
+        primary = by_id["slot-dsflash-2"]["hermes"]
+        doc["model"]["default"] = primary["model"]
+        doc["model"]["provider"] = primary["provider"]
+        doc["model"]["base_url"] = primary["base_url"]
+        cfg.write_text(yaml.safe_dump(doc, sort_keys=False))
+        plan2 = generator.build_plan(tmp_hermes_home, REGISTRY, SURFACES)
+        entry = next(e for e in plan2["entries"] if e["surface"] == "content-strategist")
+        assert not any(c["field"] == "model" for c in entry["changes"]), (
+            "already-migrated surface must not plan another model migration")
 
     def test_content_strategist_uses_approved_same_model_slots(self, by_id, surfaces):
         surface = next(s for s in surfaces if s["surface"] == "content-strategist")

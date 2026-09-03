@@ -469,10 +469,14 @@ def _migrated_model(doc: dict[str, Any], surf: dict[str, Any],
             f"surface {surf['surface']}: primary migration requires a model mapping")
     actual = current.get("default")
     expected = migration["expected_old_main"]
+    primary = by_id[migration["primary_slot"]]["hermes"]
+    if actual == primary["model"]:
+        # Migration already applied on this surface: the plan is a no-op for
+        # the model block (idempotent re-plan), not an error.
+        return None
     if actual != expected:
         raise ValidationError(
             f"surface {surf['surface']}: expected old main {expected!r}, found {actual!r}; refusing migration")
-    primary = by_id[migration["primary_slot"]]["hermes"]
     out = copy.deepcopy(current)
     out["default"] = primary["model"]
     for key in ("provider", "base_url", "reasoning_effort"):

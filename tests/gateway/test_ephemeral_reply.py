@@ -182,9 +182,11 @@ async def test_process_message_unwraps_ephemeral_before_send():
     adapter.set_message_handler(_handler)
 
     sleeps: list[float] = []
+    real_sleep = asyncio.sleep
 
     async def _fake_sleep(duration):
         sleeps.append(duration)
+        await real_sleep(0)
 
     event = _make_event()
     session_key = "agent:main:telegram:private:42"
@@ -194,7 +196,7 @@ async def test_process_message_unwraps_ephemeral_before_send():
         await adapter._process_message_background(event, session_key)
         # Pump until the detached delete task completes.
         for _ in range(10):
-            await asyncio.sleep(0)
+            await real_sleep(0)
 
     # Sent text is the unwrapped string, NOT repr(EphemeralReply(...))
     adapter._send_with_retry.assert_called_once()

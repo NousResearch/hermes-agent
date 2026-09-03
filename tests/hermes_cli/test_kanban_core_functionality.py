@@ -743,6 +743,100 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
     assert env.get("HERMES_PROFILE") == "some-profile"
 
 
+def test_skill_preflight_matches_worker_resolver(kanban_home, tmp_path):
+    """The dispatcher probe honors local, external, alias, and collision rules."""
+    skills_root = kanban_home / "skills"
+    local_skill = skills_root / "kanban-test-category" / "local-skill-for-kanban-test"
+    local_skill.mkdir(parents=True)
+    (local_skill / "SKILL.md").write_text(
+        "---\nname: local-skill-for-kanban-test\n---\nlocal\n",
+        encoding="utf-8",
+    )
+
+    external_root = tmp_path / "external-skills"
+    aliased = external_root / "filesystem-name"
+    aliased.mkdir(parents=True)
+    (aliased / "SKILL.md").write_text(
+        "---\nname: alias-skill-for-kanban-test\n---\nalias\n",
+        encoding="utf-8",
+    )
+    collision = external_root / "external-collision"
+    collision.mkdir(parents=True)
+    (collision / "SKILL.md").write_text(
+        "---\nname: collision-skill-for-kanban-test\n---\nexternal\n",
+        encoding="utf-8",
+    )
+    local_collision = skills_root / "local-collision"
+    local_collision.mkdir()
+    (local_collision / "SKILL.md").write_text(
+        "---\nname: collision-skill-for-kanban-test\n---\nlocal\n",
+        encoding="utf-8",
+    )
+    (kanban_home / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {external_root}\n",
+        encoding="utf-8",
+    )
+
+    assert kb._skill_available_for_home(
+        "local-skill-for-kanban-test", str(kanban_home)
+    ) is True
+    assert kb._skill_available_for_home(
+        "alias-skill-for-kanban-test", str(kanban_home)
+    ) is True
+    assert kb._skill_available_for_home(
+        "collision-skill-for-kanban-test", str(kanban_home)
+    ) is False
+    assert kb._skill_available_for_home(
+        "missing-skill-for-kanban-test", str(kanban_home)
+    ) is False
+
+
+def test_default_spawn_drops_unresolvable_task_skills(kanban_home, monkeypatch, capfd):
+    """Only skills resolved by the real filesystem resolver reach child argv."""
+    skill = kanban_home / "skills" / "good-skill-for-kanban-test"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: good-skill-for-kanban-test\n---\nusable\n",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class FakeProc:
+        pid = 7
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="real skill preflight",
+            assignee="some-profile",
+            skills=["good-skill-for-kanban-test", "missing-skill-for-kanban-test"],
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        workspace = kb.resolve_workspace(task)
+        assert kb._default_spawn(task, str(workspace)) == 7
+    finally:
+        conn.close()
+
+    cmd = captured["cmd"]
+    skill_names = [
+        cmd[index + 1]
+        for index, token in enumerate(cmd)
+        if token == "--skills" and index + 1 < len(cmd)
+    ]
+    assert skill_names == ["good-skill-for-kanban-test"]
+    err = capfd.readouterr().err
+    assert "missing-skill-for-kanban-test" in err
+    assert tid in err
+
+
 # ---------------------------------------------------------------------------
 # Per-task force-loaded skills
 # ---------------------------------------------------------------------------

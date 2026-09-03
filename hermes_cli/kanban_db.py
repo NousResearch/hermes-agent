@@ -10627,6 +10627,42 @@ def _resolve_hermes_argv() -> list[str]:
     return _module_hermes_argv()
 
 
+def _skill_available_for_home(skill_name: str, hermes_home: Optional[str]) -> bool:
+    """Return whether a worker can resolve ``skill_name`` in its profile.
+
+    ``--skills`` is loaded by the child CLI before the agent loop starts. A
+    missing or ambiguous name therefore aborts the worker instead of merely
+    omitting supplementary context. Reuse the same resolver as the worker
+    itself so profile-local skills, configured external directories,
+    frontmatter ``name:`` aliases, plugin-qualified lookups, and collision
+    handling cannot drift between the dispatch preflight and child startup.
+
+    The home override is context-local and does not mutate ``os.environ``;
+    dispatchers may have other gateway work in flight in the same process.
+    """
+    identifier = str(skill_name or "").strip()
+    if not identifier:
+        return False
+
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from agent.skill_commands import _load_skill_payload
+
+        token = set_hermes_home_override(hermes_home)
+        try:
+            return _load_skill_payload(identifier) is not None
+        finally:
+            reset_hermes_home_override(token)
+    except Exception as exc:
+        _log.debug(
+            "kanban worker: skill preflight failed for %r under HERMES_HOME=%r (%s)",
+            identifier,
+            hermes_home,
+            exc,
+        )
+        return False
+
+
 def _worker_terminal_timeout_env(
     max_runtime_seconds: Optional[int],
     current_timeout: Optional[str],
@@ -10864,10 +10900,25 @@ def _default_spawn(
     # accepts both forms (action='append' + comma-split), but
     # per-name pairs are easier to read in `ps` output and avoid any
     # quoting ambiguity if a skill name ever contains unusual chars.
+    #
+    # Gate each name against the same resolver the child CLI uses. A missing
+    # or ambiguous skill is fatal during CLI startup; dropping only that
+    # supplementary flag lets the worker run its kanban task instead of
+    # entering a crash loop.
     if task.skills:
+        worker_home = env.get("HERMES_HOME")
         for sk in task.skills:
-            if sk:
+            if not sk:
+                continue
+            if _skill_available_for_home(sk, worker_home):
                 cmd.extend(["--skills", sk])
+            else:
+                sys.stderr.write(
+                    f"kanban: task {task.id} requested skill "
+                    f"{sk!r} but it does not resolve under "
+                    f"{worker_home or '~/.hermes'} — dropping flag; "
+                    "worker will start without it\n"
+                )
     if task.model_override:
         cmd.extend(["-m", task.model_override])
         # Pin the provider too when the override names one, so the worker

@@ -134,6 +134,24 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
+# What an ``idempotency_key`` is allowed to match, per ``create_task``'s
+# ``dedupe_scope``. Two different needs share that one key:
+#
+#   'any'  — request idempotency. "I may send this same call twice." A retried
+#            webhook is the same event, so matching a completed task is right.
+#   'open' — open-item dedup. "Do not open a second ticket while one is open."
+#            A recurring alert is a NEW event, so a completed task must not
+#            match: the fault came back after somebody fixed it, which is the
+#            most important moment to have a card on the board.
+#
+# 'any' stays the default because changing it would silently alter the meaning
+# of every existing caller's key.
+DEDUPE_EXCLUDED_STATUSES = {
+    "any": ("archived",),
+    "open": ("archived", "done"),
+}
+VALID_DEDUPE_SCOPES = frozenset(DEDUPE_EXCLUDED_STATUSES)
+
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     """Normalize a per-task reasoning effort into a storable level.
@@ -3181,6 +3199,7 @@ def create_task(
     parents: Iterable[str] = (),
     triage: bool = False,
     idempotency_key: Optional[str] = None,
+    dedupe_scope: str = "any",
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
@@ -3203,10 +3222,29 @@ def create_task(
     parents — a specifier/triager is expected to promote the task to
     ``todo`` once the spec is fleshed out.
 
-    If ``idempotency_key`` is provided and a non-archived task with the
-    same key already exists, returns the existing task's id instead of
-    creating a duplicate. Useful for retried webhooks / automation that
-    should not double-write.
+    If ``idempotency_key`` is provided and a matching task already exists,
+    returns the existing task's id instead of creating a duplicate. Useful
+    for retried webhooks / automation that should not double-write.
+
+    ``dedupe_scope`` decides what "already exists" means, because two
+    different needs have always been sharing this one key:
+
+    * ``"any"`` (default, and the historical behaviour) matches any
+      non-archived task. This is *request* idempotency: "I may send this
+      same call twice, do not create two tasks." Correct for a webhook
+      retry, where the second call is the same event.
+
+    * ``"open"`` matches only tasks that are still open — anything not
+      ``done`` and not ``archived``. This is *open-item* dedup: "do not
+      open a second ticket while one is already open." Correct for
+      recurring automation, where the second call is a *new* occurrence.
+
+    The distinction matters because under ``"any"`` a completed task keeps
+    matching forever. Alerting automation files once, a human fixes it and
+    marks it ``done``, and from then on every recurrence silently returns
+    the closed task's id — while still exiting 0 with a plausible id, so the
+    caller cannot tell it was suppressed. The fault reappears and the board
+    stays empty. ``"open"`` is almost always what recurring automation wants.
 
     ``max_runtime_seconds`` caps how long a worker may run before the
     dispatcher SIGTERMs (then SIGKILLs after a grace window) and
@@ -3410,11 +3448,19 @@ def create_task(
     # acceptable: two concurrent creators with the same key might both
     # insert, at which point both rows exist but the next lookup stabilises.
     if idempotency_key:
+        if dedupe_scope not in VALID_DEDUPE_SCOPES:
+            raise ValueError(
+                f"dedupe_scope must be one of {sorted(VALID_DEDUPE_SCOPES)}"
+            )
+        # 'open' additionally excludes `done`, so a completed task cannot
+        # suppress a fresh occurrence of a recurring fault.
+        excluded = DEDUPE_EXCLUDED_STATUSES[dedupe_scope]
+        placeholders = ", ".join("?" * len(excluded))
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
+            f"AND status NOT IN ({placeholders}) "
             "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
+            (idempotency_key, *excluded),
         ).fetchone()
         if row:
             return row["id"]

@@ -385,8 +385,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--triage", action="store_true",
                           help="Park in triage — a specifier will flesh out the spec and promote to todo")
     p_create.add_argument("--idempotency-key", default=None,
-                          help="Dedup key. If a non-archived task with this key exists, "
-                               "its id is returned instead of creating a duplicate.")
+                          help="Dedup key. If a matching task with this key exists, "
+                               "its id is returned instead of creating a duplicate. "
+                               "See --dedupe-scope for what counts as matching.")
+    p_create.add_argument("--dedupe-scope", default="any",
+                          choices=sorted(kb.VALID_DEDUPE_SCOPES),
+                          help="What --idempotency-key matches. 'any' (default) "
+                               "matches any non-archived task, including completed "
+                               "ones — right for retried webhooks, where the second "
+                               "call is the same event. 'open' matches only tasks "
+                               "that are still open — right for recurring alerts, "
+                               "where a task that was already fixed and closed must "
+                               "not suppress the next occurrence.")
     p_create.add_argument("--max-runtime", default=None,
                           help="Per-task runtime cap. Accepts seconds (300) or "
                                "durations (90s, 30m, 2h, 1d). When exceeded, "
@@ -1678,6 +1688,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             parents=tuple(args.parent or ()),
             triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),
+            dedupe_scope=getattr(args, "dedupe_scope", "any") or "any",
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,

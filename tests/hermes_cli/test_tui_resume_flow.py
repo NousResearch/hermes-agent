@@ -226,9 +226,9 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
         lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
     )
 
-    def fake_call(argv, cwd=None, env=None):
+    def fake_call(argv, cwd=None, env=None, stdin=None):
         nonlocal active_path_during_call
-        captured.update({"argv": argv, "cwd": cwd, "env": env})
+        captured.update({"argv": argv, "cwd": cwd, "env": env, "stdin": stdin})
         active_path_during_call = Path(env["HERMES_TUI_ACTIVE_SESSION_FILE"])
         assert active_path_during_call.exists()
         return 1
@@ -252,6 +252,7 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert active_path_during_call == active_path
     assert not active_path.exists()
     assert env["NODE_ENV"] == "production"
+    assert captured["stdin"] is None
 
 
 
@@ -282,7 +283,6 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
     assert argv == [str(tsx), "src/entry.tsx"]
     assert cwd == tui_dir
     assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
-
 
 
 

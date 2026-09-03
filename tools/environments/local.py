@@ -609,6 +609,8 @@ def _is_hermes_internal_secret(key: str) -> bool:
         upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
     ):
         return True
+    if upper.startswith("OP_SESSION_"):
+        return True
     return False
 
 
@@ -702,6 +704,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     _plugin_strip = _plugin_terminal_env_strip_keys()
 
     for key, value in (base_env or {}).items():
+        if key.upper() in _ALWAYS_STRIP_KEYS:
+            continue
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
         if _is_hermes_internal_secret(key):
@@ -723,6 +727,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             sanitized[key] = resolved
 
     for key, value in (extra_env or {}).items():
+        if key.upper() in _ALWAYS_STRIP_KEYS:
+            continue
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             if _is_hermes_internal_secret(real_key):
@@ -828,6 +834,12 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
     "DAYTONA_API_KEY",
+    # Vault bootstrap authority is admitted only by the typed VAULT_CLI and
+    # trusted-Hermes-child edges. It must never ride a generic terminal or
+    # model-driving subprocess merely because the active profile owns it.
+    "BWS_ACCESS_TOKEN",
+    "OP_SERVICE_ACCOUNT_TOKEN",
+    "OP_CONNECT_TOKEN",
 })
 
 

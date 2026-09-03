@@ -483,6 +483,13 @@ def _yn(b: bool) -> str:
 
 def _op_version(binary: Path) -> str:
     try:
+        from tools.child_process_authority import (
+            build_child_process_env,
+            probe_spec,
+            stdin_for_spec,
+        )
+
+        spec = probe_spec(source="hermes_cli.onepassword_secrets_cli.op_version")
         res = subprocess.run(
             [str(binary), "--version"],
             capture_output=True,
@@ -490,6 +497,8 @@ def _op_version(binary: Path) -> str:
             encoding="utf-8",
             errors="replace",
             timeout=5,
+            env=build_child_process_env(spec),
+            stdin=stdin_for_spec(spec),
         )
         if res.returncode == 0:
             return (res.stdout or res.stderr).strip().splitlines()[0]
@@ -510,17 +519,23 @@ def _op_whoami(
     cmd = [str(binary), "whoami"]
     if account:
         cmd += ["--account", account]
-    # 1Password CLI child: intentionally receives the service-account token —
-    # no scrub, no HOME rewrite (op stores auth state under the real home).
-    from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-    env.setdefault("NO_COLOR", "1")
+    from tools.child_process_authority import (
+        build_child_process_env,
+        op_vault_spec,
+    )
+
+    overrides = {"NO_COLOR": "1"}
     if token_value:
-        env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
+        overrides["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
+    env = build_child_process_env(
+        op_vault_spec(source="hermes_cli.onepassword_secrets_cli.whoami"),
+        overrides=overrides,
+    )
     try:
         res = subprocess.run(
             cmd, env=env, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=10
+            encoding="utf-8", errors="replace", timeout=10,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

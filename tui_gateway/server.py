@@ -502,19 +502,28 @@ class _SlashWorker:
         self._closed = False
         from hermes_cli._subprocess_compat import windows_hide_flags
 
-        # slash_worker runs the Hermes agent → needs provider credentials.
-        # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
+        # slash_worker runs the Hermes agent → retain profile-scoped
+        # agent/tool authority while stripping parent gateway/orchestration
+        # authority (#29157).
         # Global-remote / multi-profile sessions: the worker must resolve
         # config/skills/state against the session's profile home, not the
         # gateway's launch HERMES_HOME (#40677). The override goes through the
-        # build_subprocess_env factory's `extra` (applied last, always wins)
-        # instead of a hand-rolled env["HERMES_HOME"] assignment.
-        from tools.environments.local import build_subprocess_env
-        env = build_subprocess_env(
-            hermes_subprocess_env(inherit_credentials=True),
-            scrub_secrets=False,
-            inherit_profile_home=False,  # base already carries the HOME contract
-            extra={"HERMES_HOME": str(profile_home)} if profile_home else None,
+        # typed broker's explicit override instead of a hand-rolled
+        # env["HERMES_HOME"] assignment.
+        from tools.child_process_authority import (
+            build_child_process_env,
+            stdin_for_spec,
+            trusted_hermes_child_spec,
+        )
+
+        worker_spec = trusted_hermes_child_spec(
+            source="tui_gateway.server.slash_worker"
+        )
+        env = build_child_process_env(
+            worker_spec,
+            overrides=(
+                {"HERMES_HOME": str(profile_home)} if profile_home else None
+            ),
         )
         # Prepend the Hermes venv bin dir and the user-local bin dir to PATH so
         # slash_worker child processes can resolve Hermes-managed CLIs
@@ -532,7 +541,7 @@ class _SlashWorker:
         # tools/mcp_tool.py _filter_mcp_children for defense-in-depth.
         self.proc = subprocess.Popen(
             argv,
-            stdin=subprocess.PIPE,
+            stdin=stdin_for_spec(worker_spec),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

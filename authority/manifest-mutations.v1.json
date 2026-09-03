@@ -1,0 +1,245 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "canonical_manifest",
+      "mutations": [],
+      "expected": {
+        "schema_valid": true,
+        "compiler_valid": true
+      }
+    },
+    {
+      "name": "boolean_schema_version",
+      "mutations": [
+        {
+          "op": "set",
+          "path": [
+            "schema_version"
+          ],
+          "value": true
+        }
+      ],
+      "expected": {
+        "schema_valid": false,
+        "compiler_valid": false
+      }
+    },
+    {
+      "name": "valid_direct_symbol_extension",
+      "mutations": [
+        {
+          "op": "append",
+          "path": [
+            "domains",
+            "github.operation",
+            "sinks",
+            "github.comment.write",
+            "direct_symbols"
+          ],
+          "value": "issues.createDiscussionComment"
+        }
+      ],
+      "expected": {
+        "schema_valid": true,
+        "compiler_valid": true
+      }
+    },
+    {
+      "name": "unknown_top_level_field",
+      "mutations": [
+        {
+          "op": "set",
+          "path": [
+            "ambient_fallback"
+          ],
+          "value": true
+        }
+      ],
+      "expected": {
+        "schema_valid": false,
+        "compiler_valid": false
+      }
+    },
+    {
+      "name": "unknown_domain",
+      "mutations": [
+        {
+          "op": "set",
+          "path": [
+            "domains",
+            "unknown.operation"
+          ],
+          "value": {
+            "sinks": {
+              "unknown.sink": {
+                "broker": "unknownBroker",
+                "direct_symbols": []
+              }
+            },
+            "operation_classes": {
+              "unknown.write": {
+                "sink_class": "unknown.sink",
+                "required_capabilities": [
+                  "unknown:write"
+                ],
+                "allowed_actor_classes": [
+                  "human"
+                ],
+                "allowed_resource_states": [
+                  "current"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "schema_valid": false,
+        "compiler_valid": false
+      }
+    },
+    {
+      "name": "missing_policy_version",
+      "mutations": [
+        {
+          "op": "delete",
+          "path": [
+            "policy_version"
+          ]
+        }
+      ],
+      "expected": {
+        "schema_valid": false,
+        "compiler_valid": false
+      }
+    },
+    {
+      "name": "blank_sink_broker",
+      "mutations": [
+        {
+          "op": "set",
+          "path": [
+            "domains",
+            "github.operation",
+            "sinks",
+            "github.comment.write",
+            "broker"
+          ],
+          "value": ""
+        }
+      ],
+      "expected": {
+        "schema_valid": false,
+        "compiler_valid": false
+      }
+    },
+    {
+      "name": "duplicate_direct_symbol",
+      "mutations": [
+        {
+          "op": "append",
+          "path": [
+            "domains",
+            "github.operation",
+            "sinks",
+            "github.comment.write",
+            "direct_symbols"
+          ],
+          "value": "issues.createComment"
+        }
+      ],
+      "expected": {
+        "schema_valid": false,
+        "compiler_valid": false
+      }
+    },
+    {
+      "name": "unregistered_sink_reference",
+      "mutations": [
+        {
+          "op": "set",
+          "path": [
+            "domains",
+            "github.operation",
+            "operation_classes",
+            "github.comment.write",
+            "sink_class"
+          ],
+          "value": "github.api.unregistered"
+        }
+      ],
+      "expected": {
+        "schema_valid": true,
+        "compiler_valid": false
+      }
+    },
+    {
+      "name": "wildcard_capability",
+      "mutations": [
+        {
+          "op": "set",
+          "path": [
+            "domains",
+            "github.operation",
+            "operation_classes",
+            "github.comment.write",
+            "required_capabilities"
+          ],
+          "value": [
+            "comments:*"
+          ]
+        }
+      ],
+      "expected": {
+        "schema_valid": false,
+        "compiler_valid": false
+      }
+    },
+    {
+      "name": "duplicate_required_capability",
+      "mutations": [
+        {
+          "op": "set",
+          "path": [
+            "domains",
+            "github.operation",
+            "operation_classes",
+            "github.comment.write",
+            "required_capabilities"
+          ],
+          "value": [
+            "comments:write",
+            "comments:write"
+          ]
+        }
+      ],
+      "expected": {
+        "schema_valid": false,
+        "compiler_valid": false
+      }
+    },
+    {
+      "name": "unknown_actor_class",
+      "mutations": [
+        {
+          "op": "set",
+          "path": [
+            "domains",
+            "github.operation",
+            "operation_classes",
+            "github.comment.write",
+            "allowed_actor_classes"
+          ],
+          "value": [
+            "root"
+          ]
+        }
+      ],
+      "expected": {
+        "schema_valid": false,
+        "compiler_valid": false
+      }
+    }
+  ]
+}

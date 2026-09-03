@@ -239,23 +239,20 @@ def _scrub(text: str) -> str:
 
 
 def _op_child_env(token_value: str) -> Dict[str, str]:
-    """Build a minimal allowlisted environment for the ``op`` child process."""
-    source_env = get_source_environment()
-    env: Dict[str, str] = {}
-    for key in _OP_ENV_ALLOWLIST:
-        val = source_env.get(key)
-        if val is not None:
-            env[key] = val
-    # Desktop / interactive session credentials.
-    for key, val in source_env.items():
-        if key.startswith("OP_SESSION_"):
-            env[key] = val
-    # `op` reads OP_SERVICE_ACCOUNT_TOKEN regardless of which env var the user
-    # configured Hermes to source it from, so normalize to that name here.
+    """Build the typed minimal environment for the ``op`` child process."""
+    from tools.child_process_authority import (
+        build_child_process_env,
+        op_vault_spec,
+    )
+
+    overrides = {"NO_COLOR": "1"}
     if token_value:
-        env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
-    env["NO_COLOR"] = "1"
-    return env
+        overrides["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
+    return build_child_process_env(
+        op_vault_spec(source="agent.secret_sources.onepassword"),
+        source_env=get_source_environment(),
+        overrides=overrides,
+    )
 
 
 def _run_op_read(
@@ -287,6 +284,7 @@ def _run_op_read(
             encoding="utf-8",
             errors="replace",
             timeout=_OP_RUN_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(

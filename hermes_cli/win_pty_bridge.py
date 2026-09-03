@@ -88,11 +88,14 @@ class WinPtyBridge:
                     "pywinpty is not installed. Install with: pip install pywinpty"
                 )
             raise PtyUnavailableError("ConPTY is unavailable on this platform.")
-        # See pty_bridge.py: exact-preservation factory for the env=None fallback.
-        from tools.environments.local import build_subprocess_env
-        spawn_env = (
-            build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-            if env is None else dict(env)
+        from tools.child_process_authority import (
+            build_child_process_env,
+            interactive_hermes_pty_spec,
+        )
+
+        spawn_env = build_child_process_env(
+            interactive_hermes_pty_spec(source="hermes_cli.win_pty_bridge"),
+            source_env=env,
         )
         if not spawn_env.get("TERM"):
             spawn_env["TERM"] = "xterm-256color"

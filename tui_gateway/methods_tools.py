@@ -419,6 +419,10 @@ def _(rid, params: dict) -> dict:
         # CREATE_NO_WINDOW on Windows — under the desktop GUI's windowless
         # parent, this spawn otherwise flashes a console (#56747).
         from hermes_cli._subprocess_compat import windows_hide_flags
+        from tools.child_process_authority import (
+            build_child_process_env,
+            trusted_hermes_child_spec,
+        )
 
         r = subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", *argv],
@@ -432,7 +436,11 @@ def _(rid, params: dict) -> dict:
             cwd=os.getcwd(),
             # cli.exec runs `python -m hermes_cli.main` (can drive the agent) →
             # needs provider credentials. Tier-1 secrets still stripped (#29157).
-            env=hermes_subprocess_env(inherit_credentials=True),
+            env=build_child_process_env(
+                trusted_hermes_child_spec(
+                    source="tui_gateway.methods_tools.cli_exec"
+                )
+            ),
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
         )
@@ -2665,13 +2673,21 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
         from hermes_cli._subprocess_compat import windows_hide_flags
+        from tools.environments.local import build_subprocess_env
 
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=os.getcwd(),
             # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash
             # the gateway thread on locale-mismatched Windows (#53137).
-            encoding="utf-8", errors="replace",
+            encoding="utf-8",
+            errors="replace",
             stdin=subprocess.DEVNULL,
+            env=build_subprocess_env(),
             creationflags=windows_hide_flags(),
         )
         return _ok(

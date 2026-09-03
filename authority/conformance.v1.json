@@ -1,0 +1,476 @@
+{
+  "schema_version": 1,
+  "vectors": [
+    {
+      "name": "issue_metadata_write_allowed_with_exact_grant",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.issue.metadata.write",
+        "actor_class": "github_app",
+        "resource_state": "open",
+        "capabilities": [
+          {
+            "capability": "issues:metadata:write",
+            "granted": true,
+            "source": "app_installation_token",
+            "generation": "cred-1"
+          }
+        ]
+      },
+      "expected": {
+        "allowed": true,
+        "operation_class": "github.issue.metadata.write",
+        "reason_code": "allowed",
+        "matched_rule": "github.operation.github.issue.metadata.write",
+        "capability_proofs": [
+          {
+            "capability": "issues:metadata:write",
+            "source": "app_installation_token",
+            "generation": "cred-1"
+          }
+        ],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "comment_write_allowed_with_exact_grant",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.comment.write",
+        "actor_class": "github_app",
+        "resource_state": "open",
+        "capabilities": [
+          {
+            "capability": "comments:write",
+            "granted": true,
+            "source": "app_installation_token",
+            "generation": "cred-2"
+          }
+        ]
+      },
+      "expected": {
+        "allowed": true,
+        "operation_class": "github.comment.write",
+        "reason_code": "allowed",
+        "matched_rule": "github.operation.github.comment.write",
+        "capability_proofs": [
+          {
+            "capability": "comments:write",
+            "source": "app_installation_token",
+            "generation": "cred-2"
+          }
+        ],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "contents_write_allowed_with_exact_grant",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.contents.write",
+        "actor_class": "automation",
+        "resource_state": "current",
+        "capabilities": [
+          {
+            "capability": "contents:write",
+            "granted": true,
+            "source": "contents_token",
+            "generation": "cred-3"
+          }
+        ]
+      },
+      "expected": {
+        "allowed": true,
+        "operation_class": "github.contents.write",
+        "reason_code": "allowed",
+        "matched_rule": "github.operation.github.contents.write",
+        "capability_proofs": [
+          {
+            "capability": "contents:write",
+            "source": "contents_token",
+            "generation": "cred-3"
+          }
+        ],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "gitdata_write_preserves_object_and_ref_proof_pairing",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.gitdata.write",
+        "actor_class": "automation",
+        "resource_state": "current",
+        "capabilities": [
+          {
+            "capability": "refs:write",
+            "granted": true,
+            "source": "ref_token",
+            "generation": "cred-4b"
+          },
+          {
+            "capability": "git_objects:write",
+            "granted": true,
+            "source": "git_object_token",
+            "generation": "cred-4a"
+          }
+        ]
+      },
+      "expected": {
+        "allowed": true,
+        "operation_class": "github.gitdata.write",
+        "reason_code": "allowed",
+        "matched_rule": "github.operation.github.gitdata.write",
+        "capability_proofs": [
+          {
+            "capability": "git_objects:write",
+            "source": "git_object_token",
+            "generation": "cred-4a"
+          },
+          {
+            "capability": "refs:write",
+            "source": "ref_token",
+            "generation": "cred-4b"
+          }
+        ],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "pull_request_create_allowed_with_exact_grant",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.pull_request.create",
+        "actor_class": "automation",
+        "resource_state": "current",
+        "capabilities": [
+          {
+            "capability": "pull_requests:create",
+            "granted": true,
+            "source": "pull_request_token",
+            "generation": "cred-5"
+          }
+        ]
+      },
+      "expected": {
+        "allowed": true,
+        "operation_class": "github.pull_request.create",
+        "reason_code": "allowed",
+        "matched_rule": "github.operation.github.pull_request.create",
+        "capability_proofs": [
+          {
+            "capability": "pull_requests:create",
+            "source": "pull_request_token",
+            "generation": "cred-5"
+          }
+        ],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "actions_dispatch_allowed_with_exact_grant",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.actions.dispatch",
+        "actor_class": "workflow",
+        "resource_state": "current",
+        "capabilities": [
+          {
+            "capability": "actions:dispatch",
+            "granted": true,
+            "source": "workflow_dispatch_token",
+            "generation": "cred-6"
+          }
+        ]
+      },
+      "expected": {
+        "allowed": true,
+        "operation_class": "github.actions.dispatch",
+        "reason_code": "allowed",
+        "matched_rule": "github.operation.github.actions.dispatch",
+        "capability_proofs": [
+          {
+            "capability": "actions:dispatch",
+            "source": "workflow_dispatch_token",
+            "generation": "cred-6"
+          }
+        ],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "unknown_operation_precedes_other_refusals",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.admin_everything",
+        "actor_class": "external_bot",
+        "resource_state": "deleted",
+        "capabilities": [
+          {
+            "capability": "*",
+            "granted": true,
+            "source": "",
+            "generation": ""
+          }
+        ]
+      },
+      "expected": {
+        "allowed": false,
+        "operation_class": "github.admin_everything",
+        "reason_code": "unsupported_operation",
+        "matched_rule": null,
+        "capability_proofs": [],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "actor_forbidden_precedes_resource_and_proof",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.gitdata.write",
+        "actor_class": "external_bot",
+        "resource_state": "deleted",
+        "capabilities": [
+          {
+            "capability": "git_objects:write",
+            "granted": true,
+            "source": "",
+            "generation": ""
+          },
+          {
+            "capability": "refs:write",
+            "granted": true,
+            "source": "",
+            "generation": ""
+          }
+        ]
+      },
+      "expected": {
+        "allowed": false,
+        "operation_class": "github.gitdata.write",
+        "reason_code": "actor_forbidden",
+        "matched_rule": "github.operation.github.gitdata.write",
+        "capability_proofs": [],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "resource_state_precedes_invalid_proof",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.comment.write",
+        "actor_class": "human",
+        "resource_state": "merged",
+        "capabilities": [
+          {
+            "capability": "comments:write",
+            "granted": true,
+            "source": "",
+            "generation": ""
+          }
+        ]
+      },
+      "expected": {
+        "allowed": false,
+        "operation_class": "github.comment.write",
+        "reason_code": "resource_state_denied",
+        "matched_rule": "github.operation.github.comment.write",
+        "capability_proofs": [],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "blank_provenance_fails_closed",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.comment.write",
+        "actor_class": "human",
+        "resource_state": "open",
+        "capabilities": [
+          {
+            "capability": "comments:write",
+            "granted": true,
+            "source": "",
+            "generation": "cred-7"
+          }
+        ]
+      },
+      "expected": {
+        "allowed": false,
+        "operation_class": "github.comment.write",
+        "reason_code": "invalid_capability_proof",
+        "matched_rule": "github.operation.github.comment.write",
+        "capability_proofs": [],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "duplicate_conflicting_grants_fail_closed",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.comment.write",
+        "actor_class": "human",
+        "resource_state": "open",
+        "capabilities": [
+          {
+            "capability": "comments:write",
+            "granted": true,
+            "source": "user_api_token",
+            "generation": "cred-8"
+          },
+          {
+            "capability": "comments:write",
+            "granted": false,
+            "source": "user_api_token",
+            "generation": "cred-8"
+          }
+        ]
+      },
+      "expected": {
+        "allowed": false,
+        "operation_class": "github.comment.write",
+        "reason_code": "invalid_capability_proof",
+        "matched_rule": "github.operation.github.comment.write",
+        "capability_proofs": [],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "duplicate_proof_precedes_missing_capability",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.gitdata.write",
+        "actor_class": "workflow",
+        "resource_state": "current",
+        "capabilities": [
+          {
+            "capability": "git_objects:write",
+            "granted": true,
+            "source": "object_token",
+            "generation": "cred-9"
+          },
+          {
+            "capability": "git_objects:write",
+            "granted": false,
+            "source": "object_token",
+            "generation": "cred-9"
+          }
+        ]
+      },
+      "expected": {
+        "allowed": false,
+        "operation_class": "github.gitdata.write",
+        "reason_code": "invalid_capability_proof",
+        "matched_rule": "github.operation.github.gitdata.write",
+        "capability_proofs": [],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "all_required_gitdata_capabilities_must_be_present",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.gitdata.write",
+        "actor_class": "workflow",
+        "resource_state": "current",
+        "capabilities": [
+          {
+            "capability": "git_objects:write",
+            "granted": true,
+            "source": "object_token",
+            "generation": "cred-10"
+          }
+        ]
+      },
+      "expected": {
+        "allowed": false,
+        "operation_class": "github.gitdata.write",
+        "reason_code": "missing_capability",
+        "matched_rule": "github.operation.github.gitdata.write",
+        "capability_proofs": [],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "contents_authority_does_not_admit_gitdata_write",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.gitdata.write",
+        "actor_class": "automation",
+        "resource_state": "current",
+        "capabilities": [
+          {
+            "capability": "contents:write",
+            "granted": true,
+            "source": "contents_token",
+            "generation": "cred-11"
+          }
+        ]
+      },
+      "expected": {
+        "allowed": false,
+        "operation_class": "github.gitdata.write",
+        "reason_code": "missing_capability",
+        "matched_rule": "github.operation.github.gitdata.write",
+        "capability_proofs": [],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "gitdata_authority_does_not_admit_pull_request_create",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.pull_request.create",
+        "actor_class": "automation",
+        "resource_state": "current",
+        "capabilities": [
+          {
+            "capability": "git_objects:write",
+            "granted": true,
+            "source": "object_token",
+            "generation": "cred-12a"
+          },
+          {
+            "capability": "refs:write",
+            "granted": true,
+            "source": "ref_token",
+            "generation": "cred-12b"
+          }
+        ]
+      },
+      "expected": {
+        "allowed": false,
+        "operation_class": "github.pull_request.create",
+        "reason_code": "missing_capability",
+        "matched_rule": "github.operation.github.pull_request.create",
+        "capability_proofs": [],
+        "policy_version": "2026.08.25-v2"
+      }
+    },
+    {
+      "name": "adjacent_workflow_authority_does_not_admit_actions_dispatch",
+      "request": {
+        "domain": "github.operation",
+        "operation_class": "github.actions.dispatch",
+        "actor_class": "workflow",
+        "resource_state": "current",
+        "capabilities": [
+          {
+            "capability": "workflows:write",
+            "granted": true,
+            "source": "workflow_token",
+            "generation": "cred-13"
+          }
+        ]
+      },
+      "expected": {
+        "allowed": false,
+        "operation_class": "github.actions.dispatch",
+        "reason_code": "missing_capability",
+        "matched_rule": "github.operation.github.actions.dispatch",
+        "capability_proofs": [],
+        "policy_version": "2026.08.25-v2"
+      }
+    }
+  ]
+}

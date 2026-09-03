@@ -599,11 +599,20 @@ def _yn(b: bool) -> str:
 
 def _bws_version(binary: Path) -> str:
     try:
+        from tools.child_process_authority import (
+            build_child_process_env,
+            probe_spec,
+            stdin_for_spec,
+        )
+
+        spec = probe_spec(source="hermes_cli.secrets_cli.bws_version")
         res = subprocess.run(
             [str(binary), "--version"],
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
             timeout=5,
+            env=build_child_process_env(spec),
+            stdin=stdin_for_spec(spec),
         )
         if res.returncode == 0:
             return (res.stdout or res.stderr).strip().splitlines()[0]
@@ -648,14 +657,21 @@ def _list_projects(
     binary: Path, token: str, console: Console, *, server_url: str = ""
 ) -> Optional[List[dict]]:
     """Call ``bws project list`` and return the parsed list, or None on failure."""
-    # Secret-manager CLI child: intentionally receives tokens — no scrub,
-    # no HOME rewrite (bws stores state under the real user home).
-    from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-    env["BWS_ACCESS_TOKEN"] = token
-    env.setdefault("NO_COLOR", "1")
+    from tools.child_process_authority import (
+        build_child_process_env,
+        bws_vault_spec,
+    )
+
+    overrides = {
+        "BWS_ACCESS_TOKEN": token,
+        "NO_COLOR": "1",
+    }
     if server_url:
-        env["BWS_SERVER_URL"] = server_url
+        overrides["BWS_SERVER_URL"] = server_url
+    env = build_child_process_env(
+        bws_vault_spec(source="hermes_cli.secrets_cli.list_projects"),
+        overrides=overrides,
+    )
     try:
         res = subprocess.run(
             [str(binary), "project", "list", "--output", "json"],
@@ -663,6 +679,7 @@ def _list_projects(
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
             timeout=15,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         console.print(f"  [red]Couldn't list projects: {exc}[/red]")

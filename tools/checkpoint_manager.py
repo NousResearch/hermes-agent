@@ -312,22 +312,24 @@ def _git_env(
     ``store/indexes/<hash>`` so projects don't race on a shared index.
     """
     normalized_working_dir = _normalize_path(working_dir)
-    # git child with hand-isolated config env; exact preservation — a HOME
-    # rewrite would change which ~/.gitconfig the isolation vars are hiding.
-    from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-    env["GIT_DIR"] = str(store)
-    env["GIT_WORK_TREE"] = str(normalized_working_dir)
-    env.pop("GIT_NAMESPACE", None)
-    env.pop("GIT_ALTERNATE_OBJECT_DIRECTORIES", None)
+    from tools.child_process_authority import (
+        build_child_process_env,
+        checkpoint_git_spec,
+    )
+
+    overrides = {
+        "GIT_DIR": str(store),
+        "GIT_WORK_TREE": str(normalized_working_dir),
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
     if index_file is not None:
-        env["GIT_INDEX_FILE"] = str(index_file)
-    else:
-        env.pop("GIT_INDEX_FILE", None)
-    env["GIT_CONFIG_GLOBAL"] = os.devnull
-    env["GIT_CONFIG_SYSTEM"] = os.devnull
-    env["GIT_CONFIG_NOSYSTEM"] = "1"
-    return env
+        overrides["GIT_INDEX_FILE"] = str(index_file)
+    return build_child_process_env(
+        checkpoint_git_spec(source="tools.checkpoint_manager"),
+        overrides=overrides,
+    )
 
 
 def _repair_bare_repo_dirs(store: Path) -> None:
@@ -497,17 +499,22 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     (store / _PROJECTS_DIRNAME).mkdir(exist_ok=True)
 
     # ``git init --bare`` rejects GIT_WORK_TREE, so we can't use _run_git
-    # here (which always sets GIT_DIR + GIT_WORK_TREE).  Use a raw
-    # subprocess with just the config-isolation env vars.
-    from tools.environments.local import build_subprocess_env
-    init_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-    init_env["GIT_CONFIG_GLOBAL"] = os.devnull
-    init_env["GIT_CONFIG_SYSTEM"] = os.devnull
-    init_env["GIT_CONFIG_NOSYSTEM"] = "1"
-    # Drop any inherited GIT_* that would interfere.
-    for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_NAMESPACE",
-              "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
-        init_env.pop(k, None)
+    # here (which always sets GIT_DIR + GIT_WORK_TREE). Keep the same typed
+    # CHECKPOINT_GIT edge but grant only the config-isolation variables needed
+    # by the bare-repository initializer.
+    from tools.child_process_authority import (
+        build_child_process_env,
+        checkpoint_git_spec,
+    )
+
+    init_env = build_child_process_env(
+        checkpoint_git_spec(source="tools.checkpoint_manager.init_store"),
+        overrides={
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+        },
+    )
     try:
         result = subprocess.run(
             ["git", "init", "--bare", str(store)],

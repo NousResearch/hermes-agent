@@ -29,7 +29,12 @@ from agent.acp_openai_bridge import (
 )
 from agent.file_safety import get_read_block_error, get_write_denied_error, is_write_approval_required
 from agent.redact import redact_sensitive_text
-from tools.environments.local import hermes_subprocess_env
+from tools.child_process_authority import (
+    build_child_process_env,
+    model_driver_spec,
+    probe_spec,
+    stdin_for_spec,
+)
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 logger = logging.getLogger(__name__)
@@ -111,9 +116,14 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
     if cached is not None:
         return cached
     try:
+        spec = probe_spec(source="agent.copilot_acp_client.acp_probe")
         probe = subprocess.run(
             [command, "--help"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=build_child_process_env(spec),
+            stdin=stdin_for_spec(spec),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
@@ -156,7 +166,9 @@ def _build_subprocess_env() -> dict[str, str]:
     # Copilot ACP is a model-driving CLI executor: it legitimately needs LLM
     # provider credentials. Route through the central helper so Tier-1 secrets
     # (gateway bot tokens, GitHub auth, infra) are still stripped (#29157).
-    env = hermes_subprocess_env(inherit_credentials=True)
+    env = build_child_process_env(
+        model_driver_spec(source="agent.copilot_acp_client")
+    )
     home = _resolve_home_dir()
     env["HOME"] = home
     from hermes_constants import apply_subprocess_home_env

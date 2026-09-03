@@ -143,13 +143,14 @@ class PtyBridge:
         # simple terminal probes like `tput cols` fail before winsize reads.
         # Preserve explicit caller overrides, but backfill a sensible default
         # when TERM is missing or blank.
-        # env=None fallback: callers own env policy (process_registry already
-        # sanitizes). Build via the factory with exact preservation so the
-        # site stays findable without changing inherited content.
-        from tools.environments.local import build_subprocess_env
-        spawn_env = (
-            build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-            if env is None else env.copy()
+        from tools.child_process_authority import (
+            build_child_process_env,
+            interactive_hermes_pty_spec,
+        )
+
+        spawn_env = build_child_process_env(
+            interactive_hermes_pty_spec(source="hermes_cli.pty_bridge"),
+            source_env=env,
         )
         if not spawn_env.get("TERM"):
             spawn_env["TERM"] = "xterm-256color"

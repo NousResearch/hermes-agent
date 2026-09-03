@@ -6546,10 +6546,20 @@ def _trim_setup_output(value: Optional[str], limit: int = 4000) -> str:
 
 
 def _memory_provider_setup_env() -> Dict[str, str]:
-    # External package-manager child (npm/uv/pip): exact env preservation —
-    # scrubbing or HOME rewriting could break user tool auth/config.
-    from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+    # External package-manager child (npm/uv/pip): retain profile-scoped tool
+    # authority while stripping parent gateway and orchestration authority.
+    from tools.child_process_authority import (
+        ChildStdinPolicy,
+        build_child_process_env,
+        trusted_hermes_child_spec,
+    )
+
+    env = build_child_process_env(
+        trusted_hermes_child_spec(
+            source="hermes_cli.web_server.memory_provider_setup",
+            stdin=ChildStdinPolicy.CLOSED,
+        )
+    )
     home = Path.home()
     extra_bins = [
         home / ".brv-cli" / "bin",
@@ -6596,6 +6606,7 @@ def _run_setup_command(
         shell=shell,
         executable="/bin/bash" if shell else None,
         env=_memory_provider_setup_env(),
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         # Lossy UTF-8 decode — setup tools emit UTF-8; never let a
@@ -16792,14 +16803,25 @@ def _resolve_chat_argv(
         profile_dir = _resolve_profile_dir(requested)
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
-    # Hermes TUI child: build via the single spawn-env factory (profile-home
-    # contract applied; secrets kept — the spawned agent needs provider creds).
-    # An explicit profile scope still overrides HERMES_HOME before config is
-    # bridged into the child environment.
-    from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
-    if profile_dir is not None:
-        env["HERMES_HOME"] = str(profile_dir)
+    # Hermes TUI child: declare an interactive typed edge that retains
+    # profile-scoped agent/tool authority while stripping parent gateway and
+    # orchestration authority. An explicit profile scope overrides HERMES_HOME
+    # before config is bridged into the child environment.
+    from tools.child_process_authority import (
+        build_child_process_env,
+        interactive_hermes_pty_spec,
+    )
+
+    env = build_child_process_env(
+        interactive_hermes_pty_spec(
+            source="hermes_cli.web_server.dashboard_chat_pty"
+        ),
+        overrides=(
+            {"HERMES_HOME": str(profile_dir)}
+            if profile_dir is not None
+            else None
+        ),
+    )
     try:
         from hermes_cli.config import (
             apply_terminal_config_to_env,

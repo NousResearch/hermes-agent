@@ -8,7 +8,8 @@
     "./billing": "./src/billing-types.ts",
     "./billing-policy": "./src/billing-policy.ts",
     "./charge-settlement": "./src/charge-settlement.ts",
-    "./skin": "./src/skin.ts"
+    "./skin": "./src/skin.ts",
+    "./authority-manifest": "./src/authority/manifest.ts"
   },
   "types": "./src/index.ts",
   "scripts": {

@@ -194,12 +194,22 @@ def _platform_asset_name() -> str:
         # don't need bullet-proof detection — getting it wrong falls
         # back to a clear error from the binary loader, which we catch.
         try:
+            from tools.child_process_authority import (
+                build_child_process_env,
+                probe_spec,
+                stdin_for_spec,
+            )
+
+            spec = probe_spec(source="agent.secret_sources.bitwarden.libc")
             res = subprocess.run(
                 ["ldd", "--version"],
                 capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=2,
-                stdin=subprocess.DEVNULL,
+                env=build_child_process_env(spec),
+                stdin=stdin_for_spec(spec),
             )
             if "musl" in (res.stdout + res.stderr).lower():
                 libc = "musl"
@@ -678,22 +688,22 @@ def _run_bws_list(
     # bws child intentionally receives the access token.  Under a profile-local
     # fetch it must not inherit sibling credentials from process-global env.
     source_env = get_source_environment()
-    if source_env is os.environ:
-        from tools.environments.local import build_subprocess_env
+    from tools.child_process_authority import (
+        build_child_process_env,
+        bws_vault_spec,
+    )
 
-        env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-    else:
-        env = dict(source_env)
-    env["BWS_ACCESS_TOKEN"] = access_token
-    # Make sure we're not echoing telemetry / colour codes into json.
-    env.setdefault("NO_COLOR", "1")
-    # Region / self-hosted support.  bws defaults to https://vault.bitwarden.com
-    # (US Cloud); EU Cloud users need https://vault.bitwarden.eu, and
-    # self-hosted users need their own URL.  When unset, fall back to whatever
-    # BWS_SERVER_URL the caller already had in their shell env (preserved by
-    # the copy above) so manual overrides keep working too.
+    overrides = {
+        "BWS_ACCESS_TOKEN": access_token,
+        "NO_COLOR": "1",
+    }
     if server_url:
-        env["BWS_SERVER_URL"] = server_url
+        overrides["BWS_SERVER_URL"] = server_url
+    env = build_child_process_env(
+        bws_vault_spec(source="agent.secret_sources.bitwarden"),
+        source_env=source_env,
+        overrides=overrides,
+    )
 
     try:
         proc = subprocess.run(  # noqa: S603 — bws path is trusted

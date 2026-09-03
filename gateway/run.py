@@ -12608,8 +12608,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 """
             ).strip()
-            from tools.environments.local import build_subprocess_env
-            watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+            from tools.child_process_authority import (
+                ChildStdinPolicy,
+                build_child_process_env,
+                stdin_for_spec,
+                trusted_hermes_child_spec,
+            )
+
+            watcher_spec = trusted_hermes_child_spec(
+                source="gateway.run.restart_watcher.windows",
+                stdin=ChildStdinPolicy.CLOSED,
+            )
+            watcher_env = build_child_process_env(watcher_spec)
             # This watcher is intentionally outside the running gateway. If it
             # inherits the gateway marker, `hermes gateway restart` refuses to
             # run as a self-restart loop guard and the gateway stays stopped.
@@ -12653,6 +12663,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     watcher_argv,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    stdin=stdin_for_spec(watcher_spec),
                     env=watcher_env,
                     **windows_detach_popen_kwargs(),
                 )
@@ -12662,6 +12673,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         watcher_argv,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        stdin=stdin_for_spec(watcher_spec),
                         env=watcher_env,
                         creationflags=windows_detach_flags_without_breakaway(),
                     )
@@ -12698,8 +12710,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # _HERMES_GATEWAY=1 from us, and the CLI's self-restart loop guard
         # refuses to run when that marker is set — silently (DEVNULL), so the
         # gateway stops and never comes back.
-        from tools.environments.local import build_subprocess_env
-        watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+        from tools.child_process_authority import (
+            ChildStdinPolicy,
+            build_child_process_env,
+            stdin_for_spec,
+            trusted_hermes_child_spec,
+        )
+
+        watcher_spec = trusted_hermes_child_spec(
+            source="gateway.run.restart_watcher.posix",
+            stdin=ChildStdinPolicy.CLOSED,
+        )
+        watcher_env = build_child_process_env(watcher_spec)
         watcher_env.pop("_HERMES_GATEWAY", None)
         setsid_bin = shutil.which("setsid")
         if setsid_bin:
@@ -12707,6 +12729,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 [setsid_bin, "bash", "-lc", shell_cmd],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                stdin=stdin_for_spec(watcher_spec),
                 env=watcher_env,
                 start_new_session=True,
             )
@@ -12715,6 +12738,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ["bash", "-lc", shell_cmd],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                stdin=stdin_for_spec(watcher_spec),
                 env=watcher_env,
                 start_new_session=True,
             )

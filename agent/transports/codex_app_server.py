@@ -25,7 +25,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from tools.environments.local import hermes_subprocess_env
+from tools.child_process_authority import (
+    KANBAN_WORKER_GRANT_PREFIXES,
+    KANBAN_WORKER_GRANTS,
+    build_child_process_env,
+    model_driver_spec,
+    probe_spec,
+    stdin_for_spec,
+)
 
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
@@ -87,9 +94,14 @@ class CodexAppServerClient:
         # centralized helper so Tier-1 + dynamic-internal secrets are always
         # stripped while provider creds still flow, matching copilot_acp_client
         # (#29157 sibling spawn-site gap).
-        spawn_env = hermes_subprocess_env(inherit_credentials=True)
-        if env:
-            spawn_env.update(env)
+        spawn_env = build_child_process_env(
+            model_driver_spec(
+                source="agent.transports.codex_app_server",
+                grants=KANBAN_WORKER_GRANTS,
+                grant_prefixes=KANBAN_WORKER_GRANT_PREFIXES,
+            ),
+            overrides=env,
+        )
         if codex_home:
             spawn_env["CODEX_HOME"] = codex_home
 
@@ -391,12 +403,16 @@ def check_codex_binary(
 
     Returns (ok, message). Used by setup wizard and runtime startup."""
     try:
+        spec = probe_spec(source="agent.transports.codex_app_server.version")
         proc = subprocess.run(
             [codex_bin, "--version"],
             capture_output=True,
-            text=True, encoding='utf-8', errors='replace',
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
-            stdin=subprocess.DEVNULL,
+            env=build_child_process_env(spec),
+            stdin=stdin_for_spec(spec),
         )
     except FileNotFoundError:
         return False, (

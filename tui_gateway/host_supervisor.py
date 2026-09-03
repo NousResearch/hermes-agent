@@ -23,7 +23,12 @@ from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_hermes_home
-from tools.environments.local import hermes_subprocess_env
+from tools.child_process_authority import (
+    build_child_process_env,
+    probe_spec,
+    stdin_for_spec,
+    trusted_hermes_child_spec,
+)
 
 logger = logging.getLogger(__name__)
 _Thread = threading.Thread
@@ -73,6 +78,7 @@ def _repo_root() -> Path:
 
 def _build_sha() -> str:
     try:
+        spec = probe_spec(source="tui_gateway.host_supervisor.build_sha")
         return subprocess.check_output(
             ["git", "rev-parse", "HEAD"],
             cwd=str(_repo_root()),
@@ -81,6 +87,8 @@ def _build_sha() -> str:
             errors="replace",
             stderr=subprocess.DEVNULL,
             timeout=2,
+            env=build_child_process_env(spec),
+            stdin=stdin_for_spec(spec),
         ).strip()
     except Exception:
         return "unknown"
@@ -116,6 +124,7 @@ def _pid_command(pid: int) -> str:
     except Exception:
         pass
     try:
+        spec = probe_spec(source="tui_gateway.host_supervisor.pid_command")
         return subprocess.check_output(
             ["ps", "-p", str(pid), "-o", "command="],
             text=True,
@@ -123,6 +132,8 @@ def _pid_command(pid: int) -> str:
             errors="replace",
             stderr=subprocess.DEVNULL,
             timeout=2,
+            env=build_child_process_env(spec),
+            stdin=stdin_for_spec(spec),
         ).strip()
     except Exception:
         return ""
@@ -393,14 +404,20 @@ class HostSupervisor:
             raise RuntimeError("compute host respawn disabled after crash loop")
         self._hello_event.clear()
         self._hello = {}
-        env = hermes_subprocess_env(inherit_credentials=True)
-        env.update(os.environ)
-        if self.env:
-            env.update(self.env)
-        env["HERMES_COMPUTE_HOST_HEARTBEAT_SECS"] = str(self.heartbeat_secs)
-        env.setdefault("PYTHONPATH", str(_repo_root()))
-        if str(_repo_root()) not in env["PYTHONPATH"].split(os.pathsep):
-            env["PYTHONPATH"] = str(_repo_root()) + os.pathsep + env["PYTHONPATH"]
+        overrides = dict(self.env or {})
+        overrides["HERMES_COMPUTE_HOST_HEARTBEAT_SECS"] = str(self.heartbeat_secs)
+        env = build_child_process_env(
+            trusted_hermes_child_spec(source="tui_gateway.host_supervisor"),
+            overrides=overrides,
+        )
+        inherited_pythonpath = str(env.get("PYTHONPATH") or "")
+        repo_root = str(_repo_root())
+        pythonpath_parts = [
+            part for part in inherited_pythonpath.split(os.pathsep) if part
+        ]
+        if repo_root not in pythonpath_parts:
+            pythonpath_parts.insert(0, repo_root)
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
         proc = subprocess.Popen(
             self.argv,
             cwd=str(self.cwd),

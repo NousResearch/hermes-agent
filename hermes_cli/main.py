@@ -2963,10 +2963,17 @@ def _launch_tui(
 
     import tempfile
 
-    # TUI child is a hermes process: propagate the profile-home contract via
-    # the single factory; keep secrets (the TUI/agent needs provider creds).
-    from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+    # TUI child is a Hermes process: declare an interactive typed edge that
+    # retains profile-scoped agent/tool authority while stripping parent
+    # gateway and orchestration authority.
+    from tools.child_process_authority import (
+        build_child_process_env,
+        interactive_hermes_pty_spec,
+        stdin_for_spec,
+    )
+
+    tui_spec = interactive_hermes_pty_spec(source="hermes_cli.main.launch_tui")
+    env = build_child_process_env(tui_spec)
     try:
         from hermes_cli.config import apply_terminal_config_to_env
         apply_terminal_config_to_env(env=env)
@@ -3089,7 +3096,12 @@ def _launch_tui(
     code: Optional[int] = None
     try:
         try:
-            code = subprocess.call(argv, cwd=str(cwd), env=env)
+            code = subprocess.call(
+                argv,
+                cwd=str(cwd),
+                env=env,
+                stdin=stdin_for_spec(tui_spec),
+            )
         except KeyboardInterrupt:
             code = 130
 
@@ -12229,6 +12241,34 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     return "app.asar" in path.replace("\\", "/")
 
 
+def _machine_dashboard_reexec_env() -> dict[str, str]:
+    """Build the trusted child env for a named-profile dashboard reroute."""
+
+    from tools.child_process_authority import (
+        ChildStdinPolicy,
+        build_child_process_env,
+        trusted_hermes_child_spec,
+    )
+
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        machine_root = str(get_default_hermes_root())
+    except Exception:
+        machine_root = ""
+
+    env = build_child_process_env(
+        trusted_hermes_child_spec(
+            source="hermes_cli.main.machine_dashboard_reexec",
+            stdin=ChildStdinPolicy.CLOSED,
+        ),
+        overrides={"HERMES_HOME": machine_root} if machine_root else None,
+    )
+    if not machine_root:
+        env.pop("HERMES_HOME", None)
+    return env
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     _token_file = getattr(args, "ssh_session_token_file", None)
@@ -12364,10 +12404,7 @@ def cmd_dashboard(args):
             reexec_argv.append("--insecure")
         if getattr(args, "skip_build", False):
             reexec_argv.append("--skip-build")
-        from tools.environments.local import build_subprocess_env
-        # Exact env preservation: HERMES_HOME is explicitly pinned to the
-        # machine root below — the factory must not re-inject a profile home.
-        env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+        env = _machine_dashboard_reexec_env()
         # Pin the child to the machine ROOT, not the launching profile's
         # HERMES_HOME.  We must resolve the root explicitly instead of just
         # dropping HERMES_HOME: in the Docker layout the machine root is
@@ -12379,13 +12416,6 @@ def cmd_dashboard(args):
         # returns the root for both layouts: ~/.hermes for a standard install
         # and /opt/data for Docker (it strips a trailing profiles/<name>).
         # See the support report for the double-mount workaround this avoids.
-        try:
-            from hermes_constants import get_default_hermes_root
-            env["HERMES_HOME"] = str(get_default_hermes_root())
-        except Exception:
-            # Best-effort: if root resolution fails, fall back to the prior
-            # behaviour (drop HERMES_HOME) rather than block the reroute.
-            env.pop("HERMES_HOME", None)
         # On Windows, os.execvpe() does not truly replace the process — it
         # spawns via CreateProcess then the parent exits.  Under Python 3.14+
         # this can crash with STATUS_ACCESS_VIOLATION (0xC0000005) when

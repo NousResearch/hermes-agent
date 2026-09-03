@@ -1,0 +1,10 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://hermes-agent.nousresearch.com/schemas/authority-manifest-v1.json",
+  "title":"Hermes Authority Policy Manifest v1",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["schema_version","policy_version","domains"],
+  "properties":{"schema_version":{"const":1},"policy_version":{"type":"string","minLength":1},"domains":{"type":"object","additionalProperties":false,"minProperties":1,"properties":{"github.operation":{"$ref":"#/$defs/domain"},"sandbox.execution":{"$ref":"#/$defs/domain"},"child_process.operation":{"$ref":"#/$defs/domain"},"gateway.mutation":{"$ref":"#/$defs/domain"}}}},
+  "$defs":{"domain":{"type":"object","additionalProperties":false,"required":["sinks","operation_classes"],"properties":{"sinks":{"type":"object","minProperties":1,"additionalProperties":{"$ref":"#/$defs/sink"}},"operation_classes":{"type":"object","minProperties":1,"additionalProperties":{"$ref":"#/$defs/operation"}}}},"sink":{"type":"object","additionalProperties":false,"required":["broker","direct_symbols"],"properties":{"broker":{"type":"string","minLength":1},"direct_symbols":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}}},"operation":{"type":"object","additionalProperties":false,"required":["sink_class","required_capabilities","allowed_actor_classes","allowed_resource_states"],"properties":{"sink_class":{"type":"string","minLength":1},"required_capabilities":{"type":"array","minItems":1,"items":{"type":"string","minLength":1,"not":{"pattern":"\\*"}},"uniqueItems":true},"allowed_actor_classes":{"type":"array","minItems":1,"items":{"enum":["human","github_app","workflow","automation","external_bot"]},"uniqueItems":true},"allowed_resource_states":{"type":"array","minItems":1,"items":{"type":"string","minLength":1},"uniqueItems":true}}}}
+}

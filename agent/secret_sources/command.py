@@ -180,20 +180,17 @@ def _run_helper(
         )
         return None
 
-    # User-configured secret-helper command: runs with the user's full shell
-    # env by design (it may need any credential to resolve the secret).
     source_env = get_source_environment()
-    if source_env is os.environ:
-        # Legacy single-profile startup intentionally preserves the existing
-        # helper contract, which may rely on the user's full environment.
-        from tools.environments.local import build_subprocess_env
-        env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-    else:
-        # A multiplex profile must never inherit sibling secrets from the
-        # process-global environment.  hydrate_profile_secret_sources seeds
-        # only global-safe values plus this profile's own .env.
-        env = dict(source_env)
-    env["HERMES_SECRET_KEY"] = secret_key
+    from tools.child_process_authority import (
+        build_child_process_env,
+        secret_helper_spec,
+    )
+
+    env = build_child_process_env(
+        secret_helper_spec(source="agent.secret_sources.command"),
+        source_env=source_env,
+        overrides={"HERMES_SECRET_KEY": secret_key},
+    )
 
     try:
         proc = subprocess.Popen(  # noqa: S602 — command is the user's own config

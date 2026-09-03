@@ -45,9 +45,19 @@ def _ensure_singularity_available() -> str:
     """Preflight check: resolve the executable and verify it responds."""
     exe = _find_singularity_executable()
     try:
+        from tools.child_process_authority import (
+            build_child_process_env,
+            container_control_spec,
+            stdin_for_spec,
+        )
+
+        spec = container_control_spec(
+            source="tools.environments.singularity.preflight"
+        )
         result = subprocess.run(
             [exe, "version"], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
-            stdin=subprocess.DEVNULL,
+            env=build_child_process_env(spec),
+            stdin=stdin_for_spec(spec),
         )
     except FileNotFoundError:
         raise RuntimeError(
@@ -130,12 +140,20 @@ def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
         tmp_dir = cache_dir / "tmp"
         tmp_dir.mkdir(parents=True, exist_ok=True)
 
-        # apptainer/singularity build: external tool, may need registry
-        # credentials from the user env — exact preservation.
-        from tools.environments.local import build_subprocess_env
-        env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-        env["APPTAINER_TMPDIR"] = str(tmp_dir)
-        env["APPTAINER_CACHEDIR"] = str(cache_dir)
+        from tools.child_process_authority import (
+            build_child_process_env,
+            container_image_build_spec,
+        )
+
+        env = build_child_process_env(
+            container_image_build_spec(
+                source="tools.environments.singularity.image_build"
+            ),
+            overrides={
+                "APPTAINER_TMPDIR": str(tmp_dir),
+                "APPTAINER_CACHEDIR": str(cache_dir),
+            },
+        )
 
         try:
             result = subprocess.run(
@@ -228,7 +246,25 @@ class SingularityEnvironment(BaseEnvironment):
         cmd.extend([str(self.image), self.instance_id])
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120, stdin=subprocess.DEVNULL)
+            from tools.child_process_authority import (
+                build_child_process_env,
+                container_control_spec,
+                stdin_for_spec,
+            )
+
+            spec = container_control_spec(
+                source="tools.environments.singularity.instance_start"
+            )
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=120,
+                env=build_child_process_env(spec),
+                stdin=stdin_for_spec(spec),
+            )
             if result.returncode != 0:
                 raise RuntimeError(f"Failed to start instance: {result.stderr}")
             self._instance_started = True
@@ -257,10 +293,20 @@ class SingularityEnvironment(BaseEnvironment):
         """Stop the instance. If persistent, the overlay dir survives."""
         if self._instance_started:
             try:
+                from tools.child_process_authority import (
+                    build_child_process_env,
+                    container_control_spec,
+                    stdin_for_spec,
+                )
+
+                spec = container_control_spec(
+                    source="tools.environments.singularity.instance_stop"
+                )
                 subprocess.run(
                     [self.executable, "instance", "stop", self.instance_id],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
-                    stdin=subprocess.DEVNULL,
+                    env=build_child_process_env(spec),
+                    stdin=stdin_for_spec(spec),
                 )
                 logger.info("Singularity instance %s stopped", self.instance_id)
             except Exception as e:

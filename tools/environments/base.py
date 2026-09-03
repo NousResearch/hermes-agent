@@ -385,6 +385,10 @@ def _popen_bash(
     this and call :func:`_pipe_stdin` directly.
     """
     kwargs.setdefault("creationflags", windows_hide_flags())
+    from tools.environments.local import build_subprocess_env
+
+    caller_env = kwargs.pop("env", None)
+    kwargs["env"] = build_subprocess_env(base=caller_env)
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,

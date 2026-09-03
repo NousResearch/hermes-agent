@@ -804,6 +804,28 @@ def main(argv: list[str]) -> int:
         )
         return 1
 
+    if args.all:
+        # This established blocking static-check job also owns the Phase G
+        # process-edge AST admission. Keep structural policy in CI rather than
+        # introducing a source-reading behavior test.
+        from check_process_edge_authority import scan_repository
+
+        authority_findings = scan_repository()
+        if authority_findings:
+            print(
+                "\n✗ Production child-process authority bypasses remain:",
+                file=sys.stderr,
+            )
+            for finding in authority_findings:
+                print(f"  {finding}", file=sys.stderr)
+            print(
+                "  Use tools.child_process_authority with a typed "
+                "ChildProcessSpec.",
+                file=sys.stderr,
+            )
+            return 1
+        print("✓ Process-edge authority check passed.")
+
     print(
         f"✓ No Windows footguns found ({files_scanned} file(s) scanned)."
     )

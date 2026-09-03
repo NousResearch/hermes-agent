@@ -1150,6 +1150,31 @@ class WebhookAdapter(BasePlatformAdapter):
             ).hexdigest()
             return _hmac_str_equal(gh_sig, expected)
 
+        # Pocket (heypocketai.com): X-HeyPocket-Signature = <hex HMAC-SHA256 of
+        # "{timestamp}.{raw_body}">, X-HeyPocket-Timestamp = unix ms.
+        # Pocket's documented scheme (docs.heypocketai.com/docs/api/webhooks);
+        # ms-resolution timestamp, 300s replay window (same as generic V2).
+        hp_sig = request.headers.get("X-HeyPocket-Signature", "")
+        if hp_sig:
+            hp_timestamp = request.headers.get("X-HeyPocket-Timestamp", "")
+            if not hp_timestamp:
+                return False
+            try:
+                hp_ts = int(hp_timestamp)
+            except (TypeError, ValueError):
+                return False
+            if abs(int(time.time() * 1000) - hp_ts) > 300_000:
+                logger.warning(
+                    "[webhook] Route '%s' Pocket timestamp outside replay window",
+                    request.match_info.get("route_name", ""),
+                )
+                return False
+            signed_content = hp_timestamp.encode() + b"." + body
+            expected_hp = hmac.new(
+                secret.encode(), signed_content, hashlib.sha256
+            ).hexdigest()
+            return _hmac_str_equal(hp_sig, expected_hp)
+
         # GitLab: X-Gitlab-Token = <plain secret>
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:

@@ -175,7 +175,7 @@ def call_llm_once(cfg: dict, prompt: str) -> list:
                 sys.exit(2)
         except urllib.error.HTTPError as e:
             last_err = f"HTTP {e.code}: {e.read().decode()[:200]}"
-            if e.code in (524, 520, 503, 429):
+            if e.code == 429 or e.code >= 500:  # 500/502/503/504/520/524 + rate-limit
                 print(f"  [retry {attempt}/{MAX_RETRIES}] {e.code} (server latency) — waiting {RETRY_BASE_DELAY * attempt}s...")
                 time.sleep(RETRY_BASE_DELAY * attempt)
                 continue

@@ -200,6 +200,14 @@ The most reliable way to get a token:
 3. Scroll down and expand **Advanced** — the access token is displayed there.
 4. **Copy it immediately.**
 
+:::note
+If you plan to enable E2EE, use **Via the API** below instead. A token copied
+from an Element browser session is bound to that browser's device; E2EE
+cross-signing ties trust to a dedicated device, and running the bot on a
+shared browser device breaks that trust. The API login below mints a token for
+its own dedicated device.
+:::
+
 **Via the API:**
 
 ```bash
@@ -208,7 +216,8 @@ curl -X POST https://your-server/_matrix/client/v3/login \
   -d '{
     "type": "m.login.password",
     "user": "@hermes:your-server.org",
-    "password": "your-password"
+    "password": "your-password",
+    "initial_device_display_name": "Hermes Agent"
   }'
 ```
 

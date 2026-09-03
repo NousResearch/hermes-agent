@@ -3087,3 +3087,110 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="s2", gateway_session_key="ch")
         assert captured[1]["model"] == "anthropic/claude-opus-4.6"
+
+
+class TestCreateAgentBareProviderKind:
+    """A named custom provider's ambient runtime carries provider="custom" —
+    a billing *kind* label, not a name under ``providers:``. On the turn
+    after the session row persists a model, _create_agent re-resolved that
+    label and clobbered the working credentials with a credential-less
+    fallback runtime, 500ing every subsequent turn (#102384)."""
+
+    def test_persisted_session_model_keeps_ambient_custom_credentials(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        # Ambient runtime of a named custom provider: resolved credentials
+        # plus the "custom" kind label.
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "custom",
+                "api_key": "sk-live",
+                "base_url": "https://gateway.example.com/v1",
+                "api_mode": "responses",
+            },
+        )
+        # What re-resolving "custom" actually returns (issue #102384 probe):
+        # the OpenRouter fallback with no credentials.
+        resolved_names = []
+
+        def fake_request_runtime(provider, target_model=None):
+            resolved_names.append(provider)
+            return {
+                "provider": "custom",
+                "api_key": "",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            }
+
+        monkeypatch.setattr(
+            "gateway.platforms.api_server._resolve_request_runtime_agent_kwargs",
+            fake_request_runtime,
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        # Turn-2 shape: the session row has a persisted model.
+        agent = adapter._create_agent(session_id="s", session_model="some-model")
+
+        assert isinstance(agent, FakeAgent)
+        # The ambient credentials survive — the kind label is never re-resolved.
+        assert captured["api_key"] == "sk-live"
+        assert captured["base_url"] == "https://gateway.example.com/v1"
+        assert captured["provider"] == "custom"
+        assert resolved_names == []
+
+    def test_session_model_override_keeps_ambient_custom_credentials(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "custom",
+                "api_key": "sk-live",
+                "base_url": "https://gateway.example.com/v1",
+                "api_mode": "responses",
+            },
+        )
+        resolved_names = []
+
+        def fake_request_runtime(provider, target_model=None):
+            resolved_names.append(provider)
+            return {
+                "provider": "custom",
+                "api_key": "",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            }
+
+        monkeypatch.setattr(
+            "gateway.platforms.api_server._resolve_request_runtime_agent_kwargs",
+            fake_request_runtime,
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        # Override carries a model but no provider — the ambient "custom"
+        # label is the fallback and must not be re-resolved either.
+        monkeypatch.setattr(
+            adapter, "_session_model_override_for", lambda _k: {"model": "other-model"}
+        )
+
+        agent = adapter._create_agent(session_id="s")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["api_key"] == "sk-live"
+        assert captured["base_url"] == "https://gateway.example.com/v1"
+        assert captured["model"] == "other-model"
+        assert resolved_names == []

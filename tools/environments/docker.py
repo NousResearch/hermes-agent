@@ -44,6 +44,7 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EGRESS_LABEL_KEY = "hermes-egress"
+_RUNTIME_LABEL_KEY = "hermes-runtime-fingerprint"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -600,6 +601,23 @@ def _egress_reuse_fingerprint(
             "env_overrides": env_overrides,
             "host_args": host_args,
         },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def _runtime_reuse_fingerprint(image: str, all_run_args: list[str]) -> str:
+    """Stable label for the final immutable ``docker run`` configuration.
+
+    ``all_run_args`` is assembled immediately before this call from every
+    create-time option that Hermes passes to Docker: security, user, mounts,
+    resource, egress, environment, and validated extra arguments.  Values
+    that change that configuration, including rotated proxy credentials, are
+    intentionally part of the fingerprint so reuse fails closed.
+    """
+    payload = json.dumps(
+        {"image": image, "run_args": all_run_args},
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -1413,11 +1431,14 @@ class DockerEnvironment(BaseEnvironment):
         # container-start time and never changes for the container's lifetime.
         profile_name = _container_identity(shared_container_key)
         task_label = _sanitize_label_value(task_id)
+        runtime_fp = _runtime_reuse_fingerprint(image, all_run_args)
+        self._runtime_fp = runtime_fp
         label_args = [
             "--label", "hermes-agent=1",
             "--label", f"hermes-task-id={task_label}",
             "--label", f"hermes-profile={profile_name}",
             "--label", f"{_EGRESS_LABEL_KEY}={egress_label}",
+            "--label", f"{_RUNTIME_LABEL_KEY}={runtime_fp}",
         ]
         # Save args for container recreation on "No such container" recovery.
         self._image = image
@@ -1430,6 +1451,7 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label,
+            _RUNTIME_LABEL_KEY: runtime_fp,
         }
 
         # Cross-process container reuse (issue #20561 — docs claim "ONE long-lived
@@ -1487,6 +1509,36 @@ class DockerEnvironment(BaseEnvironment):
                     except (subprocess.TimeoutExpired, OSError) as e:
                         logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
                     existing = None
+                elif existing is not None:
+                    actual_fp = self._container_runtime_fingerprint(container_id)
+                    if actual_fp != runtime_fp:
+                        # An empty fingerprint is a deliberate mismatch.  It
+                        # covers containers created before this label existed;
+                        # those legacy containers are rebuilt once after the
+                        # upgrade instead of being reused without proof that
+                        # their immutable Docker configuration still matches.
+                        logger.warning(
+                            "Existing container %s runtime fingerprint %r does not "
+                            "match current config %r — removing it and starting "
+                            "fresh (task=%s, profile=%s).",
+                            container_id[:12], actual_fp or "<missing>",
+                            runtime_fp, task_label, profile_name,
+                        )
+                        try:
+                            subprocess.run(
+                                [self._docker_exe, "rm", "-f", container_id],
+                                capture_output=True,
+                                text=True, encoding="utf-8", errors="replace",
+                                timeout=30,
+                                check=False,
+                                stdin=subprocess.DEVNULL,
+                            )
+                        except (subprocess.TimeoutExpired, OSError) as e:
+                            logger.warning(
+                                "Failed to remove drifted container %s: %s",
+                                container_id[:12], e,
+                            )
+                        existing = None
             if existing is not None:
                 container_id, state = existing
                 self._container_id = container_id
@@ -1901,6 +1953,32 @@ class DockerEnvironment(BaseEnvironment):
             return None
         mode = result.stdout.strip()
         return mode or None
+
+    def _container_runtime_fingerprint(self, container_id: str) -> str:
+        """Return the stored ``hermes-runtime-fingerprint`` label, or ``""``."""
+        try:
+            result = subprocess.run(
+                [
+                    self._docker_exe, "inspect",
+                    "--format",
+                    '{{index .Config.Labels "' + _RUNTIME_LABEL_KEY + '"}}',
+                    container_id,
+                ],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=10,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("docker inspect runtime fingerprint failed: %s", e)
+            return ""
+        if result.returncode != 0:
+            return ""
+        value = result.stdout.strip()
+        if value in ("", "<no value>"):
+            return ""
+        return value
 
     def _find_reusable_container(
         self,

@@ -728,12 +728,12 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 
     env = _make_dummy_env(task_id="abc")
 
-    assert env._labels == {
-        "hermes-agent": "1",
-        "hermes-task-id": "abc",
-        "hermes-profile": "default",
-        "hermes-egress": "off",
-    }
+    assert env._labels["hermes-agent"] == "1"
+    assert env._labels["hermes-task-id"] == "abc"
+    assert env._labels["hermes-profile"] == "default"
+    assert env._labels["hermes-egress"] == "off"
+    assert env._labels["hermes-runtime-fingerprint"] == env._runtime_fp
+    assert len(env._runtime_fp) == 24
 
 
 def test_shared_container_key_replaces_profile_identity(monkeypatch):
@@ -833,6 +833,11 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment,
+        "_container_runtime_fingerprint",
+        lambda self, cid: getattr(self, "_runtime_fp", ""),
+    )
     return calls
 
 
@@ -925,6 +930,56 @@ def test_extra_args_proxy_override_refuses_under_egress(monkeypatch):
 
     with pytest.raises(RuntimeError, match="docker_extra_args.*HTTPS_PROXY"):
         _make_dummy_env(extra_args=["-e", "HTTPS_PROXY="])
+
+
+@pytest.mark.parametrize("stored_fingerprint", ["stale-fingerprint", "<no value>"])
+def test_reuse_rejects_container_when_runtime_fingerprint_drifts(
+    monkeypatch, stored_fingerprint,
+):
+    """Drifted and legacy unlabeled containers must not be reattached."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    docker_env._cgroup_limits_ok = True
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "ps":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="reused-cid\trunning\t<no value>\n", stderr="",
+                )
+            if sub == "inspect":
+                format_arg = cmd[cmd.index("--format") + 1]
+                assert format_arg == (
+                    '{{index .Config.Labels "hermes-runtime-fingerprint"}}'
+                )
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"{stored_fingerprint}\n", stderr="",
+                )
+            if sub == "rm":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if sub == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    env = _make_dummy_env(task_id="reuse-drift", memory=2048, extra_args=["--pids-limit=64"])
+    assert env._container_id == "fresh-cid"
+    assert any(isinstance(c[0], list) and "rm" in c[0] for c in calls)
+    assert any(isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run" for c in calls)
+
+
+def test_runtime_fingerprint_changes_with_memory_and_extra_args():
+    a = docker_env._runtime_reuse_fingerprint("python:3.11", ["--memory=1g"])
+    b = docker_env._runtime_reuse_fingerprint("python:3.11", ["--memory=2g"])
+    c = docker_env._runtime_reuse_fingerprint("python:3.12", ["--memory=1g"])
+    assert a != b
+    assert a != c
+    assert a == docker_env._runtime_reuse_fingerprint("python:3.11", ["--memory=1g"])
 
 
 def test_reuse_starts_stopped_container_before_attaching(monkeypatch):
@@ -1045,6 +1100,11 @@ def test_find_reusable_handles_empty_label_string(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment,
+        "_container_runtime_fingerprint",
+        lambda self, cid: getattr(self, "_runtime_fp", ""),
+    )
 
     env = _make_dummy_env(task_id="empty-label")
     assert env._container_id == "safe-cid", (

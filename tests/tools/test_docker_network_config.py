@@ -77,6 +77,11 @@ def _reuse_guard_harness(monkeypatch, *, existing_mode: str, network: bool):
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env.subprocess, "run", fake_run)
     monkeypatch.setattr(docker_env.DockerEnvironment, "_storage_opt_supported", lambda self: False)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment,
+        "_container_runtime_fingerprint",
+        lambda self, cid: getattr(self, "_runtime_fp", ""),
+    )
 
     docker_env.DockerEnvironment(
         image="python:3.11",

@@ -58,6 +58,63 @@ from pathlib import Path
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_operator_skill_demotions(
+    skills_cfg: Any,
+) -> "tuple[frozenset[str], bool, frozenset[str]]":
+    """Parse the ``skills`` config section into prompt-builder demotion args.
+
+    Returns ``(pinned_categories, demote_all, keep_full_categories)``:
+
+    * ``skills.compact_categories`` — a category name, a list of names, or
+      ``"*"`` (demote every category). Names and ``"*"`` combine freely.
+    * ``skills.keep_full_categories`` — name or list of names exempted from
+      ``"*"`` (explicitly pinned names still demote; keep-full only guards
+      against the wildcard).
+
+    Anything malformed is dropped with a warning instead of being silently
+    ignored, so a typo never looks like a working config.
+    """
+
+    def _as_names(value: Any, key: str) -> "tuple[set[str], bool]":
+        """Normalize a name-or-list config value; flags ``*`` separately."""
+        if value is None:
+            return set(), False
+        items = [value] if isinstance(value, str) else value
+        if not isinstance(items, (list, tuple, set, frozenset)):
+            logger.warning(
+                "skills.%s must be a string or list, got %s — ignored",
+                key, type(value).__name__,
+            )
+            return set(), False
+        names: set[str] = set()
+        star = False
+        for item in items:
+            text = str(item).strip()
+            if not text:
+                continue
+            if text == "*":
+                star = True
+            else:
+                names.add(text)
+        return names, star
+
+    if not isinstance(skills_cfg, dict):
+        return frozenset(), False, frozenset()
+    pinned, demote_all = _as_names(
+        skills_cfg.get("compact_categories"), "compact_categories"
+    )
+    keep, keep_star = _as_names(
+        skills_cfg.get("keep_full_categories"), "keep_full_categories"
+    )
+    if keep_star:
+        logger.warning(
+            "skills.keep_full_categories: \"*\" is meaningless here — ignored"
+        )
+    return frozenset(pinned), demote_all, frozenset(keep)
+
+
 _PLUGIN_SECTION_FRAME_RE = re.compile(
     r"^## Plugin Context: (?P<id>[a-z0-9][a-z0-9._-]{0,127})\n"
     r"<!-- hermes-plugin-section-chars:(?P<chars>[0-9]{1,4}) -->\n\n",
@@ -638,11 +695,43 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
         except Exception:
             _compact_cats = frozenset()
+        # Operator-pinned demotions: skills.compact_categories in config.yaml
+        # slims the per-call index on skill-heavy installs. Accepts a list of
+        # category names, "*" (demote all), or the two combined;
+        # skills.keep_full_categories lists the "*" exceptions. A bare string
+        # is treated as a single entry. Missing/empty = unchanged behavior.
+        _pinned: "frozenset[str] | None" = None
+        _demote_all = False
+        _keep_full: "frozenset[str] | None" = None
+        try:
+            from hermes_cli.config import load_config_readonly as _load_cfg_ro
+
+            _skills_cfg = (_load_cfg_ro() or {}).get("skills") or {}
+            _pinned, _demote_all, _keep_full = resolve_operator_skill_demotions(
+                _skills_cfg
+            )
+        except Exception as exc:
+            # resolve_operator_skill_demotions warns about malformed *values*
+            # itself, so anything reaching here is unexpected — an import
+            # failure, or a config shape that raises before it is inspected.
+            # Silently dropping the operator's pins leaves no trace of why the
+            # index came back full. exc_info only under debug: this is a
+            # per-build path, and a persistently broken config would otherwise
+            # print a traceback every turn.
+            logger.warning(
+                "skills.compact_categories/keep_full_categories could not be "
+                "resolved; operator pins ignored for this build: %s",
+                exc,
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
             compact_categories=_compact_cats or None,
             skills_dir_override=_agent_skills_dir(agent),
+            pinned_categories=_pinned,
+            demote_all_categories=_demote_all,
+            keep_full_categories=_keep_full,
         )
     else:
         skills_prompt = ""

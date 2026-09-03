@@ -1076,6 +1076,18 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Slim the per-call skill index: demoted categories render as a single
+  # names-only line (descriptions dropped). Skills are never hidden —
+  # skill_view / skills_list still load everything. Accepts a category name,
+  # a list of names, or "*" to demote everything; names and "*" combine.
+  # keep_full_categories exempts categories from "*" only (explicitly pinned
+  # names always demote); entries match the full category path or its
+  # top-level segment. Default: unset = index unchanged.
+  # compact_categories: "*"
+  # keep_full_categories:
+  #   - hermes
+  #   - software-development
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

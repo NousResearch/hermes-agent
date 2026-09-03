@@ -2320,6 +2320,16 @@ DEFAULT_CONFIG = {
         # Absolute paths of project roots whose repo-local skills may load.
         # Managed by ``hermes skills trust`` / ``hermes skills untrust``.
         "trusted_project_dirs": [],
+        # Slim the per-call skill index: a demoted category renders as one
+        # names-only line, dropping its descriptions.  Nothing is hidden —
+        # skill_view / skills_list still load everything.  Accepts a category
+        # name, a list of names, or "*" for every category; names and "*"
+        # combine.  Empty = index unchanged.
+        "compact_categories": [],
+        # Categories exempted from a "*" in compact_categories; an explicitly
+        # named category always demotes.  Entries match the full category path
+        # or its top-level segment.
+        "keep_full_categories": [],
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled

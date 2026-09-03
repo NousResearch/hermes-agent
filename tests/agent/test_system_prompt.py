@@ -535,6 +535,86 @@ class TestSkillsInVolatileBand:
         assert full.index(_SKILLS) < full.index("Conversation started:")
 
 
+class TestResolveOperatorSkillDemotions:
+    """skills.compact_categories / keep_full_categories config parsing."""
+
+    def test_absent_config_is_noop(self):
+        from agent.system_prompt import resolve_operator_skill_demotions as r
+        assert r({}) == (frozenset(), False, frozenset())
+        assert r(None) == (frozenset(), False, frozenset())
+        assert r("bogus") == (frozenset(), False, frozenset())
+
+    def test_named_list_pins(self):
+        from agent.system_prompt import resolve_operator_skill_demotions as r
+        pinned, demote_all, keep = r({"compact_categories": ["pixiv", "creative"]})
+        assert pinned == frozenset({"pixiv", "creative"})
+        assert demote_all is False
+        assert keep == frozenset()
+
+    def test_bare_string_star_demotes_all(self):
+        """The way operators actually write it: compact_categories: "*"."""
+        from agent.system_prompt import resolve_operator_skill_demotions as r
+        pinned, demote_all, keep = r({"compact_categories": "*"})
+        assert pinned == frozenset()
+        assert demote_all is True
+        assert keep == frozenset()
+
+    def test_star_and_names_combine_with_keep_full(self):
+        from agent.system_prompt import resolve_operator_skill_demotions as r
+        pinned, demote_all, keep = r({
+            "compact_categories": ["*", "pixiv"],
+            "keep_full_categories": "hermes",
+        })
+        assert pinned == frozenset({"pixiv"})
+        assert demote_all is True
+        assert keep == frozenset({"hermes"})
+
+    def test_posture_compact_categories_are_top_level_only(self):
+        """The nested-path widening must stay a no-op for in-repo callers.
+
+        _build_skills_system_prompt_inner used to demote a category only when
+        its top-level segment was listed; it now also matches the full nested
+        path. compact_categories is the posture set, and its sole producer is
+        coding_context._NON_CODING_SKILL_CATEGORIES — every entry there is a
+        top-level segment, so the widening changes nothing today. Adding a
+        nested entry would silently start relying on the new semantics, so make
+        that a deliberate edit to this test rather than an invisible flip.
+        """
+        from agent.coding_context import _NON_CODING_SKILL_CATEGORIES
+        nested = [c for c in _NON_CODING_SKILL_CATEGORIES if "/" in c]
+        assert nested == [], (
+            f"nested posture categories now depend on the widened match: {nested}"
+        )
+
+    def test_config_read_failure_is_logged_not_swallowed(self, caplog):
+        """A broken config surface must leave a trace, not a silent full index.
+
+        resolve_operator_skill_demotions warns about malformed values itself;
+        this covers the outer guard, where an unexpected raise used to drop the
+        operator's pins with no diagnostic at all.
+        """
+        import logging
+        from unittest.mock import patch
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            side_effect=RuntimeError("config surface exploded"),
+        ):
+            with caplog.at_level(logging.WARNING):
+                parts = _build(build_system_prompt_parts)
+        assert parts["volatile"]  # the build still succeeds
+        assert "operator pins ignored" in caplog.text
+        assert "config surface exploded" in caplog.text
+
+    def test_malformed_values_warn_not_silence(self, caplog):
+        import logging
+        from agent.system_prompt import resolve_operator_skill_demotions as r
+        with caplog.at_level(logging.WARNING):
+            assert r({"compact_categories": 42}) == (frozenset(), False, frozenset())
+            r({"keep_full_categories": "*"})
+        assert "must be a string or list" in caplog.text
+        assert "meaningless" in caplog.text
+
+
 class TestMemoryProviderSystemPromptGating:
     """Issue #81014: the provider's ``system_prompt_block()`` must be gated
     on the same ``memory_provider_tools_enabled`` check as tool injection.

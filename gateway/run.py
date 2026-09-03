@@ -29309,6 +29309,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "min_tail_user_messages"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
+        # These two are read through load_config_readonly(), whose cache is
+        # keyed on the config file's (mtime, size) — so the *resolver* already
+        # sees an edit on its next call without any help from this list. They
+        # are registered here for the other half: the skills prompt is baked
+        # into the agent at construction, so without an eviction the fresh
+        # values would not reach a running session until some unrelated cache
+        # bust. Both halves are required; neither is sufficient.
+        ("skills", "compact_categories"),
+        ("skills", "keep_full_categories"),
         ("checkpoints", "enabled"),
         ("checkpoints", "max_snapshots"),
         ("checkpoints", "max_total_size_mb"),

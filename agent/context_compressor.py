@@ -5518,6 +5518,13 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # summaries and compaction loops. Omitting lets the adapter
                 # fall back to the model's native output ceiling.
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
+                # stream=True: a slow (e.g. local thinking-model) backend can
+                # take minutes for this single call. Without streaming,
+                # CompressionCommitFence.touch_progress never ticks (it fires
+                # from the SSE delta accumulator's progress hook), so the
+                # idle-window timeout degenerates into a hard wall-clock cap
+                # instead of the inactivity budget it's meant to be (#102407).
+                "stream": True,
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model

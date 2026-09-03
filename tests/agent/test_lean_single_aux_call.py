@@ -142,6 +142,23 @@ class TestLeanSingleAuxiliaryCall:
         assert len(prompt) <= c._SUMMARY_INPUT_MAX_CHARS + 20_000
         assert "chars elided" in prompt
 
+    def test_summary_call_streams_so_the_idle_window_ticks(self):
+        """Regression for issue #102407, defect 1: without stream=True, a
+        slow (e.g. local thinking-model) backend never fires
+        CompressionCommitFence.touch_progress via the SSE delta
+        accumulator's progress hook, so the idle-window timeout
+        (hygiene_timeout_seconds / context_timeout_seconds) degenerates
+        into a hard wall-clock cap instead of an inactivity budget."""
+        c = _mk_compressor()
+        turns = _big_region()
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value=_llm_response(SUMMARY_BODY),
+        ) as mock_call:
+            c._generate_summary(turns)
+        assert mock_call.call_count == 1
+        assert mock_call.call_args.kwargs.get("stream") is True
+
 
 class TestSampledSummaryInput:
     def test_small_input_passes_through(self):

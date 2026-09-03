@@ -244,7 +244,14 @@ function ProjectTreeRowContainer({ attrs, children, innerRef, node }: RowRendere
   return (
     <div
       {...attrs}
-      onClick={node.handleClick}
+      onClick={e => {
+        // Stop propagation so context-menu item clicks (rendered in a Radix
+        // portal via document.body) do not bubble as synthetic fiber events to
+        // this row container's handleClick.  Without this, every menu item
+        // except "Rename…" opens the file preview alongside its intended action.
+        e.stopPropagation()
+        node.handleClick(e)
+      }}
       onFocus={e => e.stopPropagation()}
       ref={innerRef}
       style={{ ...attrs.style, minWidth: 0, width: '100%' }}

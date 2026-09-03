@@ -1,8 +1,10 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 from hermes_wisdom.contract import author_description_hash
 from hermes_wisdom.professionalism import (
     CHECK_KEYS,
+    canonical_assessed_at,
     enqueue_review,
     exact_utf8_package,
     process_pending_reviews,
@@ -23,6 +25,14 @@ def _queued(tmp_path: Path) -> tuple[WisdomStore, dict]:
         author_description="A useful helper.",
     )
     return store, job
+
+
+def test_assessment_timestamp_matches_gateway_canonical_iso_form():
+    assessed_at = canonical_assessed_at(
+        datetime(2026, 9, 3, 0, 53, 54, 633999, tzinfo=timezone.utc)
+    )
+
+    assert assessed_at == "2026-09-03T00:53:54.633Z"
 
 
 def test_classifier_is_tool_free_hash_bound_and_records_route(monkeypatch, tmp_path: Path):
@@ -70,6 +80,8 @@ def test_classifier_is_tool_free_hash_bound_and_records_route(monkeypatch, tmp_p
         "provider": "codex",
         "model": "gpt-5.6-sol",
     }
+    assert review["assessed_at"].endswith("Z")
+    assert len(review["assessed_at"].split(".", 1)[1]) == 4
 
 
 def test_malformed_classifier_output_retries_then_becomes_unavailable(

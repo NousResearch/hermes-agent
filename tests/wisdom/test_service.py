@@ -414,7 +414,7 @@ def test_prepare_requires_local_owner_edit_before_any_network(
                 "provider": "codex",
                 "model": "gpt-5.6-sol",
             },
-            "assessed_at": "2026-09-02T00:00:00+00:00",
+            "assessed_at": "2026-09-02T00:00:00.000Z",
         },
     )
 

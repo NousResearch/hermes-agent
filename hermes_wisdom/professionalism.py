@@ -39,6 +39,20 @@ class ProfessionalismReviewError(RuntimeError):
         self.route_info = dict(route_info or {})
 
 
+def canonical_assessed_at(value: datetime | None = None) -> str:
+    """Serialize a UTC timestamp in the Gateway's canonical JS ISO form."""
+
+    current = value or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("professionalism assessment timestamp must be timezone-aware")
+    return (
+        current
+        .astimezone(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
+
 class _ClassifierCheck(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -143,7 +157,7 @@ def unavailable_review(
             "provider": str(route.get("provider") or "")[:128] or None,
             "model": str(route.get("model") or "")[:128] or None,
         },
-        "assessed_at": datetime.now(timezone.utc).isoformat(),
+        "assessed_at": canonical_assessed_at(),
     }
 
 
@@ -247,7 +261,7 @@ def run_review(job: dict[str, Any]) -> dict[str, Any]:
             "provider": str(route_info.get("provider") or "")[:128] or None,
             "model": str(route_info.get("model") or "")[:128] or None,
         },
-        "assessed_at": datetime.now(timezone.utc).isoformat(),
+        "assessed_at": canonical_assessed_at(),
     }
 
 

@@ -538,6 +538,27 @@ class TestIdempotency:
             data = await resp2.json()
             assert data["status"] == "duplicate"
 
+    @pytest.mark.asyncio
+    async def test_duplicate_whatsapp_message_id_returns_200(self):
+        """WhatsApp retries with different HTTP IDs must run only once."""
+        routes = {"whatsapp-inbound": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        payload = {"messageId": "3EB0F00D", "content": "hello"}
+        async with TestClient(TestServer(app)) as cli:
+            resp1 = await cli.post(
+                "/webhooks/whatsapp-inbound", json=payload, headers={"X-Request-ID": "attempt-1"}
+            )
+            assert resp1.status == 202
+
+            resp2 = await cli.post(
+                "/webhooks/whatsapp-inbound", json=payload, headers={"X-Request-ID": "attempt-2"}
+            )
+            assert resp2.status == 200
+            assert (await resp2.json())["status"] == "duplicate"
+
 
 # ===================================================================
 # Rate limiting

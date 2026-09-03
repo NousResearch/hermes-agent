@@ -45,6 +45,8 @@ class TestDeprecatedCwdWarning:
         assert "TERMINAL_CWD" in captured.err
         assert "deprecated" in captured.err.lower()
         assert "config.yaml" in captured.err
+        assert "\033[" not in captured.err
+        assert "    terminal:\n      cwd: /term/path" in captured.err
 
     def test_dotenv_terminal_cwd_warns_with_explicit_config(
         self, monkeypatch, tmp_path, capsys
@@ -60,7 +62,10 @@ class TestDeprecatedCwdWarning:
 
         warn_deprecated_cwd_env_vars()
 
-        assert "TERMINAL_CWD=/legacy/path" in capsys.readouterr().err
+        captured = capsys.readouterr()
+        assert "TERMINAL_CWD=/legacy/path" in captured.err
+        assert "\033[" not in captured.err
+        assert "    terminal:\n      cwd: /legacy/path" in captured.err
 
     def test_commented_and_empty_dotenv_values_do_not_warn(
         self, monkeypatch, tmp_path, capsys

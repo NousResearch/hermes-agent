@@ -25,6 +25,11 @@ import unicodedata
 import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
+from agent.file_safety import (
+    SHELL_RC_RELATIVE_PATHS,
+    SHELL_RC_ZSH_FILENAMES,
+    build_shell_rc_approval_paths,
+)
 
 from tools.interrupt import is_interrupted
 from utils import env_var_enabled, is_truthy_value
@@ -387,11 +392,15 @@ def _should_fall_through_to_cli_approval(
 # go stale when HERMES_HOME is set after this module is imported, e.g. under the
 # hermetic test conftest or any deferred-profile-resolution path).
 _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
+# Shell word boundary used by exact-file targets. `#` is deliberately not
+# included: a glued `#` is part of the filename, while a comment has leading
+# whitespace and is already covered by `\s`.
+_WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 _HERMES_ENV_PATH = (
     r'(?:~\/\.hermes/|'
     r'(?:\$home|\$\{home\})/\.hermes/|'
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
-    r'\.env\b'
+    rf'\.env(?:\.[^/\s/"\'`]+)*{_WRITE_TARGET_BOUNDARY}'
 )
 # ~/.hermes/config.yaml IS the security policy: approvals.mode, yolo, and the
 # permanent-approval allowlist live here, and the config cache is mtime-keyed
@@ -405,17 +414,28 @@ _HERMES_CONFIG_PATH = (
     r'(?:~\/\.hermes/|'
     r'(?:\$home|\$\{home\})/\.hermes/|'
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
-    r'config\.yaml\b'
+    rf'config\.yaml{_WRITE_TARGET_BOUNDARY}'
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
+_SHELL_RC_RELATIVE_PATTERN = "|".join(
+    re.escape(path) for path in SHELL_RC_RELATIVE_PATHS
+)
+_SHELL_RC_ZSH_PATTERN = "|".join(
+    re.escape(filename) for filename in SHELL_RC_ZSH_FILENAMES
+)
 _SHELL_RC_FILES = (
-    r'(?:~|\$home|\$\{home\})/\.'
-    r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
+    rf'(?:'
+    rf'(?:~|\$home|\$\{{home\}})/(?:{_SHELL_RC_RELATIVE_PATTERN})'
+    rf'|(?:\$zdotdir|\$\{{zdotdir\}})/(?:{_SHELL_RC_ZSH_PATTERN})'
+    rf'|(?:\$xdg_config_home|\$\{{xdg_config_home\}})/fish/config\.fish'
+    rf'|(?:\$bash_env|\$\{{bash_env\}})'
+    rf'|(?:\$env|\$\{{env\}})'
+    rf'){_WRITE_TARGET_BOUNDARY}'
 )
 _CREDENTIAL_FILES = (
     r'(?:~|\$home|\$\{home\})/\.'
-    r'(?:netrc|pgpass|npmrc|pypirc)\b'
+    rf'(?:netrc|pgpass|npmrc|pypirc){_WRITE_TARGET_BOUNDARY}'
 )
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/{etc,var,tmp,home}.
 # A command written to target /private/etc/sudoers works identically to
@@ -447,23 +467,6 @@ _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PAT
 # (or a command separator) keeps `cp config.yaml backup.yaml` — config.yaml as
 # the SOURCE — out of the deny.
 _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
-# Boundary for stream-write rules (`>`/`>>` redirection and `tee`), where the
-# sensitive path is ALWAYS a write target no matter what follows it. We only
-# need the path token to END at a shell word boundary — whitespace, a quote, a
-# command separator, a redirection operator, or end-of-line.
-# Using _COMMAND_TAIL here was too strict: it required the rest of the line to
-# be empty or a command separator, so `echo x > .env extra` (extra arg to echo)
-# and `echo x > .env # note` (trailing comment) slipped past the deny even
-# though the shell still overwrites `.env`. Mirrors the looser system-path
-# redirection rule, which never had this restriction.
-#
-# `#` is deliberately NOT a boundary char: a real trailing comment always has
-# whitespace before the `#` (already covered by `\s`), whereas a `#` glued to
-# the path is part of the filename. `echo x > .env#backup` writes to the
-# distinct file `.env#backup`, not `.env`, so it must stay OUT of the deny —
-# the same reasoning that keeps `config.yaml.bak` safe.
-_WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
-
 # =========================================================================
 # Hardline (unconditional) blocklist
 # =========================================================================
@@ -1183,6 +1186,11 @@ DANGEROUS_PATTERNS = [
     # The trailing `[^\s"\']*` consumes the rest of the destination filename
     # (e.g. `authorized_keys` after the `~/.ssh/` fragment).
     (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # touch/mkdir/ln create or plant into the same destinations without
+    # going through write_file (which now approval-gates shell rc) or
+    # cp/sed. `touch ~/.ssh/authorized_keys` / `mkdir ~/.ssh` /
+    # `ln -s evil ~/.bashrc` were unpaired theater (#85321).
+    (rf'\b(?:touch|mkdir|ln)\b.*["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_WRITE_TARGET_BOUNDARY}', "create or link a file in a sensitive credential/SSH/shell-rc path"),
     # In-place edits mutate the target file directly, bypassing redirection,
     # tee, and copy/move/install coverage. Gate the same user-controlled
     # startup/credential files so `sed -i ... ~/.bashrc` and `perl -i ...
@@ -1318,6 +1326,33 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
+def _rewrite_resolved_shell_rc_paths(command: str) -> str:
+    """Fold relocated shell startup paths into the shared canonical forms."""
+    try:
+        home = os.path.realpath(os.path.expanduser("~"))
+        paths: set[str] = set(build_shell_rc_approval_paths(home))
+    except Exception:
+        return command
+
+    for path in sorted(paths, key=lambda value: len(value), reverse=True):
+        relative: str = os.path.relpath(path, home)
+        path_name: str = os.path.basename(path)
+        if relative in SHELL_RC_RELATIVE_PATHS:
+            canonical = f"~/{relative}"
+        elif path_name in SHELL_RC_ZSH_FILENAMES:
+            canonical = f"~/{path_name}"
+        elif relative.endswith(os.path.join("fish", "config.fish")):
+            canonical = "~/.config/fish/config.fish"
+        else:
+            # BASH_ENV and ENV can point at arbitrary filenames, but they are
+            # sourced by a shell and therefore use the bashrc gate semantics.
+            canonical = "~/.bashrc"
+        candidates: set[str] = {path, path.replace(os.sep, "/")}
+        for candidate in candidates:
+            command = command.replace(candidate, canonical)
+    return command
+
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
 
@@ -1360,6 +1395,7 @@ def _normalize_command_for_detection(command: str) -> str:
     # first would eat the prefix the Hermes-home fold needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
+    command = _rewrite_resolved_shell_rc_paths(command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.

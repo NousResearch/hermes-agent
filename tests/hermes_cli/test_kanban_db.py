@@ -246,6 +246,74 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
 
 
 
+# ---------------------------------------------------------------------------
+# Re-claim started_at reset: a card that crashes / goes stale / gets
+# reclaimed and then re-claimed by a NEW worker must carry the new
+# worker's start time in tasks.started_at — not the original first
+# claim's. Before the fix (COALESCE(started_at, ?) on claim), age
+# metrics (task_age / dashboard "age", detect_crashed_workers grace)
+# measured elapsed-since-first-claim, producing false "stuck worker"
+# signals on every retry.
+# ---------------------------------------------------------------------------
+
+
+def test_reclaim_resets_started_at(kanban_home, monkeypatch):
+    """A re-claimed card's started_at tracks the NEW worker's spawn time."""
+    before = int(time.time())
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reclaim me", assignee="a")
+        first = kb.claim_task(conn, t)
+        assert first.started_at is not None
+        assert before <= first.started_at <= int(time.time())
+        # Simulate crash / stale-claim recovery: dispatcher releases the
+        # card back to ready with a fresh worker on the next tick.
+        conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL WHERE id = ?",
+            (t,),
+        )
+        time.sleep(2)
+        reap_before = int(time.time())
+        second = kb.claim_task(conn, t)
+        assert second is not None
+        assert second.started_at is not None
+        # THE regression: started_at must be the second claim's time,
+        # not inherited from the first claim.
+        assert second.started_at >= first.started_at + 1
+        assert abs(second.started_at - reap_before) <= 5
+        # task_age (dashboard "age") must report ~0s, not elapsed
+        # since the first claim.
+        age = kb.task_age(second)
+        assert age["started_age_seconds"] <= 5
+
+
+def test_reclaim_resets_started_at_review_loop(kanban_home):
+    """Review -> rework -> review keeps started_at on the current reviewer."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review loop", assignee="a")
+        kb.claim_task(conn, t)
+        # Implementer finishes, review phase opens.
+        assert kb.request_review(conn, t, force=True) is True
+        first_review = kb.claim_review_task(conn, t)
+        assert first_review is not None
+        # Reviewer requests changes → task returns to the implementer.
+        ok, _ = kb.request_changes(conn, t, reason="rework needed")
+        assert ok
+        # Implementer re-claims, re-submits, reviewer claims again.
+        kb.claim_task(conn, t)
+        assert kb.request_review(conn, t, force=True) is True
+        time.sleep(2)
+        second_review = kb.claim_review_task(conn, t)
+        assert second_review is not None
+        assert second_review.started_at is not None
+        assert second_review.started_at >= first_review.started_at + 1
+        assert abs(second_review.started_at - int(time.time())) <= 5
+
+
+
+
 
 
 # ---------------------------------------------------------------------------

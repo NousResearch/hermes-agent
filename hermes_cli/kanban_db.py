@@ -4636,6 +4636,13 @@ def claim_task(
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
+
+    ``tasks.started_at`` is always overwritten with the current claim's
+    start time, so a re-claimed card (crash, stale claim, manual
+    reclaim) reflects the NEW worker's age rather than
+    elapsed-since-first-claim. Per-attempt timing lives in the
+    ``task_runs`` row; ``tasks.started_at`` is the active worker's
+    clock.
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
@@ -4689,13 +4696,13 @@ def claim_task(
         cur = conn.execute(
             """
             UPDATE tasks
-               SET status        = 'running',
-                   claim_lock    = ?,
-                   claim_expires = ?,
-                   started_at    = COALESCE(started_at, ?)
-             WHERE id = ?
-               AND status = 'ready'
-               AND claim_lock IS NULL
+              SET status        = 'running',
+                  claim_lock    = ?,
+                  claim_expires = ?,
+                  started_at    = ?
+            WHERE id = ?
+              AND status = 'ready'
+              AND claim_lock IS NULL
             """,
             (lock, expires, now, task_id),
         )
@@ -4762,6 +4769,10 @@ def claim_review_task(
     Parent dependencies are re-checked because a previously completed parent
     may have been reopened while this task waited in review.
 
+    ``tasks.started_at`` is reset to this review claim's start time (same
+    semantics as :func:`claim_task`), so a task that loops review ->
+    rework -> review always reflects the current reviewer's age.
+
     Creates a new run entry so the review agent's lifecycle is tracked
     independently from the original worker run.
     """
@@ -4792,7 +4803,7 @@ def claim_review_task(
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
-                   started_at    = COALESCE(started_at, ?)
+                   started_at    = ?
              WHERE id = ?
                AND status = 'review'
                AND claim_lock IS NULL
@@ -8468,8 +8479,11 @@ def enforce_max_runtime(
         if not lock.startswith(host_prefix):
             continue
         # Runtime is per attempt, not lifetime-of-task. ``tasks.started_at``
-        # intentionally records the first time a task ever started, so retries
-        # must be measured from the active task_runs row when present.
+        # is reset to the current claim's start time on every claim (see
+        # ``claim_task``), so it already tracks the active worker's age; the
+        # ``task_runs`` row remains the authoritative per-attempt clock and
+        # is preferred when present (it survives even if a task was
+        # re-claimed while still running).
         elapsed = now - int(row["active_started_at"])
         if elapsed < int(row["max_runtime_seconds"]):
             continue
@@ -9323,13 +9337,21 @@ def _record_task_failure(
                         "retry_status": retry_status,
                     },
                 )
+                _event_payload = {
+                    "error": error[:500],
+                    "failures": failures,
+                    "retry_status": retry_status,
+                }
+                # Budget-exhaustion telemetry (turns_used / final_action /
+                # completion_tool_called / context_tail) must be visible on
+                # the FIRST timed_out event, not only after the breaker trips
+                # into gave_up — otherwise the loop-signature fields are lost
+                # for the common case where a task recovers on retry.
+                if event_payload_extra:
+                    _event_payload.update(event_payload_extra)
                 _append_event(
                     conn, task_id, outcome,
-                    {
-                        "error": error[:500],
-                        "failures": failures,
-                        "retry_status": retry_status,
-                    },
+                    _event_payload,
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
@@ -10717,6 +10739,74 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
+# Per-card budget-tier thresholds, expressed in chars of the task body.
+# These back the ``kanban.tiered_turn_budget`` feature flag: a worker whose
+# card is small doesn't need (or want) 60+ turns of rope to loop in, while a
+# genuinely long-horizon card outgrows a uniform cap. The default (flag OFF)
+# leaves the budget exactly as before — no behavior change.
+DEFAULT_BUDGET_TIER_TURNS = 60
+BUDGET_TIER_SMALL_MAX_CHARS = 800
+BUDGET_TIER_MEDIUM_MAX_CHARS = 2000
+BUDGET_TIER_SMALL_TURNS = 25
+BUDGET_TIER_MEDIUM_TURNS = 50
+BUDGET_TIER_LARGE_TURNS = 80
+
+
+def resolve_tiered_turn_budget(
+    task,
+    *,
+    flag_on: Optional[bool] = None,
+    small_max: int = BUDGET_TIER_SMALL_MAX_CHARS,
+    medium_max: int = BUDGET_TIER_MEDIUM_MAX_CHARS,
+    small_turns: int = BUDGET_TIER_SMALL_TURNS,
+    medium_turns: int = BUDGET_TIER_MEDIUM_TURNS,
+    large_turns: int = BUDGET_TIER_LARGE_TURNS,
+) -> Optional[int]:
+    """Resolve a per-card ``--max-turns`` budget from the card's body length.
+
+    Returns ``None`` when the feature is off (or disabled at the config
+    level) — callers then leave the worker's max_turns at its configured
+    default, preserving existing behavior exactly. Returns an int when the
+    ``kanban.tiered_turn_budget`` flag is on, so the dispatcher can pass an
+    explicit ``--max-turns`` to the worker CLI (an int always wins over the
+    profile's configured default, because a tool-calling run should honour
+    the card's declared scope).
+
+    Tier mapping (body char length, inclusive):
+      * ``<= small_max`` (800): ``small_turns`` (25) — small cards. Enough
+        to finish honest work; too small to let a token optimizer / cheap
+        worker spin for 60 turns on a task that should take ~10.
+      * ``<= medium_max`` (2000): ``medium_turns`` (50).
+      * else: ``large_turns`` (80) — the counterintuitive tail where our
+        data shows bigger cards time out more (avg body_len of timed_out
+        ≈ 2186 vs ≈ 1551 for completed), precisely because 60 is too tight
+        for them.
+
+    The feature-flag read is deliberately lazy (read via load_config_readonly
+    on first call) and defensive: any config/import failure disables the
+    feature rather than crashing the dispatcher tick.
+    """
+    if flag_on is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            flag_on = bool(
+                (load_config_readonly() or {}).get("kanban", {}).get(
+                    "tiered_turn_budget", False
+                )
+            )
+        except Exception:
+            flag_on = False
+    if not flag_on:
+        return None
+    body = (task.body or "")
+    n = len(body)
+    if n <= small_max:
+        return max(1, int(small_turns))
+    if n <= medium_max:
+        return max(1, int(medium_turns))
+    return max(1, int(large_turns))
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -10881,6 +10971,13 @@ def _default_spawn(
     # branch, not a nested one.
     if task.reasoning_effort:
         cmd.extend(["--reasoning", task.reasoning_effort])
+    # Per-card budget tier (feature flag `kanban.tiered_turn_budget`).
+    # When on, derive a max_turns budget from the card's body length and
+    # pass it as an explicit CLI arg so it wins over the profile's default.
+    # Autonomous (off) → None, and we pass nothing: existing behavior.
+    _tier_turns = resolve_tiered_turn_budget(task)
+    if _tier_turns is not None:
+        cmd.extend(["--max-turns", str(_tier_turns)])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])

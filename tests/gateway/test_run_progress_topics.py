@@ -2089,6 +2089,72 @@ async def test_ambiguous_edit_does_not_fall_back_to_fresh_send(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_raising_visible_edit_retries_exact_payload_before_rollover(monkeypatch):
+    """An untyped edit failure must not replay its possibly-visible tail."""
+    gateway_run = importlib.import_module("gateway.run")
+    clock = [0.0]
+
+    def monotonic():
+        clock[0] += 2.0
+        return clock[0]
+
+    monkeypatch.setattr(gateway_run.time, "monotonic", monotonic)
+    adapter = SmallLimitProgressAdapter(platform=Platform.SLACK)
+    visible = {}
+    first_sent = asyncio.Event()
+    edit_raised = asyncio.Event()
+    exact_retry_succeeded = asyncio.Event()
+    continuation_sent = asyncio.Event()
+    raised_payload = [None]
+    original_send = adapter.send
+
+    async def tracking_send(chat_id, content, reply_to=None, metadata=None):
+        result = await original_send(chat_id, content, reply_to, metadata)
+        if result.message_id:
+            visible[result.message_id] = content
+        if content == "first":
+            first_sent.set()
+        elif content == "third":
+            continuation_sent.set()
+        return result
+
+    async def raising_then_too_long_edit(chat_id, message_id, content):
+        adapter.edits.append(
+            {"chat_id": chat_id, "message_id": message_id, "content": content}
+        )
+        if raised_payload[0] is None:
+            raised_payload[0] = content
+            visible[message_id] = content
+            edit_raised.set()
+            raise RuntimeError("response decode failed after visible edit")
+        if content == raised_payload[0]:
+            visible[message_id] = content
+            exact_retry_succeeded.set()
+            return SendResult(success=True, message_id=message_id)
+        return SendResult(success=False, error="Slack API error: msg_too_long")
+
+    adapter.send = tracking_send
+    adapter.edit_message = raising_then_too_long_edit
+    async with _running_progress_worker(adapter) as (progress_queue, _task):
+        progress_queue.put("first")
+        await asyncio.wait_for(first_sent.wait(), timeout=2)
+        progress_queue.put("second")
+        await asyncio.wait_for(edit_raised.wait(), timeout=2)
+        progress_queue.put("third")
+        await asyncio.wait_for(exact_retry_succeeded.wait(), timeout=2)
+        await asyncio.wait_for(continuation_sent.wait(), timeout=2)
+
+    assert [edit["content"] for edit in adapter.edits[:2]] == [
+        "first\nsecond",
+        "first\nsecond",
+    ]
+    assert [call["content"] for call in adapter.sent] == ["first", "third"]
+    visible_text = "\n".join(visible.values())
+    for line in ("first", "second", "third"):
+        assert visible_text.count(line) == 1
+
+
+@pytest.mark.asyncio
 async def test_content_reset_retries_ambiguous_edit_in_place(monkeypatch):
     """A reset settles an ACK-lost edit before opening a fresh bubble."""
     gateway_run = importlib.import_module("gateway.run")

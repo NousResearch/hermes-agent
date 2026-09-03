@@ -5501,7 +5501,32 @@ class TurnRunner:
                 if state.can_edit and state.progress_msg_id is not None:
                     # Try to edit the existing progress message
                     full_text = "\n".join(state.progress_lines)
-                    result = await state.edit_message(state.progress_msg_id, full_text)
+                    try:
+                        result = await state.edit_message(
+                            state.progress_msg_id, full_text
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # Entering edit_message() makes an untyped exception
+                        # ACK-ambiguous: the edit may already be visible. Retry
+                        # the exact same idempotent edit before incorporating
+                        # later lines, just as for a typed ambiguous result.
+                        state.pending_ambiguous_edit = (
+                            state.progress_msg_id,
+                            full_text,
+                            list(state.progress_lines),
+                        )
+                        state.delivered_progress_lines = list(
+                            state.progress_lines
+                        )
+                        logger.warning(
+                            "[%s] Progress edit raised with unknown outcome; "
+                            "retaining exact edit payload",
+                            getattr(adapter, "name", "unknown"),
+                            exc_info=True,
+                        )
+                        continue
                     if not result.success:
                         _err = (getattr(result, "error", "") or "").lower()
                         if getattr(result, "ambiguous", False):

@@ -8316,7 +8316,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             parent = conn.execute(
                 """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
-                          thread_id, display_name, origin_json, profile_name
+                          thread_id, display_name, origin_json, profile_name,
+                          hidden, pinned, archived
                    FROM sessions WHERE id = ?""",
                 (parent_session_id,),
             ).fetchone()
@@ -8357,8 +8358,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                    system_prompt_hash,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
-                   thread_id, display_name, origin_json, started_at
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   thread_id, display_name, origin_json, started_at,
+                   hidden, pinned, archived
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     child_session_id,
                     source,
@@ -8388,6 +8390,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     parent["display_name"],
                     parent["origin_json"],
                     time.time(),
+                    # Inherit the parent's identity flags so one compression cycle
+                    # does not silently reset state the user or an owning surface
+                    # set deliberately.  Each setter documents that it applies to
+                    # the whole compression lineage; the child must mirror the
+                    # parent's value at creation, not default to 0/False (#98979).
+                    parent["hidden"],
+                    parent["pinned"],
+                    parent["archived"],
                 ),
             )
             total_messages, total_tool_calls = self._insert_message_rows(

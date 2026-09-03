@@ -71,7 +71,7 @@ describe('a row click lands on the canonical chat, never a remembered side tab',
     })
   })
 
-  it('fronting an already-open Bot Chat refreshes its transcript in place', async () => {
+  it('fronting a busy, already-open Bot Chat refreshes its transcript in place', async () => {
     // The front is presentation-only: the pane keeps whatever transcript it
     // last painted, which can predate rows the bot wrote while the user was
     // elsewhere (a cron delivery, a teammate's message_agent, another bot's
@@ -82,11 +82,16 @@ describe('a row click lands on the canonical chat, never a remembered side tab',
       only?.includes('bot-chat-tip') ? 'bot-chat-tip' : null
     ) as never
     $selectedStoredSessionId.set('bot-chat-tip')
+    const busy = vi.spyOn(host.state.busy, 'get').mockReturnValue(true)
 
-    await expect(openRosterBot(canonicalBot)).resolves.toBe(true)
+    try {
+      await expect(openRosterBot(canonicalBot)).resolves.toBe(true)
 
-    expect(openBotCanonicalChat).toHaveBeenCalledWith(canonicalBot, expect.any(Function))
-    $selectedStoredSessionId.set(null)
+      expect(openBotCanonicalChat).toHaveBeenCalledWith(canonicalBot, expect.any(Function))
+    } finally {
+      busy.mockRestore()
+      $selectedStoredSessionId.set(null)
+    }
   })
 
   it('resolves the registry when only a side thread is open', async () => {
@@ -142,5 +147,21 @@ describe('the open Bot Chat follows its session on the gateway', () => {
 
     expect(openBotCanonicalChat).not.toHaveBeenCalled()
     $selectedStoredSessionId.set(null)
+  })
+
+  it('does not re-open a focused Bot Chat from roster activity while its turn is busy', () => {
+    $selectedBot.set('alpha')
+    $selectedStoredSessionId.set('bot-chat-tip')
+    const busy = vi.spyOn(host.state.busy, 'get').mockReturnValue(true)
+
+    try {
+      trackInboundActivity([activeBot(500)])
+      trackInboundActivity([activeBot(600)])
+
+      expect(openBotCanonicalChat).not.toHaveBeenCalled()
+    } finally {
+      busy.mockRestore()
+      $selectedStoredSessionId.set(null)
+    }
   })
 })

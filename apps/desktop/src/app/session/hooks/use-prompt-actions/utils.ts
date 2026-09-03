@@ -4,6 +4,7 @@ import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { formatNumber } from '@/lib/time'
 import type { ComposerAttachment } from '@/store/composer'
 
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
@@ -578,7 +579,7 @@ export function renderRpcResult(response: unknown, name: string): string {
     const total = Number(r.total ?? 0)
 
     const lines: string[] = [
-      `Usage: ${calls.toLocaleString()} calls · ${input.toLocaleString()} in / ${output.toLocaleString()} out · ${total.toLocaleString()} total`
+      `Usage: ${formatNumber(calls)} calls · ${formatNumber(input)} in / ${formatNumber(output)} out · ${formatNumber(total)} total`
     ]
 
     if (Array.isArray(r.credits_lines)) {

@@ -13,6 +13,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
+import { formatNumber } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
@@ -158,8 +159,6 @@ function matchUiScalePreset(percent: number): UiScalePreset | null {
   return UI_SCALE_PRESETS.find(preset => Number(preset) === percent) ?? null
 }
 
-const compactNumber = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
-
 /**
  * Live VS Code Marketplace theme search (the same backend as the Cmd-K "Install
  * theme…" page). Renders below the local grid when there's a query: each row
@@ -291,7 +290,9 @@ function MarketplaceThemeResults({
                 </span>
                 <span className="block truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                   {item.publisher}
-                  {item.installs > 0 ? ` · ${copy.installs(compactNumber.format(item.installs))}` : ''}
+                  {item.installs > 0
+                    ? ` · ${copy.installs(formatNumber(item.installs, { maximumFractionDigits: 1, notation: 'compact' }))}`
+                    : ''}
                 </span>
               </span>
               <span className="shrink-0 text-(--ui-text-tertiary)">

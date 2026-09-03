@@ -2,6 +2,7 @@ import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { capitalize, firstStringField, normalize } from '@/lib/text'
+import { formatDateTimeWithOptions } from '@/lib/time'
 import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
@@ -871,7 +872,7 @@ function formatCronTime(iso: string): string {
     return iso
   }
 
-  return new Date(ts).toLocaleString(undefined, {
+  return formatDateTimeWithOptions(new Date(ts), {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',

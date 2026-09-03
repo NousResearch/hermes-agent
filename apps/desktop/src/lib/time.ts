@@ -2,40 +2,140 @@
 // per-render) + relative-time helpers. Every surface that shows a timestamp or
 // an age pulls from here so the rendered strings stay consistent app-wide.
 
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
+import type { Locale } from '@/i18n/types'
+
 export const SECOND = 1000
 export const MINUTE = 60_000
 export const HOUR = 3_600_000
 export const DAY = 86_400_000
 
 // ── Absolute date/time formatters ──────────────────────────────────────────
-// `hh:mm` clock (thread today/yesterday lines).
-export const fmtClock = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
+const INTL_LOCALES: Record<Locale, string> = {
+  en: 'en-US',
+  zh: 'zh-CN',
+  'zh-hant': 'zh-Hant',
+  ja: 'ja-JP',
+  ar: 'ar',
+  ru: 'ru-RU',
+  da: 'da-DK'
+}
 
-// Compact "day + clock", no year/seconds (artifacts, thread fallback, cron runs).
-export const fmtDayTime = new Intl.DateTimeFormat(undefined, {
-  day: 'numeric',
-  hour: 'numeric',
-  minute: '2-digit',
-  month: 'short'
-})
+export interface TimeFormatters {
+  clock: Intl.DateTimeFormat
+  date: Intl.DateTimeFormat
+  dateTime: Intl.DateTimeFormat
+  dayTime: Intl.DateTimeFormat
+  month: Intl.DateTimeFormat
+  monthYear: Intl.DateTimeFormat
+}
 
-// Medium date + short time (command center session detail).
-export const fmtDateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+export function createTimeFormatters(locale: Locale): TimeFormatters {
+  const intlLocale = INTL_LOCALES[locale]
 
-// Date only, "5 Jun 2026" (starmap tooltip).
-export const fmtDate = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+  return {
+    // `hh:mm` clock (thread today/yesterday lines).
+    clock: new Intl.DateTimeFormat(intlLocale, { hour: 'numeric', minute: '2-digit' }),
+    // Date only, "5 Jun 2026" (starmap tooltip).
+    date: new Intl.DateTimeFormat(intlLocale, { day: 'numeric', month: 'short', year: 'numeric' }),
+    // Medium date + short time (command center session detail).
+    dateTime: new Intl.DateTimeFormat(intlLocale, { dateStyle: 'medium', timeStyle: 'short' }),
+    // Compact "day + clock", no year/seconds (artifacts, thread fallback, cron runs).
+    dayTime: new Intl.DateTimeFormat(intlLocale, {
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      month: 'short'
+    }),
+    // Month name alone / with year — session-list date-bucket dividers.
+    month: new Intl.DateTimeFormat(intlLocale, { month: 'long' }),
+    monthYear: new Intl.DateTimeFormat(intlLocale, { month: 'long', year: 'numeric' })
+  }
+}
 
-// Month name alone / with year — session-list date-bucket dividers ("September",
-// "September 2025").
-export const fmtMonth = new Intl.DateTimeFormat(undefined, { month: 'long' })
-export const fmtMonthYear = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' })
+const customFormatterCache = new Map<string, Intl.DateTimeFormat>()
+const numberFormatterCache = new Map<string, Intl.NumberFormat>()
+
+export function formatDateTimeWithOptions(value: Date | number, options: Intl.DateTimeFormatOptions): string {
+  const locale = getRuntimeI18nLocale()
+  const cacheKey = `${locale}:${JSON.stringify(options)}`
+  let formatter = customFormatterCache.get(cacheKey)
+
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(INTL_LOCALES[locale], options)
+    customFormatterCache.set(cacheKey, formatter)
+  }
+
+  return formatter.format(value)
+}
+
+export function formatNumber(value: number, options: Intl.NumberFormatOptions = {}): string {
+  const locale = getRuntimeI18nLocale()
+  const cacheKey = `${locale}:${JSON.stringify(options)}`
+  let formatter = numberFormatterCache.get(cacheKey)
+
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(INTL_LOCALES[locale], options)
+    numberFormatterCache.set(cacheKey, formatter)
+  }
+
+  return formatter.format(value)
+}
+
+const formatterCache = new Map<Locale, TimeFormatters>()
+
+function runtimeTimeFormatters(): TimeFormatters {
+  const locale = getRuntimeI18nLocale()
+  const cached = formatterCache.get(locale)
+
+  if (cached) {
+    return cached
+  }
+
+  const formatters = createTimeFormatters(locale)
+  formatterCache.set(locale, formatters)
+
+  return formatters
+}
+
+type DynamicDateTimeFormatter = Pick<Intl.DateTimeFormat, 'format'>
+
+function dynamicDateTimeFormatter(key: keyof TimeFormatters): DynamicDateTimeFormatter {
+  return {
+    format: value => runtimeTimeFormatters()[key].format(value)
+  }
+}
+
+// These facades preserve the established `.format(value)` API while resolving
+// the formatter against the currently selected Hermes language on every call.
+export const fmtClock = dynamicDateTimeFormatter('clock')
+export const fmtDayTime = dynamicDateTimeFormatter('dayTime')
+export const fmtDateTime = dynamicDateTimeFormatter('dateTime')
+export const fmtDate = dynamicDateTimeFormatter('date')
+export const fmtMonth = dynamicDateTimeFormatter('month')
+export const fmtMonthYear = dynamicDateTimeFormatter('monthYear')
 
 // ── Relative time ──────────────────────────────────────────────────────────
-const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
+const relativeFormatterCache = new Map<Locale, Intl.RelativeTimeFormat>()
+
+function runtimeRelativeTimeFormatter(): Intl.RelativeTimeFormat {
+  const locale = getRuntimeI18nLocale()
+  const cached = relativeFormatterCache.get(locale)
+
+  if (cached) {
+    return cached
+  }
+
+  const formatter = new Intl.RelativeTimeFormat(INTL_LOCALES[locale], { numeric: 'auto', style: 'short' })
+  relativeFormatterCache.set(locale, formatter)
+
+  return formatter
+}
 
 // Localized bidirectional "in 5 min" / "2 hr ago" — coarsest sensible unit so a
 // daily job reads "in 14 hr", not "in 840 min".
 export function relativeTime(targetMs: number, nowMs = Date.now()): string {
+  const rtf = runtimeRelativeTimeFormatter()
   const diff = targetMs - nowMs
   const abs = Math.abs(diff)
   const sign = diff < 0 ? -1 : 1
@@ -98,7 +198,7 @@ export const nominalDayStart = (ms: number): number => startOfLocalDay(ms - DAY_
 // Intl.Locale weekInfo reports 1=Mon … 7=Sun; unsupported → Monday.
 export function localeWeekStartDay(): number {
   try {
-    const locale = new Intl.Locale(new Intl.DateTimeFormat().resolvedOptions().locale)
+    const locale = new Intl.Locale(INTL_LOCALES[getRuntimeI18nLocale()])
     const withWeekInfo = locale as { getWeekInfo?: () => { firstDay?: number }; weekInfo?: { firstDay?: number } }
     const firstDay = (withWeekInfo.getWeekInfo?.() ?? withWeekInfo.weekInfo)?.firstDay
 

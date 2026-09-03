@@ -4,6 +4,7 @@ import pytest
 
 from hermes_state import SessionDB
 from hermes_state_common import (
+    FTS_STALE_KEY,
     FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,
     LEGACY_FTS_SQL,
@@ -202,3 +203,58 @@ def test_legacy_inline_fts_also_bounds_new_tool_rows(tmp_path):
         ] == [message_id]
     finally:
         legacy.close()
+
+
+def test_stale_fts_recovery_stamps_tool_prefix_boundary(tmp_path):
+    """A stale-FTS rebuild must move the prefix boundary, like rebuild_fts().
+
+    Recovery reindexes every row from canonical content. If the high-water
+    marker stays behind, a later delete of a post-marker tool row sends the
+    prefix form to FTS5 against a full-form index entry and corrupts the
+    external-content table.
+    """
+    path = tmp_path / "state.db"
+    first = SessionDB(db_path=path)
+    if not first._fts_enabled:
+        first.close()
+        pytest.skip("SQLite FTS5 unavailable")
+    first.create_session("session", source="cli")
+    tool_id = first.append_message(
+        "session",
+        role="tool",
+        content=_long_message("recover-prefix-token", "recover-tail-token"),
+    )
+    old_marker = int(first.get_meta(FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY))
+    assert tool_id > old_marker
+    assert first.search_messages("recover-tail-token") == []
+    first.set_meta(FTS_STALE_KEY, "1")
+    first.close()
+
+    recovered = SessionDB(db_path=path)
+    try:
+        assert recovered._fts_stale is False
+        assert int(recovered.get_meta(FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY)) == tool_id
+        assert [
+            row["id"] for row in recovered.search_messages("recover-tail-token")
+        ] == [tool_id]
+
+        recovered._execute_write(
+            lambda conn: conn.execute("DELETE FROM messages WHERE id = ?", (tool_id,))
+        )
+        recovered.append_message("session", role="assistant", content="fts-still-healthy")
+        assert recovered.search_messages("fts-still-healthy")
+
+        after_id = recovered.append_message(
+            "session",
+            role="tool",
+            content=_long_message("after-prefix-token", "after-tail-token"),
+        )
+        assert recovered.search_messages("after-tail-token") == []
+        assert [
+            row["id"]
+            for row in recovered.search_messages(
+                "after-tail-token", role_filter=["tool"]
+            )
+        ] == [after_id]
+    finally:
+        recovered.close()

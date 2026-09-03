@@ -741,11 +741,22 @@ class SessionSchemaMixin:
         drop_sql += "DROP VIEW IF EXISTS messages_fts_trigram_src;"
         drop_sql += "DROP TABLE IF EXISTS messages_fts;"
 
+        # Full rebuild indexes canonical content, so surviving rows must sit
+        # at or below the prefix boundary. Same stamp as _rebuild_fts_indexes.
+        # Skipping it leaves post-marker tool rows full-indexed while the
+        # restored triggers still emit the prefix form on delete/update.
+        stamp_sql = (
+            "INSERT INTO state_meta (key, value) VALUES ("
+            f"'{FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY}', "
+            "(SELECT CAST(COALESCE(MAX(id), 0) AS TEXT) FROM messages)"
+            ") ON CONFLICT(key) DO UPDATE SET value = excluded.value;"
+        )
+
         if legacy:
             schema_sql = LEGACY_FTS_SQL
             if include_trigram:
                 schema_sql += LEGACY_FTS_TRIGRAM_SQL
-            rebuild_sql = schema_sql + """
+            rebuild_sql = schema_sql + stamp_sql + """
                 INSERT INTO messages_fts(rowid, content)
                 SELECT id,
                        COALESCE(content, '') || ' ' ||
@@ -767,7 +778,7 @@ class SessionSchemaMixin:
             schema_sql = FTS_SQL
             if include_trigram:
                 schema_sql += FTS_TRIGRAM_SQL
-            rebuild_sql = schema_sql + (
+            rebuild_sql = schema_sql + stamp_sql + (
                 "INSERT INTO messages_fts(messages_fts) VALUES('rebuild');"
             )
             if include_trigram:

@@ -1,8 +1,8 @@
-"""``hermes approvals`` subcommand parser.
+"""Approval-related CLI parser ownership.
 
-Follows the cron/security pattern: parser construction lives here, the
-handler is injected by ``main.py`` so this module never imports ``main``
-(cycle avoidance).
+The ``approvals`` parser lives here rather than in ``hermes_cli.main``.  The
+one-shot destructive ``grant`` command is registered from the same bounded
+authority owner so adding it does not grow the central CLI godfile.
 """
 
 from __future__ import annotations
@@ -11,8 +11,18 @@ import argparse
 from typing import Callable
 
 
+def _cmd_grant(args) -> int:
+    """Dispatch ``hermes grant`` without adding another handler to main.py."""
+    from hermes_cli.subcommands.grant import run_grant_command
+
+    status = run_grant_command(args)
+    if status:
+        raise SystemExit(status)
+    return status
+
+
 def build_approvals_parser(subparsers, *, cmd_approvals: Callable) -> None:
-    """Attach the ``approvals`` subcommand to ``subparsers``."""
+    """Attach approval-related top-level commands to ``subparsers``."""
     approvals_parser = subparsers.add_parser(
         "approvals",
         help="Approval-prompt tools (mine history into allowlist proposals)",
@@ -113,3 +123,9 @@ def build_approvals_parser(subparsers, *, cmd_approvals: Callable) -> None:
     test_parser.set_defaults(func=cmd_approvals)
 
     approvals_parser.set_defaults(func=cmd_approvals)
+
+    # Keep authority-related command registration out of hermes_cli/main.py.
+    # The command itself remains implemented in its own bounded module.
+    from hermes_cli.subcommands.grant import build_grant_parser
+
+    build_grant_parser(subparsers, cmd_grant=_cmd_grant)

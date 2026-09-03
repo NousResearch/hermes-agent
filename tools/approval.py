@@ -601,6 +601,13 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    # Destructive grant issuance — the model must never mint its own
+    # authority.  `hermes grant issue` is the ONLY path that creates a
+    # one-shot destructive capability; it is hardline-blocked so no model
+    # surface (terminal, pty, yolo, mode=off, cron approve, smart approval,
+    # allowlist) can reach it.  The human runs it in their own shell, which
+    # is not subject to the agent's command guards (review #100694 blocker 1).
+    (_CMDPOS + r'hermes\s+grant\s+issue\b', "destructive grant issuance (hermes grant issue)"),
 ]
 
 # Pre-compiled variant used by the hot-path matcher. Building these at module

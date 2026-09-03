@@ -1835,6 +1835,19 @@ def load_gateway_config() -> GatewayConfig:
                         continue
                     try:
                         seeded = entry.apply_yaml_config_fn(yaml_cfg, platform_cfg)
+                    except ValueError as e:
+                        # Validation errors (e.g. duplicate app_id, exceeding
+                        # app limits) must be visible. The YAML bridge is
+                        # skipped, but env overrides may still enable the
+                        # platform downstream — so the message describes the
+                        # bridge failure, not a guaranteed disable.
+                        logger.error(
+                            "Configuration error in %s's YAML bridge: %s "
+                            "— YAML config was skipped; the platform may still "
+                            "be enabled via environment variables.",
+                            entry.name, e,
+                        )
+                        continue
                     except Exception as e:
                         logger.debug(
                             "apply_yaml_config_fn for %s raised: %s",

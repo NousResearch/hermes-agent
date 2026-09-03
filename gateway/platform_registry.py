@@ -176,7 +176,8 @@ class PlatformEntry:
     # and before ``_apply_env_overrides``.  Mutating ``os.environ`` is allowed
     # (use ``not os.getenv(...)`` guards to preserve env > YAML precedence);
     # any returned dict is merged into ``PlatformConfig.extra``.  Exceptions
-    # are caught and logged at debug level.
+    # ``ValueError`` is logged at ERROR level (visible to the user) so they
+    # can fix misconfiguration; all other exceptions are logged at debug level.
     # See website/docs/developer-guide/adding-platform-adapters.md for the
     # full contract and a worked example.
     apply_yaml_config_fn: Optional[Callable[[dict, dict], Optional[dict]]] = None

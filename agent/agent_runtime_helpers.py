@@ -100,6 +100,17 @@ _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# A tool-call opener with no closer, or GLM-style argument markup
+# (<arg_key>/<arg_value>) outside any closed block, means the stream was
+# cut mid-serialization of a text-channel tool call (#101899). The call
+# can't be recovered; strip from the block-boundary opener (or the line
+# holding the first stray argument tag) to the end of the text.
+_UNTERMINATED_TOOL_CALL_PATTERN = re.compile(
+    rf'(?:^|\n)[ \t]*<(?:{"|".join(_TOOL_CALL_TAG_NAMES)})\b[^>]*>.*$'
+    r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
+    re.DOTALL | re.IGNORECASE,
+)
+
 
 def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
@@ -1065,6 +1076,9 @@ def strip_think_blocks(agent, content: str) -> str:
     #     during streaming may still be valuable to the user; matches
     #     OpenClaw's intentional asymmetry.)
     content = _STRAY_TOOL_CALL_CLOSER_PATTERN.sub('', content)
+    # 3c. Tool-call openers or argument markup surviving 1b belong to a
+    #     block that never closed — a mid-serialization stream cut (#101899).
+    content = _UNTERMINATED_TOOL_CALL_PATTERN.sub('', content)
     return content
 
 

@@ -662,6 +662,18 @@ class AIAgent:
             pass_session_id=pass_session_id,
         )
 
+        # Advisory: a populated ``hooks:`` block is inert unless something
+        # called ``register_from_config()``, which only the CLI and gateway
+        # entry points do.  Embedders constructing AIAgent directly would
+        # otherwise get silently dead hooks.  One-shot per process and
+        # never fatal.
+        try:
+            from agent.shell_hooks import warn_if_configured_but_unregistered
+
+            warn_if_configured_but_unregistered()
+        except Exception:
+            logger.debug("shell-hook registration check failed", exc_info=True)
+
     def _get_session_db_for_recall(self):
         """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
 

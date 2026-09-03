@@ -694,6 +694,16 @@ class LineAdapter(BasePlatformAdapter):
 
     # LINE has its own message-edit story (none) — we always send fresh
     # bubbles, never edit, so REQUIRES_EDIT_FINALIZE stays False.
+    #
+    # SUPPORTS_MESSAGE_EDITING must also be False: without it, the gateway's
+    # streaming consumer (gateway/run.py _build_stream_consumer_config)
+    # defaults to True and tries edit-based streaming anyway — sending a
+    # partial bubble it can never update, then a second bubble with the
+    # rest of the turn. The split lands wherever the streaming buffer
+    # happened to flush, not on a word boundary, producing the "message
+    # gets cut in half" symptom (mid-word split, occasional replacement-
+    # character artifact right at the cut) reported over LINE.
+    SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config, **kwargs):
         platform = Platform("line")

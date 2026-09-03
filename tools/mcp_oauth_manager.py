@@ -665,7 +665,9 @@ class MCPOAuthManager:
                 self._entries[key] = entry
 
             if entry.provider is None:
-                entry.provider = self._build_provider(server_name, entry)
+                entry.provider = self._build_provider(
+                    server_name, entry, hermes_home=key[0]
+                )
                 if entry.provider is not None:
                     entry.provider._hermes_home = key[0]
 
@@ -685,6 +687,8 @@ class MCPOAuthManager:
         self,
         server_name: str,
         entry: _ProviderEntry,
+        *,
+        hermes_home: str | Path | None = None,
     ) -> Optional[Any]:
         """Build the underlying OAuth provider.
 
@@ -714,6 +718,7 @@ class MCPOAuthManager:
             _make_redirect_handler,
             cimd_provider_kwargs,
             token_request_user_agent,
+            get_oauth_reauth_staging_home,
         )
 
         if not _OAUTH_AVAILABLE:
@@ -725,7 +730,12 @@ class MCPOAuthManager:
         apply_oauth_provider_defaults(
             cfg, server_name=server_name, server_url=entry.server_url
         )
-        storage = HermesTokenStorage(server_name)
+        storage = HermesTokenStorage(
+            server_name,
+            hermes_home=get_oauth_reauth_staging_home(
+                server_name, hermes_home=hermes_home
+            ) or hermes_home,
+        )
 
         from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
 
@@ -789,6 +799,24 @@ class MCPOAuthManager:
         )
         return entry
 
+    def detach(
+        self,
+        server_name: str,
+        *,
+        hermes_home: str | Path | None = None,
+    ) -> _ProviderEntry | None:
+        """Drop a cached provider without deleting its persisted OAuth state."""
+        with self._entries_lock:
+            return self._entries.pop(self._key(server_name, hermes_home), None)
+
+    @staticmethod
+    def set_entry_persistence_suspended(entry: _ProviderEntry | None, suspended: bool) -> None:
+        """Keep a detached live provider from overwriting a reauth result."""
+        storage = getattr(getattr(getattr(entry, "provider", None), "context", None), "storage", None)
+        setter = getattr(storage, "set_persistence_suspended", None)
+        if callable(setter):
+            setter(suspended)
+
     def restore_entry(
         self,
         server_name: str,
@@ -809,8 +837,7 @@ class MCPOAuthManager:
         hermes_home: str | Path | None = None,
     ) -> None:
         """Drop only the in-process provider, preserving persisted OAuth state."""
-        with self._entries_lock:
-            self._entries.pop(self._key(server_name, hermes_home), None)
+        self.detach(server_name, hermes_home=hermes_home)
 
     # -- Disk watch ----------------------------------------------------------
 

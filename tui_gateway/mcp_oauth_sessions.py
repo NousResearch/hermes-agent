@@ -186,43 +186,55 @@ def _worker(session_id: str, hermes_home: str, server_name: str, cfg: dict, reco
             set_secret_scope,
         )
         from tools.mcp_dashboard_oauth import dashboard_oauth_flow
-        from tools.mcp_oauth import force_interactive_oauth
+        from tools.mcp_oauth import (
+            force_interactive_oauth,
+            oauth_reauth_staging,
+            oauth_reauth_transaction,
+        )
         from tools.mcp_oauth_manager import get_manager
 
         home_token = set_hermes_home_override(hermes_home)
         secret_token = set_secret_scope(build_profile_secret_scope(Path(hermes_home)))
         try:
-            with force_interactive_oauth(), dashboard_oauth_flow(flow):
+            with oauth_reauth_transaction(
+                server_name, hermes_home=hermes_home
+            ), force_interactive_oauth(), dashboard_oauth_flow(flow):
                 from tools.mcp_oauth import HermesTokenStorage
 
                 manager = get_manager()
                 storage = HermesTokenStorage(server_name)
-                backup = storage.snapshot()
                 previous_entry = None
-                try:
-                    previous_entry = manager.remove(server_name, hermes_home=hermes_home)
-                    tools = _probe_single_server(
-                        server_name,
-                        cfg,
-                        connect_timeout=max(float(cfg.get("connect_timeout", 0) or 0), 315),
-                    )
-                    if not _oauth_tokens_present(server_name):
-                        raise RuntimeError(
-                            "The server responded, but no OAuth token was obtained — "
-                            "this provider may require a manually-registered OAuth client."
+                with oauth_reauth_staging(
+                    server_name, hermes_home=hermes_home
+                ) as staging_storage:
+                    try:
+                        previous_entry = manager.detach(server_name, hermes_home=hermes_home)
+                        manager.set_entry_persistence_suspended(previous_entry, True)
+                        tools = _probe_single_server(
+                            server_name,
+                            cfg,
+                            connect_timeout=max(float(cfg.get("connect_timeout", 0) or 0), 315),
                         )
-                    _save_mcp_server(server_name, cfg)
-                    if flow is not None:
-                        flow.tools = [{"name": t, "description": d} for t, d in tools]
-                        flow.mark_approved()
-                    if reconnect_live:
-                        from tools.mcp_tool import reconnect_mcp_server
+                        if not staging_storage.has_cached_tokens():
+                            raise RuntimeError(
+                                "The server responded, but no OAuth token was obtained — "
+                                "this provider may require a manually-registered OAuth client."
+                            )
+                        storage.restore(staging_storage.snapshot())
+                        manager.evict(server_name, hermes_home=hermes_home)
+                        _save_mcp_server(server_name, cfg)
+                        if flow is not None:
+                            flow.tools = [{"name": t, "description": d} for t, d in tools]
+                            flow.mark_approved()
+                        if reconnect_live:
+                            from tools.mcp_tool import reconnect_mcp_server
 
-                        reconnect_mcp_server(server_name)
-                except Exception:
-                    storage.restore(backup, only_if_absent=True)
-                    manager.restore_entry(server_name, previous_entry, hermes_home=hermes_home)
-                    raise
+                            reconnect_mcp_server(server_name)
+                    except Exception:
+                        manager.evict(server_name, hermes_home=hermes_home)
+                        manager.set_entry_persistence_suspended(previous_entry, False)
+                        manager.restore_entry(server_name, previous_entry, hermes_home=hermes_home)
+                        raise
         finally:
             reset_secret_scope(secret_token)
             reset_hermes_home_override(home_token)

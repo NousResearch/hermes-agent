@@ -3,6 +3,7 @@
 import json
 import stat
 import sys
+import threading
 from io import BytesIO
 from unittest.mock import patch, MagicMock
 
@@ -22,6 +23,7 @@ from tools.mcp_oauth import (
     _make_callback_handler,
     _make_redirect_handler,
     _paste_callback_reader,
+    oauth_reauth_transaction,
 )
 
 
@@ -56,6 +58,68 @@ def _hit_callback_when_ready(url: str, timeout: float = 15.0) -> None:
 # ---------------------------------------------------------------------------
 
 class TestHermesTokenStorage:
+    def test_reauth_transaction_retries_windows_lock_contention(self, tmp_path, monkeypatch):
+        """A second Windows process waits instead of failing during reauth."""
+        import tools.mcp_oauth as mcp_oauth
+
+        class FakeMsvcrt:
+            LK_LOCK = 1
+            LK_NBLCK = 2
+            LK_UNLCK = 3
+
+            def __init__(self):
+                self.calls = []
+
+            def locking(self, _fd, mode, _size):
+                self.calls.append(mode)
+                if mode == self.LK_NBLCK and self.calls.count(mode) == 1:
+                    raise OSError("busy")
+
+        fake_msvcrt = FakeMsvcrt()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(mcp_oauth, "fcntl", None)
+        monkeypatch.setattr(mcp_oauth, "msvcrt", fake_msvcrt)
+        monkeypatch.setattr(mcp_oauth.time, "sleep", lambda _seconds: None)
+
+        with oauth_reauth_transaction("reports"):
+            pass
+
+        assert fake_msvcrt.calls == [
+            fake_msvcrt.LK_NBLCK,
+            fake_msvcrt.LK_NBLCK,
+            fake_msvcrt.LK_UNLCK,
+        ]
+
+    def test_reauth_transaction_serializes_same_server(self, tmp_path, monkeypatch):
+        """Concurrent reauth flows cannot interleave removal and rollback."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_entered = threading.Event()
+
+        def first():
+            with oauth_reauth_transaction("reports"):
+                first_entered.set()
+                assert release_first.wait(timeout=2)
+
+        def second():
+            assert first_entered.wait(timeout=2)
+            with oauth_reauth_transaction("reports"):
+                second_entered.set()
+
+        first_thread = threading.Thread(target=first)
+        second_thread = threading.Thread(target=second)
+        first_thread.start()
+        second_thread.start()
+        assert first_entered.wait(timeout=2)
+        assert not second_entered.wait(timeout=0.1)
+        release_first.set()
+        first_thread.join(timeout=2)
+        second_thread.join(timeout=2)
+        assert not first_thread.is_alive()
+        assert not second_thread.is_alive()
+        assert second_entered.is_set()
+
     def test_roundtrip_tokens(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("test-server")

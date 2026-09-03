@@ -756,8 +756,6 @@ class TestMcpLogin:
         _seed_config(tmp_path, {
             "realserver": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
         })
-        token_dir = tmp_path / "mcp-tokens"
-
         # cmd_mcp_login wipes tokens before probing, then the real OAuth flow
         # writes a fresh token during the probe. Simulate that: the mocked
         # probe drops a token file, mirroring a successful authorization.
@@ -765,8 +763,13 @@ class TestMcpLogin:
 
         def mock_probe(name, cfg, connect_timeout=30):
             seen["connect_timeout"] = connect_timeout
-            token_dir.mkdir(exist_ok=True)
-            (token_dir / "realserver.json").write_text('{"access_token": "x"}')
+            from tools.mcp_oauth import get_oauth_reauth_staging_home
+
+            staging_home = get_oauth_reauth_staging_home(name)
+            assert staging_home is not None
+            staged_token = staging_home / "mcp-tokens" / "realserver.json"
+            staged_token.parent.mkdir(parents=True)
+            staged_token.write_text('{"access_token": "x"}')
             return [("a", "d"), ("b", "d"), ("c", "d")]
 
         monkeypatch.setattr(
@@ -783,6 +786,99 @@ class TestMcpLogin:
         # The login path must grant a human enough time to finish the browser
         # OAuth round-trip — far longer than the 30s probe default.
         assert seen["connect_timeout"] >= 180
+
+    def test_login_failure_restores_previous_oauth_state_and_provider(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A failed forced re-auth must leave the previous login usable."""
+        from tools.mcp_oauth import HermesTokenStorage
+        from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+
+        reset_manager_for_tests()
+        storage = HermesTokenStorage("reports")
+        original_files = {
+            storage._tokens_path(): b'{"access_token":"old"}',
+            storage._client_info_path(): b'{"client_id":"old-client"}',
+            storage._meta_path(): b'{"authorization_endpoint":"https://idp.example"}',
+            storage._cimd_rejected_path(): b"",
+        }
+        for path, contents in original_files.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(contents)
+
+        manager = get_manager()
+        previous_entry = object()
+        manager._entries[manager._key("reports")] = previous_entry
+        def create_partial_entry_then_fail(*args, **kwargs):
+            from tools.mcp_oauth import HermesTokenStorage, get_oauth_reauth_staging_home
+
+            manager._entries[manager._key("reports")] = object()
+            staging_home = get_oauth_reauth_staging_home("reports")
+            assert staging_home is not None
+            staged = HermesTokenStorage("reports", hermes_home=staging_home)
+            staged._client_info_path().parent.mkdir(parents=True, exist_ok=True)
+            staged._client_info_path().write_bytes(b'{"client_id":"partial"}')
+            staged._meta_path().write_bytes(b'{"authorization_endpoint":"https://partial.example"}')
+            staged._cimd_rejected_path().write_bytes(b"")
+            raise RuntimeError("cancelled")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", create_partial_entry_then_fail
+        )
+
+        from hermes_cli.mcp_config import _reauth_oauth_server
+
+        assert not _reauth_oauth_server(
+            "reports", {"url": "https://mcp.example/mcp", "auth": "oauth"}
+        )
+        assert all(path.read_bytes() == contents for path, contents in original_files.items())
+        assert manager._entries[manager._key("reports")] is previous_entry
+        assert "Authentication failed" in capsys.readouterr().out
+
+    def test_login_failure_does_not_overwrite_newer_oauth_state(
+        self, tmp_path, monkeypatch
+    ):
+        """A concurrent writer waits for rollback, then writes the newer state."""
+        import threading
+
+        from tools.mcp_oauth import HermesTokenStorage
+        from tools.mcp_oauth import oauth_reauth_transaction
+        from tools.mcp_oauth_manager import reset_manager_for_tests
+
+        reset_manager_for_tests()
+        storage = HermesTokenStorage("reports")
+        storage._tokens_path().parent.mkdir(parents=True, exist_ok=True)
+        storage._tokens_path().write_bytes(b'{"access_token":"old"}')
+
+        writer_started = threading.Event()
+        writer_finished = threading.Event()
+
+        def write_newer_state():
+            writer_started.set()
+            with oauth_reauth_transaction("reports"):
+                storage._tokens_path().write_bytes(b'{"access_token":"new"}')
+                writer_finished.set()
+
+        writer = threading.Thread(target=write_newer_state)
+
+        def start_writer_then_fail(*args, **kwargs):
+            writer.start()
+            assert writer_started.wait(timeout=2)
+            assert not writer_finished.wait(timeout=0.1)
+            raise RuntimeError("cancelled")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", start_writer_then_fail
+        )
+
+        from hermes_cli.mcp_config import _reauth_oauth_server
+
+        assert not _reauth_oauth_server(
+            "reports", {"url": "https://mcp.example/mcp", "auth": "oauth"}
+        )
+        writer.join(timeout=2)
+        assert writer_finished.is_set()
+        assert storage._tokens_path().read_bytes() == b'{"access_token":"new"}'
 
 
 # ---------------------------------------------------------------------------

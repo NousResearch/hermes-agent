@@ -810,10 +810,12 @@ def cmd_mcp_test(args):
 def _reauth_oauth_server(name: str, server_config: dict) -> bool:
     """Force a fresh OAuth flow for one server. Returns True on success.
 
-    Wipes cached OAuth state (disk + in-process MCPOAuthManager cache),
-    re-probes to trigger the browser flow, and verifies a token actually
-    landed before reporting success. Shared by ``hermes mcp login`` and
-    ``hermes mcp reauth`` so both behave identically for a single server.
+    Temporarily removes cached OAuth state (disk + in-process
+    MCPOAuthManager cache), re-probes to trigger the browser flow, and
+    verifies a token actually landed before reporting success. Failed flows
+    restore the prior state without replacing credentials written by a newer
+    concurrent flow. Shared by ``hermes mcp login`` and ``hermes mcp reauth``
+    so both behave identically for a single server.
     """
     url = server_config.get("url")
     if not url:
@@ -824,54 +826,67 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
         _info("Use `hermes mcp remove` + `hermes mcp add` to reconfigure auth.")
         return False
 
-    # Wipe both disk and in-memory cache so the next probe forces a fresh
-    # OAuth flow.
+    manager = None
+    storage = None
+    backup = None
+    previous_entry = None
     try:
+        from tools.mcp_oauth import (
+            HermesTokenStorage,
+            force_interactive_oauth,
+            oauth_reauth_staging,
+            oauth_reauth_transaction,
+        )
         from tools.mcp_oauth_manager import get_manager
-        get_manager().remove(name)
+
+        manager = get_manager()
+        storage = HermesTokenStorage(name)
+        with oauth_reauth_transaction(name):
+            with oauth_reauth_staging(name) as staging_storage:
+                try:
+                    previous_entry = manager.detach(name)
+                    manager.set_entry_persistence_suspended(previous_entry, True)
+                    print()
+                    _info(f"Starting OAuth flow for '{name}'...")
+
+                    _login_connect_timeout = server_config.get("connect_timeout")
+                    try:
+                        _login_connect_timeout = float(_login_connect_timeout)
+                    except (TypeError, ValueError):
+                        _login_connect_timeout = 0.0
+                    _login_connect_timeout = max(_login_connect_timeout, 315.0)
+                    with force_interactive_oauth():
+                        tools = _probe_single_server(
+                            name, server_config, connect_timeout=_login_connect_timeout
+                        )
+                    if not staging_storage.has_cached_tokens():
+                        raise RuntimeError(
+                            "Server responded, but no OAuth token was obtained — "
+                            "authentication did not complete."
+                        )
+                    storage.restore(staging_storage.snapshot())
+                    manager.evict(name)
+                except Exception:
+                    manager.evict(name)
+                    manager.set_entry_persistence_suspended(previous_entry, False)
+                    manager.restore_entry(name, previous_entry)
+                    raise
+        if tools:
+            _success(f"Authenticated — {len(tools)} tool(s) available")
+        else:
+            _success("Authenticated (server reported no tools)")
+        return True
     except Exception as exc:
-        _warning(f"Could not clear existing OAuth state: {exc}")
-
-    print()
-    _info(f"Starting OAuth flow for '{name}'...")
-
-    # Probe triggers the OAuth flow (browser redirect + callback capture).
-    # Honor the server's configured connect_timeout so a human has enough
-    # time to complete the browser sign-in; the 30s default is too tight for
-    # an interactive OAuth round-trip. Floor at 315s — the OAuth callback
-    # window (300s in mcp_oauth) plus headroom — matching the GUI re-auth
-    # path in web_server.py so CLI and dashboard behave identically.
-    #
-    # force_interactive_oauth: `hermes mcp login` is *explicitly* user-
-    # initiated even when stdin isn't a TTY (Hermes desktop / agent-
-    # spawned terminals). Without this, OAuth refuses before opening a
-    # browser because _is_interactive() only checks sys.stdin.isatty().
-    try:
-        from tools.mcp_oauth import force_interactive_oauth
-
-        _login_connect_timeout = server_config.get("connect_timeout")
         try:
-            _login_connect_timeout = float(_login_connect_timeout)
-        except (TypeError, ValueError):
-            _login_connect_timeout = 0.0
-        _login_connect_timeout = max(_login_connect_timeout, 315.0)
-        with force_interactive_oauth():
-            tools = _probe_single_server(
-                name, server_config, connect_timeout=_login_connect_timeout
+            from tools.mcp_oauth import humanize_oauth_registration_error
+
+            humanized = humanize_oauth_registration_error(
+                name, exc, server_url=url
             )
-        # A clean probe is NOT proof of authentication. Some MCP servers
-        # (notably Google's official Drive server) serve initialize +
-        # tools/list WITHOUT auth, so the probe lists tools even when the
-        # OAuth flow never completed — e.g. dynamic client registration
-        # 400'd because the provider doesn't support RFC 7591. Reporting
-        # "Authenticated — N tools" in that case is a false success: every
-        # real tool call later hangs until timeout because there's no token.
-        # Verify a token actually landed on disk before claiming success.
-        if not _oauth_tokens_present(name):
-            _warning(
-                "Server responded, but no OAuth token was obtained — "
-                "authentication did not complete."
-            )
+        except Exception:
+            humanized = None
+        _error(f"Authentication failed: {humanized or exc}")
+        if "no OAuth token was obtained" in str(exc):
             print()
             _info(
                 "Some providers (e.g. Google Drive, Atlassian) do not support "
@@ -888,31 +903,15 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
             print(color("          client_secret: \"<your-oauth-client-secret>\"", Colors.DIM))
             print()
             _info("Then re-run `hermes mcp login " + name + "`.")
-            return False
-        if tools:
-            _success(f"Authenticated — {len(tools)} tool(s) available")
-        else:
-            _success("Authenticated (server reported no tools)")
-        return True
-    except Exception as exc:
-        try:
-            from tools.mcp_oauth import humanize_oauth_registration_error
-
-            humanized = humanize_oauth_registration_error(
-                name, exc, server_url=url
-            )
-        except Exception:
-            humanized = None
-        _error(f"Authentication failed: {humanized or exc}")
         return False
 
 
 def cmd_mcp_login(args):
     """Force re-authentication for an OAuth-based MCP server.
 
-    Deletes cached tokens (both on disk and in the running process's
-    MCPOAuthManager cache) and triggers a fresh OAuth flow via the
-    existing probe path.
+    Temporarily clears cached tokens (both on disk and in the running
+    process's MCPOAuthManager cache) and triggers a fresh OAuth flow via the
+    existing probe path. If the flow fails, the previous state is restored.
 
     Use this when:
       - Tokens are stuck in a bad state (server revoked, refresh token

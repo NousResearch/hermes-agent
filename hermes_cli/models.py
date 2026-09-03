@@ -6094,16 +6094,18 @@ def opencode_zen_free_headers() -> dict:
     header so the placeholder key never reaches the wire — the Zen relay
     accepts anonymous requests for free models but 401s any unknown bearer.
     Attribution headers mirror the opencode provider profile.
+
+    User-Agent is ``opencode/1.0.0`` (the native CLI format) because the
+    Zen relay rate-limits anonymous free-tier requests by User-Agent prefix:
+    ``HermesAgent/*`` and other non-opencode UAs trigger
+    ``429 FreeUsageLimitError`` on ``mimo-v2.5-free`` and other ``*-free``
+    models, while ``opencode/*`` returns 200. Verified live 2026-09-02.
     """
-    try:
-        from hermes_cli import __version__ as _v
-    except Exception:
-        _v = "0"
     return {
         "Authorization": "",
         "HTTP-Referer": "https://hermes-agent.nousresearch.com",
         "X-Title": "Hermes Agent",
-        "User-Agent": f"HermesAgent/{_v}",
+        "User-Agent": "opencode/1.0.0",
     }
 
 

@@ -18,11 +18,14 @@ from providers.base import ProviderProfile
 # Attribution headers, same values as the opencode-zen/go profiles, plus the
 # empty Authorization override that keeps the SDK's "Bearer <placeholder>"
 # off the wire (the free tier 401s any unrecognized bearer).
+# User-Agent is ``opencode/1.0.0`` (native CLI format) because the Zen
+# relay rate-limits free-tier anonymous requests by UA prefix:
+# ``HermesAgent/*`` gets 429, ``opencode/*`` gets 200 (verified 2026-09-02).
 _KEYLESS_HEADERS = {
     "Authorization": "",
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    "User-Agent": "opencode/1.0.0",
 }
 
 

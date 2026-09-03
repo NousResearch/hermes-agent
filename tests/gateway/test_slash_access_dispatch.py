@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, source_for_event_actor
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -84,6 +84,35 @@ async def test_shared_group_source_authorizes_and_identifies_actual_actor():
     assert result is not None
     assert "User ID: `111`" in result
     assert "Tier: **admin**" in result
+
+
+def test_actor_source_supports_lightweight_objects_and_keeps_transport_context():
+    transport = object()
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="-100",
+        chat_type="group",
+        user_id=None,
+        user_name=None,
+        profile="research",
+        _transport_adapter_ref=transport,
+        _authorization_profile_home="/tmp/default-profile",
+    )
+    event = SimpleNamespace(
+        source=source,
+        user_id="111",
+        user_name="Alice Example",
+    )
+
+    actor_source = source_for_event_actor(event)
+
+    assert actor_source is not source
+    assert actor_source.user_id == "111"
+    assert actor_source.user_name == "Alice Example"
+    assert actor_source.profile == "research"
+    assert actor_source._transport_adapter_ref is transport
+    assert actor_source._authorization_profile_home == "/tmp/default-profile"
+    assert source.user_id is None
 
 
 @pytest.mark.asyncio

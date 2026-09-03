@@ -33,7 +33,13 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
-from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
+from gateway.platforms.base import (
+    EphemeralReply,
+    MessageEvent,
+    MessageType,
+    event_actor_identity,
+    source_for_event_actor,
+)
 from gateway.session import (
     AsyncSessionStore,
     SessionSource,
@@ -150,7 +156,7 @@ class GatewaySlashCommandsMixin:
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
-        actor_user_id = getattr(event, "user_id", None) or source.user_id
+        actor_user_id, _actor_user_name = event_actor_identity(event)
         if not actor_user_id:
             return "⛔ /reset requires an identifiable user."
         
@@ -437,11 +443,8 @@ class GatewaySlashCommandsMixin:
         platform = source.platform.value if source and source.platform else "?"
         chat_type = (source.chat_type if source else "") or "dm"
         scope = "DM" if chat_type.lower() in {"dm", "direct", "private", ""} else "group/channel"
-        user_id = (
-            getattr(event, "user_id", None)
-            or (source.user_id if source else None)
-            or "?"
-        )
+        actor_user_id, _actor_user_name = event_actor_identity(event)
+        user_id = actor_user_id or "?"
 
         if not policy.enabled:
             return (
@@ -1515,15 +1518,7 @@ class GatewaySlashCommandsMixin:
         # (#bernard-thread-stop).  Fall back to interrupting any running
         # agent(s) that share this thread, gated on authorization.
         sibling_keys = self._sibling_thread_run_keys(source, session_key)
-        actor_source = source
-        actor_user_id = getattr(event, "user_id", None) or source.user_id
-        actor_user_name = getattr(event, "user_name", None) or source.user_name
-        if actor_user_id != source.user_id or actor_user_name != source.user_name:
-            actor_source = dataclasses.replace(
-                source,
-                user_id=actor_user_id,
-                user_name=actor_user_name,
-            )
+        actor_source = source_for_event_actor(event)
         if sibling_keys and self._is_user_authorized(actor_source):
             for sibling_key in sibling_keys:
                 await self._interrupt_and_clear_session(
@@ -2220,9 +2215,7 @@ class GatewaySlashCommandsMixin:
                         )
                         or {}
                     )
-                    picker_user_id = getattr(event, "user_id", None) or getattr(
-                        source, "user_id", None
-                    )
+                    picker_user_id, _picker_user_name = event_actor_identity(event)
                     if picker_user_id is not None:
                         metadata["picker_user_id"] = str(picker_user_id)
                     result = await adapter.send_model_picker(
@@ -2913,9 +2906,7 @@ class GatewaySlashCommandsMixin:
                 # operation behind a real, explicitly-configured admin (the
                 # same fail-closed check that guards cross-origin /resume);
                 # list/remove/clear stay open so a non-admin can still recover.
-                actor_user_id = (
-                    getattr(event, "user_id", None) or event.source.user_id
-                )
+                actor_user_id, _actor_user_name = event_actor_identity(event)
                 if not self._resume_caller_is_admin(
                     event.source, actor_user_id
                 ):
@@ -3983,7 +3974,7 @@ class GatewaySlashCommandsMixin:
                 )
                 or {}
             )
-            picker_user_id = event.user_id or event.source.user_id
+            picker_user_id, _picker_user_name = event_actor_identity(event)
             if picker_user_id is not None:
                 metadata["picker_user_id"] = str(picker_user_id)
             result = await adapter.send_choice_picker(
@@ -4311,7 +4302,7 @@ class GatewaySlashCommandsMixin:
         policy = policy_for_source(
             policy_cfg if policy_resolved else None, event.source
         )
-        actor_user_id = getattr(event, "user_id", None) or event.source.user_id
+        actor_user_id, _actor_user_name = event_actor_identity(event)
         if requested and (
             not policy_resolved
             or not actor_user_id
@@ -5050,10 +5041,10 @@ class GatewaySlashCommandsMixin:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
-        actor_user_id = getattr(event, "user_id", None) or source.user_id
+        actor_user_id, _actor_user_name = event_actor_identity(event)
         if not actor_user_id:
             return t("gateway.topic.unauthorized")
-        actor_source = dataclasses.replace(source, user_id=str(actor_user_id))
+        actor_source = source_for_event_actor(event)
 
         # Authorization: /topic activates multi-session mode and mutates
         # SQLite side tables. Unauthorized senders (not in allowlist) must
@@ -5309,7 +5300,7 @@ class GatewaySlashCommandsMixin:
         source = await asyncio.to_thread(
             self._normalize_source_for_session_key, event.source
         )
-        actor_user_id = getattr(event, "user_id", None) or source.user_id
+        actor_user_id, _actor_user_name = event_actor_identity(event)
         session_key = self._session_key_for_source(source)
         raw_args = event.get_command_args().strip()
         try:
@@ -5530,7 +5521,7 @@ class GatewaySlashCommandsMixin:
         source = await asyncio.to_thread(
             self._normalize_source_for_session_key, event.source
         )
-        actor_user_id = getattr(event, "user_id", None) or source.user_id
+        actor_user_id, _actor_user_name = event_actor_identity(event)
         session_key = self._session_key_for_source(source)
 
         # A cross-origin listing (`/sessions all`) is honored only for an

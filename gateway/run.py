@@ -3162,7 +3162,10 @@ from gateway.platforms.base import (
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     build_auto_tts_output_path,
+    copy_session_source_with,
+    event_actor_identity,
     merge_pending_message_event,
+    source_for_event_actor,
     utf16_len,
 )
 from gateway.shutdown_watchdog import (
@@ -17331,6 +17334,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 f"or configure them only on the default profile."
             )
 
+        # A profile served through a primary transport may intentionally have
+        # no adapter credential of its own. Its slash policy remains
+        # authoritative, so retain the config even when no adapter is created.
+        self._register_profile_gateway_config(profile_name, profile_cfg)
+
         profile_map = self._profile_adapters.setdefault(profile_name, {})
         connected = 0
         for platform, platform_config in profile_cfg.platforms.items():
@@ -17487,6 +17495,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
         return connected
 
+    def _register_profile_gateway_config(
+        self, profile_name: str, gateway_config: GatewayConfig
+    ) -> None:
+        """Remember one served profile's effective slash-policy config."""
+        registry = getattr(self, "_profile_gateway_configs", None)
+        if isinstance(registry, dict):
+            registry[profile_name] = gateway_config
+        else:
+            self._profile_gateway_configs = {profile_name: gateway_config}
+
     def _configure_profile_adapter(
         self,
         adapter: BasePlatformAdapter,
@@ -17507,11 +17525,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # guard: bare object.__new__(GatewayRunner) test runners never ran
         # __init__, so the registry dict may not exist yet.
         if gateway_config is not None:
-            registry = getattr(self, "_profile_gateway_configs", None)
-            if isinstance(registry, dict):
-                registry[profile_name] = gateway_config
-            else:
-                self._profile_gateway_configs = {profile_name: gateway_config}
+            self._register_profile_gateway_config(profile_name, gateway_config)
         adapter.set_message_handler(self._make_profile_message_handler(profile_name))
         _set_slash_access = getattr(adapter, "set_slash_access_check", None)
         if callable(_set_slash_access):
@@ -17956,7 +17970,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return f"⛔ /{canonical_cmd} is unavailable without profile policy context."
             scoped_source = source
             if not getattr(source, "profile", None):
-                scoped_source = dataclasses.replace(source, profile=profile_name)
+                scoped_source = copy_session_source_with(source, profile=profile_name)
             with _profile_runtime_scope(profile_home):
                 return self._check_slash_access(
                     scoped_source,
@@ -17979,7 +17993,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not profile_name:
                     profile_name = self._profile_name_for_source(source) or ""
                     if profile_name:
-                        scoped_source = dataclasses.replace(
+                        scoped_source = copy_session_source_with(
                             source, profile=profile_name
                         )
                 profile_home = (
@@ -19026,20 +19040,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # SessionSource is the routing identity. Some shared group adapters
         # deliberately remove its participant fields so every member reaches
         # one transcript. MessageEvent retains the actual inbound actor for
-        # authorization and identity-sensitive commands. Rehydrate a temporary
-        # access-only source without changing the source used for session keys.
-        _actor_user_id = getattr(event, "user_id", None) or getattr(source, "user_id", None)
-        _actor_user_name = getattr(event, "user_name", None) or getattr(source, "user_name", None)
-        _slash_access_source = source
-        if source is not None and (
-            _actor_user_id != getattr(source, "user_id", None)
-            or _actor_user_name != getattr(source, "user_name", None)
-        ):
-            _slash_access_source = dataclasses.replace(
-                source,
-                user_id=_actor_user_id,
-                user_name=_actor_user_name,
-            )
+        # authorization and identity-sensitive commands. Resolve only concrete
+        # scalar identities so lightweight mocks cannot impersonate an actor.
+        _actor_user_id, _actor_user_name = event_actor_identity(event)
 
         # 🔴 Cross-session leak guard. This handler runs inside a per-message
         # asyncio task created via create_task(), which snapshots the spawning
@@ -19166,6 +19169,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     break
                 if _action == "allow":
                     break
+
+        # Rehydrate a temporary access-only source after route stamping. A
+        # shallow copy retains transport/profile provenance and supports
+        # lightweight SessionSource-like objects without changing session keys.
+        _slash_access_source = source_for_event_actor(event)
 
         if is_internal:
             pass
@@ -26638,10 +26646,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Direct callers may omit the actor; rehydrate it from the event so a
         # shared routing source still resolves the real sender. No identity
         # anywhere fails closed at the ownership check below.
+        event_actor_user_id, _event_actor_user_name = event_actor_identity(event)
         actor_user_id = str(
             actor_user_id
-            or getattr(event, "user_id", None)
-            or source.user_id
+            or event_actor_user_id
             or ""
         )
         session_id = await self._session_db.resolve_session_id(raw_session_id.strip())

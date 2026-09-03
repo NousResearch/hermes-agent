@@ -447,6 +447,9 @@ export interface Translations {
       sessionDensityCompact: string
       sessionDensityComfortable: string
       sessionDensityDetailed: string
+      projectPreviewTitle: string
+      projectPreviewDesc: string
+      projectPreviewAll: string
       tabStripTitle: string
       tabStripDesc: string
       tabStripAuto: string

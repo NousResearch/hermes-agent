@@ -18,7 +18,7 @@ import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 import { SidebarGroupRow, SidebarRowLead, SidebarRowLink, SidebarRowStack } from '../chrome'
 import { rankSessions } from '../order'
 
-import { PROJECT_PREVIEW_COUNT, SIDEBAR_GROUP_PAGE, useWorkspaceNodeOpen } from './model'
+import { PROJECT_PREVIEW_COUNT, SIDEBAR_GROUP_PAGE, useProjectPreviewCount, useWorkspaceNodeOpen } from './model'
 import type { SidebarSessionGroup } from './workspace-groups'
 import {
   WorkspaceAddButton,
@@ -55,10 +55,16 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
   // A lane ranks by whatever the sort key says before it trims itself, so the
   // rows it hides are the ones the sort ranked last.
   const sessions = rankSessions(group.sessions, rankIds)
+  const previewCount = useProjectPreviewCount()
   // A profile previews the same handful a project does, and clicking its label
-  // is how you see the rest. Workspace groups page within what's loaded.
-  const visibleSessions = sessions.slice(0, isProfileGroup ? PROJECT_PREVIEW_COUNT : visibleCount)
-  const hiddenCount = isProfileGroup ? 0 : sessions.length - visibleSessions.length
+  // is how you see the rest. Workspace groups page within what's loaded —
+  // unless the preview setting lifts the cap, in which case everything shows.
+  const previewLimit = previewCount ?? Infinity
+  const visibleSessions = sessions.slice(
+    0,
+    isProfileGroup || previewCount === null ? previewLimit : Math.max(previewCount, visibleCount)
+  )
+  const hiddenCount = isProfileGroup || previewCount === null ? 0 : sessions.length - visibleSessions.length
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
 
   // Leading glyph: a home mark for the repo's primary checkout (labeled by its

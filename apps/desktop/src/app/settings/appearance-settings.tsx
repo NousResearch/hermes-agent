@@ -20,6 +20,7 @@ import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedM
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $projectSessionPreview, PROJECT_PREVIEW_OPTIONS, setProjectSessionPreview, type ProjectSessionPreview } from '@/store/project-session-preview'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
@@ -395,6 +396,7 @@ export function AppearanceSettings() {
   const toolViewMode = useStore($toolViewMode)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
+  const projectPreview = useStore($projectSessionPreview)
   const tabStripDefault = useStore($tabStripDefault)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
@@ -642,6 +644,24 @@ export function AppearanceSettings() {
             }
             description={a.sessionDensityDesc}
             title={a.sessionDensityTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl<string>
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setProjectSessionPreview(id === 'all' ? 'all' : (Number(id) as 3 | 4 | 5 | 8))
+                }}
+                options={PROJECT_PREVIEW_OPTIONS.map(option => ({
+                  id: String(option),
+                  label: option === 'all' ? a.projectPreviewAll : String(option)
+                }))}
+                value={String(projectPreview)}
+              />
+            }
+            description={a.projectPreviewDesc}
+            title={a.projectPreviewTitle}
           />
 
           <ListRow

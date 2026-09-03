@@ -19,7 +19,7 @@ import {
   SidebarRowShell
 } from '../chrome'
 
-import { latestProjectSessions, PROJECT_PREVIEW_COUNT, useWorkspaceNodeOpen } from './model'
+import { latestProjectSessions, PROJECT_PREVIEW_COUNT, useProjectPreviewCount, useWorkspaceNodeOpen } from './model'
 import { ProjectContextMenu, ProjectMenu } from './project-menu'
 import type { SidebarProjectTree } from './workspace-groups'
 import { WorkspaceAddButton } from './workspace-header'
@@ -94,8 +94,11 @@ export function ProjectOverviewRow({
   // The appearance popover anchors here (the full row) so it opens flush with
   // the sidebar's content edge regardless of which side the sidebar is on.
   const rowRef = useRef<HTMLDivElement>(null)
-  const fetched = (previewSessions ?? []).slice(0, PROJECT_PREVIEW_COUNT)
-  const preview = renderRows ? (fetched.length ? fetched : latestProjectSessions(project, PROJECT_PREVIEW_COUNT)) : []
+  // 'all' (null) means no cap — everything loaded shows and scrolls.
+  const previewCount = useProjectPreviewCount()
+  const previewLimit = previewCount ?? Infinity
+  const fetched = (previewSessions ?? []).slice(0, previewLimit)
+  const preview = renderRows ? (fetched.length ? fetched : latestProjectSessions(project, previewLimit)) : []
 
   const lead = reorderable ? (
     <SidebarRowGrab

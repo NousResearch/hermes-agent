@@ -1,5 +1,6 @@
 import { KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
+import { $projectSessionPreview } from '@/store/project-session-preview'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -1123,15 +1124,17 @@ export function ChatSidebar({
   // most-recent sessions), overlaid with live $sessions so a just-created
   // session shows under its project instantly (and with its working arc),
   // matching the flat Recents list. Keyed by project id for the rows.
+  const previewLimit = useStore($projectSessionPreview)
+  const previewCount = previewLimit === 'all' ? null : previewLimit
   const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
     () =>
-      overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_COUNT, {
+      overlayLivePreviews(projectOverview ?? [], agentSessions, projects, previewCount ?? Infinity, {
         removed: removedSessionIds,
         // Rank before the trim, so "3 priciest in this project" isn't "3 most
         // recent, priciest first".
         rankIds: sortOrderIds
       }),
-    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds]
+    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, previewCount]
   )
 
   const onEnterProject = useCallback(

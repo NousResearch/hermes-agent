@@ -617,7 +617,13 @@ def finalize_turn(
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can transform the LLM's output text before it's returned.
     # First hook to return a string wins; None/empty return leaves text unchanged.
-    if final_response and not interrupted:
+    # A required terminal turn has already persisted its exact host-owned
+    # projection; no fail-open plugin hook may rewrite that value.
+    if (
+        final_response
+        and not interrupted
+        and not getattr(agent, "_required_terminal_turn_active", False)
+    ):
         try:
             from hermes_cli.lifecycle import invoke_hook as _invoke_hook
             _transform_results = _invoke_hook(

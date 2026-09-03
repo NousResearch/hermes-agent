@@ -7499,6 +7499,8 @@ class AIAgent:
             logger.debug("on_stream_start plugin hook enqueue failed", exc_info=True)
 
     def _emit_stream_end(self, *, final_text: str, finished: bool, error: str | None) -> None:
+        if getattr(self, "_required_terminal_turn_active", False):
+            return
         try:
             from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
 
@@ -7514,6 +7516,8 @@ class AIAgent:
 
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
+        if getattr(self, "_required_terminal_turn_active", False):
+            return
         # Single-writer guard (#65991): a superseded stream must not interleave
         # its tokens into the turn alongside the retry that replaced it.
         if self._stream_writer_superseded():
@@ -7586,6 +7590,8 @@ class AIAgent:
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""
+        if getattr(self, "_required_terminal_turn_active", False):
+            return
         # Single-writer guard (#65991): fence out a superseded stream's
         # reasoning deltas the same way as content deltas.
         if self._stream_writer_superseded():
@@ -7648,6 +7654,8 @@ class AIAgent:
 
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
         """Forwarder — see ``agent.chat_completion_helpers.try_activate_fallback``."""
+        if getattr(self, "_required_terminal_turn_active", False):
+            return False
         from agent.chat_completion_helpers import try_activate_fallback
         return try_activate_fallback(self, reason)
 
@@ -7659,6 +7667,8 @@ class AIAgent:
         fallback chain configured).  Mirrors the early-return guard in
         ``try_activate_fallback`` (#35314, #17446).
         """
+        if getattr(self, "_required_terminal_turn_active", False):
+            return False
         chain = getattr(self, "_fallback_chain", None) or []
         index = getattr(self, "_fallback_index", 0)
         return index < len(chain)
@@ -9268,6 +9278,7 @@ class AIAgent:
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
         persist_user_platform_id: Optional[str] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        gateway_turn: bool = False,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review deliberately shares this agent's session_id for prompt-cache
@@ -9827,6 +9838,7 @@ class AIAgent:
                         persist_user_display_metadata=persist_user_display_metadata,
                         persist_user_platform_id=persist_user_platform_id,
                         moa_config=moa_config,
+                        gateway_turn=gateway_turn,
                     )
                 finally:
                     # The lease remains held through relay/task finalization, but

@@ -2530,8 +2530,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                             tool_call_id=tool_call_id,
                             session_id=agent.session_id or "",
                             turn_id=getattr(agent, "_current_turn_id", "") or "",
-                            api_request_id=getattr(agent, "_current_api_request_id", "")
-                            or "",
+                            request_id=getattr(
+                                agent, "_required_terminal_request_id", None
+                            ),
+                            api_request_id=getattr(
+                                agent, "_current_api_request_id", ""
+                            ) or "",
                             enabled_tools=(
                                 list(agent.valid_tool_names)
                                 if agent.valid_tool_names
@@ -2612,8 +2616,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                             tool_call_id=tool_call_id,
                             session_id=agent.session_id or "",
                             turn_id=getattr(agent, "_current_turn_id", "") or "",
-                            api_request_id=getattr(agent, "_current_api_request_id", "")
-                            or "",
+                            request_id=getattr(
+                                agent, "_required_terminal_request_id", None
+                            ),
+                            api_request_id=getattr(
+                                agent, "_current_api_request_id", ""
+                            ) or "",
                             enabled_tools=(
                                 list(agent.valid_tool_names)
                                 if agent.valid_tool_names
@@ -2672,6 +2680,36 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
+
+        terminal_result = None
+        from agent.required_terminal_turn import (
+            RequiredTerminalTurnError,
+            validate_terminal_result,
+        )
+        from tools.registry import TerminalToolResult
+
+        if isinstance(function_result, TerminalToolResult):
+            try:
+                policy = getattr(agent, "_required_terminal_policy", None)
+                if policy is None or function_name != policy.name:
+                    raise RequiredTerminalTurnError(
+                        "terminal receipt came from an unrequested tool"
+                    )
+                terminal_result = validate_terminal_result(
+                    function_result,
+                    turn_id=str(getattr(agent, "_current_turn_id", "") or ""),
+                    tool_call_id=tool_call_id,
+                    request_id=str(
+                        getattr(agent, "_required_terminal_request_id", "") or ""
+                    ),
+                )
+                function_result = terminal_result.tool_content()
+            except RequiredTerminalTurnError as exc:
+                terminal_result = None
+                function_result = json.dumps(
+                    {"error": str(exc), "error_type": "terminal_tool_contract"},
+                    sort_keys=True,
+                )
 
         _execution_timed_out = isinstance(
             function_result, (_ToolTimeoutResult, _ToolCancelledResult)
@@ -2783,6 +2821,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             stage=f"tool result {function_name}",
         ):
             return
+        if terminal_result is not None:
+            agent._required_terminal_result = terminal_result
 
         # UI completion/progress events are projections of the canonical tool
         # row, never a competing in-memory authority.

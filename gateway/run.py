@@ -7099,6 +7099,7 @@ class TurnRunner:
             _conversation_kwargs = {
                 "conversation_history": agent_history,
                 "task_id": ctx.session_id,
+                "gateway_turn": ctx.inbound_message_id is not None,
             }
             if _persist_user_message_override is not None:
                 _conversation_kwargs["persist_user_message"] = _persist_user_message_override

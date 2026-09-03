@@ -22,8 +22,9 @@ import logging
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from hermes_constants import hermes_home_key
 
@@ -34,6 +35,29 @@ _MAX_TOOL_ERROR_CHARS = 2048
 _TOOL_ERROR_TRUNCATION_MARKER = "… [truncated]"
 # Logs keep more of the body than the model sees, but still a bounded amount.
 _MAX_LOGGED_ERROR_CHARS = 8192
+
+
+@dataclass(frozen=True)
+class TerminalToolResult:
+    """Trusted tool result that owns the exact user-visible projection."""
+
+    turn_id: str
+    tool_call_id: str
+    request_id: str
+    response_text: str
+    receipt: dict[str, Any]
+
+    def tool_content(self) -> str:
+        return json.dumps(
+            {
+                "status": "ok",
+                "request_id": self.request_id,
+                "response_text": self.response_text,
+                "receipt": self.receipt,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
 
 
 def _bound_error_text(text: str) -> str:
@@ -207,12 +231,13 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars", "dynamic_schema_overrides",
+        "max_result_size_chars", "dynamic_schema_overrides", "terminal",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 terminal: bool = False):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -231,6 +256,9 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        # Declarative metadata for the host-owned terminal-turn policy.
+        # Ordinary tool dispatch remains unchanged until a profile opts in.
+        self.terminal = bool(terminal)
 
 
 class _PluginOverridePolicy:
@@ -800,6 +828,7 @@ class ToolRegistry:
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
         scope: Optional[str] = None,
+        terminal: bool = False,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -895,6 +924,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                terminal=terminal,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
@@ -1142,6 +1172,11 @@ class ToolRegistry:
         """
         if isinstance(result, str):
             return _bound_json_error_result(result)
+        # A terminal result is consumed by the host-owned agent loop after the
+        # normal tool pipeline persists its canonical tool row. Keep the typed
+        # value intact until that boundary; it never returns to the model.
+        if isinstance(result, TerminalToolResult):
+            return result
         if (
             isinstance(result, dict)
             and result.get("_multimodal") is True
@@ -1169,7 +1204,7 @@ class ToolRegistry:
         *,
         scope: Optional[str] = None,
         **kwargs,
-    ) -> str | dict:
+    ) -> Any:
         """Execute a tool handler by name.
 
         * Async handlers are bridged automatically via ``_run_async()``.

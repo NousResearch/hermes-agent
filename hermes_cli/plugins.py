@@ -1787,6 +1787,7 @@ class PluginContext:
         description: str = "",
         emoji: str = "",
         override: bool = False,
+        terminal: bool = False,
     ) -> Optional[PluginRegistration]:
         """Register a tool in the global registry **and** track it as plugin-provided.
 
@@ -1794,6 +1795,10 @@ class PluginContext:
         same name (e.g. swap the default ``browser_navigate`` for a custom
         CDP-backed implementation). Without it, attempting to register a name
         already claimed by a different toolset is rejected.
+
+        ``terminal=True`` declares that the handler may return a
+        ``TerminalToolResult``. It has no effect unless the profile also opts
+        into ``agent.required_terminal_tool`` for natural gateway turns.
 
         ``override=True`` against a built-in tool requires the operator to
         opt in via ``plugins.entries.<plugin_id>.allow_tool_override: true``
@@ -1834,6 +1839,7 @@ class PluginContext:
             is_async=is_async,
             description=description,
             emoji=emoji,
+            terminal=terminal,
             override=override,
             scope=scope,
         )

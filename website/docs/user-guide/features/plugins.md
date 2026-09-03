@@ -92,6 +92,51 @@ The model-facing tool description belongs in `schema["description"]`. The option
 
 Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
 
+### Fail-closed terminal tools
+
+A gateway profile can require one plugin tool to own the complete visible result of every natural inbound turn. This is intended for stateful applications where ordinary model prose must never be mistaken for a committed transition.
+
+Register the tool as terminal and return a receipt bound to the identifiers Hermes passes to the handler:
+
+```python
+from tools.registry import TerminalToolResult
+
+
+def handle_turn(params, *, request_id, turn_id, tool_call_id, **kwargs):
+    # Commit or replay the application transition under request_id first.
+    response_text = apply_or_replay(params, request_id=request_id)
+    return TerminalToolResult(
+        response_text=response_text,
+        request_id=request_id,
+        turn_id=turn_id,
+        tool_call_id=tool_call_id,
+    )
+
+
+def register(ctx):
+    ctx.register_tool(
+        name="application_turn",
+        toolset="application",
+        schema={...},
+        handler=handle_turn,
+        terminal=True,
+    )
+```
+
+Enable the requirement explicitly in that profile's `config.yaml`:
+
+```yaml
+agent:
+  required_terminal_tool:
+    name: application_turn
+    surface: gateway
+    failure_response: "The request could not be committed safely. Please retry."
+```
+
+The policy currently supports natural gateway turns through the `openai-codex` Responses transport. Hermes forces exactly one call to the named tool after middleware and transport preflight, suppresses provider prose and streaming, persists the tool call/result and exact terminal response, then stops without a second model call or fallback. Missing or inconsistent configuration, the wrong number of calls, mixed prose, handler failure, an invalid receipt, or transcript-persistence failure all fail closed.
+
+`request_id` is host-owned and stable for the same gateway session and inbound platform message. A mutating handler must enforce durable idempotency itself: same request ID and same intent replays the stored response; the same request ID with a different intent must not mutate.
+
 ## What plugins can do
 
 Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.

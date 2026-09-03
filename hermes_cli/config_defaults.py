@@ -66,6 +66,9 @@ DEFAULT_CONFIG = {
         # inline lease waiter also delays unrelated topics. Non-positive values
         # fall back to the five-second safety default.
         "gateway_turn_lease_timeout": 5,
+        # Optional fail-closed gateway turn policy for a plugin tool registered
+        # with terminal=True. The mapping is deliberately absent by default.
+        "required_terminal_tool": None,
         # Per-session AIAgent cache in the gateway. Each cached agent keeps a
         # warm prompt prefix AND the session's full transcript, so the cache
         # trades memory for cost: too small and every turn re-pays an uncached

@@ -2036,6 +2036,7 @@ def run_conversation(
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    gateway_turn: bool = False,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -2064,6 +2065,8 @@ def run_conversation(
             Discord/Telegram message id) to store as metadata on that
             persisted user message, so restart drain-window recovery can
             dedup an interrupted turn against the transcript.
+        gateway_turn: Trusted marker set only by the gateway's natural-turn
+            runner. Direct CLI, TUI, desktop, and API calls leave it false.
                 or queuing follow-up prefetch work.
 
     Returns:
@@ -2272,12 +2275,56 @@ def run_conversation(
     # stale prior turn's usage.
     agent._last_turn_usage = None
 
+    # Resolve the profile-owned terminal policy once per natural gateway turn.
+    # Keep all state turn-local on the cached agent and reset it before any
+    # provider or tool work so receipts cannot leak across queued messages.
+    from agent.required_terminal_turn import (
+        DEFAULT_FAILURE_RESPONSE,
+        RequiredTerminalTurnError,
+        apply_required_terminal_request,
+        load_required_terminal_policy,
+        validate_required_terminal_call,
+        validate_required_terminal_policy,
+    )
+
+    required_terminal_policy = None
+    required_terminal_policy_error = None
+    required_terminal_failure = DEFAULT_FAILURE_RESPONSE
+    agent._required_terminal_policy = None
+    agent._required_terminal_result = None
+    agent._required_terminal_request_id = None
+    agent._required_terminal_turn_active = False
+    try:
+        required_terminal_policy = load_required_terminal_policy(
+            agent, gateway_turn=gateway_turn
+        )
+        if required_terminal_policy is not None:
+            required_terminal_failure = required_terminal_policy.failure_response
+            validate_required_terminal_policy(agent, required_terminal_policy)
+            platform_message_id = str(persist_user_platform_id or "").strip()
+            session_id = str(getattr(agent, "session_id", "") or "").strip()
+            if not platform_message_id or not session_id:
+                raise RequiredTerminalTurnError(
+                    "required terminal turn lacks durable inbound identity"
+                )
+            agent._required_terminal_policy = required_terminal_policy
+            agent._required_terminal_request_id = (
+                f"{session_id}:{platform_message_id}"
+            )
+            agent._required_terminal_turn_active = True
+    except RequiredTerminalTurnError as exc:
+        required_terminal_policy_error = str(exc)
+        agent._required_terminal_turn_active = True
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
-    if agent.api_mode == "codex_app_server":
+    if (
+        agent.api_mode == "codex_app_server"
+        and not agent._required_terminal_turn_active
+    ):
         return agent._run_codex_app_server_turn(
             user_message=user_message,
             original_user_message=original_user_message,
@@ -2287,6 +2334,11 @@ def run_conversation(
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        if required_terminal_policy_error is not None:
+            final_response = required_terminal_failure
+            failed = True
+            _turn_exit_reason = "required_terminal_tool_failure(preflight)"
+            break
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
             _apply_active_turn_redirect(agent, messages, _redirect_text)
@@ -3634,6 +3686,12 @@ def run_conversation(
                             is_github_responses=agent._is_copilot_url(),
                             sanitize_harmony_tokens=agent._is_codex_backend(),
                         )
+                    if required_terminal_policy is not None:
+                        next_api_kwargs = apply_required_terminal_request(
+                            next_api_kwargs,
+                            policy=required_terminal_policy,
+                            provider=agent.provider,
+                        )
                     if _use_streaming:
                         return agent._interruptible_streaming_api_call(
                             next_api_kwargs, on_first_delta=_stop_spinner
@@ -3816,6 +3874,13 @@ def run_conversation(
                             error_details.append("response.choices is empty")
 
                 if response_invalid:
+                    if required_terminal_policy is not None:
+                        final_response = required_terminal_failure
+                        failed = True
+                        _turn_exit_reason = (
+                            "required_terminal_tool_failure(invalid_response)"
+                        )
+                        break
                     agent._invoke_api_request_error_hook(
                         task_id=effective_task_id,
                         turn_id=turn_id,
@@ -4042,6 +4107,17 @@ def run_conversation(
                             force=True,
                         )
                         finish_reason = "length"
+
+                if (
+                    required_terminal_policy is not None
+                    and finish_reason != "stop"
+                ):
+                    final_response = required_terminal_failure
+                    failed = True
+                    _turn_exit_reason = (
+                        "required_terminal_tool_failure(provider_finish)"
+                    )
+                    break
 
                 # ── Content-policy refusal (HTTP 200) ──────────────────
                 # The model — or the provider's safety system — returned a
@@ -4969,6 +5045,13 @@ def run_conversation(
                 break  # Success, exit retry loop
 
             except InterruptedError:
+                if required_terminal_policy is not None:
+                    final_response = required_terminal_failure
+                    failed = True
+                    _turn_exit_reason = (
+                        "required_terminal_tool_failure(interrupted)"
+                    )
+                    break
                 if thinking_spinner:
                     thinking_spinner.stop("")
                     thinking_spinner = None
@@ -5003,6 +5086,17 @@ def run_conversation(
                 break
 
             except Exception as api_error:
+                if required_terminal_policy is not None:
+                    logger.warning(
+                        "Required terminal provider request failed closed: %s",
+                        api_error,
+                    )
+                    final_response = required_terminal_failure
+                    failed = True
+                    _turn_exit_reason = (
+                        "required_terminal_tool_failure(provider_request)"
+                    )
+                    break
                 # Stop spinner silently — retry status is buffered and
                 # only flushed when every retry+fallback is exhausted.
                 if thinking_spinner:
@@ -7417,6 +7511,8 @@ def run_conversation(
         # (e.g. repeated context-length errors that exhausted retry_count),
         # the `response` variable is still None. Break out cleanly.
         if response is None:
+            if required_terminal_policy is not None and failed:
+                break
             _turn_exit_reason = "all_retries_exhausted_no_response"
             print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
             agent._persist_session(messages, conversation_history)
@@ -7430,6 +7526,19 @@ def run_conversation(
             normalized = _transport.normalize_response(response, **_normalize_kwargs)
             assistant_message = normalized
             finish_reason = normalized.finish_reason
+
+            if required_terminal_policy is not None:
+                try:
+                    validate_required_terminal_call(
+                        assistant_message, required_terminal_policy
+                    )
+                except RequiredTerminalTurnError:
+                    final_response = required_terminal_failure
+                    failed = True
+                    _turn_exit_reason = (
+                        "required_terminal_tool_failure(provider_response)"
+                    )
+                    break
             
             # Normalize content to string — some OpenAI-compatible servers
             # (llama-server, etc.) return content as a dict or list instead
@@ -7646,7 +7755,8 @@ def run_conversation(
                                     last_msg[_key] = interim_msg[_key]
                     else:
                         append_message(messages, interim_msg)
-                        agent._emit_interim_assistant_message(interim_msg)
+                        if required_terminal_policy is None:
+                            agent._emit_interim_assistant_message(interim_msg)
 
                 if agent._codex_incomplete_retries < 3:
                     # When the interim message has nothing the Responses
@@ -8141,7 +8251,8 @@ def run_conversation(
                 # still only an ephemeral in-memory projection. Emit interim
                 # commentary only after the canonical SessionDB append above.
                 if not duplicate_previous_interim:
-                    agent._emit_interim_assistant_message(assistant_msg)
+                    if required_terminal_policy is None:
+                        agent._emit_interim_assistant_message(assistant_msg)
 
                 # Close any open streaming display (response box, reasoning
                 # box) before tool execution begins.  Intermediate turns may
@@ -8149,7 +8260,10 @@ def run_conversation(
                 # flushing here prevents it from wrapping tool feed lines.
                 # Only signal the display callback — TTS (_stream_callback)
                 # should NOT receive None (it uses None as end-of-stream).
-                if agent.stream_delta_callback:
+                if (
+                    agent.stream_delta_callback
+                    and required_terminal_policy is None
+                ):
                     try:
                         agent.stream_delta_callback(None)
                     except Exception:
@@ -8164,6 +8278,38 @@ def run_conversation(
                     _turn_exit_reason = "session_persistence_failed"
                     final_response = ""
                     failed = True
+                    break
+
+                if required_terminal_policy is not None:
+                    terminal_result = getattr(
+                        agent, "_required_terminal_result", None
+                    )
+                    if terminal_result is None:
+                        final_response = required_terminal_failure
+                        failed = True
+                        _turn_exit_reason = (
+                            "required_terminal_tool_failure(tool_result)"
+                        )
+                        break
+                    final_response = terminal_result.response_text
+                    append_message(
+                        messages,
+                        {"role": "assistant", "content": final_response},
+                    )
+                    try:
+                        persisted = agent._flush_messages_to_session_db(
+                            messages, conversation_history
+                        )
+                    except Exception:
+                        persisted = False
+                    if persisted is False:
+                        final_response = required_terminal_failure
+                        failed = True
+                        _turn_exit_reason = (
+                            "required_terminal_tool_failure(final_persistence)"
+                        )
+                        break
+                    _turn_exit_reason = "required_terminal_tool_success"
                     break
 
                 if agent._tool_guardrail_halt_decision is not None:
@@ -9145,6 +9291,15 @@ def run_conversation(
                 break
             
         except Exception as e:
+            if required_terminal_policy is not None:
+                logger.warning(
+                    "Required terminal-tool turn failed closed: %s", e,
+                    exc_info=True,
+                )
+                final_response = required_terminal_failure
+                failed = True
+                _turn_exit_reason = "required_terminal_tool_failure(exception)"
+                break
             # Count every escaped exception against the per-turn bound before
             # classification — permanent failures must terminate even when the
             # turn budget is unlimited (#92450).

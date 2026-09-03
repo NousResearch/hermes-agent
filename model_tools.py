@@ -1255,6 +1255,7 @@ def handle_function_call(
     tool_call_id: Optional[str] = None,
     session_id: Optional[str] = None,
     turn_id: Optional[str] = None,
+    request_id: Optional[str] = None,
     api_request_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
@@ -1264,7 +1265,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
-) -> str:
+) -> Any:
     """
     Main function call dispatcher that routes calls to the tool registry.
 
@@ -1556,6 +1557,15 @@ def handle_function_call(
         except Exception:
             reset_current_observability_context = None
         try:
+            terminal_context = (
+                {
+                    "request_id": request_id,
+                    "turn_id": turn_id,
+                    "tool_call_id": tool_call_id,
+                }
+                if request_id
+                else {}
+            )
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
@@ -1566,6 +1576,7 @@ def handle_function_call(
                         task_id=task_id,
                         session_id=session_id,
                         enabled_tools=sandbox_enabled,
+                        **terminal_context,
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
@@ -1574,6 +1585,7 @@ def handle_function_call(
                         task_id=task_id,
                         session_id=session_id,
                         user_task=user_task,
+                        **terminal_context,
                     )
             if skip_tool_execution_middleware:
                 result = _dispatch(function_args)

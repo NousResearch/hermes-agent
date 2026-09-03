@@ -931,6 +931,7 @@ class BuzzAdapter(BasePlatformAdapter):
         # classification (see _may_reclassify_as_dm).
         self._channel_meta: Dict[str, dict] = {}
         self._user_names: Dict[str, str] = {}
+        self._USER_NAMES_MAX = 5000
         self._poll_count = 0
         # inbound event_id -> thread root event id, or None when that message
         # was itself top-level.  Lets send() mirror the user's own threading
@@ -2675,7 +2676,10 @@ class BuzzAdapter(BasePlatformAdapter):
         Failures are cached too (negative caching): without it, every message
         from a profile-less pubkey re-runs ``users get`` each poll sweep,
         which amplifies badly when several adapter instances poll in one
-        process.
+        process. The cache is bounded (``_USER_NAMES_MAX``, mirroring the
+        Slack adapter's ``_user_name_cache`` cap) so a long-running gateway
+        on a busy relay doesn't grow this dict for every unique sender ever
+        seen — oldest half is evicted on overflow.
         """
         cached = self._user_names.get(pubkey)
         if cached is not None:
@@ -2689,6 +2693,10 @@ class BuzzAdapter(BasePlatformAdapter):
         if not name:
             name = (hex_to_npub(pubkey) or pubkey)[:16]
         self._user_names[pubkey] = name
+        if len(self._user_names) > self._USER_NAMES_MAX:
+            excess = len(self._user_names) - self._USER_NAMES_MAX // 2
+            for old_key in list(self._user_names)[:excess]:
+                del self._user_names[old_key]
         return name
 
     @staticmethod

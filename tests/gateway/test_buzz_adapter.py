@@ -624,6 +624,44 @@ class TestCliErrorContract:
         assert msg.endswith("...")
 
 
+# ── Display-name cache bound (#73961) ──────────────────────────────────────
+
+
+class TestUserNamesCacheCap:
+    """``_user_names`` must not grow unbounded on a long-running gateway
+    (mirrors the Slack ``_user_name_cache`` cap: 91693f9d4 / b0358cf3c)."""
+
+    def test_cache_cap_holds_under_churn(self):
+        adapter = _make_adapter()
+        adapter._USER_NAMES_MAX = 10
+        # Simulate the post-resolution write + trim path directly.
+        for i in range(50):
+            pubkey = f"{i:064x}"
+            adapter._user_names[pubkey] = f"user{i}"
+            if len(adapter._user_names) > adapter._USER_NAMES_MAX:
+                excess = len(adapter._user_names) - adapter._USER_NAMES_MAX // 2
+                for old_key in list(adapter._user_names)[:excess]:
+                    del adapter._user_names[old_key]
+        assert len(adapter._user_names) <= adapter._USER_NAMES_MAX
+        # Newest entry survives; oldest was evicted.
+        assert f"{49:064x}" in adapter._user_names
+        assert f"{0:064x}" not in adapter._user_names
+
+    @pytest.mark.asyncio
+    async def test_cache_bounded_through_resolve(self):
+        """End-to-end: _resolve_user_name enforces the cap."""
+        adapter = _make_adapter()
+        adapter._USER_NAMES_MAX = 4
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+        for i in range(10):
+            pubkey = f"{i:064x}"
+            cli.script("users", "get", [{"display_name": f"name-{i}"}])
+            await adapter._resolve_user_name(pubkey)
+        assert len(adapter._user_names) <= adapter._USER_NAMES_MAX
+        assert f"{9:064x}" in adapter._user_names
+
+
 # ── Seeding / high-water mark / de-dupe ───────────────────────────────────
 
 

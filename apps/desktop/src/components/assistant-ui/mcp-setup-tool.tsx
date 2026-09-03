@@ -28,6 +28,7 @@ import { AlertCircle, CheckCircle2, Loader2 } from '@/lib/icons'
 import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { directoryEntry } from '@/lib/mcp-directory'
+import { readMcpInputValue } from '@/lib/mcp-input'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
@@ -481,7 +482,10 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
               </span>
               <Input
                 className="h-7 text-xs"
-                onChange={event => setEnvDraft(prev => ({ ...prev, [env.name]: event.currentTarget.value }))}
+                onChange={event => {
+                  const value = readMcpInputValue(event)
+                  setEnvDraft(prev => ({ ...prev, [env.name]: value }))
+                }}
                 type="password"
                 value={envDraft[env.name] ?? ''}
               />

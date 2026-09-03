@@ -38,6 +38,7 @@ import { brandFor } from '@/lib/mcp-brands'
 import { estimateServerTokens, serverUsageCount } from '@/lib/mcp-cost'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import { type McpImportEntry, parseMcpImport } from '@/lib/mcp-import'
+import { readMcpInputValue } from '@/lib/mcp-input'
 import { NEEDS_AUTH_RE, PROBE_TTL_MS, probeCache, probeKey, serverFingerprint } from '@/lib/mcp-probe-cache'
 import { getServers, isServerShape, type McpServers, normalizeEntry } from '@/lib/mcp-servers'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
@@ -1640,12 +1641,13 @@ function McpCatalog({
                         </span>
                         <Input
                           className="h-7 text-xs"
-                          onChange={event =>
+                          onChange={event => {
+                            const value = readMcpInputValue(event)
                             setEnvDrafts(prev => ({
                               ...prev,
-                              [entry.name]: { ...prev[entry.name], [env.name]: event.currentTarget.value }
+                              [entry.name]: { ...prev[entry.name], [env.name]: value }
                             }))
-                          }
+                          }}
                           type="password"
                           value={draft[env.name] ?? ''}
                         />

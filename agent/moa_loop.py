@@ -1030,7 +1030,12 @@ _ADVISORY_INSTRUCTION = (
 )
 
 
-def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _reference_messages(
+    messages: list[dict[str, Any]],
+    *,
+    advisory_context: str = "auto",
+    advisory_max_chars: int | None = None,
+) -> list[dict[str, Any]]:
     """Build an advisory view of the conversation for reference models.
 
     A reference gives an INFORMED judgement on the current state, so it must
@@ -1156,6 +1161,43 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 fallback_text = flatten_message_text(msg.get("content"))
                 if fallback_text.strip():
                     return [{"role": "user", "content": fallback_text}]
+    if advisory_context == "none":
+        # A self-contained artifact review needs only its current payload. Keep
+        # the latest real user turn and discard the session replay; the caller
+        # still prepends the fixed advisory system prompt.
+        for message in reversed(rendered):
+            if (
+                message.get("role") == "user"
+                and message.get("content") != _ADVISORY_INSTRUCTION
+            ):
+                return [message]
+        return []
+
+    if advisory_max_chars is not None and advisory_max_chars > 0:
+        # Bound the advisory transcript by dropping whole oldest messages. This
+        # preserves role/content bytes and always retains the latest real user
+        # payload plus all state after it, even when that suffix alone exceeds
+        # the configured soft bound.
+        latest_user_idx = 0
+        for index in range(len(rendered) - 1, -1, -1):
+            message = rendered[index]
+            if (
+                message.get("role") == "user"
+                and message.get("content") != _ADVISORY_INSTRUCTION
+            ):
+                latest_user_idx = index
+                break
+        bounded = list(rendered[latest_user_idx:])
+        used = sum(len(str(message.get("content") or "")) for message in bounded)
+        for message in reversed(rendered[:latest_user_idx]):
+            size = len(str(message.get("content") or ""))
+            if used + size > advisory_max_chars:
+                break
+            bounded.insert(0, message)
+            used += size
+        rendered = bounded
+        while rendered and rendered[0].get("role") == "assistant":
+            rendered.pop(0)
     return rendered
 
 
@@ -1245,6 +1287,8 @@ def aggregate_moa_context(
     temperature: float | None = None,
     aggregator_temperature: float | None = None,
     reference_max_tokens: int | None = None,
+    advisory_context: str = "auto",
+    advisory_max_chars: int | None = None,
     reference_timeout: float | None = None,
     degraded_reference_policy: str = "loud",
     agent: Any = None,
@@ -1273,7 +1317,11 @@ def aggregate_moa_context(
     """
     reference_models = [slot for slot in reference_models if slot.get("enabled", True)]
     reference_outputs: list[tuple[str, str, Any]] = []
-    ref_messages = _reference_messages(api_messages)
+    ref_messages = _reference_messages(
+        api_messages,
+        advisory_context=advisory_context,
+        advisory_max_chars=advisory_max_chars,
+    )
     reference_outputs = _run_references_parallel(
         reference_models,
         ref_messages,
@@ -1999,7 +2047,11 @@ class MoAChatCompletions:
         from agent.usage_pricing import CanonicalUsage
 
         reference_outputs: list[tuple[str, str, Any]] = []
-        ref_messages = _reference_messages(messages)
+        ref_messages = _reference_messages(
+            messages,
+            advisory_context=str(preset.get("advisory_context") or "auto"),
+            advisory_max_chars=preset.get("advisory_max_chars"),
+        )
 
         # Fan-out cadence. "user_turn" (default — cheapest cadence, #67199):
         # advisors run ONCE per user turn; subsequent tool iterations reuse

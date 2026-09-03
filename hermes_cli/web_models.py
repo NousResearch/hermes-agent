@@ -162,6 +162,8 @@ class _MoaReferenceControls(BaseModel):
     # auxiliary.moa_reference.timeout (900s default).
     reference_timeout: Optional[float] = None
     degraded_reference_policy: Literal["loud", "silent"] = "loud"
+    advisory_context: Literal["auto", "none"] = "auto"
+    advisory_max_chars: Optional[int] = None
 
     @field_validator("reference_timeout", mode="before")
     @classmethod
@@ -180,6 +182,21 @@ class _MoaReferenceControls(BaseModel):
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("reference_timeout must be a finite positive number")
         return timeout
+
+    @field_validator("advisory_max_chars", mode="before")
+    @classmethod
+    def _validate_advisory_max_chars(cls, value: Any) -> Optional[int]:
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool):
+            raise ValueError("advisory_max_chars must be a positive integer")
+        try:
+            limit = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("advisory_max_chars must be a positive integer") from exc
+        if limit <= 0 or (isinstance(value, float) and not value.is_integer()):
+            raise ValueError("advisory_max_chars must be a positive integer")
+        return limit
 
 
 class MoaPresetPayload(_MoaReferenceControls):

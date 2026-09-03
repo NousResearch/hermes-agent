@@ -2084,9 +2084,19 @@ def run_doctor(args):
         try:
             import sqlite3
             conn = sqlite3.connect(str(state_db_path))
-            cursor = conn.execute("SELECT COUNT(*) FROM sessions")
-            count = cursor.fetchone()[0]
-            conn.close()
+            # try/finally, not bare close-after-read (#100836): on a
+            # malformed DB, execute() raises and the except path below calls
+            # repair_state_db_schema(), whose _live_writer_holds_db() probe
+            # fails against THIS leaked connection (SQLITE_BUSY on
+            # BEGIN IMMEDIATE) — doctor self-detects as the live writer and
+            # refuses to repair after the operator already stopped the
+            # gateway. Close on every path so the probe only sees real
+            # external holders.
+            try:
+                cursor = conn.execute("SELECT COUNT(*) FROM sessions")
+                count = cursor.fetchone()[0]
+            finally:
+                conn.close()
             check_ok(f"{_DHH}/state.db exists ({count} sessions)")
 
             # FTS write-health probe (#50502): `SELECT COUNT(*)` above succeeds
@@ -2145,10 +2155,15 @@ def run_doctor(args):
                     if report.get("repaired"):
                         try:
                             conn = sqlite3.connect(str(state_db_path))
-                            count = conn.execute(
-                                "SELECT COUNT(*) FROM sessions"
-                            ).fetchone()[0]
-                            conn.close()
+                            # Same leak shape as the pre-repair probe (#100836):
+                            # close on every path so a post-repair failure
+                            # never leaks a second blocking connection.
+                            try:
+                                count = conn.execute(
+                                    "SELECT COUNT(*) FROM sessions"
+                                ).fetchone()[0]
+                            finally:
+                                conn.close()
                         except Exception:
                             count = "?"
                         backup_name = (

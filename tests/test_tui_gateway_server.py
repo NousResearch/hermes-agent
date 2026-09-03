@@ -18805,7 +18805,7 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
             {
                 "id": str(n),
                 "method": "slash.exec",
-                "params": {"command": "/context", "session_id": "race-spawn"},
+                "params": {"command": "/tools", "session_id": "race-spawn"},
             }
         )
         results.append(resp)
@@ -18824,6 +18824,50 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
         assert all("result" in r for r in results), results
     finally:
         server._sessions.pop("race-spawn", None)
+
+
+@pytest.mark.parametrize("command", ["/context", "/ctx"])
+def test_slash_exec_context_uses_parent_session_without_spawning_worker(monkeypatch, command):
+    """/context is a read-only parent-session command.
+
+    It must not be sent to the agent-less slash worker: resumed Desktop/TUI
+    sessions can have transcript history without a resident HermesCLI agent.
+    """
+    session = _session(
+        slash_worker=None,
+        session_key="context-session-key",
+        history=[
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ],
+    )
+    server._sessions["context-sid"] = session
+    spawned = []
+
+    class _UnexpectedWorker:
+        def __init__(self, *args, **kwargs):
+            spawned.append(True)
+
+    monkeypatch.setattr(server, "_SlashWorker", _UnexpectedWorker)
+    monkeypatch.setattr(
+        server,
+        "_format_live_context_output",
+        lambda live_session: "parent-session-context",
+    )
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "context-read",
+                "method": "slash.exec",
+                "params": {"command": command, "session_id": "context-sid"},
+            }
+        )
+        assert response["result"]["output"] == "parent-session-context"
+        assert spawned == []
+        assert session["slash_worker"] is None
+    finally:
+        server._sessions.pop("context-sid", None)
 
 
 def test_session_close_rpc_claims_then_tears_down(monkeypatch):

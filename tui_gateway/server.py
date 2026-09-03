@@ -16570,6 +16570,7 @@ _LIVE_SESSION_DIRECT_COMMANDS = frozenset(
     {
         "clear",
         "compress",
+        "context",
         "effort",
         "history",
         "models",
@@ -16581,7 +16582,7 @@ _LIVE_SESSION_DIRECT_COMMANDS = frozenset(
     }
 )
 
-_ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
+_ISOLATED_SESSION_READ_COMMANDS = frozenset({"tools", "help"})
 
 
 def _format_live_review_output(session: Optional[dict], arg: str) -> str:
@@ -16811,6 +16812,17 @@ def _format_live_model_output(session: dict) -> str:
 def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg: str) -> Optional[str]:
     name = (name or "").lstrip("/").lower()
     arg = arg or ""
+    try:
+        from hermes_cli.commands import resolve_command
+
+        resolved = resolve_command(name)
+        if resolved is not None:
+            name = resolved.name
+    except Exception:
+        logger.debug(
+            "slash-command alias resolution failed for %r", name, exc_info=True
+        )
+        pass
     if name == "model" and not arg.strip():
         return _format_live_model_output(session or {})
     if name not in _LIVE_SESSION_DIRECT_COMMANDS:

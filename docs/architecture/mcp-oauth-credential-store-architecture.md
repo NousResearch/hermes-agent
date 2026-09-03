@@ -93,7 +93,8 @@ tools/mcp_oauth_store/
 ├── file_backend.py      # versioned atomic file bundle storage
 ├── apple_keychain.py    # macOS generic-password backend
 ├── sdk_adapter.py       # active and staged MCP SDK storage adapters
-├── lifecycle.py         # authorize, refresh, delete, status
+├── interaction.py       # OAuthInteraction protocol and CLI/dashboard/RPC adapters
+├── lifecycle.py         # authorize, refresh, delete, status; outcome classifier
 ├── migration.py         # legacy mcp-tokens import
 └── diagnostics.py       # non-secret status projection
 ```
@@ -306,6 +307,8 @@ class OAuthLifecycleService:
 ```
 
 `OAuthInteraction` abstracts how an authorization URL is delivered and how its callback is received. CLI loopback, dashboard callback, and remote Desktop callback relay implement this interface. They do not own storage or rollback.
+
+`StoredBundle` is the final loaded-credential handle. Chunks 2–4 use a transitional `StoredState` in these signatures (wrapping legacy state, then gaining a revision); Chunk 5 replaces it with `StoredBundle`.
 
 ### 5.3 MCP SDK storage adapters
 

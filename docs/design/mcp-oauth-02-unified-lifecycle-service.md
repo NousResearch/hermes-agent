@@ -33,7 +33,7 @@ class OAuthLifecycleService:
     def status(self, identity) -> OAuthCredentialStatus: ...
 ```
 
-In this chunk `StoredState` wraps legacy state. Later it becomes the revisioned bundle.
+`StoredState` is the transitional name for the loaded-credential handle in Chunks 2–4: it wraps `LegacyOAuthState` here, gains a revision in Chunk 4, and is replaced by architecture §4.2's `StoredBundle` in Chunk 5. The lifecycle signatures above match architecture §5.2 with `StoredState` substituted for `StoredBundle`.
 
 `load_for_runtime` classifies token expiration from the absolute `expires_at` (architecture §4.3). The wall-clock plausibility guard — demote to `unknown` when the elapsed time since `accepted_at_utc` is negative or exceeds `original_expires_in × CLOCK_SLACK` — is added in Chunk 4, when `original_expires_in` is persisted. It is not a legacy-format field, so it cannot be applied here.
 
@@ -104,7 +104,7 @@ Only `OAuthLifecycleService.delete` invokes durable store deletion. Server confi
 
 `MCPOAuthManager` owns cached provider entries, in-flight 401 coordination, and provider reconstruction. It no longer exposes a method whose name `remove` ambiguously means both memory eviction and credential deletion.
 
-`load_for_runtime` is a rebuild-decision-point call (before a flow, during 401 recovery, on explicit refresh or status), not a per-request call. Chunk 2 keeps legacy disk-mtime watching; the revision-probe cadence and in-memory TTL that architecture §8.3 / §12.1 formalize arrive with revisions in Chunk 4.
+`load_for_runtime` is a rebuild-decision-point call (before a flow, during 401 recovery, on explicit refresh or status), not a per-request call. Chunk 2 keeps legacy disk-mtime watching. Revisions and CAS arrive in Chunk 4; the switch from mtime watching to revision watching, and the in-memory revision TTL that architecture §8.3 / §12.1 formalize, arrive in Chunk 5.
 
 Use explicit methods:
 

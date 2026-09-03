@@ -57,11 +57,20 @@ def _env(tmp_path):
     return bundled, skills_dir, manifest_file
 
 
-def test_pristine_skill_is_not_listed_as_modified(tmp_path):
+def test_pristine_skill_ignores_generated_cache_in_modified_and_diff_checks(tmp_path):
     bundled, skills_dir, manifest_file = _env(tmp_path)
     with _patches(bundled, skills_dir, manifest_file):
         sync_skills(quiet=True)
+        user_skill = skills_dir / "category" / "foo"
+        cache = user_skill / "scripts" / "__pycache__"
+        cache.mkdir(parents=True)
+        (cache / "helper.cpython-313.pyc").write_bytes(b"generated")
+        (user_skill / "scripts" / "helper.pyc").write_bytes(b"generated")
+
         assert list_user_modified_bundled_skills() == []
+        result = diff_bundled_skill("foo")
+        assert result["modified"] is False
+        assert result["diffs"] == []
 
 
 def test_reset_clears_modified_state(tmp_path):

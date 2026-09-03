@@ -27,6 +27,7 @@ from tools.skills_guard import (
     should_allow_install,
     format_scan_report,
     content_hash,
+    full_content_hash,
     _determine_verdict,
     _resolve_trust_level,
     _check_structure,
@@ -344,6 +345,25 @@ class TestContentHash:
         f.write_text("version2")
         h2 = content_hash(tmp_path)
         assert h1 != h2
+
+    def test_ignores_generated_python_cache_files(self, tmp_path):
+        (tmp_path / "SKILL.md").write_text("same content")
+        baseline = content_hash(tmp_path)
+        cache = tmp_path / "scripts" / "__pycache__"
+        cache.mkdir(parents=True)
+        (cache / "helper.cpython-313.pyc").write_bytes(b"generated")
+        (tmp_path / "scripts" / "helper.pyc").write_bytes(b"generated")
+
+        assert content_hash(tmp_path) == baseline
+
+    def test_full_hash_changes_for_generated_python_cache_files(self, tmp_path):
+        (tmp_path / "SKILL.md").write_text("same content")
+        baseline = full_content_hash(tmp_path)
+        cache = tmp_path / "scripts" / "__pycache__"
+        cache.mkdir(parents=True)
+        (cache / "helper.cpython-313.pyc").write_bytes(b"generated")
+
+        assert full_content_hash(tmp_path) != baseline
 
 
 # ---------------------------------------------------------------------------

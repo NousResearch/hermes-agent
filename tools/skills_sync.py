@@ -46,7 +46,7 @@ for _stream in (sys.stdout, sys.stderr):
         except (ValueError, TypeError):
             pass
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import is_excluded_skill_path, is_generated_skill_path
 from typing import Dict, List, Optional, Set, Tuple
 from utils import atomic_replace, atomic_write_text
 
@@ -289,10 +289,28 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
 
 def _dir_hash(directory: Path) -> str:
     """Compute a hash of all file contents in a directory for change detection."""
+    return _dir_hash_impl(directory, include_generated=False)
+
+
+def _legacy_dir_hash(directory: Path) -> str:
+    """Reproduce the pre-cache-filter manifest hash for compatibility.
+
+    This is deliberately not the canonical skill identity.  It exists only to
+    prove that an old manifest origin was produced from a tree that is still
+    available on disk; new manifest entries always use :func:`_dir_hash`.
+    """
+    return _dir_hash_impl(directory, include_generated=True)
+
+
+def _dir_hash_impl(directory: Path, *, include_generated: bool) -> str:
+    """Hash skill files using the bundled-manifest MD5 wire format."""
     hasher = hashlib.md5()
     try:
         for fpath in sorted(directory.rglob("*")):
-            if fpath.is_file():
+            if fpath.is_file() and (
+                include_generated
+                or not is_generated_skill_path(fpath.relative_to(directory))
+            ):
                 rel = fpath.relative_to(directory)
                 hasher.update(str(rel).encode("utf-8"))
                 hasher.update(fpath.read_bytes())
@@ -317,7 +335,9 @@ def _skill_file_list(skill_dir: Path) -> List[str]:
     files: List[str] = []
     for fpath in sorted(skill_dir.rglob("*")):
         if fpath.is_file():
-            files.append(fpath.relative_to(skill_dir).as_posix())
+            rel = fpath.relative_to(skill_dir).as_posix()
+            if not is_generated_skill_path(rel):
+                files.append(rel)
     return files
 
 
@@ -649,6 +669,7 @@ def _recover_renamed_skill(
     active_index: Dict[str, List[Path]],
     hub_paths: Set[str],
     quiet: bool,
+    bundled_src: Optional[Path] = None,
 ) -> Optional[str]:
     """Move a bundled skill's stale copy to its new canonical path.
 
@@ -659,9 +680,9 @@ def _recover_renamed_skill(
     *user-deleted*: the old directory is stranded forever and never receives
     another update.
 
-    A stale copy is only moved when it is byte-identical to ``origin_hash`` —
-    the hash recorded the last time sync wrote that skill — which proves the
-    directory is the copy *we* placed there rather than the user's own work.
+    A stale copy is only moved when the manifest origin is proven by the local
+    or bundled tree. This includes an attested legacy cache-inclusive origin,
+    while generated-cache drift alone does not make the copy user-authored.
     Anything else (user-edited, hub-installed) is left untouched.
 
     Returns the relative source path when a move happened, else ``None``.
@@ -679,7 +700,11 @@ def _recover_renamed_skill(
         # Never relocate a hub-installed skill — the hub owns its path.
         if rel in hub_paths:
             continue
-        if _dir_hash(candidate) != origin_hash:
+        if _is_tracked_user_modification(
+            origin_hash,
+            candidate,
+            bundled_src=bundled_src,
+        ):
             # User customized the copy at the old path. Moving it would edit
             # their work; leaving it avoids a duplicate-name collision. Warn
             # so they can migrate deliberately.
@@ -814,6 +839,7 @@ def sync_skills(quiet: bool = False) -> dict:
                 active_index,
                 hub_paths or set(),
                 quiet,
+                bundled_src=skill_src,
             )
             if _moved_from:
                 relocated.append(skill_name)
@@ -904,57 +930,69 @@ def sync_skills(quiet: bool = False) -> dict:
                     skipped += 1
                 continue
 
-            if _is_tracked_user_modification(origin_hash, user_hash):
+            if _is_tracked_user_modification(
+                origin_hash,
+                dest,
+                bundled_src=skill_src,
+                user_hash=user_hash,
+                bundled_hash=bundled_hash,
+            ):
                 # User modified this skill — don't overwrite their changes
                 user_modified.append(skill_name)
                 if not quiet:
                     print(f"  ~ {skill_name} (user-modified, skipping)")
                 continue
 
-            # User copy matches origin — check if bundled has a newer version
-            if bundled_hash != origin_hash:
+            # A legacy cache-inclusive origin is proven but not itself the
+            # canonical identity. If intentional content is already equal,
+            # migrate the manifest without replacing cache files on disk.
+            if user_hash == bundled_hash:
+                manifest[skill_name] = bundled_hash
+                skipped += 1
+                continue
+
+            # The equality case returned above, so the proven-pristine user
+            # copy now receives the newer canonical bundled version.
+            try:
+                # Move old copy to a backup so we can restore on failure
+                backup = dest.with_suffix(".bak")
+                # A stale backup left by an earlier failure would make
+                # shutil.move() nest dest *inside* it (or fail outright)
+                # and would poison the restore path below. The current
+                # dest is the authoritative copy — clear the leftover.
+                if backup.exists():
+                    _rmtree_writable(backup)
+                shutil.move(str(dest), str(backup))
                 try:
-                    # Move old copy to a backup so we can restore on failure
-                    backup = dest.with_suffix(".bak")
-                    # A stale backup left by an earlier failure would make
-                    # shutil.move() nest dest *inside* it (or fail outright)
-                    # and would poison the restore path below. The current
-                    # dest is the authoritative copy — clear the leftover.
-                    if backup.exists():
-                        _rmtree_writable(backup)
-                    shutil.move(str(dest), str(backup))
-                    try:
-                        shutil.copytree(skill_src, dest)
-                        manifest[skill_name] = bundled_hash
-                        updated.append(skill_name)
-                        if not quiet:
-                            print(f"  ↑ {skill_name} (updated)")
-                        # Remove backup after successful copy
-                        try:
-                            _rmtree_writable(backup)
-                        except (OSError, IOError):
-                            logger.debug("Could not remove backup %s", backup, exc_info=True)
-                    except (OSError, IOError):
-                        # Restore from backup. A partially-written dest must
-                        # not shadow the user's copy or block the restore —
-                        # clear it first, then move the backup home.
-                        if backup.exists():
-                            if dest.exists():
-                                try:
-                                    _rmtree_writable(dest)
-                                except (OSError, IOError):
-                                    logger.warning(
-                                        "Could not clear partial copy %s during restore",
-                                        dest, exc_info=True,
-                                    )
-                            if not dest.exists():
-                                shutil.move(str(backup), str(dest))
-                        raise
-                except (OSError, IOError) as e:
+                    shutil.copytree(skill_src, dest)
+                    manifest[skill_name] = bundled_hash
+                    updated.append(skill_name)
                     if not quiet:
-                        print(f"  ! Failed to update {skill_name}: {e}")
-            else:
-                skipped += 1  # bundled unchanged, user unchanged
+                        print(f"  ↑ {skill_name} (updated)")
+                    # Remove backup after successful copy
+                    try:
+                        _rmtree_writable(backup)
+                    except (OSError, IOError):
+                        logger.debug("Could not remove backup %s", backup, exc_info=True)
+                except (OSError, IOError):
+                    # Restore from backup. A partially-written dest must
+                    # not shadow the user's copy or block the restore —
+                    # clear it first, then move the backup home.
+                    if backup.exists():
+                        if dest.exists():
+                            try:
+                                _rmtree_writable(dest)
+                            except (OSError, IOError):
+                                logger.warning(
+                                    "Could not clear partial copy %s during restore",
+                                    dest, exc_info=True,
+                                )
+                        if not dest.exists():
+                            shutil.move(str(backup), str(dest))
+                    raise
+            except (OSError, IOError) as e:
+                if not quiet:
+                    print(f"  ! Failed to update {skill_name}: {e}")
 
         else:
             # ── In manifest but not on disk — user deleted it ──
@@ -1158,16 +1196,45 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     return {"ok": True, "action": action, "message": message, "synced": synced}
 
 
-def _is_tracked_user_modification(origin_hash: str, user_hash: str) -> bool:
+def _is_tracked_user_modification(
+    origin_hash: str,
+    user_dir: Path,
+    *,
+    bundled_src: Optional[Path] = None,
+    user_hash: Optional[str] = None,
+    bundled_hash: Optional[str] = None,
+) -> bool:
     """Whether an on-disk skill counts as a user modification ``hermes update`` keeps.
 
-    Shared by the sync loop (which decides what to skip) and
-    ``list_user_modified_bundled_skills`` (which surfaces the names) so the two
-    can never drift. A skill is a tracked modification only when it has a
-    recorded origin hash (an un-baselined / v1 entry with an empty hash is not)
-    and its current content hash differs from that origin.
+    Besides current canonical origins, accept a legacy cache-inclusive origin
+    only with proof from a current tree.  The local tree proves it directly
+    when its old full hash matches.  Alternatively, the bundled tree can prove
+    the legacy origin when its old full hash matches and the user's canonical
+    content still equals bundled.  That second case permits generated cache
+    drift without treating a real content edit as pristine.
+
+    Arbitrary stale hashes match neither tree and remain user modifications.
+    This single decision is shared by sync, modified-skill listing, rename
+    recovery, and pristine removal.
     """
-    return bool(origin_hash) and user_hash != origin_hash
+    if not origin_hash:
+        return False
+
+    current_hash = user_hash if user_hash is not None else _dir_hash(user_dir)
+    if current_hash == origin_hash or _legacy_dir_hash(user_dir) == origin_hash:
+        return False
+
+    if bundled_src is not None:
+        source_hash = (
+            bundled_hash if bundled_hash is not None else _dir_hash(bundled_src)
+        )
+        if (
+            current_hash == source_hash
+            and _legacy_dir_hash(bundled_src) == origin_hash
+        ):
+            return False
+
+    return True
 
 
 def list_user_modified_bundled_skills() -> List[dict]:
@@ -1199,7 +1266,11 @@ def list_user_modified_bundled_skills() -> List[dict]:
         dest = _compute_relative_dest(skill_dir, bundled_dir)
         if not dest.exists():
             continue
-        if _is_tracked_user_modification(origin_hash, _dir_hash(dest)):
+        if _is_tracked_user_modification(
+            origin_hash,
+            dest,
+            bundled_src=skill_dir,
+        ):
             modified.append(
                 {"name": skill_name, "dest": dest, "bundled_src": skill_dir}
             )
@@ -1388,8 +1459,9 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
       - it is recorded in the sync manifest (so it is genuinely a bundled
         skill, not a hub-installed or hand-written one), AND
       - it still exists in the bundled source (so we can hash-compare), AND
-      - its on-disk copy is byte-identical to the manifest origin hash
-        (so the user has not edited it).
+      - its on-disk canonical content matches proven manifest provenance
+        (including an attested legacy cache-inclusive origin), so the user has
+        not edited intentional content.
 
     Anything user-modified, hub-installed, or locally authored is left
     untouched and reported under ``skipped``. The manifest entry for each
@@ -1422,8 +1494,17 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
             if not dry_run and name in manifest:
                 del manifest[name]
             continue
-        on_disk = _dir_hash(dest)
-        if on_disk != origin_hash:
+        if not origin_hash:
+            # A plain-name v1 entry has no provenance hash.  Normal sync may
+            # baseline or migrate it, but destructive opt-out cleanup cannot
+            # prove that the on-disk copy is pristine and must keep it.
+            skipped.append({"name": name, "reason": "user-modified (kept)"})
+            continue
+        if _is_tracked_user_modification(
+            origin_hash,
+            dest,
+            bundled_src=src,
+        ):
             skipped.append({"name": name, "reason": "user-modified (kept)"})
             continue
         # Pristine bundled copy — safe to remove.

@@ -1124,8 +1124,12 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
     paperclipai/paperclip#10978's explicit-merge-mode rule: destructive
     replacement must be an explicit caller choice, never a rerun default).
     """
-    from tools.skills_hub import SKILLS_DIR, HubLockFile, check_for_skill_updates
-    from tools.skills_guard import content_hash
+    from tools.skills_hub import (
+        SKILLS_DIR,
+        HubLockFile,
+        check_for_skill_updates,
+        resolve_hub_lock_tree_hash,
+    )
 
     c = console or _console
     lock = HubLockFile()
@@ -1143,10 +1147,12 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
             skill_path = SKILLS_DIR / installed.get("install_path", "")
             if recorded_hash and skill_path.is_dir():
                 try:
-                    disk_hash = content_hash(skill_path)
+                    resolved_hash = resolve_hub_lock_tree_hash(
+                        recorded_hash, skill_path
+                    )
                 except OSError:
-                    disk_hash = recorded_hash
-                if disk_hash != recorded_hash:
+                    resolved_hash = recorded_hash
+                if resolved_hash is None:
                     skipped_local.append(entry["name"])
                     c.print(
                         f"[yellow]Skipping:[/] {entry['name']} — you have local edits "

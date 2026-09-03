@@ -45,6 +45,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
+from agent.skill_utils import is_generated_skill_path
+
 
 SCANNER_VERSION = "skills-guard-v2"
 
@@ -881,8 +883,12 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     )
 
 
-def _content_digest(skill_path: Path) -> str:
+def _content_digest(skill_path: Path, *, include_generated: bool = False) -> str:
     """Canonical SHA-256 over relative paths and exact file bytes.
+
+    Generated Python cache data is outside the bundled-skill identity by
+    default, but the scanner attestation can request the full on-disk content
+    so changes to files that the scanner still examines invalidate its cache.
 
     Files are keyed and ORDERED by their POSIX relative path string,
     case-sensitively. Ordering by ``sorted(rglob(...))`` diverged from the
@@ -899,6 +905,10 @@ def _content_digest(skill_path: Path) -> str:
             (file_path.relative_to(skill_path).as_posix(), file_path)
             for file_path in skill_path.rglob("*")
             if file_path.is_file()
+            and (
+                include_generated
+                or not is_generated_skill_path(file_path.relative_to(skill_path))
+            )
         )
         for rel, file_path in entries:
             h.update(rel.encode("utf-8") + b"\x00")
@@ -910,7 +920,17 @@ def _content_digest(skill_path: Path) -> str:
 
 def full_content_hash(skill_path: Path) -> str:
     """Full canonical digest used to bind scanner attestations."""
-    return f"sha256:{_content_digest(skill_path)}"
+    return f"sha256:{_content_digest(skill_path, include_generated=True)}"
+
+
+def legacy_content_hash(skill_path: Path) -> str:
+    """Reproduce the pre-cache-filter Hub lock hash.
+
+    New lock entries use :func:`content_hash`.  This legacy shape exists only
+    to prove that an existing lock hash came from a concrete current tree;
+    callers must not use it as the identity for new installs.
+    """
+    return f"sha256:{_content_digest(skill_path, include_generated=True)[:16]}"
 
 
 def _finding_dict(finding: Finding) -> dict:

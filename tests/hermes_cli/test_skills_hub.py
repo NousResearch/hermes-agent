@@ -1,3 +1,4 @@
+import hashlib
 from io import StringIO
 from unittest.mock import patch
 
@@ -415,7 +416,19 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
 # ---------------------------------------------------------------------------
 
 
-def _update_env(monkeypatch, tmp_path, *, edit_after_install: bool):
+def _legacy_cache_inclusive_hash(skill_dir):
+    hasher = hashlib.sha256()
+    for path in sorted(skill_dir.rglob("*")):
+        if path.is_file():
+            hasher.update(path.relative_to(skill_dir).as_posix().encode("utf-8"))
+            hasher.update(b"\x00")
+            hasher.update(path.read_bytes())
+    return f"sha256:{hasher.hexdigest()[:16]}"
+
+
+def _update_env(
+    monkeypatch, tmp_path, *, edit_after_install: bool, legacy_cache_hash: bool = False
+):
     """Install a fake hub skill on disk, optionally edit it, and wire mocks.
 
     Returns (console_sink, installs_list).
@@ -429,7 +442,13 @@ def _update_env(monkeypatch, tmp_path, *, edit_after_install: bool):
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("# hub-skill\noriginal\n")
 
-    recorded = content_hash(skill_dir)
+    if legacy_cache_hash:
+        cache = skill_dir / "scripts" / "__pycache__"
+        cache.mkdir(parents=True)
+        (cache / "helper.cpython-313.pyc").write_bytes(b"generated")
+        recorded = _legacy_cache_inclusive_hash(skill_dir)
+    else:
+        recorded = content_hash(skill_dir)
     if edit_after_install:
         (skill_dir / "SKILL.md").write_text("# hub-skill\nuser edited\n")
 
@@ -489,3 +508,17 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
 
     assert installs == ["someone/hub-skill"]
     assert "Updated 1 skill(s)" in sink.getvalue()
+
+
+def test_do_update_accepts_proven_legacy_cache_inclusive_lock(monkeypatch, tmp_path):
+    console, sink, installs = _update_env(
+        monkeypatch,
+        tmp_path,
+        edit_after_install=False,
+        legacy_cache_hash=True,
+    )
+
+    do_update(console=console)
+
+    assert installs == ["someone/hub-skill"]
+    assert "local edits" not in sink.getvalue()

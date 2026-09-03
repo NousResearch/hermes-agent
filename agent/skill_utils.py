@@ -51,6 +51,18 @@ EXCLUDED_SKILL_DIRS = frozenset(
 # archive workflow preserves a complete old skill package under references/.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 
+
+def is_generated_skill_path(path) -> bool:
+    """Return whether *path* is generated Python cache data.
+
+    Skill identity and update comparison include intentional package files, but
+    interpreter-generated ``__pycache__`` directories and ``.pyc`` files are
+    not part of the bundled source boundary and must not create drift.
+    """
+    normalized = str(path).replace("\\", "/")
+    return "__pycache__" in normalized.split("/") or normalized.endswith(".pyc")
+
+
 # ── Org-shared skills (sync contract) ───────────────────────────
 # Org mirrors live under ~/.hermes/skills/_org/<org_id>/. Resolution is
 # TOKEN-GATED via a marker file the sync client writes after verifying the

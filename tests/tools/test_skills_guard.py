@@ -53,10 +53,15 @@ class TestResolveTrustLevel:
         # same trust path as the OpenAI / Anthropic / HuggingFace taps.
         assert _resolve_trust_level("NVIDIA/skills/aiq-deploy") == "trusted"
         # skills-sh wrapping (and its common prefix typo) still resolves.
-        assert _resolve_trust_level("skills-sh/anthropics/skills/frontend-design") == "trusted"
-        assert _resolve_trust_level("skils-sh/anthropics/skills/frontend-design") == "trusted"
+        assert (
+            _resolve_trust_level("skills-sh/anthropics/skills/frontend-design")
+            == "trusted"
+        )
+        assert (
+            _resolve_trust_level("skils-sh/anthropics/skills/frontend-design")
+            == "trusted"
+        )
         assert _resolve_trust_level("skills-sh/NVIDIA/skills/cuopt") == "trusted"
-
 
     def test_community_default(self):
         assert _resolve_trust_level("random-user/my-skill") == "community"
@@ -106,18 +111,18 @@ class TestShouldAllowInstall:
         # When --force CAN override the block, the error must point to it.
         assert "Use --force to override" in reason
 
-
     def test_builtin_dangerous_allowed_without_force(self):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
         allowed, reason = should_allow_install(self._result("builtin", "dangerous", f))
         assert allowed is True
         assert "builtin source" in reason
 
-
     @pytest.mark.parametrize("trust", ["community", "trusted"])
     def test_force_does_not_override_dangerous(self, trust):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
-        allowed, reason = should_allow_install(self._result(trust, "dangerous", f), force=True)
+        allowed, reason = should_allow_install(
+            self._result(trust, "dangerous", f), force=True
+        )
         assert allowed is False
         assert "Blocked" in reason
         # Error message MUST explain why --force didn't work, not invite a retry.
@@ -131,8 +136,20 @@ class TestShouldAllowInstall:
         assert allowed is True
 
         # Caution verdict (e.g. docker refs) should still pass.
-        f = [Finding("docker_pull", "medium", "supply_chain", "SKILL.md", 1, "docker pull img", "pulls Docker image")]
-        allowed, reason = should_allow_install(self._result("agent-created", "caution", f))
+        f = [
+            Finding(
+                "docker_pull",
+                "medium",
+                "supply_chain",
+                "SKILL.md",
+                1,
+                "docker pull img",
+                "pulls Docker image",
+            )
+        ]
+        allowed, reason = should_allow_install(
+            self._result("agent-created", "caution", f)
+        )
         assert allowed is True
         assert "agent-created" in reason
 
@@ -142,8 +159,20 @@ class TestShouldAllowInstall:
         to the agent, who can retry without the flagged content.
 
         This gate only runs when skills.guard_agent_created is enabled (off by default)."""
-        f = [Finding("env_exfil_curl", "critical", "exfiltration", "SKILL.md", 1, "curl $TOKEN", "exfiltration")]
-        allowed, reason = should_allow_install(self._result("agent-created", "dangerous", f))
+        f = [
+            Finding(
+                "env_exfil_curl",
+                "critical",
+                "exfiltration",
+                "SKILL.md",
+                1,
+                "curl $TOKEN",
+                "exfiltration",
+            )
+        ]
+        allowed, reason = should_allow_install(
+            self._result("agent-created", "dangerous", f)
+        )
         assert allowed is None
         assert "Requires confirmation" in reason
 
@@ -168,7 +197,6 @@ class TestScanFile:
         findings = scan_file(f, "safe.py")
         assert findings == []
 
-
     def test_detect_gitlab_pat(self, tmp_path):
         f = tmp_path / "leak.md"
         # Concatenated so no contiguous token literal exists in this file
@@ -190,7 +218,6 @@ class TestScanFile:
         ids = {fi.pattern_id for fi in findings}
         assert {"sys_prompt_override", "fake_policy", "invisible_unicode"} <= ids
         assert any(fi.category == "injection" for fi in findings)
-
 
     def test_deduplication_per_pattern_per_line(self, tmp_path):
         f = tmp_path / "dup.sh"
@@ -261,9 +288,7 @@ class TestCheckStructure:
         findings = _check_structure(tmp_path / "skill")
         assert any(fi.pattern_id == "symlink_escape" for fi in findings)
 
-    @pytest.mark.skipif(
-        not _can_symlink(), reason="Symlinks need elevated privileges"
-    )
+    @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
     def test_symlink_prefix_confusion_blocked(self, tmp_path):
         """A symlink resolving to a sibling dir with a shared prefix must be caught.
 
@@ -285,9 +310,7 @@ class TestCheckStructure:
         findings = _check_structure(skill_dir)
         assert any(fi.pattern_id == "symlink_escape" for fi in findings)
 
-    @pytest.mark.skipif(
-        not _can_symlink(), reason="Symlinks need elevated privileges"
-    )
+    @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
     def test_symlink_within_skill_dir_allowed(self, tmp_path):
         """A symlink that stays within the skill directory is fine."""
         skill_dir = tmp_path / "my-skill"
@@ -381,6 +404,52 @@ class TestFalsePositiveReductions:
             fi.pattern_id == "read_secrets_file" for fi in scan_file(bad, "bad.sh")
         )
 
+    def test_echo_pipe_execution_requires_an_interpreter_boundary(self, tmp_path):
+        for command in (
+            "shasum -a 256",
+            "sha256sum",
+            "shellcheck",
+            "python-config",
+            "node-gyp",
+            "node_modules/tool",
+        ):
+            safe = tmp_path / f"{command.replace('/', '-').replace(' ', '-')}.sh"
+            safe.write_text(f'echo "$payload" | {command}\n')
+            assert not any(
+                fi.pattern_id == "echo_pipe_exec" for fi in scan_file(safe, safe.name)
+            ), command
+
+        for command in (
+            "sh",
+            "bash5.2",
+            "python3.12",
+            "perl5.38",
+            "ruby3.3",
+            "node20",
+            "nodejs",
+        ):
+            unsafe = tmp_path / f"{command}.sh"
+            unsafe.write_text(f'echo "$payload" | {command}\n')
+            assert any(
+                fi.pattern_id == "echo_pipe_exec"
+                for fi in scan_file(unsafe, unsafe.name)
+            ), command
+
+    def test_markdown_env_column_is_not_an_environment_dump(self, tmp_path):
+        documentation = tmp_path / "settings.md"
+        documentation.write_text("| Setting | Env | Effect |\n")
+        assert not any(
+            finding.pattern_id == "dump_all_env"
+            for finding in scan_file(documentation, "settings.md")
+        )
+
+        shell = tmp_path / "dump.sh"
+        shell.write_text("env | sort\n")
+        assert any(
+            finding.pattern_id == "dump_all_env"
+            for finding in scan_file(shell, "dump.sh")
+        )
+
     def test_allowed_tools_frontmatter_is_low_severity_only(self, tmp_path):
         # Required SKILL.md frontmatter per the agent-skill spec.
         skill_dir = tmp_path / "ok-skill"
@@ -388,7 +457,11 @@ class TestFalsePositiveReductions:
         f = skill_dir / "SKILL.md"
         f.write_text("---\nallowed-tools: Bash, Read, Write\n---\n# A normal skill\n")
 
-        atf = [fi for fi in scan_file(f, "SKILL.md") if fi.pattern_id == "allowed_tools_field"]
+        atf = [
+            fi
+            for fi in scan_file(f, "SKILL.md")
+            if fi.pattern_id == "allowed_tools_field"
+        ]
         assert atf, "allowed-tools should still produce an informational finding"
         assert all(fi.severity == "low" for fi in atf)
         # low-severity findings alone must not block the install.
@@ -429,8 +502,8 @@ class TestFalsePositiveReductions:
         f = tmp_path / "lib.py"
         f.write_text(
             '"""\n'
-            'This module uses os.environ to read configuration. The\n'
-            'os.environ dictionary is populated from the shell at startup.\n'
+            "This module uses os.environ to read configuration. The\n"
+            "os.environ dictionary is populated from the shell at startup.\n"
             '"""\n'
         )
         findings = scan_file(f, "lib.py")
@@ -439,11 +512,7 @@ class TestFalsePositiveReductions:
     def test_os_environ_in_triple_single_quote_docstring_not_flagged(self, tmp_path):
         """os.environ inside ''' tripled-quoted string must not trigger."""
         f = tmp_path / "lib.py"
-        f.write_text(
-            "'''\n"
-            "Example: os.environ['PATH'] gives the system path.\n"
-            "'''\n"
-        )
+        f.write_text("'''\nExample: os.environ['PATH'] gives the system path.\n'''\n")
         findings = scan_file(f, "lib.py")
         assert not any(fi.pattern_id == "python_os_environ" for fi in findings)
 
@@ -484,7 +553,6 @@ class TestSkillIgnore:
         assert ig("fixtures/data.jsonl") is True  # glob
         assert ig("scripts/run.py") is False
         assert ig("SKILL.md") is False  # never ignorable
-
 
     def test_ignored_files_not_counted_in_structure(self, tmp_path):
         skill_dir = tmp_path / "skill"

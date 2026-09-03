@@ -5,7 +5,7 @@ The v1 scanner flagged ANY mention of AGENTS.md/CLAUDE.md/.cursorrules/
 permanently blocked popular community meta-skills (authoring guides, setup
 docs) with no --force override.
 
-skills-guard-v2 scores tiers by confidence:
+skills-guard-v3 scores tiers by confidence:
   * mechanical persistence (shell redirect, sed -i, tee, cp/mv into the
     file) -> critical -> dangerous
   * prose instructing modification of AGENT config files (imperative
@@ -34,10 +34,9 @@ def _scan(tmp_path: Path, content: str):
     return scan_skill(skill_dir, source="community/test")
 
 
-# The scanner version moved to v2 precisely so cached v1 dangerous verdicts
-# for previously-blocked skills are invalidated and re-scanned.
+# Keep cached verdicts tied to the active detection rules.
 def test_scanner_version_bumped():
-    assert SCANNER_VERSION == "skills-guard-v2"
+    assert SCANNER_VERSION == "skills-guard-v3"
 
 
 class TestFalsePositivesUnblocked:
@@ -72,13 +71,30 @@ class TestFalsePositivesUnblocked:
         )
         assert result.verdict == "safe"
 
+    def test_modification_verb_does_not_cross_a_sentence_boundary(self, tmp_path):
+        result = _scan(
+            tmp_path,
+            "Edit the matching owner. Do not paste AGENTS.md into another rule.",
+        )
+        assert result.verdict == "safe"
+
+    def test_placeholder_agent_path_is_not_shell_redirection(self, tmp_path):
+        result = _scan(
+            tmp_path,
+            "Use the closest nested <subfolder>/AGENTS.md for local guidance.",
+        )
+        assert result.verdict == "safe"
+
     def test_bare_mention_still_auditable_as_low_finding(self, tmp_path):
         """References stay visible as informational findings."""
         result = _scan(tmp_path, "Read CLAUDE.md before answering.")
         ids = {f.pattern_id for f in result.findings}
         assert "agent_config_ref" in ids
-        assert all(f.severity != "critical" and f.severity != "high"
-                   for f in result.findings if f.pattern_id == "agent_config_ref")
+        assert all(
+            f.severity != "critical" and f.severity != "high"
+            for f in result.findings
+            if f.pattern_id == "agent_config_ref"
+        )
 
 
 class TestTruePositivesStillCaught:
@@ -130,8 +146,8 @@ class TestTruePositivesStillCaught:
     @pytest.mark.parametrize(
         "line",
         [
-            "sed -Ei 's/a/b/' AGENTS.md",       # combined flags, i last
-            "sed -iE 's/a/b/' CLAUDE.md",       # combined flags, i first
+            "sed -Ei 's/a/b/' AGENTS.md",  # combined flags, i last
+            "sed -iE 's/a/b/' CLAUDE.md",  # combined flags, i first
             "sed --in-place 's/a/b/' AGENTS.md",  # GNU long form
         ],
     )

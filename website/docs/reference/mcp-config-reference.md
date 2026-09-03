@@ -61,6 +61,7 @@ mcp_servers:
 | `skip_preflight` | bool | HTTP | Bypass the fail-fast content-type probe for valid Streamable HTTP endpoints whose HEAD/GET answers a non-MCP content type (default: `false`) |
 | `transport` | string | HTTP | Set to `sse` to use the SSE transport instead of Streamable HTTP |
 | `keepalive_interval` | number | both | Liveness ping cadence in seconds (default: `180`, floored at 5s). Set below the server's session TTL for servers that GC idle sessions quickly |
+| `reconnect_backoff` | number | both | Base delay in seconds for the reconnect ladder (default: `1`, doubling per attempt, capped at 60s; clamped to [1, 60]). Raise for endpoints whose outages arrive in multi-minute bursts (e.g. 503 storms) so the retry ladder spans the burst instead of exhausting inside it and parking the server |
 | `idle_timeout_seconds` | number | stdio | Optional stdio server recycle after idle time (`0` disables). May also live under a `lifecycle:` mapping |
 | `max_lifetime_seconds` | number | stdio | Optional stdio server recycle after age (`0` disables). May also live under a `lifecycle:` mapping |
 | `tools` | mapping | both | Filtering and utility-tool policy |

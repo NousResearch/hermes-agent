@@ -1453,6 +1453,11 @@ platform_toolsets:
 #     Lower it below the server's session TTL for servers that expire idle
 #     sessions quickly (e.g. Unreal Engine editor MCP, ~15s), otherwise idle
 #     tool calls hit an expired session and pay a slow reconnect. Floored at 5s.
+#   reconnect_backoff: base reconnect delay in seconds (default: 1). The
+#     reconnect ladder doubles from this base, capped at 60s. Raise it for
+#     endpoints whose outages come in multi-minute bursts (e.g. 503 storms
+#     from a hosted MCP backend), so the retry ladder spans the burst instead
+#     of exhausting inside it and parking the server. Clamped to [1, 60].
 #
 # mcp_servers:
 #   time:

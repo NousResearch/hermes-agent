@@ -7462,7 +7462,18 @@ class BasePlatformAdapter(ABC):
                         getattr(self, "close_after_turn", False) is True
                         or getattr(event, "contractor_context", None) is not None
                     ):
-                        self.clear_session(session_key)
+                        # Release the guard via the guard-matched path first so a
+                        # command-scoped guard swapped in by /stop /new /reset is
+                        # not cleared while it is still owned by a concurrent
+                        # path. Only clear the rest of the per-session adapter
+                        # caches once the guard was actually released for this
+                        # task.
+                        self._cleanup_finished_session_task(session_key, interrupt_event)
+                        if session_key not in self._active_sessions:
+                            self._pending_messages.pop(session_key, None)
+                            self._session_tasks.pop(session_key, None)
+                            self._post_delivery_callbacks.pop(session_key, None)
+                            self._discard_text_debounce(session_key)
                     else:
                         self._cleanup_finished_session_task(session_key, interrupt_event)
     

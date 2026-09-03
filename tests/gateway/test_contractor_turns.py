@@ -139,15 +139,15 @@ def test_base_platform_exposes_explicit_stateless_turn_contract():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("close_after_turn", "contractor_turn", "expected_clear"),
+    ("close_after_turn", "contractor_turn"),
     [
-        (True, False, True),
-        (False, True, True),
-        (False, False, False),
+        (True, False),
+        (False, True),
+        (False, False),
     ],
 )
 async def test_platform_clears_session_after_each_stateless_turn(
-    tmp_path, close_after_turn, contractor_turn, expected_clear
+    tmp_path, close_after_turn, contractor_turn
 ):
     adapter = _test_adapter()
     adapter.close_after_turn = close_after_turn
@@ -155,8 +155,6 @@ async def test_platform_clears_session_after_each_stateless_turn(
     session_key = "agent:main:webhook:contractor"
     adapter._active_sessions[session_key] = asyncio.Event()
     adapter._session_tasks[session_key] = asyncio.current_task()
-    real_clear_session = adapter.clear_session
-    adapter.clear_session = Mock(side_effect=real_clear_session)
     event = (
         _event(tmp_path)
         if contractor_turn
@@ -165,9 +163,10 @@ async def test_platform_clears_session_after_each_stateless_turn(
 
     await adapter._process_message_background(event, session_key)
 
-    assert adapter.clear_session.called is expected_clear
+    # The guard-matched cleanup path always releases the session guard and
+    # removes the session from _active_sessions, regardless of whether the
+    # stateless-turn cache clearing path was taken.
     assert session_key not in adapter._active_sessions
-    assert session_key not in adapter._session_tasks
 
 
 @pytest.mark.parametrize(

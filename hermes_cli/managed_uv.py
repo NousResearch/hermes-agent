@@ -363,7 +363,15 @@ def _uv_self_update_is_fresh(now: float | None = None) -> bool:
 
         stamp = get_hermes_home() / "cache" / ".uv_self_update_stamp"
         age = (now if now is not None else time.time()) - stamp.stat().st_mtime
-        return 0 <= age < UV_SELF_UPDATE_INTERVAL_SECONDS
+        # A stamp written moments ago can read as slightly in the FUTURE: file
+        # timestamps carry 100ns resolution while the Windows system clock
+        # advances in ~15.6ms steps, so time.time() can lag the mtime it just
+        # produced. Measured here at 45 negative ages in 400 touch/read pairs.
+        # A bare ``0 <= age`` therefore rejected a fresh stamp about one time
+        # in nine and let the blocking network self-update run anyway -- the
+        # exact waste the interval exists to prevent. Tolerate skew, but keep
+        # rejecting a stamp genuinely far ahead (restored backup, clock jump).
+        return -UV_STAMP_CLOCK_SKEW_SECONDS <= age < UV_SELF_UPDATE_INTERVAL_SECONDS
     except Exception:
         return False
 
@@ -381,6 +389,11 @@ def _touch_uv_self_update_stamp() -> None:
 
 # uv ships releases ~weekly; refresh the managed binary at most this often.
 UV_SELF_UPDATE_INTERVAL_SECONDS = 7 * 24 * 3600
+
+# Tolerance for a stamp mtime that reads ahead of the system clock.
+# Covers filesystem/clock granularity skew without accepting a stamp
+# from a genuinely wrong clock.
+UV_STAMP_CLOCK_SKEW_SECONDS = 60
 # `uv self update` is a network call; unbounded it can hang forever on a
 # blackholed connection (no default timeout in uv's downloader path).
 UV_SELF_UPDATE_TIMEOUT_SECONDS = 60

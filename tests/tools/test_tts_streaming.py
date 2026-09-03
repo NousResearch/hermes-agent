@@ -759,7 +759,13 @@ def test_hybrid_prefetch_fires_http_immediately(monkeypatch):
             return True
 
         def stream(self, text):
-            stream_start_times.append(time.monotonic())
+            # perf_counter, not monotonic: on Windows CPython 3.11 the
+            # monotonic clock is GetTickCount64 at 15.625ms, so two
+            # stream() calls milliseconds apart get the SAME timestamp
+            # and the strict ordering asserted below can never hold.
+            # Measured on this host: 200 of 200 successive monotonic()
+            # reads were identical. perf_counter resolves to 100ns.
+            stream_start_times.append(time.perf_counter())
             # First sentence: block until the test signals playback to proceed.
             # This simulates a long audio segment still playing.
             if len(stream_start_times) == 1:

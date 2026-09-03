@@ -15,7 +15,7 @@ import {
 import { SharedFilesControl } from '../plugins/hermes-bots/group-files-view'
 import { $hostedRoomCapabilities } from '../plugins/hermes-bots/hosted-room-capability-state'
 import { classifyHostedRoomCapability } from '../plugins/hermes-bots/hosted-room-client'
-import { stopHostedRoomRuntime } from '../plugins/hermes-bots/hosted-room-runtime'
+import { hostedRouteForRoom, stopHostedRoomRuntime } from '../plugins/hermes-bots/hosted-room-runtime'
 import { translateBots } from '../plugins/hermes-bots/i18n-test-helper'
 import type { GroupChat, GroupMessage } from '../plugins/hermes-bots/types'
 
@@ -158,6 +158,33 @@ describe('actual capability path: preserved counterexamples and C7 repair', () =
 })
 
 describe('Files v2 concrete UI paths', () => {
+  it.each([
+    { driver: false, persistent_process: true },
+    { driver: true, persistent_process: false },
+    { driver: false, persistent_process: false }
+  ])('reads Files without admitting control on a readable gateway: %j', async flags => {
+    const readable = { ...capability, ...flags }
+    const original = mocks.requestProfile.getMockImplementation()!
+    mocks.requestProfile.mockImplementation(async (...args) =>
+      args[1] === 'groups.capabilities' ? readable : original(...args)
+    )
+    $hostedRoomCapabilities.set({
+      'gateway-a': classifyHostedRoomCapability(readable, { connectionId: 'gateway-a' })
+    })
+    await open()
+    await screen.findByText('file-20.txt')
+    fireEvent.click(screen.getByRole('button', { name: 'Download file-20.txt' }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    expect(saved[0].href).toBe('data:text/plain;base64,YQ==')
+    expect(await hostedRouteForRoom(FILE_ROOM)).toBeNull()
+    expect(reads()).toHaveLength(1)
+    expect(
+      mocks.requestProfile.mock.calls.every(call =>
+        ['groups.capabilities', 'groups.attachment.list', 'groups.attachment.read'].includes(call[1])
+      )
+    ).toBe(true)
+  })
+
   it('an older host keeps Files discoverable with its own unavailable state and no list RPC', async () => {
     $hostedRoomCapabilities.set({
       'gateway-a': classifyHostedRoomCapability({ ...capability, features: [] }, { connectionId: 'gateway-a' })

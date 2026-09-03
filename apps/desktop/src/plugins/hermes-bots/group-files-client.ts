@@ -264,7 +264,7 @@ export async function listHostedGroupFiles(group: string, input: GroupFilesListI
     throw new Error('Invalid shared-files query')
   }
 
-  const route = room ? await boundedRequest(hostedRouteForRoom(room)) : null
+  const route = room ? await boundedRequest(hostedRouteForRoom(room, 'read')) : null
   const limit = Math.min(GROUP_FILES_MAX_PAGE_SIZE, limitInput)
   const currentRoom = $groupChats.get()[group]
 

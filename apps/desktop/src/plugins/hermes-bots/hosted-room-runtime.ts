@@ -85,6 +85,7 @@ import {
   withHostedRoomCommandOrder,
   withHostedRoomOutboxDispatch
 } from './hosted-room-outbox'
+import { requestHostedConnection, withHostedRoomProbeTimeout } from './hosted-room-transport'
 import { hostedUserEventReceipt, outgoingHostedUserEvent, restoreHostedUserOutboxIntents } from './hosted-user-events'
 import { botsText } from './i18n'
 import { requestForBot } from './routing'
@@ -94,6 +95,7 @@ export { $hostedRoomCapabilities } from './hosted-room-capability-state'
 export { $hostedRoomCleanup } from './hosted-room-cleanup'
 export { describeAutonomousRoomPlan, describeHostedRoomCreationError } from './hosted-room-client'
 export { hostedRoomDriverDisplayStatus, hostedRoomPollFingerprint } from './hosted-room-inventory'
+export { requestHostedConnection } from './hosted-room-transport'
 
 const HOSTED_ROOM_SYNC_INTERVAL_MS = 5000
 const HOSTED_ROOM_UNSUPPORTED_REPROBE_MS = 30_000
@@ -253,36 +255,12 @@ async function hostedDefaultRoutes(): Promise<ProfileRoute[]> {
   return [...byConnection.values()]
 }
 
-export async function requestHostedConnection<T>(
-  route: ProfileRoute,
-  method: string,
-  params: Record<string, unknown> = {}
-): Promise<T> {
-  if (!route?.connectionId || typeof host.requestProfile !== 'function') {
-    throw new Error(botsText().group.hostRouteMissing)
-  }
-
-  return host.requestProfile(route, method, params) as Promise<T>
-}
-
-async function withHostedRoomProbeTimeout<T>(task: Promise<T>, timeoutMs = 3000) {
-  let timer: null | ReturnType<typeof setTimeout> = null
-
-  try {
-    return await Promise.race([
-      task,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('Host check timed out')), timeoutMs)
-      })
-    ])
-  } finally {
-    if (timer !== null) {
-      clearTimeout(timer)
-    }
-  }
-}
-
-async function verifiedHostedAuthorityRoute(routes: ProfileRoute[], authorityId: string, preferredConnectionId = '') {
+async function verifiedHostedAuthorityRoute(
+  routes: ProfileRoute[],
+  authorityId: string,
+  preferredConnectionId = '',
+  purpose: 'control' | 'read' = 'control'
+) {
   const ordered = [...routes].sort(
     (left, right) =>
       Number(right.connectionId === preferredConnectionId) - Number(left.connectionId === preferredConnectionId)
@@ -306,7 +284,9 @@ async function verifiedHostedAuthorityRoute(routes: ProfileRoute[], authorityId:
 
       storeHostedCapabilities({ [connectionId]: capability })
 
-      if (capability.authorityId === authorityId && isHostedRoomContinuityEligible(capability)) {
+      const eligible = purpose === 'read' ? isHostedRoomReadEligible : isHostedRoomContinuityEligible
+
+      if (capability.authorityId === authorityId && eligible(capability)) {
         return route
       }
     } catch (error) {
@@ -1305,13 +1285,13 @@ async function enqueueHostedRoomCommand(command: Partial<HostedRoomCommand>) {
   return !pending
 }
 
-export async function hostedRouteForRoom(room: GroupChat) {
+export async function hostedRouteForRoom(room: GroupChat, purpose: 'control' | 'read' = 'control') {
   const connectionId = String(room?.hostedConnectionId || '')
   const routes = await hostedDefaultRoutes()
   const authorityId = groupChatHostedGateway(room)
 
   if (authorityId) {
-    return verifiedHostedAuthorityRoute(routes, authorityId, connectionId)
+    return verifiedHostedAuthorityRoute(routes, authorityId, connectionId, purpose)
   }
 
   if (connectionId) {
@@ -1753,7 +1733,7 @@ export async function sendHostedGroupChat(group: string, message: GroupMessage, 
 
 export async function readHostedGroupChatAttachment(group: string, message: GroupMessage, attachment: Attachment) {
   const room = $groupChats.get()[group]
-  const route = room ? await hostedRouteForRoom(room) : null
+  const route = room ? await hostedRouteForRoom(room, 'read') : null
   const roomId = String(room?.roomId || '')
   const eventId = String(message.eventId || message.id || '')
   const current = $groupChats.get()[group]

@@ -128,7 +128,7 @@ describe('strict shared-files response contract', () => {
 describe('shared-files request routing', () => {
   it('uses the verified room route and exact viewer request, never the active gateway', async () => {
     await listHostedGroupFiles('Core')
-    expect(mocks.route).toHaveBeenCalledWith(FILE_ROOM)
+    expect(mocks.route).toHaveBeenCalledWith(FILE_ROOM, 'read')
     expect(mocks.request).toHaveBeenCalledWith(ROUTE, 'groups.attachment.list', {
       room_id: 'room-1',
       purpose: 'viewer',

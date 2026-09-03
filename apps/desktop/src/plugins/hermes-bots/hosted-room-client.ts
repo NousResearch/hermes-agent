@@ -395,7 +395,10 @@ export function classifyHostedRoomCapability(
       persistentProcess: capabilities.persistent_process === true,
       routeGrantFingerprint: false,
       roomLink: roomLinkCapability(capabilities.room_link),
-      limits: HOSTED_ROOM_CLIENT_LIMITATIONS
+      limits: {
+        ...HOSTED_ROOM_CLIENT_LIMITATIONS,
+        attachmentList: capabilities.driver === false && hostedCapabilityLimits(capabilities).attachmentList
+      }
     }
   }
 

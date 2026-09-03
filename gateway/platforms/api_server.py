@@ -4620,6 +4620,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
         db = await self._ensure_session_db_async()
+        # A compression lineage is one user-visible conversation: resolve to
+        # the live tip (forward), then serve the FULL lineage display history
+        # (backward, ancestors → tip). get_resume_conversations() reconciles
+        # overlap copied into continuation children (#79565).
         resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
         raw_limit = request.query.get("limit")
         raw_offset = request.query.get("offset", "0")
@@ -4650,13 +4654,14 @@ class APIServerAdapter(BasePlatformAdapter):
         default_page = requested_limit is None
         latest_page = order == "latest" or (order is None and default_page)
         limit = 500 if default_page else min(requested_limit, 500)
-        messages = await asyncio.to_thread(
-            db.get_messages,
-            resolved_id,
-            limit=limit,
-            offset=offset,
-            latest=latest_page,
+        _, display_history = await asyncio.to_thread(
+            db.get_resume_conversations, resolved_id
         )
+        if latest_page:
+            end = len(display_history) - offset
+            messages = display_history[max(0, end - limit):end]
+        else:
+            messages = display_history[offset:offset + limit]
         return web.json_response({
             "object": "list",
             "session_id": resolved_id,

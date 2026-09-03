@@ -501,6 +501,58 @@ class TestSearchFilesFallbackHiddenPaths:
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
 
 
+class TestSearchFilesBareWordSubstring:
+    """Bare words without wildcards must match filenames as substrings (#77423).
+
+    Before the fix, `readme` / CJK names like `品目39.23.md` (no leading `*`)
+    returned 0 results on both rg and find paths — agents silently degraded
+    to shell find/ls.
+    """
+
+    def _make_env(self):
+        return make_real_subprocess_env("/")
+
+    def _make_tree(self, tmp_path):
+        root = tmp_path / "tree"
+        (root / "nested").mkdir(parents=True)
+        root.joinpath("品目39.23.md").write_text("x")
+        root.joinpath("readme.txt").write_text("x")
+        root.joinpath("readme-old.txt").write_text("x")
+        root.joinpath("nested", "品目39.23.md").write_text("x")
+        root.joinpath("app.py").write_text("x")
+        return root
+
+    def test_bare_word_matches_as_substring_rg(self, tmp_path):
+        root = self._make_tree(tmp_path)
+        ops = ShellFileOperations(self._make_env())
+        result = ops._search_files("readme", str(root), limit=50, offset=0)
+        assert result.error is None
+        names = {Path(f).name for f in result.files}
+        assert {"readme.txt", "readme-old.txt"} <= names
+
+    def test_cjk_full_name_no_wildcard_found(self, tmp_path):
+        root = self._make_tree(tmp_path)
+        ops = ShellFileOperations(self._make_env())
+        result = ops._search_files("品目39.23", str(root), limit=50, offset=0)
+        assert result.error is None
+        assert len(result.files) == 2
+
+    def test_bare_word_matches_as_substring_find_fallback(self, tmp_path, monkeypatch):
+        root = self._make_tree(tmp_path)
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files("品目39.23", str(root), limit=50, offset=0)
+        assert result.error is None
+        assert len(result.files) == 2
+
+    def test_wildcard_pattern_unchanged(self, tmp_path):
+        root = self._make_tree(tmp_path)
+        ops = ShellFileOperations(self._make_env())
+        result = ops._search_files("*.py", str(root), limit=50, offset=0)
+        assert result.error is None
+        assert {Path(f).name for f in result.files} == {"app.py"}
+
+
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):
         result = file_ops.write_file("~/.ssh/authorized_keys", "evil key")

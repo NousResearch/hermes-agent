@@ -3789,6 +3789,10 @@ class ShellFileOperations(FileOperations):
             search_pattern = pattern
         else:
             search_pattern = pattern.split('/')[-1]
+        # Bare words (no wildcard) become substring globs so `find` parity
+        # with the rg path holds for partial-name lookups (#77423).
+        if search_pattern and '*' not in search_pattern and '?' not in search_pattern:
+            search_pattern = f"*{search_pattern}*"
 
         roots = [path] if isinstance(path, str) else path
         if not roots:
@@ -3934,9 +3938,14 @@ class ShellFileOperations(FileOperations):
         exact modification-time ordering is explicit because it scans globally.
         """
         # rg --files -g uses glob patterns; wrap bare names so they match
-        # at any depth (equivalent to find -name).
-        if '/' not in pattern and not pattern.startswith('*'):
-            glob_pattern = f"*{pattern}"
+        # at any depth (equivalent to find -name). Bare words without a
+        # leading wildcard get substring semantics (`*name*`) — filename
+        # search by partial name is the common case, and a silent 0-result
+        # for `readme` / CJK names like `品目39.23` (no leading `*`) is a
+        # usability trap (#77423). Patterns that already carry a wildcard
+        # (`*.py`, `foo?.txt`) are passed through unchanged.
+        if '/' not in pattern and '*' not in pattern and '?' not in pattern:
+            glob_pattern = f"*{pattern}*"
         else:
             glob_pattern = pattern
 

@@ -18,6 +18,7 @@ from hermes_cli.auth import (
     _auth_store_lock,
     _is_terminal_nous_refresh_error,
     _nous_inference_env_override,
+    _nous_invoke_jwt_is_usable,
     _quarantine_nous_oauth_state,
     _quarantine_nous_pool_entries,
     _save_auth_store,
@@ -103,6 +104,22 @@ class NousPortalAdapter(UpstreamAdapter):
                     "Not logged into Nous Portal. Run `hermes auth add nous` first."
                 )
 
+            # Refresh-if-stale (mirrors the credential pool's Nous guard):
+            # proxy requests queue on ``self._lock``, so by the time a
+            # second 401'd request gets here the first may already have
+            # rotated the token. If the stored bearer is no longer the one
+            # that failed and is usable, adopt it — never re-POST the shared
+            # grant. ``resolve_nous_runtime_credentials`` repeats this check
+            # under the cross-process locks for rotations by other processes.
+            if force_refresh and stale_access_token:
+                adopted = self._usable_token_other_than(state, stale_access_token)
+                if adopted is not None:
+                    logger.info(
+                        "nous: adopting token rotated by concurrent refresh, "
+                        "skipping POST (proxy)"
+                    )
+                    return adopted
+
             try:
                 refreshed = resolve_nous_runtime_credentials(
                     force_refresh=force_refresh,
@@ -160,6 +177,35 @@ class NousPortalAdapter(UpstreamAdapter):
     # Internal helpers — auth.json access. Kept local rather than added
     # to hermes_cli.auth to avoid expanding that module's public surface.
     # ------------------------------------------------------------------
+
+    def _usable_token_other_than(
+        self, state: Dict[str, Any], failed_bearer: str
+    ) -> Optional[UpstreamCredential]:
+        """Return the stored inference JWT when it is usable and != ``failed_bearer``."""
+        for token, expires_at in (
+            (state.get("agent_key"), state.get("agent_key_expires_at")),
+            (state.get("access_token"), state.get("expires_at")),
+        ):
+            if not isinstance(token, str) or not token.strip():
+                continue
+            token = token.strip()
+            if token == failed_bearer:
+                continue
+            if not _nous_invoke_jwt_is_usable(
+                token, scope=state.get("scope"), expires_at=expires_at
+            ):
+                continue
+            base_url = (
+                _nous_inference_env_override()
+                or _validate_nous_inference_url_from_network(state.get("inference_base_url"))
+                or DEFAULT_NOUS_INFERENCE_URL
+            )
+            return UpstreamCredential(
+                bearer=token,
+                base_url=base_url.rstrip("/"),
+                expires_at=expires_at,
+            )
+        return None
 
     def _read_state(self) -> Optional[Dict[str, Any]]:
         try:

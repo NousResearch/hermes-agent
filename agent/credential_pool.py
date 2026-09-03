@@ -1658,11 +1658,31 @@ class CredentialPool:
         except Exception as exc:
             logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
 
-    def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
+    def _refresh_entry(
+        self,
+        entry: PooledCredential,
+        *,
+        force: bool,
+        stale_access_token: Optional[str] = None,
+    ) -> Optional[PooledCredential]:
+        """Refresh ``entry``'s OAuth material.
+
+        ``stale_access_token`` is the bearer that just failed upstream (401).
+        For providers whose refresh token is shared across many callers it
+        turns the forced refresh into refresh-*if-stale*: when the pool row —
+        or the on-disk store — already holds a different, usable token, a
+        sibling rotated first and this caller adopts it instead of spending
+        the refresh token again.
+        """
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
                 self._mark_exhausted(entry, None)
             return None
+
+        if self.provider == "nous":
+            return self._refresh_nous_entry(
+                entry, force=force, stale_access_token=stale_access_token
+            )
 
         # Codex and xAI OAuth refresh tokens are single-use.  The
         # sync→POST→write-back sequence below must run atomically across Hermes
@@ -1732,6 +1752,49 @@ class CredentialPool:
                     return synced
                 return self._refresh_entry_impl(synced, force=force)
         return self._refresh_entry_impl(entry, force=force)
+
+    def _refresh_nous_entry(
+        self,
+        entry: PooledCredential,
+        *,
+        force: bool,
+        stale_access_token: Optional[str] = None,
+    ) -> Optional[PooledCredential]:
+        """Nous refresh: adopt a sibling's rotation before spending the grant.
+
+        Mirrors the Codex/xAI "sync, then skip the POST if a peer already
+        rotated" guard in :meth:`_refresh_entry`, in three layers:
+
+        1. In-process: the pool row itself. Children of one session share
+           the parent's pool and its RLock, so by the time a waiter gets in
+           here a sibling may already have rewritten the row — its runtime
+           key is then no longer the bearer that failed, and the waiter just
+           takes it.
+        2. Cross-process, pre-lock: ``_sync_nous_entry_from_auth_store``
+           inside :meth:`_refresh_entry_impl` picks up a rotation another
+           Hermes process persisted to auth.json.
+        3. Cross-process, in-lock: ``resolve_nous_runtime_credentials``
+           re-checks under ``_auth_store_lock`` + the shared Nous lock and
+           only POSTs when the stored token is still the failed one.
+
+        Without ``stale_access_token`` (explicit user/keepalive force) the
+        forced refresh keeps its refresh-always semantics.
+        """
+        if (
+            force
+            and stale_access_token
+            and entry.runtime_api_key
+            and entry.runtime_api_key != stale_access_token
+        ):
+            logger.info(
+                "nous: adopting token rotated by concurrent refresh, skipping POST "
+                "(pool entry %s already carries a token other than the failed one)",
+                entry.id,
+            )
+            return entry
+        return self._refresh_entry_impl(
+            entry, force=force, stale_access_token=stale_access_token
+        )
 
     def _claude_code_credentials_lock(self):
         """Cross-process lock over the shared claude_code credentials file.
@@ -1838,7 +1901,11 @@ class CredentialPool:
         )
 
     def _refresh_entry_impl(
-        self, entry: PooledCredential, *, force: bool
+        self,
+        entry: PooledCredential,
+        *,
+        force: bool,
+        stale_access_token: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         try:
             if self.provider == "anthropic":
@@ -1962,7 +2029,16 @@ class CredentialPool:
                     last_refresh=refreshed.get("last_refresh"),
                 )
             elif self.provider == "nous":
-                stale_key = entry.runtime_api_key or entry.agent_key or entry.access_token
+                # The bearer to compare against is the one that actually
+                # 401'd. With no hint (keepalive / explicit force) fall back
+                # to the entry's own key, which preserves the older "adopt a
+                # peer-rotated token after the sync" behaviour.
+                stale_key = (
+                    stale_access_token
+                    or entry.runtime_api_key
+                    or entry.agent_key
+                    or entry.access_token
+                )
                 synced = self._sync_nous_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
@@ -1970,7 +2046,11 @@ class CredentialPool:
                     # this process was still holding the failed one: adopt it
                     # without consuming the (single-use) refresh token again.
                     if force and entry.runtime_api_key and entry.runtime_api_key != stale_key:
-                        logger.debug("Nous entry %s: adopting peer-rotated token, skipping refresh", entry.id)
+                        logger.info(
+                            "nous: adopting token rotated by concurrent refresh, skipping POST "
+                            "(auth.json already holds a token other than the failed one, entry %s)",
+                            entry.id,
+                        )
                         return entry
                 auth_mod.resolve_nous_runtime_credentials(
                     force_refresh=force,
@@ -2233,6 +2313,20 @@ class CredentialPool:
                     # entry untouched; the caller's retry re-syncs once the
                     # winner has persisted.
                     logger.debug("Nous refresh skipped: auth store lock busy; not benching entry")
+                    return entry
+                if auth_mod._is_transient_nous_refresh_error(exc):
+                    # Token endpoint said "not now" (429 slow_down / WAF /
+                    # 5xx) after the resolver's own bounded retries. The
+                    # grant is intact; marking the entry exhausted would
+                    # turn a one-minute WAF block into a benched credential
+                    # and a bogus re-login prompt. Leave it for the next
+                    # attempt.
+                    logger.info(
+                        "nous: transient token-endpoint failure during refresh of "
+                        "entry %s (%s); leaving credential untouched",
+                        entry.id,
+                        exc,
+                    )
                     return entry
                 if auth_mod._is_terminal_nous_refresh_error(exc):
                     logger.debug("Nous refresh token is terminally invalid; clearing local token state")
@@ -2865,6 +2959,24 @@ class CredentialPool:
         with self._lock:
             return self._try_refresh_current_unlocked()
 
+    @staticmethod
+    def _entry_supplied_key(entry: PooledCredential, api_key_hint: str) -> bool:
+        """True when ``entry`` is the row that handed out ``api_key_hint``.
+
+        ``runtime_api_key`` masks a token that is no longer usable (for Nous,
+        an invoke JWT past its ``exp``) as ``""``. That is exactly the state
+        a 401'd bearer is in by the time recovery runs, so matching on the
+        runtime key alone can never attribute an expiry-401 to its entry —
+        the refresh is skipped and the pool "rotates" to nothing. Fall back
+        to the raw stored tokens: same credential, expiry mask removed.
+        """
+        if entry.runtime_api_key == api_key_hint:
+            return True
+        return api_key_hint in {
+            str(entry.agent_key or ""),
+            str(entry.access_token or ""),
+        }
+
     def try_refresh_matching(
         self,
         api_key_hint: Optional[str] = None,
@@ -2895,7 +3007,7 @@ class CredentialPool:
                         (
                             candidate
                             for candidate in self._entries
-                            if candidate.runtime_api_key == api_key_hint
+                            if self._entry_supplied_key(candidate, api_key_hint)
                         ),
                         None,
                     )
@@ -2906,13 +3018,24 @@ class CredentialPool:
             if entry is None:
                 return None
             self._current_id = entry.id
-            return self._try_refresh_current_unlocked()
+            # Hand the refresh the bearer that actually failed. Once a sibling
+            # (same pool, same process) has rotated the row, the entry's own
+            # runtime key is already the NEW token — comparing against it
+            # would make every follow-up 401 look like "still stale" and
+            # re-POST the shared grant (Sep 2026 refresh stampede).
+            return self._try_refresh_current_unlocked(
+                stale_access_token=api_key_hint or None
+            )
 
-    def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:
+    def _try_refresh_current_unlocked(
+        self, *, stale_access_token: Optional[str] = None
+    ) -> Optional[PooledCredential]:
         entry = self._current_unlocked()
         if entry is None:
             return None
-        refreshed = self._refresh_entry(entry, force=True)
+        refreshed = self._refresh_entry(
+            entry, force=True, stale_access_token=stale_access_token
+        )
         if refreshed is not None:
             self._current_id = refreshed.id
         return refreshed

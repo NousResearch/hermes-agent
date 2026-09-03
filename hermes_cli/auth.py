@@ -114,6 +114,11 @@ DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
 DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
 DEFAULT_NOUS_CLIENT_ID = "hermes-cli"
 NOUS_INFERENCE_INVOKE_SCOPE = "inference:invoke"
+# AuthError.code for a Nous token-endpoint failure that says nothing about the
+# grant itself: 429 ``slow_down`` (another caller holds the rotation lock for
+# this refresh token), a 429 with a non-JSON body (Vercel WAF), or any 5xx.
+# Callers back off and retry; nothing is quarantined and no re-login is asked.
+NOUS_REFRESH_TRANSIENT_CODE = "refresh_transient"
 NOUS_BILLING_MANAGE_SCOPE = "billing:manage"
 DEFAULT_NOUS_SCOPE = NOUS_INFERENCE_INVOKE_SCOPE
 NOUS_DEVICE_CODE_SOURCE = "device_code"
@@ -1022,11 +1027,15 @@ class AuthError(RuntimeError):
         provider: str = "",
         code: Optional[str] = None,
         relogin_required: bool = False,
+        retry_after: Optional[float] = None,
     ) -> None:
         super().__init__(message)
         self.provider = provider
         self.code = code
         self.relogin_required = relogin_required
+        # Seconds the token endpoint asked us to wait (``Retry-After``) before
+        # retrying a transient failure. ``None`` when the server sent no hint.
+        self.retry_after = retry_after
 
 
 def is_rate_limited_auth_error(error: Exception) -> bool:
@@ -6348,6 +6357,23 @@ def _is_terminal_nous_refresh_error(exc: Exception) -> bool:
     )
 
 
+def _is_transient_nous_refresh_error(exc: Exception) -> bool:
+    """True when a Nous refresh failed for a reason unrelated to the grant.
+
+    ``refresh_transient`` covers 429 ``slow_down`` (another caller is mid-
+    rotation on this exact token), a 429 with a non-JSON body (Vercel WAF
+    after 25 POSTs/IP/60s) and any 5xx. The stored credential is still good;
+    the right move is to back off, re-check whether a sibling already rotated,
+    and retry — never quarantine, never ask for a re-login.
+    """
+    return (
+        isinstance(exc, AuthError)
+        and exc.provider == "nous"
+        and exc.code == NOUS_REFRESH_TRANSIENT_CODE
+        and not exc.relogin_required
+    )
+
+
 def _is_terminal_xai_oauth_refresh_error(exc: Exception) -> bool:
     """True when retrying the same xAI OAuth refresh token cannot succeed.
 
@@ -6600,14 +6626,45 @@ def _refresh_access_token(
                             provider="nous", code="invalid_token", relogin_required=True)
         return payload
 
+    status = int(response.status_code or 0)
+    retry_after = _parse_retry_after_seconds(getattr(response, "headers", None))
+
     try:
         error_payload = response.json()
+        if not isinstance(error_payload, dict):
+            raise ValueError("token endpoint error body is not a JSON object")
     except Exception as exc:
-        raise AuthError("Refresh token exchange failed",
-                        provider="nous", relogin_required=True) from exc
+        # A non-JSON body is never the portal's OAuth handler: it is the
+        # Vercel WAF (429 + HTML after 25 POSTs/IP/60s), a CDN/5xx error
+        # page, or a proxy. None of those say anything about the grant, so
+        # never demand a re-login for them — surface a transient error the
+        # caller can back off from and retry.
+        raise AuthError(
+            f"Refresh token exchange failed (HTTP {status}, non-JSON response)",
+            provider="nous",
+            code=NOUS_REFRESH_TRANSIENT_CODE,
+            relogin_required=False,
+            retry_after=retry_after,
+        ) from exc
 
     code = str(error_payload.get("error", "invalid_grant"))
     description = str(error_payload.get("error_description") or "Refresh token exchange failed")
+
+    # Transient token-endpoint outcomes. The portal returns 429
+    # ``slow_down`` while another caller holds the rotation lock for this
+    # exact refresh token (retry shortly with whatever token is stored by
+    # then), and deliberately rethrows DB blips as 5xx rather than
+    # ``invalid_grant``. Any other 429 is throttling. None of these
+    # invalidate the credential.
+    if status >= 500 or status == 429:
+        raise AuthError(
+            description,
+            provider="nous",
+            code=NOUS_REFRESH_TRANSIENT_CODE,
+            relogin_required=False,
+            retry_after=retry_after,
+        )
+
     relogin = code in {"invalid_grant", "invalid_token", "refresh_token_reused"}
 
     # Detect the OAuth 2.1 "refresh token reuse" signal from the Nous portal
@@ -7062,6 +7119,23 @@ def _sync_nous_pool_from_auth_store() -> None:
         logger.debug("Failed to sync Nous credential pool from auth store: %s", exc)
 
 
+# Bounded in-turn retry for transient token-endpoint failures (see
+# ``_is_transient_nous_refresh_error``). Delays are the default backoff when
+# the server sends no ``Retry-After``; a ``Retry-After`` beyond the max wait
+# (a Vercel WAF block is a full minute) stops the retry loop instead of
+# stalling the turn — the caller surfaces the transient error, nothing is
+# quarantined, and the next turn tries again.
+_NOUS_REFRESH_TRANSIENT_MAX_ATTEMPTS = 3
+_NOUS_REFRESH_TRANSIENT_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 2.0, 4.0)
+_NOUS_REFRESH_TRANSIENT_MAX_WAIT_SECONDS = 8.0
+
+
+def _nous_refresh_backoff_sleep(seconds: float) -> None:
+    """Sleep between transient-refresh retries (patched to a no-op in tests)."""
+    if seconds > 0:
+        time.sleep(seconds)
+
+
 def resolve_nous_runtime_credentials(
     *,
     timeout_seconds: float = 15.0,
@@ -7084,7 +7158,61 @@ def resolve_nous_runtime_credentials(
     processes hitting the same hourly expiry issue N refreshes, and each
     rotation invalidates the token a sibling just adopted (Sep 2026: 120
     subagents, 81 refreshes, ~540 401s in eight minutes).
+
+    Transient token-endpoint failures (429 ``slow_down``, WAF 429, 5xx) are
+    retried a bounded number of times with backoff. Every attempt re-enters
+    the store transaction from scratch, so the peer-rotation check above runs
+    again before each POST and a sibling's success short-circuits the retry.
+    Terminal errors (``invalid_grant`` & co.) are never retried.
     """
+    attempts = max(1, int(_NOUS_REFRESH_TRANSIENT_MAX_ATTEMPTS))
+    for attempt in range(attempts):
+        try:
+            return _resolve_nous_runtime_credentials_once(
+                timeout_seconds=timeout_seconds,
+                insecure=insecure,
+                ca_bundle=ca_bundle,
+                force_refresh=force_refresh,
+                stale_access_token=stale_access_token,
+            )
+        except AuthError as exc:
+            if not _is_transient_nous_refresh_error(exc) or attempt >= attempts - 1:
+                raise
+            if exc.retry_after is not None:
+                delay = float(exc.retry_after)
+            else:
+                schedule = _NOUS_REFRESH_TRANSIENT_BACKOFF_SECONDS
+                delay = float(schedule[min(attempt, len(schedule) - 1)])
+            if delay > _NOUS_REFRESH_TRANSIENT_MAX_WAIT_SECONDS:
+                logger.info(
+                    "nous: token endpoint asked to retry in %.0fs, beyond the %.0fs "
+                    "in-turn budget — surfacing transient refresh error (%s)",
+                    delay,
+                    _NOUS_REFRESH_TRANSIENT_MAX_WAIT_SECONDS,
+                    exc,
+                )
+                raise
+            logger.info(
+                "nous: transient token-endpoint failure (%s); retrying refresh in "
+                "%.1fs (attempt %d/%d)",
+                exc,
+                delay,
+                attempt + 2,
+                attempts,
+            )
+            _nous_refresh_backoff_sleep(delay)
+    raise AssertionError("unreachable: retry loop exhausted without raising")  # pragma: no cover
+
+
+def _resolve_nous_runtime_credentials_once(
+    *,
+    timeout_seconds: float = 15.0,
+    insecure: Optional[bool] = None,
+    ca_bundle: Optional[str] = None,
+    force_refresh: bool = False,
+    stale_access_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """One attempt of :func:`resolve_nous_runtime_credentials` (no retry)."""
     sequence_id = uuid.uuid4().hex[:12]
 
     with _provider_state_transaction("nous") as (
@@ -7109,6 +7237,21 @@ def resolve_nous_runtime_credentials(
                     scope=state.get("scope"),
                     expires_at=state.get("expires_at"),
                 ) is None
+            )
+
+        def _note_peer_rotation(token: Any, *, where: str) -> None:
+            _oauth_trace(
+                "refresh_skipped_peer_rotated",
+                sequence_id=sequence_id,
+                access_token_fp=_token_fingerprint(token),
+                where=where,
+            )
+            logger.info(
+                "nous: adopting token rotated by concurrent refresh, skipping POST "
+                "(failed=%s adopted=%s, %s)",
+                _token_fingerprint(stale_access_token),
+                _token_fingerprint(token),
+                where,
             )
 
         persisted_state = dict(state)
@@ -7260,11 +7403,7 @@ def resolve_nous_runtime_credentials(
             # longer the one on disk and the on-disk one is usable, a peer
             # already rotated — adopt, never re-POST the shared grant.
             if _already_rotated_by_peer(access_token):
-                _oauth_trace(
-                    "refresh_skipped_peer_rotated",
-                    sequence_id=sequence_id,
-                    access_token_fp=_token_fingerprint(access_token),
-                )
+                _note_peer_rotation(access_token, where="profile store")
                 force_refresh = False
             if force_refresh or invoke_jwt_status is not None:
                 with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)):
@@ -7284,11 +7423,7 @@ def resolve_nous_runtime_credentials(
                         )
                         _persist_state("post_shared_merge_access_unusable")
                         if _already_rotated_by_peer(access_token):
-                            _oauth_trace(
-                                "refresh_skipped_peer_rotated",
-                                sequence_id=sequence_id,
-                                access_token_fp=_token_fingerprint(access_token),
-                            )
+                            _note_peer_rotation(access_token, where="shared store")
                             force_refresh = False
 
                     if force_refresh or invoke_jwt_status is not None:

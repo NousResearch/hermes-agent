@@ -144,4 +144,3 @@ class TestFastChoicePicker:
         assert runner._session_service_tier_overrides
         assert not (tmp_path / "config.yaml").exists()
 
-

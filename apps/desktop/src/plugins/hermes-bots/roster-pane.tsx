@@ -77,7 +77,13 @@ import {
 } from './roster-sections'
 import type { ResolvedRosterGatewaySection } from './roster-sections'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
-import { ACTIVE_WINDOW_S, activeBots, BOT_ROSTER_SEARCH_THRESHOLD, rosterActivityMatches } from './row-helpers'
+import {
+  ACTIVE_WINDOW_S,
+  activeBots,
+  BOT_ROSTER_SEARCH_THRESHOLD,
+  canCreateGroupChat,
+  rosterActivityMatches
+} from './row-helpers'
 import { backfillMessagingProtocol } from './soul'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
 import {
@@ -760,7 +766,7 @@ export function BotsPane() {
                 <Codicon className="mr-1.5" name="hubot" />
                 {b.bot.newTitle}
               </DropdownMenuItem>
-              <DropdownMenuItem disabled={activeSourceRoster.length < 2} onSelect={() => setGroupCreateOpen(true)}>
+              <DropdownMenuItem disabled={!canCreateGroupChat(roster)} onSelect={() => setGroupCreateOpen(true)}>
                 <Codicon className="mr-1.5" name="organization" />
                 {b.group.newTitle}
               </DropdownMenuItem>

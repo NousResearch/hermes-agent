@@ -209,3 +209,65 @@ async def test_capability_handler_uses_legacy_claims_monkeypatch(monkeypatch):
         request,
         permission="status",
     )
+
+
+@pytest.mark.asyncio
+async def test_grant_revoke_cleans_reciprocal_control_on_the_target(monkeypatch):
+    from gateway import hosted_room_control_client, hosted_room_peer, hosted_rooms
+
+    adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
+    adapter._read_json_body = AsyncMock(return_value=({}, None))
+    adapter._room_grant_token = MagicMock(return_value="grant-token")
+    adapter._room_grant_secret = MagicMock(return_value=b"s" * 32)
+    claims = {
+        "room_id": "room-1",
+        "member_id": "member-peer",
+        "target_profile": "reviewer",
+        "target_install_id": "install-target",
+        "expires_at": 200,
+        "status_expires_at": 300,
+    }
+    monkeypatch.setattr(hosted_room_peer, "decode_room_grant", lambda *_a, **_k: claims)
+    monkeypatch.setattr(
+        hosted_rooms, "local_authority_gateway_id", lambda: "install-target"
+    )
+    revoke_grant = MagicMock()
+    monkeypatch.setattr(hosted_rooms, "revoke_room_grant_scope", revoke_grant)
+    revoke_control = MagicMock(return_value=1)
+    monkeypatch.setattr(
+        hosted_room_control_client,
+        "revoke_stored_peer_control",
+        revoke_control,
+    )
+    profile_token = api_server._api_request_profile.set("reviewer")
+    try:
+        response = await room_grants._handle_room_member_grant_revoke(
+            adapter,
+            object(),
+            _openai_error=api_server._openai_error,
+            _api_request_profile=api_server._api_request_profile,
+        )
+    finally:
+        api_server._api_request_profile.reset(profile_token)
+
+    assert response.status == 200
+    revoke_grant.assert_called_once()
+    revoke_control.assert_called_once_with(
+        hosted_rooms.default_db_path(),
+        room_id="room-1",
+        member_id="member-peer",
+    )
+
+    revoke_control.side_effect = RuntimeError("home unreachable")
+    profile_token = api_server._api_request_profile.set("reviewer")
+    try:
+        retryable = await room_grants._handle_room_member_grant_revoke(
+            adapter,
+            object(),
+            _openai_error=api_server._openai_error,
+            _api_request_profile=api_server._api_request_profile,
+        )
+    finally:
+        api_server._api_request_profile.reset(profile_token)
+    assert retryable.status == 503
+    assert json.loads(retryable.text)["error"]["code"] == "room_control_cleanup_pending"

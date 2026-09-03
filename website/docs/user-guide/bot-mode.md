@@ -136,6 +136,42 @@ Every gateway you register in **Settings → Connections** — local, remote URL
 - **`message_agent` reaches them directly.** A Bot on your laptop messages the cloud agent with `message_agent(target="moxie", …)` exactly like a local teammate. If the same handle exists on several machines, disambiguate with `target="moxie@<connection>"` (the tool's error tells the Bot the exact forms). Delivery rides the Desktop: the sending gateway queues the message, the Desktop relays it to the target connection's own gateway, the target Bot runs a turn in its canonical Bot Chat, and the reply comes back to the sender as the same background completion notification local DMs use.
 - **The Desktop is the courier.** Cross-connection delivery works while a Desktop that knows both connections is running (it holds the sockets and the credentials — gateways never see each other's auth). If the Desktop is closed mid-delivery, the sender's Bot is told the reply didn't arrive rather than left hanging. For always-on machine-to-machine messaging with no Desktop in the loop, register a peer (`hermes peer`, below) — the two routes coexist.
 
+### Control Group Chats from mobile messaging
+
+From an authorized private owner chat on a connected messaging platform, use
+`/group` to open the same Bot Group Chats without keeping Hermes Desktop in the
+foreground:
+
+```text
+/group
+/group 2
+/group 2 bots
+/group 2 bot @handle
+/group 2 send Review the launch checklist
+/group 2 retry
+/group 2 stop
+```
+
+Telegram, Discord, and Matrix can show native room and participant pickers.
+Other messaging clients receive the same controls as bounded text. Group Chat
+numbers stay stable for the lifetime of the room and are not reused after
+Disband.
+
+These commands are gateway controls, not ordinary agent prompts. A Send is
+recorded durably and acknowledged as queued or saved; the Group Chat driver runs
+Bot turns separately. Sending `/group ...` while your ordinary Hermes chat is
+working does not interrupt that turn or wait on its conversation lock.
+
+Hosted Group Chats continue while Desktop is closed as long as their authority
+gateway and required Bot routes remain reachable. Classic compatibility rooms
+save commands for the exact owning Desktop and say so explicitly until it is
+online. Stop is two-phase: `Stop requested` means cancellation is in progress,
+not that every active Bot turn has already terminated.
+
+This control surface is owner-only by default. It does not bind arbitrary public
+channels to a Group Chat, mirror every room message into a native channel, or
+accept bot/webhook-authored control traffic.
+
 ### Bot-initiated DMs across machines (`hermes peer`)
 
 Bots on one machine can message Bots on **another machine's gateway** without any desktop in the loop. Register the other gateway as a *peer* (its API server URL + `API_SERVER_KEY`):

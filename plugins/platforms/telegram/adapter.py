@@ -214,6 +214,11 @@ import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
+try:
+    from . import choice_picker as _choice_picker
+except ImportError:
+    from plugins.platforms.telegram import choice_picker as _choice_picker
+
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -6810,111 +6815,34 @@ class TelegramAdapter(BasePlatformAdapter):
         `/reasoning`, `/fast`, and any future finite-choice command. Each
         choice dict: ``{"value": str, "label": str, "is_current": bool}``.
         """
-        if not self._bot:
-            return SendResult(success=False, error="Not connected")
-
-        try:
-            buttons = []
-            for i, choice in enumerate(choices):
-                label = str(choice.get("label") or choice.get("value") or "")
-                if choice.get("is_current"):
-                    label = f"✓ {label}"
-                buttons.append(
-                    InlineKeyboardButton(label, callback_data=f"cp:{i}")
-                )
-            if not buttons:
-                return SendResult(success=False, error="No choices")
-            # Two buttons per row keeps labels readable on mobile.
-            keyboard = InlineKeyboardMarkup(
-                [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-            )
-
-            thread_id = metadata.get("thread_id") if metadata else None
-            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
-            msg = await self._send_message_with_thread_fallback(
-                chat_id=normalize_telegram_chat_id(chat_id),
-                text=self.format_message(title),
-                parse_mode=ParseMode.MARKDOWN_V2,
-                reply_markup=keyboard,
-                reply_to_message_id=reply_to_id,
-                **self._thread_kwargs_for_send(
-                    chat_id,
-                    thread_id,
-                    metadata,
-                    reply_to_message_id=reply_to_id,
-                    reply_to_mode=self._reply_to_mode
-                ),
-                **self._link_preview_kwargs(),
-            )
-
-            self._choice_picker_state[str(chat_id)] = {
-                "msg_id": msg.message_id,
-                "choices": choices,
-                "session_key": session_key,
-                "on_choice_selected": on_choice_selected,
-            }
-            return SendResult(success=True, message_id=str(msg.message_id))
-        except Exception as e:
-            logger.warning("[%s] send_choice_picker failed: %s", self.name, _redact_telegram_error_text(e))
-            return SendResult(success=False, error=_redact_telegram_error_text(e))
+        return await _choice_picker.send_choice_picker(
+            self,
+            chat_id,
+            title,
+            choices,
+            session_key,
+            on_choice_selected,
+            metadata,
+            inline_keyboard_button=InlineKeyboardButton,
+            inline_keyboard_markup=InlineKeyboardMarkup,
+            parse_mode=ParseMode,
+            normalize_chat_id=normalize_telegram_chat_id,
+            redact_error=_redact_telegram_error_text,
+            logger=logger,
+        )
 
     async def _handle_choice_picker_callback(
         self, query, data: str, chat_id: str
     ) -> None:
         """Handle choice picker button taps (cp:<index>)."""
-        state = self._choice_picker_state.get(chat_id)
-        if not state:
-            await query.answer(text="Picker expired — run the command again.")
-            return
-
-        # Same authorization gate as approval buttons: unauthorized users in a
-        # shared group must not flip session/config state via someone else's
-        # picker message.
-        query_message = getattr(query, "message", None)
-        query_chat = getattr(query_message, "chat", None)
-        if not self._is_callback_user_authorized(
-            str(getattr(query.from_user, "id", "")),
-            chat_id=getattr(query_message, "chat_id", None),
-            chat_type=str(getattr(query_chat, "type", None)) if getattr(query_chat, "type", None) is not None else None,
-            thread_id=str(getattr(query_message, "message_thread_id", None)) if getattr(query_message, "message_thread_id", None) is not None else None,
-            user_name=getattr(query.from_user, "first_name", None),
-        ):
-            await query.answer(text="⛔ You are not authorized to change this setting.")
-            return
-
-        try:
-            idx = int(data[3:])
-            choice = state["choices"][idx]
-        except (ValueError, IndexError):
-            await query.answer(text="Invalid selection.")
-            return
-
-        callback = state.get("on_choice_selected")
-        if not callback:
-            await query.answer(text="Picker expired.")
-            return
-
-        try:
-            result_text = await callback(chat_id, str(choice.get("value") or ""))
-        except Exception as exc:
-            logger.error("Choice picker selection failed: %s", exc)
-            result_text = f"Error applying selection: {exc}"
-
-        try:
-            await query.edit_message_text(
-                text=self.format_message(result_text),
-                parse_mode=ParseMode.MARKDOWN_V2,
-                reply_markup=None,
-            )
-        except Exception:
-            try:
-                await query.edit_message_text(
-                    text=result_text, parse_mode=None, reply_markup=None,
-                )
-            except Exception:
-                pass
-        await query.answer()
-        self._choice_picker_state.pop(chat_id, None)
+        await _choice_picker.handle_choice_picker_callback(
+            self,
+            query,
+            data,
+            chat_id,
+            parse_mode=ParseMode,
+            logger=logger,
+        )
 
     _MODEL_PAGE_SIZE = 8
 
@@ -10967,6 +10895,10 @@ class TelegramAdapter(BasePlatformAdapter):
             message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False,
         )
+        source.is_one_to_one = (
+            str(getattr(chat, "type", "") or "").casefold() == "private"
+        )
+        source.message_is_edit = getattr(message, "edit_date", None) is not None
         
         # Extract reply context if this message is a reply.
         # Prefer Telegram's native partial quote (message.quote, TextQuote)

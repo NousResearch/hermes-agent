@@ -77,6 +77,8 @@ def test_metadata_flag_set_when_payload_has_from_owner():
     assert event.metadata.get("whatsapp_from_owner") is True
     assert event.text.startswith("[owner reply] ")
     assert event.text == "[owner reply] hi from the linked phone"
+    assert event.source.is_one_to_one is True
+    assert event.source.is_bot is False
 
 
 def test_from_owner_does_not_double_prefix_when_already_tagged():
@@ -91,5 +93,4 @@ def test_from_owner_does_not_double_prefix_when_already_tagged():
     assert event is not None
     assert event.metadata.get("whatsapp_from_owner") is True
     assert event.text == "[owner reply] already tagged"
-
 

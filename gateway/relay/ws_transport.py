@@ -289,6 +289,7 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         scope_id=src.get("scope_id"),
         parent_chat_id=src.get("parent_chat_id"),
         message_id=src.get("message_id"),
+        is_bot=src.get("is_bot") if isinstance(src.get("is_bot"), bool) else False,
         # The HERMES profile this event is routed to (multiplex mode). The
         # connector stamps it on the wire source when NAS resolves the target
         # profile for a Team-Gateway message; absent for a single-profile
@@ -319,6 +320,24 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         # ``Platform.RELAY``). Stamped here, never read off the wire.
         delivered_via_upstream_relay=True,
     )
+    verified_one_to_one = src.get("one_to_one_verified")
+    if isinstance(verified_one_to_one, bool):
+        # The connector is authenticated to this relay socket, so this wire-only
+        # proof becomes a transport-local fact and is never persisted/replayed.
+        source.is_one_to_one = verified_one_to_one
+    elif str(src.get("chat_type") or "").casefold() in {"dm", "direct", "private"} and platform_enum in {
+        Platform.DISCORD,
+        Platform.SIGNAL,
+        Platform.TELEGRAM,
+        Platform.WHATSAPP,
+        Platform.WHATSAPP_CLOUD,
+    }:
+        # These adapters use a distinct non-DM chat type for multi-party chats.
+        # Slack MPIM and Matrix m.direct are deliberately excluded.
+        source.is_one_to_one = True
+    relay_edit = src.get("message_is_edit")
+    if isinstance(relay_edit, bool):
+        source.message_is_edit = relay_edit
     try:
         msg_type = MessageType(raw.get("message_type", "text"))
     except ValueError:
@@ -336,6 +355,10 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         text=text,
         message_type=msg_type,
         source=source,
+        metadata={
+            "relay_author_classified": isinstance(src.get("is_bot"), bool),
+            "relay_edit_classified": isinstance(relay_edit, bool),
+        },
         message_id=raw.get("message_id"),
         reply_to_message_id=raw.get("reply_to_message_id"),
         # Richer quoted-reply context (Phase 4): what the user replied TO,

@@ -64,6 +64,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from hermes_constants import get_hermes_home
+from session_turn_lease import SESSION_TURN_LEASE_WAIT_REFRESH_STATUS_TEMPLATE  # noqa: F401
+from session_turn_lease import format_session_turn_lease_wait_refresh as _lease_refresh
 
 
 def _launch_cwd_for_session(source: str) -> Optional[str]:
@@ -9408,10 +9410,7 @@ class AIAgent:
                             "waiting for it to finish before starting your turn..."
                         )
                     else:
-                        self._emit_status(
-                            "⏳ Still waiting for the other Hermes process on "
-                            f"this session ({int(elapsed)}s)..."
-                        )
+                        self._emit_status(_lease_refresh(int(elapsed)))
 
                 if not _turn_db.acquire_session_turn_lease(
                     session_id,

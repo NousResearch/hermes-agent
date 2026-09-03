@@ -169,6 +169,9 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
         ("GET", "/v1/room-members/capabilities"),
         ("POST", "/v1/room-members/grants/refresh"),
         ("POST", "/v1/room-members/grants/revoke"),
+        ("GET", "/v1/room-controls/{room_id}"),
+        ("POST", "/v1/room-controls/{room_id}"),
+        ("DELETE", "/v1/room-controls/{room_id}"),
     ]
     assert [(method, path) for method, path, _ in run_routes] == [
         ("POST", "/v1/runs"),
@@ -178,5 +181,6 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
         ("POST", "/v1/runs/{run_id}/steer"),
         ("POST", "/v1/runs/{run_id}/stop"),
     ]
-    assert all(handler.__self__ is adapter for _, _, handler in room_routes)
+    assert all(handler.__self__ is adapter for _, _, handler in room_routes[:4])
+    assert all(callable(handler) for _, _, handler in room_routes[4:])
     assert all(handler.__self__ is adapter for _, _, handler in run_routes)

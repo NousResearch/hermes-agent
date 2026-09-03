@@ -5,9 +5,11 @@ exercise the dispatch site live in test_slash_access_dispatch.py.
 """
 from __future__ import annotations
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.session import SessionSource
 from gateway.slash_access import (
+    is_home_control_source,
+    is_home_dm_source,
     policy_for_source,
     policy_from_extra,
 )
@@ -126,3 +128,92 @@ class TestPolicyForSource:
         assert grp_p.enabled is True
         assert grp_p.can_run("999", "stop") is False  # gated
 
+
+class TestHomeDmSource:
+    def _config(self, *, user_id=None, scope_id=None):
+        return GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    home_channel=HomeChannel(
+                        platform=Platform.TELEGRAM,
+                        chat_id="home-chat",
+                        name="Home",
+                        user_id=user_id,
+                        scope_id=scope_id,
+                    ),
+                )
+            }
+        )
+
+    def test_legacy_home_dm_matches_authenticated_sender(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="home-chat",
+            chat_type="dm",
+            user_id="owner",
+        )
+        assert is_home_dm_source(self._config(), source) is True
+
+    def test_home_group_never_inherits_owner_controls(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="home-chat",
+            chat_type="group",
+            user_id="owner",
+        )
+        assert is_home_dm_source(self._config(), source) is False
+
+    def test_home_group_matches_only_its_stored_operator(self):
+        config = self._config(user_id="owner")
+        owner = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="home-chat",
+            chat_type="group",
+            user_id="owner",
+        )
+        other = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="home-chat",
+            chat_type="group",
+            user_id="other",
+        )
+        assert is_home_control_source(config, owner) is True
+        assert is_home_control_source(config, other) is False
+
+    def test_stored_identity_and_scope_must_match(self):
+        config = self._config(user_id="owner", scope_id="tenant-a")
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="home-chat",
+            chat_type="dm",
+            user_id="other",
+            scope_id="tenant-a",
+        )
+        assert is_home_dm_source(config, source) is False
+        wrong_scope = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="home-chat",
+            chat_type="dm",
+            user_id="owner",
+            scope_id="tenant-b",
+        )
+        assert is_home_dm_source(config, wrong_scope) is False
+
+    def test_bot_and_other_dm_do_not_match(self):
+        config = self._config()
+        bot = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="home-chat",
+            chat_type="dm",
+            user_id="owner",
+            is_bot=True,
+        )
+        other = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="other-chat",
+            chat_type="dm",
+            user_id="owner",
+        )
+        assert is_home_dm_source(config, bot) is False
+        assert is_home_dm_source(config, other) is False

@@ -1519,7 +1519,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     msg_type = MessageType.DOCUMENT
             
             # Determine chat type
-            is_group = data.get("isGroup", False)
+            raw_is_group = data.get("isGroup")
+            is_group = raw_is_group is True
             chat_type = "group" if is_group else "dm"
             
             # Build source
@@ -1529,6 +1530,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 chat_type=chat_type,
                 user_id=data.get("senderId"),
                 user_name=data.get("senderName"),
+                is_bot=data.get("fromMe") is True and data.get("fromOwner") is not True,
+            )
+            source.is_one_to_one = raw_is_group is False
+            source.message_is_edit = bool(
+                data.get("isEdited") is True
+                or str(data.get("nativeType") or "").casefold()
+                in {"editedmessage", "protocolmessage:message_edit"}
             )
             
             # Download media URLs to the local cache so agent tools
@@ -1662,6 +1670,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 metadata["whatsapp_native_type"] = native_type
             if isinstance(native_metadata, dict) and native_metadata:
                 metadata["whatsapp_native"] = native_metadata
+            if source.message_is_edit:
+                metadata["message_is_edit"] = True
             # The bridge sets ``fromOwner: true`` on inbound fromMe messages
             # that look owner-typed (linked-device send, not echoed from our
             # own /send).  Surfaced under a platform-prefixed key so plugins

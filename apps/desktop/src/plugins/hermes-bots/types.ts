@@ -144,9 +144,15 @@ export interface GroupMessageAuthor {
 export interface GroupMessage {
   /** Milliseconds. */
   at: number
+  /** Stable gateway event identity after a hosted-room replay. */
+  eventId?: string
+  /** True for an idempotent message accepted through a messaging bridge. */
+  external?: boolean
   from: GroupMessageAuthor
   id?: string
   images?: Attachment[]
+  /** Monotonic gateway order for hosted-room events. */
+  seq?: number
   text: string
   /** Messages predating threading carry the sentinel thread `'legacy'`. */
   thread?: string
@@ -158,6 +164,16 @@ export interface GroupHold {
 }
 
 export interface GroupChat {
+  /** User-facing continuity choice. Missing records are classic Desktop rooms. */
+  continuityMode?: 'desktop' | 'distributed' | 'gateway'
+  /** Public SHA-256 commitment to the local authority token. */
+  desktopAuthorityHash?: null | string
+  /** Secret held only by the Desktop that coordinates this classic room. */
+  desktopAuthorityToken?: null | string
+  /** Stable installation/window identity that owns classic room commands. */
+  desktopCoordinatorId?: null | string
+  /** Bounded idempotency receipts for messaging commands already settled. */
+  desktopCommandSettled?: Record<string, number>
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
   holds?: Record<string, GroupHold>
@@ -167,6 +183,25 @@ export interface GroupChat {
   /** Immutable identity, so a rename doesn't fork the room. */
   roomId?: null | string
   running?: boolean
+  /** Stable authority installation id for a gateway-hosted room. */
+  hosted?: null | string
+  /** The local Desktop connection that currently reaches the authority. */
+  hostedConnectionId?: null | string
+  /** Server-issued fencing epoch for the hosted authority. */
+  hostedEpoch?: null | number
+  /** Last contiguous hosted-room event sequence applied locally. */
+  hostedSeq?: number
+  hostedStatus?: null | {
+    canReconnect?: boolean
+    canRetry?: boolean
+    canStop?: boolean
+    label: string
+    reconnectMemberId?: string
+    state: string
+    taskId?: string
+  }
+  /** Short, actionable continuity problem for the room surface. */
+  continuityIssue?: null | string
   /** The immutable owner descriptor captured beside each plumbing session,
    *  keyed the same way as `sessions`. Partial: legacy records hold a bare
    *  `{ name }`, and the sweep re-validates the route before trusting one. */

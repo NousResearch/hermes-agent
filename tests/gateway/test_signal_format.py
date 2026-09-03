@@ -187,7 +187,6 @@ class TestEdgeCases:
         # Should not crash; any italic match would be a false positive
         assert "5" in text and "15" in text
 
-
 # ===========================================================================
 # signal-markdown-strip-patch: core conversion pipeline
 # ===========================================================================
@@ -255,4 +254,3 @@ class TestSignalStreamingPatch:
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         from gateway.platforms.signal import SignalAdapter
         assert SignalAdapter.SUPPORTS_MESSAGE_EDITING is False
-

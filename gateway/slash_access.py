@@ -222,8 +222,60 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     return policy_from_extra(extra, scope)
 
 
+def is_home_control_source(gateway_config: Any, source: Any) -> bool:
+    """Return whether *source* is the configured home chat's exact operator.
+
+    The home chat is the operator-selected control surface (``/sethome``).
+    Matching it here avoids making that same operator maintain a second
+    slash-admin allowlist for owner-only controls. A shared home chat is valid
+    only when ``/sethome`` stored the selecting user's identity; other members
+    never inherit that authority.
+    """
+    if gateway_config is None or source is None:
+        return False
+    scope = _scope_for_chat_type(getattr(source, "chat_type", None))
+    if scope not in {"dm", "group"}:
+        return False
+    if getattr(source, "is_bot", False) is True:
+        return False
+
+    platform = getattr(source, "platform", None)
+    user_id = getattr(source, "user_id", None)
+    chat_id = getattr(source, "chat_id", None)
+    if platform is None or not user_id or not chat_id:
+        return False
+
+    try:
+        home = gateway_config.get_home_channel(platform)
+    except Exception:
+        return False
+    if home is None or str(home.chat_id) != str(chat_id):
+        return False
+
+    home_user_id = getattr(home, "user_id", None)
+    if scope == "group" and not home_user_id:
+        return False
+    if home_user_id and str(home_user_id) != str(user_id):
+        return False
+    home_scope_id = getattr(home, "scope_id", None)
+    source_scope_id = getattr(source, "scope_id", None)
+    if home_scope_id and str(home_scope_id) != str(source_scope_id or ""):
+        return False
+    return True
+
+
+def is_home_dm_source(gateway_config: Any, source: Any) -> bool:
+    """Backward-compatible DM-only wrapper for existing callers."""
+
+    if _scope_for_chat_type(getattr(source, "chat_type", None)) != "dm":
+        return False
+    return is_home_control_source(gateway_config, source)
+
+
 __all__ = [
     "SlashAccessPolicy",
     "policy_from_extra",
     "policy_for_source",
+    "is_home_control_source",
+    "is_home_dm_source",
 ]

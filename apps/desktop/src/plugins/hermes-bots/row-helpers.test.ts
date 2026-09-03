@@ -19,6 +19,7 @@ import {
   activeBots,
   botCanonicalSessionId,
   botRowOwnsWorkspace,
+  canCreateGroupChat,
   previewKind,
   rosterActivityMatches,
   workerActiveAt
@@ -154,6 +155,22 @@ describe('which bots are working right now', () => {
     // heartbeat — but not an hour's worth.
     expect(workerActiveAt(finished, NOW)).toBe(false)
     expect(ACTIVE_WINDOW_S).toBeGreaterThan(0)
+  })
+})
+
+describe('Group Chat creation availability', () => {
+  it('counts reachable local and remote Bots together', () => {
+    expect(
+      canCreateGroupChat([
+        row({ connectionId: 'local', name: 'local' }),
+        row({ connectionId: 'remote-a', name: 'remote', remoteSource: true })
+      ])
+    ).toBe(true)
+  })
+
+  it('excludes offline ghost placeholders and tolerates an unresolved roster', () => {
+    expect(canCreateGroupChat([row({ name: 'local' }), row({ ghost: true, name: 'offline' })])).toBe(false)
+    expect(canCreateGroupChat(undefined)).toBe(false)
   })
 })
 

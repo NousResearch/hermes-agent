@@ -110,7 +110,6 @@ class TestFormatMessage:
         # Already-WhatsApp _italic_ passes through unchanged
         assert adapter.format_message("_italic_") == "_italic_"
 
-
 # ---------------------------------------------------------------------------
 # MAX_MESSAGE_LENGTH tests
 # ---------------------------------------------------------------------------
@@ -215,6 +214,13 @@ class TestBridgeEventMetadata:
         assert event.raw_message["quotedParticipant"] == "99999999999@s.whatsapp.net"
         assert event.raw_message["quotedRemoteJid"] == "15551234567@s.whatsapp.net"
         assert event.raw_message["hasQuotedMessage"] is True
+        assert event.source.is_one_to_one is True
+
+        unknown = dict(data)
+        unknown.pop("isGroup")
+        unknown_event = await adapter._build_message_event(unknown)
+        assert unknown_event is not None
+        assert unknown_event.source.is_one_to_one is False
 
 
 # ---------------------------------------------------------------------------
@@ -228,4 +234,3 @@ class TestWhatsAppTier:
         from gateway.display_config import resolve_display_setting
         # TIER_MEDIUM has streaming: None (follow global), not False
         assert resolve_display_setting({}, "whatsapp", "streaming") is None
-

@@ -13,13 +13,30 @@ import type { GroupChat, RosterRow } from './types'
 // window, and disbanding one — plus the ordering rules that keep the in-pane
 // fallback from painting a duplicate beside the main tab.
 
-const { host } = vi.hoisted(() => ({ host: {} as Record<string, unknown> }))
+const { beginHostedRoomMutation, disbandHostedGroupChat, host, markHostedRoomLocallyDeleted, renameHostedGroupChat } =
+  vi.hoisted(() => ({
+    beginHostedRoomMutation: vi.fn(() => 1),
+    disbandHostedGroupChat: vi.fn(async () => true),
+    host: {} as Record<string, unknown>,
+    markHostedRoomLocallyDeleted: vi.fn(),
+    renameHostedGroupChat: vi.fn(async () => true)
+  }))
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock } = await import('./group-test-utils')
 
   return pluginSdkMock(host)
 })
+
+vi.mock('./hosted-room-runtime', () => ({
+  beginHostedRoomMutation,
+  disbandHostedGroupChat,
+  markHostedRoomLocallyDeleted,
+  readHostedGroupChatAttachment: vi.fn(),
+  renameHostedGroupChat,
+  retryHostedGroupChat: vi.fn(),
+  retryHostedRoomReplay: vi.fn()
+}))
 
 interface Room {
   chat: typeof groupChat
@@ -57,7 +74,46 @@ async function loadRoom(): Promise<Room> {
 const durable = (room: Room) => (room.gateway.storage.get('group-chats') || {}) as Record<string, GroupChat>
 
 beforeEach(() => {
+  vi.clearAllMocks()
+  disbandHostedGroupChat.mockResolvedValue(true)
+  renameHostedGroupChat.mockResolvedValue(true)
   runTimersInline()
+})
+
+describe('renaming a hosted Group Chat', () => {
+  it('queues the durable rename before re-keying the local room', async () => {
+    const room = await loadRoom()
+
+    renameHostedGroupChat.mockResolvedValue(false)
+    room.chat.$groupChats.set({
+      Core: {
+        continuityMode: 'gateway',
+        hosted: 'install:studio',
+        hostedConnectionId: 'host-a',
+        hostedEpoch: 1,
+        hostedSeq: 2,
+        log: [],
+        members: [
+          {
+            connectionId: 'host-a',
+            connectionLabel: 'Studio',
+            name: 'research'
+          }
+        ],
+        roomId: 'room-1',
+        watermarks: {}
+      }
+    })
+
+    await expect(room.view.renameGroupChat('Core', 'Launch', [])).resolves.toBe('Launch')
+
+    expect(renameHostedGroupChat).toHaveBeenCalledWith('Core', 'Launch')
+    expect(room.chat.$groupChats.get()).not.toHaveProperty('Core')
+    expect(room.chat.$groupChats.get().Launch).toMatchObject({
+      hosted: 'install:studio',
+      continuityIssue: 'Rename saved. It will sync when Studio is online.'
+    })
+  })
 })
 
 describe('opening a room', () => {
@@ -138,6 +194,80 @@ describe('opening a room', () => {
 })
 
 describe('disband', () => {
+  it('fences an idle hosted deletion before removing local state', async () => {
+    const room = await loadRoom()
+
+    room.chat.$groupChats.set({
+      Hosted: {
+        continuityMode: 'gateway',
+        hosted: 'install:home',
+        hostedConnectionId: 'gateway-a',
+        hostedEpoch: 1,
+        log: [],
+        members: [],
+        roomId: 'room-hosted',
+        running: false,
+        watermarks: {}
+      }
+    })
+
+    await room.view.disbandGroupChat('Hosted', [])
+
+    expect(beginHostedRoomMutation).toHaveBeenCalledWith('room-hosted')
+    expect(disbandHostedGroupChat).toHaveBeenCalledWith('Hosted')
+    expect(markHostedRoomLocallyDeleted).toHaveBeenCalledWith('room-hosted')
+    expect(room.chat.$groupChats.get().Hosted).toBeUndefined()
+  })
+
+  it('removes a remotely deleted hosted room locally without requiring the authority again', async () => {
+    const room = await loadRoom()
+
+    room.chat.$groupChats.set({
+      Deleted: {
+        continuityMode: 'gateway',
+        hosted: 'install:home',
+        hostedConnectionId: 'gateway-a',
+        hostedEpoch: 1,
+        hostedStatus: { label: 'Deleted', state: 'deleted' },
+        log: [],
+        members: [],
+        roomId: 'room-deleted',
+        running: false,
+        watermarks: {}
+      }
+    })
+
+    await room.view.disbandGroupChat('Deleted', [])
+
+    expect(disbandHostedGroupChat).not.toHaveBeenCalled()
+    expect(markHostedRoomLocallyDeleted).toHaveBeenCalledWith('room-deleted')
+    expect(room.chat.$groupChats.get().Deleted).toBeUndefined()
+  })
+
+  it('keeps a hosted room when its authority cannot confirm deletion', async () => {
+    const room = await loadRoom()
+
+    disbandHostedGroupChat.mockRejectedValueOnce(new Error('Reconnect Studio to delete this Group Chat.'))
+    room.chat.$groupChats.set({
+      Hosted: {
+        continuityMode: 'gateway',
+        hosted: 'install:home',
+        hostedConnectionId: 'gateway-a',
+        hostedEpoch: 1,
+        log: [],
+        members: [],
+        roomId: 'room-hosted',
+        running: false,
+        watermarks: {}
+      }
+    })
+
+    await expect(room.view.disbandGroupChat('Hosted', [])).rejects.toThrow('Reconnect Studio')
+
+    expect(markHostedRoomLocallyDeleted).not.toHaveBeenCalled()
+    expect(room.chat.$groupChats.get().Hosted).toBeTruthy()
+  })
+
   it('removes only this membership, room log, workspace and needs-you state', async () => {
     const room = await loadRoom()
     room.chat.$groupChats.set({

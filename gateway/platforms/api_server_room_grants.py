@@ -1,5 +1,6 @@
 """RoomLink room-member grants and capability HTTP handlers."""
 
+import asyncio
 import time
 import uuid
 from typing import Any
@@ -49,7 +50,7 @@ def _room_grant_error_response(exc: Exception, *, _openai_error) -> "web.Respons
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
-    return [
+    routes = [
         (
             "POST",
             "/v1/room-members/invitations",
@@ -71,6 +72,10 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
             self._handle_room_member_grant_revoke,
         ),
     ]
+    from gateway.platforms import api_server_room_controls
+
+    routes.extend(api_server_room_controls._http_routes(self))
+    return routes
 
 
 def _room_grant_token(request: "web.Request") -> str:
@@ -391,6 +396,7 @@ async def _handle_room_member_grant_revoke(
             self._room_grant_secret(),
             token,
             permission="status",
+            allow_expired_for_revocation=True,
         )
         profile = _api_request_profile.get() or "default"
         installation_id = hosted_rooms.local_authority_gateway_id()
@@ -414,6 +420,23 @@ async def _handle_room_member_grant_revoke(
                 code="invalid_room_grant",
             ),
             status=401,
+        )
+    try:
+        from gateway.hosted_room_control_client import revoke_stored_peer_control
+
+        await asyncio.to_thread(
+            revoke_stored_peer_control,
+            hosted_rooms.default_db_path(),
+            room_id=str(claims["room_id"]),
+            member_id=str(claims["member_id"]),
+        )
+    except Exception:
+        return web.json_response(
+            _openai_error(
+                "Room control cleanup is pending; retry this revocation.",
+                code="room_control_cleanup_pending",
+            ),
+            status=503,
         )
     return web.json_response(
         {

@@ -17,7 +17,7 @@ from tui_gateway import server
 
 @pytest.fixture()
 def watcher_home(tmp_path, monkeypatch):
-    (tmp_path / "config.yaml").write_text("display: {}\n")
+    (tmp_path / "config.yaml").write_text("display: {}\n", encoding="utf-8")
     (tmp_path / "cron").mkdir()
 
     monkeypatch.setattr(server, "_hermes_home", str(tmp_path))
@@ -36,8 +36,8 @@ def watcher_home(tmp_path, monkeypatch):
 
 def test_first_sighting_seeds_without_broadcasting(watcher_home):
     home, events = watcher_home
-    (home / "cron" / "jobs.json").write_text("[]")
-    (home / "state.db").write_text("x")
+    (home / "cron" / "jobs.json").write_text("[]", encoding="utf-8")
+    (home / "state.db").write_text("x", encoding="utf-8")
 
     server._broadcast_watched_changes(now=0.0)
 
@@ -48,7 +48,7 @@ def test_cron_jobs_file_move_broadcasts_cron_changed(watcher_home):
     home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)
 
-    (home / "cron" / "jobs.json").write_text("[]")
+    (home / "cron" / "jobs.json").write_text("[]", encoding="utf-8")
     server._broadcast_watched_changes(now=10.0)
 
     assert ("cron.changed", {}) in events
@@ -58,7 +58,7 @@ def test_state_db_move_broadcasts_sessions_changed(watcher_home):
     home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)
 
-    (home / "state.db").write_text("x")
+    (home / "state.db").write_text("x", encoding="utf-8")
     server._broadcast_watched_changes(now=10.0)
 
     assert ("sessions.changed", {}) in events
@@ -75,7 +75,7 @@ def test_served_profile_store_move_broadcasts_sessions_changed(watcher_home, mon
     assert server._profile_home("bot") == bot_home
     server._broadcast_watched_changes(now=0.0)
 
-    (bot_home / "state.db").write_text("x")
+    (bot_home / "state.db").write_text("x", encoding="utf-8")
     server._broadcast_watched_changes(now=10.0)
 
     assert ("sessions.changed", {}) in events
@@ -85,7 +85,7 @@ def test_gateway_state_move_broadcasts_platforms_changed(watcher_home):
     home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)
 
-    (home / "gateway_state.json").write_text('{"platforms": {}}')
+    (home / "gateway_state.json").write_text('{"platforms": {}}', encoding="utf-8")
     server._broadcast_watched_changes(now=10.0)
 
     assert ("platforms.changed", {}) in events
@@ -104,7 +104,9 @@ def test_pending_pairing_request_broadcasts_pairing_changed(watcher_home):
     store.mkdir(parents=True)
     server._broadcast_watched_changes(now=0.0)
 
-    (store / "telegram-pending.json").write_text('{"abc": {"user_id": "1"}}')
+    (store / "telegram-pending.json").write_text(
+        '{"abc": {"user_id": "1"}}', encoding="utf-8"
+    )
     server._broadcast_watched_changes(now=10.0)
 
     assert ("pairing.changed", {}) in events
@@ -118,7 +120,9 @@ def test_pairing_signal_follows_a_profile_store(watcher_home):
     store.mkdir(parents=True)
     server._broadcast_watched_changes(now=0.0)
 
-    (store / "telegram-approved.json").write_text('{"u1": {"user_id": "u1"}}')
+    (store / "telegram-approved.json").write_text(
+        '{"u1": {"user_id": "u1"}}', encoding="utf-8"
+    )
     server._broadcast_watched_changes(now=10.0)
 
     assert ("pairing.changed", {}) in events
@@ -130,10 +134,10 @@ def test_rate_limit_churn_does_not_broadcast_pairing_changed(watcher_home):
     home, events = watcher_home
     store = home / "platforms" / "pairing"
     store.mkdir(parents=True)
-    (store / "telegram-pending.json").write_text("{}")
+    (store / "telegram-pending.json").write_text("{}", encoding="utf-8")
     server._broadcast_watched_changes(now=0.0)
 
-    (store / "_rate_limits.json").write_text('{"telegram:1": 123}')
+    (store / "_rate_limits.json").write_text('{"telegram:1": 123}', encoding="utf-8")
     server._broadcast_watched_changes(now=10.0)
 
     assert ("pairing.changed", {}) not in events
@@ -143,13 +147,13 @@ def test_sessions_floor_coalesces_burst_but_keeps_trailing_edge(watcher_home):
     home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)
 
-    (home / "state.db").write_text("x")
+    (home / "state.db").write_text("x", encoding="utf-8")
     server._broadcast_watched_changes(now=10.0)
     events.clear()
 
     # A second write lands inside the 2s floor: no broadcast yet…
     time.sleep(0.02)
-    (home / "state.db").write_text("xy")
+    (home / "state.db").write_text("xy", encoding="utf-8")
     server._broadcast_watched_changes(now=11.0)
     assert events == []
 
@@ -163,7 +167,10 @@ def test_pet_sig_stays_off_without_a_renderable_pet(watcher_home):
     server._broadcast_watched_changes(now=0.0)
 
     # Config flips enabled but no pet exists on disk → signature stays ("off",).
-    (home / "config.yaml").write_text("display:\n  pet:\n    enabled: true\n    slug: boba\n")
+    (home / "config.yaml").write_text(
+        "display:\n  pet:\n    enabled: true\n    slug: boba\n",
+        encoding="utf-8",
+    )
     server._cfg_cache = None
     server._broadcast_watched_changes(now=10.0)
 
@@ -172,12 +179,15 @@ def test_pet_sig_stays_off_without_a_renderable_pet(watcher_home):
 
 def test_renderable_pet_broadcasts_meta_payload(watcher_home, monkeypatch):
     home, events = watcher_home
-    (home / "config.yaml").write_text("display:\n  pet:\n    enabled: true\n    slug: boba\n")
+    (home / "config.yaml").write_text(
+        "display:\n  pet:\n    enabled: true\n    slug: boba\n",
+        encoding="utf-8",
+    )
     server._cfg_cache = None
     server._broadcast_watched_changes(now=0.0)
 
     sheet = home / "sheet.png"
-    sheet.write_text("png")
+    sheet.write_text("png", encoding="utf-8")
 
     class FakePet:
         slug = "boba"
@@ -205,7 +215,9 @@ def test_enqueued_envelope_broadcasts_outbox_pending(watcher_home):
     outbox.mkdir(parents=True)
     server._broadcast_watched_changes(now=0.0)
 
-    (outbox / ("a" * 32 + ".json")).write_text('{"id": "' + "a" * 32 + '"}')
+    (outbox / ("a" * 32 + ".json")).write_text(
+        '{"id": "' + "a" * 32 + '"}', encoding="utf-8"
+    )
     server._broadcast_watched_changes(now=10.0)
 
     assert ("bot_relay.outbox.pending", {}) in events
@@ -218,7 +230,7 @@ def test_drained_outbox_does_not_rebroadcast_pending(watcher_home):
     outbox = home / "bot_relay" / "outbox"
     outbox.mkdir(parents=True)
     envelope = outbox / ("b" * 32 + ".json")
-    envelope.write_text("{}")
+    envelope.write_text("{}", encoding="utf-8")
     server._broadcast_watched_changes(now=0.0)
 
     envelope.unlink()  # the Desktop drained it
@@ -235,9 +247,11 @@ def test_new_envelope_after_drain_fires_pending_again(watcher_home):
     outbox = home / "bot_relay" / "outbox"
     outbox.mkdir(parents=True)
     first = outbox / ("c" * 32 + ".json")
-    first.write_text("{}")
+    first.write_text("{}", encoding="utf-8")
     server._broadcast_watched_changes(now=0.0)
-    first.write_text("{}")  # make the first sighting a change, not a seed
+    first.write_text(
+        "{}", encoding="utf-8"
+    )  # make the first sighting a change, not a seed
     bump_ns = first.stat().st_mtime_ns + 1_000_000
     os.utime(first, ns=(bump_ns, bump_ns))  # strictly newer, FS-independent
     server._broadcast_watched_changes(now=10.0)
@@ -246,7 +260,7 @@ def test_new_envelope_after_drain_fires_pending_again(watcher_home):
     server._broadcast_watched_changes(now=20.0)
 
     second = outbox / ("d" * 32 + ".json")
-    second.write_text("{}")
+    second.write_text("{}", encoding="utf-8")
     newer_ns = bump_ns + 1_000_000  # strictly beyond the watermark
     os.utime(second, ns=(newer_ns, newer_ns))
     server._broadcast_watched_changes(now=30.0)
@@ -255,6 +269,17 @@ def test_new_envelope_after_drain_fires_pending_again(watcher_home):
         ("bot_relay.outbox.pending", {}),
         ("bot_relay.outbox.pending", {}),
     ]
+
+
+def test_desktop_room_command_signal_broadcasts_pending(watcher_home):
+    home, events = watcher_home
+    signal = home / "desktop_room_mailbox.pending"
+    server._broadcast_watched_changes(now=0.0)
+
+    signal.write_text("1", encoding="utf-8")
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("desktop_rooms.commands.pending", {}) in events
 
 
 def test_no_outbox_dir_never_fires_pending(watcher_home):
@@ -274,7 +299,7 @@ def test_broken_probe_never_kills_the_pass(watcher_home, monkeypatch):
         "cron.changed",
         (1.0, lambda: (_ for _ in ()).throw(RuntimeError("boom")), lambda: {}),
     )
-    (home / "state.db").write_text("x")
+    (home / "state.db").write_text("x", encoding="utf-8")
     server._broadcast_watched_changes(now=10.0)
 
     # The broken cron probe is skipped; sessions still broadcasts.

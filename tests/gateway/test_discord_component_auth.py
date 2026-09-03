@@ -13,6 +13,7 @@ handling, and fail-closed behavior so the parity cannot regress.
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -20,6 +21,8 @@ import pytest
 # importing the production module.
 from plugins.platforms.discord.adapter import (  # noqa: E402
     ClarifyChoiceView,
+    ChoicePickerView,
+    DiscordAdapter,
     ExecApprovalView,
     ModelPickerView,
     SlashConfirmView,
@@ -143,6 +146,68 @@ def test_clarify_choice_view_accepts_role_allowlist():
     )
     assert view._check_auth(_interaction(99999, role_ids=[42])) is True
     assert view._check_auth(_interaction(99999, role_ids=[7])) is False
+
+
+def test_choice_picker_is_bound_to_the_exact_requester():
+    async def _noop(*_args):
+        return ""
+
+    view = ChoicePickerView(
+        choices=[{"value": "1", "label": "Room"}],
+        on_choice_selected=_noop,
+        allowed_user_ids={"11111", "22222"},
+        requester_user_id="11111",
+    )
+
+    assert view._check_auth(_interaction(11111)) is True
+    assert view._check_auth(_interaction(22222)) is False
+
+
+@pytest.mark.asyncio
+async def test_navigation_picker_uses_neutral_discord_chrome(monkeypatch):
+    from plugins.platforms.discord import adapter as discord_adapter
+
+    class _Embed:
+        def __init__(self, *, title=None, description=None, color=None):
+            self.title = title
+            self.description = description
+            self.color = color
+
+    monkeypatch.setattr(discord_adapter, "DISCORD_AVAILABLE", True)
+    monkeypatch.setattr(discord_adapter.discord, "Embed", _Embed)
+    monkeypatch.setattr(discord_adapter.discord.Color, "blue", lambda: "blue")
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=SimpleNamespace(id=7)),
+    )
+    client = SimpleNamespace(
+        get_channel=lambda _channel_id: channel,
+        fetch_channel=AsyncMock(return_value=channel),
+    )
+    adapter = object.__new__(DiscordAdapter)
+    adapter._client = client
+    adapter._allowed_user_ids = {"11111"}
+    adapter._allowed_role_ids = set()
+
+    result = await adapter.send_choice_picker(
+        chat_id="123",
+        title="👥 Group Chats\nChoose a recent Group Chat.",
+        choices=[
+            {
+                "value": "room-token",
+                "label": "🟢 Release room",
+                "full_width": True,
+            }
+        ],
+        session_key="session-1",
+        on_choice_selected=AsyncMock(),
+        metadata={"requester_user_id": "11111"},
+    )
+
+    assert result.success is True
+    sent = channel.send.await_args.kwargs
+    assert sent["embed"].title == "👥 Group Chats"
+    assert sent["view"].navigation is True
+    assert sent["view"].requester_user_id == "11111"
 
 
 # ---------------------------------------------------------------------------
@@ -277,4 +342,3 @@ def test_other_views_not_admin_gated():
         session_key="s", confirm_id="c", allowed_user_ids={"11111"}
     )
     assert sc._check_auth(_interaction(11111)) is True
-

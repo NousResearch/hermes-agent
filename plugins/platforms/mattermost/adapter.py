@@ -1002,6 +1002,7 @@ class MattermostAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             message_id=post_id,
         )
+        source.message_had_attachments = bool(file_ids)
 
         # Per-channel ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt

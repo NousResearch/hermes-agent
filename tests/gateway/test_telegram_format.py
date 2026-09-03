@@ -74,7 +74,6 @@ class TestFormatMessageBasic:
         assert "\\." in result
         assert "\\!" in result
 
-
 # =========================================================================
 # format_message - code blocks
 # =========================================================================

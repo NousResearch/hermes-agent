@@ -633,17 +633,26 @@ class HostedRoomPolicyCheckpoint:
                 (room_id, source_event_seq),
             ).fetchone()
             if source is None:
+                source = conn.execute(
+                    """SELECT thread_id
+                       FROM hosted_room_policy_transcript
+                       WHERE room_id=? AND seq=?""",
+                    (room_id, source_event_seq),
+                ).fetchone()
+                active_rows = []
+            else:
+                active_rows = conn.execute(
+                    """SELECT event_json FROM hosted_room_policy_events
+                       WHERE room_id=? AND discussion_event_id=?
+                       ORDER BY seq LIMIT ?""",
+                    (
+                        room_id,
+                        str(source["discussion_event_id"]),
+                        MAX_ACTIVE_POLICY_EVENTS + 1,
+                    ),
+                ).fetchall()
+            if source is None:
                 return []
-            active_rows = conn.execute(
-                """SELECT event_json FROM hosted_room_policy_events
-                   WHERE room_id=? AND discussion_event_id=?
-                   ORDER BY seq LIMIT ?""",
-                (
-                    room_id,
-                    str(source["discussion_event_id"]),
-                    MAX_ACTIVE_POLICY_EVENTS + 1,
-                ),
-            ).fetchall()
             transcript_events = self._transcript_events(
                 conn,
                 room_id=room_id,

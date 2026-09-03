@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import stat
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from gateway.hosted_room_peer import (
     PROTOCOL_VERSION,
     RoomLinkProbe,
     catalog_mapping,
+    decode_room_grant,
     derive_room_grant_secret,
     gateway_room_grant_secret,
     issue_room_grant,
@@ -51,7 +53,8 @@ def test_gateway_room_grant_secret_is_private_persistent_and_not_an_api_key(
     secret_path = home / ".room-link-grant-secret"
     assert first == second
     assert len(first) == 32
-    assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
+    if not sys.platform.startswith("win"):
+        assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
     assert secret_path.read_bytes() != first
     assert first != derive_room_grant_secret("gateway-api-key-1234567890")
 
@@ -290,6 +293,64 @@ def test_room_grant_fails_closed_for_tamper_expiry_and_permission():
         )
     with pytest.raises(HostedRoomGrantError, match="signature"):
         verify_room_grant(SECRET, token[:-1] + "A", dispatch, now=105)
+
+    assert (
+        decode_room_grant(
+            SECRET,
+            token,
+            permission="status",
+            now=100 + 30 * 24 * 60 * 60,
+            allow_expired_for_revocation=True,
+        )["grant_id"]
+        == "grant-1"
+    )
+    with pytest.raises(HostedRoomGrantError, match="only.*revocation"):
+        decode_room_grant(
+            SECRET,
+            token,
+            permission="dispatch",
+            now=100 + 30 * 24 * 60 * 60,
+            allow_expired_for_revocation=True,
+        )
+
+
+def test_expired_status_grant_can_only_authenticate_idempotent_revocation():
+    dispatch = _dispatch()
+    token = issue_room_grant(
+        SECRET,
+        grant_id="grant-expired",
+        room_id=dispatch.room_id,
+        home_install_id=dispatch.home_install_id,
+        authority_gateway_id=dispatch.authority_gateway_id,
+        authority_epoch=dispatch.authority_epoch,
+        member_id=dispatch.member_id,
+        target_install_id=dispatch.target_install_id,
+        target_profile=dispatch.target_profile,
+        execution_policy_digest=dispatch.execution_policy_digest,
+        permissions=("status",),
+        issued_at=100,
+        ttl_seconds=10,
+        status_expires_at=120,
+    )
+
+    with pytest.raises(HostedRoomGrantError, match="expired"):
+        decode_room_grant(SECRET, token, permission="status", now=121)
+    claims = decode_room_grant(
+        SECRET,
+        token,
+        permission="status",
+        now=121,
+        allow_expired_for_revocation=True,
+    )
+    assert claims["grant_id"] == "grant-expired"
+    with pytest.raises(HostedRoomGrantError, match="only.*revocation"):
+        decode_room_grant(
+            SECRET,
+            token,
+            permission="run",
+            now=121,
+            allow_expired_for_revocation=True,
+        )
 
 
 def test_link_selection_prefers_safe_direct_then_overlay_then_relay_then_pull():

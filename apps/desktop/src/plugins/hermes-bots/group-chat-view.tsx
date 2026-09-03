@@ -63,8 +63,11 @@ import {
   $groupChatWorkspace,
   $groupClarify,
   $groupNeedsYou,
+  groupChatContinuityMode,
+  groupChatHostedGateway,
   groupSpeakerLabel,
   groupThreadOf,
+  groupThreadReplyCount,
   scheduleGroupChatServerSync,
   setGroupChatImage,
   updateGroupChat
@@ -95,6 +98,15 @@ import {
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
+import { reconnectHostedGroupChatPeer } from './hosted-room-reauthorization'
+import {
+  beginHostedRoomMutation,
+  disbandHostedGroupChat,
+  markHostedRoomLocallyDeleted,
+  renameHostedGroupChat,
+  retryHostedGroupChat,
+  retryHostedRoomReplay
+} from './hosted-room-runtime'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify, stripPreviewMarkdown } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
@@ -117,6 +129,27 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   }
 
   const prior = all[group] || {}
+
+  if (groupChatHostedGateway(prior)) {
+    const roomId = String(prior.roomId || '')
+    const alreadyDeleted = prior.hostedStatus?.state === 'deleted'
+
+    if (!alreadyDeleted) {
+      beginHostedRoomMutation(roomId)
+      const acknowledged = await disbandHostedGroupChat(group)
+
+      if (!acknowledged) {
+        throw new Error(
+          botsText().group.hostedReconnectToDelete(
+            prior.members?.find(member => member.connectionLabel)?.connectionLabel || botsText().group.thisHost
+          )
+        )
+      }
+    }
+
+    markHostedRoomLocallyDeleted(roomId)
+  }
+
   const metaBefore = $botMeta.get()
   const cleanup = groupDisbandMetadataPlan(group, members, prior, $lastRoster.get(), metaBefore)
   let metadataPersistence: Promise<unknown> = Promise.resolve()
@@ -192,6 +225,12 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
           sessionOwners: room.sessionOwners || {},
           members: Array.isArray(room.members) ? room.members : [],
           roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+          hosted: groupChatHostedGateway(room) || null,
+          hostedEpoch: Math.max(0, Number(room.hostedEpoch || 0)) || null,
+          hostedConnectionId:
+            typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
+          hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
+          continuityMode: groupChatContinuityMode(room),
           image: room.image || null,
           syncRevision: Math.max(0, Number(room.syncRevision || 0))
         }
@@ -238,7 +277,12 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
  *  rename, so even a member whose sid is later lost falls back to the same
  *  "Group: <roomId>" title lookup instead of a fresh "Group: <new name>".
  *  Returns the new name, or null when the target name is taken. */
-async function renameGroupChat(oldName: string, newName: string, members: GroupMember[] | null | undefined) {
+export async function renameGroupChat(
+  oldName: string,
+  newName: string,
+  members: GroupMember[] | null | undefined,
+  { hostedAlreadyRenamed = false }: { hostedAlreadyRenamed?: boolean } = {}
+) {
   const next = String(newName || '')
     .trim()
     .slice(0, 64)
@@ -267,6 +311,37 @@ async function renameGroupChat(oldName: string, newName: string, members: GroupM
     })
 
     return null
+  }
+
+  const beforeRename = $groupChats.get()[oldName]
+
+  if (groupChatHostedGateway(beforeRename) && !hostedAlreadyRenamed) {
+    const connectionName =
+      beforeRename.members?.find(member => member.connectionLabel)?.connectionLabel || botsText().group.thisHost
+
+    try {
+      const acknowledged = await renameHostedGroupChat(oldName, next)
+
+      if (!acknowledged) {
+        updateGroupChat(
+          oldName,
+          current => ({
+            ...current,
+            continuityIssue: botsText().group.hostedRenameQueued(connectionName)
+          }),
+          {
+            sync: false
+          }
+        )
+      }
+    } catch {
+      host.notify({
+        kind: 'error',
+        message: botsText().group.hostedRenameFailed(connectionName)
+      })
+
+      return null
+    }
   }
 
   // Move the room record wholesale — log, watermarks, sessions, members,
@@ -367,7 +442,15 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
   const { t } = useI18n()
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
-  const current = (rooms[group] || {}).image || null
+  const room = rooms[group] || {}
+  const current = room.image || null
+  const hosted = Boolean(groupChatHostedGateway(room))
+  const hostedState = String(room.hostedStatus?.state || '')
+
+  const renameBlocked =
+    hosted && (room.running === true || ['queued', 'sending', 'stopping', 'working'].includes(hostedState))
+
+  const continuity = groupChatContinuityMode(room)
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
   useEffect(() => {
@@ -379,6 +462,10 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
   }, [open, group])
 
   const save = async () => {
+    if (renameBlocked) {
+      return
+    }
+
     const finalName = await renameGroupChat(group, name, members)
 
     if (finalName === null) {
@@ -410,6 +497,14 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
           <DialogTitle>{b.group.settingsTitle}</DialogTitle>
           <DialogDescription>{b.group.settingsDesc}</DialogDescription>
         </DialogHeader>
+        <div className="grid gap-0.5 text-sm">
+          <div className="font-medium text-(--ui-text-primary)">
+            {continuity === 'desktop' ? b.group.continuityDesktopTitle : b.group.continuityOnTitle}
+          </div>
+          <div className="text-xs text-(--ui-text-tertiary)">
+            {continuity === 'desktop' ? b.group.continuityDesktopDesc : b.group.continuityOnDesc}
+          </div>
+        </div>
         <GroupImageControls
           image={image}
           onImage={setImage}
@@ -425,6 +520,7 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
           <Input
             aria-label={b.group.nameLabel}
             autoFocus
+            disabled={renameBlocked}
             maxLength={64}
             onChange={event => setName(event.target.value)}
             value={name}
@@ -434,7 +530,7 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
           </Button>
-          <Button disabled={!name.trim()} onClick={() => void save()}>
+          <Button disabled={!name.trim() || renameBlocked} onClick={() => void save()}>
             {t.common.save}
           </Button>
         </DialogFooter>
@@ -472,6 +568,11 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     log: [],
     running: false
   }
+  const hostedState = String(room.hostedStatus?.state || '')
+  const hostedDeleted = Boolean(groupChatHostedGateway(room) && hostedState === 'deleted')
+  const canStop = Boolean(
+    room.running && hostedState !== 'stopping' && room.hostedStatus?.canStop !== false
+  )
 
   const composerKey = groupComposerDraftKey(group, room)
   const composerKeyRef = useRef(composerKey)
@@ -519,6 +620,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     }))
 
   const [confirmDisband, setConfirmDisband] = useState(false)
+  const [confirmRetry, setConfirmRetry] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Click-to-disambiguate: which log entry is showing its speaker's full
   // @handle (the roster's name-device form when names collide across
@@ -611,6 +713,10 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
   // Ctrl/⌘-V a screenshot (or any file) into any composer in this room.
   const pasteImages = (thread: null | string, event: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (hostedDeleted) {
+      return
+    }
+
     const files = [...(event.clipboardData?.files || [])]
 
     if (!files.length) {
@@ -628,19 +734,30 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
   const dropFiles = (event: DragEvent<HTMLDivElement>) => {
     const files = [...(event.dataTransfer?.files || [])]
+
+    if (files.length) {
+      event.preventDefault()
+    }
+
+    if (hostedDeleted) {
+      setDragOver(false)
+
+      return
+    }
+
     setDragOver(false)
 
     if (!files.length) {
       return
     }
 
-    event.preventDefault()
     void filesToGroupAttachments(files).then(picked => addImages(replyThread, picked))
   }
 
   // Collapsible Activity view: collapsed by default — opening it is always an
   // explicit user action, it never steals focus, and it never auto-scrolls.
   const [activityOpen, setActivityOpen] = useState(false)
+  const [reconnecting, setReconnecting] = useState(false)
   // Subscribe: activity rows re-render as turn events land.
   useValue($groupActivity)
   // Pending member questions for THIS room (#90694), oldest first.
@@ -723,12 +840,37 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // Events are epoch-tagged, so a superseded run's history drops out of view.
   const activityEvents: GroupActivityEntry[] = currentGroupActivity(group)
   const latestActivity = activityEvents.length ? activityEvents[activityEvents.length - 1] : null
+  const hostedActivity = groupChatHostedGateway(room) ? room.hostedStatus?.label : null
+  const retryTaskId = String(room.hostedStatus?.taskId || '')
+  const reconnectMemberId = String(room.hostedStatus?.reconnectMemberId || '')
+
+  const reconnectRoomMember = async () => {
+    if (!reconnectMemberId || reconnecting) {
+      return
+    }
+
+    setReconnecting(true)
+    try {
+      await reconnectHostedGroupChatPeer(group, reconnectMemberId)
+    } catch {
+      host.notify({
+        kind: 'error',
+        message: b.group.reconnectFailed
+      })
+    } finally {
+      setReconnecting(false)
+    }
+  }
 
   // #94570 shell rewired onto the real primitive (#91868/#94569): the button
   // must stop the ROUND, not just spray per-member interrupts — without the
   // epoch bump + holds the loop marched on to the next member. Thread scope:
   // the run being stopped is the one the latest activity belongs to.
   const stopRoomRun = async () => {
+    if (!canStop) {
+      return
+    }
+
     await stopGroupThread(group, latestActivity?.thread || null, memberDescriptors())
     host.notify({
       kind: 'success',
@@ -748,11 +890,13 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         >
           <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>
-          {latestActivity ? (
+          {hostedActivity ? (
+            <span className="min-w-0 flex-1 truncate">{hostedActivity}</span>
+          ) : latestActivity ? (
             <span className="min-w-0 flex-1 truncate">{`${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`}</span>
           ) : null}
         </RowButton>
-        {room.running ? (
+        {canStop ? (
           <Tip label={b.group.stopHint}>
             <Button
               className="shrink-0 text-(--ui-accent)"
@@ -765,7 +909,32 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             </Button>
           </Tip>
         ) : null}
+        {room.hostedStatus?.canRetry ? (
+          <Button
+            onClick={() =>
+              retryTaskId ? setConfirmRetry(true) : void retryHostedRoomReplay(group).catch(() => undefined)
+            }
+            size="xs"
+            variant="secondary"
+          >
+            {b.group.retryAction}
+          </Button>
+        ) : null}
+        {room.hostedStatus?.canReconnect && reconnectMemberId ? (
+          <Button
+            aria-busy={reconnecting}
+            disabled={reconnecting}
+            onClick={() => void reconnectRoomMember()}
+            size="xs"
+            variant="secondary"
+          >
+            {reconnecting ? b.group.reconnectingAction : b.group.reconnectAction}
+          </Button>
+        ) : null}
       </div>
+      {room.continuityIssue ? (
+        <div className="px-2.5 pb-1 text-[0.625rem] text-(--ui-text-quaternary)">{room.continuityIssue}</div>
+      ) : null}
       {activityOpen ? (
         <div className="grid gap-0.5 px-2.5 pb-1.5" id={`group-activity:${group}`}>
           {activityEvents.length ? (
@@ -779,7 +948,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                   {groupActivityLabel(event)}
                 </span>
                 <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(event.at)}</span>
-                {event.kind === 'working' ? (
+                {canStop && event.kind === 'working' ? (
                   <Tip label={b.group.stopHint}>
                     <Button
                       className="shrink-0 text-(--ui-accent)"
@@ -925,6 +1094,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   const attachButton = (thread: null | string) => (
     <Button
       className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+      disabled={hostedDeleted}
       onClick={() => void pickGroupAttachments().then(picked => addImages(thread, picked))}
       size="sm"
       title={b.group.attachHint}
@@ -1102,7 +1272,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     const expanded = openThreads[id] ?? isNewest
 
     if (!expanded) {
-      const replies = entries.length - 1
+      const replies = groupThreadReplyCount(room.log || [], id)
       const headText = stripPreviewMarkdown(head?.text || '').slice(0, 80)
       logChildren.push(
         <RowButton
@@ -1169,6 +1339,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             <GroupMentionInput
               aria-label={b.group.replyInThread}
               autoFocus
+              disabled={hostedDeleted}
               members={members}
               onChange={text =>
                 setReplyDrafts(prev => ({
@@ -1182,7 +1353,11 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               value={replyDrafts[id] || ''}
             />
             {attachButton(id)}
-            <Button disabled={!(replyDrafts[id] || '').trim() && !imagesFor(id).length} size="sm" type="submit">
+            <Button
+              disabled={hostedDeleted || (!(replyDrafts[id] || '').trim() && !imagesFor(id).length)}
+              size="sm"
+              type="submit"
+            >
               {b.group.reply}
             </Button>
           </div>
@@ -1218,7 +1393,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         }
       }}
       onDragOver={event => {
-        if ([...(event.dataTransfer?.types || [])].includes('Files')) {
+        if (!hostedDeleted && [...(event.dataTransfer?.types || [])].includes('Files')) {
           event.preventDefault()
           setDragOver(true)
         }
@@ -1256,9 +1431,11 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             <div className="px-2 py-1 text-[0.7rem] italic text-(--ui-text-quaternary)" key={'working'}>
               {roomClarifies.length
                 ? b.group.waitingForAnswer
-                : room.turn
-                  ? b.group.memberThinking(groupSpeakerLabel(room.turn))
-                  : b.group.roomWorking}
+                : groupChatHostedGateway(room) && room.hostedStatus?.label
+                  ? room.hostedStatus.label
+                  : room.turn
+                    ? b.group.memberThinking(groupSpeakerLabel(room.turn))
+                    : b.group.roomWorking}
             </div>
           ) : null}
           {/* Scroll anchor (#89835): rooms opened at scroll position 0, mid- */
@@ -1279,6 +1456,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           <div className="flex items-center gap-1.5">
             <GroupMentionInput
               aria-label={b.group.messageRoom(group)}
+              disabled={hostedDeleted}
               members={members}
               onChange={setDraft}
               onPaste={event => pasteImages(null, event)}
@@ -1287,7 +1465,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               value={draft}
             />
             {attachButton(null)}
-            <Button disabled={!draft.trim() && !imagesFor(null).length} size="sm" type="submit">
+            <Button disabled={hostedDeleted || (!draft.trim() && !imagesFor(null).length)} size="sm" type="submit">
               {b.group.newThread}
             </Button>
           </div>
@@ -1326,6 +1504,16 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         }}
         open={confirmDisband}
         title={b.group.disbandTitle}
+      />
+      <ConfirmDialog
+        confirmLabel={b.group.retryAction}
+        description={b.group.retryDesc}
+        onClose={() => setConfirmRetry(false)}
+        onConfirm={async () => {
+          await retryHostedGroupChat(group, retryTaskId)
+        }}
+        open={confirmRetry}
+        title={b.group.retryTitle}
       />
     </div>
   )

@@ -591,7 +591,30 @@ class TestSignalInboundMessageTypeClassification:
         adapter._fetch_attachment = AsyncMock(return_value=(fetch_path, fetch_ext))
         await adapter._handle_envelope(envelope)
         assert dispatched, "_handle_envelope did not dispatch any event"
+        assert dispatched[0].source.is_one_to_one is True
         return dispatched[0]
+
+    @pytest.mark.asyncio
+    async def test_signal_edit_is_marked_for_command_replay_guard(self, monkeypatch):
+        envelope = _make_dm_envelope(
+            sender="+15559876543",
+            text="/group 1 send changed",
+            attachments=[],
+        )
+        data_message = envelope["envelope"].pop("dataMessage")
+        envelope["envelope"]["editMessage"] = {"dataMessage": data_message}
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._rpc, _ = _stub_rpc(None)
+        dispatched = []
+
+        async def _fake_handle_message(event):
+            dispatched.append(event)
+
+        adapter.handle_message = _fake_handle_message
+        await adapter._handle_envelope(envelope)
+
+        assert len(dispatched) == 1
+        assert dispatched[0].source.message_is_edit is True
 
     @pytest.mark.asyncio
     async def test_pdf_attachment_sets_document_type(self, monkeypatch):
@@ -997,6 +1020,9 @@ class TestSignalQuoteExtraction:
         assert event.reply_to_text == "want to grab lunch?"
         assert event.reply_to_author_id == "other-author"
         assert event.reply_to_is_own_message is False
+        from gateway.hosted_room_messaging import messaging_event_id
+
+        assert messaging_event_id(event) == messaging_event_id(event)
 
 
     @pytest.mark.asyncio

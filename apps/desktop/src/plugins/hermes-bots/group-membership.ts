@@ -248,7 +248,7 @@ export function groupChatMemberBots(
  *  by friendly name against rows on the same connection. Unresolvable
  *  descriptors return as-is — they stay visible-but-degraded ghosts and must
  *  never be used as a `profile:` target. */
-function resolveLegacyMemberDescriptor(descriptor: RosterRow, roster: RosterRow[]): RosterRow {
+export function resolveLegacyMemberDescriptor(descriptor: RosterRow, roster: RosterRow[]): RosterRow {
   const rows = roster || []
 
   if (rows.some(bot => botRosterKey(bot) === botRosterKey(descriptor))) {
@@ -294,6 +294,25 @@ function resolveLegacyMemberDescriptor(descriptor: RosterRow, roster: RosterRow[
   )
 
   return match || descriptor
+}
+
+export function groupChatBotsFromDescriptors(descriptors: GroupMember[], roster: RosterRow[]): RosterRow[] {
+  const members: RosterRow[] = []
+  const seen = new Set<string>()
+
+  for (const descriptor of Array.isArray(descriptors) ? descriptors : []) {
+    const resolved = resolveLegacyMemberDescriptor(descriptor, roster)
+    const key = botRosterKey(resolved)
+
+    if (!key || seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    members.push((roster || []).find(bot => !bot?.ghost && botRosterKey(bot) === key) || resolved)
+  }
+
+  return members
 }
 
 /** Persist source-qualified identities for every selected member. The active

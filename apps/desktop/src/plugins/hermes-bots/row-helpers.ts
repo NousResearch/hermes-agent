@@ -57,6 +57,13 @@ export const ACTIVE_WINDOW_S = 90
 const RECENT_ACTIVITY_WINDOW_S = 7 * 24 * 60 * 60
 export const BOT_ROSTER_SEARCH_THRESHOLD = 8
 
+/** A Group Chat can seat every reachable roster row, regardless of which
+ * gateway is currently active. Ghost rows preserve offline identity but are
+ * not routable participants. */
+export function canCreateGroupChat(roster: null | RosterRow[] | undefined): boolean {
+  return (roster || []).filter(bot => !bot?.ghost).length >= 2
+}
+
 /** The stored session id this bot's canonical Bot Chat answers to — the
  *  compression-lineage tip the live-state atoms are keyed by, falling back to
  *  the durable registry id. THE id for anything core-keyed: the row's status

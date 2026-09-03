@@ -495,7 +495,6 @@ class WhatsAppBehaviorMixin:
             result = result.replace(f"{_FENCE_PH}{i}\x00", fence)
         for i, code in enumerate(codes):
             result = result.replace(f"{_CODE_PH}{i}\x00", code)
-
         return result
 
 

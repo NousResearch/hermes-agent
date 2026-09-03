@@ -22,6 +22,13 @@ from typing import Any, Dict, Optional, Tuple
 
 from utils import is_truthy_value
 from hermes_constants import INDICATOR_STYLES
+from hermes_cli.slack_command_policy import (
+    _SLACK_MAX_SLASH_COMMANDS,
+    _SLACK_PRIORITY_ALIASES,
+    _SLACK_RESERVED_COMMANDS,
+    _SLACK_VIA_HERMES_ONLY,
+    _sanitize_slack_name,
+)
 
 # mtime-keyed memo of the /personality completion source. load_cli_config()
 # does a full YAML parse + deep merge of the built-in defaults on every call,
@@ -203,6 +210,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<question>", busy_policy="dispatch"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",), busy_policy="dispatch"),
+    CommandDef("group", "List, inspect, or control Bot Group Chats", "Bots",
+               gateway_only=True,
+               args_hint="[list [page] | number | number send message | number retry | number stop]",
+               busy_policy="dispatch"),
     CommandDef("journey", "Open the learning journey timeline",
                "Session", aliases=("learning", "memory-graph"), cli_only=True,
                args_hint="[list|delete <id>|edit <id>]",
@@ -1404,94 +1415,6 @@ def discord_skill_commands_by_category(
 # ---------------------------------------------------------------------------
 # Slack native slash commands
 # ---------------------------------------------------------------------------
-
-# Slack slash command name constraints: lowercase a-z, 0-9, hyphens,
-# underscores. Max 32 chars. Slack app manifest accepts up to 50 slash
-# commands per app.
-_SLACK_MAX_SLASH_COMMANDS = 50
-_SLACK_NAME_LIMIT = 32
-_SLACK_INVALID_CHARS = re.compile(r"[^a-z0-9_\-]")
-_SLACK_RESERVED_COMMANDS = frozenset({
-    # Built-in Slack slash commands that cannot be registered by apps.
-    # https://slack.com/help/articles/201259356-Use-built-in-slash-commands
-    "me", "status", "away", "dnd", "shrug", "remind", "msg", "feed",
-    "who", "collapse", "expand", "leave", "join", "open", "search",
-    "topic", "mute", "pro", "shortcuts",
-})
-
-# High-value aliases that must survive Slack's 50-slash cap even when the
-# registry fills up. Without this, adding a new canonical command silently
-# clamps off low-priority aliases (they're added in the second pass), so a
-# long-standing native slash like /btw could disappear just because an
-# unrelated command landed. These claim their slots right after /hermes,
-# ahead of both canonical names and the rest of the aliases. Anything not
-# listed here still degrades gracefully (reachable via /hermes <command>).
-# Keep this list TIGHT: every pinned alias takes a slot a canonical command
-# would otherwise get, and the Telegram-parity test fails when a canonical
-# gets clamped ("reset" was unpinned for exactly that — /new keeps its
-# native slot, the alias spelling stays reachable via /hermes reset).
-# (Currently empty: /bg and /btw were promoted from aliases of /background
-# to canonical commands, so they win first-pass slots on their own.)
-_SLACK_PRIORITY_ALIASES: tuple[str, ...] = ()
-
-# Canonical commands intentionally NOT given a native Slack slash slot. Slack
-# caps apps at 50 slash commands and the registry is at that ceiling; rather
-# than let the clamp silently drop whichever command sorts last (and break
-# Telegram parity), we explicitly route a few low-frequency commands through
-# ``/hermes <command>`` on Slack only. They remain native on every other
-# surface (CLI, TUI, Telegram, Discord). Keep this list TIGHT and intentional —
-# the telegram-parity test reads it so an entry here is a deliberate
-# "Slack-via-/hermes" decision, not a silent clamp.
-#   - topup: the billing/balance surface; reached via /hermes topup on Slack.
-#     (the rehaul folded the old /credits + /billing surfaces into /topup.)
-#   - moa: high-cost slash mode, available through /hermes moa to avoid
-#     displacing existing native Slack slash commands at the 50-command cap.
-#   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-#   - egress: Docker-only proxy status; reachable as /hermes egress on Slack.
-#   - init: repo-scan AGENTS.md bootstrap — a cwd-centric dev command that is
-#     rare from Slack; reachable as /hermes init. Without this entry, adding
-#     /init clamps /version off the native list and breaks Telegram parity.
-#   - version: low-frequency info command; reachable as /hermes version on
-#     Slack. Demoted when /context claimed a native slot (context is a
-#     recurring inspection surface; version is a one-off lookup); the demotion
-#     also absorbs the native slot /approvals now consumes at the 50-cap.
-#   - diff: git working-tree diff; reached via /hermes diff on Slack so it
-#     doesn't displace an existing native slash at the 50-command cap.
-#   - update: low-frequency self-update maintenance command; reached via
-#     /hermes update on Slack. Demoted to free the native slot /approvals now
-#     claims — without this entry /approvals tips the registry past the 50-cap
-#     and silently clamps /update off, breaking Telegram parity.
-#   - heartbeat: session heartbeat management; reached via /hermes heartbeat
-#     on Slack. Added at the 50-cap — a native slot would clamp /insights.
-#   - refine: on-demand memory/skill review; reached via /hermes refine on
-#     Slack. Added at the 50-cap — a native slot would clamp an existing
-#     native slash.
-#   - pause: global emergency stop; reached via /hermes pause [off] on
-#     Slack. Added at the 50-cap — a native slot would clamp /platform.
-#   - whoami: one-off identity lookup; reached via /hermes whoami on Slack.
-#     Demoted when /loop claimed a native slot (loop is a recurring
-#     interactive surface; whoami is a rare debug lookup) — without this
-#     entry /loop tips the registry past the 50-cap and silently clamps
-#     /platform, breaking Telegram parity.
-#   - platform: informational platform/environment lookup; reached via
-#     /hermes platform on Slack. Demoted when /save became gateway-available
-#     (session export is an interactive surface; platform is a rare
-#     informational lookup) — without this entry /save tips the registry
-#     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "insights"})
-
-
-def _sanitize_slack_name(raw: str) -> str:
-    """Convert a command name to a valid Slack slash command name.
-
-    Slack allows lowercase a-z, digits, hyphens, and underscores. Max 32
-    chars. Uppercase is lowercased; invalid chars are stripped.
-    """
-    name = raw.lower()
-    name = _SLACK_INVALID_CHARS.sub("", name)
-    name = name.strip("-_")
-    return name[:_SLACK_NAME_LIMIT]
-
 
 def slack_native_slashes() -> list[tuple[str, str, str]]:
     """Return (slash_name, description, usage_hint) triples for Slack.

@@ -176,6 +176,7 @@ present (may be `null`); the rest are included only when set.
 | `platform` | string | yes | Platform name (matches the descriptor's `platform`). |
 | `chat_id` | string | yes | Primary conversation id (channel/chat). Session-key discriminator. |
 | `chat_type` | string | yes | `dm` / `group` / `channel` / `thread` / `forum`. |
+| `one_to_one_verified` | boolean | no | Connector-verified private conversation with exactly one human. Required for private controls on relay-fronted platforms where `dm` can contain multiple people (for example Slack or Matrix). The gateway treats it as a transport-local fact and never persists it. |
 | `chat_name` | string\|null | yes | Human-readable chat name. |
 | `user_id` | string\|null | yes | Message author id. Session-key discriminator. |
 | `user_name` | string\|null | yes | Author display name. |
@@ -187,11 +188,12 @@ present (may be `null`); the rest are included only when set.
 | `guild_id` | string | no | **Legacy alias, no longer read by the connector.** As of D-Q2.5c the connector reads and writes only `scope_id`; the gateway's agent-wide `SessionSource.to_dict()` still emits `guild_id` (mirrored to `scope_id`) for non-relay session persistence, so it may still appear on the wire but the connector ignores it. Do not depend on it. |
 | `parent_chat_id` | string | no | Parent channel when `chat_id` refers to a thread. |
 | `message_id` | string | no | Id of the triggering message (for pin/reply/react). |
+| `is_bot` | boolean | yes | Whether the author is a bot or webhook. Room controls fail closed when an older connector omits this classification. |
+| `message_is_edit` | boolean | yes | Whether this delivery edits a prior message. Room controls fail closed when an older connector omits this classification. |
 
-> `is_bot` (author-is-a-bot/webhook classification) exists on the gateway-side
-> dataclass but is **intentionally NOT on the wire** in v1 — it is not part of
-> `to_dict()`. Do not add it to the connector's `SessionSource` until it is
-> first added here and to `to_dict()` (additive bump).
+`is_bot` is an additive author-provenance bump. Updated connectors must send an
+explicit `false` for people rather than omitting the field; omission remains
+accepted by older gateway features but room controls reject it.
 
 ### SessionSource discriminators per platform
 

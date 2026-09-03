@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import logging
 import os
 import threading
 import time
@@ -15,6 +16,7 @@ from types import ModuleType
 from typing import Any
 
 from gateway import hosted_room_discussion as discussion
+from gateway import hosted_room_controls
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_links
 from gateway import hosted_rooms
@@ -27,7 +29,11 @@ from gateway.hosted_room_peer import (
     HostedMemberDispatch,
     PROTOCOL_VERSION,
 )
-from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
+from tui_gateway.hosted_room_driver import (
+    ROOM_SESSION_SOURCE,
+    HostedRoomBinding,
+    HostedRoomRuntime,
+)
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 from tui_gateway.hosted_room_peer_transport import (
@@ -35,6 +41,9 @@ from tui_gateway.hosted_room_peer_transport import (
     PeerHostedRoomTransport,
     PeerMemberRoute,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 _HOSTED_ROOM_IDLE_FALLBACK_SECONDS = 5.0
@@ -121,6 +130,19 @@ class HostedRoomService:
                 self._link_load_error = ",".join(errors)
         except Exception as exc:
             self._link_load_error = str(exc)
+        try:
+            from gateway import hosted_room_messaging_approvals as approvals
+
+            for action in approvals.list_all_pending_approvals(self.db_path):
+                self._pending_actions[
+                    (str(action["room_id"]), str(action["member_id"]))
+                ] = action
+        except Exception as exc:
+            self._link_load_error = ",".join(
+                value
+                for value in (self._link_load_error, f"approval-recovery:{exc}")
+                if value
+            )
         supplied_routes = dict(peer_routes or {})
         supplied_clients = dict(peer_clients or {})
         self.peer_routes.update(supplied_routes)
@@ -137,6 +159,7 @@ class HostedRoomService:
             transport_resolver=self._resolve_member_transport,
             turn_lock=self._turn_lock,
             prepare_room=self.prepare_room,
+            prepare_leased_room=self._apply_pending_controls,
             publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
@@ -159,6 +182,15 @@ class HostedRoomService:
 
     def bindings(self) -> tuple[HostedRoomBinding, ...]:
         local_gateway_id = hosted_rooms.local_authority_gateway_id()
+        try:
+            from gateway import hosted_room_messaging_approvals as approvals
+
+            approvals.terminalize_unowned_approval_commands(
+                self.db_path,
+                local_gateway_id=local_gateway_id,
+            )
+        except Exception as exc:
+            logger.warning("Group Chat approval cleanup will retry: %s", exc)
         return tuple(
             HostedRoomBinding(
                 room_id=str(room["room_id"]),
@@ -204,6 +236,7 @@ class HostedRoomService:
         client: HostedRoomPeerClient,
         target_url: str | None = None,
         catalog: GatewayRoomCatalog | None = None,
+        expected_grant_sha256: str | None = None,
     ) -> None:
         """Register one verified route and optionally persist its scoped grant."""
         bind_store = getattr(client, "bind_receipt_store", None)
@@ -223,23 +256,37 @@ class HostedRoomService:
                 != catalog.execution_policy.policy_digest
             ):
                 raise ValueError("peer route does not match its target catalog")
-        if target_url is not None and catalog is not None:
-            hosted_room_links.save_room_link(
-                self.db_path,
-                hosted_room_links.make_stored_link(
-                    room_id=room_id,
-                    member_id=member_id,
-                    target_url=target_url,
-                    target_profile=route.target_profile,
-                    grant=route.grant,
-                    catalog=catalog,
-                    cancellation_scope_id=route.cancellation_scope_id,
-                    trace_id=route.trace_id,
-                ),
-            )
         # Persistence is the publication boundary. A failed disk write must
-        # never leave a process-local route that disappears after restart.
+        # never leave a process-local route that disappears after restart. The
+        # same lock makes reconnect a compare-and-swap against grant rotation.
         with self._policy_lock:
+            current = self.peer_routes.get((room_id, member_id))
+            current_sha256 = (
+                hashlib.sha256(current.grant.encode("utf-8")).hexdigest()
+                if current is not None
+                else ""
+            )
+            incoming_sha256 = hashlib.sha256(route.grant.encode("utf-8")).hexdigest()
+            if (
+                current_sha256 != incoming_sha256
+                and expected_grant_sha256 is not None
+                and current_sha256 != expected_grant_sha256
+            ):
+                raise RuntimeError("peer route changed during reconnect")
+            if target_url is not None and catalog is not None:
+                hosted_room_links.save_room_link(
+                    self.db_path,
+                    hosted_room_links.make_stored_link(
+                        room_id=room_id,
+                        member_id=member_id,
+                        target_url=target_url,
+                        target_profile=route.target_profile,
+                        grant=route.grant,
+                        catalog=catalog,
+                        cancellation_scope_id=route.cancellation_scope_id,
+                        trace_id=route.trace_id,
+                    ),
+                )
             self.peer_routes[(room_id, member_id)] = route
             self.peer_clients[(room_id, member_id)] = client
             self._peer_route_status[(room_id, member_id)] = "ready"
@@ -406,12 +453,197 @@ class HostedRoomService:
         member_id: str,
         action: Mapping[str, Any] | None,
     ) -> None:
+        from gateway import hosted_room_messaging_approvals as approvals
+
         key = (room_id, member_id)
+        stored_action = (
+            {**action, "member_id": member_id} if action is not None else None
+        )
+        if stored_action is not None and stored_action.get("kind") in {
+            "approval",
+            "approval_clear",
+        }:
+            profile = ""
+            try:
+                room = hosted_rooms.room_state(self.db_path, room_id=room_id)
+            except hosted_rooms.RoomNotFoundError:
+                approvals.clear_pending_approval(
+                    self.db_path,
+                    room_id=room_id,
+                    member_id=member_id,
+                )
+                with self._policy_lock:
+                    self._pending_actions.pop(key, None)
+                return
+            reported_gateway_id = str(
+                stored_action.get("authority_gateway_id")
+                or room.get("authority_gateway_id")
+                or ""
+            )
+            reported_epoch = int(
+                stored_action.get("authority_epoch")
+                or room.get("authority_epoch")
+                or 0
+            )
+            reported_observer = str(
+                stored_action.get("observer_generation") or "legacy"
+            )
+            reported_lease_generation = int(
+                stored_action.get("observer_lease_generation") or 0
+            )
+            if reported_observer != "legacy":
+                lease = self.runtime._leases.get(room_id)
+                if (
+                    lease is None
+                    or lease.gateway_id != reported_gateway_id
+                    or lease.authority_epoch != reported_epoch
+                    or lease.process_generation != reported_observer
+                    or lease.lease_generation != reported_lease_generation
+                ):
+                    return
+                try:
+                    driver.require_active_lease(
+                        self.db_path,
+                        lease,
+                        clock=self.runtime.clock,
+                    )
+                except driver.StaleLeaseError:
+                    return
+            if (
+                reported_gateway_id != str(room["authority_gateway_id"])
+                or reported_epoch != int(room["authority_epoch"])
+            ):
+                is_clear = stored_action.get("kind") == "approval_clear"
+                approvals.clear_pending_approval(
+                    self.db_path,
+                    room_id=room_id,
+                    member_id=member_id,
+                    request_id=(
+                        None if is_clear else stored_action.get("request_id")
+                    ),
+                    authority_gateway_id=reported_gateway_id,
+                    authority_epoch=reported_epoch,
+                )
+                with self._policy_lock:
+                    current = self._pending_actions.get(key)
+                    same_authority = str(
+                        (current or {}).get("authority_gateway_id") or ""
+                    ) == reported_gateway_id and int(
+                        (current or {}).get("authority_epoch") or 0
+                    ) == reported_epoch
+                    same_request = str((current or {}).get("request_id") or "") == str(
+                        stored_action.get("request_id") or ""
+                    )
+                    if same_authority and (is_clear or same_request):
+                        self._pending_actions.pop(key, None)
+                return
+            stored_action["authority_gateway_id"] = reported_gateway_id
+            stored_action["authority_epoch"] = reported_epoch
+            stored_action["observer_generation"] = reported_observer
+            stored_action["observer_lease_generation"] = reported_lease_generation
+            if stored_action.get("kind") == "approval_clear":
+                with self._policy_lock:
+                    current = self._pending_actions.get(key)
+                if (
+                    not isinstance(current, Mapping)
+                    or str(current.get("authority_gateway_id") or "")
+                    != reported_gateway_id
+                    or int(current.get("authority_epoch") or 0) != reported_epoch
+                    or str(current.get("task_id") or "")
+                    != str(stored_action.get("task_id") or "")
+                    or int(current.get("execution_generation") or 0)
+                    != int(stored_action.get("execution_generation") or 0)
+                    or str(current.get("session_id") or "")
+                    != str(stored_action.get("session_id") or "")
+                ):
+                    return
+                try:
+                    approvals.clear_pending_approval(
+                        self.db_path,
+                        room_id=room_id,
+                        member_id=member_id,
+                        request_id=current.get("request_id"),
+                        authority_gateway_id=reported_gateway_id,
+                        authority_epoch=reported_epoch,
+                        observer_generation=reported_observer,
+                        observer_lease_generation=reported_lease_generation,
+                    )
+                except approvals.MessagingApprovalObservationStale:
+                    return
+                with self._policy_lock:
+                    if self._pending_actions.get(key) == current:
+                        self._pending_actions.pop(key, None)
+                return
+            for member in room.get("members") or []:
+                if not isinstance(member, Mapping):
+                    continue
+                if str(member.get("member_id") or member.get("profile") or "") != member_id:
+                    continue
+                target = member.get("target")
+                profile = str(
+                    (target.get("profile") if isinstance(target, Mapping) else "")
+                    or member.get("profile")
+                    or ""
+                )
+                break
+            stored_action["profile"] = profile
+        changed = False
+        previous_action: Mapping[str, Any] | None = None
         with self._policy_lock:
-            if action is None:
-                self._pending_actions.pop(key, None)
-            else:
-                self._pending_actions[key] = {**action, "member_id": member_id}
+            current_action = self._pending_actions.get(key)
+            if stored_action is None:
+                if current_action is not None:
+                    changed = True
+                    previous_action = dict(current_action)
+            elif current_action != stored_action:
+                previous_action = (
+                    dict(current_action) if current_action is not None else None
+                )
+                self._pending_actions[key] = stored_action
+                changed = True
+        if stored_action is None and changed:
+            approvals.clear_pending_approval(
+                self.db_path,
+                room_id=room_id,
+                member_id=member_id,
+                request_id=(previous_action or {}).get("request_id"),
+                authority_gateway_id=(previous_action or {}).get(
+                    "authority_gateway_id"
+                ),
+                authority_epoch=(previous_action or {}).get("authority_epoch"),
+            )
+            with self._policy_lock:
+                if self._pending_actions.get(key) == previous_action:
+                    self._pending_actions.pop(key, None)
+        elif changed and stored_action.get("kind") == "approval":
+            try:
+                approvals.persist_pending_approval(
+                    self.db_path,
+                    room_id=room_id,
+                    member_id=member_id,
+                    action=stored_action,
+                )
+            except Exception as exc:
+                with self._policy_lock:
+                    if self._pending_actions.get(key) == stored_action:
+                        if previous_action is None:
+                            self._pending_actions.pop(key, None)
+                        else:
+                            self._pending_actions[key] = dict(previous_action)
+                if isinstance(exc, approvals.MessagingApprovalObservationStale):
+                    return
+                raise
+        if stored_action is not None and stored_action.get("kind") == "approval":
+            binding = next(
+                (
+                    candidate
+                    for candidate in self.bindings()
+                    if candidate.room_id == room_id
+                ),
+                None,
+            )
+            if binding is not None:
+                self._apply_pending_control_approvals(binding)
 
     def _rotate_route_grant(
         self,
@@ -421,62 +653,62 @@ class HostedRoomService:
         catalog: GatewayRoomCatalog | None = None,
     ) -> None:
         """Persist a target-refreshed scoped grant before publishing it live."""
-        key = (room_id, member_id)
-        route = self.peer_routes.get(key)
-        if route is None:
-            raise RuntimeError("peer room route is unavailable")
-        stored = next(
-            (
-                link
-                for link in hosted_room_links.load_room_links(self.db_path)
-                if (link.room_id, link.member_id) == key
-            ),
-            None,
-        )
-        if stored is None:
-            raise RuntimeError("peer room route cannot be renewed before persistence")
-        effective_catalog = catalog or stored.catalog
-        if catalog is not None and (
-            catalog.installation_id != route.target_install_id
-            or catalog.execution_policy.target_profile != route.target_profile
-            or PROTOCOL_VERSION not in catalog.protocol_versions
-            or "direct" not in catalog.link_modes
-            or not catalog.text
-            or catalog.execution_policy.policy_digest
-            != route.execution_policy_digest
-        ):
-            self._set_route_status(room_id, member_id, "needs_reauthorization")
-            raise RuntimeError(
-                "peer room execution policy changed; reauthorization is required"
-            )
-        rotated_route = replace(
-            route,
-            grant=grant,
-            capability_digest=(
-                catalog.catalog_digest
-                if catalog is not None
-                else route.capability_digest
-            ),
-            execution_policy_digest=(
-                catalog.execution_policy.policy_digest
-                if catalog is not None
-                else route.execution_policy_digest
-            ),
-        )
-        hosted_room_links.save_room_link(
-            self.db_path,
-            hosted_room_links.make_stored_link(
-                room_id=room_id,
-                member_id=member_id,
-                target_url=stored.target_url,
-                target_profile=stored.target_profile,
-                grant=grant,
-                catalog=effective_catalog,
-                cancellation_scope_id=stored.cancellation_scope_id,
-                trace_id=stored.trace_id,
-            ),
-        )
         with self._policy_lock:
+            key = (room_id, member_id)
+            route = self.peer_routes.get(key)
+            if route is None:
+                raise RuntimeError("peer room route is unavailable")
+            stored = next(
+                (
+                    link
+                    for link in hosted_room_links.load_room_links(self.db_path)
+                    if (link.room_id, link.member_id) == key
+                ),
+                None,
+            )
+            if stored is None:
+                raise RuntimeError("peer room route cannot be renewed before persistence")
+            effective_catalog = catalog or stored.catalog
+            if catalog is not None and (
+                catalog.installation_id != route.target_install_id
+                or catalog.execution_policy.target_profile != route.target_profile
+                or PROTOCOL_VERSION not in catalog.protocol_versions
+                or "direct" not in catalog.link_modes
+                or not catalog.text
+                or catalog.execution_policy.policy_digest
+                != route.execution_policy_digest
+            ):
+                self._set_route_status(room_id, member_id, "needs_reauthorization")
+                raise RuntimeError(
+                    "peer room execution policy changed; reauthorization is required"
+                )
+            rotated_route = replace(
+                route,
+                grant=grant,
+                capability_digest=(
+                    catalog.catalog_digest
+                    if catalog is not None
+                    else route.capability_digest
+                ),
+                execution_policy_digest=(
+                    catalog.execution_policy.policy_digest
+                    if catalog is not None
+                    else route.execution_policy_digest
+                ),
+            )
+            hosted_room_links.save_room_link(
+                self.db_path,
+                hosted_room_links.make_stored_link(
+                    room_id=room_id,
+                    member_id=member_id,
+                    target_url=stored.target_url,
+                    target_profile=stored.target_profile,
+                    grant=grant,
+                    catalog=effective_catalog,
+                    cancellation_scope_id=stored.cancellation_scope_id,
+                    trace_id=stored.trace_id,
+                ),
+            )
             self.peer_routes[key] = rotated_route
             self._peer_route_status[key] = "ready"
 
@@ -492,6 +724,33 @@ class HostedRoomService:
                 if room_id is None or key[0] == room_id
             ]
         return sorted(rows, key=lambda row: (row["room_id"], row["member_id"]))
+
+    def status_with_grant_fingerprints(self, room_id: str) -> dict[str, Any]:
+        """Snapshot reconnect status and non-secret grant identity atomically."""
+        with self._policy_lock:
+            status = self.status(room_id)
+            return {
+                **status,
+                "peer_routes": [
+                    {
+                        **row,
+                        **(
+                            {
+                                "grant_sha256": hashlib.sha256(
+                                    route.grant.encode("utf-8")
+                                ).hexdigest()
+                            }
+                            if (
+                                route := self.peer_routes.get(
+                                    (room_id, str(row.get("member_id") or ""))
+                                )
+                            )
+                            else {}
+                        ),
+                    }
+                    for row in status.get("peer_routes", [])
+                ],
+            }
 
     def _events(self, room_id: str) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
@@ -657,6 +916,164 @@ class HostedRoomService:
             elif decision.status in {"settled", "bounded"}:
                 self._append_room_status(room, decision)
 
+    def _apply_pending_control_retries(
+        self,
+        binding: HostedRoomBinding,
+        lease: driver.DriverLease,
+    ) -> None:
+        """Apply cross-process Retry commands under this worker's active lease."""
+
+        pending = hosted_room_controls.load_pending_control_retries(
+            self.db_path,
+            room_id=binding.room_id,
+        )
+        if not pending:
+            return
+        room = hosted_rooms.room_state(self.db_path, room_id=binding.room_id)
+        stopped_through_seq = self._policy_snapshot(room).stopped_through_seq
+        tasks = {
+            task["identity"].task_id: task
+            for task in driver.list_tasks(self.db_path, room_id=binding.room_id)
+        }
+        for command in pending:
+            try:
+                for task_id in command.task_ids:
+                    task = tasks.get(task_id)
+                    if task is None:
+                        continue
+                    status = str(task.get("status") or "")
+                    if status in driver.TERMINAL_STATUSES or status == "stopping":
+                        continue
+                    source_event_seq = int(
+                        (task.get("payload") or {}).get("source_event_seq") or 0
+                    )
+                    if source_event_seq < stopped_through_seq:
+                        self.runtime.cancel(
+                            task["identity"],
+                            cancel_id=f"stop-fence:{stopped_through_seq}",
+                        )
+                        continue
+                    if status in {"deferred", "indeterminate"}:
+                        self.retry_room_task(
+                            binding.room_id,
+                            task_id=task_id,
+                            retry_id=hosted_room_controls.control_retry_attempt_id(
+                                command.command_id, task_id
+                            ),
+                        )
+                hosted_room_controls.complete_control_retry(
+                    self.db_path,
+                    command_id=command.command_id,
+                    result={
+                        "action": "retry",
+                        "processed": len(command.task_ids),
+                    },
+                    lease=lease,
+                    now=self.runtime.clock(),
+                )
+            except Exception as exc:
+                hosted_room_controls.defer_control_retry(
+                    self.db_path,
+                    command_id=command.command_id,
+                    now=self.runtime.clock(),
+                )
+                logger.warning(
+                    "Hosted room retry command %s remains pending: %s",
+                    command.command_id,
+                    exc,
+                )
+
+    def _apply_pending_controls(
+        self,
+        binding: HostedRoomBinding,
+        lease: driver.DriverLease,
+    ) -> None:
+        self._apply_pending_control_retries(binding, lease)
+        self._apply_pending_control_approvals(binding)
+
+    def _apply_pending_control_approvals(
+        self,
+        binding: HostedRoomBinding,
+    ) -> None:
+        from gateway import hosted_room_messaging_approvals as approvals
+
+        pending = approvals.list_pending_approval_commands(
+            self.db_path,
+            room_id=binding.room_id,
+        )
+        if not pending:
+            return
+        durable = {
+            (
+                item["authority_gateway_id"],
+                item["authority_epoch"],
+                item["member_id"],
+                item["task_id"],
+                item["execution_generation"],
+                item["request_id"],
+            )
+            for item in approvals.list_pending_approvals(
+                self.db_path,
+                room_id=binding.room_id,
+            )
+        }
+        for command in pending:
+            coordinates = (
+                str(command["authority_gateway_id"]),
+                int(command["authority_epoch"]),
+                str(command["member_id"]),
+                str(command["task_id"]),
+                int(command["execution_generation"]),
+                str(command["request_id"]),
+            )
+            if coordinates not in durable:
+                approvals.complete_approval_command(
+                    self.db_path,
+                    command_id=command["command_id"],
+                    result="Approval was already resolved.",
+                )
+                continue
+            with self._policy_lock:
+                action = self._pending_actions.get(
+                    (binding.room_id, coordinates[2])
+                )
+            if (
+                not isinstance(action, Mapping)
+                or coordinates[0] != binding.gateway_id
+                or coordinates[1] != binding.authority_epoch
+                or str(action.get("authority_gateway_id") or "") != coordinates[0]
+                or int(action.get("authority_epoch") or 0) != coordinates[1]
+                or str(action.get("task_id") or "") != coordinates[3]
+                or int(action.get("execution_generation") or 0) != coordinates[4]
+                or str(action.get("request_id") or "") != coordinates[5]
+            ):
+                continue
+            try:
+                self.approve_room_task(
+                    binding.room_id,
+                    member_id=coordinates[2],
+                    task_id=coordinates[3],
+                    execution_generation=coordinates[4],
+                    choice=str(command["choice"]),
+                    request_id=coordinates[5],
+                )
+                result = (
+                    "Approved once."
+                    if command["choice"] == "once"
+                    else "Denied."
+                )
+                approvals.complete_approval_command(
+                    self.db_path,
+                    command_id=command["command_id"],
+                    result=result,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Hosted room approval command %s remains pending: %s",
+                    command["command_id"],
+                    exc,
+                )
+
     def publish_terminal(
         self,
         binding: HostedRoomBinding,
@@ -700,6 +1117,23 @@ class HostedRoomService:
         event_id: str,
         payload: Any,
     ) -> dict[str, Any]:
+        return self.send_server_owned(
+            room_id=room_id,
+            event_id=event_id,
+            payload=payload,
+            actor={"kind": "user", "id": "desktop"},
+        )
+
+    def send_server_owned(
+        self,
+        *,
+        room_id: str,
+        event_id: str,
+        payload: Any,
+        actor: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Append a user event whose actor was derived by trusted gateway code."""
+
         normalized = discussion.validate_user_payload(payload)
         room = self._owned_room(room_id)
         event = hosted_rooms.append_event(
@@ -707,7 +1141,7 @@ class HostedRoomService:
             room_id=room_id,
             event_id=event_id,
             kind="message.user",
-            actor={"kind": "user", "id": "desktop"},
+            actor=dict(actor),
             payload=normalized,
             authority_gateway_id=str(room["authority_gateway_id"]),
             authority_epoch=int(room["authority_epoch"]),
@@ -734,13 +1168,14 @@ class HostedRoomService:
         require_acknowledged: bool = False,
     ) -> int:
         room = self._owned_room(room_id)
-        hosted_rooms.request_room_stop(
+        stop_event = hosted_rooms.request_room_stop(
             self.db_path,
             room_id=room_id,
             cancel_id=cancel_id,
             expected_gateway_id=str(room["authority_gateway_id"]),
             expected_epoch=int(room["authority_epoch"]),
         )
+        stop_seq = int(stop_event["seq"])
         cancelled = 0
         pending = 0
         with self._policy_lock:
@@ -757,6 +1192,8 @@ class HostedRoomService:
                     room_id=room_id,
                     status=status,
                 ):
+                    if int(task["payload"]["source_event_seq"]) >= stop_seq:
+                        continue
                     identity = task["identity"]
                     tasks[(identity.room_id, identity.task_id)] = task
             for task in tasks.values():
@@ -779,16 +1216,19 @@ class HostedRoomService:
         self.runtime.wakeup()
         return cancelled
 
-    def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
+    def retry_room_task(
+        self,
+        room_id: str,
+        *,
+        task_id: str,
+        retry_id: str | None = None,
+    ) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""
 
         task = next(
             (
                 candidate
-                for status in ("indeterminate", "deferred")
-                for candidate in driver.list_tasks(
-                    self.db_path, room_id=room_id, status=status
-                )
+                for candidate in driver.list_tasks(self.db_path, room_id=room_id)
                 if candidate["identity"].task_id == task_id
             ),
             None,
@@ -797,7 +1237,18 @@ class HostedRoomService:
             raise driver.InvalidTaskTransitionError(
                 "no retryable room task matches task_id"
             )
-        return self.runtime.retry_indeterminate(task["identity"])
+        if retry_id and driver.retry_receipt_exists(
+            self.db_path,
+            room_id=room_id,
+            task_id=task_id,
+            retry_id=retry_id,
+        ):
+            return {**task, "idempotent": True}
+        if task["status"] not in {"indeterminate", "deferred"}:
+            raise driver.InvalidTaskTransitionError(
+                "no retryable room task matches task_id"
+            )
+        return self.runtime.retry_indeterminate(task["identity"], retry_id=retry_id)
 
     def approve_room_task(
         self,
@@ -815,6 +1266,42 @@ class HostedRoomService:
         client = self.peer_clients.get(key)
         with self._policy_lock:
             action = self._pending_actions.get(key)
+        from gateway import hosted_room_messaging_approvals as approvals
+
+        try:
+            room = self._owned_room(room_id)
+        except hosted_rooms.RoomNotFoundError:
+            approvals.clear_pending_approval(
+                self.db_path,
+                room_id=room_id,
+                member_id=member_id,
+                request_id=request_id,
+                authority_gateway_id=(action or {}).get("authority_gateway_id"),
+                authority_epoch=(action or {}).get("authority_epoch"),
+            )
+            with self._policy_lock:
+                current = self._pending_actions.get(key)
+                if current == action:
+                    self._pending_actions.pop(key, None)
+            raise approvals.MessagingApprovalTerminalError(
+                "Approval expired because the Group Chat is no longer available."
+            ) from None
+        except hosted_rooms.AuthorityConflictError:
+            approvals.clear_pending_approval(
+                self.db_path,
+                room_id=room_id,
+                member_id=member_id,
+                request_id=request_id,
+                authority_gateway_id=(action or {}).get("authority_gateway_id"),
+                authority_epoch=(action or {}).get("authority_epoch"),
+            )
+            with self._policy_lock:
+                current = self._pending_actions.get(key)
+                if current == action:
+                    self._pending_actions.pop(key, None)
+            raise approvals.MessagingApprovalTerminalError(
+                "Approval expired because Group Chat authority changed."
+            ) from None
         requested_approval_id = str(request_id or "")
         pending_approval_id = str((action or {}).get("request_id") or "")
         if (
@@ -827,6 +1314,27 @@ class HostedRoomService:
             or requested_approval_id != pending_approval_id
         ):
             raise RuntimeError("room approval is no longer pending")
+        if (
+            str((action or {}).get("authority_gateway_id") or "")
+            != str(room["authority_gateway_id"])
+            or int((action or {}).get("authority_epoch") or 0)
+            != int(room["authority_epoch"])
+        ):
+            approvals.clear_pending_approval(
+                self.db_path,
+                room_id=room_id,
+                member_id=member_id,
+                request_id=request_id,
+                authority_gateway_id=(action or {}).get("authority_gateway_id"),
+                authority_epoch=(action or {}).get("authority_epoch"),
+            )
+            with self._policy_lock:
+                current = self._pending_actions.get(key)
+                if current == action:
+                    self._pending_actions.pop(key, None)
+            raise approvals.MessagingApprovalTerminalError(
+                "Approval expired because Group Chat authority changed."
+            )
         if choice not in {"once", "deny"}:
             raise RuntimeError("room approval choice must be once or deny")
         approve = getattr(client, "approve_receipt", None)
@@ -840,15 +1348,40 @@ class HostedRoomService:
             )
         else:
             session_id = str(action.get("session_id") or "")
+            profile = str(action.get("profile") or "")
             if not session_id:
                 raise RuntimeError("local room approval identity is unavailable")
+            if profile:
+                resumed = self.rpc.resume(
+                    profile=profile,
+                    session_id=session_id,
+                    source=ROOM_SESSION_SOURCE,
+                )
+                session_id = str((resumed or {}).get("session_id") or session_id)
             result = self.rpc.approve(
                 session_id=session_id,
                 request_id=requested_approval_id,
                 choice=choice,
             )
-        if result is None:
-            raise RuntimeError("room approval target is unavailable")
+        if not isinstance(result, Mapping) or int(result.get("resolved") or 0) != 1:
+            raise RuntimeError("room approval target did not resolve the exact request")
+        for attempt in range(2):
+            try:
+                approvals.clear_pending_approval(
+                    self.db_path,
+                    room_id=room_id,
+                    member_id=member_id,
+                    request_id=requested_approval_id,
+                    authority_gateway_id=(action or {}).get(
+                        "authority_gateway_id"
+                    ),
+                    authority_epoch=(action or {}).get("authority_epoch"),
+                )
+                break
+            except Exception:
+                if attempt:
+                    raise
+                logger.warning("Retrying durable Group Chat approval cleanup")
         with self._policy_lock:
             current = self._pending_actions.get(key)
             if (
@@ -881,7 +1414,18 @@ class HostedRoomService:
         ]
         with self._policy_lock:
             pending_actions.extend(
-                dict(action)
+                {
+                    key: value
+                    for key, value in action.items()
+                    if key
+                    not in {
+                        "profile",
+                        "authority_gateway_id",
+                        "authority_epoch",
+                        "observer_generation",
+                        "observer_lease_generation",
+                    }
+                }
                 for (
                     action_room_id,
                     _member_id,

@@ -69,6 +69,8 @@ from agent.turn_context import (
 )
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from session_turn_lease import is_session_turn_lease_wait_refresh as _is_lease_refresh
+from session_turn_lease import session_turn_lease_refresh_re as _session_turn_lease_refresh_re
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -1181,6 +1183,21 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
         # Timeout or session-boundary cancellation
         return f"[user did not respond within {int(timeout / 60)}m]"
     return response
+
+
+def _should_suppress_lease_wait_refresh(adapter, message: str) -> bool:
+    """True when a periodic turn-lease wait refresh would flood this adapter.
+
+    The periodic refresh exists to update the initial "Another Hermes process
+    is using this session..." notice in place. On adapters without
+    ``send_or_update_status`` (WeCom, Weixin, QQ, Signal, ... — all
+    SUPPORTS_MESSAGE_EDITING = False) ``_send_or_update_status_coro`` falls
+    back to a plain send, so every ~15s refresh lands as another standalone
+    chat message (#89166). Suppress the refresh there; the initial notice and
+    the lease-timeout warning use different wording and are always delivered.
+    """
+    can_update = callable(getattr(adapter, "send_or_update_status", None))
+    return not can_update and _is_lease_refresh(message)
 
 
 def _resolve_progress_thread_id(
@@ -5907,6 +5924,15 @@ class TurnRunner:
                 ctx.source.platform.value if ctx.source.platform else "unknown",
                 event_type,
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
+            )
+            return
+        if _should_suppress_lease_wait_refresh(
+            ctx._status_adapter, prepared_message
+        ):
+            logger.debug(
+                "suppressed periodic lease-wait refresh for %s: adapter has "
+                "no in-place status updates",
+                ctx.source.platform.value if ctx.source.platform else "unknown",
             )
             return
         _fut = safe_schedule_threadsafe(
@@ -18514,32 +18540,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         "moa": "Agent is running — wait or /stop first, then run /moa.",
     }
 
-    def _gateway_plain_command_handlers(self):
-        """Return ordinary slash handlers shared by idle and busy dispatch."""
-        return {
-            "status": self._handle_status_command,
-            "context": self._handle_context_command,
-            "restart": self._handle_restart_command,
-            "approve": self._handle_approve_command,
-            "deny": self._handle_deny_command,
-            "pause": self._handle_pause_command,
-            "agents": self._handle_agents_command,
-            "bg": self._handle_background_command,
-            "btw": self._handle_btw_command,
-            "kanban": self._handle_kanban_command,
-            "subgoal": self._handle_subgoal_command,
-            "heartbeat": self._handle_heartbeat_command,
-            "busy": self._handle_busy_command,
-            "yolo": self._handle_yolo_command,
-            "verbose": self._handle_verbose_command,
-            "footer": self._handle_footer_command,
-            "help": self._handle_help_command,
-            "commands": self._handle_commands_command,
-            "profile": self._handle_profile_command,
-            "update": self._handle_update_command,
-            "version": self._handle_version_command,
-        }
-
     async def _dispatch_busy_slash_command(
         self, event: MessageEvent, cmd_def, quick_key: str, source,
     ):
@@ -26673,7 +26673,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return result
             return result
 
-        _p = self._typed_command_prefix_for(event.source.platform)
+        _p = self._typed_command_prefix_for(event.source)
         prompt_message = (
             f"⚠️ **Confirm /{command}**\n\n"
             f"{detail}\n\n"

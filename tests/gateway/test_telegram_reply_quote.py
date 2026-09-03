@@ -70,5 +70,18 @@ def test_native_partial_quote_used_as_reply_to_text():
 
     assert event.reply_to_text == "Item B: rotate keys"
     assert event.reply_to_message_id == "42"
+    assert event.source.is_one_to_one is True
+    assert event.source.message_is_edit is False
 
 
+def test_edited_telegram_message_is_marked_for_command_replay_guard():
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    message = _make_message(text="/group 1 send changed")
+    message.edit_date = object()
+
+    event = adapter._build_message_event(message, MessageType.TEXT)
+
+    assert event.source.is_one_to_one is True
+    assert event.source.message_is_edit is True

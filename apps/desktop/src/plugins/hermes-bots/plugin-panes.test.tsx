@@ -28,6 +28,8 @@ const mocks = vi.hoisted(() => ({
   botChatOwnsWorkspace: vi.fn(() => false),
   paneVisibility: vi.fn(),
   sessionOwnsWorkspace: vi.fn(() => false),
+  startHostedRoomRuntime: vi.fn(async () => undefined),
+  stopHostedRoomRuntime: vi.fn(),
   setWorkspaceScope: vi.fn()
 }))
 
@@ -49,10 +51,15 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 // storage sweeps and the panes' own render trees.
 vi.mock('./avatar', () => ({ startFaceClock: vi.fn(), stopFaceClock: vi.fn() }))
 vi.mock('./relay', () => ({ startBotRelay: vi.fn(), stopBotRelay: vi.fn() }))
+vi.mock('./hosted-room-runtime', () => ({
+  startHostedRoomRuntime: mocks.startHostedRoomRuntime,
+  stopHostedRoomRuntime: mocks.stopHostedRoomRuntime
+}))
 vi.mock('./session-sweep', () => ({ startHideSweepScheduler: vi.fn() }))
 vi.mock('./canonical-chat', () => ({ openBotCanonicalChat: vi.fn() }))
 vi.mock('./chat-empty', () => ({ BotChatEmpty: () => null }))
 vi.mock('./hygiene', () => ({ annotateOrphanedGroupChatMembers: () => ({ changed: false, rooms: {} }) }))
+vi.mock('./group-chat-view', () => ({ renameGroupChat: vi.fn(async (_old, next) => next) }))
 vi.mock('./cron', () => ({ bindProfileSync: () => () => undefined, RoutinesPane: () => null }))
 vi.mock('./roster-pane', () => ({
   botChatOwnsWorkspace: mocks.botChatOwnsWorkspace,
@@ -97,7 +104,7 @@ interface Registration {
 }
 
 /** A recording `PluginContext`: registrations, their disposers, teardown. */
-function recordingContext() {
+function recordingContext(storageGet: (key: string) => Promise<unknown> = async () => undefined) {
   const disposers: (() => void)[] = []
   const registrations: Registration[] = []
   const unregisters = new Map<string, () => void>()
@@ -116,7 +123,7 @@ function recordingContext() {
 
       return unregister
     },
-    storage: { get: async () => undefined, set: async () => undefined }
+    storage: { get: storageGet, set: async () => undefined }
   }
 
   return {
@@ -177,6 +184,39 @@ describe('the Bots pane dock', () => {
     expect(data).not.toHaveProperty('heal')
 
     harness.dispose()
+  })
+})
+
+describe('hosted Group Chat startup', () => {
+  it('does not probe or replay hosted rooms before local Group Chat hydration settles', async () => {
+    paneStores()
+    let releaseRooms: (value: unknown) => void = () => undefined
+
+    const rooms = new Promise(resolve => {
+      releaseRooms = resolve
+    })
+
+    const harness = recordingContext(async key => (key === 'group-chats' ? rooms : undefined))
+
+    plugin.register(harness.ctx)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(mocks.startHostedRoomRuntime).not.toHaveBeenCalled()
+
+    releaseRooms({})
+    await settle()
+
+    expect(mocks.startHostedRoomRuntime).toHaveBeenCalledTimes(1)
+    expect(mocks.startHostedRoomRuntime).toHaveBeenCalledWith(
+      harness.ctx.storage,
+      expect.objectContaining({
+        renameGroupChat: expect.any(Function)
+      })
+    )
+
+    harness.dispose()
+    expect(mocks.stopHostedRoomRuntime).toHaveBeenCalled()
   })
 })
 

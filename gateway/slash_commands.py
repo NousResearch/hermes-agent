@@ -33,6 +33,8 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
+from gateway.group_chat_slash import GroupChatSlashCommandsMixin
+from gateway.slash_dispatch import GatewaySlashDispatchMixin
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
@@ -54,7 +56,6 @@ logger = logging.getLogger("gateway.run")
 # past this the reset proceeds and the cleanup is left to finish (or leak) in
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
-
 
 def _clean_str(value: Any) -> str:
     """Strip and return a non-empty string value, or empty string."""
@@ -123,12 +124,15 @@ def _home_thread_from_source(source) -> Optional[str]:
     return str(thread_id)
 
 
-class GatewaySlashCommandsMixin:
+class GatewaySlashCommandsMixin(
+    GroupChatSlashCommandsMixin,
+    GatewaySlashDispatchMixin,
+):
     """In-session slash-command handlers for GatewayRunner."""
 
     async_session_store: AsyncSessionStore
 
-    def _typed_command_prefix_for(self, platform) -> str:
+    def _typed_command_prefix_for(self, source_or_platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
 
         Reads the adapter's ``typed_command_prefix`` capability flag
@@ -138,7 +142,27 @@ class GatewaySlashCommandsMixin:
         Instruction text built for those platforms must show the prefix
         that actually works when typed.
         """
-        adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
+        source = (
+            source_or_platform
+            if getattr(source_or_platform, "platform", None) is not None
+            else None
+        )
+        platform = source.platform if source is not None else source_or_platform
+        if (
+            source is not None
+            and getattr(source, "delivered_via_upstream_relay", False) is True
+            and platform in {Platform.SLACK, Platform.MATRIX}
+        ):
+            return "!"
+        adapter = (
+            self._adapter_for_source(source)
+            if source is not None
+            else (
+                self.adapters.get(platform)
+                if getattr(self, "adapters", None)
+                else None
+            )
+        )
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
@@ -572,6 +596,13 @@ class GatewaySlashCommandsMixin:
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+
+
+
+
+
+
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
@@ -2520,7 +2551,7 @@ class GatewaySlashCommandsMixin:
                 # an explicit decision).
                 return await _finish_switch()
 
-            _p = self._typed_command_prefix_for(event.source.platform)
+            _p = self._typed_command_prefix_for(event.source)
             return await self._request_slash_confirm(
                 event=event,
                 command="model",
@@ -3877,44 +3908,6 @@ class GatewaySlashCommandsMixin:
             ]
         )
         return choices
-
-    async def _try_send_choice_picker(
-        self,
-        event: MessageEvent,
-        session_key: str,
-        title: str,
-        choices: list,
-        on_choice_selected,
-    ) -> bool:
-        """Send an interactive choice picker when the platform supports it.
-
-        Mirrors the `/model` picker gate: the capability is detected on the
-        adapter *type* (``send_choice_picker``), and a failed send falls back
-        to the text path (returns False) instead of erroring the command.
-        """
-        adapter = getattr(self, "_adapter_for_source")(event.source)
-        has_picker = (
-            adapter is not None
-            and getattr(type(adapter), "send_choice_picker", None) is not None
-        )
-        if not has_picker:
-            return False
-        try:
-            metadata = self._thread_metadata_for_source(
-                event.source, self._reply_anchor_for_event(event)
-            )
-            result = await adapter.send_choice_picker(
-                chat_id=event.source.chat_id,
-                title=title,
-                choices=choices,
-                session_key=session_key,
-                on_choice_selected=on_choice_selected,
-                metadata=metadata,
-            )
-            return bool(getattr(result, "success", False))
-        except Exception as e:
-            logger.warning("send_choice_picker failed, falling back to text: %s", e)
-            return False
 
     async def _handle_reasoning_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /reasoning command — manage reasoning effort and display toggle.

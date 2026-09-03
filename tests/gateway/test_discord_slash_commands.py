@@ -474,6 +474,13 @@ class _FakeTextChannel:
         return _empty()
 
 
+class _FakeDMChannel(_discord_mod.DMChannel):
+    def __init__(self, channel_id=101):
+        self.id = channel_id
+        self.name = "Direct message"
+        self.topic = None
+
+
 class _FakeThreadChannel(_discord_mod.Thread):
     """isinstance(ch, discord.Thread) → True."""
 
@@ -491,6 +498,38 @@ class _FakeThreadChannel(_discord_mod.Thread):
             yield  # pragma: no cover — make this an async generator
 
         return _empty()
+
+
+def test_discord_slash_interaction_supplies_room_control_idempotency(adapter):
+    from gateway.hosted_room_messaging import messaging_event_id
+
+    channel = _FakeTextChannel(channel_id=123)
+    interaction = SimpleNamespace(
+        id=987654321,
+        channel=channel,
+        channel_id=channel.id,
+        user=SimpleNamespace(id=42, display_name="Jezza"),
+    )
+    event = adapter._build_slash_event(
+        interaction,
+        "/group 1 send hello",
+    )
+    assert messaging_event_id(event) == messaging_event_id(event)
+    assert event.source.is_one_to_one is False
+
+
+def test_discord_dm_slash_marks_verified_one_to_one(adapter):
+    channel = _FakeDMChannel()
+    interaction = SimpleNamespace(
+        id=987654322,
+        channel=channel,
+        channel_id=channel.id,
+        user=SimpleNamespace(id=42, display_name="Jezza"),
+    )
+
+    event = adapter._build_slash_event(interaction, "/group")
+
+    assert event.source.is_one_to_one is True
 
 
 def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza"):

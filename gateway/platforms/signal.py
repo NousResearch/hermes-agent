@@ -742,6 +742,9 @@ class SignalAdapter(BasePlatformAdapter):
             user_id_alt=sender_uuid if sender_uuid else None,
             chat_id_alt=group_id if is_group else None,
         )
+        source.is_one_to_one = not is_group
+        source.message_is_edit = envelope_data.get("editMessage") is not None
+        source.message_had_attachments = bool(attachments_data)
 
         # Determine message type from media
         msg_type = MessageType.TEXT

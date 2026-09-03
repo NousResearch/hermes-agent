@@ -67,4 +67,43 @@ describe('BOTS_LOCALES', () => {
       expect(reasonFn(sentinel)).toContain(sentinel)
     }
   })
+
+  it('keeps automatic continuity copy concise and free of gateway jargon', () => {
+    const byPath = Object.fromEntries(leafEntries(en!))
+    const copy = (path: string) => byPath[`group.${path}`] as (value: string) => string
+    const text = (path: string) => byPath[`group.${path}`] as string
+
+    const samples = [
+      copy('hostedFallbackToDesktop')('Studio'),
+      copy('hostedQueued')('Studio'),
+      copy('hostedQueuedHint')('Studio'),
+      copy('hostedSendFailed')('Studio'),
+      copy('hostedRenameQueued')('Studio'),
+      copy('hostedRenameFailed')('Studio'),
+      copy('hostUpdateNeeded')('Studio'),
+      copy('hostReconnectToContinue')('Studio'),
+      copy('hostedReconnectToStop')('Studio'),
+      copy('hostedReconnectToDelete')('Studio'),
+      text('hostedSending'),
+      text('hostedWorking'),
+      text('hostedNeedsAttention'),
+      text('hostedStopping'),
+      text('hostedStopped'),
+      text('hostedDeleted'),
+      text('hostedDeleteLocally'),
+      text('hostedMembersFixed'),
+      text('hostRouteMissing'),
+      text('hostedSyncing'),
+      text('botsNeedOneHost'),
+      text('desktopStorageUnavailable'),
+      text('hostRejectedCommand')
+    ]
+
+    expect(byPath).not.toHaveProperty('group.keepRunningTitle')
+
+    for (const sample of samples) {
+      expect(sample).not.toMatch(/gateway/i)
+      expect(sample.length).toBeLessThanOrEqual(110)
+    }
+  })
 })

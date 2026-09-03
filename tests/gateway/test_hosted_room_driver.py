@@ -514,6 +514,122 @@ def test_release_fails_closed_while_its_task_is_running(db):
     assert driver.release_lease(db, lease, clock=clock)["idempotent"] is False
 
 
+def test_active_lease_revalidation_does_not_extend_expiry(db):
+    clock = FakeClock()
+    lease = _lease(db, clock, ttl=5)
+
+    validated = driver.require_active_lease(db, lease, clock=clock)
+
+    assert validated == lease
+    clock.advance(5)
+    with pytest.raises(driver.StaleLeaseError):
+        driver.require_active_lease(db, lease, clock=clock)
+
+
+def test_start_task_atomically_honors_room_stop_fence(db):
+    clock = FakeClock()
+    identity = _identity()
+    lease = _lease(db, clock)
+    rooms.append_event(
+        db,
+        room_id="room-1",
+        event_id="user-before-start",
+        kind="message.user",
+        actor={"kind": "user", "id": "desktop"},
+        payload={"text": "Start", "thread_id": "thread-1"},
+        authority_gateway_id="gateway-a",
+        authority_epoch=1,
+    )
+    _admit(db, identity, clock)
+    rooms.request_room_stop(
+        db,
+        room_id="room-1",
+        cancel_id="stop-before-start",
+        expected_gateway_id="gateway-a",
+        expected_epoch=1,
+    )
+
+    assert (
+        driver.start_task(
+            db,
+            identity,
+            lease,
+            expected_cancel_generation=0,
+            clock=clock,
+        )
+        is None
+    )
+    assert driver.get_task(db, identity)["status"] == "cancelled"
+
+
+@pytest.mark.parametrize("retry_state", ["deferred", "indeterminate"])
+def test_retry_atomically_honors_room_stop_fence(db, retry_state):
+    clock = FakeClock()
+    identity = _identity()
+    first = _lease(db, clock, ttl=5)
+    rooms.append_event(
+        db,
+        room_id="room-1",
+        event_id="user-before-retry",
+        kind="message.user",
+        actor={"kind": "user", "id": "desktop"},
+        payload={"text": "Retry", "thread_id": "thread-1"},
+        authority_gateway_id="gateway-a",
+        authority_epoch=1,
+    )
+    _admit(db, identity, clock)
+    original = driver.start_task(
+        db,
+        identity,
+        first,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+    assert original is not None
+    clock.advance(5)
+    recovered = _lease(db, clock, process="new-process", ttl=30)
+    driver.recover_room(db, recovered, clock=clock)
+    if retry_state == "deferred":
+        driver.defer_indeterminate_task(
+            db,
+            identity,
+            recovered,
+            expected_execution_generation=original.execution_generation,
+            expected_cancel_generation=original.cancel_generation,
+            reason="member_unavailable",
+            clock=clock,
+        )
+    rooms.request_room_stop(
+        db,
+        room_id="room-1",
+        cancel_id="stop-before-retry",
+        expected_gateway_id="gateway-a",
+        expected_epoch=1,
+    )
+
+    if retry_state == "deferred":
+        retried = driver.requeue_deferred_task(
+            db,
+            identity,
+            recovered,
+            expected_execution_generation=original.execution_generation,
+            expected_cancel_generation=original.cancel_generation,
+            clock=clock,
+        )
+    else:
+        retried = driver.requeue_indeterminate_task(
+            db,
+            identity,
+            recovered,
+            expected_execution_generation=original.execution_generation,
+            expected_cancel_generation=original.cancel_generation,
+            clock=clock,
+        )
+
+    assert retried["status"] == "cancelled"
+    assert retried["cancel_id"].startswith("stop-fence:")
+
+
 def test_restart_recovery_never_requeues_indeterminate_work(db):
     clock = FakeClock()
     running = _identity()
@@ -617,6 +733,18 @@ def test_current_lease_can_commit_verified_indeterminate_receipt(db):
         result={"text": "recovered"},
         clock=clock,
     )
+    repeated = driver.resolve_indeterminate_task(
+        db,
+        running,
+        recovered,
+        expected_execution_generation=attempt.execution_generation,
+        expected_cancel_generation=attempt.cancel_generation,
+        settlement_id="recovered-receipt",
+        status="settled",
+        result={"text": "recovered"},
+        clock=clock,
+        retry_id="retry-terminal",
+    )
     next_attempt = driver.start_task(
         db,
         queued,
@@ -626,6 +754,13 @@ def test_current_lease_can_commit_verified_indeterminate_receipt(db):
     )
 
     assert settled["status"] == "settled"
+    assert repeated["idempotent"] is True
+    assert driver.retry_receipt_exists(
+        db,
+        room_id=running.room_id,
+        task_id=running.task_id,
+        retry_id="retry-terminal",
+    )
     assert next_attempt.execution_generation == 1
 
 
@@ -662,11 +797,18 @@ def test_current_lease_can_commit_verified_indeterminate_cancellation(db):
         expected_cancel_generation=attempt.cancel_generation,
         cancel_id="remote-cancel:1",
         clock=clock,
+        retry_id="retry-cancelled",
     )
 
     assert cancelled["status"] == "cancelled"
     assert cancelled["execution_generation"] == attempt.execution_generation
     assert repeated["idempotent"] is True
+    assert driver.retry_receipt_exists(
+        db,
+        room_id=running.room_id,
+        task_id=running.task_id,
+        retry_id="retry-cancelled",
+    )
 
 
 def test_indeterminate_retry_is_explicit_and_advances_execution_generation(db):
@@ -1067,6 +1209,45 @@ def test_pre_deferred_schema_is_migrated_without_losing_tasks(db):
             "SELECT sql FROM sqlite_master WHERE name='hosted_room_driver_tasks'"
         ).fetchone()[0]
     assert "'deferred'" in table_sql
+
+
+def test_draft_retry_id_column_is_migrated_to_receipt_ledger(db):
+    clock = FakeClock()
+    identity = _identity()
+    _admit(db, identity, clock)
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("ALTER TABLE hosted_room_driver_tasks ADD COLUMN retry_id TEXT")
+        conn.execute(
+            """INSERT INTO hosted_room_retry_receipts(
+                   retry_id, room_id, task_id, source_execution_generation, created_at
+               ) VALUES ('existing-retry', ?, ?, 0, 100)""",
+            (identity.room_id, identity.task_id),
+        )
+        conn.execute(
+            "UPDATE hosted_room_driver_tasks SET retry_id='draft-retry'"
+        )
+        conn.commit()
+
+    assert driver.get_task(db, identity)["status"] == "queued"
+    with sqlite3.connect(db) as conn:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(hosted_room_driver_tasks)")
+        }
+    assert "retry_id" not in columns
+    assert driver.retry_receipt_exists(
+        db,
+        room_id=identity.room_id,
+        task_id=identity.task_id,
+        retry_id="draft-retry",
+    )
+    assert driver.retry_receipt_exists(
+        db,
+        room_id=identity.room_id,
+        task_id=identity.task_id,
+        retry_id="existing-retry",
+    )
 
 
 def test_first_schema_creation_is_safe_across_processes(db):

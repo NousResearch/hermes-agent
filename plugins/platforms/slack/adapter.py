@@ -176,6 +176,12 @@ _THREAD_ROOT_IMAGE_MAX = 4
 # spends once (:func:`_serialize_slack_blocks_for_agent`, 6000 chars).
 _SLACK_ATTACHMENT_BLOCKS_MAX_CHARS = 6000
 
+# Below this, :func:`_serialize_slack_blocks_for_agent` can only return its
+# fixed frame (header + fenced code block, ~55 chars) plus the truncation
+# marker, with no readable block content inside. Callers spending a shared
+# budget skip the call rather than pay for an empty frame.
+_SLACK_BLOCKS_PAYLOAD_MIN_CHARS = 80
+
 
 def _slack_file_marker(file_obj: Dict[str, Any]) -> str:
     """Render a compact text marker for a Slack file attachment.
@@ -830,7 +836,9 @@ def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> st
         payload = repr(inspectable)
 
     if len(payload) > max_chars:
-        payload = payload[: max_chars - 18].rstrip() + "\n... [truncated]"
+        # ``max(…, 0)`` keeps a tiny budget from turning into a negative slice
+        # index, which would silently keep almost the whole payload.
+        payload = payload[: max(max_chars - 18, 0)].rstrip() + "\n... [truncated]"
 
     return f"[Slack Block Kit payload for this message]\n```json\n{payload}\n```"
 
@@ -6282,7 +6290,10 @@ class SlackAdapter(BasePlatformAdapter):
                             )
                         att_blocks_parts.append(nested_rich)
                         nested_budget -= len(nested_rich)
-                    if nested_budget > 0:
+                    # The serializer wraps its payload in a fixed frame; below
+                    # that, all it can return is the frame around an empty
+                    # body, which spends budget on nothing readable.
+                    if nested_budget > _SLACK_BLOCKS_PAYLOAD_MIN_CHARS:
                         nested_payload = _serialize_slack_blocks_for_agent(
                             att_blocks, max_chars=nested_budget
                         )

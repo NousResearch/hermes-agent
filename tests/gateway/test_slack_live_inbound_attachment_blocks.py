@@ -269,3 +269,36 @@ class TestNestedBlockBudget:
         ] + [self._chatty_attachment(i) for i in range(1, 20)]
         msg = _deliver(event)
         assert ALERT_BODY in msg.text
+
+    def test_nearly_spent_budget_cannot_be_overrun_by_the_next_attachment(self):
+        """Adversarial: land the shared budget on a tiny positive remainder.
+
+        ``_serialize_slack_blocks_for_agent`` truncates with
+        ``payload[: max_chars - 18]``. Handed a remaining budget below 18, that
+        slice index goes negative and Python keeps *almost the whole payload* —
+        so a first attachment sized to leave 1..17 chars of budget let the next
+        attachment blow straight through the cap. Measured: 26,153 chars
+        delivered against a 6,000 budget.
+        """
+        max_chars = _slack_mod._SLACK_ATTACHMENT_BLOCKS_MAX_CHARS
+
+        def section(n):
+            return {"type": "section", "text": {"type": "mrkdwn", "text": "x" * n}}
+
+        # Find a first-attachment size whose serialized form leaves 1..17 chars.
+        for n in range(max_chars - 300, max_chars):
+            left = max_chars - len(_slack_mod._serialize_slack_blocks_for_agent([section(n)]))
+            if 1 <= left <= 17:
+                break
+        else:  # pragma: no cover - shape of the frame changed; re-derive
+            raise AssertionError("could not construct a 1..17 char remainder")
+
+        event = _alert_event()
+        event["attachments"] = [
+            {"id": 0, "fallback": "fb", "blocks": [section(n)]},
+            {"id": 1, "fallback": "fb", "blocks": [section(20_000)]},
+        ]
+        msg = _deliver(event)
+        assert len(msg.text) < max_chars + 500, (
+            f"second attachment overran a nearly-spent budget: {len(msg.text)} chars"
+        )

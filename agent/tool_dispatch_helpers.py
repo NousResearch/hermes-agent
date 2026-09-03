@@ -32,6 +32,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.message_metadata import stamp_message_timestamp
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
 )
@@ -113,6 +114,38 @@ def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return False
 
 
+# Read-only bridge lookups: dispatch_tool_search / dispatch_tool_describe are
+# stateless catalog reads (the catalog is rebuilt from the current tool-defs
+# list on every call), so a batch of them can run concurrently.
+_PARALLEL_SAFE_BRIDGE_LOOKUPS = frozenset({"tool_search", "tool_describe"})
+
+
+def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
+    """Resolve a ``tool_call`` bridge invocation to its underlying tool.
+
+    The batch planner admits calls to a parallel run by tool NAME, but when
+    tool search is active the model emits the literal name ``tool_call`` for
+    every deferred tool — so a server opted in via
+    ``supports_parallel_tool_calls: true`` silently lost concurrency the
+    moment the bridge activated. Peel the wrapper here so admission is
+    decided on the underlying tool, exactly like the executors' unwrap.
+
+    Returns ``(underlying_name, underlying_args)`` when the wrapper parses
+    cleanly, else ``(tool_name, function_args)`` unchanged — an unparseable
+    bridge call stays a sequential barrier and fails at dispatch as before.
+    """
+    try:
+        from tools.tool_search import TOOL_CALL_NAME, resolve_underlying_call
+        if tool_name != TOOL_CALL_NAME:
+            return tool_name, function_args
+        underlying, underlying_args, err = resolve_underlying_call(function_args)
+        if err is not None or not underlying:
+            return tool_name, function_args
+        return underlying, underlying_args
+    except Exception:
+        return tool_name, function_args
+
+
 def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = None) -> List[tuple]:
     """Split a tool-call batch into ordered ``(kind, calls)`` segments.
 
@@ -192,14 +225,23 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
             _add_sequential(tool_call)
             continue
 
-        if tool_name in _PATH_SCOPED_TOOLS:
+        # Bridge unwrap: admission is decided on the UNDERLYING tool, not on
+        # the literal wrapper name the model emitted. Read-only bridge
+        # lookups (tool_search / tool_describe) are parallel-safe as-is.
+        effective_name, effective_args = _peel_bridge_call(tool_name, function_args)
+
+        if effective_name in _NEVER_PARALLEL_TOOLS:
+            _add_sequential(tool_call)
+            continue
+
+        if effective_name in _PATH_SCOPED_TOOLS:
             scoped_paths = _extract_parallel_scope_paths(
-                tool_name, function_args, execution_cwd=execution_cwd
+                effective_name, effective_args, execution_cwd=execution_cwd
             )
             if not scoped_paths:
                 _add_sequential(tool_call)
                 continue
-            is_writer = tool_name in _PATH_SCOPED_WRITERS
+            is_writer = effective_name in _PATH_SCOPED_WRITERS
             if any(
                 (is_writer or existing_is_writer)
                 and _paths_overlap(scoped_path, existing)
@@ -215,7 +257,11 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
             current.append(tool_call)
             continue
 
-        if tool_name in _PARALLEL_SAFE_TOOLS or _is_mcp_tool_parallel_safe(tool_name):
+        if (
+            effective_name in _PARALLEL_SAFE_TOOLS
+            or effective_name in _PARALLEL_SAFE_BRIDGE_LOOKUPS
+            or _is_mcp_tool_parallel_safe(effective_name)
+        ):
             current.append(tool_call)
             continue
 
@@ -530,6 +576,13 @@ def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     return msg
 
 
+def _normalize_tool_call_id(tool_call_id: Any) -> Any:
+    """Normalize a composite bridge id to its canonical call-id half."""
+    if isinstance(tool_call_id, str) and "|" in tool_call_id:
+        return tool_call_id.split("|", 1)[0].strip()
+    return tool_call_id
+
+
 def make_tool_result_message(
     name: str,
     content: Any,
@@ -556,14 +609,22 @@ def make_tool_result_message(
     The outer list itself is rebuilt rather than returned by identity, so
     callers should compare by value, not by ``is``.
     """
-    wrapped = _maybe_wrap_untrusted(name, content)
-    message = {
+    # Keep the constructor safe for every caller, including replay recovery
+    # paths that do not go through the live executor's canonical-id helper.
+    tool_call_id = _normalize_tool_call_id(tool_call_id)
+
+    # Order matters: detect provider-side elision on the RAW content and
+    # append the notice first, THEN wrap — so the notice lives inside the
+    # untrusted block next to the data it describes, appended exactly once
+    # at construction time (cache-safe).
+    wrapped = _maybe_wrap_untrusted(name, _maybe_append_elision_notice(name, content))
+    message = stamp_message_timestamp({
         "role": "tool",
         "name": name,
         "tool_name": name,
         "content": wrapped,
         "tool_call_id": tool_call_id,
-    }
+    })
     try:
         risk_metadata = _tool_output_risk_metadata(name, content)
     except Exception as exc:
@@ -605,6 +666,70 @@ def _is_untrusted_tool(name: Optional[str]) -> bool:
     if name in _UNTRUSTED_TOOL_NAMES:
         return True
     return any(name.startswith(p) for p in _UNTRUSTED_TOOL_PREFIXES)
+
+
+# --- Upstream-elision detection --------------------------------------------
+#
+# Some MCP servers elide data SERVER-SIDE and mark the elision inside the
+# payload itself (e.g. Composio: '...13 more items' inside a JSON array,
+# '"has_more": true', 'Complete response was large (N tokens). Full data
+# saved to sandbox in /mnt/files/...', 'data_preview' envelopes). Because the
+# result looks structurally complete, models treat the visible slice as the
+# whole dataset and falsely claim completeness. When one of these markers is
+# present, we append ONE compact notice at result-construction time — before
+# the message enters history, never mutated later, so prompt caching is safe.
+
+# Conservative patterns only: each one is an explicit provider-side "there is
+# more data than what you can see" signal, not a generic truncation heuristic.
+_UPSTREAM_ELISION_PATTERNS = (
+    re.compile(r"\.\.\.\s*\d+\s+more\s+items?", re.IGNORECASE),
+    re.compile(r'"has_more"\s*:\s*true', re.IGNORECASE),
+    re.compile(r"saved to sandbox", re.IGNORECASE),
+    re.compile(r"data_preview", re.IGNORECASE),
+)
+
+# Results smaller than this can't meaningfully hide an elided enumeration —
+# skip the scan entirely so tiny results pay nothing.
+_ELISION_SCAN_MIN_CHARS = 1_000
+
+# Bound the regex scan: markers appear near the elided structure, which for
+# the payload sizes that matter (20-50K) is always inside the first 64KB.
+_ELISION_SCAN_MAX_CHARS = 65_536
+
+_UPSTREAM_ELISION_NOTICE = (
+    '\n[hermes note: this result contains provider-side elision markers '
+    '(e.g. "...N more items" / has_more:true). The data shown is INCOMPLETE '
+    '— page/fetch the remainder before treating any enumeration as complete.]'
+)
+
+
+def _detect_upstream_elision(content: Any) -> bool:
+    """True when a string tool result carries provider-side elision markers.
+
+    Cheap and safe by construction: non-string content is never scanned,
+    results under ``_ELISION_SCAN_MIN_CHARS`` short-circuit, and the regex
+    scan is capped at the first ``_ELISION_SCAN_MAX_CHARS`` chars.
+    """
+    if not isinstance(content, str):
+        return False
+    if len(content) < _ELISION_SCAN_MIN_CHARS:
+        return False
+    window = content[:_ELISION_SCAN_MAX_CHARS]
+    return any(p.search(window) for p in _UPSTREAM_ELISION_PATTERNS)
+
+
+def _maybe_append_elision_notice(name: str, content: Any) -> Any:
+    """Append the incompleteness notice to untrusted string results that
+    embed upstream elision markers. Returns ``content`` unchanged otherwise.
+
+    Runs on the RAW result before untrusted-wrapping so the notice sits with
+    the data it describes, and only at result-construction time (cache-safe).
+    """
+    if not _is_untrusted_tool(name):
+        return content
+    if _detect_upstream_elision(content):
+        return content + _UPSTREAM_ELISION_NOTICE
+    return content
 
 
 def _tool_output_risk_metadata(name: str, content: Any) -> Optional[Dict[str, Any]]:
@@ -728,5 +853,7 @@ __all__ = [
     "_extract_landed_file_mutation_paths",
     "_extract_error_preview",
     "_trajectory_normalize_msg",
+    "_detect_upstream_elision",
+    "_maybe_append_elision_notice",
     "make_tool_result_message",
 ]

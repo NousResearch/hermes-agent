@@ -15,8 +15,14 @@ from unittest.mock import patch
 import pytest
 
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+# Minimal valid 1x1 PNG bytes. Resolver validation requires a decodable fixture.
+PNG = base64.b64decode(
+    b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+)
 JPEG = b"\xff\xd8\xff" + b"\x00" * 64
+CORRUPT_PNG = base64.b64decode(
+    b"iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAFElEQVR4nGP8z8Dwn4EIwESJ5gAAVQ4CH1evYJQAAAAASUVORK5CYII="
+)
 
 
 def _reload(monkeypatch, hermes_home: Path):
@@ -56,6 +62,16 @@ class TestDataUrl:
         with pytest.raises(isrc.NotAnImage):
             await isrc.resolve_image_source(
                 f"data:text/plain;base64,{b64}", isrc.ResolveContext())
+
+    @pytest.mark.asyncio
+    async def test_corrupt_png_rejected_at_resolver_boundary(self, tmp_path, monkeypatch):
+        """A PNG-shaped but undecodable payload never becomes a resolved image."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "corrupt.png"
+        img.write_bytes(CORRUPT_PNG)
+        with pytest.raises(isrc.NotAnImage):
+            await isrc.resolve_image_source(str(img), isrc.ResolveContext())
 
 
 class TestLocalBackend:
@@ -243,6 +259,57 @@ class TestExecReadSafety:
             with pytest.raises(isrc.SourceNotFound):
                 await isrc.resolve_image_source(
                     "/workspace/nope.png", isrc.ResolveContext(task_id="t1"))
+
+    @pytest.mark.asyncio
+    async def test_exec_read_retries_cold_start_then_succeeds(self, tmp_path, monkeypatch):
+        """#76566: under Docker, vision's first exec-read can fail (cold
+        container / pipe setup) and an identical retry succeeds. The
+        resolver must transparently retry before raising, so users don't
+        see 'could not read inside the sandbox' on a file that is fully
+        readable on the second attempt."""
+        home = tmp_path / "hermes"
+        isrc = _reload(monkeypatch, home)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        calls = {"n": 0}
+        b64 = base64.b64encode(PNG).decode()
+
+        def fake_execute(cmd, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # First call: cold start — empty pipe, exit non-zero.
+                return {"returncode": 1, "output": ""}
+            return {"returncode": 0, "output": b64}
+
+        with patch("tools.image_source._get_active_env",
+                   return_value=SimpleNamespace(execute=fake_execute)):
+            res = await isrc.resolve_image_source(
+                "/workspace/cold.png", isrc.ResolveContext(task_id="t1"))
+        assert res.origin == "container"
+        assert res.data == PNG
+        assert calls["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_exec_read_retries_exhausted_includes_diagnostic(
+        self, tmp_path, monkeypatch
+    ):
+        """#76566: when every retry still fails, the error must carry the
+        container's stderr/stdout so the user can tell 'no such file'
+        from 'permission denied' from 'cold start never came up'."""
+        home = tmp_path / "hermes"
+        isrc = _reload(monkeypatch, home)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        def fake_execute(cmd, **kw):
+            return {"returncode": 1, "output": "head: can't open '/x': No such file or directory"}
+
+        with patch("tools.image_source._get_active_env",
+                   return_value=SimpleNamespace(execute=fake_execute)):
+            with pytest.raises(isrc.SourceNotFound) as excinfo:
+                await isrc.resolve_image_source(
+                    "/workspace/missing.png", isrc.ResolveContext(task_id="t1"))
+        # Diagnostic surfaced — the user can act on it.
+        assert "No such file or directory" in str(excinfo.value)
 
 
 class TestSvgNormalization:

@@ -23,7 +23,7 @@ Usage:
     all_tools = resolve_toolset("full_stack")
 """
 
-from typing import List, Dict, Any, Set, Optional
+from typing import Dict, List, Any, Set, Optional, Tuple
 
 
 # Shared tool list for CLI and all messaging platform toolsets.
@@ -32,7 +32,7 @@ _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
     # Terminal + process management
-    "terminal", "process",
+    "terminal", "process_manage",
     # NOTE: the desktop GUI affordances (read_terminal, open_preview, …) are
     # deliberately NOT here, for the same reason as the `project` tools below:
     # they only work where a GUI renderer can answer them. They live in the
@@ -44,10 +44,6 @@ _HERMES_CORE_TOOLS = [
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
     "vision_analyze", "image_generate",
-    # BFL FLUX 3 video generation
-    "bfl_flux3_text_to_video", "bfl_flux3_image_to_video",
-    "bfl_flux3_keyframes_to_video", "bfl_flux3_video_continuation",
-    "bfl_flux3_get_result", "bfl_flux3_prompting_guide",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -55,10 +51,12 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    # replaces other tools when browser.backend is "browser-use"
+    "browser_exec",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
-    "todo", "memory",
+    "todo_list", "memory",
     # NOTE: the desktop Project tools (project_list/create/switch) are
     # deliberately NOT here. They only make sense where a GUI can follow the
     # move, so they live in the `project` toolset and are enabled solely by the
@@ -71,7 +69,7 @@ _HERMES_CORE_TOOLS = [
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management
-    "cronjob",
+    "cronjob_manage",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -79,7 +77,9 @@ _HERMES_CORE_TOOLS = [
     # profile explicitly enables the kanban toolset. Gated via check_fn in
     # tools/kanban_tools.py.
     "kanban_show", "kanban_list",
-    "kanban_complete", "kanban_block", "kanban_heartbeat",
+    "kanban_complete", "kanban_block", "kanban_request_review",
+    "kanban_request_changes",
+    "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
     "kanban_unblock",
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
@@ -157,25 +157,6 @@ TOOLSETS = {
         "includes": []
     },
 
-    "bfl": {
-        "description": (
-            "Black Forest Labs FLUX 3 video generation through the Nous tool "
-            "gateway: per-mode submit tools (text, image, keyframes, "
-            "continuation), a poll tool, and a prompting guide. Generations "
-            "take minutes, so submit returns a job id and the model polls for "
-            "the result."
-        ),
-        "tools": [
-            "bfl_flux3_text_to_video",
-            "bfl_flux3_image_to_video",
-            "bfl_flux3_keyframes_to_video",
-            "bfl_flux3_video_continuation",
-            "bfl_flux3_get_result",
-            "bfl_flux3_prompting_guide",
-        ],
-        "includes": []
-    },
-
     "computer_use": {
         "description": (
             "Background desktop control via cua-driver (macOS/Windows/Linux) — "
@@ -188,7 +169,7 @@ TOOLSETS = {
 
     "terminal": {
         "description": "Terminal/command execution and process management tools",
-        "tools": ["terminal", "process"],
+        "tools": ["terminal", "process_manage"],
         "includes": []
     },
     
@@ -205,14 +186,14 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "web_search"
+            "browser_dialog", "browser_exec", "web_search"
         ],
         "includes": []
     },
     
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
-        "tools": ["cronjob"],
+        "tools": ["cronjob_manage"],
         "includes": []
     },
     
@@ -231,7 +212,7 @@ TOOLSETS = {
     
     "todo": {
         "description": "Task planning and tracking for multi-step work",
-        "tools": ["todo"],
+        "tools": ["todo_list"],
         "includes": []
     },
     
@@ -255,12 +236,18 @@ TOOLSETS = {
 
     "project": {
         "description": "Desktop Projects — create/switch named workspaces (GUI sessions only)",
-        "tools": ["project_list", "project_create", "project_switch"],
+        "tools": ["desktop_project"],
         "includes": []
     },
 
+    "bot_room": {
+        "description": "Verified text-only Group Chat turn capabilities",
+        "tools": [],
+        "includes": [],
+    },
+
     # Affordances that only exist because a GUI renderer is on the other end of
-    # the connection: read/close the embedded terminal pane, open and read the
+    # the connection: read/close the embedded terminal pane, open/read/close the
     # in-app browser, focus a pane, tapback a message.
     #
     # Enabled by the GUI gateway for a session whose SOURCE is the desktop app
@@ -272,8 +259,10 @@ TOOLSETS = {
         "description": "Desktop GUI affordances — in-app terminal/browser panes, pane focus, reactions (GUI sessions only)",
         "tools": [
             "read_terminal", "close_terminal",
-            "open_preview", "read_preview",
+            "desktop_preview", "drive_preview", "annotate_preview",
+            "read_window_below",
             "focus_pane", "react_to_message",
+            "setup_mcp", "gui_tour", "show_tip",
         ],
         "includes": []
     },
@@ -311,12 +300,14 @@ TOOLSETS = {
             "is spawned by the kanban dispatcher (HERMES_KANBAN_TASK env "
             "set). The dispatcher runs inside the gateway by default; see "
             "`kanban.dispatch_in_gateway` in config.yaml. Lets workers mark "
-            "tasks done with structured handoffs, block for human input, "
+            "tasks done with structured handoffs, enter first-class review "
+            "(request_review — not a block), return review changes, block for human input, "
             "heartbeat during long ops, comment on threads, attach files, and "
             "(for orchestrators) list, unblock, and fan out tasks."
         ),
         "tools": [
             "kanban_show", "kanban_list", "kanban_complete", "kanban_block",
+            "kanban_request_review", "kanban_request_changes",
             "kanban_heartbeat", "kanban_comment",
             "kanban_create", "kanban_link",
             "kanban_unblock",
@@ -378,7 +369,7 @@ TOOLSETS = {
     
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
-        "tools": ["terminal", "process"],
+        "tools": ["terminal", "process_manage"],
         "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
     },
     
@@ -401,7 +392,7 @@ TOOLSETS = {
         "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
         "tools": [
             "web_search", "web_extract",
-            "terminal", "process",
+            "terminal", "process_manage",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
@@ -409,7 +400,8 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "todo", "memory",
+            "browser_exec",
+            "todo_list", "memory",
             "session_search", "clarify",
             "execute_code", "delegate_task",
         ],
@@ -433,7 +425,7 @@ TOOLSETS = {
         "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
         "tools": [
             "web_search", "web_extract",
-            "terminal", "process",
+            "terminal", "process_manage",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
@@ -441,7 +433,8 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "todo", "memory",
+            "browser_exec",
+            "todo_list", "memory",
             "session_search",
             "execute_code", "delegate_task",
         ],
@@ -454,15 +447,11 @@ TOOLSETS = {
             # Web
             "web_search", "web_extract",
             # Terminal + process management
-            "terminal", "process",
+            "terminal", "process_manage",
             # File manipulation
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation
             "vision_analyze", "image_generate",
-            # BFL FLUX 3 video generation
-            "bfl_flux3_text_to_video", "bfl_flux3_image_to_video",
-            "bfl_flux3_keyframes_to_video", "bfl_flux3_video_continuation",
-            "bfl_flux3_get_result", "bfl_flux3_prompting_guide",
             # Skills
             "skills_list", "skill_view", "skill_manage",
             # Browser automation
@@ -470,14 +459,15 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "browser_exec",
             # Planning & memory
-            "todo", "memory",
+            "todo_list", "memory",
             # Session history search
             "session_search",
             # Code execution + delegation
             "execute_code", "delegate_task",
             # Cronjob management
-            "cronjob",
+            "cronjob_manage",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 
@@ -742,6 +732,19 @@ def bundle_non_core_tools(toolset_name: str) -> Set[str]:
     return to_remove
 
 
+# Resolution memo keyed on (toolset name, include_registry, registry
+# generation). resolve_toolset() recursively walks toolset includes and, with
+# include_registry=True, merges registry-registered tools on every call —
+# measured ~2us/toolset in isolation but called dozens of times per
+# _get_platform_tools() (per-keystroke /tools completion) and per picker
+# render. The registry exposes a monotonic _generation counter (bumped on
+# every register/deregister/alias/MCP refresh — see tools/registry.py), so a
+# cache entry is valid for as long as the generation is unchanged; external
+# callers never pass ``visited``, so the memo engages exactly at the public
+# entry and the internal cycle-detection recursion stays untouched.
+_resolve_toolset_memo: Dict[Tuple[str, bool, int, int], List[str]] = {}
+
+
 def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bool = True) -> List[str]:
     """
     Recursively resolve a toolset to get all tool names.
@@ -762,6 +765,21 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
     Returns:
         List[str]: List of all tool names in the toolset
     """
+    external_call = visited is None
+    if external_call:
+        try:
+            from tools.registry import registry
+
+            registry_id = id(registry)
+            generation = getattr(registry, "_generation", 0)
+        except Exception:
+            registry_id = 0
+            generation = 0
+        memo_key = (name, include_registry, registry_id, generation)
+        cached = _resolve_toolset_memo.get(memo_key)
+        if cached is not None:
+            return list(cached)
+
     if visited is None:
         visited = set()
 
@@ -800,7 +818,7 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
                     try:
                         from tools.registry import registry
                         plugin_tools.update(
-                            e.name for e in registry._tools.values()
+                            e.name for e in registry.get_all_entries()
                             if e.toolset == platform_name
                         )
                     except Exception:
@@ -821,7 +839,22 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
         included_tools = resolve_toolset(included_name, visited, include_registry=include_registry)
         tools.update(included_tools)
 
-    return sorted(tools)
+    result = sorted(tools)
+    if external_call:
+        try:
+            from tools.registry import registry
+
+            registry_id = id(registry)
+            generation = getattr(registry, "_generation", 0)
+        except Exception:
+            registry_id = 0
+            generation = 0
+        # Entries from previous registry generations are never hit again;
+        # keep the memo bounded across long sessions with many MCP refreshes.
+        if len(_resolve_toolset_memo) >= 256:
+            _resolve_toolset_memo.clear()
+        _resolve_toolset_memo[(name, include_registry, registry_id, generation)] = list(result)
+    return result
 
 
 def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:

@@ -45,6 +45,34 @@ _TOPIC_TABLES = (
     "telegram_dm_topic_bindings",
 )
 
+
+
+def _init_delivery_ledger_schema(conn: sqlite3.Connection) -> None:
+    from gateway.delivery_ledger import _initialize_schema
+
+    _initialize_schema(conn)
+
+
+# Tables that live in state.db but are created lazily by a gateway module on
+# first use, so base ``SessionDB`` never creates them on a fresh destination.
+# Every entry maps the table to the initializer that owns its DDL; recovery
+# creates the table on the destination before copying, so owed rows survive
+# instead of silently vanishing from a "complete" salvage (#100313, #86236).
+# Add new lazily-created state.db tables HERE, never as one-off ``if table ==``
+# branches.
+_AUXILIARY_TABLE_SCHEMAS: dict[str, Callable[[sqlite3.Connection], None]] = {
+    "delivery_obligations": _init_delivery_ledger_schema,
+}
+
+_AUXILIARY_TABLES = tuple(_AUXILIARY_TABLE_SCHEMAS)
+
+_INVENTORY_TABLES = (
+    *_CANONICAL_TABLES,
+    "state_meta",
+    *_TOPIC_TABLES,
+    *_AUXILIARY_TABLES,
+)
+
 # These values describe derived indexes or the schema that owns an optional
 # table. A fresh destination must generate them from its own current schema.
 _GENERATED_META_KEYS = frozenset({
@@ -305,7 +333,7 @@ def _inspect_connection(conn: sqlite3.Connection) -> dict[str, Any]:
         # A damaged journal pragma must not block rows that are still readable.
         report["warnings"].append(f"journal mode: {exc}")
 
-    for table in (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES):
+    for table in _INVENTORY_TABLES:
         report["tables"][table] = _table_inventory(conn, table)
 
     for required in ("sessions", "messages"):
@@ -334,7 +362,15 @@ def _snapshot_and_inspect(
         if before != after:
             raise SessionRecoverySafetyError(
                 "The source database bundle changed while it was being copied. "
-                "Stop every Hermes process using this profile and retry."
+                "Stop every Hermes process using this profile and retry. "
+                "This includes the interactive `hermes` CLI session this "
+                "command may have been launched from: a running parent CLI "
+                "writes session bookkeeping (compression ticks, context "
+                "tracking) to state.db in the background and counts as a "
+                "Hermes process even after the gateway is stopped. Run the "
+                "recovery from a fresh shell with no `hermes` session open, "
+                "or point --source at an immutable snapshot copy of the "
+                "database."
             )
 
         conn = sqlite3.connect(
@@ -375,6 +411,25 @@ def inspect_session_database(
         }
     finally:
         temp_dir.cleanup()
+
+
+def _ensure_auxiliary_destination_schema(
+    destination: sqlite3.Connection,
+    table: str,
+) -> None:
+    """Create a lazy auxiliary table on the recovered destination.
+
+    Recovery initializes the destination through base ``SessionDB``, which
+    does not create gateway-owned tables. Copying into a missing dest table
+    would report ``missing`` / ``no compatible columns`` and drop the rows.
+    """
+
+    initialize = _AUXILIARY_TABLE_SCHEMAS.get(table)
+    if initialize is None:
+        raise SessionRecoverySafetyError(
+            f"no destination schema initializer registered for table {table!r}"
+        )
+    initialize(destination)
 
 
 def _copy_table(
@@ -505,6 +560,68 @@ def _salvage_rowid_bounds(
     return result
 
 
+def _probe_populated_edge(
+    source: sqlite3.Connection,
+    table: str,
+    *,
+    edge: str,
+    anchor: int,
+) -> dict[str, Any]:
+    """Find a finite bound for a damaged rowid edge (issue #80205).
+
+    When an ordered edge probe fails, :func:`_salvage_rowid_bounds` used to
+    substitute the whole SQLite rowid domain. Range bisection then burned the
+    entire ``_MAX_SALVAGE_RANGE_QUERIES`` budget subdividing an enormous
+    synthetic tail that could not contain real rows — and once the budget was
+    gone, rows that were still readable were silently recorded as skipped.
+
+    This gallops outward from the readable ``anchor`` edge with exponentially
+    growing offsets. A probe that cleanly reports "no rows beyond X" caps the
+    domain at X; a probe that errors (its b-tree path crosses the damage) or
+    finds a row keeps growing. At most ~64 probes per edge, so the cap costs
+    a bounded, tiny slice of the salvage budget instead of all of it.
+    """
+
+    ascending = edge == "high"
+    comparison = ">" if ascending else "<"
+    probe_sql = (
+        f'SELECT rowid FROM "{table}" WHERE rowid {comparison} ? '
+        f'ORDER BY rowid {"ASC" if ascending else "DESC"} LIMIT 1'
+    )
+    domain_limit = _MAX_SQLITE_ROWID if ascending else _MIN_SQLITE_ROWID
+    result: dict[str, Any] = {"edge": edge, "probes": 0, "capped": False}
+
+    position = anchor
+    span = 1
+    while True:
+        candidate = position + span if ascending else position - span
+        if (ascending and candidate >= domain_limit) or (
+            not ascending and candidate <= domain_limit
+        ):
+            # No clean empty-tail answer before the domain edge; keep the
+            # domain fallback rather than inventing a bound.
+            result["bound"] = domain_limit
+            return result
+        result["probes"] += 1
+        try:
+            row = source.execute(probe_sql, (candidate,)).fetchone()
+        except sqlite3.DatabaseError:
+            # Damage on the probe path — inconclusive, widen further.
+            span *= 2
+            continue
+        if row is None:
+            # Clean answer: nothing beyond ``candidate``. The salvageable
+            # data ends at or before it, so the synthetic domain tail is
+            # provably empty and need not be bisected at all.
+            result["bound"] = candidate
+            result["capped"] = True
+            return result
+        # Rows exist beyond the candidate; advance the anchor. The span keeps
+        # doubling (never resets) so the whole gallop stays O(log range).
+        position = int(row[0])
+        span *= 2
+
+
 def _copy_table_salvage(
     source: sqlite3.Connection,
     destination: sqlite3.Connection,
@@ -530,6 +647,7 @@ def _copy_table_salvage(
         "excluded_rows": 0,
         "columns": columns,
         "range_queries": 0,
+        "exact_lookup_recovered": 0,
         "skipped_rowid_ranges": [],
     }
     if not source_columns:
@@ -553,6 +671,28 @@ def _copy_table_salvage(
             result["error"] += f": {details}"
         return result
 
+    # Issue #80205: a damaged ordered edge probe used to substitute the whole
+    # SQLite rowid domain, and bisecting that synthetic tail exhausted the
+    # range-query budget while readable tail rows were still waiting to be
+    # copied. Gallop outward from the surviving edge for a finite bound first.
+    fallback_edges = bounds.get("fallback_edges") or []
+    if fallback_edges:
+        bounds["edge_probes"] = []
+        if "high" in fallback_edges and bounds.get("low") is not None:
+            probe = _probe_populated_edge(
+                source, table, edge="high", anchor=int(bounds["low"])
+            )
+            bounds["edge_probes"].append(probe)
+            if probe["capped"]:
+                bounds["high"] = int(probe["bound"])
+        if "low" in fallback_edges and bounds.get("high") is not None:
+            probe = _probe_populated_edge(
+                source, table, edge="low", anchor=int(bounds["high"])
+            )
+            bounds["edge_probes"].append(probe)
+            if probe["capped"]:
+                bounds["low"] = int(probe["bound"])
+
     quoted = ", ".join(f'"{column}"' for column in columns)
     placeholders = ", ".join("?" for _ in columns)
     select_sql = (
@@ -564,6 +704,41 @@ def _copy_table_salvage(
     )
     column_names = tuple(columns)
     stopped_at_query_limit = False
+    exact_sql = f'SELECT {quoted} FROM "{table}" WHERE rowid = ?'
+
+    def recover_exact_rowid(rowid: int) -> bool:
+        """Issue #80205: salvage one row by exact-key lookup.
+
+        A singleton range scan (``rowid BETWEEN x AND x ORDER BY rowid``)
+        must advance the cursor past ``x`` to prove the range is exhausted;
+        when the *next* cell or page is damaged that advance raises AFTER the
+        row was produced, and the driver discards the already-fetched row. An
+        equality lookup on the rowid stops at the hit, so the boundary row
+        directly before a damaged page — readable in the field case and by
+        SQLite's page-level ``.recover`` — is recovered instead of being
+        recorded as skipped.
+        """
+        result["range_queries"] += 1
+        try:
+            row = source.execute(exact_sql, (rowid,)).fetchone()
+        except sqlite3.DatabaseError:
+            return False
+        if row is None:
+            return True  # genuinely absent: nothing to skip
+        value = tuple(row)
+        if row_filter is not None and not row_filter(value, column_names):
+            result["excluded_rows"] += 1
+            return True
+        destination.execute("BEGIN IMMEDIATE")
+        try:
+            destination.execute(insert_sql, value)
+            destination.execute("COMMIT")
+        except BaseException:
+            destination.execute("ROLLBACK")
+            raise
+        result["copied_rows"] += 1
+        result["exact_lookup_recovered"] += 1
+        return True
 
     def copy_range(low: int, high: int) -> None:
         nonlocal stopped_at_query_limit
@@ -626,12 +801,13 @@ def _copy_table_salvage(
             if retry_low > high:
                 return
             if retry_low == high:
-                _append_skipped_range(
-                    result["skipped_rowid_ranges"],
-                    retry_low,
-                    high,
-                    str(exc),
-                )
+                if not recover_exact_rowid(retry_low):
+                    _append_skipped_range(
+                        result["skipped_rowid_ranges"],
+                        retry_low,
+                        high,
+                        str(exc),
+                    )
                 return
             midpoint = retry_low + (high - retry_low) // 2
             copy_range(retry_low, midpoint)
@@ -1114,7 +1290,7 @@ def _verify_recovered_database(
             )
 
         counts: dict[str, int] = {}
-        for table in (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES):
+        for table in _INVENTORY_TABLES:
             columns = _table_columns(conn, table)
             if columns:
                 counts[table] = int(
@@ -1122,7 +1298,7 @@ def _verify_recovered_database(
                 )
         verification["table_counts"] = counts
 
-        for table in ("sessions", "messages"):
+        for table in ("sessions", "messages", *_AUXILIARY_TABLES):
             expected = expected_counts.get(table)
             if expected is not None and counts.get(table) != expected:
                 message = (
@@ -1255,6 +1431,221 @@ def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any
     return result
 
 
+def _lost_and_found_plausibility_errors(
+    conn: sqlite3.Connection,
+) -> list[str]:
+    """Flag systematic timestamp mis-mapping in a salvaged database.
+
+    Structural checks (integrity, FK, FTS, row counts) pass on mis-mapped
+    salvage because every row still inserts. Only semantics give it away:
+    the physical column order of a source upgraded via ALTER TABLE differs
+    from the destination template's declared order, so positional cell
+    mapping lands counters/strings where ``started_at``/``timestamp``
+    belong — and the NOT NULL substitutes turn gaps into 0.0. When every
+    mapped row violates the epoch floor, the mapping was wrong.
+
+    Stub rows written by ``stub_missing_parent_sessions`` legitimately carry
+    ``started_at = 0.0`` when no timestamped message survived, so they are
+    excluded from the denominator.
+    """
+    from hermes_cli.session_lost_and_found import _EPOCH_LOW, STUB_TITLE_PREFIX
+
+    errors: list[str] = []
+    checks = (
+        ("sessions", "started_at", f"WHERE COALESCE(title, '') NOT LIKE '{STUB_TITLE_PREFIX}%'"),
+        ("messages", "timestamp", ""),
+    )
+    for table, column, mapped_filter in checks:
+        (total,) = conn.execute(f"SELECT COUNT(*) FROM {table} {mapped_filter}").fetchone()
+        if not total:
+            continue
+        (implausible,) = conn.execute(
+            f"SELECT COUNT(*) FROM {table} {mapped_filter} "
+            f"{'AND' if mapped_filter else 'WHERE'} ({column} IS NULL OR {column} < ?)",
+            (_EPOCH_LOW,),
+        ).fetchone()
+        if implausible == total:
+            errors.append(
+                f"{table}.{column} is implausible in all {total} salvaged row(s) "
+                "(NULL or before 2001-09): the source's physical column order "
+                "did not match the destination template, so cells were mapped "
+                "onto the wrong columns"
+            )
+    return errors
+
+
+def _recover_via_lost_and_found(
+    *,
+    source: Path,
+    snapshot_source: Path,
+    snapshot_dir: Path,
+    output: Path,
+    inspection: dict[str, Any],
+    disk_space: dict[str, Any],
+    missing_required: list[str],
+) -> dict[str, Any]:
+    """Best-effort page-level salvage when table schemas are unreadable.
+
+    Shells out to the sqlite3 CLI's ``.recover`` (a shell-only feature, not
+    part of Python's ``sqlite3`` module) to rebuild rows into a scratch
+    lost_and_found database, then heuristically maps them into a fresh
+    current-schema database. The result is explicitly labeled best-effort.
+    """
+
+    from hermes_cli.session_lost_and_found import (
+        SQLITE3_CLI_GUIDANCE,
+        LostAndFoundError,
+        find_sqlite3_cli,
+        find_sqlite3_cli_refusal,
+        map_lost_and_found_rows,
+        rebuild_fts_indexes,
+        run_cli_lost_and_found_recover,
+        stub_missing_parent_sessions,
+    )
+
+    sqlite3_bin = find_sqlite3_cli()
+    if sqlite3_bin is None:
+        refusal = find_sqlite3_cli_refusal()
+        if refusal.get("reason") == "wal_reset_vulnerable":
+            raise SessionRecoverySourceError(
+                "Partial recovery requires a page-level salvage shell, but "
+                "the only sqlite3 CLI on PATH is not safe to use for it: it "
+                + refusal["detail"]
+                + ". The readable table schemas for: "
+                + ", ".join(missing_required)
+                + " are still required."
+            )
+        raise SessionRecoverySourceError(
+            "Partial recovery still requires readable table schemas for: "
+            + ", ".join(missing_required)
+            + ". " + SQLITE3_CLI_GUIDANCE
+        )
+
+    lf_path = snapshot_dir / "lost_and_found.db"
+    try:
+        cli_report = run_cli_lost_and_found_recover(
+            snapshot_source, lf_path, sqlite3_bin
+        )
+    except (LostAndFoundError, OSError) as exc:
+        raise SessionRecoverySourceError(
+            "Partial recovery could not read the table schemas for: "
+            + ", ".join(missing_required)
+            + f", and page-level .recover salvage failed: {exc}"
+        ) from exc
+
+    destination_db = SessionDB(db_path=output)
+    destination_db.close()
+
+    lf_conn = sqlite3.connect(str(lf_path), isolation_level=None)
+    destination_conn = sqlite3.connect(
+        str(output), isolation_level=None, timeout=1.0
+    )
+    try:
+        destination_conn.execute("PRAGMA foreign_keys=OFF")
+        mapping = map_lost_and_found_rows(lf_conn, destination_conn)
+        stubbing = stub_missing_parent_sessions(destination_conn)
+        fts = rebuild_fts_indexes(destination_conn)
+        derived_metadata = _finalize_derived_metadata(destination_conn)
+    finally:
+        lf_conn.close()
+        destination_conn.close()
+
+    copy_report: dict[str, dict[str, Any]] = {
+        table: {
+            "mode": "lost_and_found_salvage",
+            "status": "partial",
+            "copied_rows": (
+                int(mapping["direct_table_rows"].get(table) or 0)
+                + int(mapping["mapped"].get(table) or 0)
+            ),
+            "error": "recovered via page-level lost_and_found salvage; "
+            "row completeness cannot be verified against the source",
+        }
+        for table in ("sessions", "messages", "session_model_usage")
+    }
+
+    verification = _verify_recovered_database(
+        output,
+        expected_counts={"sessions": None, "messages": None},
+        copy_report=copy_report,
+        allow_partial=True,
+        orphan_cleanup={
+            "sessions_reconstructed": stubbing["sessions_stubbed"],
+            "messages_retained": stubbing["messages_retained"],
+            "messages_removed": 0,
+            "total_removed_or_relinked": 0,
+        },
+    )
+    verification["loss_detected"] = True
+    verification["warnings"].append(
+        "BEST-EFFORT page-level salvage: the source table schemas were "
+        "unreadable, so rows were rebuilt from raw pages and mapped "
+        "heuristically. Review every count before trusting this output."
+    )
+    verification["complete"] = False
+
+    # Structural checks cannot see a positional mis-mapping (#101409):
+    # every row still inserts, so integrity/FK/FTS stay green. A
+    # systematic timestamp violation is the semantic tell — surface it
+    # so a mis-mapped salvage is never reported as verified.
+    plausibility_conn = sqlite3.connect(str(output), isolation_level=None)
+    try:
+        plausibility_errors = _lost_and_found_plausibility_errors(
+            plausibility_conn
+        )
+    finally:
+        plausibility_conn.close()
+    if plausibility_errors:
+        verification["errors"].extend(plausibility_errors)
+        verification["healthy"] = False
+
+    source_unchanged = (
+        _source_fingerprint(source) == inspection["source_fingerprint"]
+    )
+    if not source_unchanged:
+        verification["errors"].append(
+            "the source database bundle changed during recovery"
+        )
+        verification["healthy"] = False
+
+    return {
+        "operation": "recover",
+        "allow_partial": True,
+        "mode": "lost_and_found_salvage",
+        "best_effort": True,
+        "source": str(source),
+        "output": str(output),
+        "source_bundle": inspection["source_bundle"],
+        "source_fingerprint": inspection["source_fingerprint"],
+        "source_unchanged": source_unchanged,
+        "disk_space": disk_space,
+        "inspection": {
+            "journal_mode": inspection.get("journal_mode"),
+            "tables": inspection["tables"],
+            "errors": inspection["errors"],
+            "warnings": inspection["warnings"],
+        },
+        "unreadable_schemas": missing_required,
+        "sqlite3_cli": cli_report,
+        "lost_and_found": mapping,
+        "session_stubs": stubbing,
+        "fts_rebuild": fts,
+        "copy": copy_report,
+        "orphan_cleanup": {
+            "sessions_reconstructed": stubbing["sessions_stubbed"],
+            "messages_retained": stubbing["messages_retained"],
+            "messages_removed": 0,
+            "total_removed_or_relinked": 0,
+        },
+        "derived_metadata": derived_metadata,
+        "verification": verification,
+        "complete": False,
+        "partial": True,
+        "verified": bool(verification.get("healthy") and source_unchanged),
+        "installed": False,
+    }
+
+
 def recover_session_database(
     source_path: Path,
     output_path: Path,
@@ -1286,7 +1677,9 @@ def recover_session_database(
         if not inspection.get("recoverable") and not allow_partial:
             reasons = "; ".join(inspection.get("errors") or ["unknown source error"])
             raise SessionRecoverySourceError(
-                f"Required canonical tables are not readable: {reasons}"
+                f"Required canonical tables are not readable: {reasons}. "
+                "Re-run with --allow-partial to salvage every readable row "
+                "into a new database (the source is never modified)."
             )
         if allow_partial:
             missing_required = [
@@ -1295,9 +1688,17 @@ def recover_session_database(
                 if not inspection["tables"][table].get("available")
             ]
             if missing_required:
-                raise SessionRecoverySourceError(
-                    "Partial recovery still requires readable table schemas for: "
-                    + ", ".join(missing_required)
+                # SQL-level salvage is impossible without readable table
+                # schemas. Fall back to page-level lost_and_found salvage via
+                # the sqlite3 CLI's .recover (a shell-only feature).
+                return _recover_via_lost_and_found(
+                    source=source,
+                    snapshot_source=snapshot_source,
+                    snapshot_dir=Path(temp_dir.name),
+                    output=output,
+                    inspection=inspection,
+                    disk_space=disk_space,
+                    missing_required=missing_required,
                 )
 
         source_conn = sqlite3.connect(
@@ -1377,6 +1778,27 @@ def recover_session_database(
                     progress_cb=progress_cb,
                     source_rows=table_inspection.get("rows"),
                 )
+
+            for table in _AUXILIARY_TABLES:
+                table_inspection = inspection["tables"][table]
+                if not table_inspection.get("available"):
+                    copy_report[table] = {
+                        "status": "missing",
+                        "copied_rows": 0,
+                    }
+                    continue
+                _ensure_auxiliary_destination_schema(destination_conn, table)
+                copy_function = (
+                    _copy_table_salvage if allow_partial else _copy_table
+                )
+                copy_report[table] = copy_function(
+                    source_conn,
+                    destination_conn,
+                    table,
+                    chunk_size=chunk_size,
+                    progress_cb=progress_cb,
+                    source_rows=table_inspection.get("rows"),
+                )
             orphan_cleanup = (
                 _cleanup_partial_orphans(destination_conn)
                 if allow_partial
@@ -1393,8 +1815,15 @@ def recover_session_database(
         verification = _verify_recovered_database(
             output,
             expected_counts={
-                table: inspection["tables"][table].get("rows")
-                for table in _CANONICAL_TABLES
+                **{
+                    table: inspection["tables"][table].get("rows")
+                    for table in _CANONICAL_TABLES
+                },
+                **{
+                    table: inspection["tables"][table].get("rows")
+                    for table in _AUXILIARY_TABLES
+                    if inspection["tables"].get(table, {}).get("available")
+                },
             },
             copy_report=copy_report,
             allow_partial=allow_partial,

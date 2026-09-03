@@ -41,10 +41,13 @@ def _stub_install_env(monkeypatch, m, seen):
     monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: R())
     monkeypatch.setattr(m, "_is_termux_env", lambda *a, **k: False)
     monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: None)
+    # The install executor moved to hermes_cli._install_repair (shared between
+    # the pre-import early pass and this late recovery path) — stub WHERE it
+    # is executed, not the legacy main.py wrapper it replaced.
+    import hermes_cli._install_repair as ir
+
     monkeypatch.setattr(
-        m,
-        "_install_python_dependencies_with_optional_fallback",
-        lambda *a, **k: seen.__setitem__("install", True),
+        ir, "run_core_install", lambda _root: seen.__setitem__("install", True)
     )
 
 

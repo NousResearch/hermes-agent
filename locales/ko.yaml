@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ 명령이 승인되었습니다 (패턴 영구 승인됨) ({count}개). 에이전트가 재개됩니다..."
 
   background:
-    usage:                 "사용법: /background <prompt>\n예시: /background 오늘 HN 인기 글을 요약해줘\n\n프롬프트를 별도 세션에서 실행합니다. 계속 대화할 수 있으며, 완료되면 결과가 여기에 표시됩니다."
+    usage:                 "사용법: /bg <prompt>\n예시: /bg 오늘 HN 인기 글을 요약해줘\n\n프롬프트를 별도 세션에서 실행합니다. 계속 대화할 수 있으며, 완료되면 결과가 여기에 표시됩니다."
     started:               "🔄 백그라운드 작업이 시작되었습니다: \"{preview}\"\n작업 ID: {task_id}\n계속 대화하실 수 있습니다 — 완료되면 결과가 여기에 표시됩니다."
+
+  btw:
+    usage:                 "사용법: /btw <질문>\n예시: /btw 그 오류가 어느 파일에 있었지?\n\n현재 작업을 중단하지 않고 이 대화에 대한 간단한 질문에 답합니다. 독립적인 백그라운드 작업은 /bg <prompt>를 사용하세요."
+    no_history:            "아직 대화가 없습니다 — 질문을 일반 메시지로 보내주세요."
+    no_provider:           "❌ 질문에 답할 수 없습니다: 공급자 자격 증명이 설정되지 않았습니다."
+    started:               "💬 사이드 질문: \"{preview}\"\n이 대화의 스냅샷을 바탕으로 답변합니다 — 현재 작업은 계속됩니다."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw 실패: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "세션 데이터베이스를 사용할 수 없습니다."
@@ -98,6 +106,7 @@ gateway:
     summary_failed:        "⚠️ 요약 생성에 실패했습니다 ({error}). 과거 메시지 {count}개가 제거되어 자리표시자로 대체되었으며, 이전 컨텍스트는 더 이상 복구할 수 없습니다. auxiliary.compression 모델 설정을 확인해 보세요."
     aborted:               "⚠️ 압축이 중단되었습니다 ({error}). 메시지가 삭제되지 않았으며 대화는 그대로 유지됩니다. 다시 시도하려면 /compress를 실행하거나, 새 세션을 시작하려면 /reset을 사용하거나, auxiliary.compression 모델 설정을 확인하세요."
     aux_failed:            "ℹ️ 구성된 압축 모델 `{model}`이(가) 실패했습니다 ({error}). 메인 모델로 복구되어 컨텍스트는 보존되었지만, config.yaml의 `auxiliary.compression.model` 설정을 확인하는 것이 좋습니다."
+    turnhold_deferred:     "ℹ️ 컨텍스트 압축이 연기되었습니다 — 요약이 아직 스트리밍 중입니다. 이번 턴은 압축 없이 계속합니다."
     failed:                "압축 실패: {error}"
 
   debug:
@@ -128,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\n현재 모드: `{mode}`\\n\\n옵션을 선택하세요:"
     choice_fast:           "fast — Priority Processing 켜기"
     choice_normal:         "normal — 표준 처리"
+    choice_auto:           "auto — 매 턴의 처음 몇 초 동안 빠름"
+    choice_cold:           "cold — 세션의 첫 턴에만 빠름"
 
   footer:
     status:                "📎 런타임 푸터: **{state}**\n필드: `{fields}`\n플랫폼: `{platform}`"
@@ -142,7 +153,7 @@ gateway:
     no_goal_set:           "설정된 목표가 없습니다."
     paused:                "⏸ 목표 일시정지: {goal}"
     no_resume:             "재개할 목표가 없습니다."
-    resumed:               "▶ 목표 재개: {goal}\n메시지를 보내 계속하거나 기다려 주세요 — 다음 차례에 다음 단계를 진행하겠습니다."
+    resumed:               "▶ 목표 재개: {goal}\n바로 계속합니다 — 즉시 다음 단계를 진행하겠습니다."
     invalid:               "잘못된 목표: {error}"
     set:                   "⊙ 목표 설정됨 ({budget}회 예산): {goal}\n목표가 완료되거나, 일시정지/삭제하거나, 예산이 소진될 때까지 계속 작업하겠습니다.\n제어: /goal status · /goal pause · /goal resume · /goal clear"
 
@@ -166,9 +177,15 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "`{path}/config.yaml`에 구성된 성격이 없습니다"
@@ -254,6 +271,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "이름이 지정된 세션이 없습니다.\n현재 세션에 이름을 지정하려면 `/title 내 세션`을 사용하고, 나중에 `/resume 내 세션`으로 돌아오세요."
+    all_requires_admin: "_참고: `--all`(채팅 간 목록)은 구성된 관리자가 필요합니다. 이 채팅의 세션만 표시합니다._"
     list_header:           "📋 **이름이 지정된 세션**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -277,6 +295,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "{cwd}에 체크포인트를 찾을 수 없습니다"
     invalid_number:        "잘못된 체크포인트 번호입니다. 1-{max}을 사용하세요."
     restored:              "✅ 체크포인트 {hash}(으)로 복원됨: {reason}\n롤백 전 스냅샷이 자동으로 저장되었습니다."
+    kept_user_edits:       "↷ 직접 수정한 내용은 유지되었습니다: {files}\n해당 파일도 복원하려면 /rollback <N> --all 을 사용하세요."
+    kept_oversize:         "↷ 유지됨 (체크포인트에 저장하기엔 너무 커서 되돌릴 저장본이 없습니다): {files}"
+    failed_deletes:        "⚠️ 제거할 수 없었습니다 (그대로 남아 있음): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

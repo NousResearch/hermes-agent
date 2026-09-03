@@ -3,7 +3,11 @@ import assert from 'node:assert/strict'
 import { test, vi } from 'vitest'
 
 import { createFirstRunSetupGate } from './first-run-setup-gate'
-import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
+import {
+  createPrimaryRemoteConnection,
+  FirstRunSetupResetError,
+  runPrimaryBackendStartup
+} from './primary-backend-startup'
 
 const bootstrapBackend = {
   activeRoot: '/tmp/hermes-home/hermes-agent',
@@ -22,6 +26,67 @@ function startupOptions(overrides: Record<string, unknown> = {}) {
     ...overrides
   }
 }
+
+test('primary remote descriptor preserves a resolved registry connection id', () => {
+  const connection = createPrimaryRemoteConnection(
+    {
+      authMode: 'token',
+      baseUrl: 'https://gateway.example.com',
+      connectionId: 'skateway',
+      remoteKind: 'url',
+      source: 'settings',
+      token: 'secret',
+      wsUrl: 'wss://gateway.example.com/api/ws'
+    },
+    ['ready'],
+    { isFullscreen: false }
+  )
+
+  assert.equal(connection.connectionId, 'skateway')
+  assert.equal(connection.mode, 'remote')
+  assert.deepEqual(connection.logs, ['ready'])
+  assert.equal(connection.isFullscreen, false)
+})
+
+test('primary remote descriptor preserves the effective SSH dialing identity', () => {
+  const ssh = {
+    effectiveConfigFingerprint: 'effective-config',
+    host: 'build-host',
+    remoteHermesPath: '/srv/hermes',
+    remoteProfile: 'default',
+    user: 'alice'
+  }
+
+  const connection = createPrimaryRemoteConnection(
+    {
+      baseUrl: 'http://127.0.0.1:49152',
+      remoteKind: 'ssh',
+      ssh,
+      token: 'secret',
+      wsUrl: 'ws://127.0.0.1:49152/api/ws'
+    },
+    [],
+    {}
+  )
+
+  assert.equal(connection.ssh, ssh)
+  assert.equal(connection.ssh?.effectiveConfigFingerprint, 'effective-config')
+})
+
+test('primary remote descriptor keeps legacy unregistered routes unqualified', () => {
+  const connection = createPrimaryRemoteConnection(
+    {
+      baseUrl: 'https://env.example.com',
+      source: 'env',
+      token: 'secret',
+      wsUrl: 'wss://env.example.com/api/ws'
+    },
+    [],
+    {}
+  )
+
+  assert.equal('connectionId' in connection, false)
+})
 
 test('remote apply re-resolves the saved connection without ensuring a local runtime', async () => {
   const gate = createFirstRunSetupGate({ stuckAfterMs: 0 })

@@ -24,26 +24,24 @@ from utils import env_var_enabled
 def _open_session_db():
     """Open the SessionDB for the profile owning this turn, or ``None``."""
     try:
-        from hermes_state import SessionDB
+        from hermes_state import get_shared_session_db
 
-        return SessionDB()
+        return get_shared_session_db()
     except Exception:
         return None
 
 
-def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -> str:
+def _react_to_message_with_db(
+    emoji: str,
+    message_row_id=None,
+    messages_back=None,
+    *,
+    db,
+    session_key: str,
+) -> str:
     """Attach (or with an empty ``emoji`` retract) the agent's reaction."""
-    emoji = (emoji or "").strip()
-    session_key = get_session_env("HERMES_SESSION_KEY", "") or get_session_env(
-        "HERMES_SESSION_ID", ""
-    )
-
     if not session_key:
         return tool_error("No active session — reactions need a persisted conversation.")
-
-    db = _open_session_db()
-    if db is None:
-        return tool_error("Session storage is unavailable.")
 
     row_id = message_row_id
     target_role = "user"
@@ -89,21 +87,43 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
     )
 
 
+def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -> str:
+    """Attach (or with an empty ``emoji`` retract) the agent's reaction."""
+    emoji = (emoji or "").strip()
+    session_key = get_session_env("HERMES_SESSION_KEY", "") or get_session_env(
+        "HERMES_SESSION_ID", ""
+    )
+
+    if not session_key:
+        return tool_error("No active session — reactions need a persisted conversation.")
+
+    db = _open_session_db()
+    if db is None:
+        return tool_error("Session storage is unavailable.")
+
+    try:
+        return _react_to_message_with_db(
+            emoji,
+            message_row_id,
+            messages_back,
+            db=db,
+            session_key=session_key,
+        )
+    finally:
+        try:
+            from hermes_state import release_or_close
+            release_or_close(db)
+        except Exception:
+            pass
+
+
 def check_react_requirements() -> bool:
     """Opt-in feature flag — surface eligibility is the toolset's job.
 
     ``desktop_ui`` already restricts this to GUI sessions. What's left is the
-    user's own toggle (Settings → Appearance), which the desktop mirrors into
-    ``display.message_reactions`` on the CONNECTED gateway's config — so this
-    reads the right config whether that gateway is local, SSH, URL, or cloud.
+    user's own toggle (Settings → Appearance).
     """
-    try:
-        from hermes_cli.config import load_config_readonly
-
-        display = load_config_readonly().get("display")
-    except Exception:
-        return False
-    return isinstance(display, dict) and bool(display.get("message_reactions", False))
+    return desktop_ui.user_enabled("message_reactions", default=False)
 
 
 REACT_TO_MESSAGE_SCHEMA = {

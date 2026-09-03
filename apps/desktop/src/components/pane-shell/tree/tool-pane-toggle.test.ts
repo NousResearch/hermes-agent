@@ -14,7 +14,7 @@ import {
   closeToolPane,
   isPaneVisible,
   revealTreePane,
-  setTreeGroupHeaderHidden,
+  setTreeGroupTabStrip,
   togglePaneVisible
 } from './store'
 
@@ -69,7 +69,7 @@ const toolZone = () => {
       ? tree.children.find(c => c.type === 'group' && (c.panes.includes('terminal') || c.panes.includes('logs')))
       : null
 
-  return found as { active?: string; headerHidden?: boolean; minimized?: boolean; panes: string[] } | null
+  return found as { active?: string; minimized?: boolean; panes: string[]; tabStrip?: string } | null
 }
 
 /** Terminal dragged to the bottom; logs adopted into the same zone.
@@ -77,13 +77,13 @@ const toolZone = () => {
  *  Set via `$layoutTree.set`, NOT `declareDefaultTree` — that only adopts into
  *  an existing tree, and `$layoutTree` is module state that survives between
  *  tests, so the second case would silently assert against the first's shape. */
-const stackTree = (options?: { active?: string; headerHidden?: boolean }) => {
+const stackTree = (options?: { active?: string; tabStrip?: 'always' | 'never' }) => {
   $layoutTree.set(
     split('column', [
       group(['workspace'], { active: 'workspace', id: 'grp-main' }),
       group(['terminal', 'logs'], {
         active: options?.active ?? 'terminal',
-        headerHidden: options?.headerHidden,
+        tabStrip: options?.tabStrip,
         id: 'g-tools'
       })
     ])
@@ -363,23 +363,23 @@ describe('a terminal that owns its own zone (Default / Terminal deck / Quad)', (
 
 describe('a zone whose header the user hid', () => {
   it('keeps it hidden after a stacked sibling is closed and toggled back', () => {
-    stackTree({ headerHidden: true })
+    stackTree({ tabStrip: 'never' })
     bindPaneCollapse('terminal', atom(true))
     const $logs = atom(true)
     bindPaneCollapse('logs', $logs)
 
-    setTreeGroupHeaderHidden('g-tools', true)
+    setTreeGroupTabStrip('g-tools', 'never')
 
     // Close logs: the zone drops to one pane. normalize used to DISCARD the
     // hidden flag here ("a lone zone is headerless anyway"), so the bar
     // reappeared the moment logs was toggled back in.
     closeToolPane('logs')
-    expect(toolZone()?.headerHidden).toBe(true)
+    expect(toolZone()?.tabStrip).toBe('never')
 
     $logs.set(true)
 
     expect(toolZone()?.panes).toContain('logs')
-    expect(toolZone()?.headerHidden).toBe(true)
+    expect(toolZone()?.tabStrip).toBe('never')
   })
 
   it('keeps it hidden when a closed pane is re-adopted into it', () => {
@@ -388,14 +388,14 @@ describe('a zone whose header the user hid', () => {
     bindPaneCollapse('terminal', $terminal)
     bindPaneCollapse('logs', atom(true))
 
-    setTreeGroupHeaderHidden('g-tools', true)
+    setTreeGroupTabStrip('g-tools', 'never')
 
-    // Re-adoption pins headerHidden:false so a surprise pane always has a
-    // handle — correct for a new pane, wrong for a zone the user hid.
+    // Re-adoption used to pin the strip visible so a surprise pane always had
+    // a handle — correct for a new pane, wrong for a zone the user hid.
     closeToolPane('terminal')
     $terminal.set(true)
 
     expect(toolZone()?.panes).toContain('terminal')
-    expect(toolZone()?.headerHidden).toBe(true)
+    expect(toolZone()?.tabStrip).toBe('never')
   })
 })

@@ -128,6 +128,11 @@ expansive skill:
   decision rules, anti-patterns, key numbers and tables, with
   chapter/section refs back to the source. Bullet-dense, roughly 100-150
   lines per file.
+- Process large sources incrementally: inventory the chapters/topics first,
+  then read, distill, and persist ONE chapter or topic at a time before moving
+  to the next. Never load an entire large corpus into conversation context at
+  once. After all units are written, reconcile the SKILL.md index against the
+  actual reference files so none are missing or stale.
 - Add cross-cutting files when the source earns them: a `references/`
   glossary (terms with chapter refs), patterns/techniques, and a cheatsheet
   of decision tables. Skip any that would be padding.
@@ -192,25 +197,37 @@ def build_learn_prompt(user_request: str) -> str:
         "deprecated\" as authoring requirements. Never fetch the first source "
         "and ignore the rest.\n\n"
         "Do this:\n"
-        "1. Gather every source the user named, using the tools you already "
+        "1. Inventory every source the user named, using the tools you already "
         "have — `read_file`/`search_files` for local files or directories, "
         "`web_extract` for URLs, the current conversation history if they "
         "referred to something you just did, and the text they pasted as-is. "
+        "Gather a small source now. For a large source, inspect enough to map "
+        "its chapters or major topics, but do not load the whole corpus into "
+        "conversation context; process it incrementally in step 2b. "
         "If the request is ambiguous about scope, make a reasonable choice "
         "and note it; do not stall.\n"
         "1b. Apply every requirement, focus, and constraint in the request to "
         "the skill you author — these govern what the SKILL.md covers and "
         "emphasizes, not just which sources you read.\n"
-        "2. Author the skill and save it with the `skill_manage` tool "
-        "(action=\"create\"). Pick a sensible category. If the procedure needs "
-        "a non-trivial script, add it under the skill's `scripts/` with "
-        "`skill_manage` write_file and reference it by relative path.\n"
+        "2. Save the skill with `skill_manage`. First check the available "
+        "skills for one covering this source or topic. If one exists, load it "
+        "with `skill_view`, then extend its SKILL.md with `skill_manage` patch "
+        "(or edit for a necessary full rewrite) and add or update supporting "
+        "files with `skill_manage` write_file. Only when no matching skill "
+        "exists, create one with `skill_manage` action=\"create\" and pick a "
+        "sensible category. If the procedure needs a non-trivial script, add "
+        "it under the skill's `scripts/` with `skill_manage` write_file and "
+        "reference it by relative path.\n"
         "2b. Pick the shape by the source, not by habit: a workflow or small "
         "source gets ONE tight SKILL.md; a book, paper stack, spec, or large "
         "docs corpus gets the knowledge-base layout below — a lean SKILL.md "
         "index plus per-chapter `references/` files added with `skill_manage` "
         "write_file. If a single SKILL.md would force you to summarize away "
-        "most of the material, that is the signal to go expansive.\n\n"
+        "most of the material, that is the signal to go expansive. For this "
+        "layout, create or load the skill after inventorying the source, then "
+        "read, distill, and persist one chapter/topic at a time before reading "
+        "the next; finish by reconciling the SKILL.md index with every "
+        "reference file you wrote.\n\n"
         f"{_SOURCE_HYGIENE}\n\n"
         f"{_AUTHORING_STANDARDS}\n\n"
         f"{_KNOWLEDGE_SKILL_STANDARDS}\n\n"

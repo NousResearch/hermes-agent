@@ -128,6 +128,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -593,12 +594,13 @@ def _resolve_max_message_length(config) -> int:
 # Back-compat alias for callers/tests that import the module constant.
 MAX_MESSAGE_LENGTH = DEFAULT_MAX_MESSAGE_LENGTH
 
-# Store directory for E2EE keys and sync state.
-# Uses get_hermes_home() so each profile gets its own Matrix store.
+# Store directory for E2EE keys and sync state. Resolved per adapter in
+# ``connect()`` (see ``_resolve_store_dir``), NOT at module scope: the
+# multiplex gateway imports this module once, so a module-level constant
+# would pin the root HERMES_HOME for every profile and all bots' Olm
+# identities would collide in one crypto.db (#89168). Mirrors the
+# pairing-store fix (a6397c379).
 from hermes_constants import get_hermes_dir as _get_hermes_dir
-
-_STORE_DIR = _get_hermes_dir("platforms/matrix/store", "matrix/store")
-_CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
 
 # Grace period: ignore messages older than this many seconds before startup.
 _STARTUP_GRACE_SECONDS = 5
@@ -623,6 +625,13 @@ _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
     ".heic",
     ".heif",
     ".avif",
+})
+
+# Extensions for audio/video/file msgtypes whose ``content.body`` is
+# the uploaded filename when the sender adds no caption.
+_MATRIX_MEDIA_FILENAME_EXTS = frozenset({
+    ".ogg", ".oga", ".opus", ".m4a", ".mp3", ".wav", ".flac", ".aac", ".amr",
+    ".mp4", ".webm", ".mov", ".mkv",
 })
 
 _MATRIX_MODEL_PICKER_REACTIONS = (
@@ -693,6 +702,36 @@ def _looks_like_matrix_image_filename(text: str) -> bool:
     return suffix in _MATRIX_IMAGE_FILENAME_EXTS
 
 
+def _looks_like_matrix_media_filename(text: str) -> bool:
+    """Return True when Matrix audio/video/file body text is a transport filename.
+
+    Matrix ``m.audio``/``m.file``/``m.video`` events populate ``content.body``
+    with the uploaded filename when the sender adds no caption.  Same
+    conservative heuristic as :func:`_looks_like_matrix_image_filename` but
+    for non-image media types.
+    """
+    candidate = str(text or "").strip()
+    if not candidate or "\n" in candidate or candidate.endswith("/"):
+        return False
+    # A genuine caption essentially always contains whitespace; a bare
+    # transport filename does not.
+    if any(ch.isspace() for ch in candidate):
+        return False
+
+    name = Path(candidate).name
+    if not name or name != candidate:
+        return False
+
+    suffix = Path(name).suffix.lower()
+    if not suffix:
+        return False
+
+    guessed_type, _ = mimetypes.guess_type(name)
+    if guessed_type and guessed_type.startswith(("audio/", "video/")):
+        return True
+    return suffix in _MATRIX_MEDIA_FILENAME_EXTS
+
+
 def _matrix_event_timestamp_seconds(event: Any) -> float:
     """Return a Matrix event timestamp in seconds, accepting ms or sec values."""
     raw_ts = (
@@ -726,7 +765,7 @@ def _create_matrix_session(proxy_url: str | None):
     import aiohttp
 
     if not proxy_url:
-        return aiohttp.ClientSession(trust_env=True)
+        return aiohttp.ClientSession(trust_env=gateway_trust_env())
 
     if proxy_url.split("://")[0].lower().startswith("socks"):
         try:
@@ -741,7 +780,7 @@ def _create_matrix_session(proxy_url: str | None):
                 "Run: pip install aiohttp-socks",
                 proxy_url,
             )
-            return aiohttp.ClientSession(trust_env=True)
+            return aiohttp.ClientSession(trust_env=gateway_trust_env())
 
     return aiohttp.ClientSession(proxy=proxy_url)
 
@@ -981,7 +1020,7 @@ def check_matrix_requirements() -> bool:
     """
     token = _startup_env_secret("MATRIX_ACCESS_TOKEN")
     password = _startup_env_secret("MATRIX_PASSWORD")
-    homeserver = os.getenv("MATRIX_HOMESERVER", "")
+    homeserver = _startup_env_secret("MATRIX_HOMESERVER")
 
     if not token and not password:
         logger.debug("Matrix: neither MATRIX_ACCESS_TOKEN nor MATRIX_PASSWORD set")
@@ -1150,6 +1189,23 @@ class MatrixAdapter(BasePlatformAdapter):
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _split_threshold = DEFAULT_MAX_MESSAGE_LENGTH - 100
 
+    def _resolve_store_dir(self) -> Path:
+        """Pin this adapter's crypto-store directory to the active profile.
+
+        Called from ``connect()``, which the multiplex gateway runs inside
+        ``_profile_runtime_scope`` -- ``get_hermes_dir`` honors that
+        context-local HERMES_HOME, so each profile's adapter gets its own
+        store. Cached on the instance so later reads (diagnostics, error
+        logs) outside the scope still report the store actually in use.
+        """
+        self._store_dir = _get_hermes_dir("platforms/matrix/store", "matrix/store")
+        return self._store_dir
+
+    @property
+    def _crypto_db_path(self) -> Path:
+        store_dir = self._store_dir or _get_hermes_dir("platforms/matrix/store", "matrix/store")
+        return store_dir / "crypto.db"
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
 
@@ -1180,6 +1236,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
+        self._store_dir: Optional[Path] = None  # pinned per profile in connect()
         self._sync_task: Optional[asyncio.Task] = None
         self._invite_join_tasks: Dict[str, asyncio.Task] = {}
         self._closing = False
@@ -1635,7 +1692,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix: server has different identity keys for device %s — "
                     "local crypto state is stale. Delete %s and restart.",
                     client.device_id,
-                    _CRYPTO_DB_PATH,
+                    str(self._crypto_db_path),
                 )
                 return False
 
@@ -1691,8 +1748,9 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.error("Matrix: homeserver URL not configured")
             return False
 
-        # Ensure store dir exists for E2EE key persistence.
-        _STORE_DIR.mkdir(parents=True, exist_ok=True)
+        # Ensure store dir exists for E2EE key persistence (resolved here,
+        # inside the profile scope, so multiplexed profiles never share it).
+        self._resolve_store_dir().mkdir(parents=True, exist_ok=True)
 
         # Create the HTTP API layer.
         client_session = _create_matrix_session(self._proxy_url)
@@ -1849,7 +1907,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     from mautrix.crypto.store.asyncpg import PgCryptoStore
                     from mautrix.util.async_db import Database
 
-                    _STORE_DIR.mkdir(parents=True, exist_ok=True)
+                    self._store_dir.mkdir(parents=True, exist_ok=True)
                 except Exception as exc:
                     if self._e2ee_mode == "optional":
                         logger.warning(
@@ -1870,7 +1928,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if self._encryption:
                 try:
                     # Remove legacy pickle file from pre-SQLite era.
-                    legacy_pickle = _STORE_DIR / "crypto_store.pickle"
+                    legacy_pickle = self._store_dir / "crypto_store.pickle"
                     if legacy_pickle.exists():
                         logger.info(
                             "Matrix: removing legacy crypto_store.pickle (migrated to SQLite)"
@@ -1878,7 +1936,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         legacy_pickle.unlink()
 
                     crypto_db = Database.create(
-                        f"sqlite:///{_CRYPTO_DB_PATH}",
+                        f"sqlite:///{self._crypto_db_path}",
                         upgrade_table=PgCryptoStore.upgrade_table,
                     )
                     await crypto_db.start()
@@ -2006,7 +2064,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     client.crypto = olm
                     logger.info(
                         "Matrix: E2EE enabled (store: %s%s)",
-                        str(_CRYPTO_DB_PATH),
+                        str(self._crypto_db_path),
                         f", device_id={client.device_id}" if client.device_id else "",
                     )
                 except Exception as exc:
@@ -2105,6 +2163,8 @@ class MatrixAdapter(BasePlatformAdapter):
         # Start the sync loop.
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
+        # Plugin-registered native handlers (Matrix client — event callbacks).
+        self._wire_plugin_handlers(self._client)
         return True
 
     async def disconnect(self) -> None:
@@ -2248,7 +2308,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 "mode": self._e2ee_mode,
                 "enabled": bool(self._encryption),
                 "deps_available": _check_e2ee_deps(),
-                "crypto_store_path": str(_CRYPTO_DB_PATH),
+                "crypto_store_path": str(self._crypto_db_path),
                 "recovery_key_configured": bool(
                     _scoped_recovery_key().strip()
                 ),
@@ -3642,9 +3702,9 @@ class MatrixAdapter(BasePlatformAdapter):
 
                     if file_bytes is not None:
                         from gateway.platforms.base import (
-                            cache_audio_from_bytes,
-                            cache_document_from_bytes,
-                            cache_image_from_bytes,
+                            cache_audio_from_bytes_async,
+                            cache_document_from_bytes_async,
+                            cache_image_from_bytes_async,
                         )
 
                         if msg_type == MessageType.PHOTO:
@@ -3655,7 +3715,7 @@ class MatrixAdapter(BasePlatformAdapter):
                                 "image/webp": ".webp",
                             }
                             ext = ext_map.get(media_type, ".jpg")
-                            cached_path = cache_image_from_bytes(file_bytes, ext=ext)
+                            cached_path = await cache_image_from_bytes_async(file_bytes, ext=ext)
                             logger.info("[Matrix] Cached user image at %s", cached_path)
                         elif msg_type in {MessageType.AUDIO, MessageType.VOICE}:
                             ext = (
@@ -3667,14 +3727,14 @@ class MatrixAdapter(BasePlatformAdapter):
                                 ).suffix
                                 or ".ogg"
                             )
-                            cached_path = cache_audio_from_bytes(file_bytes, ext=ext)
+                            cached_path = await cache_audio_from_bytes_async(file_bytes, ext=ext)
                         else:
                             filename = body or (
                                 "video.mp4"
                                 if msg_type == MessageType.VIDEO
                                 else "document"
                             )
-                            cached_path = cache_document_from_bytes(
+                            cached_path = await cache_document_from_bytes_async(
                                 file_bytes, filename
                             )
             except Exception as e:
@@ -3711,6 +3771,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 )
 
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
+            body = ""
+        elif msgtype in ("m.audio", "m.file", "m.video") and _looks_like_matrix_media_filename(body):
             body = ""
 
         allow_http_fallback = bool(http_url) and not is_encrypted_media
@@ -4237,7 +4299,7 @@ class MatrixAdapter(BasePlatformAdapter):
             thread_sessions_per_user=self.config.extra.get(
                 "thread_sessions_per_user", False
             ),
-            profile=event.source.profile,
+            profile=self._session_key_profile(event.source),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:

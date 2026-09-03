@@ -29,7 +29,6 @@ Remote execution additionally requires Python 3 in the terminal backend.
 """
 
 import base64
-import functools
 import json
 import logging
 import os
@@ -121,18 +120,72 @@ def _assemble_stdout_result(
 
 
 def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
-    """Cap a complete stdout string by bytes using the same head/tail policy."""
+    """Cap a complete stdout string by bytes using the same head/tail policy.
+
+    When the full text is in hand (this function's callers, unlike the
+    streaming per-call reader), the omitted middle is not discarded: the
+    complete output is spilled to cache/exec and the result carries the
+    path — the same recover-don't-rerun pattern as web_extract's
+    cache/web full-text store.
+    """
     stdout_bytes = stdout_text.encode("utf-8", errors="replace")
     if len(stdout_bytes) <= MAX_STDOUT_BYTES:
         return _assemble_stdout_result(stdout_bytes)
 
     head_bytes = int(MAX_STDOUT_BYTES * 0.4)
     tail_bytes = MAX_STDOUT_BYTES - head_bytes
-    return _assemble_stdout_result(
+    text, metadata = _assemble_stdout_result(
         stdout_bytes[:head_bytes],
         stdout_bytes[-tail_bytes:],
         total_bytes=len(stdout_bytes),
     )
+    spill_path = _spill_full_stdout(stdout_text)
+    if spill_path:
+        metadata["stdout_spill_path"] = spill_path
+        metadata["warning"] = (
+            "execute_code stdout was truncated (head/tail shown); the "
+            f"script did run. FULL output saved to {spill_path} — page it "
+            f'with read_file(path="{spill_path}", offset=...) instead of '
+            "re-running."
+        )
+    return text, metadata
+
+
+# Hard ceiling on the spilled file, mirroring web_tools' MAX_STORED_TEXT_CHARS
+# rationale: a runaway print loop must not write unbounded bytes to disk.
+MAX_SPILLED_STDOUT_BYTES = 5_000_000
+
+
+def _spill_full_stdout(stdout_text: str) -> Optional[str]:
+    """Write full stdout to cache/exec; return its path (None on failure).
+
+    Best-effort by design — truncated inline output is still returned when
+    storage fails. Files are keyed by content digest so identical reruns
+    coalesce; the directory rides the same remote bind-mount list as
+    cache/web (credential_files._CACHE_DIRS) if present there.
+    """
+    try:
+        import hashlib
+        from hermes_constants import get_hermes_dir
+
+        if len(stdout_text) > MAX_SPILLED_STDOUT_BYTES:
+            stdout_text = (
+                stdout_text[:MAX_SPILLED_STDOUT_BYTES]
+                + f"\n\n[... spill capped at {MAX_SPILLED_STDOUT_BYTES:,} bytes ...]"
+            )
+        cache_dir = get_hermes_dir("cache/exec", "exec_spill")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(
+            stdout_text.encode("utf-8", errors="replace")
+        ).hexdigest()[:12]
+        path = cache_dir / f"stdout-{digest}.txt"
+        from tools.spill_safety import write_text_exclusive
+
+        write_text_exclusive(path, stdout_text, private=False, overwrite=True)
+        return str(path)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to spill execute_code stdout: %s", exc)
+        return None
 
 # Environment variable scrubbing rules (shared between the local + remote
 # backends).  Secret-substring block is applied first; anything left must
@@ -350,19 +403,19 @@ _TOOL_STUBS = {
     "write_file": (
         "write_file",
         "path: str, content: str, cross_profile: bool = False",
-        '"""Write content to a file (always overwrites). Returns dict with status. cross_profile=True opts out of the cross-Hermes-profile soft guard."""',
+        '"""Write content to a file (always overwrites). Returns dict with status."""',
         '{"path": path, "content": content, "cross_profile": cross_profile}',
     ),
     "search_files": (
         "search_files",
-        'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0',
+        'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0, order: str = "discovery"',
         '"""Search file contents (target="content") or find files by name (target="files"). Returns dict with "matches"."""',
-        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context}',
+        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context, "order": order}',
     ),
     "patch": (
         "patch",
         'path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None, cross_profile: bool = False',
-        '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status. cross_profile=True opts out of the cross-Hermes-profile soft guard."""',
+        '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status."""',
         '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch, "cross_profile": cross_profile}',
     ),
     "terminal": (
@@ -473,9 +526,12 @@ _COMMON_HELPERS = '''\
 # ---------------------------------------------------------------------------
 
 def json_parse(text: str):
-    """Parse JSON tolerant of control characters (strict=False).
+    """Parse JSON tolerant of control characters and UTF-8 BOM (strict=False).
     Use this instead of json.loads() when parsing output from terminal()
-    or web_extract() that may contain raw tabs/newlines in strings."""
+    or web_extract() that may contain raw tabs/newlines in strings,
+    or from tools/files that prepend a UTF-8 BOM (salvage #57870, credit @woxinwuhen713-bit)."""
+    if isinstance(text, str) and text.startswith("﻿"):
+        text = text[1:]
     return json.loads(text, strict=False)
 
 
@@ -550,17 +606,34 @@ def _call(tool_name, args):
         "args": args,
         "token": os.environ.get("HERMES_RPC_TOKEN", ""),
     }) + "\\n"
+    # Session kernels outlive the RPC server's 300s idle window, so their
+    # connection can be legitimately gone by the next cell. The server
+    # re-accepts (HERMES_RPC_PERSISTENT=1); retry once on a fresh socket.
+    _attempts = 2 if os.environ.get("HERMES_RPC_PERSISTENT") == "1" else 1
     with _call_lock:
-        conn = _connect()
-        conn.sendall(request.encode())
-        buf = b""
-        while True:
-            chunk = conn.recv(65536)
-            if not chunk:
-                raise RuntimeError("Agent process disconnected")
-            buf += chunk
-            if buf.endswith(b"\\n"):
+        for _attempt in range(_attempts):
+            try:
+                conn = _connect()
+                conn.sendall(request.encode())
+                buf = b""
+                while True:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        raise RuntimeError("Agent process disconnected")
+                    buf += chunk
+                    if buf.endswith(b"\\n"):
+                        break
                 break
+            except (OSError, RuntimeError):
+                global _sock
+                try:
+                    if _sock is not None:
+                        _sock.close()
+                except OSError:
+                    pass
+                _sock = None
+                if _attempt + 1 >= _attempts:
+                    raise
     raw = buf.decode().strip()
     result = json.loads(raw)
     if isinstance(result, str):
@@ -644,7 +717,7 @@ def _call(tool_name, args):
 # ---------------------------------------------------------------------------
 
 # Terminal parameters that must not be used from ephemeral sandbox scripts
-_TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
+_TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns"}
 
 
 def _rpc_server_loop(
@@ -656,12 +729,24 @@ def _rpc_server_loop(
     allowed_tools: frozenset,
     stop_event: threading.Event,
     rpc_token: str,
+    dispatch=None,
 ):
     """
     Accept one client connection and dispatch tool-call requests until
     the client disconnects or the call limit is reached.
+
+    ``dispatch`` overrides how an allowed, budgeted call is executed:
+    per-call sandboxes use the default (this thread already carries the
+    cell's context via propagate_context_to_thread), while session kernels
+    pass a dispatcher that rebinds each call to the CURRENT cell's
+    authority — the serving thread outlives many cells there and must not
+    freeze the first cell's context.
     """
     from model_tools import handle_function_call
+
+    if dispatch is None:
+        def dispatch(tool_name, tool_args):
+            return handle_function_call(tool_name, tool_args, task_id=task_id)
 
     conn = None
     try:
@@ -743,9 +828,7 @@ def _rpc_server_loop(
                 # their status prints don't leak into the CLI spinner.
                 try:
                     with thread_scoped_silence():
-                        result = handle_function_call(
-                            tool_name, tool_args, task_id=task_id
-                        )
+                        result = dispatch(tool_name, tool_args)
                 except Exception as exc:
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
                     result = tool_error(str(exc))
@@ -790,7 +873,7 @@ def _get_or_create_env(task_id: str):
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id,
+        _resolve_container_task_id, _resolve_task_host_cwd,
     )
 
     effective_task_id = _resolve_container_task_id(task_id)
@@ -831,7 +914,9 @@ def _get_or_create_env(task_id: str):
         cwd = overrides.get("cwd") or config["cwd"]
 
         container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+        from tools.terminal_tool import _is_container_backend as _is_container
+
+        if _is_container(env_type):
             container_config = {
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
@@ -870,7 +955,7 @@ def _get_or_create_env(task_id: str):
             container_config=container_config,
             local_config=local_config,
             task_id=effective_task_id,
-            host_cwd=config.get("host_cwd"),
+            host_cwd=_resolve_task_host_cwd(config, task_id),
         )
 
         with _env_lock:
@@ -1058,16 +1143,84 @@ def _rpc_poll_loop(
             stop_event.wait(poll_interval)
 
 
+def _format_interrupted_output(stdout_text: str) -> str:
+    """Append an interruption marker without guessing who caused it."""
+    from tools.interrupt import get_interrupt_reason
+
+    reason = get_interrupt_reason()
+    marker = (
+        f"[execution interrupted — {reason}]"
+        if reason
+        else "[execution interrupted]"
+    )
+    return f"{stdout_text}\n{marker}" if stdout_text else marker
+
+
+def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
+                                 timeout: int, exec_start: float) -> str:
+    """Post-process a remote-kernel cell result into the tool's JSON reply.
+
+    Same output pipeline as the per-call paths: truncation, ANSI strip,
+    secret redaction; timeout messaging mirrors the local kernel contract
+    (kernel killed, state lost, next call fresh).
+    """
+    from tools.ansi_strip import strip_ansi
+    from agent.redact import redact_sensitive_text
+
+    stdout_text = kernel_result.get("stdout", "") or ""
+    stderr_text = kernel_result.get("stderr", "") or ""
+    traceback_text = kernel_result.get("traceback", "") or ""
+    if stderr_text or traceback_text:
+        # Same joining shape as the local kernel path (code_kernel result
+        # assembly): stderr and traceback ride in the output under one
+        # marker so the model always sees the failure inline.
+        stdout_text = (
+            stdout_text + "\n--- stderr ---\n" + stderr_text + traceback_text
+        )
+
+    stdout_text, stdout_metadata = _truncate_stdout_text(stdout_text)
+    stdout_text = strip_ansi(stdout_text)
+    stdout_text = redact_sensitive_text(stdout_text, code_file=True)
+
+    duration = round(time.monotonic() - exec_start, 2)
+    result: Dict[str, Any] = {
+        "status": kernel_result.get("status", "error"),
+        "output": stdout_text,
+        "tool_calls_made": kernel_result.get("tool_calls_made", 0),
+        "duration_seconds": duration,
+        "kernel": kernel_result.get("kernel", {"remote": True}),
+    }
+    result.update(stdout_metadata)
+
+    if result["status"] == "timeout":
+        timeout_msg = (
+            f"Cell timed out after {timeout}s; the remote session kernel was "
+            "killed and its state was lost. The next call starts fresh."
+        )
+        result["error"] = timeout_msg
+        result["output"] = (
+            (stdout_text + f"\n\n⏰ {timeout_msg}") if stdout_text
+            else f"⏰ {timeout_msg}"
+        )
+    elif result["status"] == "error" and kernel_result.get("error"):
+        result["error"] = kernel_result["error"]
+
+    return json.dumps(result, ensure_ascii=False)
+
+
 def _execute_remote(
     code: str,
     task_id: Optional[str],
     enabled_tools: Optional[List[str]],
+    reset: bool = False,
 ) -> str:
-    """Run a script on the remote terminal backend via file-based RPC.
+    """Run code on the remote terminal backend.
 
-    The script and the generated hermes_tools.py module are shipped to
-    the remote environment, and tool calls are proxied through a polling
-    thread that communicates via request/response files.
+    Preferred path: the owner's persistent remote session kernel
+    (tools/code_kernel_remote.py — detached runner + file cell protocol).
+    Fallback path: the original per-call script ship (kept both as the
+    fail-open route when a kernel cannot be spawned and as the only route
+    for hosts that cannot sustain a background process).
     """
 
     _cfg = _load_config()
@@ -1111,6 +1264,41 @@ def _execute_remote(
                 "tool_calls_made": 0,
                 "duration_seconds": 0,
             })
+
+        # --- Session-kernel path (hermes-agent#96873) -------------------
+        # Same always-on model as local: one persistent kernel per owner,
+        # rebuilt on the run-to-completion transport (detached runner +
+        # file cell protocol). Spawn failure falls OPEN to the per-call
+        # path below so a degraded remote host never blocks execution.
+        try:
+            from tools.code_kernel_remote import execute_in_remote_kernel
+
+            kernel_result = execute_in_remote_kernel(
+                code,
+                env=env,
+                env_type=env_type,
+                task_env_id=effective_task_id,
+                sandbox_tools=frozenset(sandbox_tools),
+                timeout=timeout,
+                max_tool_calls=max_tool_calls,
+                reset=bool(reset),
+                idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
+            )
+        except Exception:
+            logger.warning(
+                "remote session-kernel path failed; falling back to per-call",
+                exc_info=True,
+            )
+            kernel_result = None
+
+        if kernel_result is not None:
+            return _finish_remote_kernel_result(
+                kernel_result, timeout=timeout, exec_start=exec_start,
+            )
+        logger.info(
+            "remote session kernel unavailable on %s; using per-call path",
+            env_type,
+        )
 
         # Create sandbox directory on remote
         env.execute(
@@ -1236,9 +1424,7 @@ def _execute_remote(
             duration, timeout, tool_call_counter[0],
         )
     elif status == "interrupted":
-        result["output"] = (
-            stdout_text + "\n[execution interrupted — user sent a new message]"
-        )
+        result["output"] = _format_interrupted_output(stdout_text)
     elif exit_code != 0:
         result["status"] = "error"
         result["error"] = f"Script exited with code {exit_code}"
@@ -1250,14 +1436,101 @@ def _execute_remote(
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
+                     child_python: str) -> Dict[str, str]:
+    """Build the scrubbed child environment both execution paths share.
+
+    Extracted verbatim from the per-call spawn path so the session-kernel
+    path (tools/code_kernel.py) cannot drift from the security rules here:
+    secret scrubbing, UTF-8 forcing, TZ handling, subprocess HOME, and the
+    PYTHONPATH hygiene for external interpreters.
+    """
+    from hermes_constants import apply_subprocess_home_env
+    child_env = _scrub_child_env(os.environ)
+    child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
+    child_env["HERMES_RPC_TOKEN"] = rpc_token
+    child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # Force UTF-8 for the child's stdio and default file encoding.
+    #
+    # Without this, on Windows sys.stdout is bound to the console code
+    # page (cp1252 on US-locale installs), and any script that does
+    # ``print("café")`` or ``print("→")`` crashes with:
+    #
+    #   UnicodeEncodeError: 'charmap' codec can't encode character
+    #   '\u2192' in position N: character maps to <undefined>
+    #
+    # PYTHONIOENCODING fixes sys.stdin/stdout/stderr.
+    # PYTHONUTF8=1 enables "UTF-8 mode" (PEP 540) which additionally
+    # makes ``open()``'s default encoding UTF-8, so user scripts that
+    # write files without specifying encoding= also work correctly.
+    #
+    # On POSIX both values usually match the locale default already,
+    # so setting them is harmless belt-and-suspenders for environments
+    # with a C/POSIX locale (containers, minimal base images).
+    child_env["PYTHONIOENCODING"] = "utf-8"
+    child_env["PYTHONUTF8"] = "1"
+    # Inject user's configured timezone so datetime.now() in sandboxed
+    # code reflects the correct wall-clock time.  Only TZ is set —
+    # HERMES_TIMEZONE is an internal Hermes setting and must not leak
+    # into child processes.
+    _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
+    if _tz_name:
+        child_env["TZ"] = _tz_name
+    child_env.pop("HERMES_TIMEZONE", None)
+
+    apply_subprocess_home_env(child_env)
+    # ``hermes_tools.py`` always lives in the staging directory, so that
+    # directory must be importable even when project mode changes CWD.
+    # Hermes's own package root is useful too, but only when the child
+    # uses the same Python environment. Project mode can select an
+    # external venv; exposing Hermes's site-packages to that interpreter
+    # can mix incompatible compiled extensions (for example, Python 3.12
+    # NumPy with a Python 3.9 project interpreter).
+    #
+    # Before re-injecting PYTHONPATH, strip Hermes-owned entries that
+    # leaked through _scrub_child_env (PYTHONPATH is in _SAFE_ENV_PREFIXES
+    # so it passes the scrub).  They are redundant for same-Hermes-
+    # environment children and may be incompatible with external
+    # interpreters (project mode can select a different venv), so they
+    # must not shadow or poison the child's sys.path (#74817).
+    from tools.environments.local import _strip_hermes_owned_pythonpath
+    _strip_hermes_owned_pythonpath(child_env)
+    _hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _existing_pp = child_env.get("PYTHONPATH", "")
+    _pp_parts = [tmpdir]
+    if _uses_hermes_python_environment(child_python):
+        _pp_parts.append(_hermes_root)
+    elif child_python not in _external_env_logged:
+        # Import behavior changes silently otherwise — surface it (once
+        # per interpreter path) so "import hermes_constants suddenly
+        # fails" reports are diagnosable without log spam.
+        _external_env_logged.add(child_python)
+        logger.info(
+            "execute_code: child interpreter %s is outside the Hermes "
+            "environment; hermes root omitted from PYTHONPATH",
+            child_python,
+        )
+    if _existing_pp:
+        _pp_parts.append(_existing_pp)
+    child_env["PYTHONPATH"] = os.pathsep.join(_pp_parts)
+    return child_env
+
+
 def execute_code(
     code: str,
     task_id: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    reset: bool = False,
 ) -> str:
     """
-    Run a Python script in a sandboxed child process with RPC access
-    to a subset of Hermes tools.
+    Run Python in the session's persistent kernel (local) or a per-call
+    child process (remote backends), with RPC access to a subset of
+    Hermes tools.
+
+    "Sandbox" in names below refers to the security envelope (env
+    scrubbing, tool whitelist + call budget, output redaction) — not an
+    isolation jail: in the default `project` mode, code runs in the
+    session's cwd with the project venv's interpreter.
 
     Dispatches to the local (UDS) or remote (file-based RPC) path
     depending on the configured terminal backend.
@@ -1267,6 +1540,9 @@ def execute_code(
         task_id:       Session task ID for tool isolation (terminal env, etc.).
         enabled_tools: Tool names enabled in the current session. The sandbox
                        gets the intersection with SANDBOX_ALLOWED_TOOLS.
+        reset:         Session-kernel mode only: kill the existing kernel and
+                       start fresh before running this code. Ignored in
+                       per-call mode, where every call is already fresh.
 
     Returns:
         JSON string with execution results.
@@ -1277,8 +1553,44 @@ def execute_code(
             "Use normal tool calls (terminal, read_file, write_file, ...) instead."
         )
 
+    # Fail closed under a terminal-policy refusal scope (#68559): the routed
+    # profile's terminal policy could not be resolved and execute_code runs on
+    # the configured terminal backend — refuse rather than inheriting the
+    # launch process's ambient policy.
+    try:
+        from tools.terminal_scope import enforce_no_refusal
+
+        enforce_no_refusal()
+    except Exception as refusal:
+        return tool_error(
+            f"execute_code refused: {refusal} "
+            "(profile terminal policy unresolved; fix the profile's "
+            "config.yaml / .env and retry)"
+        )
+
     if not code or not code.strip():
-        return tool_error("No code provided.")
+        return tool_error(
+            "No code provided. execute_code requires a non-empty 'code' "
+            "parameter containing Python source. To run shell commands, use "
+            "terminal(command=...) instead."
+        )
+
+    # Hard-block gateway-lifecycle commands, mirroring the terminal_tool
+    # guard (#68289): without this, execute_code is a straight bypass — the
+    # terminal() path refuses `launchctl bootout ai.hermes.gateway`, but the
+    # identical command inside `os.system(...)` / `subprocess.run([...])`
+    # here sailed through and SIGTERM'd the gateway mid-task. Gated on
+    # PID-file ownership, not the inherited env marker (#92560).
+    from tools.process_registry import _is_supervised_gateway_process
+    if _is_supervised_gateway_process():
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+        if contains_gateway_lifecycle_command(code):
+            return tool_error(
+                "Blocked: cannot restart or stop the gateway from inside the "
+                "gateway process. The gateway would kill this script before "
+                "it could complete (SIGTERM propagates to child processes). "
+                "Run the lifecycle command from a shell outside the gateway."
+            )
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config, _docker_has_host_access
@@ -1315,7 +1627,7 @@ def execute_code(
         clear_current_thread_interrupt()
 
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools)
+        return _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
 
     # --- Local execution path (UDS) --- below this line is unchanged ---
 
@@ -1333,6 +1645,26 @@ def execute_code(
 
     if not sandbox_tools:
         sandbox_tools = SANDBOX_ALLOWED_TOOLS
+
+    if _get_kernel_mode() == "session":
+        # Session kernels keep one interpreter alive across calls; the guards
+        # above already ran for this cell, and the kernel path reuses the
+        # same env builder, RPC server, and output redaction as below.
+        from tools.code_kernel import execute_in_session_kernel
+
+        _mode = _get_execution_mode()
+        return execute_in_session_kernel(
+            code,
+            task_id=task_id or "",
+            mode=_mode,
+            child_python=_resolve_child_python(_mode),
+            child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
+            sandbox_tools=frozenset(sandbox_tools),
+            timeout=timeout,
+            max_tool_calls=max_tool_calls,
+            reset=bool(reset),
+            is_interrupted=_is_interrupted,
+        )
 
     # --- Set up temp directory with hermes_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
@@ -1425,50 +1757,6 @@ def execute_code(
         # OS-essential allowlist (SYSTEMROOT, WINDIR, COMSPEC, ...) is also
         # passed through — without those, the child can't create a socket
         # or spawn a subprocess.  See ``_scrub_child_env`` for the rules.
-        child_env = _scrub_child_env(os.environ)
-        child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
-        child_env["HERMES_RPC_TOKEN"] = rpc_token
-        child_env["PYTHONDONTWRITEBYTECODE"] = "1"
-        # Force UTF-8 for the child's stdio and default file encoding.
-        #
-        # Without this, on Windows sys.stdout is bound to the console code
-        # page (cp1252 on US-locale installs), and any script that does
-        # ``print("café")`` or ``print("→")`` crashes with:
-        #
-        #   UnicodeEncodeError: 'charmap' codec can't encode character
-        #   '\u2192' in position N: character maps to <undefined>
-        #
-        # PYTHONIOENCODING fixes sys.stdin/stdout/stderr.
-        # PYTHONUTF8=1 enables "UTF-8 mode" (PEP 540) which additionally
-        # makes ``open()``'s default encoding UTF-8, so user scripts that
-        # write files without specifying encoding= also work correctly.
-        #
-        # On POSIX both values usually match the locale default already,
-        # so setting them is harmless belt-and-suspenders for environments
-        # with a C/POSIX locale (containers, minimal base images).
-        child_env["PYTHONIOENCODING"] = "utf-8"
-        child_env["PYTHONUTF8"] = "1"
-        # Ensure the hermes-agent root is importable in the sandbox so
-        # repo-root modules are available to child scripts.  We also prepend
-        # the staging tmpdir so ``from hermes_tools import ...`` resolves even
-        # when the subprocess CWD is not tmpdir (project mode).
-        _hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        _existing_pp = child_env.get("PYTHONPATH", "")
-        _pp_parts = [tmpdir, _hermes_root]
-        if _existing_pp:
-            _pp_parts.append(_existing_pp)
-        child_env["PYTHONPATH"] = os.pathsep.join(_pp_parts)
-        # Inject user's configured timezone so datetime.now() in sandboxed
-        # code reflects the correct wall-clock time.  Only TZ is set —
-        # HERMES_TIMEZONE is an internal Hermes setting and must not leak
-        # into child processes.
-        _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
-        if _tz_name:
-            child_env["TZ"] = _tz_name
-        child_env.pop("HERMES_TIMEZONE", None)
-
-        from hermes_constants import apply_subprocess_home_env
-        apply_subprocess_home_env(child_env)
 
         # Resolve interpreter + CWD based on execute_code mode.
         #   - strict : today's behavior (sys.executable + tmpdir CWD).
@@ -1479,6 +1767,13 @@ def execute_code(
         _child_python = _resolve_child_python(_mode)
         _child_cwd = _resolve_child_cwd(_mode, tmpdir, task_id=task_id or "")
         _script_path = os.path.join(tmpdir, "script.py")
+
+        child_env = _build_child_env(
+            rpc_endpoint=rpc_endpoint,
+            rpc_token=rpc_token,
+            tmpdir=tmpdir,
+            child_python=_child_python,
+        )
 
         proc = subprocess.Popen(
             [_child_python, _script_path],
@@ -1662,7 +1957,7 @@ def execute_code(
                 duration, timeout, tool_call_counter[0],
             )
         elif status == "interrupted":
-            result["output"] = stdout_text + "\n[execution interrupted — user sent a new message]"
+            result["output"] = _format_interrupted_output(stdout_text)
         elif exit_code != 0:
             result["status"] = "error"
             result["error"] = stderr_text or f"Script exited with code {exit_code}"
@@ -1714,53 +2009,40 @@ def execute_code(
 
 
 def _kill_process_group(proc, escalate: bool = False):
-    """Kill the child and its entire process tree (cross-platform via psutil)."""
-    import psutil
-    try:
-        parent = psutil.Process(proc.pid)
-        children = parent.children(recursive=True)
-        for child in children:
+    """Kill the child and its entire process tree (cross-platform).
+
+    Delegates to :func:`agent.deadline.kill_process_tree` (#85125 4d):
+    SIGTERM to the whole tree first (killpg when the child leads its own
+    group — it does, ``start_new_session=True`` — plus a psutil descendant
+    sweep for setsid'd grandchildren; ``taskkill /T /F`` on Windows).
+    With ``escalate=True`` the child gets 5s to exit after SIGTERM, then the
+    surviving tree is SIGKILLed — same escalation the old psutil-local body
+    implemented. Never raises; a delegation failure degrades to a plain
+    ``proc.kill()`` like the old psutil-failure fallback.
+    """
+    import signal as _signal
+
+    def _tree_signal(sig) -> None:
+        try:
+            from agent.deadline import kill_process_tree as _deadline_kill_tree
+
+            _deadline_kill_tree(proc.pid, sig=sig)
+        except Exception as e:
+            logger.debug("Could not terminate process tree: %s", e, exc_info=True)
             try:
-                child.terminate()
-            except psutil.NoSuchProcess:
-                pass
-        try:
-            parent.terminate()
-        except psutil.NoSuchProcess:
-            pass
-    except psutil.NoSuchProcess:
-        pass
-    except (PermissionError, OSError) as e:
-        logger.debug("Could not terminate process tree: %s", e, exc_info=True)
-        try:
-            proc.kill()
-        except Exception as e2:
-            logger.debug("Could not kill process: %s", e2, exc_info=True)
+                proc.kill()
+            except Exception as e2:
+                logger.debug("Could not kill process: %s", e2, exc_info=True)
+
+    # sig is ignored on Windows (taskkill /F is already forceful).
+    _tree_signal(getattr(_signal, "SIGTERM", None))
 
     if escalate:
         # Give the process 5s to exit after SIGTERM, then SIGKILL
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            try:
-                parent = psutil.Process(proc.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.kill()
-                    except psutil.NoSuchProcess:
-                        pass
-                try:
-                    parent.kill()
-                except psutil.NoSuchProcess:
-                    pass
-            except psutil.NoSuchProcess:
-                pass
-            except (PermissionError, OSError) as e:
-                logger.debug("Could not kill process tree: %s", e, exc_info=True)
-                try:
-                    proc.kill()
-                except Exception as e2:
-                    logger.debug("Could not kill process: %s", e2, exc_info=True)
+            _tree_signal(getattr(_signal, "SIGKILL", None))
 
 
 def _load_config() -> dict:
@@ -1791,6 +2073,22 @@ def _load_config() -> dict:
 EXECUTION_MODES = ("project", "strict")
 DEFAULT_EXECUTION_MODE = "project"
 
+# Session kernels are the only local execution model: one persistent kernel
+# per conversation (see tools/code_kernel.py). The former
+# code_execution.kernel_mode knob ("per-call" | "session") is retired — the
+# config key is silently ignored if present, and _get_kernel_mode() remains
+# only as a compat symbol for external callers. Remote terminal backends
+# still run per-call: their file-based RPC path has no kernel host YET (a
+# long-lived remote runner + cell protocol is tracked follow-up work, not a
+# design limit).
+KERNEL_MODES = ("per-call", "session")  # legacy compat constant
+DEFAULT_KERNEL_MODE = "session"
+
+
+def _get_kernel_mode() -> str:
+    """Legacy compat shim — session kernels are always on for local runs."""
+    return "session"
+
 
 def _get_execution_mode() -> str:
     """Return the active execute_code mode — 'project' or 'strict'.
@@ -1819,28 +2117,104 @@ def _get_execution_mode() -> str:
     return DEFAULT_EXECUTION_MODE
 
 
-@functools.lru_cache(maxsize=32)
+# Shared budget for the two interpreter-probe caches below. Success-only
+# dict caches (FIFO-evicted at the cap) rather than lru_cache: a transient
+# probe failure (fork pressure, 5s timeout on a loaded host) must not stick
+# for the process lifetime.
+_PROBE_CACHE_MAX = 32
+_usable_python_cache: dict = {}
+_python_prefix_cache: dict = {}
+
+# Interpreter paths already reported as outside the Hermes environment —
+# dedupes the exclusion log to once per path per process.
+_external_env_logged: set = set()
+
+
+def _cache_probe_result(cache: dict, key: str, value):
+    """Insert into a bounded probe cache, FIFO-evicting at the cap."""
+    if len(cache) >= _PROBE_CACHE_MAX:
+        cache.pop(next(iter(cache)))
+    cache[key] = value
+
+
 def _is_usable_python(python_path: str) -> bool:
     """Check whether a candidate Python interpreter is usable for execute_code.
 
     Requires Python 3.8+ (f-strings and stdlib modules the RPC stubs need).
-    Cached so we don't fork a subprocess on every execute_code call.
+    Successful probes are cached per interpreter path; failures are retried
+    (a sticky False would silently pin project mode to sys.executable).
+    """
+    cached = _usable_python_cache.get(python_path)
+    if cached is not None:
+        return cached
+    result = _probe_python(
+        python_path,
+        "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)",
+    )
+    if result is None:
+        return False
+    usable = result.returncode == 0
+    _cache_probe_result(_usable_python_cache, python_path, usable)
+    return usable
+
+
+def _probe_python(python_path: str, code: str, *, text: bool = False):
+    """Run ``python_path -c code`` with the standard interpreter-probe guards.
+
+    Returns the ``CompletedProcess``, or ``None`` when the interpreter is
+    missing, can't be spawned, or hangs past the 5s timeout.
     """
     try:
         from agent.delegation_context import delegated_child_subprocess_env
 
-        result = subprocess.run(
-            [python_path, "-c",
-             "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)"],
+        return subprocess.run(
+            [python_path, "-c", code],
             timeout=5,
             capture_output=True,
+            text=text,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL,
             env=delegated_child_subprocess_env(),
         )
-        return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
-        return False
+        return None
+
+
+def _python_environment_prefix(python_path: str) -> str:
+    """Return the resolved ``sys.prefix`` reported by *python_path*, if any.
+
+    Successful probes are cached per interpreter path (bounded, FIFO-evicted).
+    Failures are NOT cached: a transient probe failure (fork pressure, 5s
+    timeout on a loaded host) must not stick for the process lifetime — a
+    sticky empty result would silently drop the hermes root from every
+    subsequent execute_code call's PYTHONPATH.
+    """
+    cached = _python_prefix_cache.get(python_path)
+    if cached is not None:
+        return cached
+    result = _probe_python(python_path, "import sys; print(sys.prefix)", text=True)
+    if result is not None and result.returncode == 0 and result.stdout.strip():
+        prefix = os.path.realpath(result.stdout.strip())
+        _cache_probe_result(_python_prefix_cache, python_path, prefix)
+        return prefix
+    return ""
+
+
+def _uses_hermes_python_environment(python_path: str) -> bool:
+    """Whether *python_path* belongs to Hermes's active Python environment.
+
+    Short-circuits when *python_path* IS the running interpreter (by path or
+    realpath) — no subprocess probe on the default strict-mode path, and no
+    way for a flaky probe of ``sys.executable`` itself to break the invariant
+    that repo-root modules are importable in strict mode.  The realpath leg
+    also covers venvs whose bin/python resolves to the same binary (e.g.
+    ``uv run`` setting VIRTUAL_ENV without changing sys.prefix).
+    """
+    if python_path == sys.executable or (
+        os.path.realpath(python_path) == os.path.realpath(sys.executable)
+    ):
+        return True
+    return _python_environment_prefix(python_path) == os.path.realpath(sys.prefix)
 
 
 def _resolve_child_python(mode: str) -> str:
@@ -1923,7 +2297,9 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
             session_cwd = None
         if session_cwd and os.path.isdir(session_cwd):
             return session_cwd
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    from agent.runtime_cwd import scope_terminal_cwd
+
+    raw = scope_terminal_cwd().strip()
     if raw:
         expanded = os.path.expanduser(raw)
         if os.path.isdir(expanded):
@@ -1955,7 +2331,7 @@ _TOOL_DOC_LINES = [
      "  write_file(path: str, content: str) -> dict\n"
      "    Always overwrites the entire file."),
     ("search_files",
-     "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
+     "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\") -> dict\n"
      "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
     ("patch",
      "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
@@ -2009,27 +2385,39 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         )
     else:
         cwd_note = (
-            "Scripts run in the session's working directory with the active venv's python, "
-            "so project deps (pandas, etc.) and relative paths work like in terminal()."
+            "Scripts run in the session's working directory. Interpreter: "
+            "the project's activated venv/conda python when one is active "
+            "(VIRTUAL_ENV/CONDA_PREFIX — matches terminal()); otherwise "
+            "Hermes's own python (the common case — stdlib plus Hermes's "
+            "deps; check `import x` before relying on project packages)."
         )
 
+    # Session kernels are always on (kernel_mode retired in #96787):
+    # persistence is part of the tool's one description, not a bolt-on
+    # paragraph behind a dead conditional. Remote hosts that cannot sustain
+    # a kernel fail open to per-call silently — not worth schema words;
+    # the result's `kernel` field tells the truth per call.
     description = (
-        "Run a Python script that calls Hermes tools programmatically. "
-        "Use when you need 3+ tool calls with logic between them: "
-        "filtering/reducing large outputs before they enter context, "
-        "conditional branching, or loops (N pages/files, retry on failure). "
-        "Use normal tool calls for single calls, results you must reason "
-        "over in full, or anything needing user interaction.\n\n"
+        "Run Python that calls Hermes tools programmatically. Use when you "
+        "need 3+ tool calls with logic between them: filtering/reducing "
+        "large outputs before they enter context, branching, or loops "
+        "(N pages/files, retry on failure). Use normal tool calls for "
+        "single calls, results you must reason over in full, or anything "
+        "needing user interaction.\n\n"
+        "Calls run in a persistent session kernel: variables, imports, and "
+        "loaded data survive across execute_code calls, so build on earlier "
+        "work instead of re-loading it. A timed-out or interrupted call "
+        "loses that state.\n\n"
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
-        "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
-        "terminal() is foreground-only (no background or pty).\n\n"
+        "Limits: 5-minute timeout, max 50 tool calls per call. Stdout over "
+        "50KB shows head/tail inline; the FULL text is auto-saved to a file "
+        "whose path rides in the result.\n\n"
         f"{cwd_note}\n\n"
-        "Print your final result to stdout; stdlib (json, re, csv, datetime, ...) "
-        "is available for processing.\n\n"
-        "Built-in helpers (no import): json_parse(text) — tolerant json.loads for "
-        "terminal() output; shell_quote(s) — shlex.quote for dynamic shell args; "
-        "retry(fn, max_attempts=3, delay=2) — exponential backoff for transient failures."
+        "Built-in helpers (no import): json_parse(text) — tolerant "
+        "json.loads for terminal() output; shell_quote(s) — shlex.quote for "
+        "dynamic shell args; retry(fn, max_attempts=3, delay=2) — "
+        "exponential backoff."
     )
 
     return {
@@ -2046,6 +2434,13 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
                         "and print your final result to stdout."
                     ),
                 },
+                "reset": {
+                    "type": "boolean",
+                    "description": (
+                        "Discard the kernel's persistent state and start "
+                        "fresh before running this code."
+                    ),
+                },
             },
             "required": ["code"],
         },
@@ -2060,14 +2455,48 @@ EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 # --- Registry ---
 from tools.registry import registry, tool_error
 
+
+def _execute_code_handler(args: dict, **kwargs) -> str:
+    """Recover misdirected calls before dispatching to ``execute_code``.
+
+    Models sometimes reuse terminal's ``command`` argument or send a
+    non-string ``code`` payload; both get an actionable redirect instead
+    of a generic failure.
+    """
+    # Help models recover when they reuse terminal's ``command`` argument.
+    if "code" not in args and "command" in args:
+        logger.warning(
+            "execute_code received 'command' instead of the required 'code' argument"
+        )
+        return tool_error(
+            "execute_code received a 'command' parameter, but it requires "
+            "Python source in 'code'. Use terminal(command=...) for shell "
+            "commands; for Python, retry as execute_code(code=...)."
+        )
+
+    code = args.get("code", "")
+    if code is not None and not isinstance(code, str):
+        # A non-string payload (int, dict, list) would otherwise surface as
+        # a generic AttributeError from code.strip() — redirect instead.
+        return tool_error(
+            f"execute_code received a {type(code).__name__} in 'code', but it "
+            "requires Python source as a string. Retry as "
+            "execute_code(code=\"...\")."
+        )
+
+    return execute_code(
+        code=code or "",
+        task_id=kwargs.get("task_id"),
+        enabled_tools=kwargs.get("enabled_tools"),
+        reset=bool(args.get("reset", False)),
+    )
+
+
 registry.register(
     name="execute_code",
     toolset="code_execution",
     schema=EXECUTE_CODE_SCHEMA,
-    handler=lambda args, **kw: execute_code(
-        code=args.get("code", ""),
-        task_id=kw.get("task_id"),
-        enabled_tools=kw.get("enabled_tools")),
+    handler=_execute_code_handler,
     check_fn=check_sandbox_requirements,
     emoji="🐍",
     max_result_size_chars=100_000,

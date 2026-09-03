@@ -11,7 +11,7 @@
     "tests-js"
   ],
   "scripts": {
-    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'",
+    "postinstall": "echo '\u2705 Node dependencies installed. Run: python run_agent.py --help'",
     "install:root": "npm install --workspaces=false",
     "install:web": "npm install --workspace web",
     "install:tui": "npm install --workspace ui-tui",
@@ -34,10 +34,6 @@
     "url": "https://github.com/NousResearch/Hermes-Agent/issues"
   },
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
-  "dependencies": {
-    "@streamdown/math": "1.0.2",
-    "agent-browser": "0.26.0"
-  },
   "devDependencies": {
     "@eslint/js": "9.39.5",
     "typescript-eslint": "8.64.0",
@@ -50,10 +46,20 @@
     "lodash": "4.18.1",
     "yauzl": "^3.3.1",
     "protobufjs": "^8.7.1",
-    "brace-expansion": "5.0.8"
+    "brace-expansion": "5.0.9",
+    "mermaid": "11.16.1",
+    "dompurify": "3.4.13",
+    "ip-address": "10.3.1",
+    "nanoid@^3": "3.3.18",
+    "nanoid@^6": "6.0.0",
+    "js-yaml@^4": "4.3.1",
+    "undici@^6": "6.28.0",
+    "undici@^7": "7.29.0",
+    "postcss": "8.5.23",
+    "tar": "7.5.22"
   },
   "engines": {
-    "node": ">=22.22.0",
+    "node": "^22.22.0 || ^24.11.0 || >=26.0.0",
     "npm": "<11.10.0 || >=11.17.0"
   },
   "allowScripts": {
@@ -61,9 +67,9 @@
     "esbuild@0.28.1": true,
     "node-pty@1.1.0": true,
     "electron-winstaller@5.4.0": true,
-    "agent-browser@0.26.0": true,
     "electron@40.10.2": true,
     "fsevents@2.3.2": true,
-    "fsevents@2.3.3": true
+    "fsevents@2.3.3": true,
+    "get-windows@9.3.0": true
   }
 }

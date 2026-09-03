@@ -3,10 +3,11 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type { ReadableAtom } from 'nanostores'
 import type * as React from 'react'
-import { memo, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
+import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
@@ -20,17 +21,20 @@ import { TitleMenuTrigger } from '@/components/ui/title-menu-trigger'
 import { type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
+import { NEW_SESSION_TITLE, quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
+import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
 import {
+  $connection,
   $contextSuggestions,
   $freshDraftReady,
   $gatewayState,
@@ -38,37 +42,50 @@ import {
   $introSeed,
   $resumeExhaustedSessionId,
   $sessions,
+  getSessionOwnerHint,
   resolveComposerSessionKey,
   sessionMatchesStoredId,
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
-import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
+import { $focusedStoredSessionId, sessionTileDelegate } from '@/store/session-states'
+import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
+import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
-import { ChatSwapOverlay } from './chat-swap-overlay'
+import { ChatSwapOverlay, ChatSyncBadge } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
-import { useComposerScope } from './composer/scope'
+import { ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from './composer/scope'
 import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
+import { shouldShowIntro } from './intro-visibility'
 import { ProfileTag } from './profile-tag'
+import { isRouteSessionMismatch } from './route-session-state'
 import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
-import { threadLoadingState } from './thread-loading'
-import { selectTranscriptWindow } from './transcript-window'
+import { routedSessionIsLoading, threadLoadingState } from './thread-loading'
+import {
+  backfillOlderTranscriptPage,
+  mergeOlderTranscriptPage,
+  transcriptBackfillAvailable
+} from './transcript-backfill'
+import { advanceSessionTranscriptWindow, type SessionWindowMemo } from './transcript-window'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
+  modelOptionsOwnerConnectionId?: string
+  modelOptionsProfile?: string
   modelMenuContent?: React.ReactNode
+  requestModelOptionsForOwner?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   onToggleSelectedPin: () => void
   onDeleteSelectedSession: () => void
   onCancel: () => Promise<void> | void
@@ -78,6 +95,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   maxVoiceRecordingSeconds?: number
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
+  onAttachPrCommentUrl?: (url: string) => boolean
   onPasteClipboardImage: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles: () => void
   onPickFolders: () => void
@@ -116,7 +134,7 @@ function ChatHeader({
   const activeStoredSession =
     (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
 
-  const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
+  const title = activeStoredSession ? sessionTitle(activeStoredSession) : NEW_SESSION_TITLE
 
   // Which agent/persona owns this chat — glanceable in the header once a
   // second profile exists, so the open session's ownership is never ambiguous
@@ -135,7 +153,7 @@ function ChatHeader({
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
   // are compact side panels — they drop the session-actions header + border
   // entirely. A brand-new draft has nothing to pin/delete/rename either.
-  if (isSecondaryWindow() || (!selectedSessionId && !activeSessionId && !isRoutedSessionView)) {
+  if (isAuxiliaryWindow() || (!selectedSessionId && !activeSessionId && !isRoutedSessionView)) {
     return null
   }
 
@@ -229,24 +247,98 @@ function ChatRuntimeBoundary({
 
   const [windowPages, setWindowPages] = useState(1)
   const [windowSessionKey, setWindowSessionKey] = useState(runtimeId)
+  // Per-session sticky-cut continuity (advanceSessionTranscriptWindow). A ref,
+  // not state: it is derived from `messages` and must never trigger a render.
+  // Keyed by runtime id so a warm switch back to a session whose transcript
+  // is unchanged reuses the previous windowed slice BY REFERENCE — no window
+  // re-index, no runtime-repository rebuild, no per-row re-parse/re-highlight
+  // (#95595). Bounded internally (oldest session evicted).
+  const windowStateRef = useRef(new Map<string, SessionWindowMemo>())
+  // The memo below intentionally skips `runtimeId` in its deps (a switch
+  // always changes the messages array too, which re-runs it), so the current
+  // value must come from a ref rather than the stale render closure.
+  const runtimeIdRef = useRef(runtimeId)
+  runtimeIdRef.current = runtimeId
 
   // Reset the window on session swap during RENDER, so a large expand from the
-  // previous chat can't leak into the next one's first paint (#55191).
+  // previous chat can't leak into the next one's first paint (#55191). The
+  // per-session map above keeps each session's own cut; only the page count
+  // resets on a switch.
   if (windowSessionKey !== runtimeId) {
     setWindowSessionKey(runtimeId)
     setWindowPages(1)
   }
 
-  const { messages: windowedMessages, windowed } = useMemo(
-    () => selectTranscriptWindow(messages, windowPages),
-    [messages, windowPages]
-  )
+  const { messages: windowedMessages, windowed } = useMemo(() => {
+    const next = advanceSessionTranscriptWindow(
+      windowStateRef.current,
+      // Draft state has no runtime id yet; a single shared slot is fine there
+      // (mirrors the old single-slot behaviour for the no-runtime case).
+      runtimeIdRef.current ?? '',
+      messages,
+      windowPages
+    )
+
+    return next.window
+  }, [messages, windowPages])
 
   const runtimeMessageRepository = useRuntimeMessageRepository(windowedMessages)
 
-  const expandWindow = useCallback(() => setWindowPages(pages => pages + 1), [])
+  const storedId = useStore(view.$storedId)
+  const connection = useStore($connection)
+  const activeProfile = useStore($activeGatewayProfile)
+  // Subscribed (not read imperatively) so the "Show earlier" affordance
+  // appears/retires as tail hydrations and backfill pages record their state.
+  const transcriptTailStates = useStore($transcriptTailBySessionId)
+  const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
 
-  const transcriptWindow = useMemo(() => ({ olderAvailable: windowed, expandWindow }), [expandWindow, windowed])
+  const ownerRoute = storedId
+    ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
+    : undefined
+
+  const tailProfile = ownerRoute
+    ? { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile || ownerRoute.profile }
+    : undefined
+
+  const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
+  const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
+
+  const expandWindow = useCallback(() => {
+    // The store window still holds older messages: growing pages is enough.
+    // Otherwise the whole in-memory transcript is already materialized — if
+    // the REST tail hydration was truncated, fetch the next older page and
+    // PREPEND it to the session store before growing, so the grown window has
+    // something older to show. Fire-and-forget: the prepend lands through the
+    // session-state write path and re-renders this boundary.
+    if (
+      !windowStateRef.current.get(runtimeIdRef.current ?? '')?.state.window.windowed &&
+      runtimeId &&
+      storedId &&
+      transcriptBackfillAvailable(storedId, tailProfile)
+    ) {
+      void backfillOlderTranscriptPage({
+        storedSessionId: storedId,
+        profile: tailProfile,
+        // Stale-response guard: a session switch remounts/re-keys this view;
+        // checking the live atoms (not captured props) discards a page that
+        // resolves after the user moved on — same pattern as isCurrentResume.
+        isCurrent: () => view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId,
+        applyOlderPage: olderPage => {
+          sessionTileDelegate()?.updateSession(runtimeId, state => {
+            const merged = mergeOlderTranscriptPage(state.messages, olderPage)
+
+            return merged === state.messages ? state : { ...state, messages: merged }
+          })
+        }
+      })
+    }
+
+    setWindowPages(pages => pages + 1)
+  }, [runtimeId, storedId, tailProfile, view])
+
+  const olderAvailable = windowed || restBackfillAvailable
+
+  const transcriptWindow = useMemo(() => ({ olderAvailable, expandWindow }), [expandWindow, olderAvailable])
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,
@@ -271,10 +363,23 @@ function ChatRuntimeBoundary({
 // Memoized: the tile caller (session-tile.tsx) and the contrib surface re-render
 // on idle ticks unrelated to the chat; with stable callback props (hoisted to
 // useCallback at the call sites) memo() lets the whole chat shell skip those.
-export const ChatView = memo(function ChatView({
+export const ChatView = memo(function ChatView(props: ChatViewProps) {
+  const composerSurfaceId = useId()
+
+  return (
+    <ComposerSurfaceProvider value={composerSurfaceId}>
+      <ChatViewContent {...props} />
+    </ComposerSurfaceProvider>
+  )
+})
+
+const ChatViewContent = memo(function ChatViewContent({
   className,
   gateway,
+  modelOptionsOwnerConnectionId,
+  modelOptionsProfile,
   modelMenuContent,
+  requestModelOptionsForOwner,
   onToggleSelectedPin,
   onDeleteSelectedSession,
   onCancel,
@@ -282,6 +387,7 @@ export const ChatView = memo(function ChatView({
   onAddUrl,
   onAttachImageBlob,
   onAttachDroppedItems,
+  onAttachPrCommentUrl,
   onBranchInNewChat,
   maxVoiceRecordingSeconds,
   onPasteClipboardImage,
@@ -305,9 +411,17 @@ export const ChatView = memo(function ChatView({
   // atoms) or a tile's session slice — same component either way.
   const view = useSessionView()
   const composerScope = useComposerScope()
+  const composerSurfaceId = useComposerSurfaceId()
   const isPrimary = view.kind === 'primary'
   const activeSessionId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
+  // Multi-pane dimming: only the focused surface paints at full strength, so
+  // two sessions side by side read as "this one, and that one over there".
+  // A selector, not a plain useStore — the focused id changes on click, and a
+  // boolean bails every other surface out of the re-render. Sole surface ⇒
+  // always focused (the atom falls back to the primary's selection), so a
+  // single-pane workspace never dims.
+  const surfaceFocused = useStoreSelector($focusedStoredSessionId, focused => focused === storedId)
   // Dock anchor for a session drop onto this surface: the workspace pane for the
   // primary, this tile's pane id for a tile. Read by the session-drop bridge.
   const sessionAnchor = isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
@@ -327,9 +441,11 @@ export const ChatView = memo(function ChatView({
   const freshDraftReady = useStore($freshDraftReady)
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
+  const hydrationSyncProfile = useStore($hydrationSyncProfile)
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
+  const introSplash = useStore($introSplash)
   // PERF: ChatView must not subscribe to the view's $messages — the atom is
   // replaced on every streaming delta flush (~30×/s) and a subscription here
   // re-renders the entire chat shell (header, chat bar, thread wrapper) per
@@ -391,24 +507,28 @@ export const ChatView = memo(function ChatView({
   // direct nav). Derived in render so the swap reads instantly: the same frame
   // the id changes we drop the old transcript and show the loader, instead of
   // waiting for the resume effect (which paints a frame later) to clear them.
-  const routeSessionMismatch = isRoutedSessionView && routedSessionId !== selectedSessionId
+  const routeSessionMismatch = isPrimary ? isRouteSessionMismatch(routedSessionId, selectedSessionId, sessions) : false
 
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
-  // scratch window, not the full-height empty state.
-  const showIntro =
-    isPrimary &&
-    !isSecondaryWindow() &&
-    freshDraftReady &&
-    !isRoutedSessionView &&
-    !selectedSessionId &&
-    !activeSessionId &&
-    messagesEmpty
+  // scratch window, not the full-height empty state. The Appearance toggle
+  // turns it off everywhere else.
+  const showIntro = shouldShowIntro({
+    activeSessionId,
+    auxiliaryWindow: isAuxiliaryWindow(),
+    enabled: introSplash,
+    freshDraftReady,
+    messagesEmpty,
+    primary: isPrimary,
+    routedSessionView: isRoutedSessionView,
+    selectedSessionId
+  })
 
   // Session is still loading if the route references a session we haven't
-  // resumed yet. Once `activeSessionId` is set (runtime has resumed), the
-  // session exists — even if it has zero messages (a brand-new routed
-  // session). The flicker where `busy` flips true briefly during hydrate
-  // is handled by `threadLoadingState`'s last-visible-user gate.
+  // resumed yet. Brand-new routed drafts are empty on purpose once a runtime
+  // is bound. A session the list already knows has history must keep the
+  // loader up until a display-authoritative transcript arrives — including
+  // the unproven warm-cache hold, where the runtime is bound but messages
+  // are still suppressed.
   //
   // resumeExhausted: the bounded auto-retry in use-route-resume gave up on this
   // routed session (gateway RPC + REST fallback failed through every attempt).
@@ -417,8 +537,19 @@ export const ChatView = memo(function ChatView({
   // session can't blank the current one.
   const resumeExhausted = isPrimary && isRoutedSessionView && resumeExhaustedSessionId === routedSessionId
 
-  const loadingSession =
-    !resumeExhausted && isRoutedSessionView && (routeSessionMismatch || (messagesEmpty && !activeSessionId))
+  const routedHasHistory = Boolean(
+    routedSessionId &&
+    sessions.some(session => sessionMatchesStoredId(session, routedSessionId) && sessionShouldHaveTranscript(session))
+  )
+
+  const loadingSession = routedSessionIsLoading({
+    activeSessionId,
+    knownHistory: routedHasHistory,
+    messagesEmpty,
+    resumeExhausted,
+    routeSessionMismatch,
+    routedSessionView: isRoutedSessionView
+  })
 
   const threadLoading = threadLoadingState(loadingSession, busy, awaitingResponse, lastVisibleIsUser)
   // Hide the composer in the exhausted error state too: there's no live runtime
@@ -428,8 +559,18 @@ export const ChatView = memo(function ChatView({
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
-    queryKey: modelOptionsQueryKey(activeGatewayProfile, activeSessionId),
-    queryFn: () => requestModelOptions({ gateway: gateway || undefined, sessionId: activeSessionId }),
+    queryKey: modelOptionsQueryKey(
+      modelOptionsProfile || activeGatewayProfile,
+      activeSessionId,
+      modelOptionsOwnerConnectionId
+    ),
+    queryFn: () =>
+      requestModelOptions({
+        gateway: gateway || undefined,
+        profile: modelOptionsProfile || activeGatewayProfile,
+        request: requestModelOptionsForOwner,
+        sessionId: activeSessionId
+      }),
     enabled: gatewayOpen
   })
 
@@ -508,6 +649,8 @@ export const ChatView = memo(function ChatView({
         className
       )}
       data-chat-surface=""
+      data-chat-unfocused={surfaceFocused ? undefined : ''}
+      data-composer-surface-id={composerSurfaceId}
       data-composer-target={composerScope.target}
       data-session-anchor={sessionAnchor}
     >
@@ -570,7 +713,7 @@ export const ChatView = memo(function ChatView({
               </ErrorState>
             </div>
           )}
-          {showChatBar && <ScrollToBottomButton />}
+          {showChatBar && <ScrollToBottomButton sessionId={activeSessionId} />}
           {/* Vibe hearts rise from the composer only when no pet is out (else
               they play on the pet). Fired by the core `reaction` event. */}
           {!petPresent && (
@@ -587,6 +730,9 @@ export const ChatView = memo(function ChatView({
               target; the link overlay shows only for the center region. */}
           <ChatDropOverlay kind={overlayKind} />
           <ChatSwapOverlay profile={gatewaySwapTarget} />
+          {/* Paint-first wake (#89843): transcript is live, profile gate still
+              settling in the background — subtle badge, not an overlay. */}
+          {isPrimary && !gatewaySwapTarget && <ChatSyncBadge profile={hydrationSyncProfile} />}
         </div>
         {/* Composer renders OUTSIDE the contain:[layout paint] wrapper above:
             that wrapper is a containing block for — and clips — position:fixed
@@ -609,6 +755,7 @@ export const ChatView = memo(function ChatView({
               onAddUrl={onAddUrl}
               onAttachDroppedItems={onAttachDroppedItems}
               onAttachImageBlob={onAttachImageBlob}
+              onAttachPrCommentUrl={onAttachPrCommentUrl}
               onCancel={onCancel}
               onPasteClipboardImage={onPasteClipboardImage}
               onPickFiles={onPickFiles}

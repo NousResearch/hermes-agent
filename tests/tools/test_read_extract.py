@@ -10,6 +10,7 @@ omission.
 Run with:  python -m pytest tests/tools/test_read_extract.py -v
 """
 
+import base64
 import json
 import os
 import tempfile
@@ -237,8 +238,11 @@ class TestAnydocInitLifecycle(unittest.TestCase):
         self._saved_retry = read_extract.ANYDOC_RETRY_SECONDS
         read_extract._anydoc_module = read_extract._ANYDOC_UNSET
         read_extract._anydoc_failed_at = None
+        self._ensure = mock.patch("tools.lazy_deps.ensure", return_value=None)
+        self._ensure.start()
 
     def tearDown(self):
+        self._ensure.stop()
         self.rex._anydoc_module = self._saved_module
         self.rex._anydoc_failed_at = self._saved_failed_at
         self.rex.ANYDOC_RETRY_SECONDS = self._saved_retry
@@ -255,6 +259,13 @@ class TestAnydocInitLifecycle(unittest.TestCase):
             self.assertIs(self.rex._anydoc(), fake)
             self.assertIs(self.rex._anydoc(), fake)
         self.assertEqual(calls, ["anydoc"])
+
+    def test_failed_reconciliation_does_not_import_unverified_binding(self):
+        with mock.patch(
+            "tools.lazy_deps.ensure", side_effect=RuntimeError("wrong version")
+        ), mock.patch("importlib.import_module") as import_module:
+            self.assertIsNone(self.rex._anydoc())
+        import_module.assert_not_called()
 
     def test_failed_load_is_retried_after_cooldown(self):
         fake = object()
@@ -350,6 +361,131 @@ class TestNotebookExtraction(unittest.TestCase):
         _write_notebook(p, [])
         with self.assertRaises(ExtractionError):
             extract_document_text(p)
+
+    def test_stream_output_rendered(self):
+        p = os.path.join(self.tmp, "nb_out.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "print('epoch done')",
+             "outputs": [{"output_type": "stream", "name": "stdout",
+                          "text": ["epoch done\n", "loss=0.42\n"]}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("Output (cell 1)", text)
+        self.assertIn("loss=0.42", text)
+
+    def test_error_output_keeps_traceback_strips_ansi(self):
+        p = os.path.join(self.tmp, "nb_err.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "1/0",
+             "outputs": [{"output_type": "error", "ename": "ZeroDivisionError",
+                          "evalue": "division by zero",
+                          "traceback": ["\x1b[31mZeroDivisionError\x1b[0m: division by zero"]}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("Error: ZeroDivisionError: division by zero", text)
+        self.assertNotIn("\x1b", text)
+
+    def test_image_output_replaced_with_placeholder(self):
+        payload = "A" * 4096  # ~3 KB decoded
+        p = os.path.join(self.tmp, "nb_img.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "plot()",
+             "outputs": [{"output_type": "display_data",
+                          "data": {"image/png": payload}}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("[image/png output — 3 KB, omitted]", text)
+        self.assertNotIn(payload, text)
+
+    def test_execute_result_prefers_text_plain_over_html(self):
+        p = os.path.join(self.tmp, "nb_df.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "df.head()",
+             "outputs": [{"output_type": "execute_result",
+                          "data": {"text/html": "<table><tr><td>1</td></tr></table>",
+                                   "text/plain": "   col\n0    1"}}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("   col", text)
+        self.assertNotIn("<table>", text)
+
+    def test_carriage_return_progress_collapsed(self):
+        p = os.path.join(self.tmp, "nb_tqdm.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "train()",
+             "outputs": [{"output_type": "stream",
+                          "text": [" 10%|█\r 50%|█████\r100%|██████████\n"]}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("100%|██████████", text)
+        self.assertNotIn("50%", text)
+
+    def test_widget_output_placeholder(self):
+        p = os.path.join(self.tmp, "nb_widget.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "slider",
+             "outputs": [{"output_type": "display_data",
+                          "data": {"application/vnd.jupyter.widget-view+json": {"model_id": "abc"},
+                                   "text/plain": "IntSlider(value=0)"}}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("[interactive widget — omitted]", text)
+
+    def test_oversized_outputs_truncated(self):
+        from tools.read_extract import _MAX_OUTPUT_CHARS
+        p = os.path.join(self.tmp, "nb_big.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "markdown", "source": "# intro"},
+            {"cell_type": "code", "source": "spam()",
+             "outputs": [{"output_type": "stream",
+                          "text": "x" * (_MAX_OUTPUT_CHARS + 5000)}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("output chars truncated", text)
+        self.assertIn("— full output: jq -r '.cells[1].outputs' nb_big.ipynb]", text)
+        self.assertLess(len(text), _MAX_OUTPUT_CHARS + 2000)
+
+    def test_oversized_outputs_truncated_v3_jq_hint(self):
+        from tools.read_extract import _MAX_OUTPUT_CHARS
+        p = os.path.join(self.tmp, "nb_v3_big.ipynb")
+        nb = {"worksheets": [{"cells": [
+            {"cell_type": "markdown", "source": "# intro"},
+            {"cell_type": "code", "source": "spam()",
+             "outputs": [{"output_type": "stream",
+                          "text": "x" * (_MAX_OUTPUT_CHARS + 5000)}]},
+        ]}], "nbformat": 3}
+        with open(p, "w") as fh:
+            json.dump(nb, fh)
+        text = extract_document_text(p)
+        self.assertIn("output chars truncated", text)
+        self.assertIn(
+            "— full output: jq -r '.worksheets[0].cells[1].outputs' nb_v3_big.ipynb]",
+            text,
+        )
+
+    def test_legacy_v3_pyout_flat_fields(self):
+        p = os.path.join(self.tmp, "nb_v3.ipynb")
+        nb = {"worksheets": [{"cells": [
+            {"cell_type": "code", "source": "1+1",
+             "outputs": [{"output_type": "pyout", "text": ["2"]}]},
+        ]}], "nbformat": 3}
+        with open(p, "w") as fh:
+            json.dump(nb, fh)
+        text = extract_document_text(p)
+        self.assertIn("Output (cell 1)", text)
+        self.assertIn("2", text)
+
+    def test_malformed_outputs_ignored(self):
+        p = os.path.join(self.tmp, "nb_bad_out.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "ok()",
+             "outputs": ["not-a-dict", {"output_type": "bogus"}, None]},
+            {"cell_type": "code", "source": "also_ok()", "outputs": "not-a-list"},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("ok()", text)
+        self.assertIn("also_ok()", text)
+        self.assertNotIn("Output (cell", text)
 
 
 # ---------------------------------------------------------------------------
@@ -466,14 +602,64 @@ class TestReadFileToolIntegration(unittest.TestCase):
         self.assertIn("print(1)", res["content"])
 
 
-    def test_corrupt_docx_falls_through_to_binary_guard(self):
+    def test_corrupt_docx_surfaces_extraction_error(self):
         p = os.path.join(self.tmp, "bad.docx")
         with open(p, "wb") as fh:
             fh.write(b"not a zip")
         res = json.loads(read_file_tool(p))
-        # Should NOT crash; falls through to the binary-extension guard.
+        # Should NOT crash; the binary guard fires but surfaces the
+        # specific extraction failure instead of the generic message.
         self.assertIn("error", res)
-        self.assertIn("binary", res["error"].lower())
+        self.assertIn("extraction failed", res["error"].lower())
+        self.assertIn("docx", res["error"].lower())
+
+    def test_oversized_anydoc_read_surfaces_size_error(self):
+        import tools.read_extract as rex
+
+        saved_cap = rex.MAX_ANYDOC_BYTES
+        saved_module = rex._anydoc_module
+
+        class _FakeAnydoc:
+            def to_markdown(self, path):  # pragma: no cover - must not be called
+                raise AssertionError("conversion should be rejected before call")
+
+        rex._anydoc_module = _FakeAnydoc()
+        rex.MAX_ANYDOC_BYTES = 10
+        try:
+            p = os.path.join(self.tmp, "big.pdf")
+            with open(p, "wb") as fh:
+                fh.write(b"x" * 11)
+            res = json.loads(read_file_tool(p))
+            self.assertIn("error", res)
+            self.assertIn("too large", res["error"].lower())
+            # The size hint reaches the agent instead of a generic binary error.
+            self.assertNotIn("cannot read binary file", res["error"].lower())
+        finally:
+            rex.MAX_ANYDOC_BYTES = saved_cap
+            rex._anydoc_module = saved_module
+
+    def test_unavailable_converter_falls_back_to_raw_read(self):
+        import time
+
+        import tools.read_extract as rex
+
+        saved_module = rex._anydoc_module
+        saved_failed_at = rex._anydoc_failed_at
+        # Simulate "converter unavailable and in cooldown": _anydoc() returns
+        # None, the .pdf is not treated as extractable, and read_file keeps
+        # its historical raw-read fallthrough (no extraction error surfaced).
+        rex._anydoc_module = None
+        rex._anydoc_failed_at = time.monotonic()
+        try:
+            p = os.path.join(self.tmp, "doc.pdf")
+            with open(p, "wb") as fh:
+                fh.write(b"%PDF-1.4 fake")
+            res = json.loads(read_file_tool(p))
+            self.assertNotIn("error", res)
+            self.assertIn("%PDF-1.4 fake", res.get("content", ""))
+        finally:
+            rex._anydoc_module = saved_module
+            rex._anydoc_failed_at = saved_failed_at
 
     def test_docx_read_extracts(self):
         p = os.path.join(self.tmp, "d.docx")
@@ -483,6 +669,242 @@ class TestReadFileToolIntegration(unittest.TestCase):
         res = json.loads(read_file_tool(p))
         self.assertTrue(res.get("extracted_document"))
         self.assertIn("Report body", res["content"])
+
+    def test_backend_only_anydoc_path_uses_transferred_bytes(self):
+        from tools import file_tools, read_extract
+        from tools.file_operations import ReadResult
+
+        payload = br"{\rtf1\ansi Remote body\par}"
+
+        class FakeAnydoc:
+            def to_markdown_bytes(self, data):
+                self.seen = data
+                return "Remote body\n"
+
+        class FakeFileOps:
+            def read_file_bytes(self, path, max_bytes=None):
+                self.path = path
+                return ReadResult(
+                    base64_content=base64.b64encode(payload).decode("ascii"),
+                    file_size=len(payload),
+                    is_binary=True,
+                )
+
+            @staticmethod
+            def _add_line_numbers(content, start_line=1):
+                return "\n".join(
+                    f"{number}|{line}"
+                    for number, line in enumerate(content.split("\n"), start_line)
+                )
+
+        fake_anydoc = FakeAnydoc()
+        fake_ops = FakeFileOps()
+        saved_module = read_extract._anydoc_module
+        read_extract._anydoc_module = fake_anydoc
+        try:
+            with mock.patch.object(file_tools, "_get_file_ops", return_value=fake_ops), \
+                    mock.patch.object(
+                        file_tools,
+                        "_resolve_path_for_task",
+                        return_value=file_tools.PurePosixPath("/workspace/remote.rtf"),
+                    ), mock.patch("os.path.getsize", side_effect=AssertionError("host read")):
+                res = json.loads(read_file_tool("/workspace/remote.rtf", task_id="remote"))
+        finally:
+            read_extract._anydoc_module = saved_module
+
+        self.assertTrue(res.get("extracted_document"))
+        self.assertIn("Remote body", res["content"])
+        self.assertEqual(fake_anydoc.seen, payload)
+        self.assertEqual(fake_ops.path, "/workspace/remote.rtf")
+
+
+# ---------------------------------------------------------------------------
+# Scanned-PDF coverage warning
+# ---------------------------------------------------------------------------
+
+class TestPdfCoverageNote(unittest.TestCase):
+    """The coverage footer flags PDFs whose pages yielded no text."""
+
+    def _note_with_counts(self, counts):
+        """Drive _pdf_coverage_note with synthetic per-page texts whose
+        stripped lengths equal ``counts``."""
+        from tools import read_extract
+        texts = None if counts is None else ["x" * n for n in counts]
+        with mock.patch.object(read_extract, "_pdf_page_texts",
+                               return_value=texts):
+            return read_extract._pdf_coverage_note("/x/doc.pdf")
+
+    def test_mostly_scanned_pdf_warns_with_page_ranges(self):
+        # 3 text pages then 6 empty ones (scanned) — well past the ratio.
+        note = self._note_with_counts([900, 800, 700, 0, 0, 3, 0, 0, 0])
+        self.assertIn("EXTRACTION COVERAGE WARNING", note)
+        self.assertIn("6 of 9 pages", note)
+        self.assertIn("pages 4-9", note)        # contiguous empty gap
+        self.assertIn("(6 pages)", note)        # gap size stated
+        self.assertIn("vision_analyze", note)   # recovery path is named
+        self.assertIn("ocr-and-documents", note)
+        self.assertIn("do NOT OCR or render everything", note)
+
+    def test_gap_labels_carry_preceding_section_text(self):
+        """Each gap is labeled with the last text page before it (usually
+        a section divider), so the agent can pick which gaps to read."""
+        from tools import read_extract
+        texts = (
+            ["Section One: Bylaws of the Corporation"] + [""] * 5
+            + ["Section Two: Budget details here"] + [""] * 4
+        )
+        with mock.patch.object(read_extract, "_pdf_page_texts",
+                               return_value=texts):
+            note = read_extract._pdf_coverage_note("/x/doc.pdf")
+        self.assertIn(
+            'pages 2-6 (5 pages) — after "Section One: Bylaws of the Corporation" (p1)',
+            note,
+        )
+        self.assertIn(
+            'pages 8-11 (4 pages) — after "Section Two: Budget details here" (p7)',
+            note,
+        )
+
+    def test_gap_map_caps_pathological_alternation(self):
+        """Hundreds of alternating text/scan pages must not balloon the
+        warning — gaps beyond the cap collapse to one summary line."""
+        from tools import read_extract
+        texts = []
+        for i in range(60):  # 60 gaps of 1 page each
+            texts.extend([f"Divider page number {i} with enough text", ""])
+        with mock.patch.object(read_extract, "_pdf_page_texts",
+                               return_value=texts):
+            note = read_extract._pdf_coverage_note("/x/doc.pdf")
+        gap_lines = [ln for ln in note.splitlines() if ln.startswith("  ")]
+        self.assertEqual(
+            len(gap_lines), read_extract.PDF_GAP_MAP_MAX_ENTRIES + 1
+        )
+        self.assertIn("more gaps", gap_lines[-1])
+        self.assertIn("(40 pages)", gap_lines[-1])
+
+    def test_full_text_pdf_is_silent(self):
+        self.assertEqual(self._note_with_counts([500] * 20), "")
+
+    def test_one_blank_page_is_tolerated(self):
+        # A single separator/blank page in a text PDF should not warn.
+        self.assertEqual(self._note_with_counts([500, 0, 500, 500]), "")
+
+    def test_small_share_below_ratio_and_absolute_is_silent(self):
+        # 3 empty of 40 (7.5% < 20%, and < absolute threshold of 10).
+        counts = [400] * 37 + [0, 0, 0]
+        self.assertEqual(self._note_with_counts(counts), "")
+
+    def test_large_absolute_count_warns_even_below_ratio(self):
+        # 12 empty of 100 (12% < 20% ratio) still warns: 12 lost pages
+        # is real data loss regardless of document size.
+        counts = [400] * 88 + [0] * 12
+        note = self._note_with_counts(counts)
+        self.assertIn("12 of 100 pages", note)
+
+    def test_undeterminable_counts_are_silent(self):
+        self.assertEqual(self._note_with_counts(None), "")
+        self.assertEqual(self._note_with_counts([0]), "")  # single page
+
+    def test_page_ranges_compact(self):
+        from tools.read_extract import _page_ranges
+        self.assertEqual(_page_ranges([2, 3, 4, 7, 9, 10]), "2-4, 7, 9-10")
+        self.assertEqual(_page_ranges([5]), "5")
+
+    def test_page_char_counts_missing_pdftotext(self):
+        from tools import read_extract
+        with mock.patch.object(read_extract.shutil, "which", return_value=None):
+            self.assertIsNone(read_extract._pdf_page_char_counts("/x/doc.pdf"))
+
+    def test_page_char_counts_parses_formfeeds(self):
+        from tools import read_extract
+        fake = mock.Mock(returncode=0, stdout=b"alpha beta\fgamma\f\f")
+        with mock.patch.object(read_extract.shutil, "which",
+                               return_value="/usr/bin/pdftotext"), \
+             mock.patch.object(read_extract.subprocess, "run",
+                               return_value=fake):
+            counts = read_extract._pdf_page_char_counts("/x/doc.pdf")
+        # Trailing empty segment after the final \f is dropped; the real
+        # empty page between the two \f markers is preserved.
+        self.assertEqual(counts, [len("alpha beta"), len("gamma"), 0])
+
+    def test_extract_anydoc_prepends_note_for_pdf(self):
+        """The warning leads the extracted text for .pdf inputs (a trailing
+        footer would land on a page the model may never fetch)."""
+        from tools import read_extract
+        fake_mod = mock.Mock()
+        fake_mod.to_markdown.return_value = "# Title\n\nBody"
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fh:
+            fh.write(b"%PDF-1.4 fake")
+            p = fh.name
+        try:
+            with mock.patch.object(read_extract, "_anydoc",
+                                   return_value=fake_mod), \
+                 mock.patch.object(read_extract, "_pdf_coverage_note",
+                                   return_value="[EXTRACTION COVERAGE WARNING: test]\n"):
+                text = read_extract._extract_anydoc(p)
+        finally:
+            os.unlink(p)
+        self.assertTrue(text.startswith("[EXTRACTION COVERAGE WARNING"))
+        self.assertIn("# Title", text)
+
+    def test_extract_anydoc_no_note_for_non_pdf(self):
+        from tools import read_extract
+        fake_mod = mock.Mock()
+        fake_mod.to_markdown.return_value = "converted"
+        with tempfile.NamedTemporaryFile(suffix=".rtf", delete=False) as fh:
+            fh.write(b"{\\rtf1 fake}")
+            p = fh.name
+        try:
+            with mock.patch.object(read_extract, "_anydoc",
+                                   return_value=fake_mod), \
+                 mock.patch.object(read_extract, "_pdf_coverage_note") as note:
+                text = read_extract._extract_anydoc(p)
+        finally:
+            os.unlink(p)
+        note.assert_not_called()
+        self.assertEqual(text, "converted\n")
+
+    def test_bytes_path_prepends_note_with_display_path(self):
+        """Backend-transferred PDF bytes get the same warning, and the
+        recovery command names the backend-visible path, not the host
+        temp file the scan ran against."""
+        from tools import read_extract
+        fake_mod = mock.Mock()
+        fake_mod.to_markdown_bytes.return_value = "# Title\n\nBody"
+        seen = {}
+
+        def fake_note(path, display_path=None):
+            seen["scan_path"] = path
+            seen["display_path"] = display_path
+            return f"[EXTRACTION COVERAGE WARNING: test '{display_path}']\n"
+
+        with mock.patch.object(read_extract, "_anydoc",
+                               return_value=fake_mod), \
+             mock.patch.object(read_extract, "_pdf_coverage_note",
+                               side_effect=fake_note):
+            text = read_extract._extract_anydoc_bytes(
+                b"%PDF-1.4 fake", "/workspace/remote.pdf"
+            )
+        self.assertTrue(text.startswith("[EXTRACTION COVERAGE WARNING"))
+        self.assertIn("/workspace/remote.pdf", text)
+        self.assertEqual(seen["display_path"], "/workspace/remote.pdf")
+        # The scanned file is a host temp materialization, already removed.
+        self.assertNotEqual(seen["scan_path"], "/workspace/remote.pdf")
+        self.assertFalse(os.path.exists(seen["scan_path"]))
+
+    def test_bytes_path_no_note_for_non_pdf(self):
+        from tools import read_extract
+        fake_mod = mock.Mock()
+        fake_mod.to_markdown_bytes.return_value = "converted"
+        with mock.patch.object(read_extract, "_anydoc",
+                               return_value=fake_mod), \
+             mock.patch.object(read_extract,
+                               "_pdf_coverage_note_from_bytes") as note:
+            text = read_extract._extract_anydoc_bytes(
+                b"{\\rtf1 fake}", "/workspace/remote.rtf"
+            )
+        note.assert_not_called()
+        self.assertEqual(text, "converted\n")
 
 
 if __name__ == "__main__":

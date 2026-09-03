@@ -97,16 +97,6 @@ class TestAuthzAllowAllScope:
         finally:
             ss.reset_secret_scope(tok)
 
-    @pytest.mark.xfail(
-        reason=(
-            "gateway/authz_mixin.py still reads the platform allow-all flag via "
-            "_auth_env, which falls through to os.environ on a scoped miss; the "
-            "scope-authoritative gate (_platform_gate_env semantics) for the "
-            "remaining authz_mixin reads lands in a separate PR. Flips green "
-            "when that PR converts the allow-all read."
-        ),
-        strict=True,
-    )
     def test_scope_does_not_inherit_environ_opt_in(self, monkeypatch):
         # The PRIMARY profile opted in via os.environ; the secondary profile's
         # scope has no opt-in. The secondary must NOT inherit the primary's
@@ -152,6 +142,33 @@ class TestAuthzAllowlistScope:
         # Secondary scope lists only user-9 → user-1 must NOT inherit the
         # primary's environ allowlist.
         tok = ss.set_secret_scope({"QQ_ALLOWED_USERS": "user-9"})
+        try:
+            assert runner._is_user_authorized(_qq_dm_source()) is False
+        finally:
+            ss.reset_secret_scope(tok)
+
+    def test_scope_miss_does_not_inherit_environ_allowlist(self, monkeypatch):
+        # Primary env lists the sender. Secondary scope has no allowlist
+        # key at all. The miss must deny, not borrow the process value.
+        monkeypatch.setenv("QQ_ALLOWED_USERS", "user-1")
+        runner = _make_qq_runner()
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope({})
+        try:
+            assert runner._is_user_authorized(_qq_dm_source()) is False
+        finally:
+            ss.reset_secret_scope(tok)
+
+
+class TestAuthzGatewayAllowAllScope:
+    def test_scope_miss_does_not_inherit_gateway_allow_all(self, monkeypatch):
+        # GATEWAY_ALLOW_ALL_USERS is the last-chance fail-open flag, also
+        # read through _auth_env. A secondary profile that never set it
+        # must not inherit the primary's process-env opt-in.
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+        runner = _make_qq_runner()
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope({})
         try:
             assert runner._is_user_authorized(_qq_dm_source()) is False
         finally:

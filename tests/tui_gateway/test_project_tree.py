@@ -125,6 +125,42 @@ def test_linked_worktrees_fold_under_their_common_repo_root():
     assert linked["path"] == "/elsewhere/wt"
 
 
+def test_overview_orders_lanes_by_recency_not_alphabetically():
+    # Two linked-worktree lanes under one common repo root whose ALPHABETICAL
+    # order (wt-aaa, wt-zzz) is the OPPOSITE of their activity order (wt-zzz is
+    # the more recently active). The overview (hydrate=False) empties lane
+    # session arrays for payload slimness — but the lane sort must still run on
+    # real recency, matching the drill-in (hydrate=True) order, not collapse to
+    # alphabetical because the rows were dropped before sorting.
+    resolve = _resolver(
+        {
+            "/repo": ("/repo", "/repo"),
+            "/wt-aaa": ("/repo", "/wt-aaa"),
+            "/wt-zzz": ("/repo", "/wt-zzz"),
+        }
+    )
+    sessions = [
+        _session("/repo", branch="main", last_active=5000),
+        _session("/wt-aaa", last_active=1000),  # alphabetically first, older
+        _session("/wt-zzz", last_active=9000),  # alphabetically last, newer
+    ]
+
+    def _non_trunk_labels(hydrate):
+        tree = pt.build_tree([], sessions, [], resolve, hydrate=hydrate)
+        project = tree["projects"][0]
+        return [
+            g["label"]
+            for repo in project["repos"]
+            for g in repo["groups"]
+            if not g["isMain"]
+        ]
+
+    # Overview path: recency order (newer first), NOT alphabetical.
+    assert _non_trunk_labels(hydrate=False) == ["wt-zzz", "wt-aaa"]
+    # Drill-in path already sorts by recency — the two paths must agree.
+    assert _non_trunk_labels(hydrate=True) == ["wt-zzz", "wt-aaa"]
+
+
 def test_kanban_task_worktrees_collapse_into_one_bucket():
     resolve = _resolver(
         {
@@ -259,7 +295,9 @@ def test_non_git_cwd_preserves_legacy_workspace_grouping():
     assert project["isAuto"] is True
     assert project["label"] == "notes"
     assert project["sessionCount"] == 1
-    assert _lane_ids(project) == ["/work/notes"]
+    # Branch-style lane id (#53329): keying this lane by the raw path used to
+    # fork a duplicate lane against the live overlay's `::branch::main` id.
+    assert _lane_ids(project) == ["/work/notes::branch::main"]
     assert tree["scoped_session_ids"] == [legacy["id"]]
 
 
@@ -561,3 +599,61 @@ def test_colliding_repo_basenames_disambiguate_labels():
     labels = sorted(p["label"] for p in tree["projects"])
 
     assert labels == ["x/proj", "y/proj"]
+
+
+def test_non_git_folder_uses_branch_lane_id():
+    """#53329: _place_by_heuristic must use _branch_lane_id for non-git folders.
+
+    Before the fix, non-git folders got a lane key equal to the raw path,
+    while the desktop overlay expected ::branch::main. This caused duplicate
+    lanes (one from backend, one from overlay).
+    """
+    result = pt._place_by_heuristic("/home/user/my-project")
+    assert result is not None
+    assert result["lane_key"] == pt._branch_lane_id(
+        "/home/user/my-project", pt.DEFAULT_BRANCH_LABEL
+    ), (
+        f"Expected lane_key to use _branch_lane_id scheme but got "
+        f"{result['lane_key']!r}"
+    )
+    # The label should still be the folder basename
+    assert result["lane_label"] == "my-project"
+    # Must be marked as main lane
+    assert result["is_main"] is True
+
+
+def test_non_git_folder_lane_matches_overlay_scheme():
+    """#53329: verify the lane key format matches what the overlay expects."""
+    result = pt._place_by_heuristic("/data/work/folder-x")
+    assert result is not None
+    # Overlay expects: <path>::branch::main
+    expected = "/data/work/folder-x::branch::main"
+    assert result["lane_key"] == expected, (
+        f"Expected lane_key={expected!r} but got {result['lane_key']!r}"
+    )
+
+
+def test_heuristic_lane_ids_for_kanban_and_wt_suffix_are_unchanged():
+    """The branch-style id applies ONLY to the plain-folder fallback.
+
+    Kanban worktrees keep the ::kanban id and `<repo>-wt-<slug>` folders keep
+    the raw-path lane key so existing worktree lanes don't fork.
+    """
+    kanban = pt._place_by_heuristic("/www/app/.worktrees/t_1a2b3c")
+    assert kanban is not None
+    assert kanban["lane_key"] == pt._kanban_lane_id("/www/app")
+    assert kanban["is_kanban"] is True
+
+    wt = pt._place_by_heuristic("/www/app-wt-feature")
+    assert wt is not None
+    assert wt["lane_key"] == "/www/app-wt-feature"
+    assert wt["lane_label"] == "feature"
+    assert wt["is_main"] is False
+
+
+def test_equivalent_windows_spellings_derive_one_lane_key():
+    """Lane identity must collapse separator/trailing-slash variants (#62165)."""
+    a = pt._place_by_heuristic("C:/work/notes")
+    b = pt._place_by_heuristic("C:\\work\\notes\\")
+    assert a is not None and b is not None
+    assert pt._lane_key(a["lane_key"]) == pt._lane_key(b["lane_key"])

@@ -31,11 +31,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use tauri::{AppHandle, Emitter};
-use tokio::io::BufReader;
 use tokio::process::Command;
 
 use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
-use crate::powershell::read_decoded_line;
+use crate::powershell::{pump_child, DRAIN_GRACE};
 
 /// `hermes update` exit code meaning "another hermes process is holding the
 /// venv shim open / dirty precondition" — see _cmd_update_impl in
@@ -134,17 +133,13 @@ struct MarkerOwner {
     age_secs: u64,
 }
 
-/// Read the marker and report a live *foreign* owner, if any. `None` for every
-/// "no live update" case — absent, unreadable, malformed, dead pid, past the
-/// ceiling, or a marker whose pid is **this** process — matching
-/// `readLiveUpdateMarker` in the Electron gate. Never panics.
+/// Read the marker and report a live owner, if any. `None` for every "no live
+/// update" case — absent, unreadable, malformed, dead pid, or past the ceiling
+/// — matching `readLiveUpdateMarker` in the Electron gate. Never panics.
 ///
-/// Self-PID is treated as non-ownership on purpose (#74761): since #50238 the
-/// desktop pre-writes this marker with the spawned updater's pid before the
-/// updater reaches `acquire`. Without the exclusion, `acquire` sees a live
-/// owner that is itself and aborts ("Another Hermes update is already
-/// running"), then the desktop relaunches and retries forever. A foreign live
-/// pid (e.g. a dashboard-spawned `hermes update`) still blocks.
+/// Self-PID is returned so `acquire` can adopt the desktop's pre-written claim
+/// without refreshing its acquisition time (#74761). A foreign live pid (e.g.
+/// a dashboard-spawned `hermes update`) still blocks.
 fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
     let raw = std::fs::read_to_string(path).ok()?;
     let mut lines = raw.lines();
@@ -158,12 +153,39 @@ fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
     if age_secs > UPDATE_MARKER_MAX_AGE_SECS || !pid_is_alive(pid) {
         return None;
     }
-    // Desktop `writeUpdateMarker(hermesHome, child.pid)` races ahead of us;
-    // adopt that pre-claim rather than refusing our own marker.
-    if pid == std::process::id() {
-        return None;
-    }
     Some(MarkerOwner { pid, age_secs })
+}
+
+/// True when the on-disk marker names THIS process as its owner.
+///
+/// A raw read is used instead of `live_marker_owner` on purpose: that
+/// helper folds in age and liveness policy (and, since the #74761
+/// adoption work, self-ownership handling has changed shape more than
+/// once). The exit-2 self-heal below needs exactly one raw fact — does
+/// the marker name our PID — because a `hermes update` child that
+/// refuses over OUR marker is a handoff-recognition failure in a stale
+/// checkout, not a real concurrent update.
+fn marker_owned_by_self(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| {
+            raw.lines()
+                .next()
+                .and_then(|line| line.trim().parse::<u32>().ok())
+        })
+        == Some(std::process::id())
+}
+
+/// The exit-2 heal decision (#75788), extracted so the contract is testable.
+///
+/// True only when BOTH hold: the child exited with the concurrent-update
+/// refusal code, AND the on-disk marker names THIS process. That combination
+/// means the child refused over its own parent's claim — a stale checkout
+/// without handoff recognition — so dropping the claim and retrying once is
+/// safe. Any other owner (live foreign updater, garbage, missing marker) or
+/// any other exit code must leave the refusal untouched.
+fn should_heal_self_marker_refusal(exit_code: Option<i32>, marker_path: &Path) -> bool {
+    exit_code == Some(UPDATE_EXIT_CONCURRENT) && marker_owned_by_self(marker_path)
 }
 
 /// True when a process with `pid` currently exists.
@@ -208,10 +230,18 @@ impl UpdateMarkerGuard {
     /// behavior), so we log and carry on with a guard that still attempts
     /// cleanup of whatever may exist at the path.
     fn acquire(path: PathBuf) -> Result<Self, MarkerOwner> {
+        let pid = std::process::id();
         if let Some(owner) = live_marker_owner(&path) {
+            if owner.pid == pid {
+                // Repeated acquisition in this process is intentionally
+                // re-entrant because the desktop may have pre-written our pid.
+                // The desktop races ahead and pre-writes our pid. Adopt that
+                // claim verbatim: rewriting started_at here lets retries reset
+                // a wedged updater's age before the stale ceiling can clear it.
+                return Ok(Self { path, owned: true });
+            }
             return Err(owner);
         }
-        let pid = std::process::id();
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -417,6 +447,41 @@ async fn run_update(app: AppHandle) -> Result<()> {
             "[update] first update attempt failed; retrying once (the fix it just \
              pulled loads on the second run)…",
         );
+        update = run_streamed(
+            &app,
+            &hermes,
+            &update_args,
+            &install_root,
+            &child_env,
+            Some("update"),
+        )
+        .await?;
+    }
+
+    // Self-owned-marker heal (#75788). Exit 2 means the child refused over a
+    // live update marker with a foreign owner. When that "foreign" owner is
+    // THIS process, the child simply failed to recognize the handoff — a
+    // checkout predating the HERMES_UPDATE_HANDOFF_PID env fix (8c76fe19f)
+    // and the ancestor-pid fallback runs its pre-pull update_lock.py, reads
+    // our marker, and exits 2 every time. The refusal loop is unbreakable
+    // from the user's side because the update being refused is the one that
+    // ships the fix. The marker exists to serialize updates and this process
+    // IS the update: drop our claim and retry once with the marker absent.
+    // The guard re-removes on Drop (idempotent), and the desktop is already
+    // gone at this point, so nothing races the brief marker-free window.
+    if should_heal_self_marker_refusal(
+        update.exit_code,
+        &crate::paths::update_in_progress_marker(),
+    ) {
+        emit_log(
+            &app,
+            Some("update"),
+            LogStream::Stdout,
+            "[update] child refused over this updater's own marker (stale \
+             checkout without handoff recognition); clearing the claim and \
+             retrying once…",
+        );
+        _update_marker.complete();
         update = run_streamed(
             &app,
             &hermes,
@@ -659,24 +724,42 @@ pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHa
             return;
         }
         if Instant::now() >= deadline {
-            // Last resort: a backend hermes.exe (or the desktop Hermes.exe
-            // itself) is still holding one of the update-sensitive files. The
-            // desktop should have reaped its tree before handing off, but
-            // SIGTERM races / detached grandchildren / AV handles can leave a
-            // straggler. Rather than "proceed anyway" straight into uv's
-            // "Access is denied" or install.ps1's locked app.asar failure,
-            // force-kill every Hermes.exe except ourselves, then give the OS a
-            // beat to unload the image.
+            // Last resort: a backend shim can still hold update-sensitive
+            // files when the desktop's shutdown races a detached child. Only
+            // target the shim at this install root: the desktop binary is also
+            // Hermes.exe, so an image-name kill would tear down the app itself.
             emit_log(
                 app,
                 Some(stage),
                 LogStream::Stdout,
                 &format!(
-                    "[handoff] Hermes still holding install files ({}); force-killing stragglers…",
+                    "[handoff] Hermes still holding install files ({}); locating backend shims…",
                     format_locked_paths(&locked)
                 ),
             );
-            force_kill_other_hermes();
+            let shim = venv_hermes(install_root);
+            let shim_pids = backend_shim_pids(&shim);
+            if shim_pids.is_empty() {
+                emit_log(
+                    app,
+                    Some(stage),
+                    LogStream::Stdout,
+                    "[handoff] no installed backend shim matched the force-kill fallback",
+                );
+            } else {
+                for pid in &shim_pids {
+                    emit_log(
+                        app,
+                        Some(stage),
+                        LogStream::Stdout,
+                        &format!(
+                            "[handoff] force-killing backend shim PID {pid} ({})",
+                            shim.display()
+                        ),
+                    );
+                }
+                force_kill_process_trees(&shim_pids);
+            }
             tokio::time::sleep(Duration::from_millis(800)).await;
             let locked_after_kill = locked_paths(&lock_targets);
             if locked_after_kill.is_empty() {
@@ -734,42 +817,97 @@ fn format_locked_paths(paths: &[PathBuf]) -> String {
     paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
 }
 
-/// Force-kill any `hermes.exe` other than this process. Windows-only; a no-op
-/// elsewhere (POSIX has no mandatory-lock contention). We can't selectively
-/// target "the backend" by PID here — the desktop already exited and we never
-/// knew its children — so we kill the whole `hermes.exe` image tree via
-/// taskkill, excluding our own PID.
-///
-/// Safe w.r.t. our own update child: this runs inside the install-lock wait,
-/// which completes BEFORE we spawn `venv\Scripts\hermes.exe update`. And a
-/// desktop the user relaunches mid-update will NOT have spawned a backend —
-/// `startHermes()` in the desktop gates local-backend startup on our
-/// update-in-progress marker and parks until we finish (#50238). So the only
-/// hermes.exe images here are stragglers from the old desktop — exactly what
-/// we want gone. (`/FI PID ne <self>` also spares this Tauri process, though it
-/// isn't named hermes.exe.)
-fn force_kill_other_hermes() {
-    if !cfg!(target_os = "windows") {
-        return;
+/// Find processes running the exact `venv\Scripts\hermes.exe` shim for this
+/// installation. Windows image names are case-insensitive and the desktop is
+/// also Hermes.exe, so matching by image name alone is unsafe.
+#[cfg(windows)]
+fn backend_shim_pids(shim: &Path) -> Vec<u32> {
+    use std::ffi::OsString;
+    use std::mem::{size_of, zeroed};
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    const MAX_PATH_CHARS: usize = 32_768;
+
+    fn image_path_for_pid(pid: u32) -> Option<PathBuf> {
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return None;
+            }
+            let mut path = vec![0_u16; MAX_PATH_CHARS];
+            let mut len = path.len() as u32;
+            let ok = QueryFullProcessImageNameW(handle, 0, path.as_mut_ptr(), &mut len);
+            CloseHandle(handle);
+            (ok != 0).then(|| PathBuf::from(OsString::from_wide(&path[..len as usize])))
+        }
     }
-    #[cfg(target_os = "windows")]
-    {
-        let my_pid = std::process::id();
-        // /FI excludes our own PID; /T kills the tree; /F forces.
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Vec::new();
+    }
+
+    let mut entry: PROCESSENTRY32W = unsafe { zeroed() };
+    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+    let mut pids = Vec::new();
+    let mut inspected_candidates = 0_u32;
+    let own_pid = std::process::id();
+    let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while has_entry {
+        let pid = entry.th32ProcessID;
+        if pid != own_pid {
+            if let Some(path) = image_path_for_pid(pid) {
+                inspected_candidates += 1;
+                if same_windows_path(&path, shim) {
+                    pids.push(pid);
+                }
+            }
+        }
+        has_entry = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe { CloseHandle(snapshot) };
+    if pids.is_empty() && inspected_candidates > 0 {
+        tracing::debug!(
+            expected_shim = %shim.display(),
+            inspected_candidates,
+            "no queryable process image matched the backend shim path"
+        );
+    }
+    pids
+}
+
+#[cfg(not(windows))]
+fn backend_shim_pids(_shim: &Path) -> Vec<u32> {
+    Vec::new()
+}
+
+fn same_windows_path(actual: &Path, expected: &Path) -> bool {
+    actual
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&expected.to_string_lossy())
+}
+
+#[cfg(windows)]
+fn force_kill_process_trees(pids: &[u32]) {
+    for pid in pids {
         let _ = std::process::Command::new("taskkill")
-            .args([
-                "/F",
-                "/T",
-                "/IM",
-                "hermes.exe",
-                "/FI",
-                &format!("PID ne {my_pid}"),
-            ])
+            .args(["/F", "/T", "/PID", &pid.to_string()])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
     }
 }
+
+#[cfg(not(windows))]
+fn force_kill_process_trees(_pids: &[u32]) {}
 
 /// Best-effort lock probe: try to open the file for read+write. On Windows an
 /// exclusively-held running .exe refuses the open with a sharing violation.
@@ -825,39 +963,34 @@ async fn run_streamed(
         .spawn()
         .map_err(|e| anyhow!("spawning {} {:?}: {e}", program.display(), args))?;
 
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
-    // Same non-UTF-8-safe decode path as powershell::run_script (#67193).
-    let mut out = BufReader::new(stdout);
-    let mut err = BufReader::new(stderr);
-    let mut out_buf = Vec::new();
-    let mut err_buf = Vec::new();
-
+    // Same non-UTF-8-safe decode path as powershell::run_script (#67193), and
+    // the same rule about pipe EOF: `hermes update` is precisely the shape that
+    // leaves resident descendants holding an inherited stdout handle, and every
+    // stage this drives sits downstream of the read.
     let stage_owned = stage.map(|s| s.to_string());
-    loop {
-        tokio::select! {
-            line = read_decoded_line(&mut out, &mut out_buf) => match line {
-                Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l),
-                Ok(None) => break,
-                Err(e) => { tracing::warn!("stdout read error: {e}"); break; }
-            },
-            line = read_decoded_line(&mut err, &mut err_buf) => match line {
-                Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l),
-                Ok(None) => {}
-                Err(e) => { tracing::warn!("stderr read error: {e}"); }
-            },
-        }
-    }
-    while let Ok(Some(l)) = read_decoded_line(&mut out, &mut out_buf).await {
-        emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l);
-    }
-    while let Ok(Some(l)) = read_decoded_line(&mut err, &mut err_buf).await {
-        emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l);
+    let outcome = pump_child(
+        &mut child,
+        |l| emit_log(app, stage_owned.as_deref(), LogStream::Stdout, l),
+        |l| emit_log(app, stage_owned.as_deref(), LogStream::Stderr, l),
+        &mut None,
+        DRAIN_GRACE,
+    )
+    .await
+    .map_err(|e| anyhow!("streaming {} {:?}: {e}", program.display(), args))?;
+
+    if outcome.abandoned {
+        let note = format!(
+            "{} exited but a surviving descendant still holds its stdout/stderr; \
+             gave up on the last {}s of output (#90455)",
+            program.display(),
+            DRAIN_GRACE.as_secs()
+        );
+        tracing::warn!("{note}");
+        emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &note);
     }
 
-    let status = child.wait().await.map_err(|e| anyhow!("waiting for child: {e}"))?;
     Ok(CmdResult {
-        exit_code: status.code(),
+        exit_code: outcome.exit_code,
     })
 }
 
@@ -1282,6 +1415,22 @@ mod tests {
     }
 
     #[test]
+    fn same_windows_path_accepts_case_only_difference() {
+        assert!(same_windows_path(
+            Path::new(r"C:\Users\tester\.hermes\hermes-agent\venv\scripts\HERMES.EXE"),
+            Path::new(r"c:\users\tester\.hermes\hermes-agent\venv\Scripts\hermes.exe"),
+        ));
+    }
+
+    #[test]
+    fn same_windows_path_rejects_desktop_binary() {
+        assert!(!same_windows_path(
+            Path::new(r"C:\Users\tester\.hermes\hermes-agent\apps\desktop\Hermes.exe"),
+            Path::new(r"C:\Users\tester\.hermes\hermes-agent\venv\Scripts\hermes.exe"),
+        ));
+    }
+
+    #[test]
     fn update_marker_guard_writes_then_removes_on_drop() {
         let dir = unique_tmp_dir("marker-guard");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1327,8 +1476,8 @@ mod tests {
 
     /// Spawn a short-lived sibling process whose pid stands in for a foreign
     /// updater. Same-process double-acquire no longer models contention: since
-    /// #74761 `live_marker_owner` treats our own pid as adoptable (desktop
-    /// pre-writes it), so a second acquire in *this* process would succeed.
+    /// #74761 `acquire` treats our own pid as adoptable (desktop pre-writes it),
+    /// so a second acquire in *this* process would succeed.
     fn spawn_foreign_holder() -> std::process::Child {
         #[cfg(windows)]
         {
@@ -1385,7 +1534,8 @@ mod tests {
     fn acquire_adopts_a_marker_prewritten_with_our_own_pid() {
         // #74761: desktop writeUpdateMarker(hermesHome, child.pid) races ahead
         // of UpdateMarkerGuard::acquire. The marker names US; refusing it made
-        // every in-app desktop update loop forever. Adopt and rewrite.
+        // every in-app desktop update loop forever. Adopt it without resetting
+        // the holder age, so a wedged updater still reaches the stale ceiling.
         let dir = unique_tmp_dir("marker-own-pid");
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join(".hermes-update-in-progress");
@@ -1408,13 +1558,125 @@ mod tests {
         assert_eq!(
             body.lines().next().unwrap().trim().parse::<u32>().unwrap(),
             std::process::id(),
-            "acquire rewrites the marker with our pid + fresh started_at"
+            "acquire keeps the adopted marker owner"
+        );
+        assert_eq!(
+            body.lines().nth(1).unwrap().trim().parse::<u64>().unwrap(),
+            started_at,
+            "adopting an own-pid marker must preserve its original holder age"
         );
         drop(guard);
         assert!(
             !marker.exists(),
             "Drop must still clear the marker we adopted"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- exit-2 self-marker heal (#75788) --------------------------------
+    // The deadlock: the updater holds the marker with its own PID; a stale
+    // checkout's `hermes update` reads it as a live foreign update and exits
+    // 2; the generic retry deliberately skips exit 2 — so the refusal loops
+    // forever. These tests pin the heal decision's full contract. On
+    // merge-base product code (no heal) the decision function does not exist
+    // and the refusal is terminal — the A/B run proves that.
+
+    #[test]
+    fn self_owned_marker_plus_exit_2_heals() {
+        let dir = unique_tmp_dir("heal-self-owned");
+        let marker = dir.join(".hermes-update-in-progress");
+        std::fs::write(&marker, format!("{}\n123\n", std::process::id())).unwrap();
+
+        assert!(
+            should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &marker),
+            "a child refusing over OUR marker is the #75788 deadlock — must heal"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn foreign_owned_marker_never_heals() {
+        let dir = unique_tmp_dir("heal-foreign");
+        let marker = dir.join(".hermes-update-in-progress");
+        // A live sibling process stands in for a genuinely concurrent updater.
+        let mut foreign = spawn_foreign_holder();
+        std::fs::write(&marker, format!("{}\n123\n", foreign.id())).unwrap();
+
+        assert!(
+            !should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &marker),
+            "a foreign owner is a REAL concurrent update — the refusal must stand"
+        );
+        let _ = foreign.kill();
+        let _ = foreign.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_or_garbage_marker_never_heals() {
+        let dir = unique_tmp_dir("heal-garbage");
+        let missing = dir.join("never-written");
+        assert!(
+            !should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &missing),
+            "no marker on disk = the child refused over something else entirely"
+        );
+
+        let garbage = dir.join(".hermes-update-in-progress");
+        std::fs::write(&garbage, "not-a-pid\n123\n").unwrap();
+        assert!(
+            !should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &garbage),
+            "an unparseable marker must not be treated as ours"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_exit_2_outcomes_never_heal() {
+        let dir = unique_tmp_dir("heal-wrong-exit");
+        let marker = dir.join(".hermes-update-in-progress");
+        std::fs::write(&marker, format!("{}\n123\n", std::process::id())).unwrap();
+
+        for code in [Some(0), Some(1), Some(3), None] {
+            assert!(
+                !should_heal_self_marker_refusal(code, &marker),
+                "heal is exit-2-only; exit {code:?} must keep its normal path"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn heal_end_to_end_marker_lifecycle() {
+        // The full deadlock-and-heal sequence with a REAL marker guard, as
+        // run_update executes it: acquire (marker written with our pid) →
+        // child exits 2 refusing our own claim → heal decision fires →
+        // complete() drops the claim → the retry's precondition (no marker,
+        // or a marker the child can now claim) holds.
+        let dir = unique_tmp_dir("heal-e2e");
+        let marker = dir.join(".hermes-update-in-progress");
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
+        assert!(marker.exists(), "updater holds the marker during the child run");
+
+        // Stale child refused over our claim:
+        assert!(should_heal_self_marker_refusal(
+            Some(UPDATE_EXIT_CONCURRENT),
+            &marker
+        ));
+
+        // The heal drops the claim exactly as run_update does:
+        guard.complete();
+        assert!(
+            !marker.exists(),
+            "claim dropped — the one retry now runs with the marker absent"
+        );
+
+        // And with the marker gone the heal can never fire twice (the retry's
+        // own exit 2, e.g. a genuinely still-running Hermes, stays terminal).
+        assert!(!should_heal_self_marker_refusal(
+            Some(UPDATE_EXIT_CONCURRENT),
+            &marker
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

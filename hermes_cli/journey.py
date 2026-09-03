@@ -18,6 +18,7 @@ from functools import lru_cache
 from typing import Any, Optional
 
 _TITLE_COLOR = "#E8C463"
+_CHARTED_SIGNAL_MIN_CONTRAST = 4.5
 
 
 def _build_payload() -> dict[str, Any]:
@@ -58,6 +59,57 @@ def _fade(base: Optional[str], alpha: float) -> Optional[str]:
 def _resolve(style: str, alpha: float) -> Optional[str]:
     """Fade the style's base ink toward the background by ``alpha`` (rgba-over-bg)."""
     return _fade(_palette().get(style), alpha)
+
+
+def _relative_luminance(rgb: tuple[int, int, int]) -> float:
+    def channel(value: int) -> float:
+        normalized = value / 255
+        return (
+            normalized / 12.92
+            if normalized <= 0.03928
+            else ((normalized + 0.055) / 1.055) ** 2.4
+        )
+
+    red, green, blue = (channel(value) for value in rgb)
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
+def _contrast_ratio(
+    foreground: tuple[int, int, int], background: tuple[int, int, int]
+) -> float:
+    foreground_luminance = _relative_luminance(foreground)
+    background_luminance = _relative_luminance(background)
+    high, low = sorted((foreground_luminance, background_luminance), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def _ensure_contrast(
+    color: Optional[str], background: str, minimum: float
+) -> Optional[str]:
+    """Lift a foreground toward the readable pole until it clears ``minimum``."""
+    if not color:
+        return None
+
+    from agent.learning_graph_render import hex_to_rgb, mix_rgb, rgb_to_hex
+
+    foreground_rgb = hex_to_rgb(color)
+    background_rgb = hex_to_rgb(background)
+    if _contrast_ratio(foreground_rgb, background_rgb) >= minimum:
+        return color
+
+    pole = (0, 0, 0) if _relative_luminance(background_rgb) > 0.5 else (255, 255, 255)
+    for step in range(1, 21):
+        candidate = mix_rgb(foreground_rgb, pole, step * 0.05)
+        if _contrast_ratio(candidate, background_rgb) >= minimum:
+            return rgb_to_hex(candidate)
+    return rgb_to_hex(pole)
+
+
+def _resolve_charted_signal(style: str, alpha: float) -> Optional[str]:
+    """Keep age tinting without allowing explanatory labels to disappear."""
+    return _ensure_contrast(
+        _resolve(style, alpha), _palette()["bg"], _CHARTED_SIGNAL_MIN_CONTRAST
+    )
 
 
 def _row_to_text(row: list, color: bool):
@@ -155,8 +207,13 @@ def _frame_renderable(payload, *, cols, rows, reveal, color):
         def label_row(item) -> Text:
             row = Text("  ")
             row.append(f"{item['key']} ", style="grey70" if color else None)
-            row.append(f"{item['glyph']} ", style=_resolve(item["style"], float(item.get("alpha", 1.0))) if color else None)
-            row.append(str(item["label"]), style=_resolve(item["style"], float(item.get("alpha", 1.0))) if color else None)
+            signal_style = (
+                _resolve_charted_signal(item["style"], float(item.get("alpha", 1.0)))
+                if color
+                else None
+            )
+            row.append(f"{item['glyph']} ", style=signal_style)
+            row.append(str(item["label"]), style=signal_style)
             meta = str(item["meta"])
             row.append(f"  {meta if len(meta) <= 32 else meta[:29] + '…'}", style="grey54" if color else None)
             return row

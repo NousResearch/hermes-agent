@@ -32,7 +32,7 @@ Prices are FAL's pricing at time of writing; check [fal.ai](https://fal.ai/) for
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, you can use image generation through the **[Tool Gateway](tool-gateway.md)** without a FAL API key. Your model selection persists across both paths. New installs can run `hermes setup --portal` to log in and turn on every gateway tool at once; existing installs can pick **Nous Subscription** as the image-gen backend via `hermes tools`.
 
-If the managed gateway returns `HTTP 4xx` for a specific model, that model isn't yet proxied on the portal side — the agent will tell you so, with remediation steps (set `FAL_KEY` for direct access, or pick a different model).
+If the managed gateway returns `HTTP 4xx` for a specific model, that model isn't yet proxied on the portal side — the agent will tell you so, with remediation steps (switch to FAL.ai in `hermes tools` with your own `FAL_KEY` for direct access, or pick a different model).
 :::
 
 ### Get a FAL API Key
@@ -62,18 +62,69 @@ Your selection is saved to `config.yaml`:
 
 ```yaml
 image_gen:
+  provider: fal                 # `nous` if you picked Nous Subscription
   model: fal-ai/flux-2/klein/9b
-  use_gateway: false            # true if using Nous Subscription
   max_parallel_requests: 4      # concurrent images in one tool-call batch
 ```
+
+`image_gen.provider` is the single selection key: `nous` routes through the managed Tool Gateway; a vendor name (`fal`, `openai`, `xai`, `krea`, ...) goes direct with your own key. The runtime always follows this stored selection — a `FAL_KEY` in `.env` is ignored while `provider: nous`, and `provider: fal` without `FAL_KEY` errors with `image_gen is configured to use fal (set via hermes tools), but FAL_KEY is not set. Run 'hermes tools' to change it.` rather than silently rerouting. Change providers via `hermes tools`, not by adding/removing keys. (The old `use_gateway` boolean is legacy — still read as `nous` when `true`, but never written anymore.)
 
 `max_parallel_requests` defaults to `4`. Hermes clamps it to at least one and
 to the global tool-worker limit, so image providers receive bounded parallel
 requests without allowing an image batch to bypass the agent's concurrency cap.
 
+### OpenRouter: the full Image API catalog
+
+With `image_gen.provider: openrouter`, the model picker lists OpenRouter's
+entire live image catalog — the dedicated
+[Image API](https://openrouter.ai/docs/guides/overview/multimodal/image-generation)
+models (Seedream, FLUX.2, Recraft, Qwen Image, MAI, Krea, Riverflow, Grok
+Imagine, and more — 40+ ids) merged with the chat-completions image models.
+The catalog is fetched live from `GET /images/models` and `GET /models`, so
+new models appear in the picker as soon as OpenRouter serves them; no Hermes
+update needed. Generation routes each model to the surface that serves it
+(dedicated `POST /images/generations` vs chat-completions) automatically.
+Nous Portal proxies the chat-completions protocol only, so its picker offers
+the chat-served models.
+
+Optional per-request knobs for Image API models go under the scoped config
+section (or `OPENROUTER_IMAGE_API_*` env vars):
+
+```yaml
+image_gen:
+  provider: openrouter
+  model: bytedance-seed/seedream-4.5
+  openrouter:
+    resolution: 2K        # model-dependent: 1K / 2K / 4K
+    quality: high         # gpt-image models
+    output_format: png
+```
+
 ### GPT-Image Quality
 
 The `fal-ai/gpt-image-1.5` and `fal-ai/gpt-image-2` request quality is pinned to `medium` (~$0.034–$0.06/image at 1024×1024). We don't expose the `low` / `high` tiers as a user-facing option so that Nous Portal billing stays predictable across all users — the cost spread between tiers is 3–22×. If you want a cheaper option, pick Klein 9B or Z-Image Turbo; if you want higher quality, use Nano Banana Pro or Recraft V4 Pro.
+
+### Meta Model API: Muse Image
+
+With `image_gen.provider: meta-ai`, images are generated through the
+[Meta Model API](https://api.meta.ai) (`https://api.meta.ai/v1`), the same
+OpenAI-compatible endpoint that serves the Muse Spark chat models. It is the
+image-gen companion to the bundled `meta-ai` chat provider.
+
+| Model | Speed | Strengths | Price |
+|---|---|---|---|
+| `muse-image-1.0` *(default)* | ~10s | Meta Model API image generation | $0.01/image |
+
+```yaml
+image_gen:
+  provider: meta-ai
+  model: muse-image-1.0
+```
+
+Auth reuses the same env vars as the Meta chat provider — `MODEL_API_KEY`
+(Meta's documented name), with `META_API_KEY` / `META_MODEL_API_KEY` accepted
+as aliases. Set `META_BASE_URL` to point at a proxy or alternate host. Text-to-image
+only for now; responses are saved to `$HERMES_HOME/cache/images/`.
 
 ## Usage
 
@@ -120,6 +171,7 @@ Two inputs drive the edit:
 | **xAI** (Grok Imagine) | ✓ | 1 | `/v1/images/edits` (`grok-imagine-image-quality`) |
 | **Krea** (`Krea 2`) | ✓ | up to 10 | reference-guided generation (`image_style_references`) |
 | **OpenAI (Codex auth)** | ✓ | up to 16 | Codex Responses `image_generation` tool with `input_image` content parts |
+| **OpenRouter** (Image API models) | ✓ | up to 14–16 (per model) | `input_references` on `POST /images/generations`; chat-served models use `image_url` content parts (up to 3) |
 
 FAL models with an editing endpoint: `flux-2/klein/9b`, `flux-2-pro`,
 `nano-banana-pro`, `gpt-image-1.5`, `gpt-image-2`, `ideogram/v3`, and
@@ -158,16 +210,32 @@ GPT Image 2 maps to 4:3 presets rather than 16:9 because its minimum pixel count
 
 This translation happens in `_build_fal_payload()` — agent code never has to know about per-model schema differences.
 
-## Automatic Upscaling
+## Upscaling
 
-Upscaling via FAL's **Clarity Upscaler** is gated per-model:
+### Opt-in only
 
-| Model | Upscale? | Why |
-|---|---|---|
-| `fal-ai/flux-2-pro` | ✓ | Backward-compat (was the pre-picker default) |
-| All others | ✗ | Fast models would lose their sub-second value prop; hi-res models don't need it |
+No model upscales by default. Modern image models emit their best quality
+natively, and the available upscalers are *creative* enhancers (diffusion
+passes) that can subtly redraw content — degrading rendered text, faces, and
+fine detail. Upscaling only runs when the agent explicitly requests it.
 
-When upscaling runs, it uses these settings:
+### The `upscale` parameter (per-call opt-in)
+
+- `upscale: true` — chain a high-resolution pass after generation:
+
+| Backend | Upscaler |
+|---|---|
+| **FAL.ai** | Clarity Upscaler (2×, +$0.03/MP) |
+| **Krea** | Krea Enhance (2×, up to 8K ceiling) |
+| Other backends | no upscaler; native resolution returned |
+
+- `upscale: false` / omitted — native resolution (the default)
+
+`video_generate` also accepts `upscale: true` on the FAL backend, chaining
+ByteDance's **SeedVR2** video upscaler (2×, $0.001/MP of output video) after
+generation.
+
+When the FAL image pass runs, it uses these settings:
 
 | Setting | Value |
 |---|---|
@@ -177,14 +245,14 @@ When upscaling runs, it uses these settings:
 | Guidance scale | 4 |
 | Inference steps | 18 |
 
-If upscaling fails (network issue, rate limit), the original image is returned automatically.
+If upscaling fails (network issue, rate limit), the original image is returned automatically. The response reports `upscaled: true/false` so the agent knows which resolution it got.
 
 ## How It Works Internally
 
 1. **Model resolution** — `_resolve_fal_model()` reads `image_gen.model` from `config.yaml`, falls back to the `FAL_IMAGE_MODEL` env var, then to `fal-ai/flux-2/klein/9b`.
 2. **Payload building** — `_build_fal_payload()` translates your `aspect_ratio` into the model's native format (preset enum, aspect-ratio enum, or GPT literal), merges the model's default params, applies any caller overrides, then filters to the model's `supports` whitelist so unsupported keys are never sent.
-3. **Submission** — `_submit_fal_request()` routes via direct FAL credentials or the managed Nous gateway.
-4. **Upscaling** — runs only if the model's metadata has `upscale: True`.
+3. **Submission** — `_submit_fal_request()` routes via direct FAL credentials or the managed Nous gateway, according to the stored `image_gen.provider` selection.
+4. **Upscaling** — runs only when the agent passed `upscale: true`; every model's catalog default is off.
 5. **Delivery** — final image URL returned to the agent, which emits a `MEDIA:<url>` tag that platform adapters convert to native media.
 
 ## Debugging

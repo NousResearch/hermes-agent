@@ -50,7 +50,11 @@ def run_git(cwd: str, *args: str) -> str:
     session readiness when a killed git left a suspended descendant holding the
     pipe handles (issue #68609).
     """
-    if not cwd:
+    if not cwd or not os.path.isdir(cwd):
+        # `git -C` on a directory that no longer exists can only fail, and it
+        # fails at the price of a fork. Deleted worktrees dominate the cwds a
+        # long-lived session history hands us, so the stat pays for itself many
+        # times over on every project-tree build.
         return ""
     return bounded_git_probe(["git", "-C", cwd, *args], timeout=_GIT_TIMEOUT)
 
@@ -151,6 +155,13 @@ def common_repo_root(cwd: str) -> str:
     rendered it twice (a dir-labeled lane plus a branch-labeled ``main`` lane).
     """
     if not cwd:
+        return ""
+
+    # No work tree, nothing to fold. Reading the (warmed, negative-cached)
+    # toplevel first spares every non-repo cwd a second `git` spawn — one the
+    # parallel warm can never absorb, since `resolve()` only reaches here for
+    # cwds that ARE repos.
+    if not repo_root(cwd):
         return ""
 
     def _probe() -> str:

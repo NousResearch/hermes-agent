@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-03T22:03:15Z",
+  "updated_at": "2026-09-03T07:08:39Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -12,6 +12,10 @@
         "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
       },
       "models": [
+        {
+          "id": "anthropic/claude-fable-5.1",
+          "description": ""
+        },
         {
           "id": "anthropic/claude-fable-5",
           "description": ""
@@ -81,16 +85,24 @@
           "description": ""
         },
         {
-          "id": "google/gemini-3.6-flash",
+          "id": "google/gemini-3.8-flash",
           "description": ""
         },
         {
-          "id": "x-ai/grok-4.5",
+          "id": "google/gemini-3.7-flash",
+          "description": ""
+        },
+        {
+          "id": "x-ai/grok-4.6",
           "description": ""
         },
         {
           "id": "deepseek/deepseek-v4-pro",
           "description": ""
+        },
+        {
+          "id": "deepseek/deepseek-v4-pro-0813",
+          "description": "dated snapshot of v4-pro"
         },
         {
           "id": "deepseek/deepseek-v4-flash",
@@ -105,6 +117,10 @@
           "description": ""
         },
         {
+          "id": "qwen/qwen3.8-flash",
+          "description": ""
+        },
+        {
           "id": "moonshotai/kimi-k3",
           "description": "recommended"
         },
@@ -113,16 +129,24 @@
           "description": ""
         },
         {
+          "id": "z-ai/glm-5.3",
+          "description": ""
+        },
+        {
+          "id": "z-ai/glm-5.3-flash",
+          "description": ""
+        },
+        {
           "id": "z-ai/glm-5.2",
           "description": "default",
           "default": true
         },
         {
-          "id": "z-ai/glm-5.1",
+          "id": "xiaomi/mimo-v2.5-pro",
           "description": ""
         },
         {
-          "id": "xiaomi/mimo-v2.5-pro",
+          "id": "tencent/hy4-preview",
           "description": ""
         },
         {
@@ -138,6 +162,22 @@
           "description": ""
         },
         {
+          "id": "meta/muse-spark-1.2",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.2-contributor",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.3",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.3-contributor",
+          "description": ""
+        },
+        {
           "id": "sakana/fugu-ultra",
           "description": ""
         },
@@ -146,15 +186,27 @@
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
         },
         {
-          "id": "openrouter/elephant-alpha",
+          "id": "thinkingmachines/inkling:free",
           "description": "free"
         },
         {
-          "id": "poolside/laguna-m.1:free",
+          "id": "thinkingmachines/inkling-small:free",
           "description": "free"
         },
         {
-          "id": "tencent/hy3:free",
+          "id": "minimax/minimax-m3:free",
+          "description": "free"
+        },
+        {
+          "id": "z-ai/glm-5.2:free",
+          "description": "free"
+        },
+        {
+          "id": "poolside/laguna-s-2.1:free",
+          "description": "free"
+        },
+        {
+          "id": "poolside/laguna-xs-2.1:free",
           "description": "free"
         },
         {
@@ -166,7 +218,7 @@
           "description": "free"
         },
         {
-          "id": "inclusionai/ring-2.6-1t:free",
+          "id": "nvidia/nemotron-3.5-lightning:free",
           "description": "free"
         }
       ]
@@ -177,6 +229,9 @@
         "note": "Free-tier gating is determined live via Portal pricing (partition_nous_models_by_tier), not this manifest. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
       },
       "models": [
+        {
+          "id": "anthropic/claude-fable-5.1"
+        },
         {
           "id": "anthropic/claude-fable-5"
         },
@@ -223,13 +278,19 @@
           "id": "google/gemini-3.1-pro-preview"
         },
         {
-          "id": "google/gemini-3.6-flash"
+          "id": "google/gemini-3.8-flash"
         },
         {
-          "id": "x-ai/grok-4.5"
+          "id": "google/gemini-3.7-flash"
+        },
+        {
+          "id": "x-ai/grok-4.6"
         },
         {
           "id": "deepseek/deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek/deepseek-v4-pro-0813"
         },
         {
           "id": "deepseek/deepseek-v4-flash"
@@ -241,20 +302,29 @@
           "id": "qwen/qwen3.8-max"
         },
         {
+          "id": "qwen/qwen3.8-flash"
+        },
+        {
           "id": "moonshotai/kimi-k3"
         },
         {
           "id": "minimax/minimax-m3"
         },
         {
+          "id": "z-ai/glm-5.3"
+        },
+        {
+          "id": "z-ai/glm-5.3-flash"
+        },
+        {
           "id": "z-ai/glm-5.2",
           "default": true
         },
         {
-          "id": "z-ai/glm-5.1"
+          "id": "xiaomi/mimo-v2.5-pro"
         },
         {
-          "id": "xiaomi/mimo-v2.5-pro"
+          "id": "tencent/hy4-preview"
         },
         {
           "id": "tencent/hy3"

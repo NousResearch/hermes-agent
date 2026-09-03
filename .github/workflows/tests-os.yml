@@ -1,0 +1,181 @@
+name: OS-specific tests
+
+# Runs the tests that can only be trusted on their own host OS.
+#
+# The main Python suite (.github/workflows/tests.yml) runs on
+# ubuntu-latest and covers everything that is either platform-agnostic or
+# genuinely Linux-specific. Tests whose subject is macOS- or
+# Windows-specific behaviour carry a marker (see the ``_OS_MARKS`` block
+# comment in tests/conftest.py) and are SKIPPED on Linux, because faking
+# ``sys.platform`` on a Linux runner selects the branch under test without
+# reproducing any of the OS behaviour that branch exists for. This workflow
+# is where those markers actually execute:
+#
+#   macos    → ``-m macos_only``     on macos-latest
+#   windows  → ``-m windows_only``   on windows-latest
+#
+# Deliberately NOT sliced. The marked set is small (tens of tests, not
+# thousands), so one plain ``pytest`` process per OS is both faster and far
+# less machinery than the per-file parallel runner the Linux lane uses.
+# If either lane grows past its timeout, that is the signal to reach for
+# scripts/run_tests.sh here too.
+#
+# Each lane FAILS when it selects zero tests (pytest exit code 5). Without
+# that guard, a renamed marker or a bad selector would report a green job
+# that ran nothing — the exact silent-coverage-loss failure this workflow
+# exists to prevent.
+
+on:
+  workflow_call:
+    inputs:
+      desktop_updater:
+        description: >-
+          Run the Windows desktop-update hand-off integration tests
+          (tests/test_desktop_update_windows_*.py). These spawn the real
+          scripts/desktop-update/windows.ps1 and poll its loopback server, so
+          they carry process-timing noise a shared runner amplifies; the
+          caller gates them on the classifier's desktop_updater lane so a PR
+          that never touched that surface cannot be failed by it. Push /
+          dispatch runs fail open (classifier sets every lane true).
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-os-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  os-tests:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS-only tests
+            runner: macos-latest
+            marker: macos_only
+          - name: Windows-only tests
+            runner: windows-latest-32-core
+            marker: windows_only
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          # Pinned for the same reason as the Linux lane: unpinned, setup-uv
+          # resolves "latest" by fetching a manifest on every job and a
+          # transient fetch failure fails the whole job.
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
+      - name: Install dependencies
+        # Same extras as the Linux test lane so an OS-marked test can import
+        # anything its Linux siblings can. ``[all]`` is deliberately
+        # Windows/macOS-installable (see the policy comment on the extra in
+        # pyproject.toml — matrix/python-olm was removed from it precisely
+        # because it could not build here).
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+
+      - name: Minimize uv cache
+        run: uv cache prune --ci
+
+      - name: Run ${{ matrix.marker }} tests
+        # Two-step selection:
+        #
+        #   1. scripts/ci/list_os_marked_tests.py narrows WHICH FILES are
+        #      imported. ``-m`` filters after collection, and collection
+        #      imports every module under tests/ — on this host that would
+        #      drag ~900 unrelated test modules through import, where a
+        #      single unrelated ImportError would fail a job whose own
+        #      subject is fine. The helper exits non-zero if the marker
+        #      matches no file at all.
+        #   2. ``-m`` decides WHICH TESTS run, and stays authoritative.
+        #      Passing it on the command line REPLACES pyproject's
+        #      ``-m 'not integration'`` addopts (same option, last wins) —
+        #      hence repeating ``not integration``, or the integration
+        #      suite would return through the side door.
+        #
+        # ``--timeout-method`` needs no override: tests/conftest.py's
+        # pytest_configure already downgrades the signal-based timer on
+        # Windows, which has no SIGALRM.
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          LIST="${RUNNER_TEMP:-.}/selected-tests.txt"
+
+          # Process substitution would hide the helper's exit status, so write
+          # to a file and check it explicitly.
+          if ! uv run --no-sync python scripts/ci/list_os_marked_tests.py \
+                 "${{ matrix.marker }}" > "$LIST"; then
+            echo "::error::could not enumerate ${{ matrix.marker }} test files"
+            exit 1
+          fi
+          if [ ! -s "$LIST" ]; then
+            echo "::error::empty ${{ matrix.marker }} file list"
+            exit 1
+          fi
+
+          # Deliberately NOT `mapfile`: that is a bash 4 builtin and the macOS
+          # runner's /bin/bash is 3.2. Word-splitting is safe here because the
+          # helper emits repo-relative test paths, which contain no spaces.
+          # shellcheck disable=SC2046
+          set -- $(cat "$LIST")
+          echo "selected $# file(s) for ${{ matrix.marker }}:"
+          cat "$LIST"
+
+          # ``shell: bash`` runs this script with ``-e`` injected, which
+          # ``set -uo pipefail`` above does not clear. A bare pytest call
+          # would therefore abort the script on any non-zero exit and the
+          # exit-5 branch below would be unreachable dead code — the job
+          # would still fail red, but the diagnostic would never print.
+          # Desktop-update hand-off integration tests spawn the real
+          # windows.ps1; deselect them unless the PR touched that surface
+          # (see the workflow_call input). ``--ignore-glob`` keeps the file
+          # list above intact, so a renamed test file still trips the
+          # zero-tests guard rather than silently vanishing.
+          # (bash 3.2 on the macOS runner: an empty array under ``set -u`` is
+          # an unbound-variable error, hence the ``${arr[@]+...}`` idiom.)
+          EXTRA_ARGS=()
+          if [ "${{ inputs.desktop_updater }}" != "true" ]; then
+            echo "desktop_updater lane off: skipping tests/test_desktop_update_windows_*.py"
+            EXTRA_ARGS+=(--ignore-glob='*test_desktop_update_windows_*.py')
+          fi
+
+          status=0
+          uv run --no-sync python -m pytest \
+            "$@" \
+            ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+            -m "${{ matrix.marker }} and not integration" \
+            -v --tb=short || status=$?
+          if [ "$status" -eq 5 ]; then
+            echo "::error::No tests matched -m ${{ matrix.marker }}. Either the" \
+                 "marker was renamed/dropped or selection is broken — this job" \
+                 "must never pass without running its OS's tests."
+            exit 1
+          fi
+          exit "$status"
+        env:
+          # Belt-and-suspenders with tests/conftest.py's env blanking: no
+          # test may reach a real provider API.
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""

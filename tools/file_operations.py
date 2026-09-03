@@ -25,10 +25,19 @@ Usage:
     result = file_ops.search("TODO", path=".", file_glob="*.py")
 """
 
+import base64
+import binascii
 import os
+import posixpath
 import re
+import secrets
+import sys
 import difflib
 import hashlib
+import json
+import logging
+import threading
+import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
@@ -41,6 +50,10 @@ from agent.file_safety import (
     get_write_denied_error,
     is_write_denied as _shared_is_write_denied,
 )
+from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
+from tools import interrupt as tool_interrupt
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +61,117 @@ from agent.file_safety import (
 # ---------------------------------------------------------------------------
 
 _HOME = str(Path.home())
+
+_MACOS_TCC_PROTECTED_HOME_DIRS = (
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Library",
+    "Movies",
+    "Music",
+    "Pictures",
+)
+
+
+_FILENAME_SEARCH_ADMISSION = threading.Condition()
+_ACTIVE_FILENAME_SEARCH_ROOTS: set[tuple[str, str, str]] = set()
+_FILENAME_SEARCH_WAIT_SECONDS = 0.05
+
+
+def _normalized_filename_search_root(env: Any, root: str, fallback_cwd: str) -> str:
+    """Normalize a filename-walk root without resolving remote paths locally."""
+    from tools.environments.local import LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path
+
+    cwd = getattr(env, "cwd", None) or fallback_cwd
+    if isinstance(env, LocalEnvironment):
+        if _IS_WINDOWS:
+            root = _msys_to_windows_path(root)
+            cwd = _msys_to_windows_path(cwd)
+        if not os.path.isabs(root):
+            root = os.path.join(cwd, root)
+        return os.path.normcase(os.path.abspath(os.path.normpath(root)))
+
+    if not posixpath.isabs(root):
+        root = posixpath.join(cwd, root)
+    return posixpath.normpath(root)
+
+
+def _filename_search_root_keys(
+    env: Any, roots: List[str], fallback_cwd: str
+) -> tuple[tuple[str, str, str], ...]:
+    """Return unique backend/root admission keys in deterministic order."""
+    env_type = type(env)
+    return tuple(sorted({
+        (
+            env_type.__module__,
+            env_type.__qualname__,
+            _normalized_filename_search_root(env, root, fallback_cwd),
+        )
+        for root in roots
+    }))
+
+
+def _acquire_filename_search_roots(
+    keys: tuple[tuple[str, str, str], ...],
+) -> bool:
+    """Atomically claim every key, polling for thread-scoped interruption."""
+    with _FILENAME_SEARCH_ADMISSION:
+        while any(key in _ACTIVE_FILENAME_SEARCH_ROOTS for key in keys):
+            if tool_interrupt.is_interrupted():
+                return False
+            _FILENAME_SEARCH_ADMISSION.wait(_FILENAME_SEARCH_WAIT_SECONDS)
+            if tool_interrupt.is_interrupted():
+                return False
+        if tool_interrupt.is_interrupted():
+            return False
+        return tool_interrupt.run_if_not_interrupted(
+            lambda: _ACTIVE_FILENAME_SEARCH_ROOTS.update(keys)
+        )
+
+
+def _release_filename_search_roots(
+    keys: tuple[tuple[str, str, str], ...],
+) -> None:
+    """Release a completed walk and leave no idle per-root state behind."""
+    with _FILENAME_SEARCH_ADMISSION:
+        _ACTIVE_FILENAME_SEARCH_ROOTS.difference_update(keys)
+        _FILENAME_SEARCH_ADMISSION.notify_all()
+
+
+def _macos_protected_search_exclusions(
+    path: str,
+    *,
+    cwd: Optional[str] = None,
+    home: Optional[str] = None,
+    platform: Optional[str] = None,
+) -> List[str]:
+    """Return protected home directories below a broad macOS search root.
+
+    Direct searches inside a protected directory remain allowed. Only an
+    ancestor search (for example ``$HOME`` or ``/Users``) receives exclusions,
+    preventing recursive tools from triggering unattended TCC prompts.
+    """
+    if (platform or sys.platform) != "darwin":
+        return []
+
+    home_path = Path(home or Path.home()).expanduser()
+    root = Path(path).expanduser()
+    if not root.is_absolute():
+        root = Path(cwd or os.getcwd()) / root
+    root = Path(os.path.normpath(str(root)))
+    home_path = Path(os.path.normpath(str(home_path)))
+
+    exclusions: List[str] = []
+    for dirname in _MACOS_TCC_PROTECTED_HOME_DIRS:
+        protected = home_path / dirname
+        try:
+            relative = protected.relative_to(root)
+        except ValueError:
+            continue
+        if relative.parts:
+            exclusions.append(relative.as_posix())
+    return exclusions
+
 
 WRITE_DENIED_PATHS = build_write_denied_paths(_HOME)
 
@@ -317,6 +441,7 @@ class SearchResult:
             result["counts"] = self.counts
         if self.truncated:
             result["truncated"] = True
+            result["total_count_is_lower_bound"] = True
         if self.limit_reason:
             result["limit_reason"] = self.limit_reason
         if self.warning:
@@ -446,6 +571,70 @@ def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
 # Abstract Interface
 # =============================================================================
 
+_MAGIC_SIGNATURES: tuple = (
+    # (prefix bytes, human name) — ordered, first match wins. Longest
+    # prefixes for a shared first byte come first.
+    (b"\x89PNG\r\n\x1a\n", "PNG image data"),
+    (b"\xff\xd8\xff", "JPEG image data"),
+    (b"GIF87a", "GIF image data"),
+    (b"GIF89a", "GIF image data"),
+    (b"RIFF", "RIFF container (WAV/AVI/WebP family)"),
+    (b"%PDF-", "PDF document"),
+    (b"PK\x03\x04", "ZIP archive (also docx/xlsx/jar/apk)"),
+    (b"PK\x05\x06", "ZIP archive (empty)"),
+    (b"\x1f\x8b", "gzip compressed data"),
+    (b"BZh", "bzip2 compressed data"),
+    (b"\xfd7zXZ\x00", "xz compressed data"),
+    (b"7z\xbc\xaf\x27\x1c", "7-Zip archive"),
+    (b"\x7fELF", "ELF executable"),
+    (b"MZ", "Windows PE executable"),
+    (b"\xcf\xfa\xed\xfe", "Mach-O executable (64-bit)"),
+    (b"\xca\xfe\xba\xbe", "Mach-O universal binary / Java class"),
+    (b"SQLite format 3\x00", "SQLite database"),
+    (b"OggS", "Ogg container"),
+    (b"fLaC", "FLAC audio"),
+    (b"ID3", "MP3 audio (ID3 tag)"),
+    (b"\x00\x00\x00", "ISO media container (MP4/MOV family)"),  # ftyp at +4
+    (b"BM", "BMP image data"),
+    (b"II*\x00", "TIFF image data (little-endian)"),
+    (b"MM\x00*", "TIFF image data (big-endian)"),
+)
+
+
+def identify_binary_bytes(sample: bytes) -> str:
+    """Best-effort human name for binary content from its magic bytes.
+
+    Returns e.g. ``"PNG image data"`` or ``"unknown binary"``. Never raises.
+    The ISO-media entry additionally checks for ``ftyp`` at offset 4, since
+    the leading size field alone (three NULs) is too weak a signature.
+    """
+    if not sample:
+        return "unknown binary"
+    for prefix, name in _MAGIC_SIGNATURES:
+        if sample.startswith(prefix):
+            if name.startswith("ISO media") and sample[4:8] != b"ftyp":
+                continue
+            return name
+    return "unknown binary"
+
+
+def describe_binary_file(sample: Optional[bytes], file_size: int) -> str:
+    """One-line answer for the binary-file refusal.
+
+    Naming the dead end: "Binary file" alone sends the model hunting for
+    'appropriate tools' that may not exist in its toolset. Naming the TYPE
+    ("PNG image data, 4.1 KB") answers what-is-this in a single read.
+    """
+    kind = identify_binary_bytes(sample or b"")
+    if file_size >= 1024 * 1024:
+        size = f"{file_size / (1024 * 1024):.1f} MB"
+    elif file_size >= 1024:
+        size = f"{file_size / 1024:.1f} KB"
+    else:
+        size = f"{file_size} bytes"
+    return f"Binary file ({kind}, {size}) — cannot display as text."
+
+
 class FileOperations(ABC):
     """Abstract interface for file operations across terminal backends."""
     
@@ -463,6 +652,10 @@ class FileOperations(ABC):
         failure. Always reads to EOF regardless of file size.
         """
         ...
+
+    def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
+        """Read complete binary content as base64 across the backend boundary."""
+        return ReadResult(error="Binary reads are not implemented for this backend")
 
     @abstractmethod
     def write_file(self, path: str, content: str,
@@ -504,7 +697,8 @@ class FileOperations(ABC):
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
-               output_mode: str = "content", context: int = 0) -> SearchResult:
+               output_mode: str = "content", context: int = 0,
+               order: str = "discovery") -> SearchResult:
         """Search for content or files."""
         ...
 
@@ -725,6 +919,40 @@ DEFAULT_READ_LIMIT = 2000
 DEFAULT_SEARCH_OFFSET = 0
 DEFAULT_SEARCH_LIMIT = 50
 
+# Echoed by the size probe when the path exists but is not a regular file.
+# `wc -c` prints only digits, so this can never collide with a real size.
+NOT_REGULAR_SENTINEL = "__hermes_not_regular__"
+
+# Echoed by the compound read/write probes when the path does not exist.
+# A compound command only reports its *last* exit status, so the missing-file
+# signal that ``_size_probe_cmd`` carries in ``exit 1`` has to travel in-band.
+MISSING_SENTINEL = "__hermes_missing__"
+
+_READ_SENTINEL_PREFIX = "__HERMES_RF_"
+_WRITE_SENTINEL_PREFIX = "__HERMES_WF_"
+
+
+def _new_sentinel(prefix: str) -> str:
+    """Per-call separator line for a compound shell probe.
+
+    128 random bits make a collision with file content negligible, and the
+    underscores keep the token outside the base64 alphabet, so a sentinel
+    that ever leaked into a sample segment fails base64 validation instead
+    of decoding into bytes.
+    """
+    return f"{prefix}{secrets.token_hex(16)}__"
+
+
+def _split_segments(output: str, sentinel: str) -> List[str]:
+    """Split compound-probe stdout on its sentinel lines.
+
+    Every producer (``wc``, ``base64``, ``cut``) newline-terminates its
+    output or prints nothing, so the separator is always ``sentinel + "\\n"``
+    on a line of its own. The text after the final sentinel is the status
+    segment.
+    """
+    return output.split(sentinel + "\n")
+
 
 def _coerce_int(value: Any, default: int) -> int:
     """Best-effort integer coercion for tool pagination inputs."""
@@ -840,8 +1068,13 @@ class ShellFileOperations(FileOperations):
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
 
-        # Cache for command availability checks
+        # Preserve the historical bool cache for ordinary executables: both
+        # hits and misses stay cached. Ripgrep is special because it has an
+        # off-PATH resolver and may be installed while this object is alive;
+        # only successful rg resolutions are cached.
         self._command_cache: Dict[str, bool] = {}
+        self._rg_resolution_cache: Dict[str, str] = {}
+        self._rg_modified_capability: Dict[str, Optional[str]] = {}
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
@@ -870,18 +1103,186 @@ class ShellFileOperations(FileOperations):
         # Fall through to init-time self.cwd only if the env doesn't track cwd.
         effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
         result = self.env.execute(command, cwd=effective_cwd, **kwargs)
+        exit_code = result.get("returncode", 0)
+        # A stdin write failure with an otherwise-clean child exit is still
+        # a failure: the child never received the intended input. write_file
+        # rejects such content up front (Task 3); this mapping is
+        # defense-in-depth for any other stdin caller.
+        if result.get("stdin_error") and exit_code == 0:
+            exit_code = 1
         return ExecuteResult(
             stdout=result.get("output", ""),
-            exit_code=result.get("returncode", 0)
+            exit_code=exit_code
         )
     
+    def _resolve_command(self, cmd: str) -> Optional[str]:
+        """Resolve an executable in the command host's namespace.
+
+        Ordinary commands retain the original bool hit/miss cache. Ripgrep
+        alone caches successful resolved paths and re-probes misses so a
+        mid-session install becomes visible.
+        """
+        if cmd != "rg":
+            return cmd if self._has_command(cmd) else None
+
+        cached = self._rg_resolution_cache.get(cmd)
+        if cached:
+            return cached
+
+        result = self._exec("command -v rg 2>/dev/null")
+        if result.exit_code == 0 and result.stdout.strip():
+            resolved = result.stdout.strip().splitlines()[0]
+            # Compatibility with old boolean-probe fakes.
+            if resolved == "yes":
+                resolved = "rg"
+            self._rg_resolution_cache[cmd] = resolved
+            return resolved
+
+        from tools.environments.local import LocalEnvironment, _IS_WINDOWS
+
+        if _IS_WINDOWS and isinstance(self.env, LocalEnvironment):
+            user_profile = os.environ.get("USERPROFILE") or str(Path.home())
+            local_app_data = os.environ.get("LOCALAPPDATA")
+            scoop = os.environ.get("SCOOP") or os.path.join(user_profile, "scoop")
+            candidates = [
+                os.path.join(user_profile, ".cargo", "bin", "rg.exe"),
+                os.path.join(scoop, "shims", "rg.exe"),
+            ]
+            if local_app_data:
+                candidates.append(
+                    os.path.join(local_app_data, "Microsoft", "WinGet", "Links", "rg.exe")
+                )
+            for candidate in candidates:
+                if os.path.isfile(candidate):
+                    resolved = candidate.replace("\\", "/")
+                    self._rg_resolution_cache[cmd] = resolved
+                    return resolved
+        return None
+
     def _has_command(self, cmd: str) -> bool:
-        """Check if a command exists in the environment (cached)."""
+        """Check command availability with rg-specific resolution semantics."""
+        if cmd == "rg":
+            return self._resolve_command(cmd) is not None
         if cmd not in self._command_cache:
-            result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
-            self._command_cache[cmd] = result.stdout.strip() == 'yes'
+            result = self._exec(
+                f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'"
+            )
+            self._command_cache[cmd] = result.stdout.strip() == "yes"
         return self._command_cache[cmd]
+
+    def _modified_rg_capability_error(self, executable: str) -> Optional[str]:
+        """Return a cached actionable error unless rg can sort exactly."""
+        if executable in self._rg_modified_capability:
+            return self._rg_modified_capability[executable]
+        quoted = self._quote_executable(executable)
+        result = self._exec(f"{quoted} --version", timeout=10)
+        match = re.search(
+            r"(?m)^ripgrep\s+((?:0|[1-9]\d*))\."
+            r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+            r"(?:-(?:(?:0|[1-9]\d*)|(?:[0-9A-Za-z-]*[A-Za-z-]"
+            r"[0-9A-Za-z-]*))(?:\.(?:(?:0|[1-9]\d*)|"
+            r"(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?"
+            r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+            r"(?:\s+\(rev [^)]+\))?\s*$",
+            result.stdout or "",
+        )
+        if result.exit_code == 0 and match and int(match.group(1)) >= 14:
+            error = None
+        else:
+            error = (
+                "Exact modification-time order requires ripgrep 14 or newer; "
+                "upgrade ripgrep or use order='discovery'."
+            )
+        self._rg_modified_capability[executable] = error
+        return error
+
+    def _quote_executable(self, executable: str) -> str:
+        """Quote an executable without leaking controller path semantics."""
+        if re.fullmatch(r"[A-Za-z0-9_.-]+", executable):
+            return executable
+        from tools.environments.local import LocalEnvironment
+
+        if isinstance(self.env, LocalEnvironment):
+            return self._escape_native_tool_arg(executable)
+        return "'" + executable.replace("'", "'\"'\"'") + "'"
     
+    def _sample_file_bytes(self, path: str, length: int = 1000):
+        """Fetch the first ``length`` raw bytes of a file through the terminal.
+
+        File operations run through a terminal backend (possibly remote), so
+        raw bytes cannot cross the transport directly — the terminal decodes
+        stdout with ``errors="replace"`` and manufactures U+FFFD at every
+        byte it cannot decode, including a multibyte character cut in half by
+        ``head -c``. Wrapping the sample in base64 lets the original bytes
+        survive the transport, so binary detection can happen at the byte
+        layer where it is well-defined (#80308 and friends).
+
+        Returns the sample bytes, or ``None`` when the transport could not
+        produce clean base64 (exotic shells without ``base64``); callers fall
+        back to the legacy text-sample heuristic in that case.
+        """
+        result = self._exec(
+            f"head -c {length} {self._escape_shell_arg(path)} 2>/dev/null | base64"
+        )
+        if result.exit_code != 0:
+            return None
+        return self._decode_base64_sample(result.stdout)
+
+    @staticmethod
+    def _decode_base64_sample(text: str) -> Optional[bytes]:
+        """Decode one base64 sample as emitted by ``head -c N | base64``.
+
+        Whitespace-joins the whole text first (``base64`` wraps at 76
+        columns), so callers must hand over exactly one segment; anything
+        else in the text fails validation and yields ``None``, which sends
+        the caller to the legacy text-sample heuristic.
+        """
+        encoded = _strip_terminal_fence_leaks(text)
+        encoded = "".join(encoded.split())
+        if not encoded:
+            return b""
+        if not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", encoded):
+            return None
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+
+    @staticmethod
+    def _is_likely_binary_bytes(sample: bytes) -> bool:
+        """Byte-layer binary detection (the boundary for the #80308 class).
+
+        Contract: a file is text when its sample is valid UTF-8, allowing one
+        incomplete multibyte sequence at the very end (an artifact of cutting
+        the sample at a byte boundary, not a property of the file). Anything
+        else — NUL bytes, mid-stream invalid UTF-8 such as latin-1 or true
+        binaries — stays read-only, preserving the anti-mojibake guarantee
+        the old U+FFFD check existed for: a read→edit→write round-trip must
+        never rewrite undecodable bytes with replacement characters.
+
+        A file that legitimately *contains* U+FFFD (EF BF BD — e.g. logs of
+        lossy output) is valid UTF-8 and reads as text; the old text-layer
+        check misclassified it because it could not tell a stored replacement
+        character from a transport-manufactured one.
+        """
+        if not sample:
+            return False
+        if b"\x00" in sample:
+            return True
+        try:
+            sample.decode("utf-8")
+            return False
+        except UnicodeDecodeError as exc:
+            # UTF-8 sequences are at most 4 bytes: an error starting in the
+            # last 3 bytes with a clean prefix is a boundary cut, not binary.
+            if exc.start >= len(sample) - 3:
+                try:
+                    sample[: exc.start].decode("utf-8")
+                    return False
+                except UnicodeDecodeError:
+                    pass
+            return True
+
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
         """
         Check if a file is likely binary.
@@ -994,6 +1395,34 @@ class ShellFileOperations(FileOperations):
 
         arg = _bash_safe_path(arg)
         # Use single quotes and escape any single quotes in the string
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
+
+    def _escape_native_tool_arg(self, arg: str) -> str:
+        """Escape a path argument destined for a NATIVE Windows binary.
+
+        ``_escape_shell_arg`` rewrites Windows paths to the Git Bash MSYS
+        form (``/c/Users/x``) so bash builtins resolve them. But native
+        Windows binaries invoked from that bash (ripgrep installed via
+        winget/cargo/choco, native git, etc.) do not understand ``/c/...``
+        paths — and Hermes disables MSYS argument conversion for its bash
+        subprocesses (``MSYS_NO_PATHCONV=1`` / ``MSYS2_ARG_CONV_EXCL=*``,
+        see ``_apply_windows_msys_bash_env_defaults``), so nothing ever
+        translates the MSYS form back. The native tool then fails with
+        ``The system cannot find the path specified. (os error 3)``.
+
+        The forward-slash native form (``C:/Users/x``) is the one spelling
+        every layer accepts: bash passes it through untouched (it is not an
+        absolute POSIX path, so no conversion applies even without the
+        opt-outs), and Windows APIs treat ``/`` and ``\\`` as equivalent
+        separators. MSYS builds of the same tools accept it too, so this is
+        safe regardless of which flavor of the binary is installed.
+
+        On non-Windows hosts this is exactly ``_escape_shell_arg``.
+        """
+        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
+
+        if _IS_WINDOWS and arg:
+            arg = _msys_to_windows_path(arg).replace("\\", "/")
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
@@ -1140,80 +1569,556 @@ class ShellFileOperations(FileOperations):
     # READ Implementation
     # =========================================================================
     
+    def _size_probe_cmd(self, path: str) -> str:
+        """Byte size of a regular file, without opening one that never ends.
+
+        ``wc -c < path`` opens the path. On a FIFO with no writer, a socket,
+        or a character device like /dev/zero that never reaches EOF, that
+        read blocks forever — and the read helpers pass no timeout to
+        :meth:`_exec`, so the turn wedges until the process is killed. The
+        device blocklist in ``tools/file_tools.py`` cannot cover this: it
+        matches literal ``/dev/*`` names, while a FIFO is a file *type* and
+        can sit at any path.
+
+        ``[ -f ]`` is a stat, not an open — it answers exactly the question
+        the size probe needs (regular file, symlinks followed) without
+        touching the contents. Non-regular paths that exist report the
+        sentinel so callers can say so instead of claiming the file is
+        missing; a genuinely absent path still exits non-zero.
+        """
+        arg = self._escape_shell_arg(path)
+        return (
+            f"if [ -f {arg} ]; then wc -c < {arg} 2>/dev/null; "
+            f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
+            f"else exit 1; fi"
+        )
+
+    @staticmethod
+    def _not_regular_error(path: str) -> ReadResult:
+        """Error for a path that exists but would block if read."""
+        return ReadResult(
+            error=(
+                f"Cannot read '{path}': not a regular file (directory, FIFO, "
+                "socket, or device). Reading it could block indefinitely."
+            )
+        )
+
+    # UTF-16 rescue constants (ported from MoonshotAI/kimi-code#2647,
+    # detection derived from VS Code's encoding sniffer): sample the leading
+    # bytes; trust a BOM first, then a zero-byte parity heuristic — zeros
+    # clustering at odd indices mean UTF-16 LE (`0xAA 0x00`), at even indices
+    # UTF-16 BE (`0x00 0xAA`). Only the *placement* of zeros is checked, not
+    # density, so mixed Latin/CJK content (whose CJK units carry no zero
+    # byte) still detects. Zeros at both parities, or a single isolated
+    # zero, mean real binary. Legacy 8-bit encodings (GBK, Big5, ...) are
+    # never guessed — a wrong silent guess is worse than a clear refusal.
+    _UTF16_MAX_BYTES = 10 * 1024 * 1024
+    _UTF16_SAMPLE_BYTES = 512
+
+    def _try_read_utf16(self, path: str, offset: int, limit: int,
+                        file_size: int) -> "Optional[ReadResult]":
+        """Attempt to read ``path`` as UTF-16 text, transcoded to UTF-8.
+
+        Returns a populated ``ReadResult`` when the file is UTF-16 (BOM or
+        zero-byte parity heuristic), else ``None`` so the caller falls back
+        to the binary-file error. Files over 10 MiB are not rescued.
+        ``path`` must already be expanded (caller ran ``_expand_path``).
+        """
+        # Extensions that are definitively binary (images, archives, ...)
+        # never contain UTF-16 text worth rescuing — skip the subprocess.
+        ext = os.path.splitext(path)[1].lower()
+        if ext in BINARY_EXTENSIONS:
+            return None
+        if file_size > self._UTF16_MAX_BYTES:
+            return None
+
+        snippet = (
+            "import sys, json, os\n"
+            f"p = {path!r}\n"
+            f"offset = {int(offset)}\n"
+            f"limit = {int(limit)}\n"
+            f"MAX = {self._UTF16_MAX_BYTES}\n"
+            f"SAMPLE = {self._UTF16_SAMPLE_BYTES}\n"
+            "try:\n"
+            "    size = os.path.getsize(p)\n"
+            "    if size > MAX:\n"
+            "        print('HERMES_UTF16:NO'); sys.exit(0)\n"
+            "    with open(p, 'rb') as f:\n"
+            "        data = f.read()\n"
+            "    sample = data[:SAMPLE]\n"
+            "    enc = None\n"
+            "    if sample[:2] == b'\\xfe\\xff':\n"
+            "        enc = 'utf-16-be'\n"
+            "    elif sample[:2] == b'\\xff\\xfe':\n"
+            "        enc = 'utf-16-le'\n"
+            "    else:\n"
+            "        odd = sum(1 for i in range(1, len(sample), 2) if sample[i] == 0)\n"
+            "        even = sum(1 for i in range(0, len(sample), 2) if sample[i] == 0)\n"
+            "        if even == 0 and odd >= 2:\n"
+            "            enc = 'utf-16-le'\n"
+            "        elif odd == 0 and even >= 2:\n"
+            "            enc = 'utf-16-be'\n"
+            "    if enc is None:\n"
+            "        print('HERMES_UTF16:NO'); sys.exit(0)\n"
+            "    text = data.decode(enc, 'replace')\n"
+            "    if text[:1] == '\\ufeff':\n"
+            "        text = text[1:]\n"
+            "    text = text.replace('\\r\\n', '\\n')\n"
+            "    lines = text.split('\\n')\n"
+            "    total = len(lines)\n"
+            "    sel = lines[offset - 1: offset - 1 + limit]\n"
+            "    out = {'total_lines': total, 'encoding': enc,\n"
+            "           'content': '\\n'.join(sel)}\n"
+            "    print('HERMES_UTF16:OK')\n"
+            "    print(json.dumps(out, ensure_ascii=True))\n"
+            "except Exception:\n"
+            "    print('HERMES_UTF16:NO'); sys.exit(0)\n"
+        )
+
+        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
+        if result.exit_code != 0 and "python3" in (result.stdout or ""):
+            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+
+        stdout = _strip_terminal_fence_leaks(result.stdout or "")
+        marker = stdout.find("HERMES_UTF16:OK")
+        if result.exit_code != 0 or marker < 0:
+            return None
+        payload = stdout[marker + len("HERMES_UTF16:OK"):].strip()
+        try:
+            data = json.loads(payload.split("\n", 1)[0] if "\n" in payload else payload)
+            content = data["content"]
+            total_lines = int(data["total_lines"])
+            encoding = str(data.get("encoding", "utf-16"))
+        except (ValueError, KeyError, TypeError):
+            return None
+
+        end_line = offset + limit - 1
+        truncated = total_lines > end_line
+        hint_parts = [f"Transcoded from {encoding.upper()} to UTF-8 for display. "
+                      "Text edits via patch/write_file would re-encode as UTF-8."]
+        if truncated:
+            hint_parts.append(
+                f"Use offset={end_line + 1} to continue reading "
+                f"(showing {offset}-{end_line} of {total_lines} lines)"
+            )
+        return ReadResult(
+            content=self._add_line_numbers(content, offset),
+            total_lines=total_lines,
+            file_size=file_size,
+            truncated=truncated,
+            hint=" ".join(hint_parts),
+        )
+
     def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
-        
+
         Args:
             path: File path (absolute or relative to cwd)
             offset: Line number to start from (1-indexed, default 1)
             limit: Maximum lines to return (default 500, max 2000)
-        
+
         Returns:
             ReadResult with content, metadata, or error info
+
+        One shell round-trip answers every question the read needs:
+        existence, size, binary sample, the page, line count, trailing
+        newline (see ``_read_probe_cmd``). A reply that cannot be parsed
+        falls back to ``_read_file_sequential``, the one-probe-per-call
+        form, so an exotic shell can never do worse than before. On a local
+        POSIX environment the read never touches the shell at all; see
+        ``_read_file_native``.
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
-        
+
         offset, limit = normalize_read_pagination(offset, limit)
-        
-        # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
-        
+
+        if self._native_read_enabled():
+            return self._read_file_native(path, offset, limit)
+
+        # Images and known-binary extensions never inline content; the
+        # sequential path stops at the probes for them, so nothing is gained
+        # by streaming their bytes through the page pipeline.
+        if self._is_image(path) or os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS:
+            return self._read_file_sequential(path, offset, limit)
+
+        from tools.tool_output_limits import get_max_line_length
+        line_clamp_bytes = 4 * get_max_line_length() + 1
+        end_line = offset + limit - 1
+        sentinel = _new_sentinel(_READ_SENTINEL_PREFIX)
+        probe = self._exec(
+            self._read_probe_cmd(path, offset, end_line, line_clamp_bytes, sentinel)
+        )
+        output = probe.stdout or ""
+
+        if sentinel not in output:
+            # Single-line replies: the path is missing or not a regular file.
+            marker = _strip_terminal_fence_leaks(output).strip()
+            if marker == MISSING_SENTINEL:
+                return self._read_file_missing(path, offset, limit)
+            if marker == NOT_REGULAR_SENTINEL:
+                return self._not_regular_error(path)
+            logger.debug(
+                "read_file: compound probe reply for %s has no sentinel "
+                "(exit %s, %d chars); falling back to sequential probes",
+                path, probe.exit_code, len(output),
+            )
+            return self._read_file_sequential(path, offset, limit)
+
+        segments = _split_segments(output, sentinel)
+        if probe.exit_code != 0 or len(segments) != 6:
+            logger.debug(
+                "read_file: compound probe for %s returned exit %s with %d "
+                "segments (want 6); falling back to sequential probes",
+                path, probe.exit_code, len(segments),
+            )
+            return self._read_file_sequential(path, offset, limit)
+        size_seg, sample_seg, page_seg, wc_seg, tail_seg, status_seg = segments
+
+        status = _strip_terminal_fence_leaks(status_seg).split()
+        try:
+            sample_rc, read_rc = int(status[0]), int(status[1])
+        except (IndexError, ValueError):
+            logger.debug(
+                "read_file: compound probe for %s has unparseable status %r; "
+                "falling back to sequential probes",
+                path, status_seg[-40:],
+            )
+            return self._read_file_sequential(path, offset, limit)
+
+        try:
+            file_size = int(_strip_terminal_fence_leaks(size_seg).strip())
+        except ValueError:
+            file_size = 0
+
+        # Byte-layer binary detection when base64 was available, else the
+        # legacy text heuristic over a plain sample: one extra round-trip,
+        # paid only on shells without base64.
+        sample_bytes = self._decode_base64_sample(sample_seg) if sample_rc == 0 else None
+        if sample_bytes is not None:
+            is_binary = self._is_likely_binary_bytes(sample_bytes)
+        else:
+            logger.debug(
+                "read_file: no usable base64 sample for %s (base64 exit %s); "
+                "paying one extra round-trip for the text heuristic",
+                path, sample_rc,
+            )
+            sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
+            sample_result = self._exec(sample_cmd)
+            sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
+            is_binary = self._is_likely_binary(path, sample_output)
+
+        if is_binary:
+            return self._read_binary_file(path, offset, limit, file_size, sample_bytes)
+
+        if read_rc != 0:
+            return ReadResult(
+                error=f"Failed to read file: {_strip_terminal_fence_leaks(page_seg)}"
+            )
+
+        read_output = _strip_terminal_fence_leaks(page_seg)
+        try:
+            total_lines = int(_strip_terminal_fence_leaks(wc_seg).strip())
+        except ValueError:
+            total_lines = 0
+        tail_flag = _strip_terminal_fence_leaks(tail_seg).strip()
+        file_ends_with_newline = tail_flag == "1" if tail_flag in ("0", "1") else None
+
+        return self._assemble_read_result(
+            read_output,
+            offset=offset,
+            end_line=end_line,
+            total_lines=total_lines,
+            file_size=file_size,
+            file_ends_with_newline=file_ends_with_newline,
+        )
+
+    def _native_read_enabled(self) -> bool:
+        """Whether ``read_file`` may bypass the shell and read from this host.
+
+        Only on POSIX with a ``LocalEnvironment``: the file is on this
+        machine and the path is already in native form. Windows keeps the
+        shell path, since file_operations holds Git-Bash-style paths there.
+        ``HERMES_NATIVE_FILE_READ=0`` turns the fast path off.
+        """
+        flag = os.environ.get("HERMES_NATIVE_FILE_READ", "1").strip().lower()
+        if flag in ("0", "false", "no", "off"):
+            return False
+        # Same "is this env the local host" test the LSP path already uses;
+        # ``self.env`` is bound once in __init__ and never rebound, and the
+        # isinstance check is microseconds, so there is nothing to memoize.
+        return sys.platform != "win32" and self._lsp_local_only()
+
+    def _read_file_native(self, path: str, offset: int, limit: int) -> ReadResult:
+        """``read_file`` without a shell: the file lives on this host.
+
+        Same contract as the shell path, byte for byte. ``os.stat`` is the
+        ``[ -f ]`` guard (a stat, never an open, so FIFOs and devices are
+        refused before anything touches their contents); the first 1000
+        bytes drive the byte-layer binary check; the page is produced
+        exactly as ``sed -n 'a,bp' | cut -b1-N`` prints it (every line
+        clamped to N bytes and newline-terminated), then decoded with
+        errors="replace" like the terminal transport. One chunked pass
+        counts lines and collects the page, so neither the file nor a
+        single pathological line is ever held in memory whole.
+
+        ``path`` is already expanded and ``offset``/``limit`` normalized.
+        Anything unexpected from the OS hands over to the shell path.
+        """
+        import stat as _stat
+
+        full = path if os.path.isabs(path) else os.path.join(
+            getattr(self.env, "cwd", None) or self.cwd, path
+        )
+        try:
+            st = os.stat(full)
+        except (FileNotFoundError, NotADirectoryError):
+            return self._read_file_missing(path, offset, limit)
+        except OSError:
+            return self._read_file_sequential(path, offset, limit)
+        if not _stat.S_ISREG(st.st_mode):
+            return self._not_regular_error(path)
+        file_size = st.st_size
+
+        # Images are never inlined: redirect to the vision tool
+        if self._is_image(path):
+            return self._image_redirect_result(file_size)
+
+        from tools.tool_output_limits import get_max_line_length
+        clamp = 4 * get_max_line_length() + 1
+        end_line = offset + limit - 1
+
+        page: List[bytes] = []
+        total_lines = 0
+        lineno = 1              # the line currently being scanned
+        kept = bytearray()      # first ``clamp`` bytes of that line
+        have_partial = False    # that line has bytes but no newline yet
+        last_byte = b""
+        try:
+            with open(full, "rb") as fh:
+                sample = fh.read(1000)
+                ext_binary = os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS
+                if ext_binary or self._is_likely_binary_bytes(sample):
+                    return self._read_binary_file(path, offset, limit, file_size, sample)
+                fh.seek(0)
+                while True:
+                    chunk = fh.read(1 << 20)
+                    if not chunk:
+                        break
+                    last_byte = chunk[-1:]
+                    if lineno > end_line:
+                        # Past the requested window: only the line count and
+                        # trailing byte are still needed, so let memchr do the
+                        # rest instead of the per-line bookkeeping below.
+                        total_lines += chunk.count(b"\n")
+                        have_partial = chunk[-1:] != b"\n"
+                        continue
+                    pos, n = 0, len(chunk)
+                    while pos < n:
+                        nl = chunk.find(b"\n", pos)
+                        in_page = offset <= lineno <= end_line
+                        if nl < 0:
+                            if in_page and len(kept) < clamp:
+                                kept += chunk[pos:pos + (clamp - len(kept))]
+                            have_partial = True
+                            break
+                        if in_page:
+                            if len(kept) < clamp:
+                                kept += chunk[pos:min(nl, pos + (clamp - len(kept)))]
+                            page.append(bytes(kept) + b"\n")
+                        kept = bytearray()
+                        have_partial = False
+                        total_lines += 1
+                        lineno += 1
+                        pos = nl + 1
+        except OSError:
+            return self._read_file_sequential(path, offset, limit)
+        if have_partial and offset <= lineno <= end_line:
+            # ``sed`` prints a final line that lacks a newline; ``cut`` adds one.
+            page.append(bytes(kept) + b"\n")
+
+        read_output = _strip_terminal_fence_leaks(
+            b"".join(page).decode("utf-8", errors="replace")
+        )
+        return self._assemble_read_result(
+            read_output,
+            offset=offset,
+            end_line=end_line,
+            total_lines=total_lines,
+            file_size=file_size,
+            file_ends_with_newline=(last_byte == b"\n") if file_size else None,
+        )
+
+    @staticmethod
+    def _image_redirect_result(file_size: int) -> ReadResult:
+        return ReadResult(
+            is_image=True,
+            is_binary=True,
+            file_size=file_size,
+            hint=(
+                "Image file detected. Automatically redirected to vision_analyze tool. "
+                "Use vision_analyze with this file path to inspect the image contents."
+            ),
+        )
+
+    def _read_probe_cmd(self, path: str, offset: int, end_line: int,
+                        line_clamp_bytes: int, sentinel: str) -> str:
+        """One shell command answering every question ``read_file`` asks.
+
+        Six segments, each closed by a ``sentinel`` line: byte size, base64
+        of the first 1000 bytes, the ``sed | cut`` page, ``wc -l``, whether
+        the last byte is a newline, then the base64 and page pipeline
+        statuses. The probes run only inside ``[ -f ]``, the same
+        stat-not-open guard as ``_size_probe_cmd``, so a FIFO or device
+        never reaches ``head``/``sed``. A missing path echoes
+        ``MISSING_SENTINEL`` instead of exiting non-zero, because a compound
+        command only reports its last status. Every stage silences stderr:
+        the local backend merges stderr into stdout and a stray diagnostic
+        would otherwise land inside a segment.
+
+        The page clamp is byte-based on purpose; see ``_read_file_sequential``
+        for why it is ``4 * max_line_length + 1``.
+        """
+        arg = self._escape_shell_arg(path)
+        mark = f"echo {sentinel}"
+        return (
+            f"if [ -f {arg} ]; then "
+            f"wc -c < {arg} 2>/dev/null; {mark}; "
+            f"head -c 1000 {arg} 2>/dev/null | base64 2>/dev/null; __hs=$?; {mark}; "
+            f"sed -n '{offset},{end_line}p' {arg} 2>/dev/null"
+            f" | cut -b1-{line_clamp_bytes} 2>/dev/null; __hr=$?; {mark}; "
+            f"wc -l < {arg} 2>/dev/null; {mark}; "
+            f"tail -c 1 {arg} 2>/dev/null | wc -l; {mark}; "
+            f'echo "$__hs $__hr"; '
+            f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
+            f"else echo {MISSING_SENTINEL}; fi"
+        )
+
+    def _read_file_missing(self, path: str, offset: int, limit: int) -> ReadResult:
+        """Not-found recovery shared by every read path.
+
+        Before failing, try unicode-equivalent spellings: NFC/NFD, narrow
+        no-break space, curly quotes render identically in a terminal, so
+        the model retyping a visually-correct path can never discover the
+        byte mismatch on its own (retrying is the tool's job, not the
+        model's). No equivalent spelling → suggest similar files.
+        """
+        variant = self._unicode_variant_match(path)
+        if variant is not None:
+            result = self.read_file(variant, offset=offset, limit=limit)
+            note = (
+                f"Note: '{path}' not found byte-for-byte; resolved to "
+                f"the unicode-equivalent file '{variant}' (invisible "
+                "encoding difference: NFC/NFD or special space/quote "
+                "characters)."
+            )
+            result.hint = f"{note} {result.hint}" if result.hint else note
+            return result
+        return self._suggest_similar_files(path)
+
+    def _read_binary_file(self, path: str, offset: int, limit: int,
+                          file_size: int, sample_bytes: Optional[bytes]) -> ReadResult:
+        """Binary branch shared by every read path.
+
+        UTF-16 rescue (ported from MoonshotAI/kimi-code#2647): the terminal
+        env decodes stdout as UTF-8 with errors="replace", so a UTF-16 text
+        file (Windows Notepad .txt, PowerShell `>` redirects) arrives
+        mangled with U+FFFD and trips the binary guard. Probe the raw bytes
+        via the backend's Python and transcode to UTF-8 when a BOM or the
+        zero-byte parity heuristic identifies UTF-16.
+        """
+        utf16_result = self._try_read_utf16(path, offset, limit, file_size)
+        if utf16_result is not None:
+            return utf16_result
+        return ReadResult(
+            is_binary=True,
+            file_size=file_size,
+            error=describe_binary_file(sample_bytes, file_size),
+        )
+
+    def _read_file_sequential(self, path: str, offset: int, limit: int) -> ReadResult:
+        """One-probe-per-call read: the pre-compound form, kept as fallback.
+
+        ``read_file`` lands here for image / known-binary extensions (only
+        the probes matter) and whenever the compound reply cannot be parsed.
+        ``path`` is already expanded and ``offset``/``limit`` normalized.
+        """
+        # Check if file exists and get size (POSIX, works on Linux + macOS)
+        stat_result = self._exec(self._size_probe_cmd(path))
+
         if stat_result.exit_code != 0:
-            # File not found - try to suggest similar files
-            return self._suggest_similar_files(path)
-        
+            return self._read_file_missing(path, offset, limit)
+
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
+        if stat_output.strip() == NOT_REGULAR_SENTINEL:
+            return self._not_regular_error(path)
         try:
             file_size = int(stat_output.strip())
         except ValueError:
             file_size = 0
-        
+
         # Check if file is too large
         if file_size > MAX_FILE_SIZE:
             # Still try to read, but warn
             pass
-        
+
         # Images are never inlined — redirect to the vision tool
         if self._is_image(path):
-            return ReadResult(
-                is_image=True,
-                is_binary=True,
-                file_size=file_size,
-                hint=(
-                    "Image file detected. Automatically redirected to vision_analyze tool. "
-                    "Use vision_analyze with this file path to inspect the image contents."
-                ),
-            )
-        
-        # Read a sample to check for binary content
-        sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
-        sample_result = self._exec(sample_cmd)
-        sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
-        
-        if self._is_likely_binary(path, sample_output):
-            return ReadResult(
-                is_binary=True,
-                file_size=file_size,
-                error="Binary file - cannot display as text. Use appropriate tools to handle this file type."
-            )
-        
-        # Read with pagination using sed
+            return self._image_redirect_result(file_size)
+
+        # Read a sample to check for binary content — at the byte layer when
+        # the transport allows, falling back to the legacy text heuristic.
+        sample_bytes = self._sample_file_bytes(path)
+        if sample_bytes is not None:
+            ext_binary = os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS
+            is_binary = ext_binary or self._is_likely_binary_bytes(sample_bytes)
+        else:
+            sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
+            sample_result = self._exec(sample_cmd)
+            sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
+            is_binary = self._is_likely_binary(path, sample_output)
+
+        if is_binary:
+            return self._read_binary_file(path, offset, limit, file_size, sample_bytes)
+
+        # Read with pagination using sed, clamping each line to a byte
+        # budget IN THE SHELL so a pathological single-line file (e.g. one
+        # 400MB minified line) never crosses the exec transport. The Python
+        # clamp in _add_line_numbers still runs afterwards; the shell clamp
+        # only bounds what reaches it.
+        #
+        # Why 4*max_line_length + 1 bytes (not max_line_length + 1):
+        # ``cut -c`` on GNU coreutils is byte-based despite its name, and a
+        # byte clamp can split a multibyte UTF-8 codepoint at the boundary.
+        # The transport decodes with errors="replace", so a split codepoint
+        # becomes U+FFFD rather than an exception — but a clamp of
+        # max_line_length+1 BYTES yields far fewer CHARS than
+        # max_line_length for multibyte text, so the Python clamp would
+        # never fire and truncation would be silent (no "... [truncated]"
+        # suffix). UTF-8 codepoints are at most 4 bytes, so any line whose
+        # first max_line_length chars survive occupies at most
+        # 4*max_line_length bytes; keeping one byte more guarantees that
+        # every line longer than max_line_length chars still decodes to
+        # more than max_line_length chars, which triggers the existing
+        # Python-side clamp (len(line) > max_line_length) and its
+        # "... [truncated]" suffix. Any U+FFFD from a boundary split lands
+        # beyond char max_line_length and is always removed by that clamp,
+        # so mojibake is never visible. ``cut -b`` is used explicitly to
+        # document the byte semantics.
+        from tools.tool_output_limits import get_max_line_length
+        line_clamp_bytes = 4 * get_max_line_length() + 1
         end_line = offset + limit - 1
-        read_cmd = f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
+        read_cmd = (
+            f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
+            f" | cut -b1-{line_clamp_bytes}"
+        )
         read_result = self._exec(read_cmd)
-        
+
         if read_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {read_result.stdout}")
         read_output = _strip_terminal_fence_leaks(read_result.stdout)
-        # Strip a leading UTF-8 BOM so the model never sees a phantom U+FEFF
-        # before the first real character. Only meaningful on the first
-        # chunk (the marker lives at byte 0); later pages can't carry it.
-        if offset == 1:
-            read_output, _ = _strip_bom(read_output)
-        
+
         # Get total line count
         wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
         wc_result = self._exec(wc_cmd)
@@ -1222,13 +2127,90 @@ class ShellFileOperations(FileOperations):
             total_lines = int(wc_output.strip())
         except ValueError:
             total_lines = 0
-        
+
+        # Only the page that reaches the file's final line can carry the
+        # ``cut`` newline artifact (see _assemble_read_result); probe the
+        # last byte just for that case, exactly as before.
+        file_ends_with_newline: Optional[bool] = None
+        if not total_lines > end_line and read_output.endswith('\n'):
+            tail_cmd = f"tail -c 1 {self._escape_shell_arg(path)} | wc -l"
+            tail_result = self._exec(tail_cmd)
+            tail_output = _strip_terminal_fence_leaks(tail_result.stdout)
+            if tail_result.exit_code == 0:
+                file_ends_with_newline = tail_output.strip() != "0"
+
+        return self._assemble_read_result(
+            read_output,
+            offset=offset,
+            end_line=end_line,
+            total_lines=total_lines,
+            file_size=file_size,
+            file_ends_with_newline=file_ends_with_newline,
+        )
+
+    def _assemble_read_result(
+        self,
+        read_output: str,
+        *,
+        offset: int,
+        end_line: int,
+        total_lines: int,
+        file_size: int,
+        file_ends_with_newline: Optional[bool],
+    ) -> ReadResult:
+        """Turn a raw ``sed | cut`` page into the final ``ReadResult``.
+
+        Shared by every read path so the BOM strip, pagination hint, the
+        ``cut`` newline artifact fix and the ambiguous-silence guards can
+        never drift apart. ``file_ends_with_newline`` is ``None`` when the
+        caller could not tell (the artifact is then left alone, as before).
+        """
+        # Strip a leading UTF-8 BOM so the model never sees a phantom U+FEFF
+        # before the first real character. Only meaningful on the first
+        # chunk (the marker lives at byte 0); later pages can't carry it.
+        if offset == 1:
+            read_output, _ = _strip_bom(read_output)
+
         # Check if truncated
         truncated = total_lines > end_line
         hint = None
         if truncated:
             hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
-        
+
+        # ``cut`` (unlike sed -n p) always newline-terminates its output,
+        # so a file whose final line has no trailing newline would grow a
+        # phantom empty last line. Only possible when this page reaches the
+        # file's final line; strip the artifact when the last byte says so.
+        if (
+            not truncated
+            and read_output.endswith('\n')
+            and file_ends_with_newline is False
+        ):
+            read_output = read_output[:-1]
+
+        # Ambiguous-silence guards: an empty content string is
+        # indistinguishable, from inside the model, from a broken tool —
+        # it re-reads, widens the window, tries another path. Name the
+        # dead end and its recovery instead.
+        if file_size == 0:
+            return ReadResult(
+                content="",
+                total_lines=0,
+                file_size=0,
+                hint="File is empty (0 bytes).",
+            )
+        if offset > total_lines > 0:
+            return ReadResult(
+                content="",
+                total_lines=total_lines,
+                file_size=file_size,
+                hint=(
+                    f"Note: offset {offset} is beyond the end of the file "
+                    f"({total_lines} lines total). Retry with offset <= "
+                    f"{total_lines}."
+                ),
+            )
+
         return ReadResult(
             content=self._add_line_numbers(read_output, offset),
             total_lines=total_lines,
@@ -1237,6 +2219,50 @@ class ShellFileOperations(FileOperations):
             hint=hint
         )
     
+    def _unicode_variant_match(self, path: str) -> Optional[str]:
+        """Find an existing file whose name is unicode-equivalent to ``path``.
+
+        macOS names screenshots with a NARROW NO-BREAK SPACE (U+202F) before
+        AM/PM, stores names NFD-decomposed, and Finder renames turn ' into
+        \u2019 — all invisible in rendered text. Compare directory entries
+        under a normalization that erases exactly those differences and
+        return the on-disk spelling when exactly one entry matches.
+        """
+        dir_path = os.path.dirname(path) or "."
+        filename = os.path.basename(path)
+        if not filename:
+            return None
+
+        def _canon(name: str) -> str:
+            # NFC first so composed/decomposed collapse together, then the
+            # confusable space/quote characters seen in real filenames.
+            out = unicodedata.normalize("NFC", name)
+            for src, dst in (
+                ("\u202f", " "),  # narrow no-break space
+                ("\u00a0", " "),  # no-break space
+                ("\u2019", "'"),  # right single quotation mark
+                ("\u2018", "'"),  # left single quotation mark
+            ):
+                out = out.replace(src, dst)
+            return out
+
+        target = _canon(filename)
+        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null"
+        ls_result = self._exec(ls_cmd)
+        if ls_result.exit_code != 0 or not ls_result.stdout.strip():
+            return None
+        candidates = [
+            entry
+            for entry in _strip_terminal_fence_leaks(ls_result.stdout).splitlines()
+            if entry and entry != filename and _canon(entry) == target
+        ]
+        # Exactly one equivalent spelling = unambiguous repair. Zero or
+        # several = fall through to suggestions; guessing among homoglyph
+        # collisions would silently read the wrong file.
+        if len(candidates) == 1:
+            return os.path.join(dir_path, candidates[0]) if dir_path != "." or "/" in path else candidates[0]
+        return None
+
     def _suggest_similar_files(self, path: str) -> ReadResult:
         """Suggest similar files when the requested file is not found."""
         dir_path = os.path.dirname(path) or "."
@@ -1277,6 +2303,13 @@ class ShellFileOperations(FileOperations):
                     common = set(lower_name) & set(lf)
                     if len(common) >= max(len(lower_name), len(lf)) * 0.4:
                         score = 30
+                # Near-miss spelling (AGENT.md -> AGENTS.md): substring
+                # checks above find nothing, but a high sequence ratio
+                # catches 1-2 edit typos without a homegrown levenshtein.
+                if score == 0 and difflib.SequenceMatcher(
+                    None, lower_name, lf
+                ).ratio() >= 0.8:
+                    score = 50
 
                 if score > 0:
                     scored.append((score, os.path.join(dir_path, f)))
@@ -1296,23 +2329,30 @@ class ShellFileOperations(FileOperations):
         Uses cat so the full file is returned regardless of size.
         """
         path = self._expand_path(path)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
+        stat_result = self._exec(self._size_probe_cmd(path))
         if stat_result.exit_code != 0:
             return self._suggest_similar_files(path)
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
+        if stat_output.strip() == NOT_REGULAR_SENTINEL:
+            return self._not_regular_error(path)
         try:
             file_size = int(stat_output.strip())
         except ValueError:
             file_size = 0
         if self._is_image(path):
             return ReadResult(is_image=True, is_binary=True, file_size=file_size)
-        sample_result = self._exec(f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null")
-        sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
-        if self._is_likely_binary(path, sample_output):
+        sample_bytes = self._sample_file_bytes(path)
+        if sample_bytes is not None:
+            ext_binary = os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS
+            is_binary = ext_binary or self._is_likely_binary_bytes(sample_bytes)
+        else:
+            sample_result = self._exec(f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null")
+            sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
+            is_binary = self._is_likely_binary(path, sample_output)
+        if is_binary:
             return ReadResult(
                 is_binary=True, file_size=file_size,
-                error="Binary file — cannot display as text."
+                error=describe_binary_file(sample_bytes, file_size),
             )
         cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
         if cat_result.exit_code != 0:
@@ -1326,6 +2366,39 @@ class ShellFileOperations(FileOperations):
         return ReadResult(
             content=raw_content,
             file_size=file_size,
+        )
+
+    def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
+        """Read binary-safe bytes from any shell-backed environment."""
+        path = self._expand_path(path)
+        stat_result = self._exec(self._size_probe_cmd(path))
+        if stat_result.exit_code != 0:
+            return ReadResult(error=f"File not found: {path}")
+        stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
+        if stat_output.strip() == NOT_REGULAR_SENTINEL:
+            return self._not_regular_error(path)
+        try:
+            file_size = int(stat_output.strip())
+        except ValueError:
+            return ReadResult(error=f"Could not determine file size: {path}")
+        if max_bytes is not None and file_size > max_bytes:
+            return ReadResult(
+                file_size=file_size,
+                error=f"File is too large ({file_size:,} bytes, limit is {max_bytes:,})",
+            )
+
+        encoded = self._exec(f"base64 < {self._escape_shell_arg(path)}")
+        if encoded.exit_code != 0:
+            return ReadResult(error=f"Failed to read binary file: {encoded.stdout}")
+        compact = "".join(_strip_terminal_fence_leaks(encoded.stdout).split())
+        try:
+            base64.b64decode(compact, validate=True)
+        except (ValueError, base64.binascii.Error):
+            return ReadResult(error=f"Backend returned invalid binary data for: {path}")
+        return ReadResult(
+            base64_content=compact,
+            file_size=file_size,
+            is_binary=True,
         )
 
     def delete_file(self, path: str) -> WriteResult:
@@ -1409,6 +2482,115 @@ class ShellFileOperations(FileOperations):
     # WRITE Implementation
     # =========================================================================
 
+    def _write_probe_cmd(self, path: str, sentinel: str, body: Optional[str]) -> str:
+        """One shell command for the on-disk questions ``write_file`` asks.
+
+        Two segments closed by a ``sentinel`` line: base64 of the first three
+        bytes (BOM detection at the byte layer, the same on-disk truth as
+        ``_file_has_bom``), then ``body``: ``"cat"`` for the full text when
+        pre-content is wanted, ``"sample"`` for the 4 KB line-ending sample,
+        or ``None`` for nothing. Gated on ``[ -f ]`` so a FIFO or device never
+        reaches ``head``/``cat``; a missing path echoes ``MISSING_SENTINEL``.
+        """
+        arg = self._escape_shell_arg(path)
+        if body == "cat":
+            body_cmd = f"cat {arg} 2>/dev/null"
+        elif body == "sample":
+            body_cmd = f"head -c 4096 {arg} 2>/dev/null"
+        else:
+            body_cmd = ":"
+        return (
+            f"if [ -f {arg} ]; then "
+            f"head -c 3 {arg} 2>/dev/null | base64 2>/dev/null; echo {sentinel}; "
+            f"{body_cmd}; "
+            f"else echo {MISSING_SENTINEL}; fi"
+        )
+
+    def _probe_write_target(
+        self, path: str, pre_content: Optional[str], want_pre: bool,
+    ) -> tuple[bool, Optional[str], Optional[str]]:
+        """Return ``(has_bom, pre_content, original_line_ending)`` for ``path``.
+
+        Replaces three probes (``cat`` when pre-content is wanted, a
+        ``head -c 4096`` line-ending sample, a ``head -c 3`` BOM check) with
+        one round-trip. Semantics are unchanged: pre-content is only read
+        when wanted and not supplied; the line ending comes from pre-content
+        when there is any, else from the sample; the BOM always comes from
+        the bytes on disk. A reply that cannot be parsed falls back to the
+        separate probes.
+        """
+        if want_pre and pre_content is None:
+            body_mode: Optional[str] = "cat"
+        elif not pre_content:
+            body_mode = "sample"
+        else:
+            body_mode = None
+
+        sentinel = _new_sentinel(_WRITE_SENTINEL_PREFIX)
+        probe = self._exec(self._write_probe_cmd(path, sentinel, body_mode))
+        output = probe.stdout or ""
+
+        if sentinel not in output:
+            if _strip_terminal_fence_leaks(output).strip() == MISSING_SENTINEL:
+                ending = _detect_line_ending(pre_content) if pre_content else None
+                return False, pre_content, ending
+            logger.debug(
+                "write_file: pre-write probe reply for %s has no sentinel "
+                "(exit %s, %d chars); falling back to sequential probes",
+                path, probe.exit_code, len(output),
+            )
+            return self._probe_write_target_sequential(path, pre_content, want_pre)
+
+        segments = _split_segments(output, sentinel)
+        if probe.exit_code != 0 or len(segments) != 2:
+            logger.debug(
+                "write_file: pre-write probe for %s returned exit %s with %d "
+                "segments (want 2); falling back to sequential probes",
+                path, probe.exit_code, len(segments),
+            )
+            return self._probe_write_target_sequential(path, pre_content, want_pre)
+        head_seg, body = segments
+
+        head_bytes = self._decode_base64_sample(head_seg)
+        if head_bytes is None:
+            # No clean base64 on this shell; ask the way we used to.
+            logger.debug(
+                "write_file: no usable base64 head for %s; paying one extra "
+                "round-trip for the BOM probe",
+                path,
+            )
+            has_bom = self._file_has_bom(path, pre_content)
+        else:
+            has_bom = head_bytes.startswith(_UTF8_BOM.encode("utf-8"))
+
+        if body_mode == "cat" and body:
+            pre_content = body
+
+        if pre_content:
+            ending = _detect_line_ending(pre_content)
+        elif body_mode == "sample" and body:
+            ending = _detect_line_ending(body)
+        else:
+            ending = None
+        return has_bom, pre_content, ending
+
+    def _probe_write_target_sequential(
+        self, path: str, pre_content: Optional[str], want_pre: bool,
+    ) -> tuple[bool, Optional[str], Optional[str]]:
+        """The pre-compound form of ``_probe_write_target``: one exec per question."""
+        if want_pre and pre_content is None:
+            # Best-effort read; failure (file missing, permission) leaves
+            # pre_content as None which makes both downstream consumers
+            # degrade gracefully (lint reports all errors; LSP skips the
+            # shift map).
+            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+            read_result = self._exec(read_cmd)
+            if read_result.exit_code == 0 and read_result.stdout:
+                pre_content = read_result.stdout
+        ending = self._detect_file_line_ending(path, pre_content)
+        has_bom = self._file_has_bom(path, pre_content)
+        return has_bom, pre_content, ending
+
     def write_file(self, path: str, content: str,
                    pre_content: Optional[str] = None) -> WriteResult:
         """
@@ -1457,6 +2639,22 @@ class ShellFileOperations(FileOperations):
         denied = get_write_denied_error(path)
         if denied:
             return WriteResult(error=denied)
+
+        # Reject lone surrogates up front with a regex scan (no encode, no
+        # subprocess). surrogateescape-decoded content (U+DC80–U+DCFF)
+        # round-trips through the pipe fine, but surrogates outside that
+        # range cannot be encoded at all — and letting them reach the pipe
+        # would spawn a child that then hangs, or truncates the target via
+        # empty-stdin `cat`. Refuse synchronously before any subprocess.
+        m = re.search(r"[\ud800-\udc7f\udd00-\udfff]", content)
+        if m:
+            return WriteResult(
+                error=(
+                    f"Refusing to write '{path}': content contains a lone "
+                    f"surrogate character ({m.group(0)!r}) that cannot be "
+                    "encoded as UTF-8. The file was NOT created or modified."
+                )
+            )
 
         # ── Fail-closed pre-write syntax gate ───────────────────────────
         # Validate the CANDIDATE content BEFORE any bytes touch disk —
@@ -1512,29 +2710,20 @@ class ShellFileOperations(FileOperations):
         # extensions outside both sets (binaries, opaque formats),
         # skipping the read keeps the hot path fast.
         want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
-        if want_pre:
-            if pre_content is not None:
-                # Caller already has file content (e.g. patch_replace read it
-                # for fuzzy matching) — reuse directly, skip redundant cat.
-                pass
-            else:
-                # Best-effort read; failure (file missing, permission) leaves
-                # pre_content as None which makes both downstream consumers
-                # degrade gracefully (lint reports all errors; LSP skips the
-                # shift map).
-                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
-                read_result = self._exec(read_cmd)
-                if read_result.exit_code == 0 and read_result.stdout:
-                    pre_content = read_result.stdout
+        # One shell round-trip answers every on-disk question the write
+        # needs (pre-content when wanted, line endings, BOM); see
+        # _probe_write_target. A caller that already has the file content
+        # (e.g. patch_replace read it for fuzzy matching) skips the read;
+        # the BOM is still taken from disk, never from pre_content.
+        has_bom, pre_content, original_ending = self._probe_write_target(
+            path, pre_content, want_pre
+        )
 
         # ── Line-ending preservation (Roo Code pattern) ──────────────
         # If the file existed with CRLF endings and the agent's content
         # has bare LFs, convert to CRLF before writing.  Otherwise the
         # write silently normalizes a Windows-line-ending file (and patch
         # produces mixed endings when only a substituted region changes).
-        # Detect from a small head sample to avoid reading the full file
-        # for line-ending purposes alone.
-        original_ending = self._detect_file_line_ending(path, pre_content)
         if original_ending == "\r\n":
             content = _normalize_line_endings(content, "\r\n")
 
@@ -1547,7 +2736,7 @@ class ShellFileOperations(FileOperations):
         # toolchains key on it). Only prepend when the original had a BOM
         # and the new content doesn't already carry one (guards against
         # double-BOM if a caller passed raw bytes).
-        if self._file_has_bom(path, pre_content) and not _has_bom(content):
+        if has_bom and not _has_bom(content):
             content = _UTF8_BOM + content
 
         # Snapshot LSP diagnostics for this file (best-effort) so the
@@ -1582,20 +2771,32 @@ class ShellFileOperations(FileOperations):
         # the atomic swap doesn't silently widen or narrow permissions, and
         # clean the temp up on any failure so we never leak a ``.hermes-tmp``
         # turd next to the user's file.
+        # Encode once for byte count + sha256. surrogateescape is the exact
+        # inverse of the decode that may have produced this content, so these
+        # are the bytes the pipe transmits and the bytes on disk. The early
+        # rejection above guarantees this cannot raise; the try/except is
+        # defense for future callers that bypass it.
+        try:
+            content_bytes = content.encode("utf-8", "surrogateescape")
+        except UnicodeEncodeError as exc:
+            return WriteResult(
+                error=(
+                    f"Refusing to write '{path}': content contains a lone "
+                    f"surrogate character ({exc}) that cannot be encoded as "
+                    "UTF-8. The file was NOT created or modified."
+                )
+            )
         write_result = self._atomic_write(path, content)
 
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
 
-        # Get bytes written — compute from the content we just wrote
-        # (len of the UTF-8 encoding matches wc -c) instead of spawning a
-        # ``wc -c`` subprocess. ``surrogatepass`` matches the sha256
-        # verification below: content that flowed through a surrogateescape
-        # decode (backend output via patch_replace) may carry lone
-        # surrogates a strict encode would reject.  Encode ONCE and share
-        # the bytes with the sha256 block — a second full encode of a
-        # multi-MB file is measurable.
-        content_bytes = content.encode('utf-8', 'surrogatepass')
+        # Bytes written — computed from the exact bytes we just wrote (len
+        # matches wc -c) instead of spawning a ``wc -c`` subprocess. The
+        # encode happened up front with surrogateescape — the inverse of the
+        # decode that produces surrogate content — so content_bytes == what
+        # rode stdin == what is on disk, and the sha256 below compares like
+        # with like.
         bytes_written = len(content_bytes)
 
         # Post-write content verification (cheap, one shell call): compare
@@ -1872,6 +3073,28 @@ class ShellFileOperations(FileOperations):
         if ext not in LINTERS:
             return LintResult(skipped=True, message=f"No linter for {ext} files")
 
+        # A per-file `tsc --noEmit <file>` cannot read the project's
+        # tsconfig.json, so for any .ts that belongs to a TS project it floods
+        # phantom errors — unresolved path aliases (`@/…` → TS2307) and ambient
+        # globals (`Window.hermesDesktop` → TS2339) that are defined by the
+        # config it never loads. The delta filter then reports the misleading
+        # "pre-existing lint errors … the file is still broken", which carries
+        # no signal and wastes the caller's turns. When an ancestor
+        # tsconfig.json exists, skip the shell tsc entirely; real diagnostics
+        # come from the LSP tier (below) or an explicit `tsc -p tsconfig.json`
+        # the caller runs deliberately. (.tsx already returns above via the
+        # `ext not in LINTERS` branch.)
+        if ext == '.ts' and self._has_ancestor_tsconfig(path):
+            return LintResult(
+                skipped=True,
+                message=(
+                    "Project tsconfig.json detected — per-file tsc skipped "
+                    "(single-file tsc can't resolve project aliases/globals; "
+                    "use the LSP tier or `tsc -p tsconfig.json` for real "
+                    "diagnostics)."
+                ),
+            )
+
         # If a real LSP server is active and claims this file, skip the
         # shell linter for extensions whose per-file shell invocation is
         # structurally weaker / floods phantom errors.  See
@@ -1892,8 +3115,12 @@ class ShellFileOperations(FileOperations):
         if not self._has_command(base_cmd):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
 
-        # Run linter
-        cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
+        # Run linter. Linters (python, node, tsc, go, rustfmt) are native
+        # Windows binaries on Windows hosts: they need the C:/... path form.
+        # The MSYS /c/... form makes node resolve the file as C:\c\Users\...
+        # (double-prefixed) — every .js write then reports a phantom ENOENT
+        # lint failure. Native form works for MSYS builds too.
+        cmd = linter_cmd.replace("{file}", self._escape_native_tool_arg(path))
         result = self._exec(cmd, timeout=30)
 
         if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
@@ -2048,6 +3275,33 @@ class ShellFileOperations(FileOperations):
                 return True
         return False
 
+    def _has_ancestor_tsconfig(self, path: str) -> bool:
+        """True iff a tsconfig.json exists in *path*'s directory or any ancestor.
+
+        A single-file ``tsc`` invocation can't read that config, so its
+        diagnostics for such a file are pure noise (unresolved aliases /
+        ambient globals). Used by :meth:`_check_lint` to skip the per-file
+        shell tsc for project TypeScript files.
+
+        Best-effort and local-host only: a host-side ``os.path`` walk. On a
+        remote/sandboxed backend the project tree isn't on this host, so the
+        walk returns False and the shell linter runs exactly as before — never
+        suppress lint based on a probe that couldn't answer.
+        """
+        if not self._lsp_local_only():
+            return False
+        try:
+            d = os.path.dirname(os.path.abspath(path))
+            while True:
+                if os.path.isfile(os.path.join(d, "tsconfig.json")):
+                    return True
+                parent = os.path.dirname(d)
+                if parent == d:
+                    return False
+                d = parent
+        except Exception:  # noqa: BLE001
+            return False
+
     def _lsp_will_handle(self, path: str) -> bool:
         """Return True iff the LSP service is active AND will lint this file.
 
@@ -2177,7 +3431,8 @@ class ShellFileOperations(FileOperations):
     
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
-               output_mode: str = "content", context: int = 0) -> SearchResult:
+               output_mode: str = "content", context: int = 0,
+               order: str = "discovery") -> SearchResult:
         """
         Search for content or files.
         
@@ -2190,11 +3445,18 @@ class ShellFileOperations(FileOperations):
             offset: Skip first N results
             output_mode: "content", "files_only", or "count"
             context: Lines of context around matches
+            order: File-search ordering: fast discovery or exact modified time
         
         Returns:
             SearchResult with matches or file list
         """
         offset, limit = normalize_search_pagination(offset, limit)
+
+        if target == "files" and order not in {"discovery", "modified"}:
+            return SearchResult(
+                error=(f"Invalid file search order {order!r}; expected "
+                       "'discovery' or 'modified'.")
+            )
 
         # Expand ~ and other shell paths
         path = self._expand_path(path)
@@ -2207,7 +3469,8 @@ class ShellFileOperations(FileOperations):
             # failing the whole call, split, search every path that exists,
             # merge the results, and report the skipped parts.
             multi = self._try_multi_path_search(
-                pattern, path, target, file_glob, limit, offset, output_mode, context
+                pattern, path, target, file_glob, limit, offset, output_mode, context,
+                order,
             )
             if multi is not None:
                 return multi
@@ -2242,23 +3505,103 @@ class ShellFileOperations(FileOperations):
             )
         
         if target == "files":
-            return self._search_files(pattern, path, limit, offset)
+            result = self._search_files(pattern, path, limit, offset, order)
         else:
-            return self._search_content(pattern, path, file_glob, limit, offset, 
-                                        output_mode, context)
+            result = self._search_content(pattern, path, file_glob, limit, offset,
+                                          output_mode, context)
+
+        exclusions = self._macos_search_exclusions(path)
+        if exclusions and not result.error:
+            skipped = ", ".join(item.split("/")[-1] for item in exclusions)
+            result.warning = (
+                "Skipped macOS protected folders during broad search to avoid "
+                f"an unattended privacy prompt: {skipped}. Search a protected "
+                "folder directly when access is intentional."
+            )
+        return result
+
+    def _macos_search_exclusions(self, path: str) -> List[str]:
+        """Protected descendants to prune for this search root, if any.
+
+        Gated on ``env.is_local``: ``sys.platform``/``Path.home()`` describe
+        the CONTROLLER, but search commands execute on ``self.env``'s host — a
+        macOS controller driving a Linux container/SSH backend must not prune
+        the remote's (unprotected) Downloads, and TCC doesn't exist there
+        anyway. A Linux controller driving a macOS SSH host keeps today's
+        behavior (no pruning); detecting the remote OS is out of scope here.
+        Environments without the flag (test fakes, plugins) default to local
+        semantics — pruning is a warning-carrying skip, never data loss.
+        """
+        env = getattr(self, "env", None)
+        if env is not None and getattr(env, "is_local", True) is False:
+            return []
+        cwd = getattr(self.env, "cwd", None) or self.cwd
+        return _macos_protected_search_exclusions(
+            path, cwd=cwd, home=_HOME, platform=sys.platform
+        )
+
+    def _effective_macos_search_exclusions(
+        self, roots: List[str]
+    ) -> List[tuple[str, str, str]]:
+        """Return unique exclusions without pruning an explicitly chosen root."""
+        cwd = getattr(self.env, "cwd", None) or self.cwd
+        use_posix_paths = sys.platform == "darwin" and all(
+            not re.match(r"^[A-Za-z]:[\\/]", root) and "\\" not in root
+            for root in roots
+        )
+
+        def normalized(root: str) -> str:
+            if use_posix_paths:
+                if not posixpath.isabs(root):
+                    root = posixpath.join(cwd, root)
+                return posixpath.normpath(root)
+            return os.path.normcase(os.path.abspath(os.path.normpath(root)))
+
+        normalized_roots = [normalized(root) for root in roots]
+        explicit_roots = set(normalized_roots)
+        seen = set()
+        effective = []
+        for root, normalized_root in zip(roots, normalized_roots):
+            for relative in self._macos_search_exclusions(root):
+                if use_posix_paths:
+                    absolute = posixpath.normpath(posixpath.join(normalized_root, relative))
+                    key = absolute
+                else:
+                    absolute = os.path.normpath(os.path.join(root, relative))
+                    key = os.path.normcase(os.path.abspath(absolute))
+                if key in explicit_roots or key in seen:
+                    continue
+                seen.add(key)
+                effective.append((root, relative, absolute))
+        return effective
+
+    @staticmethod
+    def _macos_protected_search_warning(paths: List[str]) -> str:
+        skipped = ", ".join(os.path.basename(item) for item in paths)
+        return (
+            "Skipped macOS protected folders during broad search to avoid "
+            f"an unattended privacy prompt: {skipped}. Search a protected "
+            "folder directly when access is intentional."
+        )
     
     def _try_multi_path_search(self, pattern: str, path: str, target: str,
                                file_glob: Optional[str], limit: int, offset: int,
-                               output_mode: str, context: int) -> Optional[SearchResult]:
+                               output_mode: str, context: int,
+                               order: str = "discovery") -> Optional[SearchResult]:
         """Recover a not-found ``path`` that is really several paths in one string.
 
         Production trajectories show models passing "dir1 dir2 dir3" (or
-        comma-separated lists) as ``path``. Split on whitespace/commas; when
-        at least one candidate exists and at least two candidates were given,
-        search every existing path, merge results, and note skipped parts.
-        Returns None when this doesn't look like a multi-path string.
+        comma-separated lists) as ``path``. Commas explicitly delimit paths and
+        therefore preserve internal spaces; without commas, retain the legacy
+        whitespace-separated recovery. When at least one candidate exists and
+        at least two candidates were given, search every existing path, merge
+        results, and note skipped parts. Returns None when this doesn't look
+        like a multi-path string.
         """
-        parts = [p for chunk in path.split(",") for p in chunk.split() if p.strip()]
+        if "," in path:
+            parts = [part.strip() for part in path.split(",") if part.strip()]
+        else:
+            parts = path.split()
         if len(parts) < 2:
             return None
         existing, missing = [], []
@@ -2271,106 +3614,175 @@ class ShellFileOperations(FileOperations):
         if not existing:
             return None
 
-        merged = SearchResult()
-        for p in existing:
-            if target == "files":
-                sub = self._search_files(pattern, p, limit, offset)
-            else:
-                sub = self._search_content(pattern, p, file_glob, limit, offset,
-                                           output_mode, context)
-            if sub.error:
-                continue
-            merged.matches.extend(sub.matches)
-            merged.files.extend(sub.files)
-            merged.counts.update(sub.counts)
-            merged.total_count += sub.total_count
-            merged.truncated = merged.truncated or sub.truncated
-        # Respect the caller's limit across the merged set.
-        merged.matches = merged.matches[:limit]
-        merged.files = merged.files[:limit]
+        if target == "files":
+            # A file search across several roots is one global traversal so
+            # modified ordering and pagination are exact across the whole set.
+            # Route every engine through _search_files so root admission wraps
+            # the actual rg/find invocation for this multi-root request.
+            merged = self._search_files(pattern, existing, limit, offset, order)
+        else:
+            merged = SearchResult()
+            for root in existing:
+                sub = self._search_content(
+                    pattern, root, file_glob, limit, offset, output_mode, context
+                )
+                if sub.error:
+                    return sub
+                merged.matches.extend(sub.matches)
+                merged.files.extend(sub.files)
+                merged.counts.update(sub.counts)
+                merged.total_count += sub.total_count
+                merged.truncated = merged.truncated or sub.truncated
+            merged.matches = merged.matches[:limit]
+            merged.files = merged.files[:limit]
+
         note = f"path contained {len(parts)} entries; searched {len(existing)} that exist"
         if missing:
             note += "; skipped missing: " + ", ".join(missing[:3])
             if len(missing) > 3:
                 note += f" (+{len(missing) - 3} more)"
-        merged.warning = note
+        warning_parts = [note]
+        if not merged.error:
+            protected_paths = [
+                absolute
+                for _root, _relative, absolute
+                in self._effective_macos_search_exclusions(existing)
+            ]
+            if protected_paths:
+                warning_parts.append(
+                    self._macos_protected_search_warning(protected_paths)
+                )
+        merged.warning = " ".join(warning_parts)
         return merged
+
+    def _search_prune_glob_args(self) -> str:
+        """Return rg globs that prune known heavyweight recursive subtrees.
+
+        The two forms cover both a root whose basename is a protected name and
+        protected descendants. Globs are relative to each rg search root, so a
+        single ``**/name/**`` pattern does not cover an explicitly selected
+        ``name/`` root. The directory names come from the shared scan policy;
+        this method deliberately does not maintain a second search-only list.
+        """
+        globs = []
+        for dirname in sorted(SEARCH_PRUNE_DIR_NAMES):
+            for prefix in ("", "**/"):
+                pattern = f"!{prefix}{dirname}/**"
+                globs.extend(("--glob", self._escape_shell_arg(pattern)))
+        return " ".join(globs)
 
     def _zero_match_probe(self, pattern: str, path: str,
                           file_glob: Optional[str]) -> Optional[str]:
         """Return a hint for a 0-match content search, or None.
 
         13.9% of production content searches return zero matches and give
-        the model nothing to steer by. Run ONE cheap case-insensitive count
-        probe; if it hits, say so. If the pattern contains regex
-        metacharacters, also probe it as a fixed string. Bounded: two rg
-        invocations max, count-only output.
+        the model nothing to steer by. Run cheap count-only probes for near
+        misses (wrong casing, hidden-only matches, unescaped regex
+        metacharacters). The hidden/ignored probe is bounded with the shared
+        dependency, cache, VCS, vendor, and build-tree pruning policy.
         """
-        if not self._has_command('rg'):
+        rg_executable = self._resolve_command('rg')
+        if not rg_executable:
             return None
+        rg = self._quote_executable(rg_executable)
+
+        def _tally(stdout: str):
+            """Parse ``path:count`` lines from rg --count-matches."""
+            total = 0
+            per_file = []
+            for line in (stdout or "").strip().splitlines():
+                p, _sep, n = line.rpartition(":")
+                if n.isdigit():
+                    total += int(n)
+                    per_file.append(p)
+            return total, per_file
+
+        def _paths_note(per_file, cap: int = 5) -> str:
+            shown = ", ".join(per_file[:cap])
+            extra = len(per_file) - cap
+            return shown + (f" (+{extra} more)" if extra > 0 else "")
+
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
         probe = self._exec(
-            f"rg -i --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"{rg} -i --count-matches{glob_expr} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
-        ci_total = 0
-        ci_files = 0
-        for line in (probe.stdout or "").strip().splitlines():
-            _p, _sep, n = line.rpartition(":")
-            if n.isdigit():
-                ci_total += int(n)
-                ci_files += 1
+        ci_total, ci_paths = _tally(probe.stdout)
         if ci_total > 0:
             return (
                 f"0 exact matches, but {ci_total} case-insensitive match(es) "
-                f"in {ci_files} file(s) — the pattern's casing may be wrong."
+                f"in {len(ci_paths)} file(s): {_paths_note(ci_paths)} — "
+                "the pattern's casing may be wrong."
             )
         # Hidden/ignored probe: rg skips dotdirs and .gitignore'd files by
         # default. When the pattern exists only there, say so instead of
         # returning a bare zero (bench case: match in .hidden/ silently
-        # missing from results).
+        # missing from results). Keep --no-ignore so project-local ignored
+        # files remain diagnosable, but prune heavyweight trees before rg can
+        # recurse into them.
         hidden = self._exec(
-            f"rg --hidden --no-ignore --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"{rg} --hidden --no-ignore --count-matches{glob_expr}"
+            f" {self._search_prune_glob_args()} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
-        h_total = 0
-        h_files = 0
-        for line in (hidden.stdout or "").strip().splitlines():
-            _p, _sep, n = line.rpartition(":")
-            if n.isdigit():
-                h_total += int(n)
-                h_files += 1
+        h_total, h_paths = _tally(hidden.stdout)
         if h_total > 0:
             return (
                 f"0 matches in visible files, but {h_total} match(es) in "
-                f"{h_files} hidden or gitignored file(s) — these are excluded "
-                "by default. Search the hidden path explicitly to include them."
+                f"{len(h_paths)} hidden or gitignored file(s): "
+                f"{_paths_note(h_paths)} — these are excluded by default."
             )
         if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
             fixed = self._exec(
-                f"rg -F --count-matches{glob_expr} "
-                f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+                f"{rg} -F --count-matches{glob_expr} "
+                f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
                 f"2>/dev/null | head -50",
                 timeout=30,
             )
-            f_total = sum(
-                int(line.rpartition(":")[2])
-                for line in (fixed.stdout or "").strip().splitlines()
-                if line.rpartition(":")[2].isdigit()
-            )
+            f_total, f_paths = _tally(fixed.stdout)
             if f_total > 0:
                 return (
-                    f"0 regex matches, but {f_total} literal match(es) — the "
+                    f"0 regex matches, but {f_total} literal match(es) in "
+                    f"{len(f_paths)} file(s): {_paths_note(f_paths)} — the "
                     "pattern contains regex metacharacters that likely need "
                     "escaping (or pass a simpler substring)."
                 )
         return None
 
-    def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
+    def _is_broad_local_search_root(self, path: str) -> bool:
+        """Whether a no-rg local root is unsafe for recursive find."""
+        from tools.environments.local import (
+            LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path,
+        )
+
+        if not isinstance(self.env, LocalEnvironment):
+            return False
+
+        def normalized(value: str) -> str:
+            if _IS_WINDOWS:
+                value = _msys_to_windows_path(value).replace("\\", "/")
+            if not os.path.isabs(value):
+                value = os.path.join(getattr(self.env, "cwd", None) or self.cwd, value)
+            return os.path.normcase(os.path.abspath(value))
+
+        root = normalized(path)
+        home = normalized(_HOME)
+        drive = os.path.splitdrive(root)[0]
+        anchor = drive + os.sep if drive else os.path.abspath(os.sep)
+        if root == os.path.normcase(anchor):
+            return True
+        try:
+            common = os.path.commonpath([root, home])
+        except ValueError:
+            return False
+        return root == home or common == root
+
+    def _search_files(self, pattern: str, path: str | List[str], limit: int, offset: int,
+                      order: str = "discovery") -> SearchResult:
         """Search for files by name pattern (glob-like)."""
         # Auto-prepend **/ for recursive search if not already present
         if not pattern.startswith('**/') and '/' not in pattern:
@@ -2378,91 +3790,148 @@ class ShellFileOperations(FileOperations):
         else:
             search_pattern = pattern.split('/')[-1]
 
-        search_root = Path(path)
-        has_hidden_path_ancestor = any(
-            part not in {".", ".."} and part.startswith(".")
-            for part in search_root.parts
-        )
+        roots = [path] if isinstance(path, str) else path
+        if not roots:
+            return SearchResult(
+                error="File search requires at least one search root in 'path'."
+            )
 
-        # Prefer ripgrep: respects .gitignore, excludes hidden dirs by
-        # default, and has parallel directory traversal (~200x faster than
-        # find on wide trees).  Mirrors _search_content which already uses rg.
-        if self._has_command('rg'):
-            return self._search_files_rg(search_pattern, path, limit, offset)
+        # Prefer ripgrep: bounded parallel traversal with ignore semantics.
+        # Resolve the engine and exact-order capability before admission so a
+        # queued request does not occupy a root while doing command discovery.
+        if self._has_command("rg"):
+            rg_executable = self._resolve_command("rg") or "rg"
+            if order == "modified":
+                capability_error = self._modified_rg_capability_error(rg_executable)
+                if capability_error:
+                    return SearchResult(error=capability_error)
+            keys = _filename_search_root_keys(self.env, roots, self.cwd)
+            if not _acquire_filename_search_roots(keys):
+                return SearchResult(error=(
+                    "File search was interrupted while waiting for another filename "
+                    "search on the same root. Retry when ready."
+                ))
+            try:
+                return self._search_files_rg(
+                    search_pattern, path, limit, offset, order,
+                    rg_executable=rg_executable,
+                )
+            finally:
+                _release_filename_search_roots(keys)
 
-        # Fallback: find (slower, no .gitignore awareness)
-        if not self._has_command('find'):
+        # A local find traversal rooted at/above the user's home or at a
+        # filesystem root can consume minutes and prompt on protected paths.
+        # Refuse before invoking find. Controller paths never classify remotes.
+        if any(self._is_broad_local_search_root(root) for root in roots):
+            return SearchResult(error=(
+                "Broad local file search without ripgrep is disabled because "
+                "find cannot keep this traversal safely bounded. Install "
+                "ripgrep or search a narrower directory."
+            ))
+
+        if not self._has_command("find"):
             return SearchResult(
                 error="File search requires 'rg' (ripgrep) or 'find'. "
                       "Install ripgrep for best results: "
                       "https://github.com/BurntSushi/ripgrep#installation"
             )
 
-        # Exclude hidden directories (matching ripgrep's default behavior).
-        hidden_exclude = "-not -path '*/.*'" if not has_hidden_path_ancestor else ""
-        hidden_filter_expr = f" {hidden_exclude}" if hidden_exclude else ""
+        # Prune hidden descendant directories while still allowing an
+        # explicitly selected hidden root. Hidden files are excluded too,
+        # matching rg's default semantics.
+        find_roots = [
+            f"./{root}" if root.startswith("-") else root
+            for root in roots
+        ]
+        q_roots = [self._escape_shell_arg(root) for root in find_roots]
+        root_exemptions = "".join(f" ! -path {root}" for root in q_roots)
+        hidden_prune = (
+            f" \\( -type d -name '.*'{root_exemptions} \\) -prune -o"
+        )
+        protected_paths = [
+            absolute
+            for _root, _relative, absolute
+            in self._effective_macos_search_exclusions(roots)
+        ]
+        protected_prune = ""
+        if protected_paths:
+            terms = " -o ".join(
+                f"-path {self._escape_shell_arg(item)}" for item in protected_paths
+            )
+            protected_prune = f" \\( {terms} \\) -prune -o"
 
-        # Use shell pagination for standard roots. For hidden roots, gather full
-        # output so we can re-apply hidden-descendant filtering while allowing
-        # explicit hidden-root searches.
-        pagination_expr = ""
-        if not has_hidden_path_ancestor:
-            pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
+        fetch_limit = offset + limit + 1
+        base = (
+            f"find {' '.join(q_roots)}{protected_prune}{hidden_prune} -type f "
+            f"! -name '.*' -name {self._escape_shell_arg(search_pattern)}"
+        )
+        if order == "modified":
+            cmd = (
+                "set -o pipefail; " + base
+                + f" -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -n {fetch_limit}"
+            )
+        else:
+            cmd = (
+                "set -o pipefail; " + base
+                + f" -print 2>/dev/null | head -n {fetch_limit}"
+            )
 
-        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
-              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
-
-        result = self._exec(cmd, timeout=60)
+        keys = _filename_search_root_keys(self.env, roots, self.cwd)
+        if not _acquire_filename_search_roots(keys):
+            return SearchResult(error=(
+                "File search was interrupted while waiting for another filename "
+                "search on the same root. Retry when ready."
+            ))
+        try:
+            result = self._exec(cmd, timeout=60)
+        finally:
+            _release_filename_search_roots(keys)
         stdout, limit_reason = _search_stdout_and_limit(result)
 
-        if not stdout.strip() and not limit_reason:
-            # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
-                        f"2>/dev/null | sort -rn{pagination_expr}"
-            result = self._exec(cmd_simple, timeout=60)
-            stdout, limit_reason = _search_stdout_and_limit(result)
-
-        files = []
-        for line in stdout.strip().split('\n'):
-            if not line:
-                continue
-            parts = line.split(' ', 1)
-            if len(parts) == 2 and parts[0].replace('.', '').isdigit():
-                files.append(parts[1])
-            else:
-                files.append(line)
-
-        # For explicit hidden roots, find's path-based filtering excludes every
-        # file under the hidden path. Apply descendant filtering after command
-        # execution so only the explicit root ancestry is bypassed.
-        if has_hidden_path_ancestor:
-            normalized_root = search_root.resolve()
-            filtered_files = []
-            for file_path in files:
-                try:
-                    rel_parts = Path(file_path).resolve().relative_to(normalized_root).parts
-                except ValueError:
-                    rel_parts = Path(file_path).parts
-                if any(part not in {".", ".."} and part.startswith(".") for part in rel_parts):
+        # Parse before classifying exit 141: with pipefail, a bounded producer
+        # can receive SIGPIPE when head intentionally closes after fetch_limit
+        # rows. It is benign only when the parsed payload proves that bound was
+        # reached; a shorter payload remains a hard failure.
+        raw_files: List[str] = []
+        for line in stdout.splitlines():
+            if order == "modified":
+                parts = line.split(" ", 1)
+                if len(parts) != 2 or not parts[0].replace(".", "", 1).isdigit():
                     continue
-                filtered_files.append(file_path)
-            files = filtered_files[offset:offset + limit]
-        # pagination for standard roots is already applied in shell
+                raw_files.append(parts[1])
+            elif line:
+                raw_files.append(line)
+        bounded_sigpipe = result.exit_code == 141 and len(raw_files) >= fetch_limit
 
+        if order == "modified" and result.exit_code not in {0, 124} and not bounded_sigpipe:
+            return SearchResult(error=(
+                "Exact modification-time order requires GNU find with "
+                "-printf support; install ripgrep 14+ or use order='discovery'."
+            ))
+        if order == "discovery" and result.exit_code not in {0, 124} and not bounded_sigpipe:
+            return SearchResult(error="File search failed while running bounded find traversal.")
+
+        from tools.environments.local import LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path
+        if _IS_WINDOWS and isinstance(self.env, LocalEnvironment):
+            raw_files = [_msys_to_windows_path(file_path) for file_path in raw_files]
+
+        page = raw_files[offset:offset + limit]
         return SearchResult(
-            files=files,
-            total_count=len(files),
-            truncated=bool(limit_reason),
+            files=page,
+            total_count=len(raw_files),
+            truncated=len(raw_files) > offset + limit or bool(limit_reason),
             limit_reason=limit_reason,
         )
 
-    def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
+    def _search_files_rg(self, pattern: str, path: str | List[str], limit: int, offset: int,
+                         order: str = "discovery",
+                         rg_executable: Optional[str] = None) -> SearchResult:
         """Search for files by name using ripgrep's --files mode.
 
         rg --files respects .gitignore and excludes hidden directories by
         default, and uses parallel directory traversal for ~200x speedup
-        over find on wide trees.  Results are sorted by modification time
-        (most recently edited first) when rg >= 13.0 supports --sortr.
+        over find on wide trees. Discovery order stays bounded and fast;
+        exact modification-time ordering is explicit because it scans globally.
         """
         # rg --files -g uses glob patterns; wrap bare names so they match
         # at any depth (equivalent to find -name).
@@ -2471,34 +3940,79 @@ class ShellFileOperations(FileOperations):
         else:
             glob_pattern = pattern
 
-        fetch_limit = limit + offset
-        # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
-        cmd_sorted = (
-            f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_shell_arg(path)} 2>/dev/null "
-            f"| head -n {fetch_limit}"
+        roots = [path] if isinstance(path, str) else path
+        fetch_limit = limit + offset + 1
+        effective_exclusions = self._effective_macos_search_exclusions(roots)
+        scoped_common = None
+        command_roots = roots
+        use_posix_paths = sys.platform == "darwin" and all(
+            not re.match(r"^[A-Za-z]:[\\/]", root) and "\\" not in root
+            for root in roots
         )
-        result = self._exec(cmd_sorted, timeout=60)
+        if len(roots) > 1 and effective_exclusions and use_posix_paths:
+            cwd = getattr(self.env, "cwd", None) or self.cwd
+            absolute_roots = [
+                posixpath.normpath(
+                    root if posixpath.isabs(root) else posixpath.join(cwd, root)
+                )
+                for root in roots
+            ]
+            scoped_common = posixpath.commonpath(absolute_roots)
+            command_roots = [
+                posixpath.relpath(root, scoped_common) for root in absolute_roots
+            ]
+            exclusion_terms = [
+                f"--glob {self._escape_shell_arg(f'!{posixpath.relpath(absolute, scoped_common)}/**')}"
+                for _root, _relative, absolute in effective_exclusions
+            ]
+        else:
+            exclusion_terms = [
+                f"--glob {self._escape_shell_arg(f'!{relative}/**')}"
+                for _root, relative, _absolute in effective_exclusions
+            ]
+        exclusion_globs = " ".join(dict.fromkeys(exclusion_terms))
+        exclusion_args = f" {exclusion_globs}" if exclusion_globs else ""
+        rg_executable = rg_executable or self._resolve_command("rg")
+        if not rg_executable:
+            return SearchResult(error="File search requires ripgrep (rg).")
+        if order == "modified":
+            capability_error = self._modified_rg_capability_error(rg_executable)
+            if capability_error:
+                return SearchResult(error=capability_error)
+        rg = self._quote_executable(rg_executable)
+        sort_arg = " --sortr=modified" if order == "modified" else ""
+        root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
+        cd_prefix = (
+            f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
+        )
+        cmd = (
+            f"set -o pipefail; {cd_prefix}{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
+            f"{exclusion_args} -- {root_args} 2>/dev/null | head -n {fetch_limit}"
+        )
+        result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
-        all_files = [f for f in stdout.strip().split('\n') if f]
+        all_files = [f for f in stdout.splitlines() if f]
+        if scoped_common:
+            all_files = [
+                file_path if posixpath.isabs(file_path)
+                else posixpath.normpath(posixpath.join(scoped_common, file_path))
+                for file_path in all_files
+            ]
+        bounded_sigpipe = result.exit_code == 141 and len(all_files) >= fetch_limit
 
-        if not all_files and not limit_reason:
-            # --sortr may have failed on older rg; retry without it.
-            cmd_plain = (
-                f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_shell_arg(path)} 2>/dev/null "
-                f"| head -n {fetch_limit}"
-            )
-            result = self._exec(cmd_plain, timeout=60)
-            stdout, limit_reason = _search_stdout_and_limit(result)
-            all_files = [f for f in stdout.strip().split('\n') if f]
+        if result.exit_code not in {0, 1, 124} and not bounded_sigpipe:
+            if order == "modified":
+                return SearchResult(error=(
+                    "Exact modification-time order failed; ripgrep 14+ is "
+                    "required. Upgrade ripgrep or use order='discovery'."
+                ))
+            return SearchResult(error="File search failed while running ripgrep.")
 
         page = all_files[offset:offset + limit]
-
         return SearchResult(
             files=page,
             total_count=len(all_files),
-            truncated=len(all_files) >= fetch_limit or bool(limit_reason),
+            truncated=len(all_files) > offset + limit or bool(limit_reason),
             limit_reason=limit_reason,
         )
     
@@ -2510,7 +4024,8 @@ class ShellFileOperations(FileOperations):
         if self._has_command('rg'):
             used_rg = True
             result = self._search_with_rg(pattern, path, file_glob, limit, offset,
-                                          output_mode, context)
+                                          output_mode, context,
+                                          rg_executable=self._resolve_command("rg") or "rg")
         elif self._has_command('grep'):
             result = self._search_with_grep(pattern, path, file_glob, limit, offset,
                                             output_mode, context)
@@ -2541,9 +4056,28 @@ class ShellFileOperations(FileOperations):
         return _maybe_warn_line_oriented_newline_pattern(result, pattern)
     
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
-                        limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                        limit: int, offset: int, output_mode: str, context: int,
+                        rg_executable: Optional[str] = None) -> SearchResult:
         """Search using ripgrep."""
-        cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
+        rg_executable = rg_executable or self._resolve_command("rg")
+        if not rg_executable:
+            return SearchResult(error="Content search requires ripgrep (rg).")
+        cmd_parts = [self._quote_executable(rg_executable), "--line-number", "--no-heading", "--with-filename"]
+
+        # Giant-single-line containment (ported from cline/cline#13525): a
+        # match inside a serialized dump (multi-MB single-line JSON/minified
+        # bundle) makes rg emit the ENTIRE line into stdout. `head -n` counts
+        # lines, so a 40MB match line sails through untruncated, gets buffered
+        # whole into Python, and only THEN hits the per-match [:500] clamp —
+        # measured 42MB across the transport / ~180MB peak alloc for one
+        # match on main. --max-columns bounds each printed line at the rg
+        # layer; --max-columns-preview keeps a truncated prefix (instead of
+        # omitting the match) so the model still sees the hit. 2000 cols
+        # comfortably exceeds the 500-char content clamp below, so no
+        # previously-visible content is lost. Both flags predate rg 11; the
+        # engine floor here is already rg 13 (--sortr).
+        if output_mode not in ("files_only", "count"):
+            cmd_parts.extend(["--max-columns", "2000", "--max-columns-preview"])
 
         # Auto-multiline: a regex `\n` (or a literal newline in the pattern)
         # cannot match in rg's default line-oriented mode — it used to hard
@@ -2558,6 +4092,10 @@ class ShellFileOperations(FileOperations):
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
         
+        # Exclude macOS TCC-protected descendants during broad searches.
+        for item in self._macos_search_exclusions(path):
+            cmd_parts.extend(["--glob", self._escape_shell_arg(f"!{item}/**")])
+
         # Add file glob filter (must be quoted to prevent shell expansion)
         if file_glob:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
@@ -2570,7 +4108,10 @@ class ShellFileOperations(FileOperations):
         
         # Add pattern and path
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        # rg is a native Windows binary when installed via winget/cargo/choco:
+        # it needs the C:/... path form, not the MSYS /c/... form (which
+        # nothing converts back — Hermes sets MSYS_NO_PATHCONV for its bash).
+        cmd_parts.append(self._escape_native_tool_arg(path))
         
         # Fetch extra rows so we can report the true total before slicing.
         # For context mode, rg emits separator lines ("--") between groups,
@@ -2689,6 +4230,23 @@ class ShellFileOperations(FileOperations):
         # Exclude hidden directories (matching ripgrep's default behavior).
         # This prevents searching inside .hub/index-cache/, .git/, etc.
         cmd_parts.append("--exclude-dir='.*'")
+
+        # Protected-dir pruning CANNOT use --exclude-dir here: grep matches
+        # exclude-dir globs against BASENAMES anywhere in the tree, so
+        # --exclude-dir=Downloads would silently skip every nested directory
+        # named Downloads (a repo's own Downloads/ folder included), not just
+        # the protected home child. When exclusions apply (darwin broad-home
+        # search on a local backend), route through find's path-scoped -prune
+        # instead — same traversal-prevention the find backend uses.
+        protected_paths = [
+            os.path.normpath(os.path.join(path, item))
+            for item in self._macos_search_exclusions(path)
+        ]
+        if protected_paths:
+            return self._search_with_grep_pruned(
+                pattern, path, file_glob, limit, offset, output_mode, context,
+                protected_paths,
+            )
         
         # Add context if requested
         if context > 0:
@@ -2704,13 +4262,33 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")
         
-        # Add pattern and path
+        # Add pattern and path. grep applies --exclude-dir to the command-line
+        # search root too, so passing the default relative root ``.`` causes
+        # ``.*`` to exclude the entire search. Anchor relative paths at the
+        # shell's live cwd; quoting $PWD separately keeps user paths escaped
+        # while working across local, container, and remote backends.
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        is_absolute = path.startswith(("/", "\\\\")) or bool(
+            re.match(r"^[A-Za-z]:[\\/]", path)
+        )
+        if is_absolute:
+            search_root = self._escape_shell_arg(path)
+        else:
+            relative_path = path[2:] if path.startswith("./") else path
+            search_root = '"$PWD"'
+            if relative_path not in {"", "."}:
+                search_root += f"/{self._escape_shell_arg(relative_path)}"
+        cmd_parts.append(search_root)
         
         # Fetch generously so we can compute total before slicing
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
+        # grep has no --max-columns: bound giant single-line matches (see the
+        # rg branch's containment comment) at the pipe layer instead. Safe for
+        # the file:line:content parser — truncation only ever drops content
+        # tail. Skipped for files_only/count where lines are paths/counts.
+        if output_mode not in ("files_only", "count"):
+            cmd_parts.extend(["|", "cut", "-c1-2000"])
         
         # `set -o pipefail` so grep's exit status propagates through `| head`
         # (without it the pipeline reports head's 0, masking grep's error 2).
@@ -2719,6 +4297,59 @@ class ShellFileOperations(FileOperations):
         # pipefail does not turn truncated results into false errors.
         cmd = "set -o pipefail; " + " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
+        return self._parse_grep_search_output(result, output_mode, limit, offset, context)
+
+    def _search_with_grep_pruned(self, pattern: str, path: str, file_glob: Optional[str],
+                                 limit: int, offset: int, output_mode: str, context: int,
+                                 protected_paths: List[str]) -> SearchResult:
+        """grep fallback with PATH-scoped protected-dir pruning.
+
+        Files are enumerated by ``find`` with the same ``-path ... -prune``
+        expression the find backend uses (traversal never enters the protected
+        dirs, so macOS never sees an access attempt), then handed to grep via
+        ``-exec {} +``. This exists because grep's own ``--exclude-dir``
+        matches basenames anywhere in the tree — it cannot express "only the
+        home-level Downloads". Hidden directories are pruned to mirror the
+        plain path's ``--exclude-dir='.*'``. Trade-off: with ``-exec {} +``
+        find folds grep's exit code into its own generic non-zero, so a hard
+        grep error surfaces as an empty result rather than exit 2 — acceptable
+        for this darwin-local-broad-search-only branch.
+        """
+        grep_parts = ["grep", "-nHE"]
+        if context > 0:
+            grep_parts.extend(["-C", str(context)])
+        if output_mode == "files_only":
+            grep_parts.append("-l")
+        elif output_mode == "count":
+            grep_parts.append("-c")
+        grep_parts.append(self._escape_shell_arg(pattern))
+
+        prune_terms = " -o ".join(
+            f"-path {self._escape_shell_arg(item)}" for item in protected_paths
+        )
+        find_parts = [
+            "find", self._escape_shell_arg(path or "."),
+            f"\\( {prune_terms} \\) -prune", "-o",
+            "\\( -type d -name '.*' \\) -prune", "-o",
+            "-type f",
+        ]
+        if file_glob:
+            find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
+        find_parts.extend(["-exec", *grep_parts, "{}", "+"])
+        fetch_limit = limit + offset + (200 if context > 0 else 0)
+        # Same giant-single-line bound as the plain grep path (grep lacks
+        # --max-columns); see the rg branch's containment comment.
+        line_cap = " | cut -c1-2000" if output_mode not in ("files_only", "count") else ""
+        cmd = (
+            "set -o pipefail; " + " ".join(find_parts)
+            + f" 2>/dev/null | head -n {fetch_limit}{line_cap}"
+        )
+        result = self._exec(cmd, timeout=60)
+        return self._parse_grep_search_output(result, output_mode, limit, offset, context)
+
+    def _parse_grep_search_output(self, result, output_mode: str, limit: int,
+                                  offset: int, context: int) -> SearchResult:
+        """Shared grep output parsing for the plain and pruned variants."""
         stdout, limit_reason = _search_stdout_and_limit(result)
 
         # _exec merges stderr into stdout, so grep's diagnostic lines

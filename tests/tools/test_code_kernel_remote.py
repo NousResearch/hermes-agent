@@ -244,6 +244,36 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
             self.assertIn("owner-1", owners)
             self.assertIn("owner-2", owners)
 
+    def test_eviction_skips_kernels_with_a_running_cell(self):
+        """Cap eviction must never kill a kernel mid-cell (the local-kernel
+        race from hermes-agent#101861): a busy kernel stays put and a
+        settled one goes instead, even if the busy one is older."""
+        import threading
+
+        gate = threading.Event()
+
+        def slow_cat(command):
+            gate.wait(10)
+            return {"output": json.dumps(_cell()), "returncode": 0}
+
+        busy_env = ScriptedEnv([
+            ("nohup", lambda c: {"output": "PID:4242\n", "returncode": 0}),
+            ("kill -0", lambda c: {"output": "ALIVE\n", "returncode": 0}),
+            ("cat ", slow_cat),
+        ])
+        with patch("tools.code_kernel._lifecycle_limits", return_value=(1, 1800)):
+            worker = threading.Thread(target=_run, args=(busy_env,), kwargs={"task": "busy"})
+            worker.start()
+            while not any(k.attached for k in _REMOTE_KERNELS.values()):
+                pass
+            env = ScriptedEnv(_spawn_ok_handlers([_cell()]))
+            _run(env, task="settled")
+            owners = {key[0] for key in _REMOTE_KERNELS}
+            self.assertIn("busy", owners)
+            gate.set()
+            worker.join(10)
+        self.assertFalse(any("kill 4242" in c for c in busy_env.commands))
+
 
 class TestDispatchIntegration(unittest.TestCase):
     """_execute_remote prefers the kernel and falls open to per-call."""

@@ -156,6 +156,10 @@ class RemoteKernel:
     last_used: float = field(default_factory=time.monotonic)
     execution_count: int = 0
     cell_seq: int = 0
+    # Cells currently running on this kernel. Reap/evict skip attached
+    # kernels: killing one mid-cell tears the runner out from under a live
+    # poll loop (same guard as tools.code_kernel, hermes-agent#101861).
+    attached: int = 0
 
 
 def _kernel_key(owner: str, env_type: str, task_env_id: str) -> Tuple:
@@ -233,7 +237,7 @@ def _reap_unlocked(idle_timeout: int) -> List["RemoteKernel"]:
     doomed = [
         key
         for key, kernel in _REMOTE_KERNELS.items()
-        if now - kernel.last_used > idle_timeout
+        if kernel.attached == 0 and now - kernel.last_used > idle_timeout
     ]
     return [_REMOTE_KERNELS.pop(key) for key in doomed]
 
@@ -250,7 +254,7 @@ def _evict_over_cap_unlocked(keep: Tuple) -> List["RemoteKernel"]:
     if len(_REMOTE_KERNELS) <= cap:
         return []
     by_age = sorted(
-        (key for key in _REMOTE_KERNELS if key != keep),
+        (key for key in _REMOTE_KERNELS if key != keep and _REMOTE_KERNELS[key].attached == 0),
         key=lambda key: _REMOTE_KERNELS[key].last_used,
     )
     doomed = by_age[: len(_REMOTE_KERNELS) - cap]
@@ -355,11 +359,6 @@ def execute_in_remote_kernel(
     the ``kernel`` sub-dict, matching the local kernel's result shape.
     """
     from tools.code_kernel import _resolve_owner
-    from tools.code_execution_tool import (
-        _rpc_poll_loop,
-        _ship_file_to_remote,
-    )
-    from tools.thread_context import propagate_context_to_thread
 
     owner = _resolve_owner(task_env_id)
     key = _kernel_key(owner, env_type, task_env_id)
@@ -401,9 +400,43 @@ def execute_in_remote_kernel(
 
     kernel.last_used = time.monotonic()
     with _REMOTE_KERNELS_LOCK:
+        kernel.attached += 1
         evicted = _evict_over_cap_unlocked(keep=key)
     for doomed in evicted:
         _kill(doomed)
+    try:
+        return _run_remote_cell(
+            kernel, key, code, env=env, task_env_id=task_env_id,
+            sandbox_tools=sandbox_tools, timeout=timeout,
+            max_tool_calls=max_tool_calls, reused=reused,
+            state_reset=state_reset, state_lost=state_lost,
+        )
+    finally:
+        with _REMOTE_KERNELS_LOCK:
+            kernel.attached -= 1
+            kernel.last_used = time.monotonic()
+
+
+def _run_remote_cell(
+    kernel: RemoteKernel,
+    key: Tuple,
+    code: str,
+    *,
+    env,
+    task_env_id: str,
+    sandbox_tools: frozenset,
+    timeout: int,
+    max_tool_calls: int,
+    reused: bool,
+    state_reset: bool,
+    state_lost: bool,
+) -> Dict[str, Any]:
+    from tools.code_execution_tool import (
+        _rpc_poll_loop,
+        _ship_file_to_remote,
+    )
+    from tools.thread_context import propagate_context_to_thread
+
     kernel.cell_seq += 1
     seq = f"{kernel.cell_seq:06d}"
     q_cells = shlex.quote(f"{kernel.kernel_dir}/cells")

@@ -235,7 +235,6 @@ def _systemd_run_user_scope_available() -> bool:
                             "--collect",
                             "--property", "MemoryAccounting=yes",
                             "--property", f"MemoryMax={_worker_memory_max_bytes()}",
-                            "--property", "OOMPolicy=kill",
                             "--",
                             "/bin/true",
                         ],
@@ -316,8 +315,6 @@ def _build_systemd_scope_argv(
         "MemoryAccounting=yes",
         "--property",
         f"MemoryMax={memory_max}",
-        "--property",
-        "OOMPolicy=kill",
         "--",
         *shell_argv,
     ]

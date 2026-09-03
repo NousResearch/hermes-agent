@@ -1092,6 +1092,22 @@ class TestOpenRouterPaidLaneGuard:
         assert model is None
         mark_unhealthy.assert_not_called()
 
+    def test_missing_key_does_not_mark_openrouter_unhealthy(self, monkeypatch, caplog):
+        """An absent optional fallback is not a provider health failure."""
+        import logging
+
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly", return_value={}), \
+             patch("agent.auxiliary_client._mark_provider_unhealthy") as mark_unhealthy, \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            client, model = _try_openrouter()
+
+        assert client is None
+        assert model is None
+        mark_unhealthy.assert_not_called()
+        assert not caplog.records
+
     def test_free_only_gate_reports_policy_not_credentials(self, monkeypatch, caplog):
         import logging
 
@@ -1208,6 +1224,23 @@ class TestGetTextAuxiliaryClient:
 
 class TestVisionClientFallback:
     """Vision client auto mode resolves known-good multimodal backends."""
+
+    def test_missing_nous_auth_is_quiet_and_not_marked_unhealthy(self, caplog):
+        """Discovery may inspect an unconfigured optional Nous fallback."""
+        import logging
+        from agent.auxiliary_client import _try_nous
+
+        with patch("agent.nous_rate_guard.nous_rate_limit_remaining", return_value=None), \
+             patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=None), \
+             patch("agent.auxiliary_client._mark_provider_unhealthy") as mark_unhealthy, \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            client, model = _try_nous()
+
+        assert client is None
+        assert model is None
+        mark_unhealthy.assert_not_called()
+        assert not caplog.records
 
     def test_vision_auto_includes_active_provider_when_configured(self, monkeypatch):
         """Active provider appears in available backends when credentials exist."""

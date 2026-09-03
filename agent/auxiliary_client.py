@@ -3354,7 +3354,12 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
 
     or_key = explicit_api_key or _scoped_key_env("OPENROUTER_API_KEY")
     if not or_key:
-        _mark_provider_unhealthy("openrouter", ttl=60)
+        # An unconfigured fallback is absent, not unhealthy.  In particular,
+        # availability probes run this path while deciding whether to expose
+        # vision tools; poisoning the health cache here both mislabels the
+        # condition as a payment failure and makes unrelated auxiliary calls
+        # skip OpenRouter after credentials are supplied in the same process.
+        logger.debug("Auxiliary OpenRouter client unavailable: no API key found")
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return _create_openai_client(api_key=or_key, base_url=OPENROUTER_BASE_URL,
@@ -3401,11 +3406,14 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
-        logger.warning(
+        # Missing optional credentials are expected during tool-availability
+        # probes and fallback discovery.  The explicit-provider resolver emits
+        # a warning for a real request; this low-level candidate must stay
+        # side-effect free when it is merely absent.
+        logger.debug(
             "Auxiliary Nous client unavailable: no Nous authentication found "
             "(run: hermes auth)."
         )
-        _mark_provider_unhealthy("nous", ttl=60)
         return None, None
     if runtime is None and nous:
         logger.debug(

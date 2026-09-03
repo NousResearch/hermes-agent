@@ -76,3 +76,40 @@ def test_unchanged_transform_prints_nothing_instead_of_repeating():
     )
 
     assert output == ""
+
+
+def test_truncation_falls_back_to_full_reprint_instead_of_silent_drop():
+    output = _post_stream_transform_output(
+        "Hello world",
+        {
+            "response_transformed": True,
+            "pre_transform_response": "Hello world foo",
+        },
+    )
+
+    assert output == "\n[Response transformed after streaming]\nHello world"
+
+
+def test_shortening_in_place_edit_falls_back_to_full_reprint():
+    output = _post_stream_transform_output(
+        "The answer is 42.",
+        {
+            "response_transformed": True,
+            "pre_transform_response": "The answer is 42. Trust me.",
+        },
+    )
+
+    assert output == (
+        "\n[Response transformed after streaming]\nThe answer is 42."
+    )
+
+
+def test_expanding_edit_after_shared_prefix_prints_divergent_tail():
+    streamed = "See docs at example.com/page"
+    transformed = "See docs at https://example.com/page for details."
+    output = _post_stream_transform_output(
+        transformed,
+        {"response_transformed": True, "pre_transform_response": streamed},
+    )
+
+    assert output == transformed[len("See docs at "):]

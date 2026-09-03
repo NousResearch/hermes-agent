@@ -3695,12 +3695,17 @@ def _post_stream_transform_output(response: str, result: dict | None) -> str:
     without repeating the already-rendered body. A replacement with no shared
     head has no safe suffix, so deliberately print the complete final response
     rather than silently dropping it.
+
+    The terminal is append-only, so a transform that *shortened* the response
+    cannot be represented this way: the deleted remainder of the streamed text
+    would stay visible while the divergent tail prints nothing. Such
+    truncations fall back to the complete re-print, which never drops content.
     """
     if not result or not result.get("response_transformed"):
         return ""
 
     original = result.get("pre_transform_response") or ""
-    if original:
+    if original and len(response) >= len(original):
         common_prefix_len = 0
         for streamed_char, transformed_char in zip(response, original):
             if streamed_char != transformed_char:

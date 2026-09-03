@@ -21,7 +21,9 @@ down:
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -433,6 +435,7 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         cfgmod, "load_config",
         lambda *a, **k: {"kanban": {"review_dispatch": True}},
     )
+    monkeypatch.setattr(kb, "_github_pr_is_terminal", lambda _url: False)
     pr_comment = "Opened https://github.com/example/repo/pull/123 for review."
 
     with kb.connect() as conn:
@@ -473,6 +476,192 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         assert kb.check_respawn_guard(
             conn, review_id, lane="review"
         ) == "rate_limit_cooldown"
+
+
+@pytest.mark.parametrize("terminal", [False, None])
+def test_active_pr_guard_fails_closed_for_open_or_ambiguous_pr(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal: bool | None,
+) -> None:
+    monkeypatch.setattr(kb, "_github_pr_is_terminal", lambda _url: terminal)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="resume implementation", assignee="worker")
+        kb.add_comment(
+            conn,
+            task_id,
+            author="worker",
+            body="Candidate: https://github.com/example/repo/pull/123",
+        )
+
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+def test_active_pr_guard_allows_verifiably_terminal_pr(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    looked_up: list[str] = []
+
+    def terminal(url: str) -> bool:
+        looked_up.append(url)
+        return True
+
+    monkeypatch.setattr(kb, "_github_pr_is_terminal", terminal)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="resume implementation", assignee="worker")
+        kb.add_comment(
+            conn,
+            task_id,
+            author="worker",
+            body="Merged https://github.com/example/repo/pull/123; resume the lane.",
+        )
+
+        assert kb.check_respawn_guard(conn, task_id) is None
+
+    assert looked_up == ["https://github.com/example/repo/pull/123"]
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "%2Fevil",
+        ".example",
+    ],
+)
+def test_active_pr_guard_fails_closed_for_malformed_numeric_suffix(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+) -> None:
+    looked_up: list[str] = []
+
+    def terminal(url: str) -> bool:
+        looked_up.append(url)
+        return True
+
+    monkeypatch.setattr(kb, "_github_pr_is_terminal", terminal)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="resume implementation", assignee="worker")
+        kb.add_comment(
+            conn,
+            task_id,
+            author="worker",
+            body=f"Candidate: https://github.com/example/repo/pull/123{suffix}",
+        )
+
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+    assert looked_up == []
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "?diff=split",
+        "#discussion_r123",
+        "/files",
+    ],
+)
+def test_active_pr_guard_preserves_unambiguous_url_suffixes(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+) -> None:
+    url = f"https://github.com/example/repo/pull/123{suffix}"
+    looked_up: list[str] = []
+
+    def terminal(candidate: str) -> bool:
+        looked_up.append(candidate)
+        return True
+
+    monkeypatch.setattr(kb, "_github_pr_is_terminal", terminal)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="resume implementation", assignee="worker")
+        kb.add_comment(conn, task_id, author="worker", body=f"Merged ({url}).")
+
+        assert kb.check_respawn_guard(conn, task_id) is None
+
+    assert looked_up == [url]
+
+
+@pytest.mark.parametrize("state", ["CLOSED", "MERGED"])
+def test_github_pr_terminal_lookup_accepts_closed_and_merged(
+    monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    monkeypatch.setattr(
+        kb.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"state": state}),
+            stderr="",
+        ),
+    )
+
+    assert kb._github_pr_is_terminal("https://github.com/example/repo/pull/123") is True
+
+
+def test_github_pr_terminal_lookup_reports_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        kb.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"state": "OPEN"}),
+            stderr="",
+        ),
+    )
+
+    assert kb._github_pr_is_terminal("https://github.com/example/repo/pull/123") is False
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.TimeoutExpired(cmd=["gh"], timeout=5),
+        FileNotFoundError("gh is unavailable"),
+    ],
+)
+def test_github_pr_terminal_lookup_is_ambiguous_when_unreachable(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(kb.subprocess, "run", fail)
+
+    assert kb._github_pr_is_terminal("https://github.com/example/repo/pull/123") is None
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        "Not GitHub: https://gitlab.com/example/repo/pull/123",
+        "Malformed: https://github.com/example/repo/pull/not-a-number",
+        "Ordinary progress comment with no URL",
+    ],
+)
+def test_active_pr_guard_ignores_non_pr_comments(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    comment: str,
+) -> None:
+    def unexpected_lookup(_url: str) -> bool:
+        raise AssertionError("non-PR comments must not trigger a GitHub lookup")
+
+    monkeypatch.setattr(kb, "_github_pr_is_terminal", unexpected_lookup)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="ordinary task", assignee="worker")
+        kb.add_comment(conn, task_id, author="worker", body=comment)
+
+        assert kb.check_respawn_guard(conn, task_id) is None
 
 
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(

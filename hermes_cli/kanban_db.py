@@ -8017,11 +8017,19 @@ DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
-# Pattern matching a GitHub PR URL in task comments.
+# Match the complete URL-like token so malformed text after the numeric PR id
+# cannot be silently discarded before terminal-state lookup.
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
-    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+    r'''https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+[^\s<>()\[\]{}"']*''',
     re.IGNORECASE,
 )
+_RESPAWN_GUARD_PR_URL_VALID_RE = re.compile(
+    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+"
+    r"(?:/[^\s?#]*)?(?:\?[^\s#]*)?(?:#[^\s]*)?",
+    re.IGNORECASE,
+)
+_RESPAWN_GUARD_PR_URL_TRAILING_PUNCTUATION = ".,;:!?"
+_RESPAWN_GUARD_PR_LOOKUP_TIMEOUT_SECONDS = 5
 
 
 @dataclass
@@ -9397,6 +9405,41 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _github_pr_is_terminal(pr_url: str) -> Optional[bool]:
+    """Return whether a GitHub PR is closed/merged, or ``None`` if unknown.
+
+    The respawn guard must fail closed: missing ``gh`` authentication, network
+    errors, timeouts, non-zero exits, and unexpected output all remain an
+    ``active_pr`` signal.  ``gh pr view`` is used instead of reading credentials
+    directly so public and authenticated private repositories share the user's
+    established GitHub CLI setup without exposing tokens.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "state"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_RESPAWN_GUARD_PR_LOOKUP_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        state = json.loads(result.stdout).get("state")
+    except (AttributeError, json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(state, str):
+        return None
+    normalized = state.upper()
+    if normalized == "OPEN":
+        return False
+    if normalized in {"CLOSED", "MERGED"}:
+        return True
+    return None
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -9447,8 +9490,10 @@ def check_respawn_guard(
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) and is open or its state cannot
+        be verified. A prior worker may still own the work; re-spawning risks
+        a duplicate PR on the same task. Verifiably closed/merged PRs do not
+        block a resumable lane.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -9536,14 +9581,24 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. GitHub PR URL in a recent comment. Open or unverifiable PRs remain a
+    #    fail-closed duplicate-work signal; terminal PRs no longer strand a
+    #    resumable lane for the rest of the 24-hour comment window.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        if not c["body"]:
+            continue
+        for match in _RESPAWN_GUARD_PR_URL_RE.finditer(c["body"]):
+            pr_url = match.group(0).rstrip(
+                _RESPAWN_GUARD_PR_URL_TRAILING_PUNCTUATION
+            )
+            if _RESPAWN_GUARD_PR_URL_VALID_RE.fullmatch(pr_url) is None:
+                return "active_pr"
+            if _github_pr_is_terminal(pr_url) is not True:
+                return "active_pr"
 
     return None
 

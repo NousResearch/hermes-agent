@@ -1464,6 +1464,15 @@ function persistPoolLimits(limits) {
   }
 }
 
+// rememberLog() state. Declared here, before the top-level
+// readPersistedPoolLimits() call below, because that call logs during module
+// evaluation; declaring these later crashed launch with `undefined.push` in
+// the packaged build (esbuild lowers the TDZ to undefined instead of throwing).
+const hermesLog = []
+let desktopLogBuffer = ''
+let desktopLogFlushTimer = null
+let desktopLogFlushPromise = Promise.resolve()
+
 let poolLimits = readPersistedPoolLimits()
 // Hard cap on local backends that are starting OR running (the LRU eviction
 // above is soft — it spares keepalive-fresh entries). Follows the live
@@ -1574,12 +1583,8 @@ let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
 let remoteHeaderRulesInstalled = false
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
-const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
-let desktopLogBuffer = ''
-let desktopLogFlushTimer = null
-let desktopLogFlushPromise = Promise.resolve()
 let nativeThemeListenerInstalled = false
 
 let bootProgressState = {

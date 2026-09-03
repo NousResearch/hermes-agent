@@ -221,16 +221,45 @@ async function relayConnections(): Promise<RelayConnection[]> {
  *  a seed can never bypass the warm/retention readiness gate. */
 async function relayRosterConnections(): Promise<RelayConnection[]> {
   const live = await relayConnections()
+  const registeredById = new Map<string, { id: string; kind?: string; remoteProfile?: string }>()
 
-  if (typeof host.connections !== 'function') {
-    return live
+  if (typeof host.connections === 'function') {
+    try {
+      const registered = await host.connections()
+
+      for (const connection of Array.isArray(registered) ? registered : []) {
+        const id = String(connection?.id || '')
+
+        if (id) {
+          registeredById.set(id, connection)
+        }
+      }
+    } catch {
+      // The union roster below is an independent credential-free registry
+      // projection and can carry the peer set through a transient IPC blip.
+    }
   }
 
-  try {
-    const registered = await host.connections()
-    const byConnection = new Map(live.map(connection => [connection.id, connection]))
+  if (typeof host.agents === 'function') {
+    try {
+      const union = await host.agents()
 
-    for (const connection of Array.isArray(registered) ? registered : []) {
+      for (const source of Array.isArray(union?.sources) ? union.sources : []) {
+        const id = String(source?.connectionId || '')
+
+        if (id && !registeredById.has(id)) {
+          registeredById.set(id, { id, kind: String(source?.kind || '') })
+        }
+      }
+    } catch {
+      // Live renderer routes and the primary registry read remain available.
+    }
+  }
+
+  const byConnection = new Map(live.map(connection => [connection.id, connection]))
+
+  try {
+    for (const connection of registeredById.values()) {
       const id = String(connection?.id || '')
 
       if (!id || byConnection.has(id)) {
@@ -283,7 +312,7 @@ async function relayRosterConnections(): Promise<RelayConnection[]> {
 
     return [...byConnection.values()]
   } catch {
-    return live
+    return [...byConnection.values()]
   }
 }
 

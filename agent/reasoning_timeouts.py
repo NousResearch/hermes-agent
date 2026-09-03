@@ -87,7 +87,8 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     # ``qwen3-.*-thinking``) breaks the moment NVIDIA or Alibaba
     # ships a slightly different naming shape.
     ("qwq-32b", 300),
-    ("qwen3", 180),
+    ("qwen3", 600),
+    ("kimi-k3", 600),
     # OpenAI o-series — known multi-minute TTFB.  Each variant
     # enumerated explicitly so bare ``o1`` doesn't over-match
     # ``olmo-1`` or hypothetical future community derivatives.
@@ -224,7 +225,9 @@ def get_reasoning_stale_timeout_floor(model: object) -> Optional[float]:
     >>> get_reasoning_stale_timeout_floor("deepseek/deepseek-v4-pro")
     600.0
     >>> get_reasoning_stale_timeout_floor("qwen/qwen3-235b-a22b-thinking")
-    180.0
+    600.0
+    >>> get_reasoning_stale_timeout_floor("moonshotai/kimi-k3")
+    600.0
     >>> get_reasoning_stale_timeout_floor("x-ai/grok-4-fast-reasoning")
     300.0
     >>> get_reasoning_stale_timeout_floor("anthropic/claude-opus-4-6")

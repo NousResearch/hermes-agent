@@ -21,6 +21,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +192,57 @@ class TestFlushAfterCompression:
                 "tool result",
                 "final answer",
             ]
+
+    def test_archive_and_compact_persists_system_prompt_in_same_write(self):
+        """In-place compaction must not leave transcript and prompt split (#84722).
+
+        A crash between archive_and_compact and a later update_system_prompt
+        used to resume with compacted messages and the pre-compaction prompt.
+        Both must land in the same write; a store failure must roll back the
+        archive.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+            db.create_session("s1", source="cli")
+            db.append_message("s1", "user", "old question")
+            db.append_message("s1", "assistant", "old answer")
+            db.update_system_prompt("s1", "OLD PROMPT")
+
+            compacted = [
+                {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "user", "content": "recent"},
+            ]
+            db.archive_and_compact(
+                "s1",
+                compacted,
+                system_prompt="NEW PROMPT",
+            )
+            row = db.get_session("s1")
+            assert row["system_prompt"] == "NEW PROMPT"
+            assert [m["content"] for m in db.get_messages("s1")] == [
+                "[CONTEXT COMPACTION] summary",
+                "recent",
+            ]
+
+            db.update_system_prompt("s1", "OLD PROMPT")
+            db.append_message("s1", "user", "another")
+
+            def _boom(conn, system_prompt):
+                raise RuntimeError("prompt store failed")
+
+            db._store_system_prompt = _boom  # type: ignore[method-assign]
+            before = [m["content"] for m in db.get_messages("s1")]
+            with pytest.raises(RuntimeError, match="prompt store failed"):
+                db.archive_and_compact(
+                    "s1",
+                    [{"role": "user", "content": "should-not-land"}],
+                    system_prompt="SHOULD NOT LAND",
+                )
+            assert [m["content"] for m in db.get_messages("s1")] == before
+            assert db.get_session("s1")["system_prompt"] == "OLD PROMPT"
 
     def test_abort_after_in_place_compaction_preserves_flush_baseline(self):
         """An aborted retry must survive flush, restart, and resume."""

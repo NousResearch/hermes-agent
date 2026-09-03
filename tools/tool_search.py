@@ -595,6 +595,47 @@ def _bm25_score(query_tokens: List[str], doc_tokens: List[str],
 
 _CorpusStats = Tuple[List[int], float, Dict[str, int], int]
 
+# ---------------------------------------------------------------------------
+# Relevance floor (ported from nearai/ironclaw#7965)
+# ---------------------------------------------------------------------------
+#
+# BM25 alone admits any document scoring above zero — which means sharing ONE
+# term with the query. A search for a capability that does not exist therefore
+# returns a plausible-looking ranked list instead of nothing, and the model
+# reads "results exist" as "it is in here somewhere" and rephrases instead of
+# stopping. IronClaw observed a production trace with 652 tool calls, 216 of
+# them tool_search, hunting a capability that did not exist ("run shell
+# command execute code python" -> a workflow-rerun tool sharing only "run").
+#
+# Fix: a document must match at least MIN_QUERY_TERM_COVERAGE of the query's
+# ANSWERABLE terms — those that appear anywhere in the index — before it is
+# offered. Unanswerable terms (words the catalog has never heard of) are not
+# counted against documents: a rare identifier plus 32 unknown words is 1-of-1
+# coverage, not 1-of-33.
+#
+# Coverage only engages from MIN_ANSWERABLE_TERMS_FOR_COVERAGE answerable
+# terms up. Short queries ("list issues", "send message") are where a coverage
+# rule costs real recall — wording legitimately differs by a word — while the
+# waste this targets is long descriptive hunts. IronClaw measured recall@10
+# dropping below their committed 0.95 gate when coverage applied to short
+# queries; the 4-term floor preserved it.
+
+MIN_QUERY_TERM_COVERAGE = 0.5
+
+MIN_ANSWERABLE_TERMS_FOR_COVERAGE = 4
+
+
+def _required_term_coverage(answerable_term_count: int) -> int:
+    """How many of a query's terms a document must match to be offered.
+
+    Takes the count of ANSWERABLE unique terms, not of typed words. One
+    answerable term needs that one match; everything else needs at least
+    half, rounded up.
+    """
+    if answerable_term_count < MIN_ANSWERABLE_TERMS_FOR_COVERAGE:
+        return 1
+    return math.ceil(answerable_term_count * MIN_QUERY_TERM_COVERAGE)
+
 
 def _corpus_stats(catalog: List[CatalogEntry]) -> _CorpusStats:
     """Compute the BM25 statistics shared by every query over a catalog."""
@@ -634,16 +675,28 @@ def search_catalog(
         corpus_stats = _corpus_stats(catalog)
     doc_lengths, avg_dl, doc_freq, n_docs = corpus_stats
 
+    # Relevance floor: unique query terms the catalog can answer at all
+    # (present in at least one document). See _required_term_coverage.
+    unique_query_tokens = set(query_tokens)
+    answerable = {t for t in unique_query_tokens if doc_freq.get(t, 0) > 0}
+    required_terms = _required_term_coverage(len(answerable))
+
     scored: List[Tuple[float, CatalogEntry]] = []
     exact_name = query.strip().lower()
     for entry in catalog:
+        # An exact name match is authoritative however few terms it shares.
         if entry.name.lower() == exact_name:
             scored.append((float("inf"), entry))
             continue
         s = _bm25_score(query_tokens, entry._tokens, doc_lengths, avg_dl,
                         doc_freq, n_docs)
         if s > 0:
-            scored.append((s, entry))
+            entry_token_set = set(entry._tokens)
+            matched_terms = sum(
+                1 for t in answerable if t in entry_token_set
+            )
+            if matched_terms >= required_terms:
+                scored.append((s, entry))
 
     if not scored:
         # Substring fallback against the original tool name.

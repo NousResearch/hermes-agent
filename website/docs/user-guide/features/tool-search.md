@@ -183,6 +183,14 @@ to any progressive-disclosure design, not specific to this implementation:
   back to a literal substring match on the tool name when no query
   token matches any document (e.g. searching `"hub"` where the token is
   `github`).
+- **Relevance floor:** a tool must match at least half of a query's
+  *answerable* terms (terms present anywhere in the catalog) before it
+  is offered — sharing one incidental word with a long query is not a
+  match. A hunt for a capability that doesn't exist returns no results
+  instead of a plausible-looking list the model rephrases against
+  forever. The floor only engages from four answerable terms up, so
+  short queries like "list issues" keep full recall, and an exact
+  tool-name query always matches.
 - **Parallel execution unwraps the bridge.** The batch planner decides
   concurrency on the *underlying* tool of a `tool_call`, not on the
   literal bridge name — so an MCP server opted in via

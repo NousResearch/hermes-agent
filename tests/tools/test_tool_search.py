@@ -289,6 +289,86 @@ class TestRetrieval:
         assert len(hits) <= 1
 
 
+class TestRelevanceFloor:
+    """Coverage floor ported from nearai/ironclaw#7965.
+
+    BM25 admits any doc sharing ONE term with the query; long descriptive
+    hunts for a capability that does not exist must return nothing rather
+    than a plausible-looking list the model rephrases against forever.
+    """
+
+    def _catalog(self):
+        from tools.tool_search import build_catalog
+        defs = [
+            _td("github_rerun_failed_workflow_run_jobs",
+                "Re-run failed jobs in a workflow run",
+                {"run_id": {"type": "string"}}),
+            _td("github_create_issue", "Open a new issue in a GitHub repository",
+                {"title": {"type": "string"}, "body": {"type": "string"}}),
+            _td("github_list_issues", "List issues in a repository",
+                {"repo": {"type": "string"}}),
+            _td("slack_send_message", "Post a message into a Slack channel",
+                {"channel": {"type": "string"}, "text": {"type": "string"}}),
+            # Make shell/command/execute/code answerable terms (present
+            # somewhere in the index) without any single doc covering the
+            # full hunt — mirrors the IronClaw production catalog shape.
+            _td("gist_save_snippet", "Save a shell command snippet as a gist",
+                {"content": {"type": "string"}}),
+            _td("codeql_scan", "Scan code for vulnerabilities and execute analysis",
+                {"repo": {"type": "string"}}),
+        ]
+        return build_catalog(defs)
+
+    def test_incidental_single_term_match_is_filtered(self):
+        # Six-term hunt sharing only "run" with the workflow tool: before
+        # the floor this returned the rerun tool; now it returns nothing.
+        from tools.tool_search import search_catalog
+        hits = search_catalog(
+            self._catalog(), "run shell command execute code python", limit=5)
+        assert hits == []
+
+    def test_short_queries_are_untouched(self):
+        # Coverage must not engage below 4 answerable terms — short queries
+        # legitimately differ by a word ("list issues" vs "list_issues").
+        from tools.tool_search import search_catalog
+        hits = search_catalog(self._catalog(), "list issues", limit=5)
+        assert any(h.name == "github_list_issues" for h in hits)
+        hits = search_catalog(self._catalog(), "send message", limit=5)
+        assert any(h.name == "slack_send_message" for h in hits)
+
+    def test_long_query_with_real_coverage_still_matches(self):
+        from tools.tool_search import search_catalog
+        hits = search_catalog(
+            self._catalog(), "create issue github repository title", limit=5)
+        assert hits and hits[0].name == "github_create_issue"
+        # And the floor prunes docs that only matched incidentally: the
+        # rerun/workflow tool shares no meaningful coverage with this query.
+        assert all(h.name != "github_rerun_failed_workflow_run_jobs"
+                   for h in hits)
+
+    def test_unanswerable_terms_do_not_punish_documents(self):
+        # A rare-but-answerable identifier plus many unknown words is
+        # 1-of-1 answerable coverage, not 1-of-N.
+        from tools.tool_search import search_catalog
+        noise = " ".join(f"zzqx{i}" for i in range(10))
+        hits = search_catalog(self._catalog(), f"slack {noise}", limit=5)
+        assert any(h.name == "slack_send_message" for h in hits)
+
+    def test_exact_name_match_bypasses_coverage(self):
+        from tools.tool_search import search_catalog
+        hits = search_catalog(self._catalog(), "github_create_issue", limit=5)
+        assert hits and hits[0].name == "github_create_issue"
+
+    def test_required_term_coverage_math(self):
+        from tools.tool_search import _required_term_coverage
+        assert _required_term_coverage(0) == 1
+        assert _required_term_coverage(1) == 1
+        assert _required_term_coverage(3) == 1
+        assert _required_term_coverage(4) == 2
+        assert _required_term_coverage(5) == 3
+        assert _required_term_coverage(6) == 3
+
+
 # ---------------------------------------------------------------------------
 # Assembly — the full passthrough/activate decision.
 # ---------------------------------------------------------------------------

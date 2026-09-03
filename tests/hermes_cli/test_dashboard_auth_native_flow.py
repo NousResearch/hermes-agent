@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import base64
 import time
+from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -33,6 +34,29 @@ from hermes_cli.dashboard_auth import (
 from hermes_cli.dashboard_auth import native_flow
 from hermes_cli.dashboard_auth.base import Session
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+
+class NousStubAuthProvider(StubAuthProvider):
+    name = "nous"
+    display_name = "Nous Research"
+
+
+class SelfHostedOidcStubAuthProvider(StubAuthProvider):
+    name = "self-hosted"
+    display_name = "Self-Hosted OIDC"
+
+
+class ProviderLinkParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.hrefs: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if tag == "a" and "provider-btn" in (values.get("class") or "").split():
+            href = values.get("href")
+            if href:
+                self.hrefs.append(href)
 
 
 # ---------------------------------------------------------------------------
@@ -256,17 +280,53 @@ def test_native_authorize_empty_provider_auto_selects_single_oauth(gated_client)
     assert "code=stub_code" in r.headers["location"]
 
 
-def test_native_authorize_empty_provider_ambiguous_multiple_oauth_404(gated_client):
-    """Two brokerable providers: the empty-provider convenience cannot pick
-    unambiguously, so the request still fails — the desktop must pass
-    ``?provider=`` explicitly."""
-    register_provider(_SecondStubProvider())
+def test_native_authorize_renders_multi_provider_chooser(gated_client):
+    """Multiple brokerable providers: empty provider returns a 200 chooser HTML
+    page preserving PKCE parameters so the user can choose between e.g. Nous
+    vs Self-Hosted OIDC."""
+    clear_providers()
+    register_provider(NousStubAuthProvider())
+    register_provider(SelfHostedOidcStubAuthProvider())
     _verifier, challenge = _make_pkce()
-    r = gated_client.get(
+    redirect_uri = "http://127.0.0.1:53999/cb"
+    state = 'state-with-unsafe-chars-"&<>'
+
+    response = gated_client.get(
         "/auth/native/authorize",
-        params=_native_authorize_params(challenge),
+        params={
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "redirect_uri": redirect_uri,
+            "state": state,
+        },
     )
-    assert r.status_code == 404
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate"
+    assert "Nous Research" in response.text
+    assert "Self-Hosted OIDC" in response.text
+
+    parser = ProviderLinkParser()
+    parser.feed(response.text)
+    assert len(parser.hrefs) == 2
+
+    links_by_provider = {}
+    for href in parser.hrefs:
+        parsed = urlparse(href)
+        query = parse_qs(parsed.query)
+        links_by_provider[query["provider"][0]] = (parsed, query)
+
+    assert set(links_by_provider) == {"nous", "self-hosted"}
+    for parsed, query in links_by_provider.values():
+        assert parsed.path == "/auth/native/authorize"
+        assert query["code_challenge"] == [challenge]
+        assert query["code_challenge_method"] == ["S256"]
+        assert query["redirect_uri"] == [redirect_uri]
+        assert query["state"] == [state]
+
+    for href in parser.hrefs:
+        selected = gated_client.get(href)
+        assert selected.status_code == 302
 
 
 def test_native_authorize_empty_provider_password_only_brokers_to_login(

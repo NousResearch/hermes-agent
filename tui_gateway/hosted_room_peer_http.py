@@ -206,12 +206,18 @@ class PeerRunsHTTPClient:
     """Drive a peer's dedicated group session via scoped async Runs APIs."""
 
     def __init__(
-        self, *, base_url: str, api_key: str, timeout_seconds: float = 30,
+        self, *, base_url: str, api_key: str, target_profile: str | None = None, timeout_seconds: float = 30,
         receipt_db_path: Path | str | None = None, poll_min_seconds: float = 0.1,
         poll_max_seconds: float = 2.0, clock: Callable[[], float] = time.monotonic) -> None:
         base_url, self.transport_security = validate_room_link_url(base_url)
         if api_key and len(api_key) < 16:
             raise ValueError("peer API key is missing or too short")
+        profile = str(target_profile or "").strip()
+        if profile and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", profile) is None:
+            raise ValueError("peer target profile is invalid")
+        self._profile_prefix = (
+            f"/p/{urllib.parse.quote(profile, safe='')}" if profile else ""
+        )
         self.base_url, self.api_key, self.clock = base_url, api_key, clock
         self.timeout_seconds = float(timeout_seconds)
         self.receipt_db_path = Path(receipt_db_path) if receipt_db_path else None
@@ -283,7 +289,7 @@ class PeerRunsHTTPClient:
         from hermes_cli.urllib_security import open_credentialed_url
         deadline, ambiguous = time.monotonic() + self.timeout_seconds, method == "POST"
         request = urllib.request.Request(
-            f"{self.base_url}{path}", method=method,
+            f"{self.base_url}{self._profile_prefix}{path}", method=method,
             data=None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8"),
             headers={
                 "Authorization": (
@@ -573,22 +579,61 @@ class PeerRunsHTTPClient:
                     "status_ttl_seconds": status_ttl_seconds})})
 
     def refresh_grant(
-        self, *, grant: str, ttl_seconds: float = 24 * 60 * 60,
-        capability_digest: str | None = None, execution_policy_digest: str | None = None,
+        self,
+        *,
+        grant: str,
+        ttl_seconds: float = 24 * 60 * 60,
+        capability_digest: str | None = None,
+        execution_policy_digest: str | None = None,
     ) -> Mapping[str, Any]:
         """Renew dispatch access only while its frozen authority is unchanged."""
-        refreshed = self._scoped_post(
-            "/v1/room-members/grants/refresh", grant, body={"ttl_seconds": ttl_seconds})
+        self._require_room_grant(grant)
+        refreshed = self._request(
+            "/v1/room-members/grants/refresh",
+            method="POST",
+            body={"ttl_seconds": ttl_seconds},
+            room_grant=grant,
+        )
         replacement = str(refreshed.get("grant") or "")
         if not replacement:
             raise PeerRunsHTTPError("peer returned no refreshed room grant")
-        # Persist only after the target proves the replacement authorizes the scoped endpoint.
-        probe = self.probe(grant=replacement)
-        error = digest_reauthorization_error(
-            GatewayRoomCatalog.from_mapping(probe.get("catalog")),
-            capability_digest=capability_digest, execution_policy_digest=execution_policy_digest)
-        if error is not None:
-            raise error
+        try:
+            # Persist only after the target proves the replacement can authorize
+            # the same scoped capability endpoint.
+            probe = self.probe(grant=replacement)
+            from gateway.hosted_room_peer import GatewayRoomCatalog
+
+            catalog = GatewayRoomCatalog.from_mapping(probe.get("catalog"))
+            if (
+                execution_policy_digest is not None
+                and catalog.execution_policy.policy_digest
+                != execution_policy_digest
+            ):
+                raise PeerRunsHTTPError(
+                    "peer room execution policy needs reauthorization",
+                    status_code=403,
+                    error_code="room_execution_policy_changed",
+                    not_admitted=True,
+                )
+            if (
+                capability_digest is not None
+                and catalog.catalog_digest != capability_digest
+            ):
+                raise PeerRunsHTTPError(
+                    "peer room capabilities need reauthorization",
+                    status_code=403,
+                    error_code="room_capability_catalog_changed",
+                    not_admitted=True,
+                )
+        except Exception:
+            try:
+                self.revoke_grant_exact(grant=replacement)
+            except Exception:
+                logger.warning(
+                    "Could not revoke an unpublished refreshed room grant",
+                    exc_info=True,
+                )
+            raise
         return {**refreshed, "catalog": probe.get("catalog")}
 
     def revoke_grant(self, *, grant: str) -> Mapping[str, Any]:
@@ -611,3 +656,13 @@ class PeerRunsHTTPClient:
         if not value or value in {"compat", "compatibility-only"}:
             raise PeerRunsHTTPError("a scoped room grant is required")
         return value
+
+    def revoke_grant_exact(self, *, grant: str) -> Mapping[str, Any]:
+        """Retire a single bearer, never the concurrent room grant replacing it."""
+        self._require_room_grant(grant)
+        return self._request(
+            "/v1/room-members/grants/revoke-exact",
+            method="POST",
+            body={},
+            room_grant=grant,
+        )

@@ -136,3 +136,44 @@ test('a respawn can await the in-flight stop before reusing the key', async () =
 
   assert.deepEqual(order, ['exit-signal', 'spawn'])
 })
+
+test('#102272: remote scope cleanup stays in-flight until the owned backend is gone', async () => {
+  const pool = new Map<string, PoolStopEntry>([['conn:lab::librarian', { process: null }]])
+  const events: string[] = []
+
+  let finishRemoteCleanup = () => {}
+
+  const remoteCleanup = new Promise<void>(resolve => {
+    finishRemoteCleanup = resolve
+  })
+
+  const stopper = createPoolStopper({
+    pool,
+    stopChild: () => events.push('stop-local-child'),
+    waitForExit: async () => {
+      events.push('local-child-exited')
+    },
+    afterStop: async key => {
+      events.push(`remote-cleanup-start:${key}`)
+      await remoteCleanup
+      events.push(`remote-cleanup-done:${key}`)
+    }
+  })
+
+  const stop = stopper.stop('conn:lab::librarian')
+  await Promise.resolve()
+
+  assert.equal(pool.has('conn:lab::librarian'), false)
+  assert.equal(stopper.inFlight('conn:lab::librarian'), stop)
+  assert.deepEqual(events, [
+    'stop-local-child',
+    'local-child-exited',
+    'remote-cleanup-start:conn:lab::librarian'
+  ])
+
+  finishRemoteCleanup()
+  await stop
+
+  assert.equal(stopper.inFlight('conn:lab::librarian'), undefined)
+  assert.equal(events.at(-1), 'remote-cleanup-done:conn:lab::librarian')
+})

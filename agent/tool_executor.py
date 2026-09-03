@@ -86,9 +86,60 @@ def _ensure_file_checkpoint(
     effective_task_id: str,
 ) -> None:
     """Checkpoint the same workspace path that the file tool will mutate."""
-    file_path = function_args.get("path", "")
-    if not file_path:
+    is_v4a_patch = (
+        function_name == "patch"
+        and (function_args.get("mode") or "replace") == "patch"
+    )
+    if is_v4a_patch:
+        from tools.patch_parser import parse_v4a_patch
+
+        operations, parse_error = parse_v4a_patch(function_args.get("patch") or "")
+        if parse_error:
+            return
+        file_paths = [
+            path
+            for operation in operations
+            for path in (operation.file_path, operation.new_path)
+            if path
+        ]
+    else:
+        file_path = function_args.get("path", "")
+        file_paths = [file_path] if file_path else []
+
+    if not file_paths:
         return
+
+    if is_v4a_patch:
+        from tools.file_tools import (
+            _check_cross_profile_path,
+            _check_sensitive_path,
+            _protected_instruction_config,
+            _protected_instruction_reason,
+        )
+        from tools.path_security import has_traversal_component
+
+        task_id = effective_task_id or "default"
+        if any(has_traversal_component(path) for path in file_paths):
+            return
+        if any(_check_sensitive_path(path, task_id) for path in file_paths):
+            return
+        if not function_args.get("cross_profile", False) and any(
+            _check_cross_profile_path(path, task_id) for path in file_paths
+        ):
+            return
+        protected_enabled, protected_patterns = _protected_instruction_config()
+        if protected_enabled and any(
+            _protected_instruction_reason(
+                path,
+                task_id,
+                enabled=protected_enabled,
+                extra_patterns=protected_patterns,
+            )
+            for path in file_paths
+        ):
+            # Avoid snapshotting protected files before patch_tool receives
+            # approval.  Calling its approval gate here would prompt twice.
+            return
 
     # File tools resolve relative paths against the task's live/session cwd,
     # which can differ from the Hermes process cwd (notably in Docker).  Resolve
@@ -96,9 +147,14 @@ def _ensure_file_checkpoint(
     # discover the project root.
     from tools.file_tools import _resolve_path_for_task
 
-    resolved_path = _resolve_path_for_task(file_path, effective_task_id or "default")
-    work_dir = agent._checkpoint_mgr.get_working_dir_for_path(str(resolved_path))
-    agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+    work_dirs = {
+        agent._checkpoint_mgr.get_working_dir_for_path(
+            str(_resolve_path_for_task(path, effective_task_id or "default"))
+        )
+        for path in file_paths
+    }
+    for work_dir in work_dirs:
+        agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
 
 
 def _budget_for_agent(agent) -> BudgetConfig:

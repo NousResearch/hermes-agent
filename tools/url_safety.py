@@ -199,6 +199,13 @@ _ALWAYS_BLOCKED_NETWORKS = (
 # to 198.18.0.0/15 behind local proxy/benchmark infrastructure.
 _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
     "multimedia.nt.qq.com.cn",
+    # QQ Bot API: bots.qq.com (app access token) and api.sgroup.qq.com
+    # (WebSocket gateway) resolve into the same 198.18.0.0/15 fake-ip
+    # range when the local proxy runs in TUN mode with fake-ip DNS
+    # (SpeedCat/Clash). Token fetch and gateway-URL fetch fail with
+    # "Blocked request to private/internal address" otherwise.
+    "bots.qq.com",
+    "api.sgroup.qq.com",
 })
 
 _MAX_SSRF_CONNECT_IPS = 8

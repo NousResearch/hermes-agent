@@ -4654,6 +4654,24 @@ def _run_job_script(
             }
         env = build_subprocess_env()
         env.update(env_overlay)
+        # Tell the script it is running as a REAL scheduled fire, not by hand.
+        #
+        # Watchdog scripts commonly fire once and then delete their own state
+        # file to disarm ("alert the operator, then stay quiet until the
+        # condition clears"). That makes them NOT idempotent: running one
+        # manually to check on it consumes the pending alert -- the message
+        # goes to the operator's terminal, the state file is gone, and the
+        # next scheduled run has nothing left to report. The person the alert
+        # was for never hears about it.
+        #
+        # Nothing in the environment distinguished the two callers, so a
+        # script could not defend itself. Scripts gate their destructive state
+        # transitions on this: set = real run, mutate state; absent = manual
+        # run, report findings and change nothing.
+        #
+        # Internal runner->subprocess signal (like HERMES_HOME above), not
+        # user-facing configuration -- there is nothing here for a user to set.
+        env["HERMES_CRON_RUN"] = "1"
         # Use the job's workdir as the subprocess cwd when configured,
         # otherwise default to the scripts-dir parent (back-compat).
         # NEVER mutate the Python process cwd — that would leak into

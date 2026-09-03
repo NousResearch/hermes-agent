@@ -712,6 +712,9 @@ class TestVisionRegistration:
         assert entry.toolset == "vision"
         assert entry.is_async is True
         assert callable(entry.handler)
+        # Native-vision sessions do not require an auxiliary vision client.
+        # A static auxiliary probe must therefore never hide this tool.
+        assert entry.check_fn is None
 
         props = entry.schema.get("parameters", {}).get("properties", {})
         assert "image_url" in props

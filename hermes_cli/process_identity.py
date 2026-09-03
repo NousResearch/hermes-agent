@@ -53,7 +53,7 @@ LEDGER_FILENAME = "spawn-ledger.json"
 
 #: Purposes a reaper may treat as "safe to kill when the owner is gone".
 #: Interactive processes (chat, REPLs) are deliberately NOT in this set.
-REAPABLE_PURPOSES = frozenset({"serve", "dashboard", "gateway", "mcp-helper"})
+REAPABLE_PURPOSES = frozenset({"serve", "dashboard", "gateway", "mcp-helper", "memory", "hindsight", "memory-hindsight"})
 
 _IS_WINDOWS = platform.system() == "Windows"
 

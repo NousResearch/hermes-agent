@@ -1840,6 +1840,86 @@ class HindsightMemoryProvider(MemoryProvider):
                     client._ensure_started()
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write("\n=== Daemon started successfully ===\n")
+                    # Ledger rung (#100060): register the daemon so the
+                    # updater can identify it as an owned memory-provider
+                    # holder and pause it before mutating the venv.  Without
+                    # a ledger entry the scan treats a ``hindsight``+``daemon``
+                    # cmdline as pausable by shape alone, which already
+                    # unblocks the Desktop hand-off; the ledger entry adds
+                    # a stronger, PID-verified identity that the updater's
+                    # ``_ledger_reapable_memory_daemon_pids`` rung can reap
+                    # even when the cmdline is unreadable, and that survives
+                    # PID reuse via the (pid, create_time) pair.  Best-effort.
+                    try:
+                        from hermes_cli.process_identity import register_child  # noqa: PLC0415
+
+                        import psutil  # noqa: PLC0415
+
+                        def _maybe_register(pid: int) -> None:
+                            try:
+                                register_child(int(pid), "memory-hindsight")
+                            except Exception:
+                                pass
+
+                        mgr = getattr(client, "_manager", None)
+                        daemon_pid = None
+                        if mgr is not None:
+                            for meth_name in ("get_daemon_pid", "daemon_pid"):
+                                try:
+                                    attr = getattr(mgr, meth_name, None)
+                                    if attr is None:
+                                        continue
+                                    if callable(attr):
+                                        # Try with profile arg first, then without.
+                                        try:
+                                            daemon_pid = attr(profile)  # type: ignore[call-arg]
+                                        except TypeError:
+                                            daemon_pid = attr()  # type: ignore[call-arg]
+                                    else:
+                                        daemon_pid = attr
+                                    if daemon_pid:
+                                        daemon_pid = int(daemon_pid)
+                                        break
+                                except Exception:
+                                    daemon_pid = None
+                                    continue
+                            if daemon_pid is None:
+                                try:
+                                    from pathlib import Path
+
+                                    home = Path.home()
+                                    for cand in [
+                                        home / f".hindsight/profiles/{profile}.pid",
+                                        home / f".hindsight/{profile}.pid",
+                                    ]:
+                                        if cand.is_file():
+                                            try:
+                                                txt = cand.read_text(encoding="utf-8").strip().split()[0]
+                                                daemon_pid = int(txt)
+                                                break
+                                            except Exception:
+                                                continue
+                                except Exception:
+                                    pass
+                        if daemon_pid:
+                            _maybe_register(daemon_pid)
+                        else:
+                            # Fallback: scan for any Hindsight daemon from this venv.
+                            try:
+                                from hermes_cli._scan_venv_blockers import _is_memory_provider_daemon  # noqa: PLC0415
+
+                                for proc in psutil.process_iter(["pid", "cmdline"]):
+                                    try:
+                                        pid2 = int(proc.info["pid"])
+                                        cmdline2 = " ".join(proc.info["cmdline"] or [])
+                                        if _is_memory_provider_daemon(cmdline2):
+                                            _maybe_register(pid2)
+                                    except Exception:
+                                        continue
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                 except Exception as e:
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"\n=== Daemon startup failed: {e} ===\n")

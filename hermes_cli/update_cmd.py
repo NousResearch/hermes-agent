@@ -5860,6 +5860,171 @@ def _leftover_pausable_gateway_pids(
     return pids
 
 
+def _is_memory_provider_daemon_holder(cmdline: str) -> bool:
+    """Whether *cmdline* is a memory-provider daemon the updater can stop.
+
+    Delegates to the scan's canonical ``_is_memory_provider_daemon`` matcher
+    so the Desktop preflight exemption and the updater's stop logic never
+    drift — the same mismatch that produced the launcher/worker dead-end for
+    gateways.  Never raises.
+    """
+    try:
+        from hermes_cli._scan_venv_blockers import _is_memory_provider_daemon
+    except Exception:
+        # Fallback matcher — conservative ``hindsight`` + ``daemon``.
+        low = (cmdline or "").lower()
+        return "hindsight" in low and "daemon" in low
+    try:
+        return bool(_is_memory_provider_daemon(cmdline))
+    except Exception:
+        low = (cmdline or "").lower()
+        return "hindsight" in low and "daemon" in low
+
+
+def _leftover_memory_provider_daemon_pids(
+    matches: list[tuple[int, str, str]],
+) -> list[int] | None:
+    """PIDs from *matches* when every remaining holder is a memory-provider daemon.
+
+    Memory-provider daemons (Hindsight) run from the venv's interpreter
+    (``venv\\\\Scripts\\\\hindsight-embed.exe`` or ``pythonw.exe -m
+    hindsight_api.main --daemon``) and therefore hold venv ``.pyd`` files
+    exactly like a gateway launcher.  The updater stops gateways before
+    the venv guard, but it has no dedicated pause machinery for memory
+    daemons — a ``local_external`` Hindsight bank with
+    ``HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT=0`` must stay up, so it always
+    holds the venv and dead-ends the Desktop hand-off as a foreign
+    blocker (``venv shim still locked`` / ``Close other processes``,
+    #100060).
+
+    When the guard sees only memory daemons left, the venv cannot be
+    mutated, but refusing is also wrong: the daemon will restart on the
+    next memory access (``HindsightEmbedded._ensure_started`` recreates
+    it), so stopping it now is safe.  The preflight
+    (``_scan_venv_blockers._is_memory_provider_daemon``) already exempts
+    these processes so the Desktop hand-off reaches the updater; this
+    rung is the updater-side half that actually stops them.
+
+    Returns ``None`` when any holder is not a memory daemon — an operator
+    REPL, a stray script, or the Desktop backend has no daemon-stop
+    machinery and must keep blocking.  Re-reads argv via psutil where
+    possible so 120-char truncation cannot hide the ``daemon`` token.
+    Never raises.
+    """
+    from hermes_cli._scan_venv_blockers import _is_memory_provider_daemon as _is_mem
+
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        psutil = None
+
+    pids: list[int] = []
+    for pid, _name, cmdline in matches:
+        argv = cmdline
+        if psutil is not None:
+            try:
+                argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
+            except Exception:
+                pass
+        # Use the canonical matcher; fall back to local helper on import failure.
+        try:
+            is_mem = _is_mem(argv)
+        except Exception:
+            is_mem = _is_memory_provider_daemon_holder(argv)
+        if not is_mem:
+            return None
+        pids.append(int(pid))
+    return pids
+
+
+def _ledger_reapable_memory_daemon_pids(
+    matches: list[tuple[int, str, str]],
+) -> list[int]:
+    """PIDs positively identified by the spawn ledger as orphaned memory daemons.
+
+    Ledger-strong variant of ``_leftover_memory_provider_daemon_pids``:
+    instead of inferring the daemon shape from cmdline, look each holder up
+    in the machine spawn ledger (``hermes_cli.process_identity``).  A holder
+    qualifies when ALL of:
+
+    - its ``(pid, create_time)`` matches a live ledger entry (PID reuse
+      cannot forge this pair);
+    - the entry's purpose is a memory-daemon kind (``memory`` / ``hindsight``
+      / ``memory-hindsight``);
+    - the entry's recorded SPAWNER is provably dead (``spawner_is_dead``).
+
+    Unlike the pure-cmdline rung, this is safe in ANY update context — no
+    hand-off contract needed — because the ownership claim is explicit.
+    Holders not in the ledger are simply not returned (they fall through to
+    the later cmdline rung); they never disqualify the identified ones.
+    Never raises.
+    """
+    try:
+        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+    except Exception:
+        return []
+    holder_pids = {int(pid) for pid, _name, _cmd in matches}
+    out: list[int] = []
+    for entry in ledger_entries():
+        if entry.get("purpose") not in ("memory", "hindsight", "memory-hindsight"):
+            continue
+        pid = entry.get("pid")
+        if not isinstance(pid, int) or pid not in holder_pids:
+            continue
+        if spawner_is_dead(entry) is True:
+            out.append(int(pid))
+    return out
+
+
+def _leftover_gateway_or_memory_daemon_pids(
+    matches: list[tuple[int, str, str]],
+) -> list[int] | None:
+    """PIDs when every holder is either a pausable gateway OR a memory daemon.
+
+    Handles the mixed-holder case (gateway + Hindsight) that the two
+    single-kind leftover helpers would each refuse.  A Desktop hand-off
+    that left both a respawned gateway and a Hindsight daemon holding the
+    venv would otherwise dead-end, even though the updater owns BOTH
+    kinds.  Like the single-kind helpers, this re-reads argv via psutil
+    so truncation cannot hide the tokens, and returns ``None`` the instant
+    any holder is neither.
+    """
+    try:
+        from hermes_cli._scan_venv_blockers import (
+            _is_memory_provider_daemon as _is_mem,
+            _is_pausable_gateway as _is_gw,
+        )
+    except Exception:
+        return None
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        psutil = None
+    pids: list[int] = []
+    for pid, _name, cmdline in matches:
+        argv = cmdline
+        if psutil is not None:
+            try:
+                argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
+            except Exception:
+                pass
+        is_gw = False
+        is_mem = False
+        try:
+            is_gw = bool(_is_gw(argv))
+        except Exception:
+            pass
+        try:
+            is_mem = bool(_is_mem(argv))
+        except Exception:
+            low = (argv or "").lower()
+            is_mem = "hindsight" in low and "daemon" in low
+        if not (is_gw or is_mem):
+            return None
+        pids.append(int(pid))
+    return pids
+
+
 def _refuse_gateway_ancestor_tree_kill(
     pids: list[int], *, gateway_mode: bool
 ) -> bool:
@@ -8375,6 +8540,89 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     except Exception as exc:
                         logger.debug(
                             "Could not stop leftover gateway %s: %s", _pid, exc
+                        )
+                _time.sleep(1.0)
+                _venv_holders = _m()._detect_venv_python_processes()
+        if _venv_holders:
+            # Memory-provider daemon rung — ledger-strong (orphaned).  Mirrors
+            # _ledger_reapable_backend_pids but for Hindsight daemons.  The
+            # spawn ledger's (pid, create_time, purpose=memory, spawner)
+            # contract makes this safe in ANY update context: the daemon
+            # self-registered at startup (via the Hindsight plugin's
+            # register_child after _ensure_started) and its supervisor is
+            # provably dead — nothing will respawn it if we stop it here.
+            # The daemon recreates on the next memory access via the
+            # embedded manager, so stopping it now unblocks the venv mutation
+            # for free (#100060).
+            _ledger_memory = _m()._ledger_reapable_memory_daemon_pids(_venv_holders)
+            if _ledger_memory:
+                print(
+                    f"  ⚠ {len(_ledger_memory)} ledger-identified orphaned "
+                    "memory-provider daemon(s) hold the venv; stopping their trees"
+                )
+                _m()._stop_process_trees(_ledger_memory)
+                _time.sleep(1.0)
+                _venv_holders = _m()._detect_venv_python_processes()
+        if _venv_holders:
+            # Memory-provider daemon rung — cmdline shape.  The preflight
+            # (_scan_venv_blockers._is_memory_provider_daemon) already
+            # exempts these holders so the Desktop hand-off reaches the
+            # updater, but the holder scan can still see them mid-update
+            # (e.g. a hand-rolled Scheduled Task with no ledger entry, or
+            # a just-respawned daemon).  When every remaining holder is a
+            # memory daemon by shape (hindsight+daemon), stopping them is
+            # safe — they restart on next memory use — and refusing would
+            # dead-end the update exactly as the bug reported.
+            _memory_holders = _m()._leftover_memory_provider_daemon_pids(_venv_holders)
+            if _memory_holders is not None and _memory_holders:
+                from gateway.status import get_process_start_time, terminate_pid
+
+                print(
+                    f"  ⚠ {len(_memory_holders)} memory-provider daemon(s) "
+                    "still hold the venv; stopping them"
+                )
+                for _pid in _memory_holders:
+                    try:
+                        pid_int = int(_pid)
+                        terminate_pid(
+                            pid_int,
+                            force=True,
+                            expected_start_time=get_process_start_time(pid_int),
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "Could not stop leftover memory daemon %s: %s", _pid, exc
+                        )
+                _time.sleep(1.0)
+                _venv_holders = _m()._detect_venv_python_processes()
+        if _venv_holders:
+            # Mixed gateway+memory-daemon holders: neither single-kind
+            # leftover helper will fire (each requires ALL holders to be
+            # one kind), but a deployment that runs both a gateway and a
+            # Hindsight bank from the same install would otherwise
+            # dead-end here even though BOTH kinds are owned by the
+            # updater's pause machinery.  Handle the union.
+            _gw_mem_holders = _m()._leftover_gateway_or_memory_daemon_pids(_venv_holders)
+            if _gw_mem_holders is not None and _gw_mem_holders:
+                from gateway.status import get_process_start_time, terminate_pid
+
+                print(
+                    f"  ⚠ {len(_gw_mem_holders)} gateway/memory-provider "
+                    "process(es) still hold the venv; stopping them"
+                )
+                for _pid in _gw_mem_holders:
+                    try:
+                        pid_int = int(_pid)
+                        terminate_pid(
+                            pid_int,
+                            force=True,
+                            expected_start_time=get_process_start_time(pid_int),
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "Could not stop leftover gateway/memory daemon %s: %s",
+                            _pid,
+                            exc,
                         )
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()

@@ -234,6 +234,101 @@ def _is_pausable_gateway(cmdline: str) -> bool:
     return looks_like_gateway_command_line(cmdline)
 
 
+def _is_memory_provider_daemon(cmdline: str) -> bool:
+    """Return True when *cmdline* is a memory-provider daemon the updater can pause.
+
+    Hindsight is the first such provider (``hindsight_api.main --daemon``,
+    ``hindsight_embed`` / ``hindsight-embed.exe ... daemon``).  The daemon
+    runs from the Hermes venv (``venv\\\\Scripts\\\\hindsight-embed.exe -p hermes
+    daemon start`` or ``pythonw.exe -m hindsight_api.main --daemon``) and
+    therefore holds the venv's ``.pyd`` files exactly like a ``serve``
+    backend, but the existing ``serve``/``gateway`` ledger rungs do not
+    recognise it — it falls through as a foreign blocker and dead-ends the
+    Desktop hand-off (``venv shim still locked after 15s`` / the "Close other
+    processes" dialog, #100060).
+
+    The scan must not report such a daemon as a blocker when the updater's
+    memory-daemon rung downstream owns it: the updater stops the daemon
+    before mutating the venv and lets it restart on next memory use (the
+    local_embedded manager's ``_ensure_started`` recreates it).  Detection
+    is intentionally conservative — ``hindsight`` + ``daemon`` must BOTH be
+    present — so a user script that merely imports ``hindsight`` (e.g. a
+    data-migration script) is never exempted.
+
+    This mirrors ``_is_pausable_gateway``: a dedicated matcher for the
+    memory-daemon shape, shared by the preflight and the updater's
+    post-pause ``_leftover_memory_provider_daemon_pids`` so the two views
+    cannot drift.
+    """
+    low = (cmdline or "").lower()
+    if "hindsight" not in low:
+        return False
+    # ``hindsight_api.main --daemon`` / ``hindsight_embed`` manager / the
+    # ``hindsight-embed.exe daemon`` shim all contain the word ``daemon``.
+    # Require it to avoid exempting a non-daemon Hindsight client import.
+    if "daemon" not in low:
+        return False
+    return True
+
+
+def _updater_owned_memory_daemon_entry(pid: int, cmdline: str) -> dict | None:
+    """Ledger entry for a deferred memory-provider daemon, or ``None`` when it must block.
+
+    Same contract as ``_updater_owned_backend_entry`` but for memory daemons
+    (purpose ``memory`` / ``hindsight`` / ``memory-hindsight``).  The plugin
+    registers its embedded daemon in the spawn ledger (``register_child``)
+    when it starts the daemon via ``HindsightEmbedded._ensure_started``; the
+    updater then owns the pause/resume exactly as it owns gateways and
+    ``serve`` backends.
+
+    For backward compatibility a daemon that was started before the ledger
+    rung existed (e.g. a hand-rolled Scheduled Task pointing into the Hermes
+    venv) has no ledger entry.  The caller (``main()``) treats such a
+    cmdline-matched daemon as unconditionally deferrable — the updater's
+    ``_leftover_memory_provider_daemon_pids`` rung stops it by cmdline
+    pattern even without ledger identity — so this helper returns ``None``
+    for unregistered PIDs and the caller falls through to the unconditional
+    ``_is_memory_provider_daemon`` exemption.
+    """
+    if not _is_memory_provider_daemon(cmdline):
+        return None
+    try:
+        from hermes_cli.process_identity import (  # noqa: PLC0415
+            ledger_entries,
+            spawner_is_dead,
+        )
+
+        entries = ledger_entries()
+    except Exception:
+        return None
+    for entry in entries:
+        if entry.get("pid") != pid:
+            continue
+        if entry.get("purpose") not in ("memory", "hindsight", "memory-hindsight"):
+            return None
+        dead = spawner_is_dead(entry)
+        if dead is not False:
+            return entry
+        if _spawner_is_this_handoff_desktop(entry):
+            return entry
+        return None
+    return None
+
+
+def _deferred_memory_daemon_evidence(entries: list[dict]) -> list[dict]:
+    """Sanitized decision evidence for deferred memory-provider daemons.
+
+    Same shape as ``_deferred_backend_evidence`` but for memory purposes.
+    """
+    evidence = []
+    for entry in entries:
+        pid = entry.get("pid")
+        if not isinstance(pid, int):
+            continue
+        evidence.append({"pid": pid, "purpose": entry.get("purpose"), "port": entry.get("port")})
+    return evidence
+
+
 def _is_updater_owned_backend(pid: int, cmdline: str) -> bool:
     """Return True when *pid* is a Hermes backend the CLI updater can stop.
 
@@ -370,9 +465,30 @@ def main() -> None:
     processes = []
     exempted_gateways = 0
     deferred_entries: list[dict] = []
+    deferred_memory_entries: list[dict] = []
+    exempted_memory_daemons = 0
     for pid, name, cmdline in matches:
         if _is_pausable_gateway(cmdline):
             exempted_gateways += 1
+            continue
+        if _is_memory_provider_daemon(cmdline):
+            mem_entry = _updater_owned_memory_daemon_entry(pid, cmdline)
+            if mem_entry is not None:
+                deferred_memory_entries.append(mem_entry)
+                continue
+            # No ledger entry (e.g. hand-rolled Scheduled Task pointing into the
+            # Hermes venv) — the daemon still holds the venv but the updater's
+            # memory-daemon rung (._leftover_memory_provider_daemon_pids) stops
+            # it by cmdline pattern before mutating the venv.  Reporting it here
+            # would dead-end the Desktop hand-off before that rung can run, so
+            # exempt it unconditionally by shape — same rationale as the pausable
+            # gateway exemption.  Identity is intentionally shape-only: a
+            # ``hindsight`` + ``daemon`` cmdline is distinctive enough that a
+            # non-daemon holder cannot be misclassified (see
+            # _is_memory_provider_daemon's conservative matcher), and a stray
+            # python script holding the venv is fundamentally not a daemon and
+            # must keep blocking (#100060).
+            exempted_memory_daemons += 1
             continue
         deferred_entry = _updater_owned_backend_entry(pid, cmdline)
         if deferred_entry is not None:
@@ -405,6 +521,15 @@ def main() -> None:
         # Diagnostic only: sanitized evidence (structured ledger identity,
         # never argv) explaining which holders the deferral consumed (#98350).
         "deferred_backend_evidence": _deferred_backend_evidence(deferred_entries),
+        # Diagnostic only: memory-provider daemons (Hindsight) present but
+        # not counted as blockers because the updater's memory-daemon rung
+        # stops them before the venv mutation (#100060).  Pausable by shape
+        # (hindsight+daemon) even without a ledger entry, so a hand-rolled
+        # Scheduled Task pointing into the Hermes venv does not dead-end the
+        # Desktop hand-off.
+        "pausable_memory_daemons": exempted_memory_daemons,
+        "deferred_memory_daemons": len(deferred_memory_entries),
+        "deferred_memory_daemon_evidence": _deferred_memory_daemon_evidence(deferred_memory_entries),
     }
     print(json.dumps(data))
     sys.exit(0)

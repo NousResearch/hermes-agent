@@ -47,14 +47,23 @@ class _ScopeHandle:
 
 
 class _FakeScopeModule:
-    """Stands in for ``nemo_relay.scope`` with a controllable pop."""
+    """Stands in for ``nemo_relay.scope`` with a controllable pop/push."""
 
-    def __init__(self, wedge_event: threading.Event | None = None) -> None:
+    def __init__(
+        self,
+        wedge_event: threading.Event | None = None,
+        wedge_push_event: threading.Event | None = None,
+    ) -> None:
         self._wedge = wedge_event
+        self._wedge_push = wedge_push_event
         self.pushed: list[str] = []
         self.popped: list[str] = []
 
     def push(self, name: str, scope_type: Any, **kwargs: Any) -> _ScopeHandle:
+        if self._wedge_push is not None:
+            # Simulates a wedged native pipeline on the push side — the
+            # ensure_session()/interpreter-shutdown-fallback class of bug.
+            self._wedge_push.wait()
         self.pushed.append(name)
         return _ScopeHandle(name)
 
@@ -91,8 +100,9 @@ class _FakeRelay:
         *,
         wedge_pop: threading.Event | None = None,
         wedge_flush: threading.Event | None = None,
+        wedge_push: threading.Event | None = None,
     ) -> None:
-        self.scope = _FakeScopeModule(wedge_pop)
+        self.scope = _FakeScopeModule(wedge_pop, wedge_push)
         self.subscribers = _FakeSubscribers(wedge_flush)
         self.ScopeType = _FakeScopeType()
 
@@ -125,7 +135,7 @@ def _release_wedges_after_test():
     """
     yield
     for runtime, fake in _LIVE_FAKES:
-        for wedge in (fake.scope._wedge, fake.subscribers._wedge):
+        for wedge in (fake.scope._wedge, fake.scope._wedge_push, fake.subscribers._wedge):
             if wedge is not None:
                 wedge.set()
         runtime.shutdown()
@@ -254,6 +264,69 @@ class TestBoundedScopeFinalization:
                 "wedged logical scopes must be retained for diagnostics, "
                 "not silently dropped"
             )
+
+
+class _RefusingExecutor:
+    """Stands in for the shared executor once the interpreter starts
+    shutting down: ``submit`` raises RuntimeError exactly like a real
+    ``concurrent.futures.ThreadPoolExecutor`` does after ``_python_exit``."""
+
+    def submit(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("cannot schedule new futures after interpreter shutdown")
+
+
+class TestBoundedShutdownFallbackLane:
+    """``ensure_session()``'s own ``except RuntimeError`` branch — taken when
+    the shared executor refuses new work during interpreter shutdown — must
+    stay bounded like the sibling shutdown lanes in ``run_in_session`` and
+    ``close_session`` (fixed for those two 2026-08-10/12); a native push that
+    wedges on this lane must not run unbounded on the calling thread.
+    """
+
+    def test_ensure_session_returns_when_executor_refuses_and_push_wedges(
+        self, coordinator, monkeypatch
+    ):
+        wedge = threading.Event()  # never set
+        runtime = _make_runtime(_FakeRelay(wedge_push=wedge))
+        monkeypatch.setattr(
+            relay_runtime, "_scope_op_executor", lambda: _RefusingExecutor()
+        )
+
+        def _call() -> str:
+            # A wedged push on the bounded fallback lane surfaces as a clean
+            # TimeoutError (ensure_session's existing except-Exception wrapper
+            # re-raises) rather than hanging — that's the bound working, not
+            # a second defect.
+            try:
+                runtime.ensure_session({"session_id": "sess-shutdown"})
+            except TimeoutError:
+                return "timed-out"
+            return "no-timeout"
+
+        returned, result = _run_with_join(_call)
+        assert returned, (
+            "ensure_session's interpreter-shutdown fallback must return even "
+            "when the native scope.push wedges — it must not run the push "
+            "unbounded on the calling thread"
+        )
+        assert result == ["timed-out"], (
+            "a wedged push on the shutdown-fallback lane must raise a bounded "
+            "TimeoutError, not hang forever nor silently succeed"
+        )
+
+    def test_ensure_session_shutdown_fallback_result_propagates(
+        self, coordinator, monkeypatch
+    ):
+        """Healthy push on the shutdown-fallback lane still sets the handle."""
+        runtime = _make_runtime(_FakeRelay())
+        monkeypatch.setattr(
+            relay_runtime, "_scope_op_executor", lambda: _RefusingExecutor()
+        )
+
+        session = runtime.ensure_session({"session_id": "sess-shutdown-ok"})
+        assert session is not None
+        assert session.handle is not None
+        assert relay_runtime.SESSION_SCOPE in runtime.relay.scope.pushed
 
 
 class TestHealthyPathUnchanged:

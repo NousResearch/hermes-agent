@@ -551,16 +551,23 @@ class RelayRuntime:
                             metadata=scope_metadata,
                         ).result(timeout=_SCOPE_OP_TIMEOUT)
                     except RuntimeError:
-                        # Interpreter shutdown: executor refuses new futures;
-                        # push synchronously (no agent turn waits at exit).
-                        session.handle = context.run(
-                            self.relay.scope.push,
-                            SESSION_SCOPE,
-                            self.relay.ScopeType.Agent,
-                            handle=parent_handle,
-                            data=data,
-                            input={},
-                            metadata=scope_metadata,
+                        # Interpreter shutdown: the executor refuses new
+                        # futures, but the push must stay bounded even here —
+                        # a wedged native call on this lane would otherwise
+                        # block process exit forever, the same defect class
+                        # run_in_session's and close_session's own shutdown
+                        # lanes were bounded against.
+                        session.handle = _run_bounded_on_exit_thread(
+                            lambda: context.run(
+                                self.relay.scope.push,
+                                SESSION_SCOPE,
+                                self.relay.ScopeType.Agent,
+                                handle=parent_handle,
+                                data=data,
+                                input={},
+                                metadata=scope_metadata,
+                            ),
+                            _SCOPE_OP_TIMEOUT,
                         )
                 except Exception:
                     session.context = None

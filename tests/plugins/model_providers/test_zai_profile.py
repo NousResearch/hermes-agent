@@ -147,7 +147,7 @@ class TestZaiGLM53ReasoningEffort:
         ("effort", "expected"),
         [
             ("low", "low"),
-            ("medium", "medium"),
+            ("medium", "high"),
             ("high", "high"),
             ("max", "max"),
             ("xhigh", "max"),

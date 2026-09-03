@@ -120,12 +120,12 @@ KIMI_K3_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
 GLM52_EFFORTS: tuple[str, ...] = ("high", "max")
 GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
-#: GLM-5.3 widens the knob to a graded low/medium/high/max scale — verified
-#: live on api.z.ai/api/coding/paas/v4 (issue #91789, 2026-08-21): every
-#: level accepted with monotonic reasoning-token scaling (low=4, medium=11,
-#: high=98, max=125 on the probe prompt). ``xhigh`` requests the top tier.
-GLM53_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
-GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
+#: GLM-5.3 native reasoning_effort knob: low/high/max (accepted universally across
+#: both open.bigmodel.cn and api.z.ai). ``medium`` maps to ``high`` (matching Kimi K3)
+#: and ``xhigh`` maps to ``max``, ensuring requests are never rejected by China or
+#: international endpoints (#96222).
+GLM53_EFFORTS: tuple[str, ...] = ("low", "high", "max")
+GLM53_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
 
 #: DeepSeek V4 OpenAI-compat endpoint: low/medium/high/max; ``xhigh``
 #: requests the top tier (matches the shipped profile mapping).

@@ -125,33 +125,54 @@ _INSTALL_FAILED = False  # sentinel: distinct from "not yet tried"
 _install_failure_reason: str = ""  # reason tag when _resolved_path is _INSTALL_FAILED
 
 # Circuit breaker: after _CRASH_LIMIT consecutive spawn/execution failures,
-# disable tirith for the rest of the process to prevent agent hangs (#41400).
-# Reset on successful execution (see _record_tirith_crash / check_command_security).
+# pause Tirith briefly to prevent agent hangs (#41400), then permit one
+# half-open recovery probe. Any recognized Tirith verdict closes the breaker.
 #
-# Thread safety: _crash_count and _circuit_open are module-level globals
+# Thread safety: the breaker fields are module-level globals
 # mutated without a lock. check_command_security can be called from
 # concurrent agent threads (gateway multi-session). The race is benign —
-# at worst two threads both increment past _CRASH_LIMIT and both set
-# _circuit_open = True, opening the breaker one call early. No data
-# corruption or security bypass is possible. This intentionally matches
+# at worst two threads both increment past _CRASH_LIMIT and both set the
+# open timestamp, opening the breaker one call early. This intentionally matches
 # the lock-free style of error counters in mcp_tool.py rather than the
 # locked _warn_once pattern, because the worst case is harmless.
 _CRASH_LIMIT = 3
+_CIRCUIT_RETRY_SECONDS = 60.0
 _crash_count: int = 0
 _circuit_open: bool = False
+_circuit_opened_at: float | None = None
+
+
+def _reset_tirith_crash_state() -> None:
+    """Close the circuit after Tirith or its managed install recovers."""
+    global _crash_count, _circuit_open, _circuit_opened_at
+    _crash_count = 0
+    _circuit_open = False
+    _circuit_opened_at = None
 
 
 def _record_tirith_crash() -> None:
     """Increment the crash counter and open the circuit breaker if needed."""
-    global _crash_count, _circuit_open
+    global _crash_count, _circuit_open, _circuit_opened_at
     _crash_count += 1
     if _crash_count >= _CRASH_LIMIT:
         _circuit_open = True
+        _circuit_opened_at = time.monotonic()
         logger.warning(
             "tirith circuit breaker opened after %d consecutive failures; "
-            "disabling for the rest of the process",
+            "retrying after %.0fs",
             _crash_count,
+            _CIRCUIT_RETRY_SECONDS,
         )
+
+
+def _circuit_retry_is_due() -> bool:
+    """Return whether an open circuit may make one recovery attempt."""
+    if not _circuit_open or _circuit_opened_at is None:
+        return False
+    if time.monotonic() - _circuit_opened_at < _CIRCUIT_RETRY_SECONDS:
+        return False
+    _reset_tirith_crash_state()
+    return True
 
 # Background install thread coordination
 _install_lock = threading.Lock()
@@ -652,6 +673,7 @@ def _clear_install_failed():
     # deletes the binary) surfaces in the log again instead of being
     # silently suppressed by a stale dedupe key from before the fix.
     _reset_spawn_warning_state()
+    _reset_tirith_crash_state()
     try:
         os.unlink(_failure_marker_path())
     except OSError:
@@ -743,7 +765,10 @@ def _download_file(
     from agent.secret_scope import get_secret
     token = get_secret("GITHUB_TOKEN")
     if token:
-        req.add_header("Authorization", f"token {token}")
+        # ``urllib`` copies ordinary headers to redirect requests, including
+        # cross-origin GitHub release-asset redirects. Keep the credential on
+        # the initial github.com request only.
+        req.add_unredirected_header("Authorization", f"token {token}")
     written = 0
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp, open(dest, "wb") as f:
@@ -1499,7 +1524,9 @@ def _is_explicit_path(configured_path: str) -> bool:
     return configured_path != "tirith"
 
 
-def _resolve_tirith_path(configured_path: str) -> str:
+def _resolve_tirith_path(
+    configured_path: str, *, background_only: bool = False
+) -> str | None:
     """Resolve the tirith binary path, auto-installing if necessary.
 
     If the user explicitly set a path (anything other than the bare "tirith"
@@ -1535,7 +1562,7 @@ def _resolve_tirith_path(configured_path: str) -> str:
     if not explicit and not is_platform_supported():
         _resolved_path = _INSTALL_FAILED
         _install_failure_reason = "unsupported_platform"
-        return expanded
+        return None if background_only else expanded
 
     # Explicit path: check it and stop. Never auto-download a replacement.
     if explicit:
@@ -1550,7 +1577,7 @@ def _resolve_tirith_path(configured_path: str) -> str:
         logger.warning("Configured tirith path %r not found; scanning disabled", configured_path)
         _resolved_path = _INSTALL_FAILED
         _install_failure_reason = "explicit_path_missing"
-        return expanded
+        return None if background_only else expanded
 
     # Default "tirith" — always re-run cheap local checks so a manual
     # install is picked up even after a previous network failure (P2 fix:
@@ -1574,7 +1601,7 @@ def _resolve_tirith_path(configured_path: str) -> str:
     # A policy opt-out is not an installation failure. Do not cache or persist
     # it, so changing the setting can take effect immediately in this process.
     if not _tirith_auto_install_allowed():
-        return expanded
+        return None if background_only else expanded
 
     # Local checks failed.  If a previous install attempt already failed,
     # skip the network retry — UNLESS the failure was "cosign_missing" and
@@ -1587,13 +1614,20 @@ def _resolve_tirith_path(configured_path: str) -> str:
             _clear_install_failed()
             install_failed = False
         else:
-            return expanded
+            return None if background_only else expanded
 
     # If a background install thread is running, don't start a parallel one —
     # return the configured path; the OSError handler in check_command_security
     # will apply fail_open until the thread finishes.
     if _install_thread is not None and _install_thread.is_alive():
-        return expanded
+        return None if background_only else expanded
+
+    # Approval is a latency-sensitive path. Startup normally starts this
+    # worker first, but alternate entrypoints and very early commands must not
+    # turn a release download into a synchronous approval stall.
+    if background_only:
+        ensure_installed(log_failures=False)
+        return None
 
     # Check disk failure marker before attempting network download.
     # Preserve the marker's real reason so in-memory retry logic can
@@ -1797,13 +1831,17 @@ def check_command_security(command: str) -> dict:
     if not cfg["tirith_enabled"]:
         return {"action": "allow", "findings": [], "summary": ""}
 
-    # Circuit breaker: if tirith has crashed _CRASH_LIMIT times in a row,
-    # stop trying for the rest of the process.  Without this, a corrupted
-    # or missing binary causes every tool call to hit the same spawn failure
-    # → fail-open → agent retry loop, hanging the user for 20+ minutes
-    # (issue #41400).
-    if _circuit_open:
-        return {"action": "allow", "findings": [], "summary": "tirith disabled (circuit breaker)"}
+    # Circuit breaker: pause after repeated failures, then make a half-open
+    # recovery attempt. Without this, a corrupted binary can make every tool
+    # call hit the same slow failure; without the retry, a repaired or updated
+    # binary stays disabled for the rest of a long-lived process.
+    if _circuit_open and not _circuit_retry_is_due():
+        action = "allow" if cfg["tirith_fail_open"] else "block"
+        return {
+            "action": action,
+            "findings": [],
+            "summary": f"tirith unavailable (circuit breaker, fail-{'open' if action == 'allow' else 'closed'})",
+        }
 
     # Unsupported manager platform (currently native Windows and unknown
     # architectures). Skip the resolver entirely; pattern-matching guards
@@ -1811,7 +1849,9 @@ def check_command_security(command: str) -> dict:
     if not is_platform_supported():
         return {"action": "allow", "findings": [], "summary": ""}
 
-    tirith_path = _resolve_tirith_path(cfg["tirith_path"])
+    tirith_path = _resolve_tirith_path(
+        cfg["tirith_path"], background_only=True
+    )
     timeout = cfg["tirith_timeout"]
     fail_open = cfg["tirith_fail_open"]
 
@@ -1860,10 +1900,15 @@ def check_command_security(command: str) -> dict:
 
     # Map exit code to action
     exit_code = result.returncode
+    if exit_code in (0, 1, 2):
+        # A recognized verdict proves the scanner is responsive. This must
+        # reset failures for warn/block verdicts too; otherwise unrelated
+        # earlier failures accumulate and open a supposedly consecutive
+        # failure breaker.
+        _reset_tirith_crash_state()
+
     if exit_code == 0:
         action = "allow"
-        # Successful execution — reset circuit breaker
-        _crash_count = 0
     elif exit_code == 1:
         action = "block"
     elif exit_code == 2:
@@ -1918,8 +1963,15 @@ def _is_app_tld_finding(finding: dict) -> bool:
         return False
     if finding.get("rule_id") != "lookalike_tld":
         return False
-    for field in ("value", "tld", "detail", "description", "message"):
+    for field in ("value", "tld", "detail"):
         val = finding.get(field)
-        if val is not None and ".app" in str(val).lower():
+        if val is not None and str(val).strip().casefold() in {"app", ".app"}:
+            return True
+    for field in ("description", "message"):
+        val = finding.get(field)
+        if val is not None and re.search(
+            r"(?i)(?:^|[\s\"'])\.app[\"']?\s+(?:tld|top-level domain)\b",
+            str(val),
+        ):
             return True
     return False

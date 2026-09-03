@@ -29,6 +29,7 @@ def _reset_resolved_path():
     _tirith_mod._install_failure_reason = ""
     _tirith_mod._crash_count = 0
     _tirith_mod._circuit_open = False
+    _tirith_mod._circuit_opened_at = None
     with _tirith_mod._in_process_update_state_lock:
         _tirith_mod._in_process_update_states.clear()
     # The global test fixture disables runtime installs. Most tests in this
@@ -41,6 +42,7 @@ def _reset_resolved_path():
     _tirith_mod._install_failure_reason = ""
     _tirith_mod._crash_count = 0
     _tirith_mod._circuit_open = False
+    _tirith_mod._circuit_opened_at = None
     with _tirith_mod._in_process_update_state_lock:
         _tirith_mod._in_process_update_states.clear()
 
@@ -593,6 +595,41 @@ class TestCosignVerification:
 
 
 class TestReleaseDownloadLimits:
+    def test_github_token_is_not_forwarded_to_release_asset_redirect(
+        self, tmp_path, monkeypatch
+    ):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.read.return_value = b""
+        urlopen = MagicMock(return_value=response)
+        monkeypatch.setattr(_tirith_mod.urllib.request, "urlopen", urlopen)
+        monkeypatch.setattr(
+            "agent.secret_scope.get_secret",
+            lambda key: "secret-token" if key == "GITHUB_TOKEN" else None,
+        )
+
+        _tirith_mod._download_file(
+            "https://github.com/sheeki03/tirith/releases/latest/download/checksums.txt",
+            str(tmp_path / "checksums.txt"),
+            max_bytes=4,
+        )
+
+        initial_request = urlopen.call_args.args[0]
+        assert initial_request.get_header("Authorization") == "token secret-token"
+        redirected_request = (
+            _tirith_mod.urllib.request.HTTPRedirectHandler().redirect_request(
+                initial_request,
+                None,
+                302,
+                "Found",
+                {},
+                "https://release-assets.githubusercontent.com/checksums.txt",
+            )
+        )
+        assert redirected_request is not None
+        assert redirected_request.get_header("Authorization") is None
+
     def test_download_rejects_response_over_limit(self, tmp_path, monkeypatch):
         response = MagicMock()
         response.__enter__.return_value = response
@@ -798,6 +835,42 @@ class TestBackgroundInstall:
         _tirith_mod._install_thread = None
         _tirith_mod._resolved_path = None
 
+    def test_approval_path_starts_missing_install_in_background(self):
+        """A first command must not synchronously download Tirith."""
+        _tirith_mod._resolved_path = None
+        _tirith_mod._install_thread = None
+        mock_thread = MagicMock()
+        mock_thread.is_alive.return_value = False
+
+        with (
+            patch(
+                "tools.tirith_security._load_security_config",
+                return_value={
+                    "tirith_enabled": True,
+                    "tirith_path": "tirith",
+                    "tirith_timeout": 5,
+                    "tirith_fail_open": True,
+                },
+            ),
+            patch("tools.tirith_security.is_platform_supported", return_value=True),
+            patch("tools.tirith_security.shutil.which", return_value=None),
+            patch(
+                "tools.tirith_security._managed_tirith_path",
+                return_value="/nonexistent/tirith",
+            ),
+            patch("tools.tirith_security._read_failure_reason", return_value=None),
+            patch("tools.tirith_security.threading.Thread", return_value=mock_thread),
+            patch("tools.tirith_security._install_tirith") as install,
+            patch("tools.tirith_security.subprocess.run") as run,
+        ):
+            result = check_command_security("echo hi")
+
+        assert result["action"] == "allow"
+        assert "unavailable" in result["summary"]
+        mock_thread.start.assert_called_once_with()
+        install.assert_not_called()
+        run.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Disk failure marker persistence (P2)
@@ -898,6 +971,55 @@ class TestSpawnWarningDedup:
         )
 
 
+class TestCircuitBreakerRecovery:
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_recognized_warn_resets_prior_failures(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        _tirith_mod._crash_count = _tirith_mod._CRASH_LIMIT - 1
+        mock_run.return_value = _mock_run(2, _json_stdout([], "review"))
+
+        result = check_command_security("echo review")
+
+        assert result["action"] == "warn"
+        assert _tirith_mod._crash_count == 0
+        assert not _tirith_mod._circuit_open
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_open_circuit_honors_fail_closed(self, mock_cfg, mock_run):
+        mock_cfg.return_value = {**_CFG, "tirith_fail_open": False}
+        _tirith_mod._crash_count = _tirith_mod._CRASH_LIMIT
+        _tirith_mod._circuit_open = True
+        _tirith_mod._circuit_opened_at = time.monotonic()
+
+        result = check_command_security("echo blocked")
+
+        assert result["action"] == "block"
+        assert "fail-closed" in result["summary"]
+        mock_run.assert_not_called()
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_open_circuit_makes_half_open_recovery_probe(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        _tirith_mod._crash_count = _tirith_mod._CRASH_LIMIT
+        _tirith_mod._circuit_open = True
+        _tirith_mod._circuit_opened_at = 100.0
+        mock_run.return_value = _mock_run(0, _json_stdout())
+
+        with patch(
+            "tools.tirith_security.time.monotonic",
+            return_value=100.0 + _tirith_mod._CIRCUIT_RETRY_SECONDS,
+        ):
+            result = check_command_security("echo recovered")
+
+        assert result["action"] == "allow"
+        assert not _tirith_mod._circuit_open
+        assert _tirith_mod._circuit_opened_at is None
+        mock_run.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # .app TLD suppression (issue #24461)
 # ---------------------------------------------------------------------------
@@ -954,6 +1076,9 @@ class TestIsAppTldFinding:
         ({"rule_id": "lookalike_tld", "message": "Domain uses '.app' TLD"}, True),
         ({"rule_id": "shortened_url", "value": ".app"}, False),  # wrong rule_id
         ({"rule_id": "lookalike_tld", "value": ".zip"}, False),  # other TLD
+        ({"rule_id": "lookalike_tld", "value": ".apple"}, False),
+        ({"rule_id": "lookalike_tld", "description": "Domain uses '.application' TLD"}, False),
+        ({"rule_id": "lookalike_tld", "message": "Docs mention .app; domain uses '.zip' TLD"}, False),
     ])
     def test_app_tld_detection(self, finding, expected):
         from tools.tirith_security import _is_app_tld_finding

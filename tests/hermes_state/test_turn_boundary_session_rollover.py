@@ -3,6 +3,7 @@
 import json
 from dataclasses import replace
 from pathlib import Path
+import threading
 
 from hermes_state import SessionDB
 from session_rollover import (
@@ -97,6 +98,23 @@ def test_completed_turn_records_recovery_status_without_arming_a_rollover(
     assert status["last_progress_at"] >= status["state_entered_at"] > 0
 
 
+def test_zero_headroom_does_not_turn_closeout_iterations_into_a_fixed_drain() -> None:
+    """Ratio-only rollout must not fence a healthy low-usage 272K model."""
+    decision = evaluate_lifecycle(LifecycleBudget(
+        context_window_tokens=272_000,
+        prompt_tokens=2_000,
+        reserved_output_tokens=0,
+        reserved_tool_result_tokens=0,
+        reserved_checkpoint_tokens=0,
+        max_iterations=3,
+        iterations_used=1,
+        closeout_iterations=2,
+    ))
+
+    assert decision.state is LifecycleState.HEALTHY
+    assert decision.accept_new_tools is True
+
+
 def test_stalled_turn_does_not_advance_last_meaningful_progress(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -150,6 +168,39 @@ def test_doctor_recovery_request_is_idempotent_and_ends_with_explicit_reason(
     assert handoff["recovery_key"] == "k1"
     # The consumed request cannot arm a second continuation.
     assert rollover.adopt_at_turn_boundary("stalled", active_work=False) is None
+
+
+def test_concurrent_doctor_recovery_arms_one_key_and_child_binds_that_key(tmp_path: Path) -> None:
+    """The check-and-arm transition is one write transaction, not read/patch/reread."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("stalled", source="cli", model_config={"provider": "openrouter"})
+    start = threading.Barrier(3)
+    results: dict[str, str | None] = {}
+
+    def arm(key: str) -> None:
+        start.wait()
+        results[key] = TurnBoundaryRollover(db).request_recovery(
+            "stalled", idempotency_key=key,
+        )
+
+    first = threading.Thread(target=arm, args=("k1",))
+    second = threading.Thread(target=arm, args=("k2",))
+    first.start()
+    second.start()
+    start.wait()
+    first.join()
+    second.join()
+
+    winners = [key for key, outcome in results.items() if outcome == "armed"]
+    assert len(winners) == 1
+    winner = winners[0]
+    config = json.loads(db.get_session("stalled")["model_config"])
+    assert config["provider"] == "openrouter"
+    assert config["_turn_boundary_rollover_pending"]["recovery_key"] == winner
+    child = TurnBoundaryRollover(db).adopt_at_turn_boundary("stalled", active_work=False)
+    assert child
+    handoff = json.loads(db.get_session(child)["model_config"])["turn_boundary_handoff"]
+    assert handoff["recovery_key"] == winner
 
 
 def test_recovery_request_preserves_runtime_config_and_refuses_ended_sessions(
@@ -444,6 +495,8 @@ def test_core_checkpoint_carries_available_result_evidence(monkeypatch, tmp_path
     assert mark_completed_turn(Agent(), {
         "completed": True,
         "api_calls": 1,
+        "pending_workers": ["worker-1", "worker-2"],
+        "changed_files": ["session_rollover.py"],
         "verification_evidence": ["pytest tests/hermes_state: passed"],
         "result_pointers": ["artifact://review/42"],
         "external_effects": ["local commit created"],
@@ -451,26 +504,66 @@ def test_core_checkpoint_carries_available_result_evidence(monkeypatch, tmp_path
     })
 
     config = json.loads(db.get_session("old")["model_config"])
+    assert config["turn_boundary_lifecycle"]["in_flight_workers"] == 2
     checkpoint = config["turn_boundary_lifecycle"]["checkpoint"]
     assert checkpoint["goal"] == "close review blockers"
     assert checkpoint["worktree"] == str(tmp_path)
+    assert checkpoint["pending_workers"] == ["worker-1", "worker-2"]
+    assert checkpoint["changed_files"] == ["session_rollover.py"]
     assert checkpoint["verification_evidence"] == ["pytest tests/hermes_state: passed"]
     assert checkpoint["result_pointers"] == ["artifact://review/42"]
     assert checkpoint["external_effects"] == ["local commit created"]
     assert checkpoint["external_readback"] == ["git status clean"]
 
 
+def test_completed_turn_uses_turn_iterations_not_lineage_wide_api_calls(monkeypatch, tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("old", source="cli")
+
+    class Agent:
+        session_id = "old"
+        _session_db = db
+        max_iterations = 3
+        context_compressor = type("Compressor", (), {
+            "context_length": 272_000,
+            "threshold_tokens": 250_000,
+            "last_prompt_tokens": 2_000,
+        })()
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {
+            "enabled": True, "ratio": 0.75,
+            "reserved_checkpoint_tokens": 1,
+        }},
+    )
+    assert mark_completed_turn(Agent(), {
+        "completed": True,
+        "turn_iterations": 0,
+        "api_calls": 1_123,
+    }) is False
+
+    status = json.loads(db.get_session("old")["model_config"])["turn_boundary_lifecycle"]
+    assert status["state"] == "healthy"
+    assert status["api_calls"] == 1_123
+
+
 def test_mark_pending_merges_without_clobbering_concurrent_model_mutation(tmp_path: Path) -> None:
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("old", source="cli", model_config={"provider": "first"})
-    original_patch = db.patch_session_model_config
+    start = threading.Barrier(2)
 
-    def patch_with_concurrent_change(session_id, patch):
-        original_patch(session_id, {"reasoning_effort": "xhigh", "yolo": True})
-        original_patch(session_id, patch)
+    def mutate_runtime_config() -> None:
+        start.wait()
+        db.patch_session_model_config(
+            "old", {"reasoning_effort": "xhigh", "yolo": True},
+        )
 
-    db.patch_session_model_config = patch_with_concurrent_change
+    writer = threading.Thread(target=mutate_runtime_config)
+    writer.start()
+    start.wait()
     assert TurnBoundaryRollover(db).mark_pending("old", threshold_tokens=10)
+    writer.join()
     row = db.get_session("old")
     assert row is not None
     config = json.loads(row["model_config"])

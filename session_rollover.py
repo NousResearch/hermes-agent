@@ -116,31 +116,12 @@ class TurnBoundaryRollover:
         """Persist a request after a response has fully committed."""
         if not session_id or threshold_tokens <= 0:
             return False
-        row = self._db.get_session(session_id)
-        if not row or row.get("ended_at") is not None:
-            return False
-        if _model_config(row).get(_PENDING_KEY):
-            return True
-        # Do not read/replace model_config: /model, /reasoning and /yolo can
-        # mutate independent keys between the read above and this write.
-        patch = getattr(self._db, "patch_session_model_config", None)
-        if not callable(patch):
-            return False
-        lifecycle_data = dict(lifecycle or {})
-        checkpoint = lifecycle_data.get("checkpoint")
-        lifecycle_data["checkpoint"] = _checkpoint_with_repo_evidence(
-            checkpoint if isinstance(checkpoint, Mapping) else {}, row
-        )
         arm_key = f"turn-boundary:{uuid.uuid4().hex}"
-        patch_data: dict[str, Any] = {
-            _PENDING_KEY: {
-                "threshold_tokens": int(threshold_tokens),
-                "idempotency_key": arm_key,
-            },
-        }
-        patch_data[_LIFECYCLE_KEY] = lifecycle_data
-        patch(session_id, patch_data)
-        return True
+        return self._claim_pending(
+            session_id,
+            {"threshold_tokens": int(threshold_tokens), "idempotency_key": arm_key},
+            lifecycle=lifecycle,
+        ) is not None
 
     def request_recovery(
         self, session_id: str, *, idempotency_key: str
@@ -155,25 +136,50 @@ class TurnBoundaryRollover:
         """
         if not session_id or not idempotency_key:
             return None
-        row = self._db.get_session(session_id)
-        if not row or row.get("ended_at") is not None:
-            return None
-        if _model_config(row).get(_PENDING_KEY):
-            return "already_armed"
-        patch = getattr(self._db, "patch_session_model_config", None)
-        if not callable(patch):
-            return None
-        patch(session_id, {_PENDING_KEY: {
+        pending = {
             "threshold_tokens": 0,
             "recovery_key": str(idempotency_key),
             "idempotency_key": str(idempotency_key),
             "requested_at": time.time(),
-        }})
-        # Re-read: a concurrent doctor/core arm resolves to exactly one owner.
-        pending = _model_config(self._db.get_session(session_id) or {}).get(_PENDING_KEY)
-        if not isinstance(pending, Mapping):
+        }
+        claim = self._claim_pending(session_id, pending)
+        if claim is None:
             return None
-        return "armed" if pending.get("recovery_key") == str(idempotency_key) else "already_armed"
+        _, claimed = claim
+        return "armed" if claimed else "already_armed"
+
+    def _claim_pending(
+        self,
+        session_id: str,
+        pending: Mapping[str, Any],
+        *,
+        lifecycle: Mapping[str, Any] | None = None,
+    ) -> Optional[tuple[dict[str, Any], bool]]:
+        """Claim the pending marker with one SessionDB write transaction."""
+        def _write(conn: Any) -> Optional[tuple[dict[str, Any], bool]]:
+            row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None or row["ended_at"] is not None:
+                return None
+            session = dict(row)
+            config = _model_config(session)
+            existing = config.get(_PENDING_KEY)
+            if isinstance(existing, Mapping):
+                return dict(existing), False
+            config[_PENDING_KEY] = dict(pending)
+            if lifecycle is not None:
+                lifecycle_data = dict(lifecycle)
+                checkpoint = lifecycle_data.get("checkpoint")
+                lifecycle_data["checkpoint"] = _checkpoint_with_repo_evidence(
+                    checkpoint if isinstance(checkpoint, Mapping) else {}, session,
+                )
+                config[_LIFECYCLE_KEY] = lifecycle_data
+            changed = conn.execute(
+                "UPDATE sessions SET model_config = ? WHERE id = ? AND ended_at IS NULL",
+                (json.dumps(config, separators=(",", ":")), session_id),
+            ).rowcount
+            return (dict(pending), True) if changed == 1 else None
+
+        return self._db._execute_write(_write)
 
     def adopt_at_turn_boundary(
         self,
@@ -422,9 +428,14 @@ def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:
         from agent.session_lifecycle import LifecycleBudget, LifecycleState, evaluate_lifecycle
 
         api_calls = int(result.get("api_calls", 0) or 0)
+        turn_iterations = int(result.get("turn_iterations", api_calls) or 0)
         cache_read_tokens = int(result.get("cache_read_tokens", 0) or 0)
         compactions = int(result.get("compactions", 0) or 0)
-        in_flight_workers = len(getattr(agent, "_active_children", ()) or ())
+        supplied_workers = result.get("pending_workers")
+        if isinstance(supplied_workers, (list, tuple, set, frozenset)):
+            in_flight_workers = len(supplied_workers)
+        else:
+            in_flight_workers = len(getattr(agent, "_active_children", ()) or ())
         active_tool_call = bool(getattr(agent, "_executing_tools", False))
         decision = evaluate_lifecycle(LifecycleBudget(
             context_window_tokens=int(getattr(compressor, "context_length", 0) or 0),
@@ -433,7 +444,7 @@ def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:
             reserved_tool_result_tokens=policy.reserved_tool_result_tokens,
             reserved_checkpoint_tokens=policy.reserved_checkpoint_tokens,
             max_iterations=int(getattr(agent, "max_iterations", sys.maxsize) or sys.maxsize),
-            iterations_used=api_calls,
+            iterations_used=turn_iterations,
             api_calls=api_calls,
             cache_read_tokens=cache_read_tokens,
             compactions=compactions,
@@ -461,12 +472,13 @@ def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:
             "goal": str(getattr(agent, "current_goal", "") or ""),
             "worktree": str(getattr(agent, "cwd", "") or ""),
             "api_calls": api_calls,
+            "turn_iterations": turn_iterations,
             "in_flight_workers": in_flight_workers,
             **{
                 key: list(result.get(key) or ())
                 for key in (
-                    "verification_evidence", "result_pointers",
-                    "external_effects", "external_readback",
+                    "changed_files", "verification_evidence", "pending_workers",
+                    "result_pointers", "external_effects", "external_readback",
                 )
                 if result.get(key)
             },

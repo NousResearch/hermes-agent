@@ -76,7 +76,10 @@ def evaluate_lifecycle(budget: LifecycleBudget) -> LifecycleDecision:
     draining = (
         not window
         or remaining_context <= checkpoint_boundary
-        or closeout_exhausted
+        # A turn-count closeout protects a real checkpoint/output reserve. With
+        # zero reserve it becomes a model-independent early fence, so ratio-only
+        # policy remains healthy until live context says otherwise.
+        or (checkpoint_boundary > 0 and closeout_exhausted)
     )
     heavy = draining or remaining_context <= heavy_boundary or utilization >= float(budget.heavy_utilization_ratio)
     state = LifecycleState.DRAINING if draining else LifecycleState.HEAVY if heavy else LifecycleState.HEALTHY

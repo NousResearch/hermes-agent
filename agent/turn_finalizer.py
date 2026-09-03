@@ -720,6 +720,9 @@ def finalize_turn(
         "last_reasoning": last_reasoning,
         "messages": messages,
         "api_calls": api_call_count,
+        # The actual bounded loop count for this completed turn. ``api_calls``
+        # remains a compatibility/observability metric on result consumers.
+        "turn_iterations": api_call_count,
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,

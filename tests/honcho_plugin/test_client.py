@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
 import types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -21,6 +22,36 @@ from plugins.memory.honcho.client import (
     resolve_config_path,
     resolve_global_config_path,
 )
+
+
+# ``clear=True`` deliberately removes operator-supplied Honcho settings from
+# these configuration tests.  On native Windows, however, a literally empty
+# environment also removes the OS-owned inputs that ``Path.home()`` and the
+# Hermes default-home resolver require.  Keep only that platform floor and a
+# deterministic synthetic home; no Honcho or Hermes configuration survives.
+_WINDOWS_OS_FLOOR_VARS = ("SystemRoot", "SystemDrive", "windir")
+
+
+def _cleared_env(**overrides: str) -> dict[str, str]:
+    env: dict[str, str] = {}
+    if sys.platform == "win32":
+        env = {
+            name: os.environ[name]
+            for name in _WINDOWS_OS_FLOOR_VARS
+            if name in os.environ
+        }
+        fake_home = os.path.join(tempfile.gettempdir(), "hermes-test-home-isolated")
+        drive, tail = os.path.splitdrive(fake_home)
+        env.update(
+            {
+                "USERPROFILE": fake_home,
+                "LOCALAPPDATA": os.path.join(fake_home, "AppData", "Local"),
+                "HOMEDRIVE": drive or "C:",
+                "HOMEPATH": tail or fake_home,
+            }
+        )
+    env.update(overrides)
+    return env
 
 
 class TestHonchoClientConfigDefaults:
@@ -48,7 +79,7 @@ class TestFromEnv:
 
 
     def test_defaults_without_env(self):
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, _cleared_env(), clear=True):
             # Remove HONCHO_API_KEY if it exists
             os.environ.pop("HONCHO_API_KEY", None)
             os.environ.pop("HONCHO_ENVIRONMENT", None)
@@ -92,7 +123,7 @@ class TestFromEnv:
 
 class TestFromGlobalConfig:
     def test_missing_config_falls_back_to_env(self, tmp_path):
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, _cleared_env(), clear=True):
             config = HonchoClientConfig.from_global_config(
                 config_path=tmp_path / "nonexistent.json"
             )
@@ -108,7 +139,11 @@ class TestFromGlobalConfig:
         absent, so a fallback that only from_global_config() understood
         would silently do nothing for users with no ~/.honcho/config.json.
         """
-        with patch.dict(os.environ, {"HONCHO_URL": "http://localhost:8000"}, clear=True):
+        with patch.dict(
+            os.environ,
+            _cleared_env(HONCHO_URL="http://localhost:8000"),
+            clear=True,
+        ):
             config = HonchoClientConfig.from_global_config(
                 config_path=tmp_path / "nonexistent.json"
             )
@@ -124,7 +159,7 @@ class TestFromGlobalConfig:
             "endpoint": {"baseUrl": "http://localhost:8000"},
         }))
 
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, _cleared_env(), clear=True):
             config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.base_url == "http://localhost:8000"
 
@@ -137,7 +172,11 @@ class TestFromGlobalConfig:
             "base_url": "http://localhost:9002",
         }))
 
-        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://localhost:9003"}, clear=True):
+        with patch.dict(
+            os.environ,
+            _cleared_env(HONCHO_BASE_URL="http://localhost:9003"),
+            clear=True,
+        ):
             config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.base_url == "http://localhost:8000"
 
@@ -150,7 +189,7 @@ class TestFromGlobalConfig:
             "baseUrl": "http://localhost:9001",
         }))
 
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, _cleared_env(), clear=True):
             config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.base_url == "http://localhost:9001"
 
@@ -245,7 +284,7 @@ class TestFromGlobalConfig:
             if i >= 4:
                 env_dict.pop("HONCHO_BASE_URL")
             config_file.write_text(json.dumps(cfg_dict))
-            with patch.dict(os.environ, env_dict, clear=True):
+            with patch.dict(os.environ, _cleared_env(**env_dict), clear=True):
                 config = HonchoClientConfig.from_global_config(config_path=config_file)
             assert config.base_url == want, f"layer {i}: got {config.base_url!r}, want {want!r}"
 
@@ -711,7 +750,7 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
             },
         }))
 
-        with patch.dict(os.environ, {}, clear=True), \
+        with patch.dict(os.environ, _cleared_env(), clear=True), \
              patch("hermes_cli.profiles.get_active_profile_name", return_value="default"), \
              patch("plugins.memory.honcho.client.resolve_config_path", return_value=config_file):
             cfg = HonchoClientConfig.from_global_config(config_path=config_file)
@@ -776,4 +815,3 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
         assert passed_base_url == expected, (
             f"Expected {expected!r}, got {passed_base_url!r}"
         )
-

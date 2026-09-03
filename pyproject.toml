@@ -22,9 +22,9 @@ dependencies = [
   # exact, hash-verified install graph used by the preferred `uv sync --locked`
   # path; declared ranges apply when regenerating it and on pip fallback paths.
   #
-  # Existing exact pins are retained until they receive dependency-specific
-  # review. When updating a requirement, follow CONTRIBUTING.md and regenerate
-  # uv.lock so the declared constraint and locked resolution stay consistent.
+  # This documentation-only alignment leaves existing requirement forms
+  # unchanged. When adding or updating a requirement, follow CONTRIBUTING.md
+  # and regenerate uv.lock so the constraint and lock stay consistent.
   #
   # Scope rule: only packages used by EVERY hermes session belong here.
   # Anything that's provider-specific (`anthropic`, `firecrawl-py`,

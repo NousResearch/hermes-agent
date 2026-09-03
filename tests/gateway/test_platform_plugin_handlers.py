@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -222,6 +223,52 @@ class TestAdapterPluginWiring:
         with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
             adapter._wire_plugin_handlers(None)
         assert seen == [None]
+
+    @pytest.mark.asyncio
+    async def test_transient_init_rebuild_rewires_plugin_handlers(self, monkeypatch):
+        adapter = TelegramAdapter(
+            PlatformConfig(enabled=True, token="test-token", extra={})
+        )
+        first_app = MagicMock()
+        first_app.bot = MagicMock()
+        first_app.initialize = AsyncMock(side_effect=OSError("transient"))
+        rebuilt_app = MagicMock()
+        rebuilt_app.bot = MagicMock()
+        rebuilt_app.initialize = AsyncMock(
+            side_effect=RuntimeError("stop after rebuild")
+        )
+
+        builder = MagicMock()
+        builder.token.return_value = builder
+        builder.request.return_value = builder
+        builder.get_updates_request.return_value = builder
+        builder.build.side_effect = [first_app, rebuilt_app]
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.Application",
+            SimpleNamespace(builder=MagicMock(return_value=builder)),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.HTTPXRequest", MagicMock
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.discover_fallback_ips",
+            AsyncMock(return_value=[]),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.asyncio.sleep", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "gateway.status.acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (True, None),
+        )
+        adapter._register_handlers = MagicMock()
+        adapter._wire_plugin_handlers = MagicMock()
+
+        assert await adapter.connect() is False
+        assert adapter._wire_plugin_handlers.call_args_list == [
+            ((first_app,), {}),
+            ((rebuilt_app,), {}),
+        ]
 
 
 # ===========================================================================

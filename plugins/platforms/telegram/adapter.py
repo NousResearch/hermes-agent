@@ -4920,8 +4920,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         old_app = self._app
                         self._app = builder.build()
                         self._bot = self._app.bot
-                        # Keep core and observer handlers in lockstep after a
-                        # transient-init rebuild (#64176).
+                        # Reapply plugin, core, and observer handlers after a
+                        # transient-init rebuild. The old Application — and all
+                        # handlers wired to it — is discarded above.
+                        self._wire_plugin_handlers(self._app)
                         self._register_handlers(self._app)
                         # Best-effort discard the old app's resources
                         try:

@@ -72,6 +72,22 @@ def _get_sessions_dir() -> Path:
         return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "sessions"
 
 
+def _state_db_change_marker(db_file: Path) -> tuple[int, int, int, int]:
+    """Return a cheap marker that changes for main-database or WAL writes.
+
+    SQLite commits in WAL mode update ``state.db-wal`` without necessarily
+    changing the main database file's mtime until a checkpoint occurs.
+    """
+    def stat_marker(path: Path) -> tuple[int, int]:
+        try:
+            stat = path.stat()
+            return stat.st_mtime_ns, stat.st_size
+        except OSError:
+            return 0, 0
+
+    return (*stat_marker(db_file), *stat_marker(db_file.with_name(f"{db_file.name}-wal")))
+
+
 def _get_session_db():
     """Get a SessionDB instance for reading message transcripts."""
     try:
@@ -351,8 +367,9 @@ class EventBridge:
         self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
         # In-memory approval tracking (populated from events)
         self._pending_approvals: Dict[str, dict] = {}
-        # mtime cache — skip expensive work when state.db hasn't changed
-        self._state_db_mtime: float = 0.0
+        # Change marker for state.db and its WAL sidecar — a WAL commit may not
+        # update the main database mtime until a later checkpoint.
+        self._state_db_mtime: tuple[int, int, int, int] = (0, 0, 0, 0)
         self._cached_sessions_index: dict = {}
 
     def start(self):
@@ -494,10 +511,7 @@ class EventBridge:
             db_file = get_hermes_home() / "state.db"
         except ImportError:
             db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
-        try:
-            self._state_db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0
-        except OSError:
-            self._state_db_mtime = 0.0
+        self._state_db_mtime = _state_db_change_marker(db_file)
         try:
             self._cached_sessions_index = _load_sessions_index()
         except Exception:
@@ -538,13 +552,14 @@ class EventBridge:
     def _poll_once(self, db):
         """Check for new messages across all sessions.
 
-        Uses a single mtime check on state.db to skip work when nothing
-        has changed — makes 200ms polling essentially free.  Since #9006
-        the routing index itself lives in state.db (session rows carry
-        session_key/origin metadata), so a new conversation and its first
-        message land in the SAME file and one mtime check covers both —
-        eliminating the old dual-file (sessions.json + state.db) race that
-        could drop brand-new conversations (#8925).
+        Uses a combined mtime marker for state.db and state.db-wal to skip
+        work when nothing has changed — makes 200ms polling essentially free
+        while still observing commits that remain in SQLite's WAL until a
+        checkpoint. Since #9006 the routing index itself lives in state.db
+        (session rows carry session_key/origin metadata), so a new conversation
+        and its first message land in the same database and one marker covers
+        both — eliminating the old dual-file (sessions.json + state.db) race
+        that could drop brand-new conversations (#8925).
         """
         try:
             from hermes_constants import get_hermes_home
@@ -552,14 +567,14 @@ class EventBridge:
         except ImportError:
             db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
 
-        try:
-            db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0
-        except OSError:
-            db_mtime = 0.0
+        db_mtime = _state_db_change_marker(db_file)
 
         if db_mtime == self._state_db_mtime:
             return  # Nothing changed since last poll — skip entirely
 
+        # Acknowledge only the marker observed before reading. A write that
+        # lands while the index/messages are being read must leave a changed
+        # marker for the next poll instead of being silently skipped.
         self._state_db_mtime = db_mtime
         # Refresh the routing index from state.db on every change tick —
         # it's a single indexed query and it can never lag the messages
@@ -615,7 +630,6 @@ class EventBridge:
                 latest = max(all_ts)
                 if latest > last_seen:
                     self._last_poll_timestamps[session_key] = latest
-
 
 # ---------------------------------------------------------------------------
 # MCP Server

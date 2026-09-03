@@ -1202,10 +1202,13 @@ class TestEventBridgePollE2E:
         first_calls = db.call_count
         assert first_calls >= 1
 
-        # Second poll — files unchanged, should skip entirely
+        # SessionDB may materialize its WAL sidecar during the first index read.
+        # One follow-up tick records that new marker; steady-state polls skip.
         bridge._poll_once(db)
-        assert db.call_count == first_calls, \
-            "Second poll should skip DB queries when files unchanged"
+        calls_after_wal_initialization = db.call_count
+        bridge._poll_once(db)
+        assert db.call_count == calls_after_wal_initialization, \
+            "Steady-state polls should skip DB queries when files are unchanged"
 
     def test_poll_detects_new_message_after_db_write(self, tmp_path, monkeypatch):
         """Write a new message to the DB after first poll, verify it's detected."""
@@ -1259,7 +1262,10 @@ class TestEventBridgePollE2E:
         conn.commit()
         conn.close()
         # Touch the DB file to update mtime (WAL mode may not update mtime on small writes)
-        os.utime(db_path, None)
+        os.utime(
+            db_path,
+            ns=(db_path.stat().st_atime_ns, db_path.stat().st_mtime_ns + 1_000_000_000),
+        )
 
         # Update sessions.json updated_at to trigger re-check
         sessions_data["agent:main:telegram:dm:new"]["updated_at"] = "2026-03-29T15:00:10"
@@ -1374,7 +1380,10 @@ class TestEventBridgePollE2E:
             "id": 2, "role": "assistant", "content": "arrived after start",
             "timestamp": "2026-03-29T15:05:00",
         })
-        os.utime(db_path, None)  # bump mtime so the poll gate opens
+        os.utime(
+            db_path,
+            ns=(db_path.stat().st_atime_ns, db_path.stat().st_mtime_ns + 1_000_000_000),
+        )  # bump mtime so the poll gate opens
         bridge._poll_once(DB())
         events = bridge.poll_events(after_cursor=0)["events"]
         assert len(events) == 1
@@ -1412,13 +1421,114 @@ class TestEventBridgePollE2E:
             "id": 1, "role": "user", "content": "hello after baseline",
             "timestamp": "2026-03-29T15:10:00",
         }]
-        os.utime(db_path, None)
+        os.utime(
+            db_path,
+            ns=(db_path.stat().st_atime_ns, db_path.stat().st_mtime_ns + 1_000_000_000),
+        )
         bridge._poll_once(DB())
 
         events = bridge.poll_events(after_cursor=0)["events"]
         assert len(events) == 1
         assert events[0]["session_key"] == "agent:main:telegram:dm:fresh"
         assert events[0]["content"] == "hello after baseline"
+
+    def test_poll_detects_wal_only_message_write(self, tmp_path, monkeypatch):
+        """A committed SQLite WAL write must invalidate the polling fast path."""
+        import mcp_serve
+
+        db_path = tmp_path / "state.db"
+        session_id = "20260329_150000_wal_only"
+        session_key = "agent:main:telegram:dm:wal_only"
+        _create_test_db(db_path, session_id, [])
+        monkeypatch.setattr(
+            mcp_serve,
+            "_load_sessions_index",
+            lambda: {session_key: {"session_id": session_id}},
+        )
+
+        class TestDB:
+            def get_messages(self, sid):
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (sid,)
+                ).fetchall()
+                conn.close()
+                return [dict(row) for row in rows]
+
+        writer = sqlite3.connect(str(db_path))
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        # Create an initial WAL frame before taking the main-file baseline.
+        writer.execute("UPDATE sessions SET message_count = 1 WHERE id = ?", (session_id,))
+        writer.commit()
+        main_mtime = db_path.stat().st_mtime_ns
+        wal_path = db_path.with_name(f"{db_path.name}-wal")
+        wal_mtime = wal_path.stat().st_mtime_ns
+        bridge = mcp_serve.EventBridge()
+        baseline_marker = mcp_serve._state_db_change_marker(db_path)
+        bridge._state_db_mtime = baseline_marker
+
+        writer.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            (session_id, "user", "written only to WAL", "2026-03-29T15:00:01"),
+        )
+        writer.commit()
+        assert db_path.stat().st_mtime_ns == main_mtime
+        assert wal_path.stat().st_mtime_ns >= wal_mtime
+        assert mcp_serve._state_db_change_marker(db_path) != baseline_marker
+
+        bridge._poll_once(TestDB())
+        writer.close()
+
+        events = bridge.poll_events(after_cursor=0)["events"]
+        assert [event["content"] for event in events] == ["written only to WAL"]
+
+    def test_poll_retries_a_write_that_arrives_while_reading(self, tmp_path, monkeypatch):
+        """A write during a change tick must remain visible to the next poll."""
+        import mcp_serve
+
+        db_path = tmp_path / "state.db"
+        session_id = "20260329_150000_poll_race"
+        session_key = "agent:main:telegram:dm:poll_race"
+        _create_test_db(db_path, session_id, [])
+        monkeypatch.setattr(
+            mcp_serve,
+            "_load_sessions_index",
+            lambda: {session_key: {"session_id": session_id}},
+        )
+        writer = sqlite3.connect(str(db_path))
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+
+        class RacingDB:
+            wrote = False
+
+            def get_messages(self, sid):
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (sid,)
+                ).fetchall()
+                conn.close()
+                if not self.wrote:
+                    self.wrote = True
+                    writer.execute(
+                        "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                        (sid, "user", "written during poll", "2026-03-29T15:00:01"),
+                    )
+                    writer.commit()
+                return [dict(row) for row in rows]
+
+        bridge = mcp_serve.EventBridge()
+        # Force the first tick; RacingDB commits after it has read no messages.
+        bridge._state_db_mtime = (0, 0, 0, 0)
+        db = RacingDB()
+        bridge._poll_once(db)
+        assert bridge.poll_events(after_cursor=0)["events"] == []
+
+        bridge._poll_once(db)
+        writer.close()
+        events = bridge.poll_events(after_cursor=0)["events"]
+        assert [event["content"] for event in events] == ["written during poll"]
 
     def test_poll_interval_is_200ms(self):
         """Verify the poll interval constant."""

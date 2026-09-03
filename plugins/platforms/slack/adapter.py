@@ -1288,6 +1288,13 @@ class SlackAdapter(BasePlatformAdapter):
         # Socket Mode resilience: track runtime connection state so we can
         # self-heal when Slack silently drops the websocket.
         self._app_token: Optional[str] = None
+        # Bot tokens preserved from connect() so _restart_socket_mode can
+        # rebuild the AsyncApp and per-workspace clients without an auth_test
+        # round-trip (see #85574: zombie aiohttp session self-heal).
+        self._bot_tokens: List[str] = []
+        self._team_tokens: Dict[str, str] = {}  # team_id → token
+        # One-shot: empty token cache must not ERROR on every watchdog tick.
+        self._socket_rebuild_skipped_no_tokens = False
         self._proxy_url: Optional[str] = None
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
@@ -1327,6 +1334,230 @@ class SlackAdapter(BasePlatformAdapter):
                 if inspect.isawaitable(result):
                     await result
                 break
+
+    def _register_app_event_handlers(self) -> None:
+        """Register message, slash, and Block Kit action handlers on ``self._app``.
+
+        Extracted from ``connect()`` so ``_restart_socket_mode`` can rebuild a
+        fresh ``AsyncApp`` after a zombie aiohttp session without replaying
+        the full workspace authentication flow (#85574).
+        """
+        assert self._app is not None
+
+        # Register message event handler
+        @self._app.event("message")
+        async def handle_message_event(event, say, body):
+            await self._handle_slack_message(event, body)
+
+        # Handle app_mention explicitly. In some Slack app configurations,
+        # channel mentions arrive only as app_mention events rather than the
+        # generic message event. Forward them into the normal message
+        # pipeline so @mentions reliably produce replies.
+        # NOTE: when Slack fires BOTH message and app_mention for the same
+        # @mention, they share the same event ts — the dedup in
+        # _handle_slack_message (MessageDeduplicator) suppresses the second.
+        @self._app.event("app_mention")
+        async def handle_app_mention(event, say, body):
+            await self._handle_slack_message(event, body)
+
+        @self._app.event("app_home_opened")
+        async def handle_app_home_opened(event, say, body):
+            await self._handle_app_home_opened(event, body)
+
+        @self._app.event("app_context_changed")
+        async def handle_app_context_changed(event, say, body):
+            await self._handle_app_context_changed(event, body)
+
+        # File lifecycle events can arrive around snippet uploads even when
+        # the actual user message is what we care about. Ack them so Slack
+        # doesn't log noisy 404 "unhandled request" warnings.
+        @self._app.event("file_shared")
+        async def handle_file_shared(event, say, body):
+            await self._handle_slack_file_shared(event, body)
+
+        @self._app.event("file_created")
+        async def handle_file_created(event, say):
+            pass
+
+        @self._app.event("file_change")
+        async def handle_file_change(event, say):
+            pass
+
+        # Forward reaction_added events through the normal message
+        # pipeline (see _handle_slack_reaction). Skills that present
+        # confirmation-style proposals ("react 👍 to proceed") then work
+        # end-to-end. Registered explicitly so high-traffic channels do
+        # not fill gateway.error.log with Slack Bolt "Unhandled request"
+        # warnings.
+        @self._app.event("reaction_added")
+        async def handle_reaction_added(event, say):
+            await self._handle_slack_reaction(event)
+
+        @self._app.event("reaction_removed")
+        async def handle_reaction_removed(event, say):
+            await self._handle_slack_reaction(event, removed=True)
+
+        @self._app.event("assistant_thread_started")
+        async def handle_assistant_thread_started(event, say, body):
+            await self._handle_assistant_thread_lifecycle_event(event, body)
+
+        @self._app.event("assistant_thread_context_changed")
+        async def handle_assistant_thread_context_changed(event, say, body):
+            await self._handle_assistant_thread_lifecycle_event(event, body)
+
+        # Catch-all no-op ack for any other subscribed event type that
+        # Hermes has no listener for (e.g. user_change,
+        # user_huddle_changed, member_joined_channel, channel_archive,
+        # pin_added, etc.).
+        #
+        # Two reasons this must exist (issues #6572 and the Event
+        # Subscriptions auto-disable failure mode):
+        #   1. Correctness at scale: without a matching listener,
+        #      slack-bolt returns HTTP 404 for every unhandled event
+        #      envelope and never sends the Socket Mode ack. When the app
+        #      is subscribed to high-volume events (user_change fires on
+        #      every presence/status change for the whole org), the flood
+        #      of un-acked 404s pushes Slack's failure rate past its
+        #      95%/60-min threshold and Slack auto-disables the app's
+        #      Event Subscriptions — silently killing ALL inbound
+        #      delivery until manually re-enabled.
+        #   2. Noise: each unhandled envelope also logs a slack_bolt
+        #      "Unhandled request" WARNING, flooding gateway logs in
+        #      busy channels.
+        #
+        # Registered AFTER every named handler: bolt dispatches to the
+        # first matching listener, so the named handlers above always
+        # win and this only fires for truly unhandled types. The
+        # envelope is acked with 200, keeping the failure rate near 0%
+        # regardless of which events the Slack app manifest subscribes
+        # to. A debug line preserves visibility into unknown event
+        # types without per-message WARNING noise.
+        @self._app.event(re.compile(r".*"))
+        async def handle_unhandled_event(event, body, logger):
+            logger.debug(
+                "[Slack] Ignoring unhandled event type=%s (no listener "
+                "registered; subscribed events not handled by Hermes can "
+                "be removed from the Slack app manifest via "
+                "`hermes slack manifest`)",
+                (event or {}).get(
+                    "type",
+                    (body or {}).get("event", {}).get("type", "unknown"),
+                ),
+            )
+
+        # Register slash command handler(s)
+        #
+        # Every gateway command from COMMAND_REGISTRY is a native Slack
+        # slash, matching Discord and Telegram's model (e.g. /btw, /stop,
+        # /model work directly without /hermes prefix). A single regex
+        # matcher dispatches all of them to one handler so we don't need
+        # N identical @app.command() decorators.
+        #
+        # The slash commands must ALSO be declared in the Slack app
+        # manifest (see `hermes slack manifest`). In Socket Mode, Slack
+        # routes the command event through the socket regardless of the
+        # manifest's request URL, but it will not deliver an event for
+        # a slash command the manifest doesn't declare.
+        from hermes_cli.commands import slack_native_slashes
+
+        _slash_names = [name for name, _d, _h in slack_native_slashes()]
+        if _slash_names:
+            _slash_pattern = re.compile(
+                r"^/(?:" + "|".join(re.escape(n) for n in _slash_names) + r")$"
+            )
+        else:  # pragma: no cover - registry always non-empty
+            _slash_pattern = re.compile(r"^/hermes$")
+
+        @self._app.command(_slash_pattern)
+        async def handle_hermes_command(ack, command):
+            slash = (command.get("command") or "").lstrip("/")
+            await ack(
+                response_type="ephemeral",
+                text=f"Running `/{slash}`…",
+            )
+            await self._handle_slash_command(command)
+
+        # Register Block Kit action handlers for approval buttons
+        for _action_id in (
+            "hermes_approve_once",
+            "hermes_approve_session",
+            "hermes_approve_always",
+            "hermes_deny",
+        ):
+            self._app.action(_action_id)(self._handle_approval_action)
+
+        # Register Block Kit action handlers for slash-confirm buttons
+        # (generic three-option prompts; see tools/slash_confirm.py).
+        for _action_id in (
+            "hermes_confirm_once",
+            "hermes_confirm_always",
+            "hermes_confirm_cancel",
+        ):
+            self._app.action(_action_id)(self._handle_slash_confirm_action)
+
+        self._app.action("hermes_feedback")(self._handle_feedback_action)
+
+        # Register Block Kit action handlers for clarify buttons
+        # (interactive multiple-choice prompts; see tools/clarify_gateway.py).
+        # Choice buttons use indexed action IDs so each ID is unique within
+        # its actions block, as required by Slack's Block Kit schema.
+        self._app.action(
+            re.compile(r"^hermes_clarify_choice_\d+$")
+        )(self._handle_clarify_action)
+        self._app.action("hermes_clarify_other")(self._handle_clarify_action)
+
+        # Register plugin-provided Block Kit action handlers.
+        #
+        # Plugins call ``ctx.register_slack_action_handler(action_id, cb)``
+        # at register() time; the manager queues them and the adapter
+        # wires them into AsyncApp here so slack_bolt's matcher knows
+        # about them before Socket Mode starts dispatching events.
+        #
+        # Each callback is wrapped so a misbehaving plugin can't take
+        # down the gateway: any exception inside the plugin handler is
+        # caught and logged, and slack_bolt still sees a clean ack.
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            _plugin_handlers = get_plugin_manager().get_slack_action_handlers()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(
+                "[Slack] Could not load plugin action handlers: %s", e,
+            )
+            _plugin_handlers = []
+
+        # Closure factory — keeps the wrapper's signature limited to
+        # ``(ack, body, action)``. slack_bolt inspects listener
+        # signatures via ``inspect.signature`` and passes ``None`` for
+        # any parameter name it doesn't recognise, so capturing loop
+        # vars as default args (``_cb=_cb`` etc.) silently clobbers
+        # them at dispatch time.
+        def _make_wrapper(cb, plugin_name):
+            async def _wrapped(ack, body, action):
+                try:
+                    await cb(ack, body, action)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.error(
+                        "[Slack] Plugin '%s' action handler raised: %s",
+                        plugin_name, exc, exc_info=True,
+                    )
+                    # Best-effort ack so Slack doesn't retry the click.
+                    try:
+                        await ack()
+                    except Exception:
+                        pass
+            return _wrapped
+
+        for _action_id, _cb, _plugin_name in _plugin_handlers:
+            self._app.action(_action_id)(_make_wrapper(_cb, _plugin_name))
+            logger.debug(
+                "[Slack] Registered plugin action handler %s (from %s)",
+                _action_id, _plugin_name,
+            )
+        if _plugin_handlers:
+            logger.info(
+                "[Slack] Wired %d plugin action handler(s)",
+                len(_plugin_handlers),
+            )
 
     @staticmethod
     def _slack_timestamp_sort_key(ts: Any) -> Tuple[int, int, str]:
@@ -1542,7 +1773,20 @@ class SlackAdapter(BasePlatformAdapter):
         return (time.time() - last) > (ping_interval * self._socket_ping_stale_factor)
 
     async def _restart_socket_mode(self, reason: str) -> None:
-        """Reconnect Socket Mode without rebuilding adapter state."""
+        """Reconnect Socket Mode, rebuilding the AsyncApp and its clients.
+
+        When the watchdog detects a wedged/zombie session (ping/pong stale,
+        transport disconnected, or the socket task dying with a closed aiohttp
+        session), the underlying aiohttp ``ClientSession`` inside the
+        ``AsyncApp``'s ``AsyncWebClient`` may be permanently closed.  Simply
+        stopping and restarting the Socket Mode handler reuses the same dead
+        client, so every reconnect attempt fails identically with
+        ``RuntimeError("Session is closed")`` (see #85574: 15,948 failed
+        attempts over 29.5 hours).  New clients are constructed first; the
+        old handler and sessions are torn down only after that succeeds, so a
+        construct failure cannot leave ``_app is None`` and disable every
+        later watchdog retry.
+        """
         if not self._running:
             return
 
@@ -1550,14 +1794,68 @@ class SlackAdapter(BasePlatformAdapter):
             if not self._running or not self._app or not self._app_token:
                 return
 
+            if not self._bot_tokens:
+                if not self._socket_rebuild_skipped_no_tokens:
+                    logger.warning(
+                        "[Slack] Cannot rebuild Socket Mode app: no bot tokens "
+                        "stored; skipping until connect() succeeds"
+                    )
+                    self._socket_rebuild_skipped_no_tokens = True
+                return
+
             logger.warning("[Slack] Socket Mode unhealthy (%s); reconnecting", reason)
-            await self._stop_socket_mode_handler()
 
             try:
+                # Build replacements before touching the live app so a
+                # construct failure keeps the current ``_app`` reference.
+                # The old aiohttp session may already be dead; keeping the
+                # object is what lets the next watchdog tick retry.
+                primary_token = self._bot_tokens[0]
+                primary_client = AsyncWebClient(
+                    token=primary_token,
+                    user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
+                )
+                new_app = AsyncApp(token=primary_token, client=primary_client)
+                _apply_slack_proxy(new_app.client, self._proxy_url)
+
+                # Reuse the team_id → token mapping from ``connect()`` so no
+                # extra auth_test round-trip is needed.
+                new_team_clients: Dict[str, Any] = {}
+                for team_id, token in self._team_tokens.items():
+                    client = AsyncWebClient(
+                        token=token,
+                        user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
+                    )
+                    _apply_slack_proxy(client, self._proxy_url)
+                    new_team_clients[team_id] = client
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error(
+                    "[Slack] Socket Mode rebuild failed; keeping current app: %s",
+                    exc,
+                    exc_info=True,
+                )
+                return
+
+            if len(self._team_tokens) != len(self._bot_tokens):
+                logger.debug(
+                    "[Slack] Socket Mode rebuild using %d/%d workspace tokens "
+                    "(tokens that failed auth_test in connect() are omitted)",
+                    len(self._team_tokens),
+                    len(self._bot_tokens),
+                )
+
+            await self._stop_socket_mode_handler()
+            await self._close_workspace_clients()
+            self._app = new_app
+            self._team_clients = new_team_clients
+            try:
+                self._register_app_event_handlers()
                 self._start_socket_mode_handler()
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error(
-                    "[Slack] Socket Mode reconnect failed: %s", exc, exc_info=True
+                    "[Slack] Socket Mode reconnect failed after rebuild: %s",
+                    exc,
+                    exc_info=True,
                 )
 
     async def _socket_watchdog_loop(self) -> None:
@@ -2160,6 +2458,9 @@ class SlackAdapter(BasePlatformAdapter):
             self._team_bot_user_ids = {}
             self._bot_display_name = None
             self._team_bot_names = {}
+            self._bot_tokens = list(bot_tokens)
+            self._team_tokens = {}
+            self._socket_rebuild_skipped_no_tokens = False
 
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
@@ -2190,6 +2491,7 @@ class SlackAdapter(BasePlatformAdapter):
                 self._team_clients[team_id] = client
                 self._team_bot_user_ids[team_id] = bot_user_id
                 self._team_bot_names[team_id] = bot_name
+                self._team_tokens[team_id] = token
 
                 # First token always wins as the primary bot user id; we
                 # cleared ``_bot_user_id`` above so this picks up the current
@@ -2210,221 +2512,7 @@ class SlackAdapter(BasePlatformAdapter):
                 self._warn_if_not_bot_token(auth_response, team_name)
                 self._warn_if_inchannel_without_flat_reply(team_name)
 
-            # Register message event handler
-            @self._app.event("message")
-            async def handle_message_event(event, say, body):
-                await self._handle_slack_message(event, body)
-
-            # Handle app_mention explicitly. In some Slack app configurations,
-            # channel mentions arrive only as app_mention events rather than the
-            # generic message event. Forward them into the normal message
-            # pipeline so @mentions reliably produce replies.
-            # NOTE: when Slack fires BOTH message and app_mention for the same
-            # @mention, they share the same event ts — the dedup in
-            # _handle_slack_message (MessageDeduplicator) suppresses the second.
-            @self._app.event("app_mention")
-            async def handle_app_mention(event, say, body):
-                await self._handle_slack_message(event, body)
-
-            @self._app.event("app_home_opened")
-            async def handle_app_home_opened(event, say, body):
-                await self._handle_app_home_opened(event, body)
-
-            @self._app.event("app_context_changed")
-            async def handle_app_context_changed(event, say, body):
-                await self._handle_app_context_changed(event, body)
-
-            # File lifecycle events can arrive around snippet uploads even when
-            # the actual user message is what we care about. Ack them so Slack
-            # doesn't log noisy 404 "unhandled request" warnings.
-            @self._app.event("file_shared")
-            async def handle_file_shared(event, say, body):
-                await self._handle_slack_file_shared(event, body)
-
-            @self._app.event("file_created")
-            async def handle_file_created(event, say):
-                pass
-
-            @self._app.event("file_change")
-            async def handle_file_change(event, say):
-                pass
-
-            # Forward reaction_added events through the normal message
-            # pipeline (see _handle_slack_reaction). Skills that present
-            # confirmation-style proposals ("react 👍 to proceed") then work
-            # end-to-end. Registered explicitly so high-traffic channels do
-            # not fill gateway.error.log with Slack Bolt "Unhandled request"
-            # warnings.
-            @self._app.event("reaction_added")
-            async def handle_reaction_added(event, say):
-                await self._handle_slack_reaction(event)
-
-            @self._app.event("reaction_removed")
-            async def handle_reaction_removed(event, say):
-                await self._handle_slack_reaction(event, removed=True)
-
-            @self._app.event("assistant_thread_started")
-            async def handle_assistant_thread_started(event, say, body):
-                await self._handle_assistant_thread_lifecycle_event(event, body)
-
-            @self._app.event("assistant_thread_context_changed")
-            async def handle_assistant_thread_context_changed(event, say, body):
-                await self._handle_assistant_thread_lifecycle_event(event, body)
-
-            # Catch-all no-op ack for any other subscribed event type that
-            # Hermes has no listener for (e.g. user_change,
-            # user_huddle_changed, member_joined_channel, channel_archive,
-            # pin_added, etc.).
-            #
-            # Two reasons this must exist (issues #6572 and the Event
-            # Subscriptions auto-disable failure mode):
-            #   1. Correctness at scale: without a matching listener,
-            #      slack-bolt returns HTTP 404 for every unhandled event
-            #      envelope and never sends the Socket Mode ack. When the app
-            #      is subscribed to high-volume events (user_change fires on
-            #      every presence/status change for the whole org), the flood
-            #      of un-acked 404s pushes Slack's failure rate past its
-            #      95%/60-min threshold and Slack auto-disables the app's
-            #      Event Subscriptions — silently killing ALL inbound
-            #      delivery until manually re-enabled.
-            #   2. Noise: each unhandled envelope also logs a slack_bolt
-            #      "Unhandled request" WARNING, flooding gateway logs in
-            #      busy channels.
-            #
-            # Registered AFTER every named handler: bolt dispatches to the
-            # first matching listener, so the named handlers above always
-            # win and this only fires for truly unhandled types. The
-            # envelope is acked with 200, keeping the failure rate near 0%
-            # regardless of which events the Slack app manifest subscribes
-            # to. A debug line preserves visibility into unknown event
-            # types without per-message WARNING noise.
-            @self._app.event(re.compile(r".*"))
-            async def handle_unhandled_event(event, body, logger):
-                logger.debug(
-                    "[Slack] Ignoring unhandled event type=%s (no listener "
-                    "registered; subscribed events not handled by Hermes can "
-                    "be removed from the Slack app manifest via "
-                    "`hermes slack manifest`)",
-                    (event or {}).get(
-                        "type",
-                        (body or {}).get("event", {}).get("type", "unknown"),
-                    ),
-                )
-
-            # Register slash command handler(s)
-            #
-            # Every gateway command from COMMAND_REGISTRY is a native Slack
-            # slash, matching Discord and Telegram's model (e.g. /btw, /stop,
-            # /model work directly without /hermes prefix). A single regex
-            # matcher dispatches all of them to one handler so we don't need
-            # N identical @app.command() decorators.
-            #
-            # The slash commands must ALSO be declared in the Slack app
-            # manifest (see `hermes slack manifest`). In Socket Mode, Slack
-            # routes the command event through the socket regardless of the
-            # manifest's request URL, but it will not deliver an event for
-            # a slash command the manifest doesn't declare.
-            from hermes_cli.commands import slack_native_slashes
-            import re as _re
-
-            _slash_names = [name for name, _d, _h in slack_native_slashes()]
-            if _slash_names:
-                _slash_pattern = _re.compile(
-                    r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
-                )
-            else:  # pragma: no cover - registry always non-empty
-                _slash_pattern = _re.compile(r"^/hermes$")
-
-            @self._app.command(_slash_pattern)
-            async def handle_hermes_command(ack, command):
-                slash = (command.get("command") or "").lstrip("/")
-                await ack(
-                    response_type="ephemeral",
-                    text=f"Running `/{slash}`…",
-                )
-                await self._handle_slash_command(command)
-
-            # Register Block Kit action handlers for approval buttons
-            for _action_id in (
-                "hermes_approve_once",
-                "hermes_approve_session",
-                "hermes_approve_always",
-                "hermes_deny",
-            ):
-                self._app.action(_action_id)(self._handle_approval_action)
-
-            # Register Block Kit action handlers for slash-confirm buttons
-            # (generic three-option prompts; see tools/slash_confirm.py).
-            for _action_id in (
-                "hermes_confirm_once",
-                "hermes_confirm_always",
-                "hermes_confirm_cancel",
-            ):
-                self._app.action(_action_id)(self._handle_slash_confirm_action)
-
-            self._app.action("hermes_feedback")(self._handle_feedback_action)
-
-            # Register Block Kit action handlers for clarify buttons
-            # (interactive multiple-choice prompts; see tools/clarify_gateway.py).
-            # Choice buttons use indexed action IDs so each ID is unique within
-            # its actions block, as required by Slack's Block Kit schema.
-            self._app.action(
-                _re.compile(r"^hermes_clarify_choice_\d+$")
-            )(self._handle_clarify_action)
-            self._app.action("hermes_clarify_other")(self._handle_clarify_action)
-
-            # Register plugin-provided Block Kit action handlers.
-            #
-            # Plugins call ``ctx.register_slack_action_handler(action_id, cb)``
-            # at register() time; the manager queues them and the adapter
-            # wires them into AsyncApp here so slack_bolt's matcher knows
-            # about them before Socket Mode starts dispatching events.
-            #
-            # Each callback is wrapped so a misbehaving plugin can't take
-            # down the gateway: any exception inside the plugin handler is
-            # caught and logged, and slack_bolt still sees a clean ack.
-            try:
-                from hermes_cli.plugins import get_plugin_manager
-                _plugin_handlers = get_plugin_manager().get_slack_action_handlers()
-            except Exception as e:  # pragma: no cover - defensive
-                logger.warning(
-                    "[Slack] Could not load plugin action handlers: %s", e,
-                )
-                _plugin_handlers = []
-
-            # Closure factory — keeps the wrapper's signature limited to
-            # ``(ack, body, action)``. slack_bolt inspects listener
-            # signatures via ``inspect.signature`` and passes ``None`` for
-            # any parameter name it doesn't recognise, so capturing loop
-            # vars as default args (``_cb=_cb`` etc.) silently clobbers
-            # them at dispatch time.
-            def _make_wrapper(cb, plugin_name):
-                async def _wrapped(ack, body, action):
-                    try:
-                        await cb(ack, body, action)
-                    except Exception as exc:  # pragma: no cover - defensive
-                        logger.error(
-                            "[Slack] Plugin '%s' action handler raised: %s",
-                            plugin_name, exc, exc_info=True,
-                        )
-                        # Best-effort ack so Slack doesn't retry the click.
-                        try:
-                            await ack()
-                        except Exception:
-                            pass
-                return _wrapped
-
-            for _action_id, _cb, _plugin_name in _plugin_handlers:
-                self._app.action(_action_id)(_make_wrapper(_cb, _plugin_name))
-                logger.debug(
-                    "[Slack] Registered plugin action handler %s (from %s)",
-                    _action_id, _plugin_name,
-                )
-            if _plugin_handlers:
-                logger.info(
-                    "[Slack] Wired %d plugin action handler(s)",
-                    len(_plugin_handlers),
-                )
+            self._register_app_event_handlers()
 
             # Generic plugin-registered native handlers
             # (ctx.register_platform_handler("slack", ...)). Factories get
@@ -2576,11 +2664,12 @@ class SlackAdapter(BasePlatformAdapter):
         self._app_token = None
         self._proxy_url = None
         self._bot_user_id = None
+        self._bot_tokens = []
+        self._team_tokens = {}
         self._team_clients = {}
         self._team_bot_user_ids = {}
         self._channel_team = {}
         self._dm_conversation_cache = {}
-
         self._release_platform_lock()
 
         logger.info("[Slack] Disconnected")

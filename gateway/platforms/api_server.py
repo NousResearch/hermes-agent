@@ -4975,7 +4975,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Accept explicit conversation_history from the request body.
         # This lets stateless clients supply their own history instead of
         # relying on server-side response chaining via previous_response_id.
-        # Precedence: explicit conversation_history > previous_response_id.
+        # A non-empty explicit history takes precedence over continuation.
         conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
@@ -6212,9 +6212,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, Any]] = []
-        explicit_history_provided = "conversation_history" in body
+        explicit_history_is_authoritative = False
         raw_history = body.get("conversation_history")
-        if explicit_history_provided:
+        if "conversation_history" in body:
             if not isinstance(raw_history, list):
                 return web.json_response(
                     _openai_error("'conversation_history' must be an array of message objects"),
@@ -6233,12 +6233,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history.append({"role": str(entry["role"]), "content": entry_content})
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
-            explicit_history_provided = bool(raw_history)
+            # An empty array is a common client default, not an instruction to
+            # replace an existing transcript. Only non-empty input overrides
+            # response/session continuation and receives explicit persistence.
+            explicit_history_is_authoritative = bool(raw_history)
 
         stored_session_id = None
-        # An empty history is a common client default, not an instruction to
-        # erase a chained transcript. Preserve previous_response_id/session
-        # continuation when callers send conversation_history: [].
+        # Preserve previous_response_id/session continuation when callers send
+        # conversation_history: [] as a client default.
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored:
@@ -6249,9 +6251,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # When input is a multi-message array, extract all but the last
         # message as conversation history (the last becomes user_message).
-        # Only fires when no explicit history was provided.
+        # Only fires when no authoritative explicit history was provided.
         if (
-            not explicit_history_provided
+            not explicit_history_is_authoritative
             and not conversation_history
             and len(input_messages) > 1
         ):
@@ -6369,7 +6371,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return cached_response
 
         if (
-            not explicit_history_provided
+            not explicit_history_is_authoritative
             and not conversation_history
             and continuation_session_id
         ):
@@ -6560,7 +6562,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                 task_id=effective_task_id,
                             )
                             if (
-                                explicit_history_provided
+                                explicit_history_is_authoritative
                                 and isinstance(r, dict)
                                 and isinstance(r.get("messages"), list)
                             ):

@@ -311,17 +311,59 @@ async def test_runs_follow_compression_tip_and_publish_rotated_session_id():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "explicit_history",
-    [
-        [],
-        [{"role": "user", "content": "explicit history"}],
-    ],
-)
-async def test_explicit_run_history_is_authoritative_and_persisted(
-    explicit_history,
-):
+async def test_empty_run_history_resumes_session_without_replacing_transcript():
     adapter = _adapter()
+    stored_history = [{"role": "user", "content": "stored history"}]
+    session_db = MagicMock()
+    session_db.resolve_resume_session_id.return_value = "explicit-session"
+    session_db.get_messages_as_conversation.return_value = stored_history
+    mock_agent = MagicMock()
+    mock_agent.session_id = "explicit-session"
+    mock_agent._session_db = session_db
+    mock_agent.run_conversation.return_value = {
+        "final_response": "done",
+        "messages": [
+            *stored_history,
+            {"role": "user", "content": "fresh turn"},
+            {"role": "assistant", "content": "done"},
+        ],
+        "session_id": "explicit-session",
+    }
+    mock_agent.session_prompt_tokens = 0
+    mock_agent.session_completion_tokens = 0
+    mock_agent.session_total_tokens = 0
+
+    with patch.object(
+        adapter, "_ensure_session_db_async", new_callable=AsyncMock
+    ) as load_db, patch.object(adapter, "_create_agent", return_value=mock_agent):
+        load_db.return_value = session_db
+        async with TestClient(TestServer(_app(adapter))) as client:
+            response = await client.post(
+                "/v1/runs",
+                json={
+                    "input": "fresh turn",
+                    "session_id": "explicit-session",
+                    "conversation_history": [],
+                },
+                headers={
+                    "Authorization": "Bearer sk-test-secret",
+                    "X-Hermes-Session-Id": "explicit-session",
+                },
+            )
+            assert response.status == 202
+            run_id = (await response.json())["run_id"]
+            await _wait_for_run(adapter, run_id)
+
+    assert mock_agent.run_conversation.call_args.kwargs["conversation_history"] == (
+        stored_history
+    )
+    session_db.replace_messages.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_nonempty_run_history_is_authoritative_and_persisted():
+    adapter = _adapter()
+    explicit_history = [{"role": "user", "content": "explicit history"}]
     session_db = MagicMock()
     returned_messages = [
         *explicit_history,

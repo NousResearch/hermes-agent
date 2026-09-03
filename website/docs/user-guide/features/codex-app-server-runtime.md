@@ -18,7 +18,7 @@ Not using OpenAI Codex? `hermes setup --portal` configures a non-Codex backend w
 - Run OpenAI agent turns against your **ChatGPT subscription** (no API key required) using the same auth flow Codex CLI uses.
 - Use **Codex's own toolset and sandbox** — `shell` for terminal/read/write/search, `apply_patch` for structured edits, `update_plan` for planning, all running inside seatbelt/landlock sandboxing.
 - **Native Codex plugins** — Linear, GitHub, Gmail, Calendar, Canva, etc. — installed via `codex plugin` are auto-migrated and active in your Hermes session.
-- **Hermes' richer tools come along** — web_search, web_extract, browser automation, vision, image generation, skills, and TTS work via an MCP callback. Codex calls back into Hermes for tools it doesn't have built in.
+- **Hermes' richer tools come along** — web_search, web_extract, browser automation, vision, image generation, skills, and TTS work via an MCP callback, and persistent memory + cross-session search ride the same callback through stateless shims (with caveats — see below). Codex calls back into Hermes for tools it doesn't have built in.
 - **Memory and skill nudges keep working** — Codex's events are projected into Hermes' message shape so the self-improvement loop sees a normal-looking transcript.
 
 ## What tools the model actually has
@@ -65,17 +65,21 @@ Hermes registers itself as an MCP server so codex can call back for tools codex 
 - **`image_generate`** — image generation through Hermes' image_gen plugin chain.
 - **`skill_view` / `skills_list`** — read from Hermes' skill library.
 - **`text_to_speech`** — TTS through Hermes' configured provider.
+- **`memory` / `session_search`** — served through **stateless shims** rather than the generic dispatcher, with a narrowed contract vs. the native tools. See [the callback section](#hermes-tool-callback-the-new-mcp-server) for the caveats.
 
 When the model wants one of these, codex spawns the `hermes_tools_mcp_server` subprocess via stdio MCP, the call is dispatched through `model_tools.handle_function_call()` (same code path as Hermes' default runtime), and the result is returned to codex like any other MCP response.
 
 ### What's NOT available on this runtime
 
-These four Hermes tools require the running AIAgent context (mid-loop state) to dispatch, and a stateless MCP callback can't drive them. Switch back to the default runtime (`/codex-runtime auto`) when you need any of them:
+These two Hermes tools require the running AIAgent context (mid-loop state) to dispatch, and a stateless MCP callback can't drive them. Switch back to the default runtime (`/codex-runtime auto`) when you need either of them:
 
 - **`delegate_task`** — spawn subagents
-- **`memory`** — Hermes' persistent memory store
-- **`session_search`** — cross-session search
 - **`todo`** — Hermes' todo store (codex's `update_plan` is the in-runtime equivalent)
+
+`memory` and `session_search` are agent-loop tools too, but both have workable stateless equivalents, so the callback serves them via dedicated shims — with a narrowed contract:
+
+- **`session_search` excludes your current conversation.** Results skip the calling session's own lineage, matching the native tool: the migration entry names `HERMES_SESSION_ID` in its `env_vars`, codex's spawn-time name passthrough, so the shim receives the active session's id. A host that delivers nothing degrades fail-open (searches still work; hits from the current conversation can appear).
+- **`memory` fails closed when an external memory provider is configured** (`memory.provider` in config). A shim write can't mirror through MemoryProvider hooks, so instead of silently diverging the on-disk store from the external backend, the tool isn't offered at all. Use the default runtime for memory in that setup.
 
 ## Workflow features (`/goal`, kanban, cron)
 
@@ -103,14 +107,15 @@ The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets �
 
 ### Cron jobs
 
-**Not specifically tested.** Cron jobs run via `cronjob` → `AIAgent.run_conversation`, the same code path as the CLI. If the cron job's config has `openai_runtime: codex_app_server` it'll run on codex. The same tool-availability rules apply — codex built-ins + plugins + MCP callback work, agent-loop tools (delegate_task, memory, session_search, todo) don't. If your cron job relies on those, scope the cron to a profile that uses the default runtime.
+**Not specifically tested.** Cron jobs run via `cronjob` → `AIAgent.run_conversation`, the same code path as the CLI. If the cron job's config has `openai_runtime: codex_app_server` it'll run on codex. The same tool-availability rules apply — codex built-ins + plugins + MCP callback (including the memory / session_search shims, with their caveats) work; delegate_task and todo don't. If your cron job relies on those two, scope the cron to a profile that uses the default runtime.
 
 ## Trade-offs
 
 |  | Hermes default runtime | Codex app-server (opt-in) |
 |---|---|---|
 | `delegate_task` subagents | yes | not available — needs agent loop context |
-| `memory`, `session_search`, `todo` | yes | not available — needs agent loop context |
+| `todo` | yes | not available — codex's `update_plan` is the in-runtime equivalent |
+| `memory`, `session_search` | yes | yes (via stateless MCP shims — narrowed contract, see above) |
 | `web_search`, `web_extract` | yes | yes (via MCP callback) |
 | Browser automation (Camofox/Browserbase) | yes | yes (via MCP callback) |
 | `vision_analyze`, `image_generate` | yes | yes (via MCP callback) |
@@ -378,7 +383,12 @@ When the model calls `web_search` (or another exposed Hermes tool), codex spawns
 
 **Tools available via the callback:** `web_search`, `web_extract`, `browser_navigate`, `browser_click`, `browser_type`, `browser_press`, `browser_snapshot`, `browser_scroll`, `browser_back`, `browser_get_images`, `browser_console`, `browser_vision`, `vision_analyze`, `image_generate`, `skill_view`, `skills_list`, `text_to_speech`.
 
-**Tools NOT available:** `delegate_task`, `memory`, `session_search`, `todo`. These need the running AIAgent context to dispatch (mid-loop state) and a stateless MCP callback can't drive them. Use the default Hermes runtime (`/codex-runtime auto`) when you need these.
+**Also available, via stateless shims:** `memory` and `session_search`. Natively these are agent-loop tools — they receive live loop state from the tool executor, and the generic dispatcher refuses them from any other caller (that refusal stays intact). The callback serves them through dedicated shims instead:
+
+- **`memory`** loads the on-disk store fresh on every call, so the native character caps, external-drift guard, threat scan, and file locking all apply. Two caveats: with no foreground approver in the subprocess, a write the approval gate stages is reported as success before it actually lands; and when an external memory provider is configured (`memory.provider`), the shim **fails closed** — the tool is not registered at all, because a shim write can't mirror to the external backend and the two stores would silently diverge.
+- **`session_search`** runs against a read-only handle to the sessions DB. Results exclude the calling conversation's own lineage, as natively: the migration entry names `HERMES_SESSION_ID` in its `env_vars` (codex snapshots the named variables from its process env at MCP spawn — a name, never a value burned into `config.toml`). Hosts that deliver nothing degrade fail-open — searches succeed but may include hits from your current conversation. One addition over the native tool: a zero-hit multi-term query with no explicit FTS operators is retried once with the terms OR-joined, and the result is annotated when the retry hits.
+
+**Tools NOT available:** `delegate_task`, `todo`. These need the running AIAgent context to dispatch (mid-loop state) and a stateless MCP callback can't drive them. Use the default Hermes runtime (`/codex-runtime auto`) when you need these.
 
 ## Disabling
 
@@ -406,7 +416,8 @@ This runtime is **opt-in beta**. Working as of Hermes Agent 2026.5 + Codex CLI 0
 Known limitations:
 
 - **Hermes auth and codex auth are separate sessions.** You need both `codex login` AND `hermes auth add openai-codex` for the cleanest UX (the runtime uses codex's session for the LLM call). This is a deliberate design choice in Hermes' `_import_codex_cli_tokens` — Hermes won't share OAuth state with codex CLI to avoid clobbering each other on token refresh.
-- **`delegate_task`, `memory`, `session_search`, `todo` are unavailable on this runtime.** They need the running AIAgent context which a stateless MCP callback can't provide. Use `/codex-runtime auto` when you need these.
+- **`delegate_task` and `todo` are unavailable on this runtime.** They need the running AIAgent context which a stateless MCP callback can't provide. Use `/codex-runtime auto` when you need them.
+- **`memory` and `session_search` run on stateless shims.** session_search excludes your current conversation's lineage under codex (via the entry's `HERMES_SESSION_ID` name-passthrough; fail-open only when a host delivers no id), and memory fails closed when an external memory provider is configured. See [the callback section](#hermes-tool-callback-the-new-mcp-server). Use `/codex-runtime auto` when you need the full native contract.
 - **No inline patch preview in approval prompts when codex doesn't track the changeset.** Codex's `fileChange` approval params don't always carry the changeset. Hermes caches the data from the corresponding `item/started` notification when possible, but if approval arrives before the item has streamed, the prompt falls back to whatever `reason` codex provides.
 - **Sub-second cancellation isn't guaranteed.** Mid-stream interrupts (Ctrl+C while codex is responding) are sent via `turn/interrupt`, but if codex has already flushed the final message, you get the response anyway.
 
@@ -454,6 +465,7 @@ If you find a bug, [open an issue](https://github.com/NousResearch/hermes-agent/
         │  hermes_tools_mcp_server.py (subprocess on demand)        │
         │   web_search, web_extract, browser_*, vision_analyze,    │
         │   image_generate, skill_view, skills_list, text_to_speech│
+        │   + stateless shims: memory, session_search              │
         └──────────────────────────────────────────────────────────┘
 ```
 

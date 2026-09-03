@@ -120,6 +120,12 @@ describe('collectArtifactsForSession', () => {
         role: 'tool',
         timestamp: 1_781_774_005,
         tool_name: 'text_to_speech'
+      },
+      {
+        content: JSON.stringify({ files_modified: ['/tmp/generated/dashboard.html'], success: true }),
+        role: 'tool',
+        timestamp: 1_781_774_006,
+        tool_name: 'write_file'
       }
     ])
 
@@ -128,7 +134,8 @@ describe('collectArtifactsForSession', () => {
       '/tmp/generated/report.pdf',
       '/tmp/generated/notes.md',
       'https://cdn.example.com/generated/data.csv',
-      '/tmp/generated/voice.ogg'
+      '/tmp/generated/voice.ogg',
+      '/tmp/generated/dashboard.html'
     ])
   })
 

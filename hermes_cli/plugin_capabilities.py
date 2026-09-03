@@ -221,7 +221,16 @@ def granted_capabilities(
 
 
 def _legacy_gate_set(entry: Mapping[str, Any], spec: CapabilitySpec) -> bool:
-    """True when the deprecated ``allow_*`` key for *spec* is truthy."""
+    """True when the deprecated ``allow_*`` key for *spec* is truthy.
+
+    A capability with no deprecated predecessor (``legacy_path=()``) has no
+    legacy gate to open, so it is never granted this way. Without this guard
+    the loop below never runs, ``node`` is still the plugin's whole config
+    entry, and ``bool(node)`` grants the capability to any plugin that has a
+    config block at all — a default-off gate that is on (ground rule 4).
+    """
+    if not spec.legacy_path:
+        return False
     node: Any = entry
     for part in spec.legacy_path:
         if not isinstance(node, Mapping):
@@ -329,8 +338,13 @@ def record_consent(
 
     # Bridge: mirror each granted capability into its legacy gate so the
     # existing enforcement sites (which still read allow_*) honor the grant.
+    # A capability with no deprecated predecessor has no key to mirror into —
+    # without this guard ``legacy_path[-1]`` raises IndexError and consent
+    # cannot be recorded at all. Its enforcing surface reads the grant.
     for cap in entry[GRANTED_KEY]:
         spec = CAPABILITY_REGISTRY[cap]
+        if not spec.legacy_path:
+            continue
         node = entry
         for part in spec.legacy_path[:-1]:
             child = node.setdefault(part, {})

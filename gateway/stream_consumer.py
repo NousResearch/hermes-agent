@@ -663,9 +663,19 @@ class GatewayStreamConsumer(ToolTimerMixin):
         ignored. Without that substitution a split turn records a tail-only
         payload, which the gateway reads as a mismatch and re-sends on top of
         an answer the user already received (#78541).
+
+        Native streaming shares the same hazard for a different reason: a
+        native turn with a tool call splits ``_accumulated`` into post-tool
+        segments (126→6→898), so the finalize path passes only the tail here.
+        The ``_FINAL_TEXT`` handler heals ``_stream_ledger`` with the
+        authoritative full final for native turns (ledger-only, no re-send),
+        so prefer the ledger there too — otherwise a tool-bearing native turn
+        records a tail-only payload and the gateway resends → double bubble.
         """
         source = text or ""
-        if self._turn_split_delivery and self._stream_ledger:
+        if self._stream_ledger and (
+            self._turn_split_delivery or self._use_native_streaming
+        ):
             source = self._stream_ledger
         self._delivered_final_text = ensure_closed_code_fences(
             self._clean_for_display(source)
@@ -1398,6 +1408,30 @@ class GatewayStreamConsumer(ToolTimerMixin):
                                 if _final_payload and _final_payload != _visible:
                                     self._accumulated = item[1]
                                     self._stream_ledger = item[1]
+                            elif (
+                                _streamed_something
+                                and self._use_native_streaming
+                                and not self._turn_split_delivery
+                            ):
+                                # Native streaming, non-split: heal the LEDGER
+                                # ONLY, never _accumulated.  A native turn with a
+                                # tool call splits _accumulated into post-tool
+                                # segments (126→6→898), so it holds only the tail
+                                # by finalize.  Adopting item[1] into _accumulated
+                                # would re-render the FULL final into the live
+                                # bubble (visual repeat of pre-tool text + broken
+                                # tool-timer frames) — which is exactly why
+                                # 12f9dab786 gated native out of the branch above.
+                                # But gating out ALSO dropped the ledger heal,
+                                # leaving _delivered_final_text = tail-only, so
+                                # delivered_final_matches reported a mismatch and
+                                # the gateway resent → SECOND bubble.  Recording
+                                # the authoritative full final in the ledger
+                                # (consumed by _record_turn_final_payload for the
+                                # reconciliation, NOT re-sent as a frame) fixes
+                                # the double bubble while leaving every visible
+                                # frame and the tool-timer animation untouched.
+                                self._stream_ledger = item[1]
                             elif _streamed_something and self._turn_split_delivery:
                                 # Split delivery + authoritative final (review
                                 # r2, finding 3): wholesale adoption would

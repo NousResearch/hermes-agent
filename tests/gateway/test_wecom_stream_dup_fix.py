@@ -442,3 +442,191 @@ class TestIntermediateFrameFailureIsFireAndForget:
             assert f"{CHAT_ID}:{TURN_ID}" not in adapter._stream_turns
         finally:
             await adapter.disconnect()
+
+
+class TestActiveRotationTimer:
+    """Layer 2 ACTIVE timer: rotation must fire from the periodic clock check
+    even when NO frames are flowing (long tool calls), lead the deadline
+    instead of lagging it, protect every new bubble, and be race-safe against
+    the frame-send path."""
+
+    @pytest.mark.asyncio
+    async def test_active_timer_rotates_without_frames(self):
+        """Defect B/core: _rotation_check_execute seals the old bubble and
+        rotates to a fresh one with no intervening frame push, and the new
+        bubble is protected (rotation check re-armed on next seed)."""
+        adapter = _make_adapter(keepalive_enabled=False)
+        try:
+            reply = AsyncMock(return_value={"errcode": 0})
+            adapter._send_stream_reply = reply
+
+            await adapter._send_stream_frame_inner(
+                "partial answer", chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
+            )
+            turn = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+            old_stream_id = turn.stream_id
+            # Age past the safe wall so the active timer decides to rotate.
+            turn.start_time -= adapter._stream_safe_duration_seconds + 500
+
+            # Drive the active-timer coroutine directly (no frames pushing).
+            await adapter._rotation_check_execute(turn, TURN_ID)
+
+            assert turn.stream_id != old_stream_id, "active timer must rotate"
+            assert turn.seeded is False, "new bubble not seeded until next frame"
+            assert turn.expired is False
+            assert CHAT_ID not in adapter._stream_expired_chats
+            finish_calls = _finalize_calls(reply)
+            assert len(finish_calls) == 1
+            assert finish_calls[0].args[1] == old_stream_id
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_pure_tool_tail_finalize_reseeds_and_protects_new_bubble(self):
+        """Defect B: after an ACTIVE rotation the tail is a pure finalize with
+        no intermediate text frame.  The finalize must re-seed the fresh
+        (un-seeded) bubble AND arm the active rotation check before sealing —
+        i.e. the new bubble is opened and closed, never stranded."""
+        adapter = _make_adapter(keepalive_enabled=False)
+        try:
+            reply = AsyncMock(return_value={"errcode": 0})
+            adapter._send_stream_reply = reply
+
+            await adapter._send_stream_frame_inner(
+                "partial answer", chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
+            )
+            turn = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+            old_stream_id = turn.stream_id
+            turn.start_time -= adapter._stream_safe_duration_seconds + 500
+
+            # Active rotation with NO following intermediate frame.
+            await adapter._rotation_check_execute(turn, TURN_ID)
+            new_stream_id = turn.stream_id
+            assert new_stream_id != old_stream_id
+            assert turn.seeded is False
+
+            # Pure-tool-tail: the very next event is the finalize.
+            reply.reset_mock()
+            armed_seen = {"v": False}
+            orig_arm = adapter._arm_rotation_check
+
+            def _spy_arm(t, *, turn_id):
+                armed_seen["v"] = True
+                return orig_arm(t, turn_id=turn_id)
+
+            adapter._arm_rotation_check = _spy_arm
+
+            ok = await adapter._send_stream_frame_inner(
+                "the complete final answer",
+                chat=CHAT_ID, finalize=True, turn_id=TURN_ID,
+            )
+
+            assert ok, "finalize on the rotated fresh bubble must succeed"
+            # Finalize re-seeded the new bubble (finish=false seed) AND armed
+            # the active rotation check for it, then sealed it (finish=true).
+            assert armed_seen["v"], (
+                "new bubble must be armed for rotation before finalize seals it"
+            )
+            seed_frames = [
+                c for c in reply.await_args_list
+                if c.kwargs.get("finish") is False
+                and c.args[1] == new_stream_id
+            ]
+            assert seed_frames, "finalize must re-seed the fresh rotated bubble"
+            finish_frames = [
+                c for c in reply.await_args_list
+                if c.kwargs.get("finish") is True
+                and c.args[1] == new_stream_id
+            ]
+            assert finish_frames, "finalize must seal the fresh rotated bubble"
+            assert f"{CHAT_ID}:{TURN_ID}" not in adapter._stream_turns
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_arm_delay_leads_deadline_never_lags(self):
+        """Defect A: the armed timer must wake BEFORE the rotation threshold
+        (safe_duration - lead), never after it — no +epsilon overshoot."""
+        adapter = _make_adapter(keepalive_enabled=False)
+        try:
+            reply = AsyncMock(return_value={"errcode": 0})
+            adapter._send_stream_reply = reply
+
+            await adapter._send_stream_frame_inner(
+                "partial answer", chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
+            )
+            turn = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+
+            import time as _t
+            rotate_at = (
+                adapter._stream_safe_duration_seconds
+                - adapter._rotation_lead_seconds
+            )
+            # Put the stream 10s before the rotation threshold.
+            turn.start_time = _t.monotonic() - (rotate_at - 10.0)
+
+            captured = {}
+            real_call_later = asyncio.get_running_loop().call_later
+
+            def _spy_call_later(delay, cb, *args):
+                captured["delay"] = delay
+                return real_call_later(delay, cb, *args)
+
+            asyncio.get_running_loop().call_later = _spy_call_later
+            try:
+                adapter._cancel_rotation_check(turn)
+                adapter._arm_rotation_check(turn, turn_id=TURN_ID)
+            finally:
+                asyncio.get_running_loop().call_later = real_call_later
+                adapter._cancel_rotation_check(turn)
+
+            # Wake must land AT or BEFORE the threshold (delay <= remaining=10),
+            # not after it (the old bug scheduled remaining+0.5 = 10.5).
+            assert captured["delay"] <= 10.0 + 1e-9, (
+                f"timer must lead the deadline; got delay={captured['delay']}"
+            )
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_rotation_and_framesend_no_double_loss(self):
+        """Defect C: the active-timer rotation and a concurrent frame-send are
+        serialized by the per-turn rotation lock, so exactly ONE rotation runs
+        and no old-bubble-unsealed + new-bubble-uncreated double-loss occurs."""
+        adapter = _make_adapter(keepalive_enabled=False)
+        try:
+            reply = AsyncMock(return_value={"errcode": 0})
+            adapter._send_stream_reply = reply
+
+            await adapter._send_stream_frame_inner(
+                "partial answer", chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
+            )
+            turn = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+            old_stream_id = turn.stream_id
+            turn.start_time -= adapter._stream_safe_duration_seconds + 500
+
+            # Fire the active timer coroutine and a frame-send at the same time.
+            await asyncio.gather(
+                adapter._rotation_check_execute(turn, TURN_ID),
+                adapter._send_stream_frame_inner(
+                    "more content", chat=CHAT_ID, finalize=False,
+                    turn_id=TURN_ID,
+                ),
+            )
+
+            # The lock must have serialized them: exactly ONE seal (finish=true)
+            # of the ORIGINAL bubble reached the wire — not zero (both saw a
+            # stale seeded=True and neither sealed) and not two (double seal).
+            seals_of_old = [
+                c for c in _finalize_calls(reply)
+                if c.args[1] == old_stream_id
+            ]
+            assert len(seals_of_old) == 1, (
+                f"exactly one rotation of the old bubble expected, got "
+                f"{len(seals_of_old)} — lock failed to serialize"
+            )
+            assert turn.stream_id != old_stream_id
+            assert turn.expired is False
+            assert CHAT_ID not in adapter._stream_expired_chats
+        finally:
+            await adapter.disconnect()

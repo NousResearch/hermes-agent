@@ -198,6 +198,14 @@ STREAM_SAFE_DURATION_SECONDS = 570.0  # 9.5 min — Layer 2 rotation trigger,
 # safely inside WeCom's absolute 10-min stream wall (846608).
 STREAM_KEEPALIVE_INTERVAL_SECONDS = 120.0  # 2 min — Layer 1 heartbeat cadence
 STREAM_KEEPALIVE_ENABLED_DEFAULT = False  # Layer 1 off unless config opts in
+ROTATION_CHECK_INTERVAL_SECONDS = 30.0  # Active rotation check cadence — how
+# often the timer-based check inspects stream age when no frames are flowing.
+# 30s is frequent enough to catch the 9.5-min threshold with margin.
+ROTATION_LEAD_SECONDS = 15.0  # Lead/safety margin — the active rotation timer
+# must wake and rotate BEFORE safe_duration, never after.  The old bubble seal
+# is a network round-trip that must land inside the 570->600s window, so we
+# trigger rotation at (safe_duration - lead) to leave room for jitter + the
+# seal RTT.  Lead >= one check-interval jitter keeps the wake ahead of the wall.
 
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
 VIDEO_MAX_BYTES = 10 * 1024 * 1024
@@ -337,6 +345,15 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         # of handing the server a doomed finish=true on the dying stream.
         self._stream_safe_duration_seconds = _extra_float(
             "stream_safe_duration_seconds", STREAM_SAFE_DURATION_SECONDS
+        )
+        # Layer 2 active timer lead margin: rotate this many seconds BEFORE the
+        # safe duration so the seal RTT + timer jitter still land inside the
+        # 570->600s window (overridable via config.extra, same mechanism).
+        self._rotation_lead_seconds = _extra_float(
+            "rotation_lead_seconds", ROTATION_LEAD_SECONDS
+        )
+        self._rotation_check_interval_seconds = _extra_float(
+            "rotation_check_interval_seconds", ROTATION_CHECK_INTERVAL_SECONDS
         )
         # Layer 1 heartbeat: off unless config opts in (see ANALYSIS §4.2/§5).
         self._stream_keepalive_enabled = bool(
@@ -1589,6 +1606,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         if turn is not None:
             self._cancel_idle_flush(turn)
             self._cancel_keepalive(turn)
+            self._cancel_rotation_check(turn)
 
     def _cancel_idle_flush(self, turn: StreamTurn) -> None:
         """Cancel a pending idle-flush timer on the turn (no-op if unarmed)."""
@@ -1617,6 +1635,165 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
             except Exception:
                 pass
             turn.keepalive_handle = None
+
+    # ── Active rotation check (Layer 2 active timer) ─────────────────────
+    # The passive Layer 2 check in _send_stream_reply_frame only fires when a
+    # new text delta produces a frame.  During long tool calls (browser_exec,
+    # hindsight_recall, etc.) no deltas are produced, so the passive check
+    # never runs and the stream silently exceeds WeCom's 10-min deadline.
+    #
+    # The active rotation check is a periodic timer (every 30s) that inspects
+    # the stream age and triggers _rotate_stream() when the safe duration is
+    # reached, regardless of whether any frames are being pushed.
+
+    def _cancel_rotation_check(self, turn: StreamTurn) -> None:
+        """Cancel a pending active rotation check on the turn (no-op if unarmed)."""
+        handle = turn.rotation_check_handle
+        if handle is not None:
+            try:
+                handle.cancel()
+            except Exception:
+                pass
+            turn.rotation_check_handle = None
+
+    def _arm_rotation_check(
+        self,
+        turn: StreamTurn,
+        *,
+        turn_id: Optional[str],
+    ) -> None:
+        """Arm the active rotation check timer if conditions are met.
+
+        Arms a periodic timer that checks stream age and triggers rotation
+        independently of frame pushes.  This ensures rotation fires even during
+        long tool executions where no text deltas produce frames.
+
+        Gating conditions (same as the passive check in _send_stream_reply_frame):
+        - Stream must be seeded (has an active bubble on WeCom's side)
+        - Keep-alive must be disabled (keep-alive users opt out of rotation)
+        - Turn must not be finalized or expired
+        - Not already armed (idempotent)
+        """
+        if self._stream_keepalive_enabled:
+            return  # keep-alive users opt out of Layer 2 rotation
+        if turn.finalized or turn.expired:
+            return
+        if not turn.seeded:
+            return  # no bubble to rotate yet
+        if turn.rotation_check_handle is not None:
+            return  # already armed
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # not inside a loop (defensive)
+
+        # Compute delay so the timer wakes BEFORE the rotation threshold
+        # (safe_duration - lead), never after.  The seal of the old bubble is a
+        # network round-trip that must complete inside the 570->600s window, so
+        # we lead the deadline instead of lagging it.  For young streams we keep
+        # the fixed check cadence; as the stream approaches the threshold we
+        # clamp the wake to the threshold itself (minus nothing — landing AT the
+        # threshold is safe, landing after it is not).
+        stream_age = time.monotonic() - turn.start_time
+        rotate_at = self._stream_safe_duration_seconds - self._rotation_lead_seconds
+        remaining = rotate_at - stream_age
+        if remaining <= 0:
+            # Already at/past the rotation threshold — fire ASAP.
+            delay = 0.1
+        else:
+            # Wake at the threshold or one cadence tick, whichever is sooner.
+            # No +epsilon: we must not schedule a wake that lands after the
+            # rotation threshold (which would eat into the seal-RTT margin).
+            delay = min(self._rotation_check_interval_seconds, remaining)
+
+        handle = loop.call_later(
+            delay,
+            self._on_rotation_check_fire,
+            turn,
+            turn_id,
+        )
+        turn.rotation_check_handle = handle
+
+    def _on_rotation_check_fire(
+        self,
+        turn: StreamTurn,
+        turn_id: Optional[str],
+    ) -> None:
+        """Loop callback — check stream age and trigger rotation if needed."""
+        turn.rotation_check_handle = None  # handle has fired
+        if turn.finalized or turn.expired:
+            return
+        if not turn.seeded:
+            return  # shouldn't happen, but defensive
+
+        stream_age = time.monotonic() - turn.start_time
+        rotate_at = self._stream_safe_duration_seconds - self._rotation_lead_seconds
+        if stream_age >= rotate_at:
+            logger.info(
+                "[%s] Active rotation check: stream age %.0fs >= rotate-at "
+                "%.0fs (safe %.0fs - lead %.0fs) for chat %s — rotating to a "
+                "fresh bubble with margin to spare (Layer 2 active timer, no "
+                "frames were pushing).",
+                self.name, stream_age, rotate_at,
+                self._stream_safe_duration_seconds,
+                self._rotation_lead_seconds, turn.chat_id,
+            )
+            try:
+                asyncio.ensure_future(
+                    self._rotation_check_execute(turn, turn_id)
+                )
+            except RuntimeError:
+                pass  # no running loop (defensive)
+        else:
+            # Not yet at threshold — re-arm for another check.
+            self._arm_rotation_check(turn, turn_id=turn_id)
+
+    async def _rotation_check_execute(
+        self,
+        turn: StreamTurn,
+        turn_id: Optional[str],
+    ) -> None:
+        """Execute the active rotation and protect the NEW bubble (Defect B).
+
+        Separated from the synchronous callback because _rotate_stream is async
+        and must be awaited under the per-turn rotation lock (Defect C: this
+        active coroutine runs concurrently with the frame-send path).
+
+        Defect B — every new bubble must be protected from birth; we do NOT bet
+        on "there will be a next frame."  After turn.rotate() the turn is
+        un-seeded (seeded=False), so the new bubble's WeCom 10-min countdown has
+        NOT started yet — it starts at the new bubble's first finish=false frame
+        (its seed).  Two paths seed that new bubble and BOTH arm the active
+        rotation check inside the seed block of _send_stream_frame_inner:
+          1. the next intermediate frame (text delta), or
+          2. a finalize on the un-seeded rotated turn (the pure-tool-tail path):
+             finalize falls through the seed block first, which re-seeds AND
+             arms, then seals.
+        So an un-seeded rotated turn is inherently safe (no live countdown), and
+        any seed re-arms.  We additionally call _arm_rotation_check here as a
+        belt-and-suspenders re-arm: it no-ops while seeded=False, but if a
+        concurrent frame already re-seeded during the await it ensures the new
+        bubble is armed without waiting for yet another frame.
+        """
+        if turn.finalized or turn.expired:
+            return
+        try:
+            rotated = await self._rotate_stream(turn, turn_id)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Active rotation check: _rotate_stream raised %s — "
+                "turn will expire naturally.",
+                self.name, exc,
+            )
+            return
+        if not rotated:
+            # _rotate_stream already retired the turn on failure.
+            return
+        # Belt-and-suspenders: re-arm for the new bubble.  No-op while the new
+        # bubble is un-seeded (safe: no live countdown yet); arms immediately if
+        # a concurrent frame re-seeded during the rotation await.  The seed
+        # block also arms, so protection is guaranteed on every seed path.
+        self._arm_rotation_check(turn, turn_id=turn_id)
 
     def _arm_keepalive(
         self,
@@ -1695,6 +1872,20 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
           ack is dropped rather than piling onto the ack queue.
         * On 846604/846608 marks the turn expired and retires it so finalize
           takes the Layer 2 fallback; stops the timer (no re-arm).
+
+        CONCURRENCY CONTRACT: this runs as an independent coroutine (see
+        _on_keepalive_fire's ensure_future) and mutates turn.last_sent_content /
+        turn._last_frame_sent_at WITHOUT holding turn.rotation_lock().  That is
+        safe ONLY because keep-alive and Layer 2 rotation are mutually
+        exclusive by config: _arm_rotation_check and the passive rotation gate
+        both early-return when self._stream_keepalive_enabled is True, so a
+        keep-alive frame can never interleave a rotation's seed/rotate on the
+        same turn.  Single str/float assignments here are atomic under the GIL
+        (no torn writes), but the check-act sequences in rotation are NOT — if
+        this mutual exclusion is ever relaxed (keep-alive + rotation both live),
+        this method MUST acquire turn.rotation_lock() to avoid a lost-update
+        race on last_sent_content (e.g. keep-alive writing back stale content
+        after rotate() cleared it, defeating the new bubble's dedup reset).
         """
         if turn.finalized or turn.expired:
             return
@@ -1734,7 +1925,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         self._arm_keepalive(turn, turn_id=turn_id)
 
     def _retire_turn(self, turn: StreamTurn, turn_id: Optional[str]) -> None:
-        """Remove a turn from the registry and cancel BOTH of its timers.
+        """Remove a turn from the registry and cancel all of its timers.
 
         Single choke point for the "turn is dead" cleanup shared by the
         expired/error paths.  Cancels idle-flush and keep-alive timers before
@@ -1742,13 +1933,42 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         """
         self._cancel_idle_flush(turn)
         self._cancel_keepalive(turn)
+        self._cancel_rotation_check(turn)
         if turn_id:
             self._stream_turns.pop(f"{turn.chat_id}:{turn_id}", None)
         else:
             self._cleanup_stream_turn(turn.chat_id, turn.req_id)
 
     async def _rotate_stream(self, turn: StreamTurn, turn_id: Optional[str]) -> bool:
+        """Locked public entrypoint for rotation — acquires the per-turn lock.
+
+        LOCKING CONTRACT (Defect C):
+          * The ACTIVE timer path (_rotation_check_execute) and any external
+            caller invoke THIS method, which acquires ``turn.rotation_lock()``
+            around the whole seal-old + rotate() critical section.
+          * The PASSIVE frame-send path (_send_stream_frame_inner) ALREADY
+            HOLDS the lock (it wraps its own check-state->act critical section
+            in the same lock) and therefore calls ``_rotate_stream_locked``
+            DIRECTLY — it must NOT call this wrapper, or it would deadlock by
+            re-acquiring a non-reentrant asyncio.Lock it already holds.
+
+        The lock makes "check stream state -> act on it" atomic across await
+        points so an active rotation cannot interleave a frame-send (and vice
+        versa), preventing the old-bubble-unsealed + new-bubble-uncreated
+        double-loss.
+        """
+        async with turn.rotation_lock():
+            return await self._rotate_stream_locked(turn, turn_id)
+
+    async def _rotate_stream_locked(
+        self, turn: StreamTurn, turn_id: Optional[str]
+    ) -> bool:
         """Close the current stream and rotate the turn to a fresh bubble.
+
+        Core rotation logic — the caller MUST hold ``turn.rotation_lock()``
+        (either via the ``_rotate_stream`` wrapper for the active path, or by
+        holding the lock directly in the passive frame-send path).  See the
+        LOCKING CONTRACT on ``_rotate_stream``.
 
         Called from the frame path (Layer 2) when the stream nears WeCom's
         absolute 10-min wall.  Sends ``finish=true`` on the *current* stream so
@@ -1765,10 +1985,21 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         (stream already dead), in which case the caller should retire the turn
         and fall back to the consumer's send() path.
         """
+        # Guard against double-rotation: if another rotation (passive or active)
+        # already ran on this turn during an await interleave, turn.seeded is
+        # already False and there is no bubble to seal.
+        if not turn.seeded:
+            logger.debug(
+                "[%s] _rotate_stream: skipping — turn %s already un-seeded "
+                "(concurrent rotation likely completed first).",
+                self.name, turn.stream_id,
+            )
+            return False
         old_stream_id = turn.stream_id
         # Cancel timers first — neither should fire during/after the swap.
         self._cancel_idle_flush(turn)
         self._cancel_keepalive(turn)
+        self._cancel_rotation_check(turn)
 
         # Seal the old bubble with whatever it last showed.  Use the accumulated
         # text (falls back to last_sent_content) and disambiguate against the
@@ -2908,7 +3139,15 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                 )
                 return StreamFrameResult.FAILED
 
-            # ── Layer 2 clock rotation ───────────────────────────────────────
+            # ── Layer 2 clock rotation + seed (LOCKED critical section) ───────
+            # Defect C: hold the per-turn rotation lock across the whole
+            # "check stream state -> rotate/seed -> mutate seeded/start_time/
+            # last_sent_content" sequence so the ACTIVE rotation timer
+            # (_rotation_check_execute) cannot interleave here across an await.
+            # We already hold the lock, so the passive rotation calls
+            # _rotate_stream_locked DIRECTLY (calling the locking _rotate_stream
+            # wrapper would deadlock on the non-reentrant asyncio.Lock).
+            #
             # WeCom binds an ABSOLUTE 10-min deadline to a stream from its first
             # frame; keep-alive cannot refresh it.  Once the stream nears the
             # safe duration (9.5 min), proactively seal the current bubble with
@@ -2923,59 +3162,78 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
             # keep that contract (keep-alive users opt out of rotation).  If such
             # a stream truly has expired, the _send_stream_reply below raises
             # WeComStreamExpiredError and the except block handles it.
-            if (
-                turn.seeded
-                and not turn.expired
-                and not self._stream_keepalive_enabled
-            ):
-                stream_age = time.monotonic() - turn.start_time
-                if stream_age >= self._stream_safe_duration_seconds:
-                    logger.info(
-                        "[%s] Stream age %.0fs >= safe duration %.0fs for chat "
-                        "%s — rotating to a fresh bubble (Layer 2). finalize=%s",
-                        self.name, stream_age,
-                        self._stream_safe_duration_seconds, chat, finalize,
-                    )
-                    rotated = await self._rotate_stream(turn, turn_id)
-                    if not rotated:
-                        # Close failed — turn already retired inside
-                        # _rotate_stream; fall back to the consumer's send().
-                        logger.debug(
-                            "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
-                            "rotation_close_failed", chat, turn_id,
+            async with turn.rotation_lock():
+                if (
+                    turn.seeded
+                    and not turn.expired
+                    and not self._stream_keepalive_enabled
+                ):
+                    stream_age = time.monotonic() - turn.start_time
+                    if stream_age >= self._stream_safe_duration_seconds:
+                        logger.info(
+                            "[%s] Stream age %.0fs >= safe duration %.0fs for "
+                            "chat %s — rotating to a fresh bubble (Layer 2). "
+                            "finalize=%s",
+                            self.name, stream_age,
+                            self._stream_safe_duration_seconds, chat, finalize,
                         )
-                        return StreamFrameResult.FAILED
-                    # turn.rotate() cleared last_sent_content, so the frame below
-                    # is never dedup-skipped against the sealed old bubble.
+                        # Passive path holds the lock — call the unlocked core.
+                        rotated = await self._rotate_stream_locked(turn, turn_id)
+                        if not rotated:
+                            # Close failed — turn already retired inside
+                            # rotate; fall back to the consumer's send().
+                            logger.debug(
+                                "[stream] frame REJECTED (reason=%s, chat=%s, "
+                                "turn_id=%s)",
+                                "rotation_close_failed", chat, turn_id,
+                            )
+                            return StreamFrameResult.FAILED
+                        # turn.rotate() cleared last_sent_content, so the frame
+                        # below is never dedup-skipped against the sealed old
+                        # bubble.
 
-            # First frame for this turn: send seed ONLY if not already seeded.
-            # The GatewayStreamConsumer sends the initial empty seed frame itself
-            # (stream_consumer.py:461), so we must not duplicate it here.
-            # The seeded flag prevents double-seed which causes WeCom errcode 6000
-            # (data version conflict).
-            if not turn.seeded and not turn.finalized:
-                # Seed frame with closed empty <think></think> — matches the
-                # official OpenClaw plugin's THINKING_MESSAGE constant.  This
-                # tells the WeCom client that a reasoning turn is starting;
-                # subsequent frames replace it with cumulative content.
-                await self._send_stream_reply(
-                    turn.req_id, turn.stream_id,
-                    "<think></think>", finish=False,
-                )
-                turn.seeded = True
-                logger.debug(
-                    "[stream] seed sent for turn %s (req_id=%s)",
-                    turn.stream_id, turn.req_id,
-                )
-                # Stream is now open on the server — arm the keep-alive timer
-                # (Layer 1) so long, content-sparse turns keep the bubble
-                # visibly updating within the 10-min window.  No-op when
-                # keep-alive is disabled by config.
-                self._arm_keepalive(turn, turn_id=turn_id)
-                # If caller sent empty text (consumer's explicit seed call),
-                # we're done — don't send another empty frame below.
-                if not text and not finalize:
-                    return StreamFrameResult.DELIVERED
+                # First frame for this turn: send seed ONLY if not already
+                # seeded.  The GatewayStreamConsumer sends the initial empty
+                # seed frame itself (stream_consumer.py:461), so we must not
+                # duplicate it here.  The seeded flag prevents double-seed which
+                # causes WeCom errcode 6000 (data version conflict).
+                _seed_only_return = False
+                if not turn.seeded and not turn.finalized:
+                    # Seed frame with closed empty <think></think> — matches the
+                    # official OpenClaw plugin's THINKING_MESSAGE constant.  This
+                    # tells the WeCom client that a reasoning turn is starting;
+                    # subsequent frames replace it with cumulative content.
+                    #
+                    # Anchor the stream age clock BEFORE the send — WeCom starts
+                    # its 10-minute countdown when it receives the first
+                    # finish=false frame, so our clock must not lag behind.
+                    turn.start_time = time.monotonic()
+                    await self._send_stream_reply(
+                        turn.req_id, turn.stream_id,
+                        "<think></think>", finish=False,
+                    )
+                    turn.seeded = True
+                    logger.debug(
+                        "[stream] seed sent for turn %s (req_id=%s)",
+                        turn.stream_id, turn.req_id,
+                    )
+                    # Stream is now open on the server — arm the keep-alive timer
+                    # (Layer 1) so long, content-sparse turns keep the bubble
+                    # visibly updating within the 10-min window.  No-op when
+                    # keep-alive is disabled by config.
+                    self._arm_keepalive(turn, turn_id=turn_id)
+                    # Arm the active rotation check (Layer 2 active timer) so
+                    # rotation fires even when no text deltas produce frames
+                    # (e.g. during long tool executions like browser_exec).
+                    self._arm_rotation_check(turn, turn_id=turn_id)
+                    # If caller sent empty text (consumer's explicit seed call),
+                    # we're done — don't send another empty frame below.  Defer
+                    # the return until AFTER the lock is released.
+                    if not text and not finalize:
+                        _seed_only_return = True
+            # Lock released here.
+            if _seed_only_return:
+                return StreamFrameResult.DELIVERED
 
             # Send the frame
             _is_indeterminate = False  # set to True on indeterminate settlement
@@ -2989,6 +3247,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                 # (finalize-only) send() fallback.
                 self._cancel_idle_flush(turn)
                 self._cancel_keepalive(turn)
+                self._cancel_rotation_check(turn)
 
                 # WeCom may silently drop (no ack) a final frame whose content
                 # is identical to the preceding intermediate frame — it treats

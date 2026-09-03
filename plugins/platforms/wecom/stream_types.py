@@ -100,6 +100,34 @@ class StreamTurn:
         # timer firing on a dead turn.  None when keep-alive is disabled or
         # the turn has no armed timer.
         self.keepalive_handle: Optional[asyncio.TimerHandle] = None
+        # Active rotation check handle (Layer 2 active timer) — a periodic
+        # asyncio TimerHandle that checks stream age independently of frame
+        # pushes.  Ensures rotation fires even during long tool executions
+        # where no text deltas produce frames.  MUST be cancelled on every
+        # turn exit path (same as keepalive_handle / idle_flush_handle).
+        self.rotation_check_handle: Optional[asyncio.TimerHandle] = None
+        # Per-turn rotation lock (Layer 2 concurrency guard).  The active
+        # rotation timer runs _rotate_stream as an independent coroutine
+        # concurrently with the frame-send path; both read/mutate stream_id,
+        # seeded and last_sent_content across await points.  This lock makes
+        # each side's "check stream state -> act on it" critical section
+        # atomic so a rotation cannot interleave a frame-send (and vice
+        # versa), preventing the old-bubble-unsealed + new-bubble-uncreated
+        # double-loss.  Created lazily via rotation_lock() because
+        # __init__ may run outside a running event loop.
+        self._rotation_lock: Optional[asyncio.Lock] = None
+
+    def rotation_lock(self) -> asyncio.Lock:
+        """Return the per-turn rotation lock, creating it lazily.
+
+        asyncio.Lock() binds to the running loop on first use; StreamTurn is
+        sometimes constructed outside a loop, so we defer creation until the
+        first async caller needs it (all callers run inside the adapter's
+        event loop).
+        """
+        if self._rotation_lock is None:
+            self._rotation_lock = asyncio.Lock()
+        return self._rotation_lock
 
     def rotate(self) -> None:
         """Swap in a fresh stream_id and reset the age clock for rotation.
@@ -118,9 +146,15 @@ class StreamTurn:
         never dedup-skipped against what the old bubble already showed, and the
         intermediate-frame counter is reset so the new bubble gets its own
         MAX_INTERMEDIATE_FRAMES budget.
+
+        NOTE: ``start_time`` is NOT reset here.  The age clock for the new
+        bubble is anchored by the caller just before the new seed frame is
+        sent (``turn.start_time = time.monotonic()`` in the seed block of
+        ``_send_stream_frame_inner``), matching the moment WeCom starts its
+        10-minute countdown.  Setting it here would be too early — there may
+        be a gap between rotate() and the next seed.
         """
         self.stream_id = f"stream_{uuid.uuid4().hex[:12]}"
-        self.start_time = time.monotonic()
         self.seeded = False
         self.last_sent_content = ""
         self._last_frame_sent_at = 0.0

@@ -117,6 +117,68 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# --board position-independence (flag accepted before OR after subcommand)
+# ---------------------------------------------------------------------------
+
+def _build_kanban_parser():
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    return parser
+
+
+def test_board_flag_accepted_before_subcommand(kanban_home):
+    parser = _build_kanban_parser()
+    args = parser.parse_args(["kanban", "--board", "alpha", "list"])
+    assert args.board == "alpha"
+    assert args.kanban_action == "list"
+
+
+def test_board_flag_accepted_after_subcommand(kanban_home):
+    parser = _build_kanban_parser()
+    args = parser.parse_args(["kanban", "list", "--board", "alpha"])
+    assert args.board == "alpha"
+    assert args.kanban_action == "list"
+
+
+def test_board_flag_default_not_clobbered_without_flag(kanban_home):
+    """Omitting --board must leave the attribute absent/None (SUPPRESS copy
+    must not overwrite the parent default with its own None)."""
+    parser = _build_kanban_parser()
+    args = parser.parse_args(["kanban", "list"])
+    assert getattr(args, "board", None) is None
+
+
+def test_board_flag_after_subcommand_routes_to_board(kanban_home):
+    """End-to-end: `list --board <slug>` reads the chosen board's tasks."""
+    kb.create_board("alpha")
+    with kb.connect_closing(board="alpha") as conn:
+        kb.create_task(conn, title="alpha-task")
+
+    out = kc.run_slash("list --board alpha --json")
+    payload = json.loads(out)
+    assert any(row.get("title") == "alpha-task" for row in payload), out
+
+
+def test_board_flag_before_subcommand_still_routes(kanban_home):
+    kb.create_board("beta")
+    with kb.connect_closing(board="beta") as conn:
+        kb.create_task(conn, title="beta-task")
+
+    out = kc.run_slash("--board beta list --json")
+    payload = json.loads(out)
+    assert any(row.get("title") == "beta-task" for row in payload), out
+
+
+def test_board_flag_accepted_on_nested_boards_subcommand(kanban_home):
+    parser = _build_kanban_parser()
+    args = parser.parse_args(["kanban", "boards", "list", "--board", "alpha"])
+    assert args.board == "alpha"
+    assert args.kanban_action == "boards"
+    assert args.boards_action == "list"
+
+
+# ---------------------------------------------------------------------------
 # Integration with the COMMAND_REGISTRY
 # ---------------------------------------------------------------------------
 

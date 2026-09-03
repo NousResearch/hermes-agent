@@ -1053,6 +1053,42 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Emit the repair report as JSON")
 
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
+
+    # --- per-subcommand --board copies (position-independent flag) ---
+    # `--board` is a global flag that scopes every subcommand to a board
+    # DB. argparse only matches parent-level options BEFORE the subcommand
+    # token, so `hermes kanban --board <slug> list` worked but the natural
+    # `hermes kanban list --board <slug>` died with a usage error. Add a
+    # copy to every subparser (recursively, so the nested `boards *`
+    # subcommands get it too) with default=argparse.SUPPRESS: when the
+    # user omits the flag, the copy does NOT set the attribute, so the
+    # parent's pre-subcommand value survives; when the user supplies it
+    # after the subcommand, it overwrites with the post-subcommand value.
+    # The dispatch side already reads getattr(args, "board", None), so no
+    # handler changes are needed.
+    def _add_board_copy(parser: argparse.ArgumentParser) -> None:
+        if "--board" in parser._option_string_actions:
+            return  # already has --board (the top-level parser)
+        parser.add_argument(
+            "--board",
+            default=argparse.SUPPRESS,
+            metavar="<slug>",
+            help=(
+                "Board slug to operate on. Defaults to the current board "
+                "(set via `hermes kanban boards switch <slug>` or the "
+                "HERMES_KANBAN_BOARD env var)."
+            ),
+        )
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for choice in action.choices.values():
+                    _add_board_copy(choice)
+
+    for action in kanban_parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for choice in action.choices.values():
+                _add_board_copy(choice)
+
     return kanban_parser
 
 

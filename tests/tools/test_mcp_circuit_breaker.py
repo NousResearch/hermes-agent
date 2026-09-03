@@ -221,6 +221,55 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
         _cleanup(mcp_tool, "srv")
 
 
+def test_tool_level_error_does_not_trip_breaker(monkeypatch, tmp_path):
+    """Semantic tool errors must not advance the transport breaker.
+
+    A tool-level error payload (validation, not-found, gated action) is a
+    sign the transport is healthy — the request reached the server and the
+    server produced a response. The breaker must reset on any call that
+    completes without a transport-level exception.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    call_count = {"n": 0}
+
+    async def _call_tool_returns_semantic_error(*a, **kw):
+        call_count["n"] += 1
+        result = MagicMock()
+        result.isError = True
+        block = MagicMock()
+        block.text = "Error: validation failed"
+        result.content = [block]
+        result.structuredContent = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_returns_semantic_error)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD - 1
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+
+        result = handler({})
+        parsed = json.loads(result)
+        assert "error" in parsed, parsed
+        assert call_count["n"] == 1
+        # Transport completed → breaker must reset to 0, not stay at threshold-1.
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+
+        # A second call must also go through (breaker closed, not tripped).
+        result = handler({})
+        parsed = json.loads(result)
+        assert "error" in parsed, parsed
+        assert call_count["n"] == 2, "tool-level error should not trip breaker"
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
 def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_path):
     """A half-open probe against a server with no live session must request
     a transport reconnect and return a clean error — NOT write into a dead

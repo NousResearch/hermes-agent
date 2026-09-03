@@ -586,6 +586,111 @@ def kanban_home() -> Path:
     return get_default_hermes_root()
 
 
+#: Mirrors ``hermes_state``'s ``HERMES_STATE_DB_GUARD_BYPASS``.
+_KANBAN_DB_GUARD_BYPASS_ENV = "HERMES_KANBAN_DB_GUARD_BYPASS"
+
+
+def _guard_in_test_context() -> bool:
+    """True when this process is a test run, for live-board guard purposes.
+
+    Broader than ``hermes_state._in_test_context()``, which reads ``PYTEST_*``
+    env vars and process ancestry and so misses a shim that fakes ``pytest``
+    in ``sys.modules``. Checking ``sys.modules`` is safe only while no module
+    under ``hermes_cli/``, ``agent/``, ``gateway/`` or ``tools/`` imports
+    pytest at top level. See PR #101997.
+    """
+    if os.environ.get(_KANBAN_DB_GUARD_BYPASS_ENV):
+        return False
+    if "pytest" in sys.modules:
+        return True
+    try:
+        from hermes_state import _in_test_context
+        return bool(_in_test_context())
+    except Exception:
+        # The guard must not be the reason a real run fails.
+        return False
+
+
+def _real_kanban_roots() -> list[Path]:
+    """Candidate real Hermes roots that a test must never write into.
+
+    Must not resolve through ``HERMES_HOME``, ``HERMES_KANBAN_HOME``,
+    ``HERMES_KANBAN_DB`` or ``Path.home()``: the fixtures this guard catches
+    rewrite all four, which would aim the deny-list at the test's own
+    sandbox. ``HERMES_REAL_HOME`` and the passwd entry survive that.
+    """
+    roots: list[Path] = []
+
+    def _add(candidate: Path) -> None:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            return
+        if resolved not in roots:
+            roots.append(resolved)
+
+    real_home = os.environ.get("HERMES_REAL_HOME", "").strip()
+    if real_home:
+        _add(Path(real_home) / ".hermes")
+
+    try:
+        home = Path(os.path.expanduser("~"))
+    except Exception:
+        home = None
+    if home is not None:
+        _add(home / ".hermes")
+        # Profile-mode HOME: <root>/profiles/<name>/home -> <root>
+        parts = home.parts
+        if len(parts) >= 4 and parts[-1] == "home" and parts[-3] == "profiles":
+            _add(Path(*parts[:-3]))
+
+    return roots
+
+
+def _is_production_kanban_db(resolved: Path, root: Path) -> bool:
+    """True when *resolved* is a real board file under Hermes root *root*.
+
+    Matches only the two shapes :func:`kanban_db_path` produces, so a scratch
+    board under ``<root>/kanban/workspaces/<task>/`` stays writable.
+    """
+    try:
+        rel = resolved.relative_to(root)
+    except ValueError:
+        return False
+    parts = rel.parts
+    if parts == ("kanban.db",):
+        return True
+    return (
+        len(parts) == 4
+        and parts[0] == "kanban"
+        and parts[1] == "boards"
+        and parts[3] == "kanban.db"
+    )
+
+
+def _ensure_not_live_board(path: Path) -> None:
+    """Raise when a test-context process resolves the live kanban board.
+
+    Called before any ``mkdir``, connection, or schema write. No-op outside a
+    test context and for sandboxed paths.
+    """
+    if not _guard_in_test_context():
+        return
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except Exception:
+        return
+    for root in _real_kanban_roots():
+        if _is_production_kanban_db(resolved, root):
+            raise RuntimeError(
+                "live-board guard: a test attempted to open the production "
+                f"kanban board at {resolved} (under real Hermes root {root}). "
+                "Tasks created there are dispatchable. Set HERMES_KANBAN_DB "
+                "to a tmp path (it outranks HERMES_HOME) or pass an explicit "
+                f"tmp db_path. To opt out, set {_KANBAN_DB_GUARD_BYPASS_ENV}=1."
+            )
+
+
 def boards_root() -> Path:
     """Return ``<root>/kanban/boards`` — the parent of non-default board dirs.
 
@@ -2362,6 +2467,8 @@ def connect(
         path = db_path
     else:
         path = kanban_db_path(board=board)
+    # Before the mkdir: creating the directory is already a live write.
+    _ensure_not_live_board(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Fast path: once THIS process has initialized this path, the expensive
@@ -2528,6 +2635,7 @@ def init_db(
         path = db_path
     else:
         path = kanban_db_path(board=board)
+    _ensure_not_live_board(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
     # Clear the cache entry so the underlying connect() re-runs the

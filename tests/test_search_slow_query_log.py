@@ -24,7 +24,17 @@ def test_slow_log_emitted_at_zero_threshold(db, monkeypatch, caplog):
     slow = [r for r in caplog.records if "slow session search" in r.getMessage()]
     assert slow, "threshold 0 must log every search"
     msg = slow[0].getMessage()
-    assert "path=" in msg and "rows=1" in msg
+    assert "path=" in msg and "rows=1" in msg and "chars=" in msg
+    assert "query=" not in msg and "graphiti" not in msg
+
+
+def test_query_text_requires_explicit_opt_in(db, monkeypatch, caplog):
+    monkeypatch.setenv("HERMES_SEARCH_SLOW_MS", "0")
+    monkeypatch.setenv("HERMES_SEARCH_LOG_QUERY", "true")
+    with caplog.at_level(logging.INFO, logger="hermes_state"):
+        db.search_messages("graphiti", limit=5)
+    slow = [r for r in caplog.records if "slow session search" in r.getMessage()]
+    assert "query='graphiti'" in slow[0].getMessage()
 
 
 def test_no_log_under_threshold(db, monkeypatch, caplog):

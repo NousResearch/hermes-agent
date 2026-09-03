@@ -12122,7 +12122,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append(clause)
             params.extend(clause_params)
         if min_message_count > 0:
-            where_clauses.append("s.message_count >= ?")
+            where_clauses.append(
+                "(s.message_count >= ? OR (s.title IS NOT NULL AND s.title != '') OR s.pinned = 1)"
+            )
             params.append(min_message_count)
         if archived_only:
             where_clauses.append("s.archived = 1")
@@ -15034,7 +15036,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append(clause)
             params.extend(clause_params)
         if min_message_count > 0:
-            where_clauses.append("s.message_count >= ?")
+            where_clauses.append(
+                "(s.message_count >= ? OR (s.title IS NOT NULL AND s.title != '') OR s.pinned = 1)"
+            )
             params.append(min_message_count)
         if archived_only:
             where_clauses.append("s.archived = 1")
@@ -15313,17 +15317,172 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 continue
         return lineage if session_id in lineage else [session_id]
 
+    def clear_session_messages(
+        self,
+        session_id: str,
+        keep_last_n: Optional[int] = None,
+        before_timestamp: Optional[float] = None,
+        sessions_dir: Optional[Path] = None,
+    ) -> bool:
+        """Clear messages for a session while preserving the session record.
+
+        When *keep_last_n* is specified (> 0), keeps the most recent *keep_last_n*
+        messages (by id) and deletes older ones.
+        When *before_timestamp* is specified, deletes messages with timestamp < before_timestamp.
+        Otherwise, deletes all messages for the session.
+
+        Recalculates or resets message_count, tool_call_count, token counters,
+        and cleans unreferenced system prompts.
+        When all messages are removed and *sessions_dir* is provided, cleans up on-disk
+        transcript files.
+
+        Returns True if the session was found and cleared, False if session was not found.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)
+            )
+            if cursor.fetchone() is None:
+                return False
+
+            if keep_last_n is not None and keep_last_n > 0:
+                conn.execute(
+                    """
+                    DELETE FROM messages
+                    WHERE session_id = ?
+                      AND id NOT IN (
+                          SELECT id FROM messages
+                          WHERE session_id = ?
+                          ORDER BY id DESC
+                          LIMIT ?
+                      )
+                    """,
+                    (session_id, session_id, keep_last_n),
+                )
+            elif before_timestamp is not None:
+                conn.execute(
+                    "DELETE FROM messages WHERE session_id = ? AND timestamp < ?",
+                    (session_id, before_timestamp),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM messages WHERE session_id = ?", (session_id,)
+                )
+
+            # Check remaining messages count
+            row = conn.execute(
+                """
+                SELECT COUNT(*) as msg_cnt,
+                       SUM(CASE WHEN role = 'tool' OR (tool_calls IS NOT NULL AND tool_calls != '' AND tool_calls != '[]') THEN 1 ELSE 0 END) as tool_cnt
+                FROM messages
+                WHERE session_id = ? AND active = 1
+                """,
+                (session_id,),
+            ).fetchone()
+
+            remaining_msgs = row["msg_cnt"] if row and row["msg_cnt"] is not None else 0
+            remaining_tools = row["tool_cnt"] if row and row["tool_cnt"] is not None else 0
+
+            if remaining_msgs == 0:
+                conn.execute(
+                    """
+                    UPDATE sessions SET
+                        message_count = 0,
+                        tool_call_count = 0,
+                        input_tokens = 0,
+                        output_tokens = 0,
+                        cache_read_tokens = 0,
+                        cache_write_tokens = 0,
+                        reasoning_tokens = 0,
+                        api_call_count = 0,
+                        last_activity_at = ?
+                    WHERE id = ?
+                    """,
+                    (time.time(), session_id),
+                )
+                conn.execute(
+                    "DELETE FROM session_model_usage WHERE session_id = ?",
+                    (session_id,),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE sessions SET
+                        message_count = ?,
+                        tool_call_count = ?,
+                        last_activity_at = ?
+                    WHERE id = ?
+                    """,
+                    (remaining_msgs, remaining_tools, time.time(), session_id),
+                )
+
+            self._delete_unreferenced_system_prompts(conn)
+            return True
+
+        cleared = self._execute_write(_do)
+        if cleared:
+            # If all messages were deleted, clean up on-disk transcript files
+            if keep_last_n is None and before_timestamp is None:
+                self._remove_session_files(sessions_dir, session_id)
+        return bool(cleared)
+
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
+        self.clear_session_messages(session_id)
+
+    def delete_session_messages(
+        self,
+        session_id: str,
+        message_ids: List[int],
+    ) -> int:
+        """Delete specific messages by ID within a session.
+
+        Recalculates message_count and tool_call_count for the session.
+        Returns the number of deleted messages.
+        """
+        if not message_ids:
+            return 0
+        valid_ids = [mid for mid in message_ids if isinstance(mid, int) or (isinstance(mid, str) and mid.isdigit())]
+        if not valid_ids:
+            return 0
+
         def _do(conn):
-            conn.execute(
-                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+            placeholders = ",".join("?" * len(valid_ids))
+            cursor = conn.execute(
+                f"DELETE FROM messages WHERE session_id = ? AND id IN ({placeholders})",
+                [session_id, *valid_ids],
             )
-            conn.execute(
-                "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
-                (session_id,),
-            )
-        self._execute_write(_do)
+            deleted_count = cursor.rowcount
+
+            if deleted_count > 0:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*) as msg_cnt,
+                           SUM(CASE WHEN role = 'tool' OR (tool_calls IS NOT NULL AND tool_calls != '' AND tool_calls != '[]') THEN 1 ELSE 0 END) as tool_cnt
+                    FROM messages
+                    WHERE session_id = ? AND active = 1
+                    """,
+                    (session_id,),
+                ).fetchone()
+
+                remaining_msgs = row["msg_cnt"] if row and row["msg_cnt"] is not None else 0
+                remaining_tools = row["tool_cnt"] if row and row["tool_cnt"] is not None else 0
+
+                conn.execute(
+                    """
+                    UPDATE sessions SET
+                        message_count = ?,
+                        tool_call_count = ?,
+                        last_activity_at = ?
+                    WHERE id = ?
+                    """,
+                    (remaining_msgs, remaining_tools, time.time(), session_id),
+                )
+                self._delete_unreferenced_system_prompts(conn)
+
+            return deleted_count
+
+        return int(self._execute_write(_do) or 0)
 
     @staticmethod
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:

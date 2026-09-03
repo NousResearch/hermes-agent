@@ -26,7 +26,9 @@ from fastapi.responses import StreamingResponse
 from hermes_cli.web_deps import late
 from hermes_cli.web_models import (
     BulkDeleteSessions,
+    SessionClear,
     SessionImport,
+    SessionMessagesDelete,
     SessionOwnerBackfill,
     SessionPrune,
     SessionRename,
@@ -753,6 +755,54 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
                 return {"ok": True, "already_absent": True}
             db.delete_session(sid)
             return {"ok": True}
+        finally:
+            db.close()
+
+    return await asyncio.to_thread(_delete)
+
+
+@manage_router.post("/api/sessions/{session_id}/clear")
+async def clear_session_endpoint(
+    session_id: str,
+    body: Optional[SessionClear] = None,
+):
+    """Clear transcript / messages for a session while preserving metadata."""
+    profile = body.profile if body else None
+    keep_last_n = body.keep_last_n if body else None
+    before_timestamp = body.before_timestamp if body else None
+
+    def _clear():
+        db = _open_session_db_for_profile(profile, read_only=False)
+        try:
+            sid = db.resolve_session_id(session_id)
+            if not sid:
+                raise HTTPException(status_code=404, detail="Session not found")
+            success = db.clear_session_messages(
+                sid,
+                keep_last_n=keep_last_n,
+                before_timestamp=before_timestamp,
+            )
+            return {"ok": success, "session_id": sid}
+        finally:
+            db.close()
+
+    return await asyncio.to_thread(_clear)
+
+
+@manage_router.post("/api/sessions/{session_id}/messages/bulk-delete")
+async def delete_session_messages_endpoint(
+    session_id: str,
+    body: SessionMessagesDelete,
+):
+    """Delete specific messages by ID within a session."""
+    def _delete():
+        db = _open_session_db_for_profile(body.profile, read_only=False)
+        try:
+            sid = db.resolve_session_id(session_id)
+            if not sid:
+                raise HTTPException(status_code=404, detail="Session not found")
+            deleted = db.delete_session_messages(sid, body.message_ids)
+            return {"ok": True, "session_id": sid, "deleted": deleted}
         finally:
             db.close()
 

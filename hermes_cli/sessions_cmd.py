@@ -894,6 +894,52 @@ def cmd_sessions(args, sessions_parser=None):
             print(f"Session '{args.session_id}' not found.")
             return 1
 
+    elif action == "clear":
+        resolved_session_id = db.resolve_session_id(args.session_id)
+        if not resolved_session_id:
+            print(f"Session '{args.session_id}' not found.")
+            return 1
+        _get_session = getattr(db, "get_session", None)
+        _meta = (_get_session(resolved_session_id) or {}) if callable(_get_session) else {}
+        _pinned_note = " (this session is PINNED)" if _meta.get("pinned") else ""
+        _title_note = f" '{_meta.get('title')}'" if _meta.get("title") else ""
+
+        keep_last = getattr(args, "last", None)
+        before_val = getattr(args, "before", None)
+        before_ts = None
+        if before_val:
+            from hermes_cli.session_filters import parse_point_in_time
+            try:
+                before_ts = parse_point_in_time(before_val, "--before")
+            except ValueError as exc:
+                print(f"Error: {exc}")
+                return 1
+
+        detail = ""
+        if keep_last is not None:
+            detail = f" (keeping last {keep_last} messages)"
+        elif before_ts is not None:
+            detail = f" (messages before {before_val})"
+
+        if not args.yes:
+            if not _confirm_prompt(
+                f"Clear transcript for session '{resolved_session_id}'{_title_note}{_pinned_note}{detail}? [y/N] "
+            ):
+                print("Cancelled.")
+                return
+        sessions_dir = get_hermes_home() / "sessions"
+        cleared = db.clear_session_messages(
+            resolved_session_id,
+            keep_last_n=keep_last,
+            before_timestamp=before_ts,
+            sessions_dir=sessions_dir,
+        )
+        if cleared:
+            print(f"Cleared transcript for session '{resolved_session_id}'{detail}.")
+        else:
+            print(f"Session '{args.session_id}' not found.")
+            return 1
+
     elif action == "prune" and getattr(args, "never_active", False):
         # Separate branch on purpose: the shared prune/archive selector is
         # pinned to `ended_at IS NOT NULL`, so never-closed rows sit outside

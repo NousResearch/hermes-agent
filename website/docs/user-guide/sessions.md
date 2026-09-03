@@ -451,6 +451,27 @@ hermes sessions delete 20250305_091523_a1b2c3d4
 hermes sessions delete 20250305_091523_a1b2c3d4 --yes
 ```
 
+### Clear a Session's Transcript
+
+Clearing a session wipes its message history and resets token counters back to zero while preserving the session container itself (title, pinned status, working directory, model preferences, and session settings).
+
+```bash
+# Clear all messages in a session (interactive confirmation)
+hermes sessions clear 20250305_091523_a1b2c3d4
+
+# Clear without confirmation prompt
+hermes sessions clear 20250305_091523_a1b2c3d4 --yes
+
+# Keep the most recent N messages and delete older turns
+hermes sessions clear 20250305_091523_a1b2c3d4 --last 5
+
+# Delete messages created before a specific duration or date
+hermes sessions clear 20250305_091523_a1b2c3d4 --before 2d
+hermes sessions clear 20250305_091523_a1b2c3d4 --before "2026-08-01 12:00"
+```
+
+In the Desktop app, right-click any session in the sidebar and choose **"Clear transcript"** to open the pruning dialog with options to clear all messages, keep recent turns, or delete messages older than a selected duration.
+
 ### Rename a Session
 
 ```bash

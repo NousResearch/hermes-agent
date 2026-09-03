@@ -14671,6 +14671,22 @@ def main():
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )
 
+    sessions_clear = sessions_subparsers.add_parser(
+        "clear", help="Clear transcript/messages of a session while keeping the session"
+    )
+    sessions_clear.add_argument("session_id", help="Session ID to clear")
+    sessions_clear.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation"
+    )
+    sessions_clear.add_argument(
+        "--last", type=int, metavar="N", help="Keep only the most recent N messages"
+    )
+    sessions_clear.add_argument(
+        "--before",
+        metavar="TIME",
+        help="Clear messages before TIME (duration ago like '5h', or ISO timestamp)",
+    )
+
     sessions_prune = sessions_subparsers.add_parser(
         "prune",
         help="Delete old sessions (filterable by time window, source, title, ...)",

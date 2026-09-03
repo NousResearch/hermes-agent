@@ -367,6 +367,21 @@ class SessionOwnerBackfill(BaseModel):
     profile: Optional[str] = None
 
 
+class SessionClear(BaseModel):
+    """Body for POST /api/sessions/{session_id}/clear."""
+
+    profile: Optional[str] = None
+    keep_last_n: Optional[int] = None
+    before_timestamp: Optional[float] = None
+
+
+class SessionMessagesDelete(BaseModel):
+    """Body for POST /api/sessions/{session_id}/messages/bulk-delete."""
+
+    message_ids: List[int]
+    profile: Optional[str] = None
+
+
 # --- from web_server.py (originally lines 12149-12174) ---
 
 class SessionPrune(BaseModel):

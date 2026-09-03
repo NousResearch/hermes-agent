@@ -1193,6 +1193,10 @@ agent:
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
+  # ponytail: keep the default at "medium". Measured in #77291, CoT-bearing
+  # turns were 66% of API time and 10% of turns (1.5k+ reasoning chars) took
+  # 30% of wall clock; a global "high" buys latency on every turn. Prefer
+  # reasoning_overrides per model below -- effort flips restart prompt cache.
   reasoning_effort: "medium"
   
   # Per-model reasoning effort overrides (optional dict)

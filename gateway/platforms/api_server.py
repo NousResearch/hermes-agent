@@ -2918,6 +2918,31 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         return None
 
+    def _reasoning_exposure_enabled(self) -> bool:
+        """True when the API server should expose model reasoning on the wire.
+
+        Honors ``display.platforms.api_server.show_reasoning`` via the standard
+        per-platform display resolver (#7556).  Off by default so the wire
+        format is byte-identical for existing clients (#37044, #21655); an
+        operator opts in per platform.
+
+        Broad ``except`` on purpose: a config that fails to load must never 500
+        an otherwise-valid /v1/chat/completions or /v1/responses request, so the
+        gate fails closed (reasoning off) and logs why at debug level.
+        """
+        try:
+            from gateway.display_config import resolve_display_setting
+            from gateway.run import _load_gateway_config
+
+            return bool(resolve_display_setting(
+                _load_gateway_config(), "api_server", "show_reasoning", False,
+            ))
+        except Exception as exc:
+            logger.debug(
+                "show_reasoning gate resolution failed; defaulting to off: %s", exc
+            )
+            return False
+
     def _create_agent(
         self,
         ephemeral_system_prompt: Optional[str] = None,
@@ -2926,6 +2951,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None,
@@ -3246,6 +3272,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
+            "reasoning_callback": reasoning_callback,
             "session_db": self._ensure_session_db(),
             "fallback_model": fallback_model,
             "reasoning_config": reasoning_config,
@@ -5293,6 +5320,14 @@ class APIServerAdapter(BasePlatformAdapter):
         model_name = body.get("model", self._model_name)
         created = int(time.time())
 
+        # Resolve reasoning exposure once, before the stream/non-stream branch.
+        # When on, chat/completions surfaces the model's STRUCTURED reasoning
+        # (the reasoning_callback / _fire_reasoning_delta path, NOT the
+        # reasoning.available progress event which carries stripped answer
+        # content) as delta.reasoning_content (stream) or a reasoning_content
+        # sibling of content (non-stream).  Off by default = byte-identical wire.
+        show_reasoning = self._reasoning_exposure_enabled()
+
         # Per-client model routing: if the requested model matches a
         # configured model_routes alias, this request's agent is created
         # with that route's model/provider instead of the global default.
@@ -5327,6 +5362,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 # put_threadsafe (not put_nowait) is required here.
                 if delta is not None:
                     _stream_q.put_threadsafe(delta)
+
+            # Structured reasoning → delta.reasoning_content chunks.  This is
+            # the agent's reasoning_callback (fired by _fire_reasoning_delta on
+            # native reasoning_content / thinking deltas), NOT the
+            # reasoning.available progress event, which conversation_loop
+            # derives from assistant_message.content and would serialize the
+            # answer text as reasoning.  Gated by show_reasoning; None when off
+            # so run_agent skips the callback entirely (unchanged wire format).
+            _on_reasoning = None
+            if show_reasoning:
+                def _on_reasoning(text):
+                    if text:
+                        _stream_q.put_threadsafe(("__reasoning__", str(text)))
 
             # Track which tool_call_ids we've emitted a "running" lifecycle
             # event for, so a "completed" event without a matching "running"
@@ -5393,6 +5441,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                reasoning_callback=_on_reasoning,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 **agent_overrides,
@@ -5408,13 +5457,25 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key=gateway_session_key,
             )
 
-        # Non-streaming: run the agent (with optional Idempotency-Key)
+        # Non-streaming: run the agent (with optional Idempotency-Key).
+        # Reasoning is sourced from the agent's structured reasoning_callback
+        # (fired once with the turn's reasoning text when not streaming — see
+        # chat_completion_helpers), NOT from reasoning.available.  Accumulated
+        # here and surfaced as a reasoning_content sibling of content when
+        # show_reasoning is on.
+        _reasoning_parts: List[str] = []
+
+        def _collect_reasoning(text):
+            if text:
+                _reasoning_parts.append(str(text))
+
         async def _compute_completion():
             return await self._run_agent(
                 user_message=user_message,
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                reasoning_callback=_collect_reasoning if show_reasoning else None,
                 gateway_session_key=gateway_session_key,
                 **agent_overrides,
                 route=route,
@@ -5517,6 +5578,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     "message": {
                         "role": "assistant",
                         "content": final_response,
+                        **({
+                            "reasoning_content": "".join(_reasoning_parts),
+                        } if show_reasoning and _reasoning_parts else {}),
                     },
                     "finish_reason": finish_reason,
                 }
@@ -5588,13 +5652,25 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
+                Tagged tuples ``("__reasoning__", text)`` are sent as
+                ``delta.reasoning_content`` chunks — the shape Open WebUI and
+                other OpenAI-compatible frontends parse for a collapsible
+                thinking block.  Only enqueued when show_reasoning is on and the
+                text came from the agent's structured reasoning_callback.
                 Tagged tuples ``("__tool_progress__", payload)`` are sent
                 as a custom ``event: hermes.tool.progress`` SSE event so
                 frontends can display them without storing the markers in
                 conversation history.  See #6972 for the original event,
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
+                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning__":
+                    reasoning_chunk = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{"index": 0, "delta": {"reasoning_content": item[1]}, "finish_reason": None}],
+                    }
+                    await response.write(_sse_frame(reasoning_chunk))
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     await response.write(_sse_frame(item[1], event="hermes.tool.progress"))
                 else:
                     content_chunk = {
@@ -6047,6 +6123,87 @@ class APIServerAdapter(BasePlatformAdapter):
                     "item": output_item,
                 })
 
+            # ── Reasoning item state (#21655, #7556) ──
+            # Structured reasoning streams as deltas via the agent's
+            # reasoning_callback (NOT reasoning.available, which carries the
+            # stripped answer content).  Deltas accumulate into one open
+            # ``reasoning`` output item per burst; the item closes when the
+            # model moves on (tool start, answer text, or end of stream).
+            # Emitted as the spec reasoning event family so Responses clients
+            # (e.g. Open WebUI) render a live collapsible thinking block:
+            #   output_item.added → reasoning_summary_part.added →
+            #   reasoning_summary_text.delta → .done → output_item.done.
+            _open_reasoning: Optional[Dict[str, Any]] = None
+
+            async def _emit_reasoning_delta(text: str) -> None:
+                """Open (if needed) the current reasoning item and append a delta."""
+                nonlocal _open_reasoning, output_index
+                if _open_reasoning is None:
+                    if not text.strip():
+                        return  # never open an item for leading whitespace
+                    idx = output_index
+                    output_index += 1
+                    _open_reasoning = {
+                        "id": f"rs_{uuid.uuid4().hex[:24]}",
+                        "idx": idx,
+                        "parts": [],
+                    }
+                    await _write_event("response.output_item.added", {
+                        "type": "response.output_item.added",
+                        "output_index": idx,
+                        "item": {
+                            "id": _open_reasoning["id"],
+                            "type": "reasoning",
+                            "summary": [],
+                            "status": "in_progress",
+                        },
+                    })
+                    await _write_event("response.reasoning_summary_part.added", {
+                        "type": "response.reasoning_summary_part.added",
+                        "item_id": _open_reasoning["id"],
+                        "output_index": idx,
+                        "summary_index": 0,
+                        "part": {"type": "summary_text", "text": ""},
+                    })
+                _open_reasoning["parts"].append(text)
+                await _write_event("response.reasoning_summary_text.delta", {
+                    "type": "response.reasoning_summary_text.delta",
+                    "item_id": _open_reasoning["id"],
+                    "output_index": _open_reasoning["idx"],
+                    "summary_index": 0,
+                    "delta": text,
+                })
+
+            async def _close_reasoning() -> None:
+                """Finalize the open reasoning item, if any."""
+                nonlocal _open_reasoning
+                if _open_reasoning is None:
+                    return
+                text = "".join(_open_reasoning["parts"])
+                await _write_event("response.reasoning_summary_text.done", {
+                    "type": "response.reasoning_summary_text.done",
+                    "item_id": _open_reasoning["id"],
+                    "output_index": _open_reasoning["idx"],
+                    "summary_index": 0,
+                    "text": text,
+                })
+                done_item = {
+                    "id": _open_reasoning["id"],
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": text}],
+                    "status": "completed",
+                }
+                await _write_event("response.output_item.done", {
+                    "type": "response.output_item.done",
+                    "output_index": _open_reasoning["idx"],
+                    "item": done_item,
+                })
+                # The same dict lands in the final envelope so the streamed
+                # and stored shapes cannot drift (id/status preserved for
+                # clients that correlate by item id).
+                emitted_items.append(done_item)
+                _open_reasoning = None
+
             # Main drain loop — thread-safe queue fed by agent callbacks.
             async def _dispatch(it) -> None:
                 """Route a queue item to the correct SSE emitter.
@@ -6055,19 +6212,25 @@ class APIServerAdapter(BasePlatformAdapter):
                 to reduce Open WebUI re-render storms.  Tagged tuples
                 with ``__tool_started__`` / ``__tool_completed__``
                 prefixes are tool lifecycle events and flush the buffer
-                before emitting.
+                before emitting.  ``__reasoning_delta__`` tuples carry
+                structured reasoning that accumulates into a reasoning item.
                 """
                 nonlocal _batch_timer
                 if isinstance(it, tuple) and len(it) == 2 and isinstance(it[0], str):
                     tag, payload = it
-                    # Flush batched text before tool events
+                    # Flush batched text before tool / reasoning-close events
                     if _batch_buf:
                         await _flush_batch()
                     if tag == "__tool_started__":
+                        await _close_reasoning()
                         await _emit_tool_started(payload)
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
+                    elif tag == "__reasoning_delta__":
+                        await _emit_reasoning_delta(payload)
                 elif isinstance(it, str):
+                    # Answer text means the current reasoning burst is over.
+                    await _close_reasoning()
                     # Batch text deltas — append to buffer, flush on timer
                     _batch_buf.append(it)
                     if _batch_timer is None:
@@ -6136,6 +6299,8 @@ class APIServerAdapter(BasePlatformAdapter):
             # Flush any final batched text before processing result
             if _batch_buf:
                 await _flush_batch()
+            # A reasoning-only tail (no text/tool after it) closes here.
+            await _close_reasoning()
 
             # Pick up agent result + usage from the completed task
             try:
@@ -6392,6 +6557,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 if isinstance(item, str):
                     input_messages.append({"role": "user", "content": item})
                 elif isinstance(item, dict):
+                    # Spec-compliant clients echo ``reasoning`` output items back
+                    # in ``input``.  They carry no role/content, so treating them
+                    # as messages injects empty user turns (or a 400 when last).
+                    # Skip them outright (#21655).
+                    if str(item.get("type") or "").strip().lower() == "reasoning":
+                        continue
                     role = item.get("role", "user")
                     try:
                         content = _normalize_multimodal_content(item.get("content", ""))
@@ -6414,6 +6585,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=400,
                 )
             for i, entry in enumerate(raw_history):
+                # Echoed reasoning output items carry no role/content — skip
+                # them here exactly like the input array, instead of rejecting
+                # the whole request (#21655).
+                if isinstance(entry, dict) and str(entry.get("type") or "").strip().lower() == "reasoning":
+                    continue
                 if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
                     return web.json_response(
                         _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
@@ -6470,6 +6646,10 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
+        # Resolve reasoning exposure once so the streamed events and the final
+        # envelope can never disagree on the gate.  Sources STRUCTURED reasoning
+        # (reasoning_callback), never reasoning.available.
+        show_reasoning = self._reasoning_exposure_enabled()
         route = self._resolve_route(body.get("model"))
         agent_overrides = _request_agent_overrides(
             body,
@@ -6505,9 +6685,24 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 The structured Responses stream uses ``tool_start_callback``
                 and ``tool_complete_callback`` for exact call-id correlation,
-                so progress events are currently ignored here.
+                so progress events are ignored here.  In particular
+                ``reasoning.available`` is NOT forwarded: conversation_loop
+                derives it from the assistant message *content*, not the
+                model's reasoning.  Real reasoning arrives through
+                ``reasoning_callback`` below (#21655, #7556).
                 """
                 return
+
+            # Structured reasoning deltas → spec reasoning output items.  Fed
+            # by the agent's reasoning_callback (_fire_reasoning_delta), which
+            # carries native reasoning_content / thinking deltas — NOT
+            # reasoning.available.  None when the gate is off so the wire format
+            # is byte-identical for existing clients.
+            _on_reasoning = None
+            if show_reasoning:
+                def _on_reasoning(text):
+                    if text:
+                        _stream_q.put_threadsafe(("__reasoning_delta__", str(text)))
 
             def _on_tool_start(tool_call_id, function_name, function_args):
                 """Queue a started tool for live function_call streaming."""
@@ -6536,6 +6731,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                reasoning_callback=_on_reasoning,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 bind_declared_conversation=_declared_selected,
@@ -6650,7 +6846,9 @@ class APIServerAdapter(BasePlatformAdapter):
             user_message,
             result,
         )
-        output_items = self._extract_output_items(result, start_index=output_start_index)
+        output_items = self._extract_output_items(
+            result, start_index=output_start_index, include_reasoning=show_reasoning,
+        )
 
         response_data = {
             "id": response_id,
@@ -7251,11 +7449,18 @@ class APIServerAdapter(BasePlatformAdapter):
         return out
 
     @staticmethod
-    def _extract_output_items(result: Dict[str, Any], start_index: int = 0) -> List[Dict[str, Any]]:
+    def _extract_output_items(
+        result: Dict[str, Any], start_index: int = 0, include_reasoning: bool = False,
+    ) -> List[Dict[str, Any]]:
         """
         Build the output item array from the agent's messages.
 
         Walks *result["messages"]* starting at *start_index* and emits:
+        - ``reasoning`` items for assistant messages carrying structured
+          reasoning, when *include_reasoning* is True (#21655; gated by
+          ``display.platforms.api_server.show_reasoning``).  Sourced from the
+          message's own ``reasoning_content``/``reasoning`` field, never from
+          reasoning.available.
         - ``function_call`` items for each tool_call on assistant messages
         - ``function_call_output`` items for each tool-role message
         - a final ``message`` item with the assistant's text reply
@@ -7267,6 +7472,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         for msg in messages:
             role = msg.get("role")
+            if role == "assistant" and include_reasoning:
+                reasoning_text = msg.get("reasoning_content") or msg.get("reasoning")
+                if isinstance(reasoning_text, str) and reasoning_text.strip():
+                    items.append({
+                        "id": f"rs_{uuid.uuid4().hex[:24]}",
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": reasoning_text}],
+                        "status": "completed",
+                    })
             if role == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     func = tc.get("function", {})
@@ -7392,6 +7606,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         agent_ref: Optional[list] = None,
         active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None,
@@ -7468,6 +7683,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_progress_callback=tool_progress_callback,
                         tool_start_callback=tool_start_callback,
                         tool_complete_callback=tool_complete_callback,
+                        reasoning_callback=reasoning_callback,
                         gateway_session_key=gateway_session_key,
                         requested_model=requested_model,
                         requested_provider=requested_provider,

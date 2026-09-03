@@ -27607,12 +27607,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Run blocking work in the thread pool while preserving session contextvars."""
         loop = asyncio.get_running_loop()
         ctx = copy_context()
-        return await loop.run_in_executor(
-            self._get_executor(),
-            ctx.run,
-            func,
-            *args,
-        )
+        # P1 #101033: bound executor work to avoid 120s gateway freeze.
+        # Configurable via gateway.executor_timeout (default 30s).
+        timeout = 30.0
+        try:
+            cfg = getattr(self, "config", None)
+            if cfg is not None:
+                v = getattr(cfg, "gateway", None)
+                if isinstance(v, dict):
+                    timeout = float(v.get("executor_timeout", 30.0))
+                elif hasattr(v, "executor_timeout"):
+                    timeout = float(getattr(v, "executor_timeout", 30.0))
+        except Exception:
+            pass
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(
+                    self._get_executor(),
+                    ctx.run,
+                    func,
+                    *args,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("gateway executor timeout after %.0fs for %s", timeout, getattr(func, "__name__", str(func)))
+            raise
 
     def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for blocking agent work."""

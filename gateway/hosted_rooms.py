@@ -14,13 +14,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping, NoReturn
 
+
+logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = 2
 MAX_ROOM_ID_CHARS = 128
@@ -47,6 +51,12 @@ MAX_GATEWAY_EVENT_BYTES = 16 * 1024 * 1024
 CONTROL_EVENT_COUNT_RESERVE = 64
 CONTROL_EVENT_BYTE_RESERVE = 1024 * 1024
 _JOURNAL_MODE_LOCK_RETRIES = 8
+# Bounded so a wedged holder degrades to the pre-fix unserialized open instead
+# of hanging the hosted-room worker; a real first open is milliseconds.
+_SHARED_DB_OPEN_LOCK_TIMEOUT_SECONDS = 20.0
+_SHARED_DB_OPEN_LOCK_POLL_SECONDS = 0.02
+_FIRST_OPEN_CORRUPTION_RETRIES = 3
+_FIRST_OPEN_CORRUPTION_BACKOFF_SECONDS = 0.05
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _EVENT_KIND_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
@@ -1111,11 +1121,148 @@ def remote_run_receipt(
     return dict(row) if row is not None else None
 
 
-def _connect(db_path: Path | str) -> sqlite3.Connection:
-    from hermes_state import apply_wal_with_fallback
+def _shared_db_open_lock_path(db_path: Path) -> Path:
+    """Return the dedicated first-open lock file for *db_path*."""
 
+    return db_path.with_name(db_path.name + ".hosted-rooms.lock")
+
+
+@contextmanager
+def _shared_db_open_lock(db_path: Path) -> Iterator[bool]:
+    """Serialize first-open of the shared room store across processes.
+
+    Every profile gateway opens the same install-root ``state.db``. On a
+    simultaneous fleet restart their first opens overlapped inside the
+    journal-mode pragma and left a file whose header was no longer a SQLite
+    database (#102120); ``BEGIN IMMEDIATE`` only covers the schema migration
+    that runs *after* journal mode is applied. This advisory lock covers the
+    whole open, and unlike the auto-maintenance lock it blocks rather than
+    skips: a newcomer must wait and then open a healthy file.
+
+    Yields True when this process holds the lock. A timed-out or unopenable
+    lock still yields (False) and the caller proceeds: never opening the room
+    store is a worse outcome than opening it unserialized, which is exactly
+    the pre-fix behavior.
+    """
+
+    from hermes_state_common import (
+        _acquire_db_flock,
+        _clear_lock_holder_record,
+        is_advisory_lock_contention,
+    )
+
+    lock_path = _shared_db_open_lock_path(db_path)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+    except OSError as exc:
+        logger.warning(
+            "Could not open hosted-rooms open lock %s (%s) — opening %s "
+            "without cross-process serialization.",
+            lock_path, exc, db_path,
+        )
+        yield False
+        return
+
+    acquired: bool | None = False
+    try:
+        if sys.platform == "win32":
+            deadline = time.monotonic() + _SHARED_DB_OPEN_LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    acquired = True
+                    break
+                except (BlockingIOError, OSError) as exc:
+                    if not is_advisory_lock_contention(exc):
+                        logger.warning(
+                            "Could not acquire hosted-rooms open lock %s (%s).",
+                            lock_path, exc,
+                        )
+                        acquired = None
+                        break
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(_SHARED_DB_OPEN_LOCK_POLL_SECONDS)
+        else:
+            acquired, handle = _acquire_db_flock(
+                str(lock_path),
+                handle,
+                _SHARED_DB_OPEN_LOCK_TIMEOUT_SECONDS,
+                _SHARED_DB_OPEN_LOCK_POLL_SECONDS,
+                "hosted-rooms open lock",
+            )
+        if acquired is None:
+            # Non-contention failure already logged with its errno.
+            acquired = False
+        elif not acquired:
+            logger.warning(
+                "hosted-rooms open lock %s held elsewhere for more than %.0fs "
+                "— opening %s unserialized rather than failing the worker.",
+                lock_path, _SHARED_DB_OPEN_LOCK_TIMEOUT_SECONDS, db_path,
+            )
+        yield acquired
+    finally:
+        try:
+            if acquired:
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    _clear_lock_holder_record(handle)
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:  # pragma: no cover - best effort release
+            pass
+        finally:
+            handle.close()
+
+
+def _is_transient_first_open_corruption(
+    path: Path, exc: sqlite3.DatabaseError
+) -> bool:
+    """True when a first open read a header another opener was still writing."""
+
+    if "file is not a database" not in str(exc).lower():
+        return False
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    # A zero-length file is a brand-new database, never a scrambled header.
+    return size > 0
+
+
+def _connect(db_path: Path | str) -> sqlite3.Connection:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    with _shared_db_open_lock(path):
+        for attempt in range(1, _FIRST_OPEN_CORRUPTION_RETRIES):
+            try:
+                return _connect_locked(path)
+            except sqlite3.DatabaseError as exc:
+                if not _is_transient_first_open_corruption(path, exc):
+                    raise
+                logger.warning(
+                    "Hosted-rooms db %s read as a non-database on open "
+                    "attempt %d (%s) — retrying under the open lock.",
+                    path, attempt, exc,
+                )
+                time.sleep(_FIRST_OPEN_CORRUPTION_BACKOFF_SECONDS * attempt)
+        return _connect_locked(path)
+
+
+def _connect_locked(path: Path) -> sqlite3.Connection:
+    """Open and migrate the room store; callers hold the shared open lock."""
+
+    from hermes_state import apply_wal_with_fallback
+
     conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     try:

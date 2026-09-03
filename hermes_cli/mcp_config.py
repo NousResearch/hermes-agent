@@ -679,13 +679,37 @@ def cmd_mcp_list(args=None):
     servers = _get_mcp_servers()
 
     if not servers:
-        print()
-        _info("No MCP servers configured.")
-        print()
-        _info("Add one with:")
-        _info('  hermes mcp add <name> --url <endpoint>')
-        _info('  hermes mcp add <name> --command <cmd> --args <args...>')
-        print()
+        if getattr(args, "json_output", False):
+            print("[]")
+        else:
+            print()
+            _info("No MCP servers configured.")
+            print()
+            _info("Add one with:")
+            _info('  hermes mcp add <name> --url <endpoint>')
+            _info('  hermes mcp add <name> --command <cmd> --args <args...>')
+            print()
+        return
+
+    if getattr(args, "json_output", False):
+        import json as _mcp_json
+
+        rows = []
+        for name, cfg in servers.items():
+            transport_type = "streamable_http" if "url" in cfg else "stdio"
+            transport_value = cfg.get("url") or cfg.get("command")
+            enabled = cfg.get("enabled", True)
+            if isinstance(enabled, str):
+                enabled = enabled.lower() in {"true", "1", "yes"}
+            rows.append({
+                "name": name,
+                "transport": transport_type,
+                "url": cfg.get("url"),
+                "command": cfg.get("command"),
+                "args": cfg.get("args"),
+                "enabled": enabled,
+            })
+        print(_mcp_json.dumps(rows, indent=2))
         return
 
     print()

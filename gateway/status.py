@@ -1242,6 +1242,7 @@ def write_runtime_status(
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
+    payload["hermes_home"] = current_record["hermes_home"]
     payload["updated_at"] = _utc_now_iso()
     # Re-stamp code identity on every write: the file can outlive the process
     # that created it, and the top-level record must always describe the

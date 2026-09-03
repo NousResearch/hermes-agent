@@ -461,6 +461,59 @@ THREAT_PATTERNS = [
      "unicode_escape_chain", "medium", "obfuscation",
      "chain of unicode escapes (possible obfuscation)"),
 
+    # ── SQL Injection (query concatenation) ──
+    (r'query\s*\(\s*[\'"`][^\'"`]*\s+\+|execute\s*\(\s*[\'"`][^\'"`]*\$|execute\s*\(\s*f[\'"`]',
+     "sql_injection_concat", "high", "injection",
+     "SQL injection risk — string concatenation in database query"),
+
+    # ── XSS: innerHTML, dangerouslySetInnerHTML, document.write ──
+    (r'innerHTML\s*[=+]|dangerouslySetInnerHTML|document\.write\s*\(',
+     "xss_innerhtml_docwrite", "high", "injection",
+     "XSS risk — direct innerHTML assignment or document.write"),
+
+    # ── Function constructor (similar to eval) ──
+    (r'new\s+Function\s*\(', "function_constructor", "medium", "obfuscation",
+     "Function constructor is similar to eval() — consider alternatives"),
+
+    # ── VBA Macros ──
+    (r'SendKeys\s*\(', "vba_sendkeys", "medium", "execution",
+     "VBA SendKeys — keystroke injection risk"),
+    (r'Shell\s*\(', "vba_shell", "high", "execution",
+     "VBA Shell execution — system command risk"),
+    (r'CreateObject\s*\(\s*[\"\']WScript\.Shell[\"\']', "vba_wscript_shell", "high", "execution",
+     "VBA WScript.Shell via CreateObject — full shell access"),
+    (r'Application\.Run\s*\(', "vba_app_run", "medium", "execution",
+     "VBA Application.Run — arbitrary macro execution"),
+
+    # ── Unicode Tag Characters (U+E0000-E0FFF) ──
+    (r'[\U000E0000-\U000E0FFF]', "unicode_tag_chars", "high", "obfuscation",
+     "Unicode tag characters (U+E0000-E0FFF) — used for hidden instructions"),
+
+    # ── Unicode Bidi Overrides ──
+    (r'[\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069]', "unicode_bidi_override", "high", "obfuscation",
+     "Unicode bidi override characters — can reverse text meaning"),
+
+    # ── MCP Tool Poisoning ──
+    (r'(mcp_servers|register_mcp|add_mcp_server)\s*\S*[=:>]\s*\S*(https?:|url|exec|curl|wget)',
+     "mcp_poison", "medium", "supply_chain",
+     "MCP server config with a remote/exec source — verify source and permissions"),
+
+    # ── Memory Poisoning (OWASP ASI06) ──
+    (r'\bmemory\b.*(save|set|update|write|persist)\s*\(\s*[^)]*(tool_output|user_text|input|content)',
+     "memory_poison", "medium", "execution",
+     "Memory write from tool output / user text — potential cross-session poisoning"),
+
+    # ── raw.githubusercontent.com installs ──
+    (r'raw\.githubusercontent\.com.*(install|setup|bootstrap)',
+     "raw_github_install", "high", "supply_chain",
+     "Installs from raw.githubusercontent.com — verify the source and version"),
+
+    # ── pip/npm remote installs ──
+    (r'(pip|npm)\s+install\s+\S*(git\+|https?://|\.git)',
+     "remote_package_install", "high", "supply_chain",
+     "Package install from remote source — supply chain risk, verify the package"),
+
+
     # ── Process execution in scripts ──
     (r'subprocess\.(run|call|Popen|check_output)\s*\(',
      "python_subprocess", "medium", "execution",

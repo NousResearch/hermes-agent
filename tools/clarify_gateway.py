@@ -388,6 +388,15 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
         return None
     choices = entry.choices or []
 
+    # A full reply that exactly matches one choice label wins outright,
+    # before any comma-splitting heuristic. Choice labels legitimately
+    # contain commas ("Health, longevity and performance science"), and
+    # WhatsApp poll votes arrive verbatim as a single label, so splitting
+    # such a label on its comma must never reject the whole reply.
+    for choice in choices:
+        if _label_matches(text, choice):
+            return _json.dumps([str(choice).strip()], ensure_ascii=False)
+
     # Split on commas first; if no commas and every whitespace-separated
     # token is numeric, treat spaces as separators too ("1 3").
     if "," in text:

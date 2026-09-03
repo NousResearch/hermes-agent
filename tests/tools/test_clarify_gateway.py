@@ -380,6 +380,46 @@ class TestMultiSelectTextFallback:
         entry = cm.register("s4", "sk", "Q?", ["A", "B"])
         assert cm._coerce_text_response(entry, "b") == "B"
 
+    def test_multi_select_label_with_comma_resolves(self):
+        """A full reply that exactly matches one choice label resolves as that
+        single selection, even though the label itself contains a comma.
+
+        Regression: WhatsApp poll votes arrive verbatim as one label, and a
+        label like "Health, longevity and performance science" was being
+        comma-split into two unrecognised tokens and rejected as an invalid
+        selection, leaving the prompt pending until timeout.
+        """
+        import json
+        from tools import clarify_gateway as cm
+        choices = [
+            "Esports/gaming industry business (VALORANT ecosystem, org funding)",
+            "Health, longevity and performance science",
+            "Edtech specifically (funding, product, platform shifts)",
+        ]
+        entry = cm.register("m5", "sk", "Pick one", choices, multi_select=True)
+        coerced = cm._coerce_text_response(entry, choices[1])
+        assert coerced is not None
+        assert json.loads(coerced) == [choices[1]]
+
+    def test_multi_select_label_with_comma_still_allows_real_lists(self):
+        """Comma-separated numeric lists still work after the whole-label
+        fast path."""
+        import json
+        from tools import clarify_gateway as cm
+        entry = self._register_multi(cid="m6")
+        assert json.loads(cm._coerce_text_response(entry, "1,3")) == ["A", "C"]
+
+    def test_multi_select_out_of_range_native_rejection_unchanged(self):
+        """Out-of-range numbers on a native prompt are still rejected — the
+        whole-label fast path does not loosen invalid-selection handling."""
+        from tools import clarify_gateway as cm
+        entry = cm.register(
+            "m7", "sk", "Pick some", ["A", "B", "C"], multi_select=True,
+        )
+        coerced, reason = cm._coerce_text_response_detailed(entry, "99")
+        assert coerced is None
+        assert reason == "invalid_selection"
+
 
 class TestNativeRejectClassification:
     """Rejected typed replies must distinguish free prose from bad selections.

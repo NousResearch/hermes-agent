@@ -167,6 +167,117 @@ def test_run_slash_reclaim_running_task(kanban_home):
     assert "ready" in out2.lower()
 
 
+def _create_args(**overrides):
+    """Build a minimal argparse.Namespace for ``_cmd_create``."""
+    import argparse
+
+    base = {
+        "workspace": "scratch",
+        "branch": None,
+        "max_runtime": None,
+        "max_retries": None,
+        "title": "durability test task",
+        "body": None,
+        "assignee": None,
+        "created_by": None,
+        "project": None,
+        "tenant": None,
+        "priority": 0,
+        "parent": [],
+        "triage": False,
+        "idempotency_key": None,
+        "skills": [],
+        "model_override": None,
+        "provider_override": None,
+        "goal_mode": False,
+        "goal_max_turns": None,
+        "initial_status": "running",
+        "json": False,
+    }
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def test_cmd_create_fails_closed_when_row_not_durable(kanban_home, monkeypatch, capsys):
+    """#76153: a row visible to the writer's own connection but missing for a
+    FRESH connection (the silent-COMMIT symptom) must fail closed with a
+    non-zero exit and a clear message — never print ``Created`` + exit 0."""
+    real_get_task = kb.get_task
+    calls = {"n": 0}
+
+    def flaky_get_task(conn, task_id):
+        # First read (inside the write block, same connection) sees the row;
+        # the post-commit verification read (fresh connection) does not —
+        # exactly the "Created t_<hex> printed, row never in kanban.db" shape.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_get_task(conn, task_id)
+        return None
+
+    monkeypatch.setattr(kb, "get_task", flaky_get_task)
+
+    rc = kc._cmd_create(_create_args(title="silent commit check"))
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert "Created" not in captured.out, captured.out
+    assert "not durably visible" in captured.err, captured.err
+
+
+def test_cmd_create_verifies_row_from_fresh_connection(kanban_home, capsys):
+    """Happy path: after create, the row must be readable from a brand-new
+    connection (proof the COMMIT is visible to other processes, not just the
+    writer)."""
+    rc = kc._cmd_create(_create_args(title="fresh-conn check"))
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert "Created t_" in captured.out, captured.out
+    m = __import__("re").search(r"(t_[a-f0-9]+)", captured.out)
+    assert m
+    # The row is really there from a separate connection.
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, m.group(1)) is not None
+
+
+def test_cmd_create_non_default_board_reports_db_path(kanban_home, monkeypatch, capsys):
+    """#76153 reproduction: `HERMES_KANBAN_BOARD=operations` writes to the
+    board's own kanban.db, NOT the default `<root>/kanban.db`. The CLI must
+    surface which board/db the row landed in so external verifiers (sqlite3,
+    wrapper scripts) check the right file instead of reporting a phantom
+    silent-COMMIT."""
+    import sqlite3
+
+    from hermes_cli import kanban_db as kb
+
+    kb.create_board("operations")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "operations")
+
+    rc = kc._cmd_create(_create_args(title="board-scoped create", assignee="ashitaka"))
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert "board=operations" in captured.out, captured.out
+    assert "db=" in captured.err, captured.err
+
+    # The row lives in the board's own DB — the default kanban.db has nothing.
+    board_db = kb.kanban_db_path()  # resolves via HERMES_KANBAN_BOARD -> operations
+    assert "boards" in str(board_db), board_db
+    m = __import__("re").search(r"(t_[a-f0-9]+)", captured.out)
+    assert m
+    with sqlite3.connect(board_db) as c:
+        rows = c.execute(
+            "SELECT id FROM tasks WHERE id=?", (m.group(1),)
+        ).fetchall()
+    assert rows, "row must be present in the board-scoped database"
+    default_db = kanban_home / "kanban.db"
+    with sqlite3.connect(default_db) as c:
+        rows = c.execute(
+            "SELECT id FROM tasks WHERE id=?", (m.group(1),)
+        ).fetchall()
+    assert not rows, "row must NOT be in the default kanban.db"
+
+
 
 
 # ---------------------------------------------------------------------------

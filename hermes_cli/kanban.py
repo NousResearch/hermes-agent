@@ -1688,10 +1688,54 @@ def _cmd_create(args: argparse.Namespace) -> int:
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
-    if getattr(args, "json", False):
-        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+
+    # Post-commit durability verification (#76153, #57967): the COMMIT
+    # happened inside create_task/write_txn, but the read above used the
+    # SAME connection that wrote the row. A row visible to the writer is
+    # not proof the commit is visible to other processes — under WAL
+    # page-count lag, a torn checkpoint, or a journal-mode fallback the
+    # row can be readable in the writer's own snapshot yet absent for
+    # every other reader (the "silent COMMIT" symptom: exit 0, "Created
+    # t_<hex>" printed, row never in kanban.db). Re-read from a FRESH
+    # connection; if the row is not durably visible, fail closed with a
+    # clear error instead of reporting success.
+    board_slug = kb.get_current_board()
+    db_path = kb.kanban_db_path()
+    try:
+        with kb.connect_closing() as verify_conn:
+            verified = kb.get_task(verify_conn, task_id)
+    except Exception as exc:
+        verified = None
+        verify_error = f"verification connection failed: {exc}"
     else:
-        print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+        verify_error = None
+    if verified is None:
+        print(
+            "kanban: ERROR: created task is not durably visible after COMMIT — "
+            "the row did not persist to the database.",
+            file=sys.stderr,
+        )
+        if verify_error:
+            print(f"kanban: {verify_error}", file=sys.stderr)
+        print(
+            f"kanban: board={board_slug} db={db_path}",
+            file=sys.stderr,
+        )
+        print(
+            "kanban: the task was NOT created; retry the create, or check "
+            "journal_mode / filesystem WAL support for the database above.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if getattr(args, "json", False):
+        payload = _task_to_dict(task)
+        payload["board"] = board_slug
+        payload["db_path"] = str(db_path)
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        board_hint = f", board={board_slug}" if board_slug != kb.DEFAULT_BOARD else ""
+        print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'}{board_hint})")
 
         # Warn when the task would sit in `ready` because no dispatcher is
         # present. Only warn on ready+assigned tasks — triage/todo are
@@ -1704,6 +1748,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+        # Non-default boards keep their DB under <root>/kanban/boards/<slug>/;
+        # say where the row actually landed so external verifiers (sqlite3,
+        # wrapper scripts) check the right file instead of the default one.
+        if board_slug != kb.DEFAULT_BOARD:
+            print(f"  (board={board_slug}; db={db_path})", file=sys.stderr)
     return 0
 
 

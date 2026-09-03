@@ -79,6 +79,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "model_override": t.model_override,
         "provider_override": t.provider_override,
         "session_id": t.session_id,
+        "current_run_id": t.current_run_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
     }

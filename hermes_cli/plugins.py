@@ -6483,6 +6483,50 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return _delivery_manager().invoke_hook(hook_name, **kwargs)
 
 
+async def ainvoke_hook_ordered(
+    hook_name: str,
+    *,
+    timeout: Optional[float] = None,
+    stop_when: Optional[Callable[[Any], bool]] = None,
+    **kwargs: Any,
+) -> List[Any]:
+    """Invoke callbacks sequentially, awaiting and short-circuiting in order.
+
+    Directive hooks need stronger semantics than :func:`invoke_hook`: a
+    decisive result must prevent later callbacks from running at all. Callback
+    failures and optional timeouts remain isolated from the caller.
+    """
+    callbacks = _delivery_manager().iter_hook_callbacks(hook_name)
+    results: List[Any] = []
+    for callback in callbacks:
+        try:
+            result = callback(**kwargs)
+            if inspect.isawaitable(result):
+                if timeout is not None and timeout > 0:
+                    result = await asyncio.wait_for(result, timeout=timeout)
+                else:
+                    result = await result
+            if result is not None:
+                results.append(result)
+                if stop_when is not None and stop_when(result):
+                    break
+        except TimeoutError:
+            logger.warning(
+                "Hook '%s' callback %s timed out after %.1fs",
+                hook_name,
+                getattr(callback, "__name__", repr(callback)),
+                timeout or 0,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Hook '%s' callback %s raised: %s",
+                hook_name,
+                getattr(callback, "__name__", repr(callback)),
+                exc,
+            )
+    return results
+
+
 def render_system_prompt_sections(
     session_info: Mapping[str, Any],
 ) -> List[RenderedPluginSystemPromptSection]:

@@ -8,6 +8,7 @@ This module is the single source of truth for the dangerous command system:
 - Permanent allowlist persistence (config.yaml)
 """
 
+import ast
 import contextlib
 import contextvars
 import fnmatch
@@ -2538,6 +2539,48 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
+def _self_pid_set() -> frozenset:
+    """Hermes 自身 + 父进程的 PID 集合（kill 数字 PID 自终止判定）。"""
+    pids = {os.getpid()}
+    try:
+        pids.add(os.getppid())
+    except (OSError, AttributeError):
+        pass
+    return frozenset(pids)
+
+
+# kill <numeric-pid> 形状（排除 kill -l 信号列表查询）。裸数字 PID 的
+# kill 是否危险取决于目标：普通 PID（reap 自己 spawn 的子进程）放行，
+# 目标是 Hermes 自身/父进程 → 拦截（#74078 Part 1，jeff-mettel 窄方案：
+# 不 gate 全部数字 PID kill——上游 test_safe_kill_pid_not_flagged 故意
+# 放行普通 PID，因为 agent 常需清理自己启动的进程）。
+_KILL_NUMERIC_PID_RE = re.compile(
+    r"\bkill\b(?!\s+-[lL]\b)"
+    r"(?:\s+-[^\s]+(?:\s+[^\s]+)?)?\s+\d+")
+
+
+def _kill_targets_own_process(command: str) -> bool:
+    """kill <numeric-pid> 且任一目标 PID 是 Hermes 自身或父进程 → True。
+
+    仅作 detect_dangerous_command 的前置补充检查：普通 PID 放行
+    （保持上游 test_safe_kill_pid_not_flagged），自身/父进程 PID
+    拦截（自终止守卫的裸 PID 缺口，#74078 Part 1）。
+    """
+    if not _KILL_NUMERIC_PID_RE.search(command.lower()):
+        return False
+    own = _self_pid_set()
+    # 提取 kill 命令后出现的所有数字 token 作为候选 PID
+    rest = command.lower().split("kill", 1)[-1] if "kill" in command.lower() else ""
+    for token in re.findall(r"\d+", rest):
+        try:
+            pid = int(token)
+        except ValueError:
+            continue
+        if pid in own:
+            return True
+    return False
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -2548,6 +2591,10 @@ def detect_dangerous_command(command: str) -> tuple:
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
+    # 自终止裸 PID 缺口（#74078 Part 1）：kill <自身/父 PID> 前置拦截，
+    # 普通 PID 放行（保持上游 test_safe_kill_pid_not_flagged）。
+    if _kill_targets_own_process(command):
+        return (True, "kill own process", "kill own process (self-termination)")
 
     for command_variant in _command_detection_variants(command):
         command_lower = command_variant.lower()
@@ -5437,6 +5484,24 @@ def check_all_command_guards(command: str, env_type: str,
             "user_approved": True, "description": combined_desc}
 
 
+# =========================================================================
+# execute_code 静态策略分析（PR #65592）
+# AST 解析器 / 危险操作扫描 / 进程终止 hard-block / 敏感写目标分析 /
+# import 分类器已提取到 tools/exec_code_policy.py（独立 <2K 模块，
+# 2026-08-25 二次 review Blocker 3 要求）。此处只保留编排接缝。
+# =========================================================================
+from tools.exec_code_policy import (
+    _execute_code_has_dangerous_ops,
+    _execute_code_has_self_destructive_ops,
+    _execute_code_has_capability_leak,
+    _execute_code_has_sensitive_write,
+    _execute_code_has_package_acquisition,
+    _PACKAGE_UNRESOLVABLE,
+    _execute_code_touches_sensitive_path,
+    _exec_code_reason_text,
+    _log_blocked_exec_code,
+)
+
 def check_execute_code_guard(code: str, env_type: str,
                              has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
@@ -5456,6 +5521,177 @@ def check_execute_code_guard(code: str, env_type: str,
     trusted-by-config (set a gateway/ask surface or ``approvals.cron_mode`` to
     require approval).
     """
+    # Check for process-killing operations BEFORE any other gate.
+    # These operations can destroy the Hermes parent process or kill
+    # arbitrary system processes.  They NEVER enter the approval chain —
+    # no user consent, yolo mode, smart approval, or session persistence
+    # can override them.  Design follows Linux seccomp / macOS SIP in
+    # spirit (static layer; runtime-built call names are out of scope —
+    # see _execute_code_has_self_destructive_ops docstring).
+    _hard_block_reason = _execute_code_has_self_destructive_ops(code)
+    if _hard_block_reason is not None:
+        return {
+            "approved": False,
+            "message": (
+                f"HARD BLOCKED: {_hard_block_reason}. "
+                "This operation can destroy the agent process or kill arbitrary "
+                "system processes. Statically matched process-killing calls are "
+                "never allowed in execute_code scripts — there is no approval "
+                "path, bypass, or override for a matched call. (Runtime-built "
+                "call names via exec/eval string construction are a separate "
+                "static-analysis limitation handled at the sandbox boundary.) "
+                "Use normal tool calls (terminal, read_file, write_file) instead."
+            ),
+            "pattern_key": "execute_code",
+            "description": (
+                "execute_code self-destructive operation (hard blocked — "
+                "no approval path exists for statically matched calls)"
+            ),
+            "outcome": "hard_blocked",
+            "user_consent": False,
+        }
+
+    # ── Layer 3b: Capability leak (#94647) ────────────────────────────
+    # session kernel 跨 cell 绕过的 cell-1 源头：能力以值的形式被存储/
+    # 传递（return/赋值/容器/参数）而非直接调用——每 cell 单独扫描时
+    # 调用点不可见，cell 2 用不透明名称间接调用即绕过。能力泄漏检测
+    # 在能力「离开当前 cell」之前拦截（存不进去，跨 cell 调用链断开）。
+    # 与 self-destructive 同级：无审批路径、yolo/off 不可覆盖。
+    _leak_reason = _execute_code_has_capability_leak(code)
+    if _leak_reason is not None:
+        return {
+            "approved": False,
+            "message": (
+                f"HARD BLOCKED: {_leak_reason}. "
+                "Storing or passing a process-killing capability as a value "
+                "lets it escape per-cell static scanning and be invoked "
+                "indirectly in a later cell (#94647). There is no approval "
+                "path, bypass, or override for a statically matched leak. "
+                "Call the function directly in the same cell, or use normal "
+                "tool calls (terminal, read_file, write_file) instead."
+            ),
+            "pattern_key": "execute_code",
+            "description": (
+                "execute_code capability leak (hard blocked — cross-cell "
+                "capability persistence vector #94647)"
+            ),
+            "outcome": "hard_blocked",
+            "user_consent": False,
+        }
+
+    # ── Layer 4: Sensitive-write destination invariant (#49578) ──────
+    # The file-tool path hard-refuses security-sensitive destinations
+    # (Hermes config, ~/.ssh, system dirs) regardless of approval mode.
+    # execute_code must preserve that effect/destination invariant, so a
+    # statically resolvable write to a protected target is hard-blocked
+    # HERE — before --yolo / approvals.mode=off can trade it away
+    # (2026-08-25 re-review Blocker 1).
+    _sensitive_target = _execute_code_has_sensitive_write(code)
+    if _sensitive_target is not None:
+        return {
+            "approved": False,
+            "message": (
+                f"HARD BLOCKED: execute_code writes to protected path "
+                f"{_sensitive_target!r}. "
+                "This destination is security-sensitive (Hermes config, "
+                "~/.ssh, or system path) and is hard-refused by the file-tool "
+                "path regardless of approval mode (#49578). There is no "
+                "approval path, bypass, or override for a statically matched "
+                "sensitive write — not even under --yolo or approvals.mode=off. "
+                "Edit the file directly instead."
+            ),
+            "pattern_key": "execute_code",
+            "description": (
+                "execute_code write to protected sensitive path (hard blocked — "
+                "destination invariant #49578)"
+            ),
+            "outcome": "hard_blocked",
+            "user_consent": False,
+        }
+
+    # ── Layer 4b: Library-writer sensitive-path invariant (#49578 残余面) ──
+    # pandas/numpy 等库写方法（to_csv/save/dump/...）的路径参数绕过
+    # open()/Path() AST 形状（2026-08-26 复现：
+    # pd.DataFrame(...).to_csv('/root/.ssh/authorized_keys') 曾直接放行）。
+    # 任何非只读方法调用携带静态可解析的敏感路径参数 → 同样 hard-block，
+    # 与上面的目标不变量共用同一优先级（yolo/off 不可覆盖）。
+    _library_sensitive_target = _execute_code_touches_sensitive_path(code)
+    if _library_sensitive_target is not None:
+        return {
+            "approved": False,
+            "message": (
+                f"HARD BLOCKED: execute_code library call references protected "
+                f"path {_library_sensitive_target!r}. "
+                "This destination is security-sensitive (Hermes config, "
+                "~/.ssh, or system path) and is hard-refused by the file-tool "
+                "path regardless of approval mode (#49578). There is no "
+                "approval path, bypass, or override for a statically matched "
+                "sensitive reference — not even under --yolo or "
+                "approvals.mode=off. Use normal tool calls (read_file, "
+                "write_file, terminal) for this path instead."
+            ),
+            "pattern_key": "execute_code",
+            "description": (
+                "execute_code library call on protected sensitive path (hard "
+                "blocked — destination invariant #49578)"
+            ),
+            "outcome": "hard_blocked",
+            "user_consent": False,
+        }
+
+    # ── Layer 4c: Package acquisition invariant (#97657 BLOCKER 2) ────
+    # #97657 (dandckr-ops) introduces the owner-gated package-acquisition
+    # boundary for terminal strings; execute_code can reach the same
+    # package managers via subprocess/os.system process-launch calls
+    # without passing through terminal approval. The same invariant is
+    # enforced HERE — before the isolated-backend / container / --yolo /
+    # approvals.mode=off short-circuits — so package acquisition stays
+    # owner-gated even where ordinary host-oriented guards are skipped
+    # (andrexibiza #97657 review: "the package decision occurring before
+    # the generic container/YOLO/off short-circuits").
+    _pkg = _execute_code_has_package_acquisition(code)
+    if _pkg == _PACKAGE_UNRESOLVABLE:
+        # fail-closed（P0-3）：进程启动调用存在但命令行静态不可解析，
+        # 无法排除包获取 → 要求 owner 精确审批，不放行（含 yolo/off）。
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: execute_code launches a process whose command "
+                "line cannot be statically resolved, so package acquisition "
+                "cannot be ruled out (#97657 owner gate, fail-closed). "
+                "Approve this exact operation explicitly, or run it through "
+                "the terminal tool where the command line is visible."
+            ),
+            "pattern_key": "package acquisition",
+            "description": (
+                "execute_code unresolvable process launch (owner-gated "
+                "fail-closed — cannot rule out package acquisition)"
+            ),
+            "outcome": "package_acquisition",
+            "user_consent": False,
+        }
+    if _pkg is not None:
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: execute_code acquires packages via {_pkg} "
+                f"({_pkg} install/add/run). Package acquisition is a "
+                "supply-chain trust boundary: it requires the owner's exact "
+                "one-operation approval and is never auto-approved — not "
+                "under --yolo, approvals.mode=off, Smart Approval, or in "
+                "isolated backends (#97657). Run it through the terminal "
+                "tool instead (same owner gate applies there), or approve "
+                "this exact operation explicitly."
+            ),
+            "pattern_key": "package acquisition",
+            "description": (
+                "execute_code package acquisition (owner-gated — no yolo/off/"
+                "container bypass, matching #97657 terminal invariant)"
+            ),
+            "outcome": "package_acquisition",
+            "user_consent": False,
+        }
+
     pattern_key = "execute_code"
     description = (
         "execute_code script execution. The script can spawn subprocesses or "
@@ -5560,8 +5796,13 @@ def check_execute_code_guard(code: str, env_type: str,
     # pending_approval. Terminal-command (not whole-script) CLI leaks from
     # the script's own per-call terminal() guards are handled separately in
     # check_all_command_guards.
+    danger_reason = None  # gateway/ask 路径不扫描，保持 None
     if not is_gateway and not is_ask:
-        return {"approved": True, "message": None}
+        danger_reason = _execute_code_has_dangerous_ops(code)
+        if danger_reason is None:
+            return {"approved": True, "message": None}
+        # 检测到危险操作 → 落到下方审批弹窗，让用户显式决策。
+        _log_blocked_exec_code(code, f"AST-dangerous-ops-CLI-fallthrough:{danger_reason}")
 
     session_key = get_current_session_key()
     # Built only now (past the early-return gates) so the common non-approval
@@ -5788,6 +6029,9 @@ def check_execute_code_guard(code: str, env_type: str,
         if smart_denied_for_owner:
             pending_data.update(smart_denied=True, allow_permanent=False)
         submit_pending(session_key, pending_data)
+        danger_note = ""
+        if danger_reason:
+            danger_note = f"\n\n检测到危险操作：{_exec_code_reason_text(danger_reason)}"
         result = {
             "approved": False,
             "pattern_key": pattern_key,
@@ -5802,6 +6046,8 @@ def check_execute_code_guard(code: str, env_type: str,
                 "variant sends the user ANOTHER approval card. Wait for the "
                 "user's decision; if this turn must end, report that approval "
                 "is pending."
+                f"BLOCKED: {display_description}. Asking the user for approval.\n\n"
+                f"**Code:**\n```python\n{display_code}\n```{danger_note}"
             ),
         }
         if smart_denied_for_owner:
@@ -5969,3 +6215,4 @@ def request_elicitation_consent(
 
 # Load permanent allowlist from config on module import
 load_permanent_allowlist()
+

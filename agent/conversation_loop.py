@@ -242,6 +242,104 @@ def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) 
     return False
 
 
+def _extract_tool_content_text(content) -> str:
+    """Normalize a tool-result content value to plain text for BLOCKED scan.
+
+    Tool results are normally strings, but structurally-valid payloads can
+    be OpenAI-style content-block lists (``[{"type": "text", "text": ...}]``)
+    or dicts.  Without normalization a denial hidden inside such a shape
+    silently evades the halt (#65592 复测 2026-08-25).  Recursively extracts
+    the first error/text/content/message field, else returns "".
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(_extract_tool_content_text(c) for c in content)
+    if isinstance(content, dict):
+        for key in ("error", "text", "content", "message"):
+            if key in content:
+                return _extract_tool_content_text(content[key])
+        return ""
+    return ""
+
+
+def _tool_results_contain_user_blocked(messages: List[Dict[str, Any]]) -> bool:
+    """Scan trailing tool messages for a user-denial BLOCKED marker.
+
+    When the user denies a dangerous command via the approval dialog, the
+    tool result is a BLOCKED string.  Without a dispatch-layer halt the
+    agent may retry the same intent with a different tool — a bypass of
+    the user's explicit deny (#65592).
+
+    Covers the denial formats:
+      - Plain-text BLOCKED (terminal/file_tools/approval)
+      - ``["BLOCKED ...]`` list form
+      - JSON-wrapped execute_code denial
+        (``{"status":"error","error":"BLOCKED: ..."}`` — plain-text
+        startswith misses this path, see #65592 review)
+    Tolerates leading whitespace before the marker/JSON and non-string
+    content shapes (list/dict) via ``_extract_tool_content_text``
+    (#65592 复测 2026-08-25).
+    """
+    for _msg in reversed(messages):
+        if _msg.get("role") != "tool":
+            break
+        _content = _extract_tool_content_text(_msg.get("content", "")).lstrip()
+        # Plain-text BLOCKED — terminal/file_tools/approval
+        if _content.startswith("BLOCKED") or _content.startswith('["BLOCKED'):
+            return True
+        # JSON-wrapped BLOCKED — execute_code returns
+        # {"status":"error","error":"BLOCKED: ..."} when the
+        # user denies via approval guard.  The plain-text
+        # startswith check misses this path entirely.
+        if _content.startswith("{"):
+            try:
+                parsed = json.loads(_content)
+                if isinstance(parsed, dict):
+                    error = parsed.get("error", "")
+                    if isinstance(error, str) and error.startswith("BLOCKED"):
+                        return True
+                    # error 字段本身是 list/dict 形状时递归提取
+                    if not isinstance(error, str):
+                        err_text = _extract_tool_content_text(error)
+                        if err_text.startswith("BLOCKED"):
+                            return True
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return False
+
+
+def _user_blocked_halt_response(agent, messages) -> tuple[str, str] | None:
+    """If trailing tool messages show a user denial, perform the halt
+    side effects and return ``(exit_reason, final_response)``; else None.
+
+    Extracted from the main loop (2026-08-25 re-review): the user-denial
+    halt must be testable at the loop boundary — parser recognition alone
+    does not prove termination semantics.  The caller breaks the loop on
+    a non-None return, so no further model call or tool retry happens.
+    """
+    if not _tool_results_contain_user_blocked(messages):
+        return None
+    _turn_exit_reason = "user_blocked"
+    _final_response = "操作被拒绝。请指示下一步。"
+    agent._emit_status(
+        "⛔ 用户拒绝了危险操作 — 已停止 Agent 循环"
+    )
+    messages.append(
+        {"role": "assistant", "content": _final_response}
+    )
+    if agent.stream_delta_callback:
+        try:
+            agent.stream_delta_callback(_final_response)
+            agent.stream_delta_callback(None)
+        except Exception:
+            pass
+    agent._safe_print(f"\n{_final_response}\n")
+    return _turn_exit_reason, _final_response
+
+
+
+
 def _restore_user_after_reference_handoff(
     messages: List[Dict[str, Any]], user_message: Any
 ) -> bool:
@@ -8120,8 +8218,18 @@ def run_conversation(
                     _turn_exit_reason = "session_persistence_failed"
                     final_response = ""
                     failed = True
+                # ── User-blocked tool check ───────────────────────────
+                # When the user denies a dangerous command via the
+                # approval dialog, the tool result is a BLOCKED string.
+                # Without a dispatch-layer halt the agent may retry the
+                # same intent with a different tool — a bypass of the
+                # user's explicit deny.  Scan the tool messages just
+                # produced and force-stop the turn when a BLOCKED is
+                # found so the user's decision is respected.
+                _user_blocked_halt = _user_blocked_halt_response(agent, messages)
+                if _user_blocked_halt is not None:
+                    _turn_exit_reason, final_response = _user_blocked_halt
                     break
-
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
                     _turn_exit_reason = "guardrail_halt"
@@ -9283,3 +9391,4 @@ def run_conversation(
 
 
 __all__ = ["run_conversation"]
+

@@ -356,11 +356,15 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         self.assertEqual(seen[0]["task_id"], "kernel-test")
 
     def test_cross_cell_alias_dispatches_under_the_current_cell(self):
-        # Adversarial cross-cell dataflow: a callable captured in cell 1 and
-        # invoked by an opaque global name in cell 2 still crosses the RPC
-        # boundary — under cell 2's authority, allow-list, and budget — the
-        # operative enforcement a per-script static scan cannot provide once
-        # state persists (composition contract with the execute-code guard).
+        # Adversarial cross-cell dataflow: a hermes_tools.* callable captured
+        # in cell 1 and invoked by an opaque global name in cell 2 still
+        # crosses the RPC boundary — under cell 2's authority, allow-list,
+        # and budget. This covers the RPC-alias class ONLY (the one class
+        # that necessarily crosses the RPC seam). Native Python capabilities
+        # (os.kill family) never cross RPC; their cross-cell persistence is
+        # handled on the #65592 side by the capability-leak detector, which
+        # blocks storing the capability as a value in cell 1 (see
+        # test_exec_code_guard_adversarial.py Section C2).
         from tools.terminal_tool import set_approval_callback
 
         seen = []

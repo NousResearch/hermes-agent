@@ -982,6 +982,20 @@ class TestPgrepKillExpansion:
         dangerous, _, _ = detect_dangerous_command("kill 12345")
         assert dangerous is False
 
+    def test_self_kill_pid_flagged(self):
+        """#74078 Part 1 (jeff-mettel 窄方案): kill <自身/父 PID> 必须拦截，
+        普通 PID 保持放行（test_safe_kill_pid_not_flagged 不变）。"""
+        import os
+        me, parent = os.getpid(), os.getppid()
+        for cmd in (f"kill {me}", f"kill -9 {me}", f"kill -s TERM {me}",
+                    f"kill {parent}"):
+            dangerous, key, _ = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert "kill" in key, key
+        # 排除 kill -l 信号列表查询
+        assert detect_dangerous_command("kill -l")[0] is False
+        assert detect_dangerous_command("kill -l 9")[0] is False
+
 
 class TestLaunchctlGatewayLifecycle:
     """launchctl stop/kickstart/bootout/unload against the Hermes service

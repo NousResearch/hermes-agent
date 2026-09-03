@@ -29,8 +29,9 @@ import re
 import threading
 import time
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
@@ -4683,6 +4684,49 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 
 
+_VERB_SUFFIX_RE = r"(?:e?|s|es|ed|d|ing|en|er|ers|ion|ions|is|ance|ence|ability|able)?"
+_NOUN_SUFFIX_RE = r"(?:s|es)?"
+
+
+@lru_cache(maxsize=256)
+def _bounded_marker_re(marker: str, verb_inflections: bool) -> "re.Pattern":
+    """Word-bounded pattern for one action/workspace marker.
+
+    ``text`` is already lowercased by the caller. Multi-word markers keep
+    their internal spacing. Single-word verb markers get a small inflection
+    suffix group (plus an optional repeat of the marker's final letter for
+    doubled-consonant forms like ``scanning``/``running``) so ``reading``,
+    ``checking``, and ``analyzing`` still match while ``bread``/``thread``
+    (no boundary before ``read``) do not (#101868). Noun markers take a
+    plural suffix only.
+    """
+    body = re.escape(marker)
+    if " " not in marker:
+        if verb_inflections:
+            if marker[-1].isalpha():
+                body = body + f"(?:{re.escape(marker[-1])})?"
+            body = body + _VERB_SUFFIX_RE
+        else:
+            body = body + _NOUN_SUFFIX_RE
+    return re.compile(r"(?<![a-z0-9])" + body + r"(?![a-z0-9])")
+
+
+def _mentions_bounded_marker(
+    text: str, markers: "Sequence[str]", verb_inflections: bool = False
+) -> bool:
+    """Whether ``text`` mentions any of ``markers`` as whole word(s).
+
+    Replaces raw substring matching (``marker in text``) in the intent-ack
+    detector: substring matching fired on intra-word collisions like
+    ``"read" in "bread"``, ``"repo" in "report"``, and ``"path" in
+    "empathy"``, misclassifying complete replies as intermediate acks and
+    suppressing their delivery (#101868).
+    """
+    return any(
+        _bounded_marker_re(m, verb_inflections).search(text) for m in markers
+    )
+
+
 def looks_like_codex_intermediate_ack(
     agent,
     user_message: Any,
@@ -4755,7 +4799,9 @@ def looks_like_codex_intermediate_ack(
         "path",
     )
 
-    assistant_mentions_action = any(marker in assistant_text for marker in action_markers)
+    assistant_mentions_action = _mentions_bounded_marker(
+        assistant_text, action_markers, verb_inflections=True
+    )
     if not assistant_mentions_action:
         return False
 
@@ -4774,12 +4820,12 @@ def looks_like_codex_intermediate_ack(
 
     user_text = _summarize_user_message_for_log(user_message).strip().lower()
     user_targets_workspace = (
-        any(marker in user_text for marker in workspace_markers)
+        _mentions_bounded_marker(user_text, workspace_markers)
         or "~/" in user_text
         or "/" in user_text
     )
-    assistant_targets_workspace = any(
-        marker in assistant_text for marker in workspace_markers
+    assistant_targets_workspace = _mentions_bounded_marker(
+        assistant_text, workspace_markers
     )
     return user_targets_workspace or assistant_targets_workspace
 

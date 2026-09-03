@@ -92,6 +92,23 @@ class TestRunner:
         result = run_verify(tmp_path, recipe, skip_start=True)
         assert "hello-verify" in result.phases[0].output_tail
 
+    def test_chatty_phase_command_still_completes_and_tail_is_bounded(self, tmp_path):
+        """A phase command printing far more than the tail limit before
+        exiting must not be collected unbounded in memory — see
+        _BoundedOutputReader. This exercises the real Popen + drain path,
+        not just the reader class in isolation."""
+        from agent.verify.runner import _TAIL_CHARS
+
+        recipe = Recipe(
+            name="x",
+            test=["python3 -c \"[print('x' * 200) for _ in range(2000)]\""],
+        )
+        result = run_verify(tmp_path, recipe, skip_start=True)
+        assert result.ok
+        assert not result.phases[0].timed_out
+        assert result.phases[0].exit_code == 0
+        assert len(result.phases[0].output_tail) <= _TAIL_CHARS
+
     def test_phase_selection(self, tmp_path):
         recipe = Recipe(name="x", bootstrap=["true"], build=["true"], test=["true"])
         result = run_verify(tmp_path, recipe, phases=("test",))
@@ -103,6 +120,43 @@ class TestRunner:
         assert not result.ok
         assert result.phases[0].timed_out
         assert result.phases[0].exit_code is None
+
+    def test_phase_timeout_reaps_whole_process_tree(self, tmp_path):
+        """A timed-out phase must not orphan the command's children.
+
+        ``proc.kill()`` on a plain (default process-group) Popen only
+        signals the direct `sh -c` wrapper — a phase that spawned children
+        (jest workers, npm build chains, dev servers) leaves them orphaned
+        and still running, holding ports/fds. _run_phase_command now spawns
+        with start_new_session=True and reaps the whole group via
+        _terminate_process_group on timeout, same as _run_start_phase.
+        """
+        import os
+        import shutil
+
+        if shutil.which("bash") is None:
+            import pytest
+
+            pytest.skip("bash required")
+
+        def _pid_alive(pid: int) -> bool:
+            try:
+                os.kill(pid, 0)
+                return True
+            except (ProcessLookupError, PermissionError):
+                return False
+
+        from agent.verify.runner import _run_phase_command
+
+        pidfile = tmp_path / "child.pid"
+        cmd = f"bash -c 'sleep 30 & echo $! > {pidfile}; wait'"
+        result = _run_phase_command("test", cmd, tmp_path, timeout=1.0)
+        assert result.timed_out
+        child_pid = int(pidfile.read_text().strip())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and _pid_alive(child_pid):
+            time.sleep(0.1)
+        assert not _pid_alive(child_pid), "phase child survived the timeout"
 
     def test_commands_run_in_project_root(self, tmp_path):
         (tmp_path / "marker.txt").write_text("here", encoding="utf-8")
@@ -187,3 +241,21 @@ class TestReadiness:
         finally:
             server.shutdown()
             thread.join(timeout=5)
+
+
+class TestBoundedOutputReader:
+    def test_keeps_only_the_tail_while_draining(self):
+        from agent.verify.runner import _BoundedOutputReader
+
+        # 500 lines of 10 chars (+ newline) = 5500 chars total, well past a
+        # small limit — the reader must never hold more than `limit` chars
+        # even mid-drain, not just after truncating a fully-collected string.
+        lines = [f"line-{i:04d}\n" for i in range(500)]
+        reader = _BoundedOutputReader(iter(lines), limit=100).start()
+
+        result = reader.result(timeout=5)
+
+        assert len(result) <= 100
+        # The tail survives; the head (line-0000) does not.
+        assert "line-0499" in result
+        assert "line-0000" not in result

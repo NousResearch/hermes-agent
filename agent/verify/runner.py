@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -100,6 +101,45 @@ def _tail(text: str, limit: int = _TAIL_CHARS) -> str:
     return text[-limit:] if len(text) > limit else text
 
 
+class _BoundedOutputReader:
+    """Drain a subprocess's stdout while it runs, keeping only the last
+    ``limit`` characters.
+
+    ``subprocess.run(..., stdout=subprocess.PIPE)`` buffers the ENTIRE
+    output in memory before ``_tail()`` ever gets a chance to truncate it —
+    a verbose phase command (a chatty test runner, a build tool with
+    progress spam) can grow that buffer without bound for the whole
+    ``timeout`` window. Draining concurrently with a bounded tail caps the
+    worst case at ``limit`` regardless of how much the command prints.
+    """
+
+    def __init__(self, stream: Any, limit: int = _TAIL_CHARS) -> None:
+        self._stream = stream
+        self._limit = limit
+        self._buf = ""
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+
+    def start(self) -> "_BoundedOutputReader":
+        self._thread.start()
+        return self
+
+    def _pump(self) -> None:
+        try:
+            for line in self._stream:
+                with self._lock:
+                    self._buf = (self._buf + line)[-self._limit :]
+        except (OSError, ValueError):
+            # Pipe closed under us (process killed) — whatever we captured stands.
+            pass
+
+    def result(self, timeout: float = 5.0) -> str:
+        """Captured tail. Never raises: diagnostics must not fail the run."""
+        self._thread.join(timeout)
+        with self._lock:
+            return self._buf
+
+
 def _run_phase_command(
     phase: str,
     command: str,
@@ -108,28 +148,31 @@ def _run_phase_command(
     on_output: Callable[[str], None] | None = None,
 ) -> PhaseResult:
     started = time.monotonic()
+    # start_new_session puts the command (and every process it spawns) in its
+    # own process group, so a timeout can terminate the WHOLE tree via
+    # _terminate_process_group — the same pattern _run_start_phase already
+    # uses. Plain proc.kill() only signals the direct `sh` wrapper; a phase
+    # that spawned children (jest workers, npm build chains, dev servers)
+    # would leave them orphaned and still running, holding ports/fds.
+    proc = subprocess.Popen(
+        command,
+        shell=True,  # project-authored commands; see module docstring
+        cwd=str(root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,  # own process group for clean teardown
+        text=True,
+        errors="replace",
+    )
+    reader = _BoundedOutputReader(proc.stdout).start() if proc.stdout is not None else None
     try:
-        proc = subprocess.run(
-            command,
-            shell=True,  # project-authored commands; see module docstring
-            cwd=str(root),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-            text=True,
-            errors="replace",
-        )
-        output = proc.stdout or ""
-        exit_code: int | None = proc.returncode
+        exit_code: int | None = proc.wait(timeout=timeout)
         timed_out = False
-    except subprocess.TimeoutExpired as exc:
-        raw = exc.output
-        if isinstance(raw, bytes):
-            output = raw.decode("utf-8", errors="replace")
-        else:
-            output = raw or ""
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(proc)
         exit_code = None
         timed_out = True
+    output = reader.result() if reader is not None else ""
     duration = time.monotonic() - started
     if on_output and output:
         on_output(output)

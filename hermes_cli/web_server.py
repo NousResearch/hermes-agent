@@ -6121,6 +6121,7 @@ def _provider_field_entry(field: ProviderField) -> Dict[str, Any]:
             {"value": opt.value, "label": opt.label, "description": opt.description}
             for opt in field.options
         ],
+        "when": {dep_key: expected for dep_key, expected in field.when} or None,
     }
 
 
@@ -6287,7 +6288,23 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]
         def sources_for(field: ProviderField) -> tuple:
             return (data,)
 
+    # Read every field's resolved value first: a field gated by ``when`` may
+    # depend on a sibling declared later in the schema, so visibility can only
+    # be decided once every value is known.
+    resolved: Dict[str, Any] = {}
     for field in provider.fields:
+        if field.is_secret:
+            continue
+        native = _read_field(field, sources_for(field), env)
+        value = _serialize_field_value(field, native)
+        if field.kind == "select" and value not in field.allowed_values():
+            value = field.default
+        resolved[field.key] = value
+
+    for field in provider.fields:
+        if not field.is_visible(resolved):
+            continue
+
         entry = _provider_field_entry(field)
         sources = sources_for(field)
 
@@ -6302,9 +6319,7 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]
             # Blank fields surface the resolved host Honcho will actually use.
             entry["placeholder"] = host
 
-        value = _serialize_field_value(field, native)
-        if field.kind == "select" and value not in field.allowed_values():
-            value = field.default
+        value = resolved[field.key]
         entry["value"] = value
         # Presence, not truthiness — a stored False/0 is still "set".
         entry["is_set"] = native is not None if is_honcho else bool(value)
@@ -6318,13 +6333,20 @@ def _apply_field_values(provider: ProviderConfigSchema, values: Dict[str, str], 
 
     Only keys present in ``values`` are touched, so a partial save never
     clobbers fields owned by another surface. ``_UNSET`` clears the key (and
-    its aliases) so it falls back to the host/default mapping.
+    its aliases) so it falls back to the host/default mapping. A field whose
+    ``when`` gate is not satisfied is skipped even if present: visibility is
+    judged against each field's own backend dict (via ``target_for``) layered
+    with the submitted batch, so a single-field autosave PUT (the inline panel
+    submits one key at a time) still sees the sibling ``mode`` value already
+    on disk instead of a same-request key that was never sent.
     """
 
     for field in provider.fields:
         if field.is_secret or field.key not in values:
             continue
         target = target_for(field)
+        if not field.is_visible({**target, **values}):
+            continue
         coerced = _coerce_field_value(field, values[field.key])
         if coerced is _UNSET:
             target.pop(field.key, None)

@@ -19,7 +19,7 @@ import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
 import { ListRow } from '../primitives'
 
-import { FieldControl, FieldTitle } from './field-control'
+import { FieldControl, FieldTitle, isFieldVisible } from './field-control'
 
 // Secrets seed blank: values are write-only and blank keeps the stored one.
 function seedAll(config: MemoryProviderConfig): Record<string, string> {
@@ -118,7 +118,7 @@ export function ProviderConfigModal({
         </DialogHeader>
 
         <div className="min-w-0">
-          {groupFields(config.fields).map(([group, fields]) => (
+          {groupFields(config.fields.filter(field => isFieldVisible(field, values))).map(([group, fields]) => (
             <section className="mt-6 first:mt-2" key={group}>
               <h3 className="border-b border-(--ui-accent-secondary)/30 pb-1.5 font-mono text-[0.68rem] uppercase tracking-wide text-(--ui-accent-secondary)">
                 {group}

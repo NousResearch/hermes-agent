@@ -161,6 +161,10 @@ export interface MemoryProviderField {
   options: MemoryProviderFieldOption[]
   placeholder: string
   value: string
+  // Visibility gate: {other_field_key: required_value}, ALL must match the
+  // current in-progress form values for this field to render. Absent/null
+  // means always visible. See ProviderField.when on the backend.
+  when?: null | Record<string, string>
 }
 
 export interface MemoryProviderConfig {

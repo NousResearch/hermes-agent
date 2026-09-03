@@ -10,7 +10,7 @@ import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
 import { ListRow, Pill } from '../primitives'
 
-import { FieldControl, FieldTitle } from './field-control'
+import { FieldControl, FieldTitle, isFieldVisible } from './field-control'
 import { ProviderConfigModal } from './provider-config-modal'
 
 // Inline fields only: the compact panel must never re-write modal-owned keys.
@@ -69,6 +69,17 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
           )
         } else {
           setSaved(current => ({ ...current, [field.key]: value }))
+          // Keep config.fields' own value in sync too: the full-config modal
+          // reseeds its visibility gates from config.fields on open, so a
+          // committed change to a gating field (e.g. mode) must be reflected
+          // there immediately, not only in this panel's local draft state.
+          setConfig(
+            current =>
+              current && {
+                ...current,
+                fields: current.fields.map(f => (f.key === field.key ? { ...f, value } : f))
+              }
+          )
         }
       } catch (err) {
         notifyError(err, `Failed to save ${field.label}`)
@@ -99,8 +110,11 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
     return <PageLoader className="min-h-24" label="Loading memory provider settings..." />
   }
 
-  const inlineFields = config.fields.filter(field => field.inline)
-  const secretFields = config.fields.filter(field => field.kind === 'secret')
+  // Visibility is judged against the live draft `values`, not `saved`: a mode
+  // switch must show/hide dependent fields the instant it's picked, before
+  // its autosave PUT resolves.
+  const inlineFields = config.fields.filter(field => field.inline && isFieldVisible(field, values))
+  const secretFields = config.fields.filter(field => field.kind === 'secret' && isFieldVisible(field, values))
   const hasFullConfig = config.fields.some(field => !field.inline)
 
   return (

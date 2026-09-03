@@ -11,6 +11,18 @@ import { CONTROL_TEXT } from '../constants'
 // Fade the placeholder well below set values so example text never reads as data.
 const FIELD_INPUT = `font-mono ${CONTROL_TEXT} placeholder:text-muted-foreground/45`
 
+// Whether `field` should render given the in-progress draft `values` (keyed
+// by field key, as edited — not yet-saved state is fine and intended: a mode
+// select's own onChange updates `values` before its autosave commit
+// resolves, so a dependent field appears/disappears the instant the user
+// picks a new mode, not after the network round-trip).
+export function isFieldVisible(field: MemoryProviderField, values: Record<string, string>): boolean {
+  if (!field.when) {
+    return true
+  }
+  return Object.entries(field.when).every(([depKey, expected]) => values[depKey] === expected)
+}
+
 // Field label with an optional info tooltip, shared by the panel and modal rows.
 export function FieldTitle({ field }: { field: MemoryProviderField }) {
   if (!field.info) {

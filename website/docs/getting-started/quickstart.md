@@ -58,6 +58,14 @@ For a command-line only install without Hermes Desktop, run:
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
+### With the desktop app on Linux:
+The installer sets up the CLI. To add the native desktop app:
+
+1. During install, answer **yes** when asked about the desktop app — or run `hermes desktop --install` after setup
+2. Launch with `hermes desktop` — first run builds the Electron app (~2 min, one-time); subsequent runs skip the build
+
+The desktop app shares your CLI config, API keys, sessions, and skills.
+
 #### Windows (native)
 
 Run in powershell:

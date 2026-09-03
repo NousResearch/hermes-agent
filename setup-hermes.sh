@@ -451,6 +451,39 @@ else
     fi
 fi
 
+# ===========================================================================
+# Desktop app opt-in (Linux only — XDG desktop entries don't exist elsewhere)
+# ===========================================================================
+if [[ "$IS_TERMUX" != "1" ]] && command -v uname >/dev/null 2>&1 && \
+   [[ "$(uname -s 2>/dev/null)" == Linux* ]]; then
+    echo ""
+    echo -e "${CYAN}→${NC} Hermes Desktop app (native Linux GUI)?"
+    echo "   Adds Hermes to your app picker/menu with an icon."
+    echo "   First launch builds the Electron app (~2 min, one-time)."
+    echo "   Skip this now — run 'hermes desktop --install' later."
+    read -p "   Install desktop launcher now? [y/N] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo ""
+        echo -e "${CYAN}→${NC} Writing desktop launcher..."
+        if "$SETUP_PYTHON" -c "
+from pathlib import Path
+from hermes_cli.linux_desktop_entry import install_desktop_entry
+entry = install_desktop_entry(Path('$SCRIPT_DIR'))
+if entry:
+    print(f'✓ Desktop launcher installed: {entry}')
+    print('  First launch will build the app (~2 min, one-time).')
+    print('  Run: hermes desktop')
+else:
+    print('⚠ Could not write desktop entry — run hermes desktop --install later')
+" 2>/dev/null; then
+            :
+        else
+            echo -e "${YELLOW}⚠${NC} Launcher write failed — run 'hermes desktop --install' after setup"
+        fi
+    fi
+fi
+
 # ============================================================================
 # Done
 # ============================================================================
@@ -467,6 +500,10 @@ if is_termux; then
     echo "  2. Start chatting:"
     echo "     hermes"
     echo ""
+    echo "  3. (Optional) Launch the desktop app:"
+    echo "     hermes desktop        # build + launch"
+    echo "     hermes desktop --install   # just the launcher, no build"
+    echo ""
 else
     echo "  1. Reload your shell:"
     echo "     source $SHELL_CONFIG"
@@ -476,6 +513,10 @@ else
     echo ""
     echo "  3. Start chatting:"
     echo "     hermes"
+    echo ""
+    echo "  4. (Optional) Launch the desktop app:"
+    echo "     hermes desktop        # build + launch"
+    echo "     hermes desktop --install   # add to app menu without building"
     echo ""
 fi
 echo "Other commands:"
@@ -487,6 +528,8 @@ else
 fi
 echo "  hermes cron list     # View scheduled jobs"
 echo "  hermes doctor        # Diagnose issues"
+echo "  hermes desktop        # native desktop app (builds on first run)"
+echo "  hermes desktop --install   # add to app menu without building"
 echo ""
 
 # Ask if they want to run setup wizard now

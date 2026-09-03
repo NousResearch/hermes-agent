@@ -32,6 +32,12 @@ hermes desktop
 
 That uses your current config, keys, sessions, and skills.
 
+On Linux, the first `hermes desktop` builds the Electron app (one-time, ~2 min, ~1.5 GB download, cached after). Subsequent launches skip the build if the source tree hasn't changed (content-hash stamp check).
+
+To add the app to your launcher/menu without building, run `hermes desktop --install`. Some desktop environments (notably GNOME) may require a logout/login for the new entry to appear in the app picker.
+
+The desktop app and CLI share the same config (`~/.hermes/config.yaml`), API keys (`~/.hermes/.env`), sessions, skills, and memory. Anything you do in one surface shows up in the other.
+
 ## What's in the app
 
 The desktop app is organized as a chat-first window with a left sidebar for navigation. It's built to allow managing multiple simultaneous agent conversations, configuring messaging providers, creating artifacts, browsing projects' folder structures, and working on multiple projects at once.
@@ -294,6 +300,7 @@ To launch via the CLI, simply run `hermes desktop`. By default it installs works
 
 | Flag                 | Description                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------- |
+| `--install`        | Write the Linux desktop entry + icon and exit (no build, no launch)                        |
 | `--skip-build`       | Skip npm install/package and launch the existing unpacked app from `apps/desktop/release` |
 | `--force-build`      | Force a full rebuild even if the content stamp matches                                    |
 | `--build-only`       | Build the desktop app but do not launch it (used by `hermes update`)                      |

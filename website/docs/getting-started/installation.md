@@ -37,6 +37,20 @@ If you want to install & run Hermes Desktop after a command-line only install, s
 hermes desktop
 ```
 
+### Desktop app on Linux
+The shell installer (`curl | bash`) sets up the CLI only. The native Electron desktop app is opt-in:
+
+- **During install** — answer yes when prompted, or pass no flag (the prompt is optional)
+- **After install** — run `hermes desktop --install` to add the launcher to your app menu (instant, no build)
+- **First launch** — `hermes desktop` builds the Electron app (~2 min, ~1.5 GB download); the result is cached and subsequent launches skip the build
+- **Skip it entirely** — nothing changes; the CLI, TUI (`hermes --tui`), and web dashboard (`hermes dashboard`) work without the desktop app
+
+The launcher entry is written to `~/.local/share/applications/hermes.desktop` and the icon to `~/.local/share/icons/hicolor/.../apps/hermes.png`. Run `hermes desktop --install` again to refresh them.
+
+Some desktop environments (notably GNOME) don't pick up new `.desktop` entries until you log out and back in. If Hermes doesn't appear in your app menu right after install, try logging out and back in, or run `update-desktop-database ~/.local/share/applications`.
+
+To remove the desktop app: `hermes uninstall --gui` (removes the launcher, icon, and build artifacts; keeps your CLI config, sessions, and skills).
+
 ### What the Installer Does
 
 The installer handles everything automatically — all dependencies (Python, Node.js, ripgrep, ffmpeg), the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. By the end, you're ready to chat.

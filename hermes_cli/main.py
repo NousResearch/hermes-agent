@@ -8520,6 +8520,25 @@ def _register_linux_desktop_entry() -> None:
 
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
+    # --install: write the launcher and exit. No build, no launch.
+    if getattr(args, "install", False):
+        if not sys.platform.startswith("linux"):
+            print("✗ --install is only supported on Linux")
+            sys.exit(1)
+        try:
+            from hermes_cli.linux_desktop_entry import install_desktop_entry
+        except ImportError:
+            print("✗ Desktop entry support not available")
+            sys.exit(1)
+        entry = install_desktop_entry(PROJECT_ROOT)
+        if entry:
+            print(f"✓ Desktop launcher installed: {entry}")
+            print("  Run 'hermes desktop' to build and launch (first build ~2 min)")
+        else:
+            print("✗ Could not write desktop entry — see previous errors")
+            sys.exit(1)
+        return
+
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
     if not (desktop_dir / "package.json").exists():
         print(f"Desktop GUI source not found at: {desktop_dir}")

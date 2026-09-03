@@ -66,6 +66,11 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         help="Force a full rebuild even if the content stamp matches",
     )
     gui_parser.add_argument(
+        "--install",
+        action="store_true",
+        help="Write the Linux desktop entry + icon and exit (no build, no launch)",
+    )
+    gui_parser.add_argument(
         "--setup-tcc-identity",
         action="store_true",
         help=(

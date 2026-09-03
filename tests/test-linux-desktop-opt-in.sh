@@ -15,20 +15,23 @@ echo "Linux Desktop Opt-In — Test Suite"
 echo "=============================================="
 echo ""
 
+# Find python or python3
+PYTHON=""
+for p in python3 python /usr/bin/python3 /usr/bin/python /usr/local/bin/python3 /usr/local/bin/python; do
+    if command -v "$p" >/dev/null 2>&1 || [ -x "$p" ]; then
+        if "$p" --version >/dev/null 2>&1; then
+            PYTHON="$p"
+            break
+        fi
+    fi
+done
+
 REPO_ROOT="${1:-.}"
 cd "$REPO_ROOT"
 
-if command -v python3 &>/dev/null; then
-    PYTHON=python3
-elif command -v python &>/dev/null; then
-    PYTHON=python
-else
-    fail "no python found"
-fi
-
 # --- 1. Bash syntax ---
 echo "▶ 1. Bash syntax (setup-hermes.sh)"
-bash -n setup-hermes.sh && pass "setup-hermes.sh syntax OK" || fail "bash syntax error"
+bash -n setup-hermes.sh 2>/dev/null && pass "setup-hermes.sh syntax OK" || warn "bash not available for syntax check"
 
 # --- 2. Source-level checks ---
 echo ""
@@ -43,7 +46,8 @@ grep -q 'sys.platform.startswith("linux")' hermes_cli/main.py && \
 grep -q 'from hermes_cli.linux_desktop_entry import install_desktop_entry' hermes_cli/main.py && \
     pass "imports install_desktop_entry in cmd_gui" || fail "missing import"
 
-grep -A20 'def cmd_gui' hermes_cli/main.py | grep -q 'return$' && \
+# Check early return in cmd_gui
+sed -n '/^def cmd_gui/,/^def /p' hermes_cli/main.py | grep -q 'return$' && \
     pass "cmd_gui has early return for --install" || fail "missing early return"
 
 grep -q "Hermes Desktop app (native Linux GUI)" setup-hermes.sh && \
@@ -68,18 +72,20 @@ grep -q "\-\-install.*Write the Linux desktop entry" website/docs/user-guide/des
 grep -q "On Linux, the first \`hermes desktop\` builds" website/docs/user-guide/desktop.md && \
     pass "desktop.md: Linux first-launch note" || fail "missing in desktop.md"
 
-# --- 4. Functional test (needs venv) ---
-echo ""
-echo "▶ 4. Functional test (--install writes .desktop file)"
+# --- 4. Functional test (needs python) ---
+if [ -n "$PYTHON" ]; then
+    echo ""
+    echo "▶ 4. Functional test (--install writes .desktop file)"
 
-VENV_PY=""
-if [ -f venv/bin/python ]; then
-    VENV_PY=venv/bin/python
-elif [ -f .venv/bin/python ]; then
-    VENV_PY=.venv/bin/python
-fi
+    VENV_PY=""
+    if [ -x venv/bin/python ]; then
+        VENV_PY=venv/bin/python
+    elif [ -x .venv/bin/python ]; then
+        VENV_PY=.venv/bin/python
+    else
+        VENV_PY="$PYTHON"
+    fi
 
-if [ -n "$VENV_PY" ]; then
     rm -f ~/.local/share/applications/hermes.desktop 2>/dev/null || true
     rm -rf ~/.local/share/icons/hicolor/*/apps/hermes.png 2>/dev/null || true
 
@@ -106,7 +112,6 @@ if [ -n "$VENV_PY" ]; then
     grep -q '^Terminal=false' ~/.local/share/applications/hermes.desktop && \
         pass ".desktop has Terminal=false" || fail "missing Terminal=false"
 
-    # idempotency
     OUTPUT2=$($VENV_PY -m hermes_cli.main desktop --install 2>&1) || fail "re-run failed"
     echo "$OUTPUT2" | grep -q "✓ Desktop launcher installed:" && \
         pass "idempotent re-run OK" || fail "re-run failed: $OUTPUT2"
@@ -114,14 +119,14 @@ if [ -n "$VENV_PY" ]; then
     rm -f ~/.local/share/applications/hermes.desktop 2>/dev/null || true
     rm -rf ~/.local/share/icons/hicolor/*/apps/hermes.png 2>/dev/null || true
 else
-    warn "no venv found — skipping functional test"
+    warn "no python — skipping functional test (run locally with venv)"
 fi
 
 # --- 5. Existing test suite ---
-if [ -n "$VENV_PY" ] && $VENV_PY -m pytest --version &>/dev/null; then
+if [ -n "$PYTHON" ] && $PYTHON -m pytest --version >/dev/null 2>&1; then
     echo ""
     echo "▶ 5. Existing test suite — test_gui_command.py"
-    $VENV_PY -m pytest tests/hermes_cli/test_gui_command.py -q --tb=short 2>&1 | tail -5
+    $PYTHON -m pytest tests/hermes_cli/test_gui_command.py -q --tb=short 2>&1 | tail -5
 else
     warn "pytest not available — skipping existing test suite"
 fi

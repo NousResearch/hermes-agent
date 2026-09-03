@@ -7393,6 +7393,46 @@ class TurnRunner:
         # as `_on_session_title` before the run starts (see
         # _attach_session_title_callback), because the titler now fires from
         # inside the turn prologue rather than from here.
+        #
+        # LOCAL CARRY (periodic retitle, PR #29983 residual delta): after the
+        # turn completes we re-evaluate the session title against the WHOLE
+        # (condensed) conversation and rename the thread only when the durable
+        # topic has drifted. Upstream owns first-turn semantic titling; this is
+        # the periodic half it still lacks. Reuses the same `_on_session_title`
+        # rename lane, adapted to its (title, title_source) signature — a
+        # periodic retitle is a real model-derived title, so it carries the
+        # "llm" source that the rename callbacks gate on. Fire-and-forget on a
+        # daemon thread inside maybe_retitle_session; never affects the turn.
+        try:
+            from agent.title_generator import maybe_retitle_session
+            _retitle_cb = getattr(agent, "_on_session_title", None)
+            _history = (
+                ctx.result_holder[0].get("messages", [])
+                if ctx.result_holder[0] else []
+            )
+            maybe_retitle_session(
+                self._session_db,
+                effective_session_id,
+                getattr(ctx, "user_message", None) or "",
+                final_response,
+                _history,
+                failure_callback=(
+                    getattr(agent, "_title_failure_callback", None)
+                    or getattr(agent, "_emit_auxiliary_failure", None)
+                ),
+                main_runtime={
+                    "model": getattr(agent, "model", None),
+                    "provider": getattr(agent, "provider", None),
+                    "base_url": getattr(agent, "base_url", None),
+                    "api_key": getattr(agent, "api_key", None),
+                    "api_mode": getattr(agent, "api_mode", None),
+                },
+                title_callback=(
+                    (lambda t: _retitle_cb(t, "llm")) if _retitle_cb else None
+                ),
+            )
+        except Exception:
+            logger.debug("Periodic retitle dispatch failed", exc_info=True)
 
         return {
             "final_response": final_response,

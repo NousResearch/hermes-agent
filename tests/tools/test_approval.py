@@ -143,6 +143,52 @@ class TestDetectDangerousRm:
                 assert "delete" in desc.lower(), command
 
 
+class TestDetectDangerousFind:
+    def test_dynamic_find_delete_spellings_require_approval(self):
+        # Port of openai/codex#39159: shell expansion/globbing can turn a
+        # source word that is not literally `-delete` into a destructive flag.
+        for command in (
+            "find ./missing-approval-target -{delete,print}",
+            "find ./missing-approval-target -del*",
+            "find ./missing-approval-target -delet?",
+            "find ./missing-approval-target -delet[e]",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+            assert "find dynamic shell word" in desc, command
+
+    def test_quoted_dynamic_find_text_remains_safe(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "echo '-{delete,print}' '-del*'"
+        )
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
+class TestDynamicShellWordExecutionFlags:
+    def test_dynamic_read_tool_exec_flags_require_approval(self):
+        for command in (
+            "rg --pre{=,=sh} pattern missing-approval-payload.sh",
+            "rg --hostname-bin{=,=sh} pattern file",
+            "sort --compress-program{=,=sh} file",
+            "ag --pager{=,=sh} pattern",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+            assert "dynamic shell word" in desc, command
+
+    def test_quoted_shell_metacharacter_arguments_remain_safe(self):
+        dangerous, key, desc = detect_dangerous_command(
+            'echo -g"*.py" \'-{delete,print}\' "--pre{=,=sh}"'
+        )
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
 class TestWindowsShellDestructiveCommands:
     def test_windows_destructive_requires_approval(self):
         cases = [

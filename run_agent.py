@@ -2004,18 +2004,17 @@ class AIAgent:
         immediately, exactly as before.
 
         ``explicit`` marks a user-initiated review (/refine, with or
-        without focus text): never deferred. It does NOT touch the
-        delegate/enabled gates below — those stay keyed on ``focus`` so a
-        bare /refine keeps its historical gating behavior.
+        without focus text). Manual reviews bypass automatic-only delegate,
+        enabled, and idle-defer gates.
         """
-        # Delegation-subagent and enabled gates run here at enqueue/spawn
-        # time; the idle dispatcher re-checks the enabled gate again at
-        # dispatch time so a review queued for minutes cannot be
-        # resurrected after the user disables reviews.
-        if focus is None and getattr(self, "_delegate_depth", 0) > 0:
+        # Automatic delegation-subagent and enabled gates run here at
+        # enqueue/spawn time; the idle dispatcher re-checks the enabled gate
+        # at dispatch time so a review queued for minutes cannot be
+        # resurrected after the user disables automatic reviews.
+        if not explicit and focus is None and getattr(self, "_delegate_depth", 0) > 0:
             return
         task_cfg = None
-        if focus is None:
+        if not explicit and focus is None:
             from agent.background_review import load_background_review_settings
             enabled, task_cfg = load_background_review_settings()
             if not enabled:

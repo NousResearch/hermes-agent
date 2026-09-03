@@ -340,9 +340,8 @@ def test_background_review_runs_at_top_level(monkeypatch):
     assert len(forks) == 1, "top-level review must still spawn the fork"
 
 
-def test_background_review_disabled_skips_automatic_spawn(monkeypatch):
-    """``auxiliary.background_review.enabled: false`` must skip automatic
-    post-turn forks while leaving ``/refine`` (focus set) working (#87250)."""
+def test_background_review_disabled_skips_only_automatic_spawn(monkeypatch):
+    """The config switch must not suppress either form of manual /refine."""
     from unittest.mock import patch
 
     forks = []
@@ -380,8 +379,17 @@ def test_background_review_disabled_skips_automatic_spawn(monkeypatch):
             messages_snapshot=[{"role": "user", "content": "hello"}],
             review_memory=True,
             focus="save the deploy workflow",
+            explicit=True,
         )
-        assert len(forks) == 1, "/refine must still run when enabled=false"
+        assert len(forks) == 1, "focused /refine must run when enabled=false"
+
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+            explicit=True,
+        )
+        assert len(forks) == 2, "bare /refine must run when enabled=false"
 
 
 def test_background_review_explicit_focus_runs_even_in_subagent(monkeypatch):

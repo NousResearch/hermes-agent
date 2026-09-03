@@ -3682,6 +3682,9 @@ class ContextCompressor(ContextEngine):
         self._last_compression_telemetry: Optional[Dict[str, Any]] = None
         self._active_compression_telemetry: Optional[Dict[str, Any]] = None
         self._compression_telemetry_seed: Optional[Dict[str, Any]] = None
+        # ponytail: dedup identical long-thread compressions (cron every 5m)
+        # stores fingerprint of last input; second tick on unchanged thread skips LLM
+        self._last_compress_fingerprint: Optional[str] = None
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -7824,6 +7827,28 @@ This compaction should PRIORITISE preserving all information related to the focu
         # always clears both.
         telemetry = self._begin_compression_telemetry(current_tokens=current_tokens)
         telemetry["chunk_count"] = 0
+        # ponytail: skip re-summarizing unchanged long thread (cron every 5m)
+        # one shared-function guard > per-caller guards; length/hash check before LLM
+        try:
+            _fp = hashlib.sha256(
+                json.dumps(
+                    [(m.get("role"), str(m.get("content", ""))[:500]) for m in messages],
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+        except Exception:
+            _fp = None
+        _last_fp = getattr(self, "_last_compress_fingerprint", None)
+        # only dedup when previous attempt was not an abort/cooldown — otherwise
+        # the failure path must re-run to set _last_compress_aborted correctly
+        # and when not in feasibility-skip probing (ineffective strike), whose
+        # second identical call must still produce a fallback boundary
+        _can_dedup = not getattr(self, "_last_compress_aborted", False) and not getattr(self, "_last_summary_empty_content_failure", False) and not getattr(self, "_last_summary_network_failure", False) and not getattr(self, "_last_summary_auth_failure", False) and not getattr(self, "_last_summary_truncated_failure", False) and getattr(self, "_ineffective_compression_count", 0) == 0
+        if not force and _fp is not None and _fp == _last_fp and _can_dedup:
+            telemetry["failure_class"] = "duplicate_input_skipped"
+            return messages
+        if _fp is not None:
+            self._last_compress_fingerprint = _fp
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without

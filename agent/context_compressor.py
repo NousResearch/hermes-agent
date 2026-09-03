@@ -2380,7 +2380,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_telemetry = None
         self._active_compression_telemetry = None
         self._compression_telemetry_seed = None
-        self._proactive_prune_rearm_tokens = 0
+        self._reset_proactive_prune_rearm()
 
         # Micro-compaction state reset
         self._micro_compact_cursor = 0
@@ -2685,7 +2685,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_telemetry = None
         self._active_compression_telemetry = None
         self._compression_telemetry_seed = None
-        self._proactive_prune_rearm_tokens = 0
+        self._reset_proactive_prune_rearm()
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Bind the current session row so durable cooldowns can round-trip."""
@@ -2700,7 +2700,7 @@ class ContextCompressor(ContextEngine):
         self._prellm_skip_count = 0
         self._anti_thrash_recovery_deadline = 0.0
         self._structural_no_op_backoff_until = 0.0
-        self._proactive_prune_rearm_tokens = 0
+        self._reset_proactive_prune_rearm()
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
         self._load_ineffective_compression_count()
@@ -3315,7 +3315,7 @@ class ContextCompressor(ContextEngine):
         # sizes. Same durable-sync discipline as the strike reset above: clear
         # the model_config copy too, so a restart doesn't resurrect a runway
         # this recalibration just voided.
-        self._proactive_prune_rearm_tokens = 0
+        self._reset_proactive_prune_rearm()
         self._clear_durable_proactive_prune_rearm()
 
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
@@ -4446,6 +4446,18 @@ class ContextCompressor(ContextEngine):
 
         return result, pruned
 
+    def _reset_proactive_prune_rearm(self) -> None:
+        """Fully rearm the proactive prune and let a future lockout warn again.
+
+        Every path that zeroes the rearm mark (compaction, session
+        reset/end/rebind, model recalibration) is a reclamation or a fresh
+        start, so the over-threshold no-op dedup key must not survive it —
+        otherwise an identical lockout after a full compaction (rearm back
+        at 0) would be silent (#101889).
+        """
+        self._proactive_prune_rearm_tokens = 0
+        self._last_reclaim_block_warn = None
+
     def _billed_basis_over_threshold(self, current_tokens: "int | None") -> bool:
         """Whether a provider-billed reading says the session is over threshold.
 
@@ -4476,10 +4488,15 @@ class ContextCompressor(ContextEngine):
         the log to explain it. Silent below the threshold (a declined prune
         there is ordinary hysteresis, not a lockout). Deduped on
         ``reason`` + the rearm snapshot so a busy tool loop logs once per
-        distinct state, not once per iteration; the key is cleared whenever a
-        prune commits so a later lockout warns again.
+        distinct state, not once per iteration; the key is cleared whenever
+        the session drops back under threshold or any reclamation resets the
+        rearm mark (prune commit, compaction, session reset/rebind, model
+        recalibration) so a later lockout warns again.
         """
-        if not self._billed_basis_over_threshold(current_tokens):
+        if current_tokens is None or not self._billed_basis_over_threshold(
+            current_tokens
+        ):
+            self._last_reclaim_block_warn = None
             return
         key = (reason, int(self._proactive_prune_rearm_tokens))
         if self._last_reclaim_block_warn == key:
@@ -8888,7 +8905,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._micro_compact_cursor = 0
         self._micro_compact_consecutive_failures = 0
         self._micro_compact_last_failure_cursor = -1
-        self._proactive_prune_rearm_tokens = 0
+        self._reset_proactive_prune_rearm()
 
         return compressed
 

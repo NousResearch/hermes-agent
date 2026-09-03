@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from utils import base_url_host_matches, base_url_hostname
 
@@ -689,6 +690,7 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
         caching live on /v1/responses; /v1/chat/completions is only a
         minimal compatibility shim translated onto it.
       - api.anthropic.com / ``…/anthropic`` suffixes speak native Messages.
+      - MiniMax's official ``/v1`` endpoints speak OpenAI-compatible chat.
       - Kimi's ``/coding`` endpoint speaks native Messages.
       - AWS Bedrock runtime hosts speak Converse.
 
@@ -709,6 +711,11 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
         return "anthropic_messages"
     if hostname == "api.anthropic.com" or url_lower.endswith("/anthropic"):
         return "anthropic_messages"
+    if (
+        hostname in {"api.minimax.io", "api.minimaxi.com"}
+        and urlparse(url_lower).path.rstrip("/") == "/v1"
+    ):
+        return "chat_completions"
     # Official OpenAI host family: canonical + data-residency regional hosts
     # (us./eu.api.openai.com) all mandate the Responses API for reasoning
     # models with tools. Shared predicate keeps this lane in lockstep with

@@ -43,6 +43,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home, display_hermes_home
 from utils import atomic_write_text, is_truthy_value
+from tools.skill_publish_guard import (
+    SkillPublishLockError,
+    live_skill_publish_guard,
+)
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     extract_skill_description,
@@ -242,6 +246,72 @@ def _is_path_redirect(path: Path) -> bool:
         return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
     except OSError:
         return False
+
+
+def _validate_publish_target(skill_dir: Path) -> Optional[str]:
+    """Last-line guard before the first mutation in ``_create_skill``.
+
+    Runs INSIDE ``live_skill_publish_guard`` so the check and the write it
+    protects are serialized against a concurrent publisher (checking before
+    the lock would be a TOCTOU window).
+
+    ``_resolve_skill_dir`` composes the target from the skills root, the
+    caller-supplied category, and the skill name — none of which is
+    guaranteed not to be a redirect. A symlink/junction planted at the
+    category directory (or at the skill directory itself) makes
+    ``mkdir(parents=True, exist_ok=True)`` + ``atomic_write_text`` publish
+    THROUGH the redirect into content outside every skills root. Refuse
+    fail-closed instead:
+
+      1. any component strictly below the skills root that is a symlink or
+         junction, and
+      2. a target whose resolved path escapes the resolved skills root.
+
+    The refusal wording is deliberately distinct from the duplicate-name
+    refusal so the caller can tell "poisoned tree" from "name taken".
+
+    Returns an error string to refuse on, or ``None`` when publication is
+    safe.
+    """
+    root = _skills_dir()
+    try:
+        resolved_root = root.resolve()
+    except OSError:
+        resolved_root = root
+
+    # (1) Reject a redirect on any component strictly below the skills root.
+    # The root itself is excluded: legitimate setups symlink HERMES_HOME (or
+    # /tmp on macOS), and that is not an escape.
+    try:
+        relative = skill_dir.relative_to(root)
+    except ValueError:
+        relative = None
+    if relative is not None:
+        probe = root
+        for part in relative.parts:
+            probe = probe / part
+            if _is_path_redirect(probe):
+                return (
+                    f"Refusing to publish '{skill_dir}': the path component "
+                    f"'{probe}' is a symlink/junction redirect. Publication "
+                    f"would write outside the skills root. Remove the link "
+                    f"if this location is intended."
+                )
+
+    # (2) Reject a target whose resolved location escapes the skills root.
+    try:
+        resolved_target = skill_dir.resolve()
+    except OSError:
+        resolved_target = skill_dir
+    try:
+        resolved_target.relative_to(resolved_root)
+    except ValueError:
+        return (
+            f"Refusing to publish '{skill_dir}': it resolves to "
+            f"'{resolved_target}', outside the skills root "
+            f"'{resolved_root}'. Publication is refused fail-closed."
+        )
+    return None
 
 
 def _validate_delete_target(skill_dir: Path) -> Optional[str]:
@@ -1022,28 +1092,65 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
-    # Check for name collisions across all directories
-    existing = _find_skill(name)
-    if existing:
+    # Resolve the target BEFORE the guard so the lock can be scoped to the
+    # canonical name and the target path both; the guard itself only needs
+    # the canonical name for lock identity.
+    #
+    # NOTE: there is deliberately NO pre-lock duplicate check here. A
+    # collision check taken outside the lock is stale by definition (another
+    # publisher can complete between the check and our lock acquisition), and
+    # acting on it reintroduces exactly the TOCTOU race the guard exists to
+    # close. The authoritative ``_find_skill`` call lives INSIDE the guard.
+    skill_dir = _resolve_skill_dir(name, category)
+
+    # Serialize the authoritative validate→mutate window on the canonical
+    # skill name. Everything that can race a concurrent publisher lives
+    # INSIDE the guard: the authoritative duplicate re-check (the pre-lock
+    # check above is only a cheap early-out and is stale by definition), the
+    # publish-target redirect refusal, the directory creation, the SKILL.md
+    # write, and the security-scan rollback.
+    try:
+        with live_skill_publish_guard(name, target=skill_dir):
+            # Authoritative in-lock duplicate check. The pre-lock check
+            # above can be stale: another publisher may have completed
+            # between it and our lock acquisition.
+            existing = _find_skill(name)
+            if existing:
+                return {
+                    "success": False,
+                    "error": f"A skill named '{name}' already exists at {existing['path']}."
+                }
+
+            # Last-line redirect/escape refusal, inside the lock so the
+            # check and the write it protects cannot be interleaved.
+            target_err = _validate_publish_target(skill_dir)
+            if target_err:
+                return {"success": False, "error": target_err}
+
+            # Create the skill directory
+            skill_dir.mkdir(parents=True, exist_ok=True)
+
+            # Write instructional documents with a readable mode while preserving
+            # the mode of an existing file across the atomic replacement.
+            skill_md = skill_dir / "SKILL.md"
+            atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
+
+            # Security scan — roll back on block
+            scan_error = _security_scan_skill(skill_dir)
+            if scan_error:
+                shutil.rmtree(skill_dir, ignore_errors=True)
+                return {"success": False, "error": scan_error}
+    except SkillPublishLockError as exc:
+        # Never let lock contention or a hard lock failure surface as a
+        # duplicate-name refusal, and never propagate the exception to the
+        # agent — convert to the normal skill_manage error contract while
+        # preserving the diagnostic classification.
         return {
             "success": False,
-            "error": f"A skill named '{name}' already exists at {existing['path']}."
+            "error": str(exc),
+            "lock_acquisition_failure": True,
+            "lock_failure_kind": exc.kind,
         }
-
-    # Create the skill directory
-    skill_dir = _resolve_skill_dir(name, category)
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write instructional documents with a readable mode while preserving
-    # the mode of an existing file across the atomic replacement.
-    skill_md = skill_dir / "SKILL.md"
-    atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
-
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
-    if scan_error:
-        shutil.rmtree(skill_dir, ignore_errors=True)
-        return {"success": False, "error": scan_error}
 
     # Extract description from frontmatter for verbose notifications
     _desc = ""

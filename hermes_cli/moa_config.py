@@ -303,7 +303,9 @@ def _default_preset() -> dict[str, Any]:
         "aggregator_temperature": None,
         "reference_timeout": DEFAULT_MOA_REFERENCE_TIMEOUT,
         "degraded_reference_policy": "loud",
-        "max_tokens": 4096,
+        # None means no preset-level output cap.  The acting aggregator is
+        # intentionally uncapped; reference output uses reference_max_tokens.
+        "max_tokens": None,
         "reference_max_tokens": None,
         "fanout": "user_turn",
         "enabled": True,
@@ -333,6 +335,7 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
 
     aggregator = _clean_slot(raw.get("aggregator")) or deepcopy(DEFAULT_MOA_AGGREGATOR)
 
+    raw_mt = raw.get("max_tokens")
     return {
         "enabled": _coerce_bool(raw.get("enabled"), True),
         "reference_models": refs,
@@ -343,7 +346,10 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "degraded_reference_policy": _coerce_degraded_reference_policy(
             raw.get("degraded_reference_policy")
         ),
-        "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
+        # Preserve an explicit null (and the absent value) as uncapped.  This
+        # field is retained for API compatibility; the runtime's actual
+        # reference cap is reference_max_tokens.
+        "max_tokens": None if raw_mt is None else _coerce_int(raw_mt, 4096),
         # Optional cap on how much each reference ADVISOR may generate per turn.
         # None (default) = uncapped: advisors write full-length advice, matching
         # prior behavior so existing presets are unchanged. Set a value (e.g.

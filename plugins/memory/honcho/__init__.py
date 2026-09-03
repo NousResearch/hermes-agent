@@ -528,6 +528,14 @@ class HonchoMemoryProvider(MemoryProvider):
         # Honcho session by design, so uploading MEMORY.md/USER.md/SOUL.md to
         # each one would flood the backend with short-lived duplicates instead
         # of performing a one-time migration.
+        #
+        # NOTE: `not session.messages` is only a cheap fast path, not the real
+        # guard. It is true for EVERY new Honcho session, and a per-chat session
+        # key (gateway surfaces / WebUI send one per conversation) creates a new
+        # session per chat — so this check alone re-uploaded local memory on
+        # every conversation and the deriver re-derived all of it. The
+        # authoritative one-time guard is the completion marker inside
+        # migrate_memory_files().
         try:
             if not session.messages and cfg.session_strategy != "per-session":
                 from hermes_constants import get_hermes_home

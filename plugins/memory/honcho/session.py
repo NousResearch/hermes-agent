@@ -16,6 +16,8 @@ from plugins.memory.honcho.client import get_honcho_client, spawn_context_thread
 from plugins.memory.honcho.oauth import redact_tokens as _redact_tokens
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from honcho import Honcho
 
 logger = logging.getLogger(__name__)
@@ -1128,6 +1130,15 @@ class HonchoSessionManager:
         Used when Honcho activates on an instance that already has locally
         consolidated memory. Backwards compatible -- skips if files don't exist.
 
+        This is a ONE-TIME migration per (workspace, user peer): the files are
+        pre-Honcho local memory, so re-uploading them makes the deriver
+        re-derive every entry into fresh documents. The caller's
+        ``not session.messages`` check only proves *that session* is new, which
+        is true for every new session — under a per-chat session key (gateway
+        surfaces, WebUI) that fires on every conversation. The completion
+        marker below is the authoritative guard; the caller's check remains a
+        cheap fast path.
+
         Args:
             session_key: The session key to associate files with.
             memory_dir: Path to the memories directory (~/.hermes/memories/).
@@ -1139,6 +1150,15 @@ class HonchoSessionManager:
         memory_path = Path(memory_dir)
 
         if not memory_path.exists():
+            return False
+
+        marker = self._memory_migration_marker_path()
+        if marker is not None and marker.exists():
+            logger.debug(
+                "Honcho memory file migration already completed for %s (marker: %s)",
+                self._migration_scope_label(),
+                marker,
+            )
             return False
 
         session = self._cache.get(session_key)
@@ -1183,6 +1203,7 @@ class HonchoSessionManager:
             return False
 
         uploaded = False
+        aborted = False
         files = [
             (
                 "MEMORY.md",
@@ -1248,11 +1269,63 @@ class HonchoSessionManager:
                 uploaded = True
             except HonchoAuthError:
                 logger.error("Honcho memory migration stopped after %s: auth failed", filename)
+                aborted = True
                 break
             except Exception as e:
                 logger.error("Failed to upload %s to Honcho: %s", filename, e)
+                aborted = True
+
+        # Only stamp completion when every present file made it. A partial
+        # upload must stay retryable: marking it done would strand the missing
+        # files forever, which is worse than one duplicate upload.
+        if uploaded and not aborted:
+            self._write_memory_migration_marker()
 
         return uploaded
+
+    def _migration_scope_label(self) -> str:
+        """Human-readable (workspace, user peer) scope for log messages."""
+        workspace = getattr(self._config, "workspace_id", None) or "default"
+        peer = getattr(self._config, "peer_name", None) or "default"
+        return f"{workspace}/{peer}"
+
+    def _memory_migration_marker_path(self) -> "Path | None":
+        """Path of the one-time memory-migration completion marker.
+
+        Scoped to (workspace, user peer) so switching either one — e.g. a
+        deliberate clean-slate migration onto a fresh workspace — legitimately
+        re-runs the upload, while ordinary new sessions do not. Returns None if
+        HERMES_HOME cannot be resolved, in which case the caller falls back to
+        the previous behaviour rather than crashing.
+        """
+        from pathlib import Path
+
+        try:
+            from hermes_constants import get_hermes_home
+
+            scope = re.sub(r"[^A-Za-z0-9_.-]+", "-", self._migration_scope_label()).strip("-")
+            return Path(get_hermes_home()) / "honcho" / f"memory-migrated-{scope}"
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Could not resolve Honcho memory migration marker path: %s", e)
+            return None
+
+    def _write_memory_migration_marker(self) -> None:
+        """Record that the one-time memory-file migration has completed."""
+        marker = self._memory_migration_marker_path()
+        if marker is None:
+            return
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(
+                f"{datetime.now().isoformat(timespec='seconds')}\n"
+                f"scope={self._migration_scope_label()}\n",
+                encoding="utf-8",
+            )
+            logger.debug("Wrote Honcho memory migration marker: %s", marker)
+        except Exception as e:
+            # Losing the marker only costs a duplicate upload next session;
+            # never let it break an otherwise successful migration.
+            logger.debug("Could not write Honcho memory migration marker: %s", e)
 
     @staticmethod
     def _normalize_card(card: Any) -> list[str]:

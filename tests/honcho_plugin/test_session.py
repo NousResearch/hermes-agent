@@ -389,6 +389,130 @@ class TestPerSessionMigrateGuard:
         mock_manager.migrate_memory_files.assert_not_called()
 
 
+class TestMemoryMigrationIsOneTime:
+    """migrate_memory_files must upload local memory exactly ONCE per scope.
+
+    MEMORY.md/USER.md are pre-Honcho local memory. Re-uploading them makes the
+    deriver re-derive every entry into fresh documents. The caller's
+    ``not session.messages`` check is true for every NEW Honcho session, and a
+    per-chat session key (gateway/WebUI) creates one session per conversation —
+    so before the completion marker, local memory was re-uploaded on every
+    chat. Measured on a live install: 13 duplicate documents per conversation.
+    """
+
+    def _make_manager(self, tmp_path, workspace="ws-a", peer="peer-a"):
+        from unittest.mock import MagicMock, patch
+
+        from plugins.memory.honcho.session import HonchoSessionManager
+
+        cfg = MagicMock()
+        cfg.workspace_id = workspace
+        cfg.peer_name = peer
+
+        manager = HonchoSessionManager(honcho=MagicMock(), config=cfg)
+
+        # Minimal cached session state so migrate_memory_files gets past its
+        # own precondition checks and reaches the upload loop.
+        session = MagicMock()
+        session.honcho_session_id = "sess-1"
+        session.user_peer_id = peer
+        session.assistant_peer_id = "assistant"
+        manager._cache["key-1"] = session
+        manager._sessions_cache["sess-1"] = MagicMock()
+
+        uploads: list[str] = []
+
+        def _fake_sdk_session(_sid):
+            sdk = MagicMock()
+            sdk.upload_file.side_effect = lambda file, peer, metadata: uploads.append(
+                metadata["original_file"]
+            )
+            return sdk
+
+        patches = [
+            patch.object(manager, "_sdk_session", side_effect=_fake_sdk_session),
+            patch.object(manager, "_get_or_create_peer", return_value=MagicMock()),
+            patch.object(manager, "_authed_call", side_effect=lambda _label, fn: fn()),
+            patch("hermes_constants.get_hermes_home", return_value=tmp_path),
+        ]
+        return manager, uploads, patches
+
+    @staticmethod
+    def _write_memory_files(tmp_path):
+        mem_dir = tmp_path / "memories"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        (mem_dir / "MEMORY.md").write_text("agent note", encoding="utf-8")
+        (mem_dir / "USER.md").write_text("user profile", encoding="utf-8")
+        return str(mem_dir)
+
+    def test_second_call_does_not_re_upload(self, tmp_path):
+        """The whole point: a second session must not re-upload local memory."""
+        import contextlib
+
+        manager, uploads, patches = self._make_manager(tmp_path)
+        mem_dir = self._write_memory_files(tmp_path)
+
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+
+            assert manager.migrate_memory_files("key-1", mem_dir) is True
+            assert uploads == ["MEMORY.md", "USER.md"]
+
+            # Simulate the next conversation: new session, same scope.
+            assert manager.migrate_memory_files("key-1", mem_dir) is False
+            assert uploads == ["MEMORY.md", "USER.md"], (
+                "local memory was re-uploaded on a second session"
+            )
+
+    def test_marker_is_scoped_so_new_workspace_still_migrates(self, tmp_path):
+        """A deliberate clean-slate move to a new workspace must re-run."""
+        import contextlib
+
+        mem_dir = self._write_memory_files(tmp_path)
+
+        manager_a, uploads_a, patches_a = self._make_manager(tmp_path, workspace="ws-a")
+        with contextlib.ExitStack() as stack:
+            for p in patches_a:
+                stack.enter_context(p)
+            assert manager_a.migrate_memory_files("key-1", mem_dir) is True
+
+        manager_b, uploads_b, patches_b = self._make_manager(tmp_path, workspace="ws-b")
+        with contextlib.ExitStack() as stack:
+            for p in patches_b:
+                stack.enter_context(p)
+            assert manager_b.migrate_memory_files("key-1", mem_dir) is True
+            assert uploads_b == ["MEMORY.md", "USER.md"]
+
+    def test_partial_upload_is_retried(self, tmp_path):
+        """A failed upload must NOT be stamped complete — fail closed."""
+        import contextlib
+        from unittest.mock import MagicMock, patch
+
+        manager, uploads, patches = self._make_manager(tmp_path)
+        mem_dir = self._write_memory_files(tmp_path)
+
+        def _failing_sdk(_sid):
+            sdk = MagicMock()
+            sdk.upload_file.side_effect = RuntimeError("network down")
+            return sdk
+
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            with patch.object(manager, "_sdk_session", side_effect=_failing_sdk):
+                manager.migrate_memory_files("key-1", mem_dir)
+
+            marker = manager._memory_migration_marker_path()
+            assert marker is not None and not marker.exists(), (
+                "a failed migration must stay retryable"
+            )
+
+            # Retry succeeds and uploads both files.
+            assert manager.migrate_memory_files("key-1", mem_dir) is True
+            assert uploads == ["MEMORY.md", "USER.md"]
+
+
 class TestChunkMessage:
     def test_short_message_single_chunk(self):
         result = HonchoMemoryProvider._chunk_message("hello world", 100)

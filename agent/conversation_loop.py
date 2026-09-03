@@ -93,6 +93,7 @@ from agent.prompt_caching import (
     strip_anthropic_tool_cache_control,
 )
 from agent.provider_projection import splice_provider_projection
+from agent.rate_limit_policy import policy_backoff_wait
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
     is_zai_coding_overload_error,
@@ -6033,10 +6034,37 @@ def run_conversation(
                 )
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
-                _should_fallback = (
-                    (is_rate_limited and _wrapped_output_cap_budget is None)
-                    or (_is_transport_failure and retry_count >= 2)
+                # rate_limit_retry policy: hold the primary provider on long
+                # backoff instead of eager failover. Billing is exempt —
+                # backoff cannot recover an empty account. Unlimited (-1)
+                # keeps raising the loop ceiling so neither the ``while``
+                # condition nor the give-up check below can fire while the
+                # policy is live; finite N raises the ceiling once to N+1 so
+                # the budget is actually reachable (api_max_retries may be
+                # smaller).
+                _rate_limit_policy = getattr(agent, "_rate_limit_retry_policy", None)
+                _policy_active = bool(
+                    _rate_limit_policy is not None
+                    and _rate_limit_policy.enabled
+                    and classified.reason == FailoverReason.rate_limit
                 )
+                _policy_budget_left = False
+                if _policy_active:
+                    _policy_budget_left = (
+                        _rate_limit_policy.max_retries < 0
+                        or _retry.rate_limit_policy_retries < _rate_limit_policy.max_retries
+                    )
+                    if _rate_limit_policy.max_retries < 0:
+                        max_retries = max(max_retries, retry_count + 2)
+                    else:
+                        max_retries = max(max_retries, _rate_limit_policy.max_retries + 1)
+                if _policy_active and _policy_budget_left:
+                    _should_fallback = False
+                else:
+                    _should_fallback = (
+                        (is_rate_limited and _wrapped_output_cap_budget is None)
+                        or (_is_transport_failure and retry_count >= 2)
+                    )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
@@ -7266,13 +7294,34 @@ def run_conversation(
                         error=api_error,
                         default_wait=wait_time,
                     )
+                # rate_limit_retry policy backoff: never wait less than the
+                # policy schedule says (a provider-supplied short Retry-After
+                # would otherwise re-hammer a still-throttled upstream), but
+                # still honor a LONGER provider window. Counting this retry
+                # against the policy here keeps the eager-fallback gate above
+                # accurate: once the budget is spent, failover proceeds.
+                if _policy_active and _policy_budget_left:
+                    _policy_wait = policy_backoff_wait(
+                        _rate_limit_policy,
+                        _retry.rate_limit_policy_retries + 1,
+                    )
+                    wait_time = max(wait_time, _policy_wait)
+                    _backoff_policy = "rate_limit_retry_policy"
+                    _retry.rate_limit_policy_retries += 1
                 if is_rate_limited or _is_zai_coding_overload:
                     _policy_note = ""
                     if _backoff_policy == "zai_coding_overload_long":
                         _policy_note = " (Z.AI Coding overload adaptive long backoff)"
                     elif _backoff_policy == "zai_coding_overload_short":
                         _policy_note = " (Z.AI Coding overload short retry)"
-                    _wait_reason = "Provider overloaded" if _is_zai_coding_overload and not is_rate_limited else "Rate limited"
+                    elif _backoff_policy == "rate_limit_retry_policy":
+                        _budget = (
+                            "unlimited"
+                            if _rate_limit_policy.max_retries < 0
+                            else f"{_retry.rate_limit_policy_retries}/{_rate_limit_policy.max_retries}"
+                        )
+                        _policy_note = f" (rate-limit retry policy, {_budget})"
+                    _wait_reason = "Provider overloaded" if (_is_zai_coding_overload and not is_rate_limited) else "Rate limited"
                     _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
                     # Normal retries are buffered to avoid noisy transient chatter. Long
                     # Z.AI Coding waits are different: they can last minutes, so surface

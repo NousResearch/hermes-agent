@@ -1160,6 +1160,15 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Rate-limit retry policy: when present, hold the primary provider on long
+  # exponential backoff for 429s instead of eagerly failing over. Useful when
+  # every fallback rides the same throttled upstream (single-tenant
+  # aggregators, z.ai). Disabled by default (max_retries: 0 or absent section).
+  # rate_limit_retry:
+  #   max_retries: -1    # -1=unlimited, 0=off, N=finite budget
+  #   backoff_base: 10   # seconds, first wait (default: 10)
+  #   backoff_max: 600   # seconds, ceiling (default: 600)
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. The default "auto" enables it on interactive
   # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables

@@ -1310,6 +1310,32 @@ def recover_with_credential_pool(
                 or "usage limit reached" in context_message
                 or "usage limit has been reached" in context_message
             )
+        # rate_limit_retry policy: when the policy owns plain 429 handling,
+        # hold the current credential with the turn loop's long backoff
+        # instead of marking the pool entry exhausted. With a single-
+        # credential pool, the 1h exhaustion cooldown starves every OTHER
+        # process (cron jobs, new sessions) while this loop keeps using the
+        # same key anyway. With a second usable credential, standard
+        # rotation below is still the better move. Real quota walls
+        # (usage_limit_reached) still exhaust below.
+        _rl_policy = getattr(agent, "_rate_limit_retry_policy", None)
+        if (
+            _rl_policy is not None
+            and _rl_policy.enabled
+            and not usage_limit_reached
+        ):
+            _rl_alternates = [
+                e for e in pool.entries()
+                if (current_entry is None or e.id != current_entry.id)
+                and e.last_status != STATUS_EXHAUSTED
+            ]
+            if not _rl_alternates:
+                if getattr(current_entry, "last_status", None) == STATUS_EXHAUSTED:
+                    # Stale exhaustion flag (e.g. a pre-policy turn tripped
+                    # during a 429 storm): clear it so other processes can
+                    # resolve credentials again.
+                    pool.reset_statuses()
+                return False, True
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429

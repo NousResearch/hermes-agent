@@ -149,3 +149,43 @@ class TestDoctorCommandInstallation:
         assert "Command Installation" in out
         assert "$PREFIX/bin" in out
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_missing_cmd_link_ok_when_hermes_resolves_on_path(self, monkeypatch, tmp_path):
+        """A working `hermes` elsewhere on PATH is not a missing command (#96976)."""
+        import shutil
+
+        home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        real_which = shutil.which
+        monkeypatch.setattr(
+            shutil,
+            "which",
+            lambda cmd, *a, **kw: "/usr/local/bin/hermes" if cmd == "hermes" else real_which(cmd, *a, **kw),
+        )
+
+        out = _run_doctor(fix=False)
+        assert "hermes resolves via /usr/local/bin/hermes" in out
+        # Must not offer or perform the duplicate-launcher "repair".
+        assert "Missing ~/.local/bin/hermes symlink" not in out
+        assert not (tmp_path / ".local" / "bin" / "hermes").exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_missing_cmd_link_still_fails_when_hermes_unresolvable(self, monkeypatch, tmp_path):
+        """Without any hermes on PATH, the failure and repair are unchanged."""
+        import shutil
+
+        home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        real_which = shutil.which
+        monkeypatch.setattr(
+            shutil,
+            "which",
+            lambda cmd, *a, **kw: None if cmd == "hermes" else real_which(cmd, *a, **kw),
+        )
+
+        out = _run_doctor(fix=False)
+        assert "~/.local/bin/hermes not found" in out
+        assert "Missing ~/.local/bin/hermes symlink — run 'hermes doctor --fix'" in out
+

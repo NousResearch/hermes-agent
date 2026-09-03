@@ -489,3 +489,44 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
 
     assert installs == ["someone/hub-skill"]
     assert "Updated 1 skill(s)" in sink.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Regression (#101670): an ambiguous short name must fail the install, not
+# report success with nothing installed.
+# ---------------------------------------------------------------------------
+
+
+def _ambiguous_candidate(name, source, identifier):
+    return type("Candidate", (), {
+        "name": name,
+        "source": source,
+        "identifier": identifier,
+        "trust_level": "community",
+        "extra": {},
+    })()
+
+
+def test_do_install_fails_on_ambiguous_short_name(monkeypatch):
+    """`hermes skills install humanizer --yes` (the Desktop hub picker's exact
+    call, per #101670) must return a non-zero status when the name matches
+    several catalog entries, so the CLI process exits non-zero and the
+    Desktop action pipeline surfaces the failure instead of reading the
+    unchanged skills list as a successful install."""
+    import tools.skills_hub as hub
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(hub, "GitHubAuth", lambda: object())
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [])
+    monkeypatch.setattr(hub, "unified_search", lambda *a, **k: [
+        _ambiguous_candidate("humanizer", "skills.sh", "skills.sh/humanizer"),
+        _ambiguous_candidate("humanizer", "clawhub", "clawhub/humanizer"),
+    ])
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=80)
+
+    rc = do_install("humanizer", skip_confirm=True, console=console)
+
+    assert rc == 1
+    assert "Multiple skills named" in sink.getvalue()

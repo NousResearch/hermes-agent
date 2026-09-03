@@ -11,10 +11,101 @@ from agent.usage_pricing import (
 from decimal import Decimal
 
 
+class _EndpointModelsResponse:
+    ok = True
+
+    def __init__(self, model: str | None):
+        self._model = model
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        if self._model is None:
+            return {"data": []}
+        return {
+            "data": [
+                {
+                    "id": self._model,
+                    "pricing": {
+                        "prompt": "0.000001",
+                        "completion": "0.000002",
+                    },
+                }
+            ]
+        }
 
 
+def test_endpoint_pricing_resolves_configured_route_api_key(monkeypatch):
+    base_url = "http://litellm-proxy:4000/v1"
+    captured = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "litellm-proxy",
+                    "base_url": base_url,
+                    "key_env": "LITELLM_API_KEY",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value_prefer_dotenv",
+        lambda name: "proxy-secret" if name == "LITELLM_API_KEY" else None,
+    )
+
+    def fake_get(url, *, headers, **_kwargs):
+        captured.update(url=url, headers=headers)
+        return _EndpointModelsResponse("some-model")
+
+    monkeypatch.setattr("agent.model_metadata.requests.get", fake_get)
+
+    entry = get_pricing_entry(
+        "some-model",
+        provider="custom:litellm-proxy",
+        base_url=base_url,
+    )
+
+    assert entry is not None
+    assert captured["url"] == f"{base_url}/models"
+    assert captured["headers"] == {"Authorization": "Bearer proxy-secret"}
 
 
+def test_endpoint_pricing_does_not_send_key_to_different_route(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "litellm-proxy",
+                    "base_url": "https://trusted.example/v1",
+                    "key_env": "LITELLM_API_KEY",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value_prefer_dotenv",
+        lambda _name: "must-not-leak",
+    )
+    captured = {}
+
+    def fake_get(url, *, headers, **_kwargs):
+        captured.update(url=url, headers=headers)
+        return _EndpointModelsResponse(None)
+
+    monkeypatch.setattr("agent.model_metadata.requests.get", fake_get)
+
+    get_pricing_entry(
+        "some-model",
+        provider="custom:litellm-proxy",
+        base_url="https://untrusted.example/v1",
+    )
+
+    assert captured["headers"] == {}
 
 
 def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():

@@ -305,7 +305,13 @@ def list_codex_sessions(root: Optional[Path] = None) -> List[ForeignSession]:
 def _first_user_line(turns: List[Tuple[str, str]]) -> Optional[str]:
     for role, text in turns:
         if role == "user":
-            line = text.strip().splitlines()[0].strip()
+            stripped = text.strip()
+            if not stripped:
+                continue
+            lines = stripped.splitlines()
+            if not lines:
+                continue
+            line = lines[0].strip()
             if line:
                 return line[:_TITLE_MAX * 2]
     return None

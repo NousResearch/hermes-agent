@@ -9,6 +9,7 @@ import pytest
 
 import acp
 from acp.agent.router import build_agent_router
+from acp.exceptions import RequestError
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
@@ -616,6 +617,50 @@ class TestRegisterSessionMcpServers:
         # Should not raise
         await agent._register_session_mcp_servers(state, None)
         await agent._register_session_mcp_servers(state, [])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("second_command", ["/first", "/second"])
+    async def test_rejects_duplicate_server_names_without_registering(
+        self, agent, mock_manager, second_command
+    ):
+        """Duplicate ACP server names fail instead of silently replacing one config."""
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        servers = [
+            McpServerStdio(name="duplicate", command="/first", args=[], env=[]),
+            McpServerStdio(name="duplicate", command=second_command, args=[], env=[]),
+        ]
+
+        with patch("tools.mcp_tool.register_mcp_servers") as register:
+            with pytest.raises(RequestError) as exc_info:
+                await agent._register_session_mcp_servers(state, servers)
+
+        assert exc_info.value.code == -32602
+        assert str(exc_info.value) == "Invalid params"
+        assert exc_info.value.data == {"serverName": "duplicate"}
+        register.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_new_session_rejects_duplicate_server_names_before_creating_session(
+        self, agent
+    ):
+        """Invalid duplicate input does not leave an unreachable new ACP session behind."""
+        from acp.schema import McpServerStdio
+
+        servers = [
+            McpServerStdio(name="duplicate", command="/first", args=[], env=[]),
+            McpServerStdio(name="duplicate", command="/second", args=[], env=[]),
+        ]
+
+        with patch.object(agent.session_manager, "create_session") as create_session:
+            with pytest.raises(RequestError) as exc_info:
+                await agent.new_session(cwd="/tmp", mcp_servers=servers)
+
+        assert exc_info.value.code == -32602
+        assert str(exc_info.value) == "Invalid params"
+        assert exc_info.value.data == {"serverName": "duplicate"}
+        create_session.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_registers_stdio_servers(self, agent, mock_manager):

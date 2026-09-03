@@ -21,6 +21,7 @@
     "@opentelemetry/otlp-exporter-base": "0.218.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.218.0",
     "@opentelemetry/exporter-logs-otlp-http": "0.218.0",
-    "@opentelemetry/core": "2.10.0"
+    "@opentelemetry/core": "2.10.0",
+    "encoding-sniffer": "1.0.2"
   }
 }

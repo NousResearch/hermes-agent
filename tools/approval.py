@@ -13,10 +13,12 @@ import contextvars
 import fnmatch
 import functools
 import hashlib
+import json
 import logging
 import os
 import re
 import shlex
+import subprocess
 import sys
 import tempfile
 import threading
@@ -25,6 +27,7 @@ import unicodedata
 import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 from tools.interrupt import is_interrupted
 from utils import env_var_enabled, is_truthy_value
@@ -732,7 +735,9 @@ _SUDO_STDIN_RE = re.compile(
     re.IGNORECASE)
 
 
-def _check_sudo_stdin_guard(command: str) -> tuple:
+def _check_sudo_stdin_guard(
+    command: str, sudo_password_configured: bool | None = None
+) -> tuple:
     """Detect ``sudo -S`` (stdin password) without configured SUDO_PASSWORD.
 
     When SUDO_PASSWORD is set, ``_transform_sudo_command`` injects ``-S``
@@ -743,7 +748,20 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     Returns:
         (is_blocked: bool, description: str | None)
     """
-    if "SUDO_PASSWORD" in os.environ:
+    if sudo_password_configured is None:
+        try:
+            from agent.secret_scope import get_secret
+
+            configured = bool(get_secret("SUDO_PASSWORD", ""))
+        except Exception:
+            # In multiplex mode an unscoped secret read must fail closed rather
+            # than consulting process-global state that may belong to another
+            # profile. In ordinary single-profile mode get_secret preserves the
+            # legacy os.environ behavior.
+            configured = False
+    else:
+        configured = sudo_password_configured
+    if configured:
         return (False, None)
     normalized = _normalize_command_for_detection(command).lower()
     if _SUDO_STDIN_RE.search(normalized):
@@ -809,6 +827,11 @@ def _match_user_deny_rule(command: str) -> str | None:
         deny_patterns = _get_approval_config().get("deny") or []
     except Exception:
         return None
+    return _match_user_deny_globs(command, deny_patterns)
+
+
+def _match_user_deny_globs(command: str, deny_patterns) -> str | None:
+    """Pure deny-glob matcher used by both parent and isolated worker."""
     if not deny_patterns:
         return None
     globs = [p.strip() for p in deny_patterns
@@ -1574,6 +1597,152 @@ _MAX_DETECTION_COMMAND_CHARS = 128_000
 _MAX_SEPARATOR_FREE_COMMAND_CHARS = 4_096
 _MAX_DETECTION_SEGMENTS = 25_000
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
+_ISOLATED_GUARD_MIN_CHARS = 4_096
+_ISOLATED_GUARD_TIMEOUT_SECONDS = 10.0
+_GUARD_TIMEOUT_DESCRIPTION = "command security inspection timed out"
+_GUARD_ERROR_DESCRIPTION = "command security inspection failed"
+
+
+def _run_command_guard_worker(mode: str, command: str) -> dict:
+    """Classify a long command outside the gateway process.
+
+    The command travels over stdin, never argv.  ``subprocess.run`` owns a
+    hard deadline and kills the worker on expiry, so pathological parser input
+    cannot monopolize the gateway's GIL.  Callers treat every operational or
+    protocol failure as an unconditional block.
+    """
+    try:
+        deny_patterns = _get_approval_config().get("deny") or []
+    except Exception:
+        deny_patterns = []
+    try:
+        from agent.secret_scope import get_secret
+
+        sudo_password_configured = bool(get_secret("SUDO_PASSWORD", ""))
+    except Exception:
+        sudo_password_configured = False
+    from hermes_constants import get_hermes_home
+
+    worker_env = os.environ.copy()
+    worker_env["HERMES_HOME"] = str(get_hermes_home())
+    completed = subprocess.run(
+        [sys.executable, "-m", "tools.command_guard_worker"],
+        input=json.dumps(
+            {
+                "mode": mode,
+                "command": command,
+                "sudo_password_configured": sudo_password_configured,
+                "deny_patterns": deny_patterns,
+            },
+            ensure_ascii=False,
+        ),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=_ISOLATED_GUARD_TIMEOUT_SECONDS,
+        stdin=None,
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        env=worker_env,
+        creationflags=windows_hide_flags(),
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"command guard worker exited {completed.returncode}: "
+            f"{completed.stderr[-200:]}"
+        )
+    result = json.loads(completed.stdout)
+    if not isinstance(result, dict):
+        raise ValueError("invalid command guard worker response")
+    kind = result.get("kind")
+    if not isinstance(kind, str):
+        raise ValueError("invalid command guard worker response")
+    if kind == "allow":
+        return result
+    required_string_fields = {
+        "hardline": ("description",),
+        "sudo_stdin": ("description",),
+        "user_deny": ("pattern",),
+        "dangerous": ("pattern_key", "description"),
+    }.get(kind)
+    if required_string_fields is None or any(
+        not isinstance(result.get(field), str) or not result[field]
+        for field in required_string_fields
+    ):
+        raise ValueError("invalid command guard worker response")
+    return result
+
+
+def _guard_worker_failure_result(description: str, *, timed_out: bool) -> dict:
+    result = _hardline_block_result(description)
+    result["guard_timeout" if timed_out else "guard_error"] = True
+    result["message"] += (
+        " The command was not executed. Do NOT retry the same inline command; "
+        "write large content with write_file/patch and execute only a short "
+        "reviewable command."
+    )
+    return result
+
+
+def _check_unconditional_guards(
+    command: str,
+) -> tuple[dict | None, tuple | None]:
+    """Return ``(unconditional_block, cached_dangerous_verdict)``.
+
+    For long commands the worker performs all pure Python classification once.
+    The dangerous verdict is cached for the later, bypassable approval phase;
+    only the unconditional findings are acted on here.
+    """
+    # Preserve the existing cheap parser cap in the parent so inputs already
+    # known to be unsafe are rejected without spawning the isolated parser.
+    if _command_parser_limit_exceeded(command):
+        is_hardline, description = detect_hardline_command(command)
+        if is_hardline:
+            return _hardline_block_result(description, command), None
+    if len(command) < _ISOLATED_GUARD_MIN_CHARS:
+        is_hardline, description = detect_hardline_command(command)
+        if is_hardline:
+            return _hardline_block_result(description, command), None
+        is_sudo_guess, description = _check_sudo_stdin_guard(command)
+        if is_sudo_guess:
+            return _sudo_stdin_block_result(description), None
+        deny_pattern = _match_user_deny_rule(command)
+        block = _user_deny_block_result(deny_pattern) if deny_pattern is not None else None
+        return block, None
+
+    try:
+        verdict = _run_command_guard_worker("unconditional", command)
+    except subprocess.TimeoutExpired:
+        logger.error("isolated command guard timed out after %.1fs", _ISOLATED_GUARD_TIMEOUT_SECONDS)
+        return _guard_worker_failure_result(_GUARD_TIMEOUT_DESCRIPTION, timed_out=True), None
+    except Exception:
+        logger.exception("isolated command guard failed")
+        return _guard_worker_failure_result(_GUARD_ERROR_DESCRIPTION, timed_out=False), None
+
+    kind = verdict["kind"]
+    if kind == "hardline":
+        return _hardline_block_result(
+            str(verdict.get("description") or "hardline command"), command
+        ), None
+    if kind == "sudo_stdin":
+        return _sudo_stdin_block_result(
+            str(verdict.get("description") or "sudo stdin guard")
+        ), None
+    if kind == "user_deny":
+        return _user_deny_block_result(
+            str(verdict.get("pattern") or "<invalid rule>")
+        ), None
+    if kind == "dangerous":
+        return None, (
+            True,
+            verdict.get("pattern_key"),
+            verdict.get("description"),
+        )
+    if kind == "allow":
+        return None, (False, None, None)
+    return _guard_worker_failure_result(_GUARD_ERROR_DESCRIPTION, timed_out=False), None
+
+
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
 
 
@@ -4746,34 +4915,18 @@ def check_all_command_guards(command: str, env_type: str,
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
-    # Hardline floor: unconditional block for catastrophic commands
-    # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
-    # kill -1). Applies BEFORE yolo / mode=off / cron approve-mode so
-    # no session-level setting can bypass it.
-    is_hardline, hardline_desc = detect_hardline_command(command)
-    if is_hardline:
-        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
-        return _hardline_block_result(hardline_desc, command)
+    # Unconditional floor: hardline, sudo-stdin, and user deny rules all run
+    # BEFORE yolo / mode=off / cron approve-mode. Long inputs are classified
+    # in a killable subprocess so parser pathologies cannot starve the gateway.
+    unconditional_block, isolated_dangerous_verdict = _check_unconditional_guards(command)
+    if unconditional_block is not None:
+        logger.warning("Unconditional command guard block (command: %s)", command[:200])
+        return unconditional_block
 
-    # == Sudo stdin guard ==
-    # Like the hardline floor above, this is unconditional: there is never a
-    # legitimate reason for the agent to pipe passwords to sudo -S when no
-    # SUDO_PASSWORD has been configured.  This must fire BEFORE the yolo
-    # check so even yolo/smart approval/mode=off cannot bypass it.
-    is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
-    if is_sudo_guess:
-        logger.warning("Sudo stdin guard block: %s (command: %s)",
-                       sudo_guess_desc, command[:200])
-        return _sudo_stdin_block_result(sudo_guess_desc)
-
-    # User-defined deny rules (approvals.deny in config.yaml): like the
-    # hardline floor, these fire BEFORE the yolo / mode=off bypass — a deny
-    # rule is the user saying "never, even under yolo".
-    deny_pattern = _match_user_deny_rule(command)
-    if deny_pattern is not None:
-        logger.warning("User deny rule %r blocked command: %s",
-                       deny_pattern, command[:200])
-        return _user_deny_block_result(deny_pattern)
+    def _dangerous_verdict() -> tuple:
+        if isolated_dangerous_verdict is not None:
+            return isolated_dangerous_verdict
+        return detect_dangerous_command(command)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
@@ -4806,7 +4959,7 @@ def check_all_command_guards(command: str, env_type: str,
         # Single-query (-q) sessions: respect single_query_mode config
         if _is_single_query_approval_context():
             if _get_single_query_approval_mode() == "deny":
-                is_dangerous, _pk, description = detect_dangerous_command(command)
+                is_dangerous, _pk, description = _dangerous_verdict()
                 if is_dangerous:
                     return {
                         "approved": False,
@@ -4875,7 +5028,7 @@ def check_all_command_guards(command: str, env_type: str,
         if _is_cron_approval_context():
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
-                is_dangerous, _pk, description = detect_dangerous_command(command)
+                is_dangerous, _pk, description = _dangerous_verdict()
                 if is_dangerous:
                     return {
                         "approved": False,
@@ -4940,7 +5093,7 @@ def check_all_command_guards(command: str, env_type: str,
         if _is_unattended_platform_approval_context() and not _is_cron_approval_context():
             if _get_unattended_approval_mode() == "deny":
                 _ua_platform = _get_session_platform()
-                is_dangerous, _pk, description = detect_dangerous_command(command)
+                is_dangerous, _pk, description = _dangerous_verdict()
                 if is_dangerous:
                     return {
                         "approved": False,
@@ -5040,8 +5193,9 @@ def check_all_command_guards(command: str, env_type: str,
             }
         # else: tirith_fail_open is True — allow as before (tirith_result stays "allow")
 
-    # Dangerous command check (detection only, no approval)
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    # Dangerous command check (detection only, no approval). Long-input
+    # classification was already completed by the isolated worker above.
+    is_dangerous, pattern_key, description = _dangerous_verdict()
 
     # --- Phase 2: Decide ---
 

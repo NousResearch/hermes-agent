@@ -163,6 +163,12 @@ _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 # — a 97-minute penalty on the boot path froze inbound on every platform (#91969).
 _FLOOD_INLINE_WAIT_CAP_SECS = 5.0
 
+# ``edit_message`` (streaming preview + finalize) routinely eats Telegram's 18–35s editMessageText
+# RetryAfter; failing those closed at the 5s boot ceiling froze the bubble mid-text (#102402).
+# Edits never run at boot, so they get their own ceiling — pathological penalties (minutes–hours,
+# #91969) still fail closed.
+_FLOOD_EDIT_INLINE_WAIT_CAP_SECS = 45.0
+
 # Shared per-chat outbound budget (#116312): Telegram counts an editMessageText against the
 # SAME per-chat allowance as a sendMessage, but streaming previews used to pace only edits at
 # DEFAULT_STREAMING_EDIT_INTERVAL = 0.8s (1.25 msg/s into one chat before any reply was sent)
@@ -3956,15 +3962,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._last_overflow_preview[_preview_key] = truncated
                 return self._stream_preview_partial_result(message_id, truncated)
             # Flood control: short waits retry inline; long waits fail immediately so streaming falls back
-            # to a normal final send instead of a clipped partial.
+            # to a normal final send instead of a clipped partial. Edits use their own ceiling (#102402):
+            # routine 18–35s stream penalties sleep inline and retry the same message_id.
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
                 wait = retry_after if retry_after else 1.0
-                if wait > _FLOOD_INLINE_WAIT_CAP_SECS:
+                if wait > _FLOOD_EDIT_INLINE_WAIT_CAP_SECS:
                     # Log AFTER the cap check: "waiting 33.0s" followed by no wait misled an investigation.
                     logger.warning(
                         "[%s] Telegram flood control, refusing edit (retry_after %.1fs > %.0fs inline cap)",
-                        self.name, wait, _FLOOD_INLINE_WAIT_CAP_SECS)
+                        self.name, wait, _FLOOD_EDIT_INLINE_WAIT_CAP_SECS)
                     return _flood_cap_result(wait)
                 logger.warning("[%s] Telegram flood control, waiting %.1fs", self.name, wait)
                 await asyncio.sleep(wait)

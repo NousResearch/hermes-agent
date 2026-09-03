@@ -1220,6 +1220,7 @@ export interface HermesApiRequest {
   // ArrayBuffer. Token-mode backends only.
   upload?: { filename: string; contentType?: string; bytes: ArrayBuffer }
   timeoutMs?: number
+  desktopLoopbackOAuth?: boolean
   // Route this REST call to a specific profile's backend. Omit for the primary
   // (window) backend. Read-only cross-profile data is served by the primary, so
   // this is only needed for profile-scoped live/settings calls.

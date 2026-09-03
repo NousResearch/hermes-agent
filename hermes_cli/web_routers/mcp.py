@@ -267,6 +267,9 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
         hermes_home=flow_home,
         redirect_uri=(cfg.get("oauth") or {}).get("redirect_uri")
         or _mcp_oauth_callback_url(request, name),
+        use_loopback_callback=(
+            request.headers.get("X-Hermes-Desktop-Loopback-OAuth") == "1"
+        ),
         reconnect_live=flow_home == process_home,
     )
     with _mcp_oauth_flows_lock:

@@ -16447,6 +16447,10 @@ async function handleHermesApiRequest(request) {
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     const url = `${connection.baseUrl}${apiRoute.requestPath}`
+    const host = new URL(connection.baseUrl).hostname
+    const loopbackOAuth = request?.desktopLoopbackOAuth && (
+      host === '127.0.0.1' || host === '[::1]' || host === 'localhost'
+    )
 
     // OAuth gateways authenticate REST via EITHER a native bearer token
     // (cookieless RFC 8252 flow) OR the HttpOnly session cookie held in the OAuth
@@ -16474,13 +16478,15 @@ async function handleHermesApiRequest(request) {
           method: request?.method,
           body: request?.body,
           timeoutMs,
-          bearer: restAuth.token
+          bearer: restAuth.token,
+          headers: loopbackOAuth ? { 'X-Hermes-Desktop-Loopback-OAuth': '1' } : undefined
         })
       } else {
         response = await fetchJsonViaOauthSession(url, {
           method: request?.method,
           body: request?.body,
-          timeoutMs
+          timeoutMs,
+          headers: loopbackOAuth ? { 'X-Hermes-Desktop-Loopback-OAuth': '1' } : undefined
         })
       }
     } else {
@@ -16488,7 +16494,8 @@ async function handleHermesApiRequest(request) {
         method: request?.method,
         body: request?.body,
         upload: request?.upload,
-        timeoutMs
+        timeoutMs,
+        headers: loopbackOAuth ? { 'X-Hermes-Desktop-Loopback-OAuth': '1' } : undefined
       })
     }
   } catch (error) {

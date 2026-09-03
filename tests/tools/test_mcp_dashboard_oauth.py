@@ -100,6 +100,31 @@ def test_mcp_oauth_helpers_use_dashboard_flow_without_loopback_port():
     assert flow.authorization_url == "https://idp.example/authorize?state=state-4"
 
 
+def test_loopback_dashboard_flow_stops_when_cancelled(monkeypatch):
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, dashboard_oauth_flow
+    from tools.mcp_oauth import _find_free_port, _make_callback_waiter
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-cancel",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-cancel",
+        use_loopback_callback=True,
+    )
+    monkeypatch.setattr("tools.mcp_oauth._raise_if_non_interactive", lambda _: None)
+
+    async def wait_then_cancel():
+        with dashboard_oauth_flow(flow):
+            task = asyncio.create_task(_make_callback_waiter(_find_free_port(), timeout=10)())
+            await asyncio.sleep(0)
+            flow.mark_error("Cancelled by user")
+            with pytest.raises(RuntimeError, match="Cancelled by user"):
+                await asyncio.wait_for(task, timeout=1)
+
+    asyncio.run(wait_then_cancel())
+
+
 def test_failed_reauth_rollback_preserves_newer_oauth_state(tmp_path, monkeypatch):
     from tools.mcp_oauth import HermesTokenStorage
 

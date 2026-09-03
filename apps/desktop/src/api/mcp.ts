@@ -54,6 +54,7 @@ export function authMcpServer(name: string, profile?: ProfileScope): Promise<Mcp
     ...capabilityScoped(profile),
     path: `/api/mcp/servers/${encodeURIComponent(name)}/auth`,
     method: 'POST',
+    desktopLoopbackOAuth: true,
     timeoutMs: 60_000
   })
 }

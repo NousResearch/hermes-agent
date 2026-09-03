@@ -345,6 +345,28 @@ def test_dashboard_flow_falls_back_to_dcr(tmp_path, monkeypatch, private_ports):
     assert cfg["redirect_uri"] == flow.redirect_uri
 
 
+def test_desktop_dashboard_flow_uses_cimd(tmp_path, monkeypatch, private_ports):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, dashboard_oauth_flow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-1",
+        server_name="srv",
+        profile=None,
+        hermes_home=str(tmp_path),
+        redirect_uri="https://agent.example/api/mcp/oauth/callback/srv",
+        use_loopback_callback=True,
+    )
+
+    cfg: dict = {}
+    with dashboard_oauth_flow(flow):
+        port = _configure_callback_port(cfg, HermesTokenStorage("srv"))
+
+    assert cfg["_cimd_url"] == _CIMD_CLIENT_METADATA_URL
+    assert port in private_ports
+    assert "redirect_uri" not in cfg
+
+
 def test_existing_registration_falls_back_to_dcr(tmp_path, monkeypatch, private_ports):
     """A stored client_id is bound to the redirect URI it registered with;
     switching to CIMD now would invalidate it."""

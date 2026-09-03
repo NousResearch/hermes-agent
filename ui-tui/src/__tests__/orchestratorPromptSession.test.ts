@@ -1,6 +1,23 @@
 import { describe, expect, it } from 'vitest'
 
-import { startPromptLiveSession } from '../app/useMainApp.js'
+import { buildTranscriptRows, startPromptLiveSession } from '../app/useMainApp.js'
+
+describe('buildTranscriptRows', () => {
+  it('keeps row keys stable so resize reflow preserves virtual-history anchors', () => {
+    const messages = [
+      { role: 'user' as const, text: 'hello' },
+      { role: 'assistant' as const, text: 'world' }
+    ]
+
+    const ids = new WeakMap(messages.map((message, index) => [message, `message-${index}`]))
+    const messageId = (message: (typeof messages)[number]) => ids.get(message)!
+
+    const beforeResize = buildTranscriptRows(messages, messageId)
+    const afterResize = buildTranscriptRows(messages, messageId)
+
+    expect(afterResize.map(row => row.key)).toEqual(beforeResize.map(row => row.key))
+  })
+})
 
 describe('startPromptLiveSession', () => {
   it('starts a kept-live session with generated id/title, applies selected model, then dispatches the prompt', async () => {

@@ -145,6 +145,10 @@ export async function startPromptLiveSession({
   return sid
 }
 
+export function buildTranscriptRows(historyItems: readonly Msg[], messageId: (msg: Msg) => string): TranscriptRow[] {
+  return historyItems.map((msg, index) => ({ index, key: messageId(msg), msg }))
+}
+
 export function useMainApp(gw: GatewayClient) {
   const { exit } = useApp()
   const { stdout } = useStdout()
@@ -340,15 +344,13 @@ export function useMainApp(gw: GatewayClient) {
     return next
   }, [])
 
-  // Wrapped row heights are width-dependent. Cached layout outlives a resize
-  // and lands sticky-scroll at the stale max, cutting off the tail. The
-  // hook's "scale heights by oldCols/newCols" path is too approximate for
-  // mixed markdown — we deliberately remount every row so yoga re-measures
-  // off live geometry. Cost: per-row local state (e.g. systemOpen toggles)
-  // resets on resize; small UX hit for a hard correctness win.
+  // Keep logical row identity stable across width changes. useVirtualHistory
+  // invalidates width-dependent measurements and remeasures the mounted rows;
+  // remounting every row here discards that anchor state during SIGWINCH and
+  // can leave the transcript viewport in an empty spacer.
   const virtualRows = useMemo<TranscriptRow[]>(
-    () => historyItems.map((msg, index) => ({ index, key: `${messageId(msg)}:c${cols}`, msg })),
-    [cols, historyItems, messageId]
+    () => buildTranscriptRows(historyItems, messageId),
+    [historyItems, messageId]
   )
 
   const detailsLayoutKey = useMemo(() => {

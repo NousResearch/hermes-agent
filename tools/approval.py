@@ -1502,12 +1502,152 @@ _COMMAND_WRAPPER_WORDS = {
     "builtin",
 }
 _SUDO_OPTIONS_WITH_ARG = {
-    "-c", "--close-from",
+    "-a", "--auth-type",
+    "-C", "--close-from",
+    "-c", "--login-class",
+    "-D", "--chdir",
     "-g", "--group",
     "-h", "--host",
     "-p", "--prompt",
+    "-R", "--chroot",
+    "-r", "--role",
+    "-T", "--command-timeout",
+    "-t", "--type",
+    "-U", "--other-user",
     "-u", "--user",
 }
+# GNU env options whose value arrives as the NEXT word. Their operand is
+# data (`env --chdir /tmp/reboot /bin/echo` never executes reboot), so the
+# projection walker must not treat it as the command word. `=`-attached
+# forms are already handled by the generic option check. `-S/--split-string`
+# is listed here only for the walker's word skipping — its payload is
+# executable-bearing, but parsing it is a separate fail-closed change
+# (same verdict as the design review); skipping keeps parity with main.
+_ENV_OPTIONS_WITH_ARG = {
+    "-a", "--argv0",
+    "-C", "--chdir",
+    "-S", "--split-string",
+    "-u", "--unset",
+}
+
+# Complete long-option universes used for getopt_long-compatible exact and
+# unambiguous-prefix resolution. Keep these synchronized with sudo v1.9.17
+# src/parse_args.c and GNU coreutils v9.11 src/env.c. Missing or ambiguous
+# entries deliberately consume no following word, which biases detection
+# toward over-blocking rather than hiding an executable as option data.
+_SUDO_LONG_OPTION_ARITY = {
+    "--other-user": "required",
+    "--auth-type": "required",
+    "--close-from": "required",
+    "--login-class": "required",
+    "--chdir": "required",
+    "--group": "required",
+    "--host": "required",
+    "--prompt": "required",
+    "--chroot": "required",
+    "--role": "required",
+    "--command-timeout": "required",
+    "--type": "required",
+    "--user": "required",
+    "--preserve-env": "optional",
+    "--background": "none",
+    "--edit": "none",
+    "--set-home": "none",
+    "--login": "none",
+    "--remove-timestamp": "none",
+    "--list": "none",
+    "--preserve-groups": "none",
+    "--shell": "none",
+    "--validate": "none",
+    "--askpass": "none",
+    "--bell": "none",
+    "--help": "none",
+    "--reset-timestamp": "none",
+    "--no-update": "none",
+    "--non-interactive": "none",
+    "--stdin": "none",
+    "--version": "none",
+}
+_ENV_LONG_OPTION_ARITY = {
+    "--argv0": "required",
+    "--unset": "required",
+    "--chdir": "required",
+    "--split-string": "required",
+    "--default-signal": "optional",
+    "--ignore-signal": "optional",
+    "--block-signal": "optional",
+    "--ignore-environment": "none",
+    "--null": "none",
+    "--debug": "none",
+    "--list-signal-handling": "none",
+    "--help": "none",
+    "--version": "none",
+}
+_SUDO_SHORT_OPTIONS_REQUIRED_ARG = frozenset("aCcDgpRrTtUu")
+_SUDO_SHORT_OPTIONS_OPTIONAL_ARG = frozenset("h")
+_SUDO_SHORT_OPTIONS_NO_ARG = frozenset("ABbEeHiKklNnPSsVv")
+_ENV_SHORT_OPTIONS_REQUIRED_ARG = frozenset("aCSu")
+_ENV_SHORT_OPTIONS_OPTIONAL_ARG = frozenset()
+_ENV_SHORT_OPTIONS_NO_ARG = frozenset("i0v")
+
+
+def _wrapper_option_consumes_next_word(wrapper: str, token: str) -> bool:
+    """Return whether one sudo/env option word owns the following word.
+
+    Short bundles follow each wrapper's case-sensitive optstring. Required
+    options consume the remainder of their bundle, or the next word when they
+    occur last. sudo's short ``-h`` follows its got_host_flag behavior and
+    conservatively consumes the next word when no host is attached.
+
+    Long options use exact-match-first, then unique-prefix resolution like
+    ``getopt_long``. Optional long arguments only consume ``=``-attached data.
+    Unknown or ambiguous options consume no next word so executable detection
+    continues in the fail-closed direction.
+    """
+    if wrapper == "sudo":
+        long_options = _SUDO_LONG_OPTION_ARITY
+        required_short = _SUDO_SHORT_OPTIONS_REQUIRED_ARG
+        optional_short = _SUDO_SHORT_OPTIONS_OPTIONAL_ARG
+        no_arg_short = _SUDO_SHORT_OPTIONS_NO_ARG
+    elif wrapper == "env":
+        long_options = _ENV_LONG_OPTION_ARITY
+        required_short = _ENV_SHORT_OPTIONS_REQUIRED_ARG
+        optional_short = _ENV_SHORT_OPTIONS_OPTIONAL_ARG
+        no_arg_short = _ENV_SHORT_OPTIONS_NO_ARG
+    else:
+        return False
+
+    if token.startswith("--"):
+        option, equals, _ = token.partition("=")
+        arity = long_options.get(option)
+        if arity is None:
+            matches = [
+                candidate
+                for candidate in long_options
+                if candidate.startswith(option)
+            ]
+            if len(matches) != 1:
+                return False
+            arity = long_options[matches[0]]
+        return arity == "required" and not equals
+
+    if (
+        not token.startswith("-")
+        or token == "-"
+        or "=" in token
+        or len(token) < 2
+    ):
+        return False
+
+    chars = token[1:]
+    for index, char in enumerate(chars):
+        if char in required_short:
+            return index == len(chars) - 1
+        if char in optional_short:
+            return index == len(chars) - 1
+        if char not in no_arg_short:
+            return False
+    return False
 
 _INTERPRETER_EXEC_FLAGS = {
     "python": {"-c"},
@@ -2022,9 +2162,42 @@ def _scan_dollar_paren_end(command: str, start: int) -> int | None:
         if ch == "\\" and i + 1 < len(command):
             i += 2
             continue
-        if command.startswith("$(", i):
+        if command.startswith("#", i) and (
+            i == start + 2 or command[i - 1].isspace() or command[i - 1] in ";&|("
+        ):
+            # A comment runs to the newline, and its parens are text. Counting
+            # them would push the depth past the real closer and swallow
+            # whatever follows the substitution.
+            newline = command.find("\n", i)
+            if newline == -1:
+                return None
+            i = newline
+            continue
+        if command.startswith("${", i):
+            # `${x:-(}` holds a literal paren, not a group.
+            end = _scan_brace_expansion_end(command, i)
+            if end is None:
+                return None
+            i = end
+            continue
+        if command.startswith("$((", i) or command.startswith("$[", i):
+            # Arithmetic parens are operators, not grouping.
+            end = _scan_arithmetic_end(command, i)
+            if end is None:
+                return None
+            i = end
+            continue
+        if command.startswith("<<", i) and not command.startswith("<<<", i):
+            # A heredoc inside the substitution puts its body's parens beyond
+            # this scanner's reach. Refusing to guess keeps the operand from
+            # swallowing a command word; the caller treats None as malformed
+            # and blocks.
+            return None
+        if ch == "(":
+            # Every unquoted paren the shell treats as grouping counts, so
+            # `<(`, `>(` and plain subshells balance under one rule.
             depth += 1
-            i += 2
+            i += 1
             continue
         if ch == ")":
             depth -= 1
@@ -2032,6 +2205,57 @@ def _scan_dollar_paren_end(command: str, start: int) -> int | None:
             if depth == 0:
                 return i
             continue
+        i += 1
+    return None
+
+
+def _scan_brace_expansion_end(command: str, start: int) -> int | None:
+    """Return the offset after a balanced ``${...}`` expansion."""
+    depth = 0
+    i = start + 1
+    quote: str | None = None
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return None
+
+
+def _scan_arithmetic_end(command: str, start: int) -> int | None:
+    """Return the offset after ``$((...))`` or the legacy ``$[...]``."""
+    if command.startswith("$[", start):
+        end = command.find("]", start + 2)
+        return None if end == -1 else end + 1
+    depth = 0
+    i = start + 1
+    while i < len(command):
+        ch = command[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
         i += 1
     return None
 
@@ -2372,7 +2596,7 @@ def _iter_shell_command_word_spans(command: str):
     for command_start in _iter_shell_command_starts(command):
         pos = command_start
         prefix_words = 0
-        skip_wrapper_options = False
+        wrapper_kind: str | None = None
         skip_next_wrapper_arg = False
         while prefix_words < 12:
             word_start, word_end, word = _read_shell_word(command, pos)
@@ -2385,11 +2609,9 @@ def _iter_shell_command_word_spans(command: str):
                 pos = word_end
                 prefix_words += 1
                 continue
-            if skip_wrapper_options and lower_word.startswith("-"):
-                option_name = lower_word.split("=", 1)[0]
-                skip_next_wrapper_arg = (
-                    "=" not in lower_word
-                    and option_name in _SUDO_OPTIONS_WITH_ARG
+            if wrapper_kind and deobfuscated.startswith("-"):
+                skip_next_wrapper_arg = _wrapper_option_consumes_next_word(
+                    wrapper_kind, deobfuscated
                 )
                 pos = word_end
                 prefix_words += 1
@@ -2399,14 +2621,343 @@ def _iter_shell_command_word_spans(command: str):
             prefix_words += 1
 
             if lower_word in _COMMAND_WRAPPER_WORDS:
-                skip_wrapper_options = lower_word in {"sudo", "env"}
+                wrapper_kind = lower_word if lower_word in {"sudo", "env"} else None
                 pos = word_end
                 continue
             if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
-                skip_wrapper_options = False
+                wrapper_kind = None
                 pos = word_end
                 continue
             break
+
+
+_EXECUTABLE_LAUNCHER_SUFFIXES = (".exe", ".bat", ".cmd")
+_PROJECTED_BASENAME_RE = re.compile(r"[A-Za-z0-9_][\w.+-]*\Z")
+_WINDOWS_ABSOLUTE_RE = re.compile(r"[A-Za-z]:[\\/]|\\\\")
+# `_read_shell_word` stops at whitespace and `;&|`, so a command that ends
+# at a substitution/subshell closer keeps that byte in the word:
+# `(/sbin/reboot)` reads as `/sbin/reboot)`. Trim the closers before the
+# basename check or the stray byte makes the word look like something other
+# than a program name and the projection silently declines. Only `)` and
+# the backtick qualify: both are shell metacharacters that can never sit
+# inside an unquoted word. `}` is NOT one (`echo foo}` prints `foo}`, and
+# a brace group's `}` is its own word behind `;`), so trimming it would
+# rewrite legitimate names like `/tmp/reboot}`.
+_WORD_TAIL_CLOSERS = ")`"
+
+
+def _projected_executable_basename(word: str) -> str | None:
+    """Reduce one command-position word to the bare program name a shell
+    would resolve, or None when the word already is one (or can't be one).
+
+    A Windows-absolute word (drive or UNC prefix) is split on both
+    separators BEFORE any escape collapsing — the deobfuscation pass treats
+    backslashes as shell escapes and would dissolve the path. Everything
+    else goes through the same quote/escape collapsing the r\\m detection
+    uses, so composed spellings (``'/sbin/'shutdown``, ``/sbin/shut\\down``)
+    reduce like their plain forms."""
+    stripped = _strip_optional_shell_quotes(word)
+    if _WINDOWS_ABSOLUTE_RE.match(stripped):
+        basename = stripped.replace("\\", "/").rsplit("/", 1)[-1]
+    else:
+        collapsed = _deobfuscate_shell_word_for_detection(word) or word
+        basename = _strip_optional_shell_quotes(collapsed).rsplit("/", 1)[-1]
+    lowered = basename.lower()
+    for suffix in _EXECUTABLE_LAUNCHER_SUFFIXES:
+        if lowered.endswith(suffix):
+            basename = basename[: -len(suffix)]
+            break
+    if basename == word:
+        return None  # already a bare name — nothing to project
+    # Refuse anything that doesn't reduce to a plain program name (empty
+    # basename from a trailing slash, expansion debris): projecting those
+    # could only manufacture command words a shell would not actually run.
+    if not _PROJECTED_BASENAME_RE.fullmatch(basename):
+        return None
+    return basename
+
+
+_MALFORMED_REDIRECTION = -1
+# `_project_path_spelled_executables` has a string-or-None compatibility
+# contract with callers outside this segment. A malformed redirection operand
+# therefore projects to a guaranteed hardline marker rather than returning
+# None and silently allowing an uninspected command suffix.
+_MALFORMED_REDIRECTION_PROJECTION = "\nmkfs"
+
+
+def _skip_leading_redirection(command: str, pos: int) -> int | None:
+    """If a redirection token begins at ``pos``, return the offset just past it
+    (and its operand); otherwise return None.
+
+    POSIX simple-command grammar allows ``(assignment | redirection)*`` before
+    the command word, so a redirection reached by path — ``</dev/null cmd`` —
+    is a prefix, not the command. ``_read_shell_word`` breaks on ``&`` and so
+    cannot read the fused fd-dup forms (``2>&1``, ``&>f``, ``>&2``); this
+    dedicated scanner recognizes them without touching the shared tokenizers.
+
+    ``pos`` must already sit on the first non-space character. Process
+    substitution operands (``< <(cmd)``) are consumed as balanced ``( )`` so
+    the outer walk resumes at the command word; the inner command is still
+    surfaced independently by ``_iter_shell_command_starts``."""
+    i = pos
+    n = len(command)
+    # Optional leading fd number (``2>``); bare digits are only a redirection
+    # when an operator follows, otherwise they are an ordinary word.
+    digits_end = i
+    while digits_end < n and command[digits_end].isdigit():
+        digits_end += 1
+    op = i
+    if digits_end < n and command[digits_end] in "<>":
+        op = digits_end
+    elif command[i] == "&" and i + 1 < n and command[i + 1] == ">":
+        op = i  # ``&>`` / ``&>>``: whole-command redirect, no fd prefix
+    else:
+        return None  # not a redirection
+
+    # Consume the operator glyphs.
+    if command[op] == "&":
+        j = op + 1  # at '>'
+        j += 1
+        if j < n and command[j] == ">":
+            j += 1  # ``&>>``
+    else:
+        ch = command[op]
+        j = op + 1
+        if ch == "<" and command.startswith("<<", op):
+            # heredoc / herestring: ``<<`` ``<<-`` ``<<<``
+            j = op + 2
+            if j < n and command[j] == "-":
+                j += 1
+            elif j < n and command[j] == "<":
+                j += 1  # ``<<<``
+        elif ch == ">" and j < n and command[j] == ">":
+            j += 1  # ``>>``
+        elif ch == "<" and j < n and command[j] == ">":
+            j += 1  # ``<>``
+        elif ch == ">" and j < n and command[j] == "|":
+            j += 1  # ``>|``
+        # fd duplication ``>&`` / ``<&`` (also ``2>&1``, ``>&-``)
+        if j < n and command[j] == "&":
+            j += 1
+            fd_end = j
+            while fd_end < n and (command[fd_end].isdigit() or command[fd_end] == "-"):
+                fd_end += 1
+            # A real fd-dup operand is a whole word of digits/`-`; a digit run
+            # glued to more characters (``>&2x``) is a filename, not fd 2.
+            if fd_end > j and (fd_end >= n or command[fd_end].isspace()
+                               or command[fd_end] in ";&|<>"):
+                return fd_end  # fused fd / `-`
+            # ``>&file`` (redirect both streams to a file) or a glued
+            # non-fd token: the operand is a filename, fused or separated —
+            # fall through to operand scanning.
+
+    # Operator consumed; now the operand. If it is fused (no separating
+    # space), the operand chars run to the next whitespace/metacharacter,
+    # except a process-substitution operand which we balance.
+    k = j
+    if k < n and not command[k].isspace():
+        operand_end = _scan_redirection_operand(command, k)
+        return (
+            operand_end
+            if operand_end is not None
+            else _MALFORMED_REDIRECTION
+        )
+    # Separated operand: skip whitespace, then the operand word.
+    k = _skip_shell_whitespace(command, k)
+    if k >= n:
+        return j  # dangling operator; nothing to consume
+    operand_end = _scan_redirection_operand(command, k)
+    return (
+        operand_end
+        if operand_end is not None
+        else _MALFORMED_REDIRECTION
+    )
+
+
+def _scan_redirection_operand(command: str, pos: int) -> int | None:
+    """Return the offset past one redirection operand starting at ``pos``.
+
+    ``<(cmd)`` / ``>(cmd)`` process substitutions are consumed as a balanced
+    paren group; every other operand runs to the next unquoted whitespace or
+    metacharacter (mirroring ``_read_shell_word`` minus the ``&`` break, which
+    inside an operand is just filename text). Returns None when a command
+    substitution or backtick payload is unterminated."""
+    n = len(command)
+    i = pos
+    if command.startswith("<(", i) or command.startswith(">(", i):
+        depth = 0
+        i += 1  # at '('
+        sub_quote: str | None = None
+        while i < n:
+            ch = command[i]
+            if sub_quote:
+                if ch == "\\" and sub_quote == '"' and i + 1 < n:
+                    i += 2
+                    continue
+                if ch == sub_quote:
+                    sub_quote = None
+                i += 1
+                continue
+            if ch in ("'", '"'):
+                sub_quote = ch
+                i += 1
+                continue
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if command.startswith("$(", i):
+                end = _scan_dollar_paren_end(command, i)
+                if end is None:
+                    return None
+                i = end
+                continue
+            if ch == "`":
+                end = _scan_backtick_end(command, i)
+                if end is None:
+                    return None
+                i = end
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+            i += 1
+        return None
+    quote: str | None = None
+    while i < n:
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if command.startswith("$(", i):
+            end = _scan_dollar_paren_end(command, i)
+            if end is None:
+                return None
+            i = end
+            continue
+        if ch == "`":
+            end = _scan_backtick_end(command, i)
+            if end is None:
+                return None
+            i = end
+            continue
+        if ch.isspace() or ch in ";&|<>":
+            break
+        i += 1
+    return i
+
+
+def _project_path_spelled_executables(command: str) -> str | None:
+    """Detection-only variant: rewrite command-position executables that are
+    spelled by path (POSIX or Windows, quoted or bare, with or without a
+    launcher suffix) to ``\\n<basename>`` so the flat ``_CMDPOS``-anchored
+    patterns see the same command word a bare spelling would produce —
+    ``/sbin/shutdown``, ``C:\\Windows\\System32\\shutdown.exe`` and
+    ``"C:\\Program Files\\Git\\usr\\bin\\rm.exe"`` must behave exactly like
+    ``shutdown`` / ``rm``. Must run on the RAW command: the global
+    normalization strips backslashes and fuses a Windows path into one word
+    before the basename could be recovered.
+
+    The walk mirrors ``_iter_shell_command_word_spans`` but recognizes
+    wrappers by their PROJECTED basename, so a path-spelled wrapper chain
+    (``/usr/bin/env /usr/bin/sudo /sbin/shutdown``) resolves in this single
+    pass — no fixpoint, no overlapping re-splice. Assignment-shaped words
+    (``X=/sbin/shutdown``) are prefix data, never executables. Returns None
+    when nothing needed rewriting."""
+    replacements: dict[int, tuple[int, str]] = {}
+    for command_start in _iter_shell_command_starts(command):
+        pos = command_start
+        wrapper_kind: str | None = None
+        skip_next_wrapper_arg = False
+        # POSIX prefixes (``VAR=v``, ``2>/dev/null``) can precede the command
+        # word any number of times. When one is consumed, the command word
+        # that follows sits mid-string where the flat ``_CMDPOS`` anchors would
+        # miss even a bare spelling, so a ``\n`` boundary is spliced in front of
+        # it just as a path spelling is projected to its basename.
+        prefix_consumed = False
+        # Unbounded walk with a progress guard (never fail open on a long
+        # prefix run): every step past here advances ``pos`` strictly.
+        while True:
+            scan = _skip_shell_whitespace(command, pos)
+            redir_end = _skip_leading_redirection(command, scan) if scan < len(command) else None
+            if redir_end == _MALFORMED_REDIRECTION:
+                return _MALFORMED_REDIRECTION_PROJECTION
+            if redir_end is not None and redir_end > scan:
+                prefix_consumed = True
+                pos = redir_end
+                continue
+
+            word_start, raw_end, _raw_word = _read_shell_word(command, pos)
+            if word_start == raw_end:
+                break
+            pos = raw_end
+            # Trim group/substitution closers the word reader keeps
+            # (`(/sbin/reboot)` reads as `/sbin/reboot)`); the closer stays
+            # outside the replacement span so the splice preserves it.
+            word_end = raw_end
+            while word_end > word_start and command[word_end - 1] in _WORD_TAIL_CLOSERS:
+                word_end -= 1
+            if word_end == word_start:
+                continue  # bare closer: structure, not a word
+            word = command[word_start:word_end]
+            if skip_next_wrapper_arg:
+                skip_next_wrapper_arg = False
+                # The option that owns this operand already proved a prefix
+                # ran, so the bare command word that follows needs the same
+                # ``\n`` anchor a projected path spelling would get.
+                prefix_consumed = True
+                continue
+            deobfuscated = _deobfuscate_shell_word_for_detection(word) or word
+            if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
+                prefix_consumed = True
+                continue  # VAR=value prefix: data, keep walking
+            if wrapper_kind and deobfuscated.startswith("-"):
+                skip_next_wrapper_arg = _wrapper_option_consumes_next_word(
+                    wrapper_kind, deobfuscated
+                )
+                # A wrapper option is itself a prefix word, whether or not it
+                # owns an operand: ``sudo -E rm ...`` needs the same anchor as
+                # ``sudo -u root rm ...`` in front of the bare command word
+                # that follows.
+                prefix_consumed = True
+                continue
+            basename = _projected_executable_basename(word)
+            effective = (basename or deobfuscated).lower()
+            if basename is not None and word_start not in replacements:
+                replacements[word_start] = (word_end, basename)
+            elif (
+                basename is None
+                and prefix_consumed
+                and word_start not in replacements
+            ):
+                # A prefix ran, so this bare command word needs the same ``\n``
+                # anchor a projected path spelling would get.
+                replacements[word_start] = (word_end, word)
+            if effective in _COMMAND_WRAPPER_WORDS:
+                wrapper_kind = effective if effective in {"sudo", "env"} else None
+                continue  # wrapper (bare or path-spelled): walk to the command
+            break
+    if not replacements:
+        return None
+    projected = command
+    for word_start in sorted(replacements, reverse=True):
+        word_end, basename = replacements[word_start]
+        projected = projected[:word_start] + "\n" + basename + projected[word_end:]
+    return projected
 
 
 def _command_detection_variants(command: str):
@@ -2455,6 +3006,16 @@ def _command_detection_variants(command: str):
                 if marked_payload != payload and marked_payload not in seen:
                     seen.add(marked_payload)
                     yield marked_payload
+                # A payload's own executable can be path-spelled too
+                # (`bash -c '/sbin/shutdown -h now'`), so it needs the same
+                # basename projection as the outer command. POSIX paths
+                # survive the normalization the payload came through;
+                # backslash Windows paths inside payloads stay out of reach
+                # until normalization preserves separators (#71919).
+                projected_payload = _project_path_spelled_executables(payload)
+                if projected_payload is not None and projected_payload not in seen:
+                    seen.add(projected_payload)
+                    yield projected_payload
                 pending.append(payload)
     # Subshell `(cmd)` and brace-group `{ cmd; }` openers put `cmd` at a real
     # command position, but the flat `_CMDPOS`-anchored patterns can't see it:
@@ -2471,6 +3032,21 @@ def _command_detection_variants(command: str):
     if marked != grep_safe and marked not in seen:
         seen.add(marked)
         yield marked
+    # Absolute-path spellings bypass every _CMDPOS-anchored rule the same
+    # way subshell openers did: the anchor class knows wrappers but not
+    # paths, so `/sbin/shutdown` or `C:\Windows\System32\shutdown.exe`
+    # never reaches `shutdown\b`. Project command-position executables to
+    # `\n<basename>` from the RAW command (normalization strips backslashes
+    # and fuses Windows paths before a basename could be recovered), then
+    # feed the projection through the standard normalize/grep-safe pipe.
+    projected = _project_path_spelled_executables(command)
+    if projected is not None:
+        projected_variant, _ = _grep_safe_detection_variant(
+            _normalize_command_for_detection(projected)
+        )
+        if projected_variant not in seen:
+            seen.add(projected_variant)
+            yield projected_variant
     # Shell quoting/escaping can spell a dangerous executable name in pieces
     # (for example r\m or r''m). Keep that deobfuscation scoped to command
     # words so similarly shaped arguments do not become false positives.

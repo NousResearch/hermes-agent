@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -109,6 +110,25 @@ def _fetch_card(base_url: str, headers: dict, timeout: int) -> dict:
         if e.code != 404:
             raise
     return _http_get_json(_legacy_card_url(base_url), headers, timeout)
+
+
+def _probe_peer(base_url: str, auth_header: dict, timeout: int = 3) -> str:
+    """Best-effort liveness probe for a configured peer.
+
+    Returns a short human-readable status line: ``online (12ms)`` on success,
+    otherwise ``offline: <reason>``. Never raises — a2a_list should stay
+    useful even when a peer is down.
+    """
+    try:
+        start = time.monotonic()
+        card = _fetch_card(base_url, auth_header, timeout)
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        name = card.get("name") or base_url
+        return f"online ({elapsed_ms}ms, {name})"
+    except urllib.error.HTTPError as e:
+        return f"offline: HTTP {e.code}"
+    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as e:
+        return f"offline: {e}"
 
 
 def _select_jsonrpc_interface(card: Optional[dict]) -> Optional[dict]:
@@ -303,7 +323,12 @@ def a2a_call(args: dict, **_: Any) -> str:
 
 
 def a2a_list(args: dict | None = None, **_: Any) -> str:
-    """List configured A2A peers and any persisted conversations."""
+    """List configured A2A peers and any persisted conversations.
+
+    Each configured peer is probed with a short GET of its Agent Card so the
+    listing doubles as a connectivity/health check: online peers show round
+    trip latency, offline peers show the failure reason.
+    """
     cfg = _load_config()
     peers = cfg.get("a2a_agents") or {}
     lines = []
@@ -313,7 +338,9 @@ def a2a_list(args: dict | None = None, **_: Any) -> str:
             auth = (entry.get("auth") or {}).get("type", "none")
             caps = entry.get("capabilities", [])
             cap_str = f" caps: {', '.join(caps)}" if caps else ""
-            lines.append(f"  - {name}: {entry.get('url', '?')} (auth: {auth}){cap_str}")
+            url = entry.get("url", "?")
+            status = _probe_peer(url, auth_header=_auth_header(entry.get("auth") or {}))
+            lines.append(f"  - {name}: {url} (auth: {auth}){cap_str} — {status}")
     else:
         lines.append("No peers configured. Add them under 'a2a_agents' in config.yaml.")
 

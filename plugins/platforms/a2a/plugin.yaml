@@ -68,3 +68,15 @@ optional_env:
     description: "Task/context id used as the cron / notification delivery target for deliver=a2a."
     prompt: "A2A home channel (or empty)"
     password: false
+  - name: A2A_CC_KEYWORDS
+    description: "Comma-separated keywords; when a final A2A reply contains one, forward a copy to a human chat (A2A_CC_CHAT_ID). Empty disables CC forwarding."
+    prompt: "A2A CC keywords (comma-separated; empty disables)"
+    password: false
+  - name: A2A_CC_CHAT_ID
+    description: "Telegram chat id that receives CC copies of notable A2A replies."
+    prompt: "A2A CC Telegram chat id (or empty)"
+    password: false
+  - name: A2A_CC_BOT_TOKEN
+    description: "Optional Telegram bot token for CC forwarding (defaults to TELEGRAM_BOT_TOKEN)."
+    prompt: "A2A CC bot token (or empty to reuse TELEGRAM_BOT_TOKEN)"
+    password: true

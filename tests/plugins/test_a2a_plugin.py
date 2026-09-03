@@ -546,6 +546,44 @@ class TestClientTools:
         out = tools.a2a_list({})
         assert "No peers configured" in out
 
+    def test_list_probes_peers(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            tools, "_load_config",
+            lambda: {"a2a_agents": {"peer": {"url": "http://localhost:9999"}}},
+        )
+        monkeypatch.setattr(tools, "_probe_peer", lambda url, auth_header, timeout=3: "online (5ms, test)")
+        out = tools.a2a_list({})
+        assert "online (5ms, test)" in out
+        assert "http://localhost:9999" in out
+
+
+class TestProbePeer:
+    def test_online(self, monkeypatch):
+        monkeypatch.setattr(tools, "_fetch_card", lambda url, h, t: {"name": "hermes-x"})
+        status = tools._probe_peer("http://x:1", {})
+        assert status.startswith("online (")
+        assert "hermes-x" in status
+
+    def test_http_error(self, monkeypatch):
+        def boom(url, h, t):
+            raise urllib.error.HTTPError(url, 401, "unauthorized", None, None)
+        monkeypatch.setattr(tools, "_fetch_card", boom)
+        assert tools._probe_peer("http://x:1", {}) == "offline: HTTP 401"
+
+    def test_connection_error(self, monkeypatch):
+        def boom(url, h, t):
+            raise urllib.error.URLError("connection refused")
+        monkeypatch.setattr(tools, "_fetch_card", boom)
+        assert "offline:" in tools._probe_peer("http://x:1", {})
+        assert "connection refused" in tools._probe_peer("http://x:1", {})
+
+    def test_never_raises_on_garbage(self, monkeypatch):
+        def boom(url, h, t):
+            raise ValueError("bad json")
+        monkeypatch.setattr(tools, "_fetch_card", boom)
+        assert "offline:" in tools._probe_peer("http://x:1", {})
+
 
 class TestRegistryDispatchConvention:
     """Tools must accept the args-as-dict positional that registry.dispatch
@@ -603,6 +641,104 @@ def _bare_adapter():
     from plugins.platforms.a2a.adapter import A2AAdapter
     from gateway.config import PlatformConfig
     return A2AAdapter(PlatformConfig(enabled=True))
+
+
+class TestAutoTtsDisabled:
+    """A2A is an agent-to-agent text protocol: audio replies are not
+    deliverable, so auto-TTS must never fire for an A2A chat. Without this
+    override, gateway auto-tts would synthesize a voice reply, fail to
+    deliver the audio attachment, and swallow the real text reply."""
+
+    def test_should_auto_tts_is_false_for_any_chat(self):
+        adapter = _bare_adapter()
+        assert adapter._should_auto_tts_for_chat("ctx-any") is False
+        assert adapter._should_auto_tts_for_chat("") is False
+
+    def test_override_exists_on_adapter(self):
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.platforms.base import BasePlatformAdapter
+        # Explicit override (not inherited default): the default base
+        # implementation consults voice config, which would enable TTS on
+        # the A2A platform — exactly what must not happen.
+        assert A2AAdapter._should_auto_tts_for_chat is not BasePlatformAdapter._should_auto_tts_for_chat
+
+
+class TestCcForwarding:
+    """A2A replies that match A2A_CC_KEYWORDS are forwarded to a human chat
+    (opt-in). Nothing happens when keywords are unset, content misses, or no
+    bot token / chat id is configured."""
+
+    def _adapter(self, monkeypatch, **env):
+        for k in ("A2A_CC_KEYWORDS", "A2A_CC_CHAT_ID", "A2A_CC_BOT_TOKEN", "TELEGRAM_BOT_TOKEN"):
+            monkeypatch.delenv(k, raising=False)
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        return _bare_adapter()
+
+    def test_no_forward_when_disabled(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        calls = []
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: calls.append(a))
+        adapter._maybe_cc_to_human("ctx-1", "我们商量了一下，决定明天见")
+        assert calls == []
+
+    def test_no_forward_when_keyword_misses(self, monkeypatch):
+        adapter = self._adapter(monkeypatch, A2A_CC_KEYWORDS="需要Rui")
+        calls = []
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: calls.append(a))
+        adapter._maybe_cc_to_human("ctx-1", "已经搞定了，不用管")
+        assert calls == []
+
+    def test_forwards_when_keyword_hits(self, monkeypatch):
+        adapter = self._adapter(
+            monkeypatch,
+            A2A_CC_KEYWORDS="商量,决定",
+            A2A_CC_CHAT_ID="12345",
+            A2A_CC_BOT_TOKEN="bot:secret",
+        )
+        calls = []
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: calls.append(a))
+        adapter._maybe_cc_to_human("ctx-9", "我们商量了一下，决定明天见")
+        assert len(calls) == 1
+        req = calls[0][0]
+        assert "api.telegram.org/botbot:secret/sendMessage" in req.full_url
+        body = json.loads(req.data.decode("utf-8"))
+        assert body["chat_id"] == "12345"
+        assert "ctx-9" in body["text"]
+        assert "商量" in body["text"]
+
+    def test_forwards_with_fallback_bot_token(self, monkeypatch):
+        adapter = self._adapter(
+            monkeypatch,
+            A2A_CC_KEYWORDS="需要Rui",
+            A2A_CC_CHAT_ID="999",
+            TELEGRAM_BOT_TOKEN="bot:fallback",
+        )
+        calls = []
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: calls.append(a))
+        adapter._maybe_cc_to_human("ctx-2", "这个需要Rui拍板")
+        assert len(calls) == 1
+        assert "botbot:fallback" in calls[0][0].full_url
+
+    def test_no_forward_without_chat_id(self, monkeypatch):
+        adapter = self._adapter(monkeypatch, A2A_CC_KEYWORDS="决定", A2A_CC_BOT_TOKEN="bot:x")
+        calls = []
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: calls.append(a))
+        adapter._maybe_cc_to_human("ctx-3", "这事决定好了")
+        assert calls == []
+
+    def test_forward_failure_is_silent(self, monkeypatch):
+        adapter = self._adapter(
+            monkeypatch,
+            A2A_CC_KEYWORDS="决定",
+            A2A_CC_CHAT_ID="1",
+            A2A_CC_BOT_TOKEN="bot:x",
+        )
+        def boom(*a, **k):
+            raise OSError("network down")
+        monkeypatch.setattr(urllib.request, "urlopen", boom)
+        # Must not raise — CC is best-effort.
+        adapter._maybe_cc_to_human("ctx-4", "决定了")
 
 
 class TestReplyCapture:

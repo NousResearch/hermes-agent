@@ -37,6 +37,24 @@ import sys
 from pathlib import Path
 from hermes_constants import get_hermes_home
 
+# Windows CRT loader-deadlock guard: acp.stdio._start_stdin_feeder parks a
+# buffered ``sys.stdin.buffer.readline()`` on a background thread. On piped
+# stdin (how every ACP client spawns us) that read sits inside ucrtbase
+# holding a CRT stdio lock. Loading an extension DLL whose DllMain touches
+# stdio — numpy's libscipy_openblas64_, pulled in lazily by the holographic
+# memory plugin at agent build — then deadlocks inside LdrLoadDll waiting on
+# that same lock, and the client's request times out (Buzz: 60s, every turn).
+# Import numpy here, before any ACP reader thread exists, so the DLL load
+# happens while stdin is untouched. POSIX has no CRT lock — Windows only.
+# ponytail: guards the one proven DLL (numpy); a different stdio-touching
+# DllMain imported mid-turn would need the same pre-import, or the feeder
+# switched to unbuffered os.read() upstream.
+if sys.platform == "win32":
+    try:
+        import numpy  # noqa: F401
+    except Exception:
+        pass
+
 
 # Methods clients send as periodic liveness probes. They are not part of the
 # ACP schema, so the acp router correctly returns JSON-RPC -32601 to the

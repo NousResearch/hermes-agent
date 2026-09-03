@@ -999,6 +999,7 @@ def _(rid, params: dict) -> dict:
         sid, session, session.get("agent_ready")
     ):
         _start_agent_build(sid, session)
+    _log_prompt_accepted(rid, sid, session, route="in_process")
 
     def run_after_agent_ready() -> None:
         # Patient wait (#63078): the user's message is already the accepted

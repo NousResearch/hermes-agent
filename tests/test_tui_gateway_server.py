@@ -257,7 +257,7 @@ def test_default_config_seeds_dashboard_process_isolation_keys():
     assert dashboard["compute_host_respawn_max"] == 3
 
 
-def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(monkeypatch):
+def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(monkeypatch, caplog):
     class FakeSupervisor:
         def __init__(self):
             self.frames = []
@@ -296,13 +296,14 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake_supervisor)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "submit",
-                "method": "prompt.submit",
-                "params": {"session_id": "iso-sid", "text": "hello"},
-            }
-        )
+        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+            resp = server.handle_request(
+                {
+                    "id": "submit",
+                    "method": "prompt.submit",
+                    "params": {"session_id": "iso-sid", "text": "hello"},
+                }
+            )
         assert resp["result"] == {"status": "streaming", "turn_isolation": True}
         assert fake_supervisor.frames[0]["type"] == "turn.start"
         assert fake_supervisor.frames[0]["sid"] == "iso-sid"
@@ -311,6 +312,11 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
         assert server._sessions["iso-sid"]["history"] == seed_history
         assert parent_writes == {"ensure_session": 0, "persist_seed": 0}
         assert server._sessions["iso-sid"]["running"] is True
+        assert any(
+            "prompt accepted: request_id=submit session=iso-sid" in message
+            and "route=compute_host" in message
+            for message in caplog.messages
+        )
 
         fake_supervisor.callback(
             {
@@ -324,6 +330,67 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
         assert server._sessions["iso-sid"]["history_version"] == 1
     finally:
         server._sessions.pop("iso-sid", None)
+
+
+def test_prompt_submit_logs_accepted_desktop_turn_without_prompt_text(
+    monkeypatch, caplog
+):
+    class _ImmediateThread:
+        def __init__(self, target=None, **_kwargs):
+            self._target = target
+
+        def start(self):
+            assert self._target is not None
+            self._target()
+
+    session = _session(
+        source="desktop",
+        profile_home="/tmp/profiles/kimi",
+        transport=types.SimpleNamespace(_peer="127.0.0.1:4321"),
+    )
+    server._sessions["desktop-sid"] = session
+    delivered = []
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    monkeypatch.setattr(
+        server,
+        "_load_dashboard_process_isolation_config",
+        lambda: {"turn_isolation": False},
+    )
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda _sid, _session: None)
+    monkeypatch.setattr(
+        server, "_wait_agent_for_prompt", lambda _session, _rid, _sid: None
+    )
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda rid, sid, _session, text, **_kwargs: delivered.append((rid, sid, text)),
+    )
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    try:
+        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+            response = server.handle_request({
+                "id": "desktop-request",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "desktop-sid",
+                    "text": "do not put this prompt in the logs",
+                },
+            })
+    finally:
+        server._sessions.pop("desktop-sid", None)
+
+    assert response["result"] == {"status": "streaming"}
+    assert delivered == [
+        ("desktop-request", "desktop-sid", "do not put this prompt in the logs")
+    ]
+    messages = "\n".join(caplog.messages)
+    assert "prompt accepted: request_id=desktop-request session=desktop-sid" in messages
+    assert "source=desktop route=in_process profile=kimi" in messages
+    assert "transport=SimpleNamespace peer=127.0.0.1:4321" in messages
+    assert "do not put this prompt in the logs" not in messages
 
 
 def test_compute_host_explicit_images_do_not_clear_later_attachment(monkeypatch):

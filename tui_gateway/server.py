@@ -13475,6 +13475,8 @@ def _run_prompt_submit(
             # begin() first — it cuts any still-speaking previous turn, and
             # that cut IS this turn's barge-in, so it must latch before we
             # consume the latch below.
+            global _fd_last_tts_text
+            _fd_last_tts_text = ""  # new turn, new spoken text (echo guard)
             tts_queue = _tts_stream_begin()
 
             # Full-duplex agent-turn listener: armed at utterance-submit so
@@ -13537,6 +13539,11 @@ def _run_prompt_submit(
                     payload["rendered"] = r
                 if tts_queue is not None and isinstance(delta, str):
                     tts_queue.put(delta)
+                    # Track what's actually being spoken so a playback-phase
+                    # barge capture can be checked against it (echo guard,
+                    # #75780).
+                    global _fd_last_tts_text
+                    _fd_last_tts_text = (_fd_last_tts_text or "") + delta
                 _emit("message.delta", sid, payload)
 
             # Surface interim assistant text (commentary emitted alongside
@@ -17218,6 +17225,15 @@ _fd_listener_active = False
 # the listener must cut THEIR private stop events too, and must keep
 # listening while any of them is still speaking.
 _fd_speak_pipelines: "set[tuple[threading.Event, threading.Event]]" = set()
+# Most recently spoken TTS text + the phase of the last barge trip (echo
+# guard, mirrors cli.py's _voice_last_tts_text/_voice_barge_phase, #75780:
+# the full-duplex listener has no acoustic echo cancellation, so speaker
+# bleed alone can trip it during playback and get transcribed as a self-
+# capture of Hermes' own reply, creating a TTS -> STT -> TTS feedback
+# loop). Process-global like the rest of this listener: voice is one mic,
+# one TTS output, regardless of which session is speaking.
+_fd_last_tts_text: str = ""
+_fd_barge_phase: "Optional[str]" = None
 
 
 def _arm_full_duplex_listener() -> None:
@@ -17257,7 +17273,8 @@ def _full_duplex_listener() -> None:
     Stop phrase is honored in both phases: mid-generation it interrupts the
     turn AND ends the voice chat ("stop everything").
     """
-    global _fd_listener_active
+    global _fd_listener_active, _fd_barge_phase
+    _rearm_on_exit = False
     try:
         from tools.tts_streaming import mark_speech_interrupted
         from tools.voice_mode import (
@@ -17299,6 +17316,8 @@ def _full_duplex_listener() -> None:
             stop_playback()
 
         def _on_trigger(phase: str) -> None:
+            global _fd_barge_phase
+            _fd_barge_phase = phase
             tripped.set()
             mark_speech_interrupted()
             if phase == "playback":
@@ -17367,7 +17386,37 @@ def _full_duplex_listener() -> None:
                         pass
                     _voice_emit("voice.transcript", {"stop_phrase": True, "text": text})
                 else:
-                    _voice_emit("voice.transcript", {"text": text})
+                    # Fail-closed echo guard (#75780): a playback-phase
+                    # capture has no acoustic echo cancellation, so speaker
+                    # bleed alone can trip the barge trigger. If the
+                    # transcript is a close match for what Hermes just
+                    # spoke, treat it as self-capture instead of emitting it
+                    # as the next user turn.
+                    _dropped_as_echo = False
+                    if _fd_barge_phase == "playback":
+                        try:
+                            from tools.voice_mode import is_tts_echo
+                            _dropped_as_echo = is_tts_echo(text, _fd_last_tts_text)
+                        except Exception:
+                            _dropped_as_echo = False
+                    if _dropped_as_echo:
+                        logger.debug(
+                            "Dropping playback-phase barge transcript as "
+                            "TTS echo: %r", text,
+                        )
+                        # No voice.transcript emitted, so the client will not
+                        # submit a new turn — real listening must continue.
+                        # Deferred to the finally below: this thread IS the
+                        # currently-armed listener (_fd_listener_active is
+                        # still True here), so calling
+                        # _arm_full_duplex_listener() at this point is a
+                        # no-op — its idempotency check returns immediately,
+                        # no new listener thread spawns, and the outer
+                        # finally then clears the flag, leaving the mic off
+                        # with nothing listening.
+                        _rearm_on_exit = True
+                    else:
+                        _voice_emit("voice.transcript", {"text": text})
         finally:
             try:
                 os.unlink(wav_path)
@@ -17378,6 +17427,12 @@ def _full_duplex_listener() -> None:
     finally:
         with _fd_listener_lock:
             _fd_listener_active = False
+        _fd_barge_phase = None
+        if _rearm_on_exit:
+            # Now that _fd_listener_active is False, this actually spawns a
+            # fresh listener thread instead of hitting the idempotency
+            # early-return above.
+            _arm_full_duplex_listener()
 
 
 def _speak_text_with_barge(text: str) -> None:
@@ -17391,6 +17446,9 @@ def _speak_text_with_barge(text: str) -> None:
     on a playback trip and keeps listening while this speak is pending.
     """
     from hermes_cli.voice import speak_text
+
+    global _fd_last_tts_text
+    _fd_last_tts_text = text  # echo guard (#75780) — see _full_duplex_listener
 
     stop = threading.Event()
     done = threading.Event()

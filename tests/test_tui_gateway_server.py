@@ -20077,6 +20077,11 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
             get_env_value=lambda key, default="": default,
         ),
     )
+    # Real is_tts_echo (not a stub) — the fake namespace below replaces the
+    # whole tools.voice_mode module, so the echo guard's own
+    # `from tools.voice_mode import is_tts_echo` needs it present here too.
+    from tools.voice_mode import is_tts_echo as _real_is_tts_echo
+
     monkeypatch.setitem(
         sys.modules,
         "tools.voice_mode",
@@ -20086,10 +20091,15 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
             full_duplex_listen=listen or default_fd_listen,
             is_audio_output_active=lambda: False,
             transcribe_recording=transcribe or (lambda path, model=None: {"success": True, "transcript": ""}),
+            is_tts_echo=_real_is_tts_echo,
         ),
     )
     # Fresh listener slot per test — the arm is idempotent per process.
     monkeypatch.setattr(server, "_fd_listener_active", False)
+    # Fresh echo-guard state per test (#75780) — both are bare module globals
+    # that persist across tests otherwise.
+    monkeypatch.setattr(server, "_fd_last_tts_text", "")
+    monkeypatch.setattr(server, "_fd_barge_phase", None)
     return started
 
 
@@ -20308,6 +20318,164 @@ def test_full_duplex_stop_phrase_mid_generation_ends_voice_chat(monkeypatch, tmp
     assert interrupted.is_set()
     assert ("voice.transcript", {"stop_phrase": True, "text": "stop"}) in events
     assert os.environ.get("HERMES_VOICE") == "0"  # voice chat ended
+
+
+def test_full_duplex_playback_phase_drops_tts_echo_transcript(monkeypatch, tmp_path):
+    """#75780 TUI counterpart of the CLI fix: a playback-phase capture that
+    closely matches the TTS text Hermes just spoke is speaker bleed, not
+    real user speech -- the full-duplex listener has no acoustic echo
+    cancellation. It must be dropped instead of emitted as voice.transcript
+    (which the client would otherwise submit as the next turn, replying to
+    itself), and the mic re-armed so real listening continues.
+
+    Uses the REAL _arm_full_duplex_listener (not a stub) — the bug this
+    pins only shows up through its actual idempotency check against
+    _fd_listener_active: calling arm() inline, while THIS call's own
+    _fd_listener_active flag is still True (not yet cleared by the outer
+    finally), is a same-thread no-op that early-returns before ever
+    spawning a new listener, silently dropping the mic. A stub that just
+    records "was arm() called" can't observe that early return. Instead we
+    patch threading.Thread so arm()'s eventual real spawn is observable
+    without actually starting a second listener thread that would recurse
+    into this test.
+    """
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"barge_in": True}})
+    events: list = []
+    monkeypatch.setattr(
+        server, "_voice_emit", lambda event, payload=None: events.append((event, payload))
+    )
+    # Simulate the real precondition: _arm_full_duplex_listener() already
+    # set this True before spawning the thread that runs
+    # _full_duplex_listener() (called directly here instead).
+    spawned_targets: list = []
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None, name=None):
+            spawned_targets.append(target)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(server.threading, "Thread", _FakeThread)
+
+    wav = tmp_path / "echo.wav"
+    wav.write_bytes(b"RIFF")
+
+    def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+        on_trigger("playback")
+        return str(wav)
+
+    _fake_tts_modules(
+        monkeypatch,
+        listen=fake_listen,
+        transcribe=lambda path, model=None: {
+            "success": True,
+            "transcript": "yes that has already been said before",
+        },
+    )
+    monkeypatch.setattr(
+        server, "_fd_last_tts_text", "yes, that's already been said before"
+    )
+    # Simulate the real precondition: _arm_full_duplex_listener() already
+    # set this True before spawning the thread that runs
+    # _full_duplex_listener() (called directly here instead). Must come
+    # AFTER _fake_tts_modules(), which itself resets this False as its own
+    # "fresh listener slot per test" isolation — setting it earlier would
+    # be silently overwritten.
+    monkeypatch.setattr(server, "_fd_listener_active", True)
+
+    server._full_duplex_listener()
+
+    assert not any(event == "voice.transcript" for event, _payload in events)
+    # A genuinely new listener thread must have been spawned AFTER
+    # _fd_listener_active was cleared — not a no-op early return.
+    assert spawned_targets == [server._full_duplex_listener], (
+        "mic was never handed back after dropping the echo — the re-arm "
+        "ran while _fd_listener_active was still True and no-op'd"
+    )
+    # A successful re-arm sets this back True (a new listener is now
+    # active) — proving _arm_full_duplex_listener()'s idempotency check
+    # actually let the re-arm through instead of early-returning.
+    assert server._fd_listener_active is True
+    assert not wav.exists()  # capture temp file still cleaned up
+    assert server._fd_barge_phase is None  # cleared in the finally block
+
+
+def test_full_duplex_playback_phase_genuine_interjection_is_still_queued(
+    monkeypatch, tmp_path
+):
+    """A real user interjection during playback -- unrelated to the TTS
+    text -- must still reach the agent as voice.transcript."""
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"barge_in": True}})
+    events: list = []
+    monkeypatch.setattr(
+        server, "_voice_emit", lambda event, payload=None: events.append((event, payload))
+    )
+
+    wav = tmp_path / "interject.wav"
+    wav.write_bytes(b"RIFF")
+
+    def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+        on_trigger("playback")
+        return str(wav)
+
+    _fake_tts_modules(
+        monkeypatch,
+        listen=fake_listen,
+        transcribe=lambda path, model=None: {
+            "success": True,
+            "transcript": "actually can you check my calendar for tomorrow",
+        },
+    )
+    monkeypatch.setattr(
+        server, "_fd_last_tts_text", "The weather today is sunny with a light breeze."
+    )
+
+    server._full_duplex_listener()
+
+    assert (
+        "voice.transcript",
+        {"text": "actually can you check my calendar for tomorrow"},
+    ) in events
+
+
+def test_full_duplex_generation_phase_transcript_not_echo_checked(
+    monkeypatch, tmp_path
+):
+    """Generation-phase barges (no TTS playing) are never treated as echo,
+    even if the transcript happens to match old TTS text -- the guard only
+    applies to playback-phase trips, which is where speaker bleed can
+    occur."""
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"barge_in": True}})
+    events: list = []
+    monkeypatch.setattr(
+        server, "_voice_emit", lambda event, payload=None: events.append((event, payload))
+    )
+    monkeypatch.setattr(server, "_sessions", {})
+
+    wav = tmp_path / "gen.wav"
+    wav.write_bytes(b"RIFF")
+
+    def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+        on_trigger("generation")
+        return str(wav)
+
+    _fake_tts_modules(
+        monkeypatch,
+        listen=fake_listen,
+        transcribe=lambda path, model=None: {
+            "success": True,
+            "transcript": "stop, do it differently",
+        },
+    )
+    monkeypatch.setattr(server, "_fd_last_tts_text", "stop, do it differently")
+
+    server._full_duplex_listener()
+
+    assert ("voice.transcript", {"text": "stop, do it differently"}) in events
 
 
 def test_speak_text_with_barge_arms_monitor_and_cuts_playback(monkeypatch, tmp_path):

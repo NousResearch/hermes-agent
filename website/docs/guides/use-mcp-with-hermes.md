@@ -207,6 +207,67 @@ mcp_servers:
       resources: false
 ```
 
+## Use `chrome-devtools-mcp` with your real Chrome profile
+
+`chrome-devtools-mcp` launches Chrome with an **isolated, blank profile** by default
+(`$HOME/.cache/chrome-devtools-mcp/chrome-profile`). This is intentional: the MCP server
+gets full control of the browser, so it starts from a clean slate instead of touching your
+daily browsing data. The side effect is that authenticated sites (Gmail, GitHub, dashboards,
+etc.) start logged out.
+
+If your workflows need your existing cookies and sessions, point the server at your real
+Chrome instead:
+
+### Option A — `--autoConnect` (recommended)
+
+Attaches to your already-running Chrome (v144+) with all your cookies, extensions, and
+sessions, without starting a separate instance:
+
+1. In Chrome, open `chrome://inspect/#remote-debugging` and follow the dialog to enable
+   remote debugging (allow incoming debugging connections).
+2. Add the server (the name `chrome-devtools` is just a label — use any name you like,
+   e.g. `chrome-devtools-win` if you already have a Windows entry):
+
+```bash
+# macOS / Linux
+hermes mcp add chrome-devtools --command npx --args -y chrome-devtools-mcp@latest --autoConnect --no-usage-statistics
+
+# Windows
+hermes mcp add chrome-devtools --command cmd.exe --args /c npx -y chrome-devtools-mcp@latest --autoConnect --no-usage-statistics
+```
+
+3. Start a fresh Hermes session or run `/reload-mcp`.
+
+The server connects to your running Chrome — the default profile when you have several —
+and asks for your permission via a dialog before taking control. Keep Chrome running while
+you use the MCP tools.
+
+### Option B — `--userDataDir`
+
+Points the server at a specific Chrome user data directory instead of the blank default.
+Use the **parent directory** that contains your profiles (e.g. `.../Chrome/User Data`),
+not an individual profile folder like `Default`:
+
+```bash
+# macOS
+hermes mcp add chrome-devtools --command npx --args -y chrome-devtools-mcp@latest --userDataDir "$HOME/Library/Application Support/Google/Chrome" --no-usage-statistics
+
+# Linux (Chromium / Chrome under ~/.config)
+hermes mcp add chrome-devtools --command npx --args -y chrome-devtools-mcp@latest --userDataDir "$HOME/.config/google-chrome" --no-usage-statistics
+
+# Windows (uses your real profile path via %LOCALAPPDATA%)
+hermes mcp add chrome-devtools --command cmd.exe --args /c npx -y chrome-devtools-mcp@latest --userDataDir "%LOCALAPPDATA%\Google\Chrome\User Data" --no-usage-statistics
+```
+
+Caveats:
+
+- A profile directory can only be used by one Chrome instance at a time. Close all Chrome
+  windows and background processes before starting the MCP server against the same
+  directory, otherwise the launch fails with a profile-in-use error.
+- The MCP server has full control over the browser it drives, so any profile you attach is
+  readable by your agent. Only attach profiles you're comfortable exposing to your MCP
+  tools.
+
 ## What does filtering actually affect?
 
 There are two categories of MCP-exposed functionality in Hermes:

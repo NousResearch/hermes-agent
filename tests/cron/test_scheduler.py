@@ -587,6 +587,64 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
+        assert mock_agent._end_session_on_close is False
+
+
+    def test_run_job_disarms_agent_close_after_scheduler_finalizes_session(self, tmp_path):
+        """Cron owns the terminal session reason; agent.close must not end it twice.
+
+        Regression for the #94736 teardown warning seen after every healthy cron
+        run: the scheduler closed its shared SessionDB, then AIAgent.close() tried
+        another end_session("agent_close"), forcing SessionDB to reopen solely
+        for a redundant write.
+        """
+        job = {"id": "single-finalize", "name": "test", "prompt": "hello"}
+        fake_db = MagicMock()
+        fake_db.get_compression_tip.side_effect = lambda session_id: session_id
+        closed = False
+        calls_after_close = []
+
+        def close_db():
+            nonlocal closed
+            closed = True
+
+        def end_session(*args):
+            if closed:
+                calls_after_close.append(args)
+
+        fake_db.close.side_effect = close_db
+        fake_db.end_session.side_effect = end_session
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+
+            def close_agent():
+                if mock_agent._end_session_on_close:
+                    fake_db.end_session(mock_agent.session_id, "agent_close")
+
+            mock_agent.close.side_effect = close_agent
+            mock_agent_cls.return_value = mock_agent
+            success, *_ = run_job(job)
+
+        assert success is True
+        assert fake_db.end_session.call_count == 1
+        assert calls_after_close == []
+        assert mock_agent._end_session_on_close is False
 
 
     @contextlib.contextmanager

@@ -1979,6 +1979,15 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         logger.debug("Job '%s': session lifecycle classification failed: %s", job_id, e)
     try:
         _session_db.end_session(_final_cron_session_id, _end_reason)
+        # run_job owns cron-session finalization. AIAgent.close() also
+        # finalizes owned session rows by default; if we release the
+        # shared SessionDB first and then call agent.close(), that second
+        # end_session() reopens the just-closed SQLite handle (#94736).
+        # Once the scheduler has durably booked this terminal reason,
+        # disarm only the agent's redundant row-finalization step. Its
+        # remaining resource teardown still runs normally below.
+        if agent is not None:
+            agent._end_session_on_close = False
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': failed to end session: %s", job_id, e)
     try:

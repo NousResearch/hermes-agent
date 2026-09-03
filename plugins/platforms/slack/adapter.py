@@ -1202,6 +1202,9 @@ class SlackAdapter(BasePlatformAdapter):
         # be workspace-scoped markers (team_id, ts) in multi-workspace mode.
         self._approval_resolved: Dict[Any, bool] = {}
         self._APPROVAL_RESOLVED_MAX = 1000
+        # Approval delegation admin identity, keyed identically to
+        # _approval_resolved → (chat_id, admin_user_id).
+        self._approval_admin: Dict[Any, tuple] = {}
         # Same guard for clarify prompts (interactive multiple-choice
         # buttons); mirrors _approval_resolved.
         self._clarify_resolved: Dict[Any, bool] = {}
@@ -7206,6 +7209,8 @@ class SlackAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        admin_user_id: Optional[str] = None,
+        **kwargs: Any,
     ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
 
@@ -7228,17 +7233,32 @@ class SlackAdapter(BasePlatformAdapter):
             # ``command``, so budget the preview against the fixed parts
             # instead of a flat truncation that overflows once the header +
             # reason are added.
-            header = ":warning: *Command Approval Required*\n"
+            # i18n: use locale-aware strings, fallback to English
+            try:
+                from agent.i18n import t as _t
+                _header = _t("gateway.approval_delegation.card_header")
+                _reason_label = _t("gateway.approval_delegation.card_reason")
+                _btn_once = _t("gateway.approval_delegation.btn_allow_once")
+                _btn_session = _t("gateway.approval_delegation.btn_session")
+                _btn_always = _t("gateway.approval_delegation.btn_always")
+                _btn_deny = _t("gateway.approval_delegation.btn_deny")
+            except Exception:
+                _header = ":warning: *Command Approval Required*"
+                _reason_label = "Reason"
+                _btn_once, _btn_session = "Allow Once", "Allow Session"
+                _btn_always, _btn_deny = "Always Allow", "Deny"
+
+            header = f"{_header}\n"
             if smart_denied:
                 header += "*Smart DENY:* owner override applies to this one operation only.\n"
-            reason = f"Reason: {description[:500]}"
+            reason = f"{_reason_label}: {description[:500]}"
             budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
             cmd_preview = command[:budget] + "..." if len(command) > budget else command
 
             actions = [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Allow Once"},
+                    "text": {"type": "plain_text", "text": _btn_once},
                     "style": "primary",
                     "action_id": "hermes_approve_once",
                     "value": session_key,
@@ -7247,20 +7267,20 @@ class SlackAdapter(BasePlatformAdapter):
             if not smart_denied and allow_session:
                 actions.append({
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Allow Session"},
+                    "text": {"type": "plain_text", "text": _btn_session},
                     "action_id": "hermes_approve_session",
                     "value": session_key,
                 })
                 if allow_permanent:
                     actions.append({
                         "type": "button",
-                        "text": {"type": "plain_text", "text": "Always Allow"},
+                        "text": {"type": "plain_text", "text": _btn_always},
                         "action_id": "hermes_approve_always",
                         "value": session_key,
                     })
             actions.append({
                 "type": "button",
-                "text": {"type": "plain_text", "text": "Deny"},
+                "text": {"type": "plain_text", "text": _btn_deny},
                 "style": "danger",
                 "action_id": "hermes_deny",
                 "value": session_key,
@@ -7290,9 +7310,10 @@ class SlackAdapter(BasePlatformAdapter):
             msg_ts = result.get("ts", "")
             if msg_ts:
                 team_id = self._metadata_team_id(metadata)
-                self._approval_resolved[
-                    self._workspace_message_marker(team_id, msg_ts)
-                ] = False
+                key = self._workspace_message_marker(team_id, msg_ts)
+                self._approval_resolved[key] = False
+                _admin_uid = str(admin_user_id or "")
+                self._approval_admin[key] = (chat_id, _admin_uid)
                 self._trim_oldest_dict_entries(
                     self._approval_resolved, self._APPROVAL_RESOLVED_MAX
                 )
@@ -7730,17 +7751,22 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return
 
-        # Only authorized users may click approval buttons.  Button clicks
-        # bypass the normal message auth flow in gateway/run.py, so we must
-        # check here as well.
-        allowed_csv = ""  # Interactive auth already ran above.
-        if allowed_csv:
-            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-            if "*" not in allowed_ids and user_id not in allowed_ids:
+        # Validate the click comes from the expected chat — prevents
+        # forwarded cards from being approved in other channels.
+        stored = self._approval_resolved.get(msg_ts)
+        if stored:
+            _, expected_chat_id, expected_admin_uid = stored
+            if expected_chat_id and channel_id and expected_chat_id != channel_id:
                 logger.warning(
-                    "[Slack] Unauthorized approval click by %s (%s) — ignoring",
-                    user_name,
-                    user_id,
+                    "[Slack] Unauthorized approval click: expected chat %s, got %s (user=%s)",
+                    expected_chat_id, channel_id, user_id,
+                )
+                return
+            if expected_admin_uid and user_id and user_id != expected_admin_uid:
+                logger.warning(
+                    "[Slack] Unauthorized approval click: expected admin %s, "
+                    "got %s (chat=%s, msg_ts=%s)",
+                    expected_admin_uid, user_id, channel_id, msg_ts,
                 )
                 return
 
@@ -7763,6 +7789,38 @@ class SlackAdapter(BasePlatformAdapter):
             approval_key = msg_ts
         if self._approval_resolved.pop(approval_key, True):
             return
+
+        # Detect redirected-delegation (from run.py _approval_notify_sync):
+        # the forward-to-admin path doesn't guarantee team_id metadata, so
+        # the stored key may be a bare msg_ts. Try both keys for admin info.
+        _admin_info = self._approval_admin.pop(approval_key, None)
+        if _admin_info is None and approval_key != msg_ts:
+            _admin_info = self._approval_admin.pop(msg_ts, None)
+        if not _admin_info:
+            logger.warning(
+                "[Slack] admin info missing in approval state — "
+                "admin identity gate is not enforced (msg_ts=%s, action=%s)",
+                msg_ts, action_id,
+            )
+        if _admin_info:
+            _expected_chat_id, _expected_admin_uid = _admin_info[0], _admin_info[1]
+            if not _expected_admin_uid:
+                logger.warning(
+                    "[Slack] admin_user_id empty in approval state — "
+                    "gate not enforced (msg_ts=%s, action=%s)", msg_ts, action_id,
+                )
+            if _expected_chat_id and channel_id and str(channel_id) != _expected_chat_id:
+                logger.warning(
+                    "[Slack] Unauthorized approval click: expected chat %s, got %s (user=%s, action=%s)",
+                    _expected_chat_id, channel_id, user_id, action_id,
+                )
+                return
+            if _expected_admin_uid and user_id and user_id != _expected_admin_uid:
+                logger.warning(
+                    "[Slack] Unauthorized approval click: expected admin %s, got %s (chat=%s, action=%s)",
+                    _expected_admin_uid, user_id, channel_id, action_id,
+                )
+                return
 
         # Resolve the approval FIRST — this unblocks the agent thread. Render
         # after, so a click that lands past the approval timeout (count == 0)

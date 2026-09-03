@@ -400,6 +400,12 @@ class WeComAdapter(BasePlatformAdapter):
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
 
+        # Approval delegation: track in-flight template_card approvals.
+        # Maps task_id → (session_key, admin_chat_id, admin_user_id, monotonic_timestamp).
+        # Entries auto-expire after _APPROVAL_TASK_TTL seconds.
+        self._approval_tasks: Dict[str, tuple] = {}
+        self._APPROVAL_TASK_TTL: float = 600.0
+
         # Per-turn stream state: keyed by (chat_id, req_id) to support concurrent messages.
         # Replaces global _active_stream_id to avoid conflicts when multiple messages
         # are processed simultaneously (e.g., approval during streaming).
@@ -1265,6 +1271,13 @@ class WeComAdapter(BasePlatformAdapter):
         body = payload.get("body")
         if not isinstance(body, dict):
             return
+
+        # Intercept template_card button click events before the normal
+        # dedup / text-extraction pipeline. template_card_event messages
+        # have no msgid and must be handled by the approval delegation path.
+        msgtype = str(body.get("msgtype") or "").lower()
+        if msgtype == "template_card_event":
+            return await self._handle_template_card_event(body, payload)
 
         msg_id = str(body.get("msgid") or self._payload_req_id(payload) or uuid.uuid4().hex)
         if self._dedup.is_duplicate(msg_id):
@@ -2566,6 +2579,243 @@ class WeComAdapter(BasePlatformAdapter):
                 "downgrade_error": downgrade_result.error if downgrade_result and not downgrade_result.success else None,
             },
         )
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+        admin_user_id: Optional[str] = None,
+    ) -> SendResult:
+        """Send a WeCom template_card with Approve / Deny buttons.
+
+        When the admin clicks a button, the WeCom websocket delivers a
+        ``template_card_event`` which is intercepted by ``_on_message``
+        and routed to ``_handle_template_card_event``. That handler
+        synthesises a ``/approve`` or ``/deny`` text command that flows
+        through the standard slash-command pipeline.
+
+        Delivery strategy (aligned with the streaming-architecture send
+        path): in group chats WeCom blocks proactive ``APP_CMD_SEND``, so we
+        reply passively via the most recent inbound ``req_id`` cached for the
+        chat (``_remember_chat_req_id``); in DMs we use ``APP_CMD_SEND``
+        directly.
+        """
+        del metadata  # unused by WeCom template_card path
+        if not chat_id:
+            return SendResult(success=False, error="chat_id is required")
+
+        task_id = self._new_req_id("approval")
+        self._approval_tasks[task_id] = (session_key, chat_id, admin_user_id or "", time.monotonic())
+        self._expire_approval_tasks()
+
+        # WeCom template_card field limits:
+        #   main_title.title ~100 chars, main_title.desc ~200,
+        #   sub_title_text ~500, horizontal_content_list value ~200
+        desc_summary = description[:80] + "…" if len(description) > 80 else description
+        cmd_preview = command[:200] + "…" if len(command) > 200 else command
+
+        # i18n: use locale-aware strings, fallback to Chinese
+        try:
+            from agent.i18n import t as _t
+            _source_desc = _t("gateway.approval_delegation.card_source")
+            _card_title = _t("gateway.approval_delegation.card_header")
+            _cmd_label = _t("gateway.approval_delegation.card_command")
+            _btn_once = _t("gateway.approval_delegation.btn_allow_once")
+            _btn_session = _t("gateway.approval_delegation.btn_session")
+            _btn_always = _t("gateway.approval_delegation.btn_always")
+            _btn_deny = _t("gateway.approval_delegation.btn_deny")
+        except Exception:
+            _source_desc = "审批委派"
+            _card_title = "🔐 审批委派 · 危险命令"
+            _cmd_label = "命令预览"
+            _btn_once = "✅ 允许一次"
+            _btn_session = "✅ 本次会话"
+            _btn_always = "✅ 始终允许"
+            _btn_deny = "❌ 拒绝"
+
+        card_body = {
+            "msgtype": "template_card",
+            "template_card": {
+                "card_type": "button_interaction",
+                "source": {
+                    "desc": _source_desc,
+                    "desc_color": 1,
+                },
+                "main_title": {
+                    "title": _card_title,
+                    "desc": desc_summary,
+                },
+                "sub_title_text": description[:500],
+                "horizontal_content_list": [
+                    {"keyname": _cmd_label, "value": cmd_preview},
+                ],
+                "task_id": task_id,
+                "button_list": [
+                    {"text": _btn_once, "style": 1, "key": "approve"},
+                    {"text": _btn_session, "style": 1, "key": "approve_session"},
+                    {"text": _btn_always, "style": 1, "key": "approve_always"},
+                    {"text": _btn_deny, "style": 2, "key": "deny"},
+                ],
+            },
+        }
+
+        try:
+            if chat_id in self._group_chat_ids:
+                # Group chats cannot use APP_CMD_SEND — reply passively on the
+                # cached inbound req_id (see _remember_chat_req_id).
+                reply_req_id = self._last_chat_req_ids.get(chat_id)
+                if not reply_req_id:
+                    self._approval_tasks.pop(task_id, None)
+                    return SendResult(
+                        success=False,
+                        error="No req_id available for group chat (passive reply required)",
+                    )
+                response = await self._send_reply_request(reply_req_id, card_body)
+            else:
+                response = await self._send_request(
+                    APP_CMD_SEND,
+                    {"chatid": chat_id, **card_body},
+                )
+        except asyncio.TimeoutError:
+            self._approval_tasks.pop(task_id, None)
+            return SendResult(success=False, error="Timeout sending template_card to WeCom")
+        except Exception as exc:
+            self._approval_tasks.pop(task_id, None)
+            logger.error("[WeCom] send_exec_approval failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+        error = self._response_error(response)
+        if error:
+            self._approval_tasks.pop(task_id, None)
+            return SendResult(success=False, error=error)
+
+        logger.info(
+            "[WeCom] Sent approval card to %s (task_id=%s)",
+            chat_id, task_id,
+        )
+        return SendResult(success=True)
+
+    def _expire_approval_tasks(self) -> None:
+        """Drop stale approval-task entries older than the TTL."""
+        if not self._approval_tasks:
+            return
+        cutoff = time.monotonic() - self._APPROVAL_TASK_TTL
+        stale = [
+            k for k, (*_, ts) in self._approval_tasks.items() if ts < cutoff
+        ]
+        for k in stale:
+            self._approval_tasks.pop(k, None)
+
+    async def _handle_template_card_event(
+        self, body: Dict[str, Any], raw_payload: Dict[str, Any]
+    ) -> None:
+        """Handle a template_card button click from WeCom.
+
+        Extracts the event_key (approve / deny) and task_id, then
+        synthesises a ``/approve`` or ``/deny`` text command that
+        flows through the standard slash-command pipeline — which
+        in turn triggers the delegation resolution logic in
+        ``gateway/slash_commands.py``.
+        """
+        card_event = body.get("template_card_event")
+        if not isinstance(card_event, dict):
+            logger.debug("[WeCom] template_card_event missing event data")
+            return
+
+        event_key = str(card_event.get("event_key") or "").strip()
+        task_id = str(card_event.get("task_id") or "").strip()
+
+        if event_key not in ("approve", "approve_session", "approve_always", "deny"):
+            logger.warning(
+                "[WeCom] Unknown template_card event_key=%s, ignoring "
+                "(task_id=%s preserved — admin can still approve)",
+                event_key, task_id,
+            )
+            # Do NOT pop here: an attacker can forward the admin's card to
+            # their own chat and send an invalid event_key, which would
+            # delete the real task BEFORE chat/user identity validation.
+            # Stale tasks are handled by _expire_approval_tasks (TTL).
+            return
+
+        # Extract sender info
+        sender = body.get("from") if isinstance(body.get("from"), dict) else {}
+        sender_id = str(sender.get("userid") or "").strip()
+        chat_id = str(body.get("chatid") or sender_id).strip()
+        is_group = str(body.get("chattype") or "").lower() == "group"
+
+        # Validate: button click must come from the expected admin chat AND user.
+        # Prevents forwarded cards from being approved by unauthorized users.
+        stored = self._approval_tasks.get(task_id)
+        if not stored:
+            # Fail-closed: unknown task_id means we cannot verify the click.
+            # An attacker could forward a card or guess a task_id — without a
+            # stored task there is no expected chat/user to validate against,
+            # so refuse rather than dispatch an unvalidated /approve.
+            # (Matches the Feishu/Telegram/Teams pattern: no state → no action.)
+            logger.warning(
+                "[WeCom] Approval click for unknown task_id=%s ignored "
+                "(user=%s, key=%s)",
+                task_id, sender_id, event_key,
+            )
+            return
+        _, expected_chat_id, expected_user_id, _ = stored
+        if not expected_user_id:
+            logger.warning(
+                "[WeCom] admin_user_id empty in approval state — "
+                "admin identity gate is not enforced (user=%s, key=%s)",
+                sender_id, event_key,
+            )
+        if expected_chat_id and chat_id != expected_chat_id:
+            logger.warning(
+                "[WeCom] Unauthorized approval click: "
+                "expected chat %s, got %s (user=%s, key=%s)",
+                expected_chat_id, chat_id, sender_id, event_key,
+            )
+            return  # Do NOT pop — let the real admin still approve
+        if expected_user_id and sender_id and sender_id != expected_user_id:
+            logger.warning(
+                "[WeCom] Unauthorized approval click: "
+                "expected user %s, got %s (chat=%s, key=%s)",
+                expected_user_id, sender_id, chat_id, event_key,
+            )
+            return  # Do NOT pop — let the real admin still approve
+
+        # Clean up the task mapping
+        self._approval_tasks.pop(task_id, None)
+
+        # Synthesise a text command that flows through the normal
+        # /approve /deny pipeline
+        _cmd_map = {
+            "approve": "/approve",
+            "approve_session": "/approve session",
+            "approve_always": "/approve always",
+            "deny": "/deny",
+        }
+        synthetic_text = _cmd_map.get(event_key, f"/{event_key}")
+        logger.info(
+            "[WeCom] template_card button clicked: "
+            "key=%s by %s in chat %s",
+            event_key, sender_id, chat_id,
+        )
+
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_type="group" if is_group else "dm",
+            user_id=sender_id or None,
+            user_name=sender_id or None,
+        )
+        event = MessageEvent(
+            text=synthetic_text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=raw_payload,
+        )
+        await self.handle_message(event)
 
     async def send(
         self,

@@ -24,13 +24,38 @@ def _compaction():
 def test_prior_turn_reasoning_items_are_pruned():
     messages = [
         {"role": "user", "content": "turn 1"},
-        {"role": "assistant", "content": "a1", "codex_reasoning_items": [_reasoning("rs_a")]},
+        {
+            "role": "assistant",
+            "content": "a1",
+            "codex_reasoning_items": [_reasoning("rs_a")],
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "id": "msg_a",
+                    "phase": "final_answer",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "a1"}],
+                }
+            ],
+        },
         {"role": "user", "content": "turn 2"},
         {"role": "assistant", "content": "a2", "codex_reasoning_items": [_reasoning("rs_b")]},
     ]
     pruned = _prune_stale_reasoning_replay(messages)
     assert pruned == 1
     assert "codex_reasoning_items" not in messages[1]
+    # Keep exact replay metadata, but not a native message identity whose
+    # reasoning dependency was just removed.
+    assert messages[1]["codex_message_items"] == [
+        {
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "a1"}],
+        }
+    ]
     # Active turn (after last user message) keeps its items.
     assert messages[3]["codex_reasoning_items"] == [_reasoning("rs_b")]
 
@@ -123,8 +148,7 @@ def test_non_codex_messages_untouched():
 
 
 def test_prune_keys_contract():
-    """codex_message_items are replayed for prefix-cache continuity and must
-    NOT be in the prune set; the prune targets reasoning blobs only."""
+    """Message metadata remains replayable; only unsafe ids are sanitized."""
     assert "codex_reasoning_items" in _STALE_REPLAY_PRUNE_KEYS
     assert "codex_message_items" not in _STALE_REPLAY_PRUNE_KEYS
 

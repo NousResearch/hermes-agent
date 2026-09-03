@@ -167,6 +167,57 @@ class TestCodexBuildKwargs:
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_id"
 
+    def test_reasoning_linked_message_drops_both_native_ids_end_to_end(self, transport):
+        messages = [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Think carefully."},
+            {
+                "role": "assistant",
+                "content": "answer",
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_linked",
+                        "encrypted_content": "sealed-reasoning",
+                        "summary": [],
+                    }
+                ],
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "answer"}],
+                        "id": "msg_linked",
+                        "phase": "final_answer",
+                    }
+                ],
+            },
+            {"role": "user", "content": "Continue."},
+        ]
+
+        built = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=messages,
+            tools=[],
+            base_url="http://localhost:9999/openai/v1",
+        )
+        normalized = transport.preflight_kwargs(built)
+
+        reasoning_item = next(
+            item for item in normalized["input"] if item.get("type") == "reasoning"
+        )
+        message_item = next(
+            item for item in normalized["input"] if item.get("type") == "message"
+        )
+        assert "id" not in reasoning_item
+        assert "id" not in message_item
+        assert message_item["phase"] == "final_answer"
+        assert message_item["status"] == "completed"
+        assert message_item["content"] == [
+            {"type": "output_text", "text": "answer"}
+        ]
+
     @pytest.mark.parametrize("model", [
         "gpt-5.5",
         "gpt-5.5-pro",

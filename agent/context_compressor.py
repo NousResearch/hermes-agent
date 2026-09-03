@@ -35,6 +35,7 @@ from agent.auxiliary_client import (
     call_llm,
     extract_content_or_reasoning,
 )
+from agent.codex_responses_adapter import _strip_codex_message_item_ids
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import tool_result_id_variants
@@ -461,6 +462,11 @@ def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
     Operates in place on the fully assembled compacted message list.  Returns
     the number of messages that were pruned (for diagnostics).  #71058.
 
+    When reasoning is pruned, provider-issued ids are also removed from that
+    message's ``codex_message_items``. The content/status/phase sidecar remains
+    replayable, but its native identity may depend on the discarded reasoning
+    item and cannot safely survive by itself.
+
     Two safety rules define the prune:
 
     * **Turn boundary is the last user message, not the last assistant
@@ -513,6 +519,11 @@ def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
                 msg[key] = kept
             else:
                 msg.pop(key, None)
+            # The exact assistant message item may depend on the reasoning
+            # identity just removed. Preserve its content/status/phase, but
+            # remove provider-issued ids so compacted history cannot replay an
+            # orphaned native item on a later turn.
+            _strip_codex_message_item_ids(msg)
             pruned += 1
     return pruned
 

@@ -302,6 +302,216 @@ _OVERSIZED_ITEM_ID = "x" * 408
 _VALID_ITEM_ID = "msg_abc123"
 
 
+def _reasoning_linked_assistant_message():
+    return {
+        "role": "assistant",
+        "content": "final answer",
+        "codex_reasoning_items": [
+            {
+                "type": "reasoning",
+                "id": "rs_linked",
+                "encrypted_content": "sealed-reasoning",
+                "summary": [],
+            }
+        ],
+        "codex_message_items": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "working"}],
+                "id": "msg_commentary",
+                "phase": "commentary",
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "final answer"}],
+                "id": "msg_final",
+                "phase": "final_answer",
+            },
+        ],
+    }
+
+
+def test_chat_converter_drops_message_ids_linked_to_stripped_reasoning():
+    """Never emit a native msg id after removing its required rs identity."""
+    converted = _chat_messages_to_responses_input(
+        [
+            {"role": "user", "content": "think"},
+            _reasoning_linked_assistant_message(),
+            {"role": "user", "content": "continue"},
+        ]
+    )
+
+    reasoning_item = next(item for item in converted if item.get("type") == "reasoning")
+    message_items = [item for item in converted if item.get("type") == "message"]
+
+    assert "id" not in reasoning_item
+    assert len(message_items) == 2
+    assert all("id" not in item for item in message_items)
+    assert [item["phase"] for item in message_items] == ["commentary", "final_answer"]
+    assert [item["content"][0]["text"] for item in message_items] == [
+        "working",
+        "final answer",
+    ]
+
+
+def test_preflight_drops_every_message_id_in_stripped_reasoning_group():
+    """The final choke point repairs raw/middleware input that bypassed conversion."""
+    raw = _chat_messages_to_responses_input(
+        [_reasoning_linked_assistant_message()]
+    )
+    # Recreate the malformed payload seen in the report: reasoning identity is
+    # absent while both native message identities remain.
+    raw[1]["id"] = "msg_commentary"
+    raw[2]["id"] = "msg_final"
+
+    normalized = _preflight_codex_input_items(raw)
+    message_items = [item for item in normalized if item.get("type") == "message"]
+
+    assert all("id" not in item for item in message_items)
+    assert [item["phase"] for item in message_items] == ["commentary", "final_answer"]
+
+
+def test_preflight_keeps_unrelated_message_id_after_function_call_boundary():
+    raw = [
+        {
+            "type": "reasoning",
+            "id": "rs_tool",
+            "encrypted_content": "sealed-tool-reasoning",
+            "summary": [],
+        },
+        {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "read_file",
+            "arguments": "{}",
+        },
+        {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "done"}],
+            "id": "msg_unrelated",
+        },
+    ]
+
+    normalized = _preflight_codex_input_items(raw)
+
+    assert normalized[-1]["id"] == "msg_unrelated"
+
+
+def test_preflight_keeps_reasoning_dependency_open_through_function_call():
+    raw = [
+        {
+            "type": "reasoning",
+            "id": "rs_tool",
+            "encrypted_content": "sealed-tool-reasoning",
+            "summary": [],
+        },
+        {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "read_file",
+            "arguments": "{}",
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "still working"}],
+            "id": "msg_same_output_group",
+            "phase": "commentary",
+        },
+    ]
+
+    normalized = _preflight_codex_input_items(raw)
+
+    message_item = next(item for item in normalized if item.get("type") == "message")
+    assert "id" not in message_item
+    assert message_item["phase"] == "commentary"
+
+
+@pytest.mark.parametrize(
+    "reasoning_item",
+    [
+        SimpleNamespace(
+            type="reasoning",
+            id="rs_tmp_transient",
+            encrypted_content="transient-sealed-reasoning",
+            summary=[],
+            status="completed",
+        ),
+        SimpleNamespace(
+            type="reasoning",
+            id="rs_without_blob",
+            encrypted_content=None,
+            summary=[],
+            status="completed",
+        ),
+    ],
+)
+def test_normalization_drops_message_id_when_reasoning_cannot_be_replayed(
+    reasoning_item,
+):
+    response = SimpleNamespace(
+        output=[
+            reasoning_item,
+            SimpleNamespace(
+                type="message",
+                id="msg_depends_on_unreplayable_reasoning",
+                phase="final_answer",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text="answer")],
+            ),
+        ],
+        status="completed",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.codex_reasoning_items is None
+    assert assistant_message.codex_message_items == [
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "answer"}],
+            "phase": "final_answer",
+        }
+    ]
+    replayed = _chat_messages_to_responses_input(
+        [
+            {
+                "role": "assistant",
+                "content": assistant_message.content,
+                "codex_message_items": assistant_message.codex_message_items,
+            }
+        ]
+    )
+    assert "id" not in replayed[0]
+
+
+def test_chat_converter_drops_message_ids_when_reasoning_replay_is_disabled():
+    message = _reasoning_linked_assistant_message()
+    # The kill switch permanently removes this sidecar before a resumed
+    # session. Even if only the exact message item remains, its origin is no
+    # longer provably independent from discarded reasoning.
+    message.pop("codex_reasoning_items")
+
+    converted = _chat_messages_to_responses_input(
+        [message], replay_encrypted_reasoning=False
+    )
+
+    message_items = [item for item in converted if item.get("type") == "message"]
+    assert message_items
+    assert all("id" not in item for item in message_items)
+
+
 # The codex app-server overflows the Responses 64-char call_id limit for
 # MCP-routed tools, e.g. codex_mcp__hermes-tools__web_search_exec-<uuid> (#73492).
 _OVERSIZED_CALL_ID = "codex_mcp__hermes-tools__web_search_exec-" + "0" * 43

@@ -237,6 +237,7 @@ from agent.message_sanitization import (  # noqa: F401
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _deterministic_call_id as _codex_deterministic_call_id,
+    _strip_codex_message_item_ids,
     _split_responses_tool_id as _codex_split_responses_tool_id,
     _summarize_user_message_for_log,  # also used by _sync_external_memory_for_turn (memory boundary)
 )
@@ -1355,7 +1356,10 @@ class AIAgent:
         and ``transports/codex.py`` to drop ``reasoning.encrypted_content``
         from subsequent requests) and pops ``codex_reasoning_items`` from
         every assistant message in ``messages`` so they cannot be replayed
-        again later in the session.
+        again later in the session. Provider-issued ids are removed from the
+        corresponding ``codex_message_items`` as well; otherwise a resumed
+        session could replay a native message whose reasoning dependency no
+        longer exists.
 
         Returns a small stats dict ``{"messages": int, "items": int}``
         counting what was stripped — purely for diagnostic logging.
@@ -1371,6 +1375,10 @@ class AIAgent:
             if isinstance(items, list) and items:
                 stripped_messages += 1
                 stripped_items += len(items)
+            # The retry flag protects this process, while scrubbing persisted
+            # message identities protects resumed sessions where the flag is
+            # reinitialized but the removed reasoning sidecar stays gone.
+            _strip_codex_message_item_ids(msg)
 
         self._codex_reasoning_replay_enabled = False
         return {"messages": stripped_messages, "items": stripped_items}

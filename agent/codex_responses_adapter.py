@@ -478,6 +478,33 @@ def _normalize_responses_message_status(value: Any, *, default: str = "completed
     return default
 
 
+def _strip_codex_message_item_ids(message: Dict[str, Any]) -> int:
+    """Remove provider-issued ids while preserving replayable message metadata.
+
+    Callers use this when they permanently remove a turn's reasoning sidecar.
+    Keeping the corresponding ``msg_*`` identity would leave durable history
+    with a dependency that can no longer be satisfied on a later replay.
+    """
+    raw_items = message.get("codex_message_items")
+    if not isinstance(raw_items, list):
+        return 0
+
+    stripped = 0
+    sanitized_items: List[Any] = []
+    for raw_item in raw_items:
+        if isinstance(raw_item, dict) and "id" in raw_item:
+            sanitized_item = dict(raw_item)
+            sanitized_item.pop("id", None)
+            sanitized_items.append(sanitized_item)
+            stripped += 1
+        else:
+            sanitized_items.append(raw_item)
+
+    if stripped:
+        message["codex_message_items"] = sanitized_items
+    return stripped
+
+
 def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]],
     *,
@@ -517,6 +544,14 @@ def _chat_messages_to_responses_input(
     this connection" even for short ids (see #32716). ``phase``/
     ``status``/``content`` are still replayed; only ``id`` is unsafe to
     reuse across a Copilot connection.
+
+    Native assistant message ids are also omitted whenever Hermes cannot
+    replay the complete reasoning identity that preceded them.  Reasoning
+    ids are intentionally stripped for ``store=False`` compatibility (see
+    #10217); retaining a dependent ``msg_*`` id after removing its ``rs_*``
+    id produces an invalid partial item graph on newer Responses backends.
+    Content, status, and phase are still replayed, so only native identity
+    and its optional cache affinity are sacrificed.
 
     ``current_issuer_kind`` enables a per-item cross-issuer guard. The
     Responses API's ``encrypted_content`` blob is decryptable only by the
@@ -583,10 +618,26 @@ def _chat_messages_to_responses_input(
                 # This applies to every Responses transport including
                 # xAI — see _chat_messages_to_responses_input docstring
                 # for the May 2026 reversal of the earlier xAI gate.
+                stored_codex_reasoning = msg.get("codex_reasoning_items")
+                has_native_reasoning_dependency = (
+                    isinstance(stored_codex_reasoning, list)
+                    and any(
+                        isinstance(ri, dict)
+                        and ri.get("type", "reasoning") == "reasoning"
+                        for ri in stored_codex_reasoning
+                    )
+                )
+                # A provider-issued message id is safe only when no reasoning
+                # identity was removed from this turn.  The session-wide replay
+                # kill switch may have already removed the sidecar from durable
+                # history, so conservatively drop all message ids while it is
+                # disabled.
+                message_item_ids_safe = (
+                    replay_encrypted_reasoning
+                    and not has_native_reasoning_dependency
+                )
                 codex_reasoning = (
-                    msg.get("codex_reasoning_items")
-                    if replay_encrypted_reasoning
-                    else None
+                    stored_codex_reasoning if replay_encrypted_reasoning else None
                 )
                 has_codex_reasoning = False
                 if isinstance(codex_reasoning, list):
@@ -691,6 +742,7 @@ def _chat_messages_to_responses_input(
                         item_id = raw_item.get("id")
                         if (
                             not is_github_responses
+                            and message_item_ids_safe
                             and isinstance(item_id, str)
                             and item_id.strip()
                         ):
@@ -976,6 +1028,12 @@ def _preflight_codex_input_items(
     )
     normalized: List[Dict[str, Any]] = []
     seen_ids: set = set()
+    # ``reasoning`` ids are stripped below for store=False compatibility.
+    # Track whether the current native output group depends on one of those
+    # identities so a caller that bypasses the chat converter cannot retain a
+    # dangling ``msg_*`` id. Multiple commentary/final message items can belong
+    # to the same reasoning group, so only a genuine group boundary clears it.
+    pending_stripped_reasoning_identity = False
     for idx, item in enumerate(raw_items):
         if not isinstance(item, dict):
             raise ValueError(f"Codex Responses input[{idx}] must be an object.")
@@ -1044,6 +1102,7 @@ def _preflight_codex_input_items(
                         "output": cleaned if cleaned else "",
                     }
                 )
+                pending_stripped_reasoning_identity = False
                 continue
             if not isinstance(output, str):
                 output = str(output)
@@ -1055,9 +1114,11 @@ def _preflight_codex_input_items(
                     "output": sanitize_text(output),
                 }
             )
+            pending_stripped_reasoning_identity = False
             continue
 
         if item_type == "reasoning":
+            pending_stripped_reasoning_identity = True
             encrypted = item.get("encrypted_content")
             if isinstance(encrypted, str) and encrypted:
                 item_id = item.get("id")
@@ -1131,6 +1192,7 @@ def _preflight_codex_input_items(
             item_id = item.get("id")
             if (
                 not is_github_responses
+                and not pending_stripped_reasoning_identity
                 and isinstance(item_id, str)
                 and item_id.strip()
             ):
@@ -1145,6 +1207,7 @@ def _preflight_codex_input_items(
 
         role = item.get("role")
         if role in {"user", "assistant"}:
+            pending_stripped_reasoning_identity = False
             content = item.get("content", "")
             if content is None:
                 content = ""
@@ -1846,6 +1909,18 @@ def _normalize_codex_response(
                 final_text = salvaged
                 reasoning_prefix = joined_reasoning[:marker].strip()
                 reasoning_parts = [reasoning_prefix] if reasoning_prefix else []
+
+    # A transient ``rs_tmp_*`` item, or reasoning without encrypted_content,
+    # cannot be persisted in ``codex_reasoning_items``. Do not persist native
+    # message identities from the same response: after a session round trip the
+    # converter would otherwise see a message-only turn and could replay an
+    # orphaned ``msg_*`` id with no evidence of its reasoning dependency.
+    has_replayable_reasoning_sidecar = any(
+        item.get("type") == "reasoning" for item in reasoning_items_raw
+    )
+    if saw_reasoning_item and not has_replayable_reasoning_sidecar:
+        for raw_message_item in message_items_raw:
+            raw_message_item.pop("id", None)
 
     assistant_message = SimpleNamespace(
         content=final_text,

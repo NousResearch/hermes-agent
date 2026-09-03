@@ -3316,6 +3316,32 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
         )
         assert message_item["id"] == "msg_short_but_connection_scoped"
 
+    def test_drops_message_id_when_auxiliary_replay_strips_linked_reasoning_id(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://chatgpt.com/backend-api/codex"
+        )
+        messages = self._replay_messages()
+        messages[1]["codex_reasoning_items"] = [
+            {
+                "type": "reasoning",
+                "id": "rs_linked",
+                "encrypted_content": "sealed-reasoning",
+                "summary": [],
+            }
+        ]
+
+        adapter.create(messages=messages)
+
+        reasoning_item = next(
+            item for item in captured["input"] if item.get("type") == "reasoning"
+        )
+        message_item = next(
+            item for item in captured["input"] if item.get("type") == "message"
+        )
+        assert "id" not in reasoning_item
+        assert "id" not in message_item
+        assert message_item["phase"] == "final_answer"
+
 
 class TestVisionAutoSkipsKimiCoding:
     """_resolve_auto vision branch skips providers that have no vision on

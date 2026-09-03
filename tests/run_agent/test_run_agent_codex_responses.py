@@ -83,6 +83,48 @@ AZURE_FOUNDRY_BASE_URL = (
 )
 
 
+def test_disable_reasoning_replay_scrubs_persisted_message_item_ids():
+    agent = SimpleNamespace(_codex_reasoning_replay_enabled=True)
+    messages = [
+        {
+            "role": "assistant",
+            "content": "answer",
+            "codex_reasoning_items": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_old",
+                    "encrypted_content": "stale",
+                }
+            ],
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "id": "msg_old",
+                    "phase": "final_answer",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "answer"}],
+                }
+            ],
+        }
+    ]
+
+    stats = run_agent.AIAgent._disable_codex_reasoning_replay(agent, messages)
+
+    assert stats == {"messages": 1, "items": 1}
+    assert agent._codex_reasoning_replay_enabled is False
+    assert "codex_reasoning_items" not in messages[0]
+    assert messages[0]["codex_message_items"] == [
+        {
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "answer"}],
+        }
+    ]
+
+
 def _build_azure_foundry_agent(monkeypatch, *, model="gpt-5.4"):
     _patch_agent_bootstrap(monkeypatch)
 
@@ -1659,6 +1701,60 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
     assert function_call["call_id"] == "call_1"
     assert "id" not in function_call
     assert function_output["call_id"] == "call_1"
+
+
+def test_run_conversation_never_replays_message_id_without_reasoning_id(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    responses = [
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning",
+                    id="rs_linked",
+                    encrypted_content="sealed-reasoning",
+                    summary=[],
+                    status="completed",
+                ),
+                SimpleNamespace(
+                    type="message",
+                    id="msg_linked",
+                    phase="commentary",
+                    status="in_progress",
+                    content=[SimpleNamespace(type="output_text", text="Working...")],
+                ),
+            ],
+            usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+            status="in_progress",
+            model="gpt-5.6-sol",
+        ),
+        _codex_message_response("done"),
+    ]
+    requests = []
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("think carefully")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "done"
+    assert len(requests) == 2
+    replay_input = requests[1]["input"]
+    reasoning_item = next(
+        item for item in replay_input if item.get("type") == "reasoning"
+    )
+    message_item = next(
+        item for item in replay_input if item.get("type") == "message"
+    )
+    assert "id" not in reasoning_item
+    assert "id" not in message_item
+    assert message_item["phase"] == "commentary"
+    assert message_item["content"] == [
+        {"type": "output_text", "text": "Working..."}
+    ]
 
 
 

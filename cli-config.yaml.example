@@ -988,6 +988,11 @@ group_sessions_per_user: true
 #
 # gateway:
 #   room_link_url: "https://hermes.example.net"
+#   # Authenticated remote clients may push bot clones only when explicitly
+#   # enabled. Per-bot pull access is controlled with
+#   # `hermes profile share <name> --allow-pull`.
+#   bot_sharing:
+#     allow_push: false
 #
 # The equivalent environment override is HERMES_ROOM_LINK_URL. After changing
 # it, restart the gateway and reopen New Group Chat > Advanced; Hermes will

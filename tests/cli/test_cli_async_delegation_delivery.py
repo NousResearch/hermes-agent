@@ -114,6 +114,8 @@ def test_cli_duplicate_completion_is_persisted_once(monkeypatch):
     cli._drain_process_notifications("cli-idle")
 
     assert len(persisted) == 1
+    assert not hasattr(cli, "conversation_history")
+    assert cli._pending_input.empty()
 
 
 def test_cli_completion_ownership_accepts_compression_lineage():

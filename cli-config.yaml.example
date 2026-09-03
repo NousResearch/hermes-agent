@@ -1076,6 +1076,15 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Keep the always-on skill index small: these top-level categories are
+  # listed names-only in the system prompt (descriptions dropped). Skills are
+  # never hidden — skill_view / skills_list still reach every one of them.
+  # Unioned with the coding "focus" posture's own demotions.
+  # compact_categories:
+  #   - devops
+  #   - creative
+  #   - productivity
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

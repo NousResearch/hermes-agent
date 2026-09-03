@@ -5892,8 +5892,16 @@ def resolve_xai_oauth_runtime_credentials(
                         # Clear dead tokens from auth.json so subsequent sessions fail fast
                         # without a network retry. Mirrors credential_pool.py quarantine.
                         try:
+                            # 2026-08-17: quarantine into the SOURCE store the
+                            # grant was resolved from. The old code stored the
+                            # emptied state into the PROFILE store, creating a
+                            # shadowing providers.xai-oauth stub that hides the
+                            # root grant from this lane forever (#74339 shape).
                             _q_store = _load_auth_store()
-                            _q_state = _load_provider_state(_q_store, "xai-oauth") or {}
+                            _q_state, _q_source = _load_provider_state_with_source(
+                                _q_store, "xai-oauth"
+                            )
+                            _q_state = _q_state or {}
                             _q_tokens = dict(_q_state.get("tokens") or {})
                             _q_tokens.pop("access_token", None)
                             _q_tokens.pop("refresh_token", None)
@@ -5906,8 +5914,14 @@ def resolve_xai_oauth_runtime_credentials(
                                 "relogin_required": True,
                                 "at": datetime.now(timezone.utc).isoformat(),
                             }
-                            _store_provider_state(_q_store, "xai-oauth", _q_state, set_active=False)
-                            _save_auth_store(_q_store)
+                            _q_active = _auth_file_path()
+                            if _q_source is not None and not _same_path(_q_source, _q_active):
+                                _persist_provider_state_to_store(
+                                    "xai-oauth", _q_state, _q_source, set_active=False
+                                )
+                            else:
+                                _store_provider_state(_q_store, "xai-oauth", _q_state, set_active=False)
+                                _save_auth_store(_q_store)
                         except Exception as _save_exc:
                             logger.debug(
                                 "xAI OAuth: failed to persist quarantined state: %s", _save_exc,

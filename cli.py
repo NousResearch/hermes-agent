@@ -19640,11 +19640,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # has no super modifier — log a warning so users notice the
         # TUI/CLI split instead of a silent mismatch (round-11).
         _raw_key: object = "ctrl+b"
+        _voice_key = "c-b"
+        # Hoist pt_key_to_sequence so it is always bound even if config/voice
+        # imports fail — otherwise the @kb.add below raises UnboundLocalError
+        # (Docker minimal env, #101757). Keep the same alt-key semantics.
+        try:
+            from hermes_cli.voice import pt_key_to_sequence as _pt_key_to_sequence  # noqa: F401
+
+            pt_key_to_sequence = _pt_key_to_sequence  # type: ignore[no-redef]
+        except Exception:
+
+            def pt_key_to_sequence(pt_key: str) -> tuple[str, ...]:  # type: ignore[no-redef]
+                if isinstance(pt_key, str) and pt_key.startswith("a-"):
+                    return ("escape", pt_key[2:])
+                return (pt_key,)
+
         try:
             from hermes_cli.config import load_config
             from hermes_cli.voice import (
                 normalize_voice_record_key_for_prompt_toolkit,
-                pt_key_to_sequence,
                 voice_record_key_from_config,
             )
             _raw_key = voice_record_key_from_config(load_config())

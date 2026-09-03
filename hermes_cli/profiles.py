@@ -2294,6 +2294,32 @@ _EXPORT_REDACT_NAMES = frozenset({
     ".cursorrules",
 })
 
+# Exact config keys whose scalar values are credentials. Text-pattern
+# redaction is insufficient here: opaque signing secrets/password hashes may
+# have no vendor prefix, and replacing a YAML scalar with bare ``***`` can make
+# the exported config syntactically invalid. Clear these fields structurally
+# before the generic text scrub. ``password_hash`` is intentionally included —
+# it is credential verifier material even though it is not plaintext.
+_EXPORT_SECRET_CONFIG_KEYS = frozenset({
+    "api_key",
+    "apikey",
+    "key",
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "secret",
+    "client_secret",
+    "password",
+    "password_hash",
+    "passwd",
+    "auth",
+    "authorization",
+    "private_key",
+    "bearer",
+    "jwt",
+})
+
 
 def _should_redact_export_file(path: Path) -> bool:
     """True when *path* is a text-ish file we should secret-scrub on export."""
@@ -2303,6 +2329,61 @@ def _should_redact_export_file(path: Path) -> bool:
     if name.lower().endswith(".env.example"):
         return True
     return path.suffix.lower() in _EXPORT_REDACT_SUFFIXES
+
+
+def _scrub_export_config_credentials(staged: Path) -> None:
+    """Clear credential-valued config fields in the staged export.
+
+    This operates only on the staged copy. Parsing failures stop the export:
+    emitting an archive we could not structurally inspect would violate the
+    credential-free export contract.
+    """
+    import yaml
+
+    config_path = staged / "config.yaml"
+    if not config_path.is_file():
+        return
+    try:
+        is_link = config_path.is_symlink()
+    except OSError:
+        is_link = False
+    try:
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(
+            "Cannot safely export profile: config.yaml could not be parsed "
+            "for credential scrubbing"
+        ) from exc
+    if data is None:
+        return
+
+    def _clear(value):
+        if isinstance(value, dict):
+            return {
+                key: (
+                    ""
+                    if isinstance(key, str)
+                    and key.lower() in _EXPORT_SECRET_CONFIG_KEYS
+                    and isinstance(child, str)
+                    and child
+                    else _clear(child)
+                )
+                for key, child in value.items()
+            }
+        if isinstance(value, list):
+            return [_clear(child) for child in value]
+        return value
+
+    scrubbed = _clear(data)
+    if is_link:
+        # ``copytree(..., symlinks=True)`` preserves profile symlinks. Never
+        # write through the staged link into the live profile or an external
+        # dotfiles target; materialize the scrubbed config inside staging.
+        config_path.unlink()
+    config_path.write_text(
+        yaml.safe_dump(scrubbed, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
 
 
 def _scrub_export_secrets(staged: Path) -> None:
@@ -2376,10 +2457,22 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     base = str(output).removesuffix(".tar.gz").removesuffix(".tgz")
 
     def _stage_extras(staged: Path) -> None:
+        staged_root = staged.resolve()
         for rel, content in (extra_files or {}).items():
             parts = normalize_archive_parts(rel)
             target = staged.joinpath(*parts)
+            try:
+                target.parent.resolve(strict=False).relative_to(staged_root)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ValueError(
+                    f"Unsafe extra file target outside the staged profile: {rel}"
+                ) from exc
             target.parent.mkdir(parents=True, exist_ok=True)
+            if target.is_symlink():
+                # Never write through a profile symlink into the live profile
+                # or an external dotfiles target. The caller supplied this
+                # overlay, so materialize it as a regular staged file.
+                target.unlink()
             target.write_text(content, encoding="utf-8")
 
     if canon == "default":
@@ -2395,6 +2488,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
                 ignore=_default_export_ignore(profile_dir),
             )
             _stage_extras(staged)
+            _scrub_export_config_credentials(staged)
             _scrub_export_secrets(staged)
             result = make_targz(base, tmpdir, "default")
             return Path(result)
@@ -2410,6 +2504,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
             ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
         )
         _stage_extras(staged)
+        _scrub_export_config_credentials(staged)
         _scrub_export_secrets(staged)
         result = make_targz(base, tmpdir, canon)
         return Path(result)

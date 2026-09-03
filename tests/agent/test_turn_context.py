@@ -292,6 +292,39 @@ def test_prefetch_runs_for_substantive_user_message():
     assert ctx.ext_prefetch_cache == "REMEMBERED CONTEXT"
 
 
+# ── on_turn_start model kwarg (issue: model_id always null in memory
+# providers) ─────────────────────────────────────────────────────────────
+#
+# MemoryProvider.on_turn_start()'s docstring promises `model` as one of the
+# kwargs a provider may receive, and MemoryManager.on_turn_start() already
+# fans **kwargs through to every registered provider. But the prologue's
+# only call site never actually passed it, so every provider that records
+# model attribution (e.g. the Ragger plugin) silently got an empty string
+# for every turn. Assert the call site itself, not just the manager's
+# fan-out (which was already covered elsewhere) — the manager forwarding
+# kwargs correctly doesn't help if the prologue never supplies one.
+
+
+def test_on_turn_start_forwards_model_kwarg():
+    agent, mm = _agent_with_memory_manager()
+    _build(agent, user_message="what did we decide about the deploy pipeline?")
+    mm.on_turn_start.assert_called_once()
+    _args, kwargs = mm.on_turn_start.call_args
+    assert kwargs.get("model") == agent.model == "test/model"
+
+
+def test_on_turn_start_model_kwarg_defaults_to_empty_string_when_absent():
+    """Agents whose `model` attribute is falsy (e.g. unset during subagent
+    scaffolding) must not raise — the call site falls back to "" rather
+    than propagating None into the memory-provider contract."""
+    agent, mm = _agent_with_memory_manager()
+    agent.model = None
+    _build(agent, user_message="what did we decide about the deploy pipeline?")
+    mm.on_turn_start.assert_called_once()
+    _args, kwargs = mm.on_turn_start.call_args
+    assert kwargs.get("model") == ""
+
+
 def test_turn_start_replaces_stale_parent_history_with_compression_child():
     agent = _FakeAgent()
     stale_history = [{"role": "user", "content": "stale parent"}]

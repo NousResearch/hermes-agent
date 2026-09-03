@@ -218,6 +218,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._breaker_lock = threading.Lock()
         self._sync_lock = threading.Lock()
         self._prefetch_lock = threading.Lock()
+        self._shutdown_started = threading.Event()
         self._atexit_registered = False
 
     @property
@@ -366,7 +367,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._channel = kwargs.get("platform") or "cli"
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
-            atexit.register(self._shutdown_backend)
+            atexit.register(self._shutdown_at_exit)
             self._atexit_registered = True
 
     def _read_filters(self) -> Dict[str, Any]:
@@ -424,10 +425,17 @@ class Mem0MemoryProvider(MemoryProvider):
             return result
 
     def _start_prefetch(self, query: str) -> None:
-        if not query or self._backend is None or self._is_breaker_open():
+        if (
+            not query
+            or self._shutdown_started.is_set()
+            or self._backend is None
+            or self._is_breaker_open()
+        ):
             return
         backend = self._backend
         with self._prefetch_lock:
+            if self._shutdown_started.is_set():
+                return
             if self._prefetch_query == query:
                 if self._prefetch_done:
                     return
@@ -478,7 +486,11 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
-        if self._backend is None or self._is_breaker_open():
+        if (
+            self._shutdown_started.is_set()
+            or self._backend is None
+            or self._is_breaker_open()
+        ):
             return
 
         def _sync():
@@ -503,6 +515,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 logger.warning("Mem0 sync failed: %s", e)
 
         with self._sync_lock:
+            if self._shutdown_started.is_set():
+                return
             if self._sync_thread and self._sync_thread.is_alive():
                 self._sync_thread.join(timeout=5.0)
             # If still alive after timeout, skip to avoid duplicate ingestion.
@@ -616,10 +630,22 @@ class Mem0MemoryProvider(MemoryProvider):
         except Exception:
             pass
 
+    def _shutdown_at_exit(self) -> None:
+        """Avoid closing clients underneath daemon workers during interpreter exit."""
+        self._shutdown_started.set()
+        workers = (self._prefetch_thread, self._sync_thread)
+        if any(t and t.is_alive() for t in workers):
+            return
+        self._shutdown_backend()
+
     def shutdown(self) -> None:
+        self._shutdown_started.set()
+        # Gateway cleanup already runs provider shutdown off-loop under its
+        # own timeout. Keep this drain lossless: closing a backend after a
+        # local timeout races the client against the still-running worker.
         for t in (self._prefetch_thread, self._sync_thread):
-            if t and t.is_alive():
-                t.join(timeout=5.0)
+            if t and t.is_alive() and t is not threading.current_thread():
+                t.join()
         self._shutdown_backend()
 
 

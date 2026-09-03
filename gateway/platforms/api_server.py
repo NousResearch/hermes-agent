@@ -3255,6 +3255,16 @@ class APIServerAdapter(BasePlatformAdapter):
             agent_kwargs["service_tier"] = request_service_tier
 
         agent = AIAgent(**agent_kwargs)
+        # AIAgent snapshots tools during construction. MCP servers are
+        # registered after that snapshot on the gateway startup path, so bring
+        # this agent in line with the native gateway/TUI refresh path.
+        try:
+            from tools.mcp_tool import refresh_agent_mcp_tools
+
+            refresh_agent_mcp_tools(agent, quiet_mode=True)
+        except Exception:
+            # MCP availability must not prevent an otherwise valid API request.
+            logger.debug("api_server MCP tool refresh failed", exc_info=True)
         agent._hermes_api_runtime = {
             "provider": runtime_kwargs.get("provider") or getattr(agent, "provider", "") or "",
             "model": getattr(agent, "model", None) or model,

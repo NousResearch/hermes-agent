@@ -1712,6 +1712,13 @@ _QUICK_STATE_FILES = (
     "verification_evidence.db",         # agent verification audit trail
     "kanban.db",                        # default board (back-compat <root>/kanban.db)
     "kanban/boards",                    # non-default boards: each <slug>/kanban.db + board metadata (workspaces/ + attachments/ are skipped as regenerable)
+    # MCP OAuth client registrations and access/refresh tokens.
+    # Dynamic client registration (RFC 7591) binds a client_id to a specific
+    # redirect_uri port; losing client.json on update forces re-registration
+    # which issues a new client_id.  The old token was issued for the old
+    # client_id and can no longer be refreshed, breaking all cron/background
+    # MCP calls until the user runs 'hermes mcp login' interactively (#84843).
+    "mcp-tokens",
     # Pairing stores (generic + per-platform JSONs outside state.db)
     "pairing",                          # legacy location (gateway/pairing.py)
     "platforms/pairing",                # new location (gateway/pairing.py)

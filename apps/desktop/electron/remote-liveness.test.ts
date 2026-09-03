@@ -260,7 +260,7 @@ describe('revalidateRemoteConnection', () => {
 })
 
 describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
-  it('retires a dead cached descriptor and gives dispatch the replacement', async () => {
+  it('retires a dead cached descriptor and gives dispatch the replacement on transport failure', async () => {
     const stale = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
     const replacement = { baseUrl: 'http://127.0.0.1:53968', mode: 'remote' }
     const stalePromise = Promise.resolve(stale)
@@ -292,11 +292,171 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
       })
     ).resolves.toBe(replacement)
 
-    expect(probe).toHaveBeenCalledWith(stale, '/api/status', {
+    expect(probe).toHaveBeenCalledWith(stale, '/api/health', {
       timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
     })
     expect(retire).toHaveBeenCalledOnce()
     expect(reconnect).toHaveBeenCalledOnce()
+  })
+
+  it('preserves the descriptor on a single transient timeout, returning existing connection', async () => {
+    const active = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const activePromise = Promise.resolve(active)
+
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+
+    const probe = vi.fn(async () => {
+      throw new Error('Timed out connecting to Hermes backend after 10000ms')
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: activePromise,
+        currentConnectionPromise: () => activePromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(active)
+
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+  })
+
+  it('retires and reconnects when timeouts repeat consecutively on a wedged backend', async () => {
+    const wedged = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const replacement = { baseUrl: 'http://127.0.0.1:53968', mode: 'remote' }
+    const wedgedPromise = Promise.resolve(wedged)
+    let currentPromise: Promise<typeof wedged> | null = wedgedPromise
+
+    const retire = vi.fn(async () => {
+      currentPromise = null
+    })
+    const reconnect = vi.fn(async () => {
+      currentPromise = Promise.resolve(replacement)
+
+      return replacement
+    })
+
+    const probe = vi.fn(async () => {
+      throw new Error('Timed out connecting to Hermes backend after 10000ms')
+    })
+
+    // First timeout: transient miss, preserved without retire
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: wedgedPromise,
+        currentConnectionPromise: () => currentPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(wedged)
+
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+
+    // Second consecutive timeout: repeated timeout exceeds tolerance, retires and reconnects
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: wedgedPromise,
+        currentConnectionPromise: () => currentPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(replacement)
+
+    expect(retire).toHaveBeenCalledOnce()
+    expect(reconnect).toHaveBeenCalledOnce()
+  })
+
+  it('resets consecutive timeout count after a successful probe', async () => {
+    const flaky = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const flakyPromise = Promise.resolve(flaky)
+
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+
+    let shouldTimeout = true
+    const probe = vi.fn(async () => {
+      if (shouldTimeout) {
+        throw new Error('Timed out connecting to Hermes backend after 10000ms')
+      }
+    })
+
+    // 1st dispatch: times out (count = 1) -> tolerated
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: flakyPromise,
+        currentConnectionPromise: () => flakyPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(flaky)
+    expect(retire).not.toHaveBeenCalled()
+
+    // 2nd dispatch: succeeds -> resets count
+    shouldTimeout = false
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: flakyPromise,
+        currentConnectionPromise: () => flakyPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(flaky)
+    expect(retire).not.toHaveBeenCalled()
+
+    // 3rd dispatch: times out again (count = 1 again, since reset) -> still tolerated
+    shouldTimeout = true
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: flakyPromise,
+        currentConnectionPromise: () => flakyPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(flaky)
+    expect(retire).not.toHaveBeenCalled()
+  })
+
+  it('falls back to /api/status when /api/health returns 404 on older backends', async () => {
+    const legacy = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const legacyPromise = Promise.resolve(legacy)
+
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+
+    const probe = vi.fn(async (_connection, path) => {
+      if (path === '/api/health') {
+        throw new Error('404: Not Found')
+      }
+      // /api/status succeeds
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: legacyPromise,
+        currentConnectionPromise: () => legacyPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(legacy)
+
+    expect(probe).toHaveBeenCalledWith(legacy, '/api/health', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+    expect(probe).toHaveBeenCalledWith(legacy, '/api/status', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
   })
 })
 

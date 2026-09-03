@@ -1,9 +1,12 @@
+import { isMissingHealthEndpointError } from './backend-health'
+
 export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
-// Dispatch is synchronous user intent: a cached descriptor must prove its
-// forwarded endpoint is alive before it can be returned. Keep this probe much
-// shorter than the background liveness budget so a dead tunnel reconnects
-// promptly instead of making the click feel hung.
-export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = 2_500
+// Dispatch is synchronous user intent, but a newly established SSH forward can
+// take several seconds before the remote HTTP server responds. Use the same
+// 10s budget as background liveness: a 2.5s /api/status probe false-fails on
+// Tailscale userspace and then kills a healthy ControlMaster.
+export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = 10_000
+export const DEFAULT_POOLED_REMOTE_DISPATCH_TIMEOUT_LIMIT = 1
 export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // Even at the capped retry path, consecutive liveness observations are at most
 // about 48s apart (ticket mint + socket open + backoff + the next status probe).
@@ -74,6 +77,25 @@ interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends
   probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
   reconnect: () => Promise<TConnection>
   retire: (error: unknown) => Promise<void> | void
+  maxConsecutiveTimeouts?: number
+}
+
+const dispatchProbeTimeoutsByConnection = new WeakMap<object, number>()
+
+export function isDispatchProbeTimeoutError(error: unknown): boolean {
+  if (!error) {
+    return false
+  }
+
+  const err = error as any
+  if (err.name === 'AbortError' || err.name === 'TimeoutError' || err.code === 'ETIMEDOUT') {
+    return true
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  const lower = message.toLowerCase()
+
+  return lower.includes('timed out') || lower.includes('timeout')
 }
 
 /**
@@ -89,9 +111,10 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
   currentConnectionPromise,
   probe,
   reconnect,
-  retire
+  retire,
+  maxConsecutiveTimeouts = DEFAULT_POOLED_REMOTE_DISPATCH_TIMEOUT_LIMIT
 }: EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection>): Promise<TConnection> {
-  let connection: TConnection
+  let connection: TConnection | undefined
 
   try {
     connection = await connectionPromise
@@ -100,10 +123,47 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       return reconnect()
     }
 
-    await probe(connection, '/api/status', {
-      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
-    })
+    try {
+      await probe(connection, '/api/health', {
+        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      })
+    } catch (healthError) {
+      // Fallback for older remote backends that predated /api/health (returns 404)
+      if (isMissingHealthEndpointError(healthError)) {
+        await probe(connection, '/api/status', {
+          timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+        })
+      } else {
+        throw healthError
+      }
+    }
+
+    if (connection && typeof connection === 'object') {
+      dispatchProbeTimeoutsByConnection.delete(connection)
+    }
   } catch (error) {
+    // An ambiguous HTTP timeout does not immediately retire the descriptor: healthy
+    // backends can exceed the probe budget while an active turn is streaming over the
+    // live WebSocket. A single transient miss is preserved, but repeated timeouts on a
+    // wedged backend are bounded: exceeding maxConsecutiveTimeouts falls through to
+    // retire and reconnect. Conclusive transport failures (refused, dropped socket, 5xx)
+    // retire the pooled backend immediately.
+    if (connection && typeof connection === 'object' && isDispatchProbeTimeoutError(error)) {
+      const timeouts = (dispatchProbeTimeoutsByConnection.get(connection) ?? 0) + 1
+      dispatchProbeTimeoutsByConnection.set(connection, timeouts)
+
+      if (timeouts <= maxConsecutiveTimeouts) {
+        if (currentConnectionPromise() !== connectionPromise) {
+          return reconnect()
+        }
+        return connection
+      }
+    }
+
+    if (connection && typeof connection === 'object') {
+      dispatchProbeTimeoutsByConnection.delete(connection)
+    }
+
     if (currentConnectionPromise() === connectionPromise) {
       await retire(error)
     }
@@ -115,7 +175,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
     return reconnect()
   }
 
-  return connection
+  return connection!
 }
 
 /**

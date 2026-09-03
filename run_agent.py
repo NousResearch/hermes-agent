@@ -7401,7 +7401,8 @@ class AIAgent:
             )
         except Exception:
             logger.debug("on_interim_message plugin hook enqueue failed", exc_info=True)
-        cb = getattr(self, "interim_assistant_callback", None)
+        if cb is None:
+            cb = getattr(self, "clarify_context_callback", None)
         if cb is None:
             return
         try:

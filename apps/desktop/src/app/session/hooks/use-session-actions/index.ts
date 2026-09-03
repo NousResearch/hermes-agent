@@ -1881,6 +1881,7 @@ export function useSessionActions({
           const verdict = goneSessionVerdict({
             createdThisRun: createdThisRun.has(storedSessionId),
             stillListed,
+            reconciliationInFlight: resumedSameSelectedSession || resumedRunning || recoveredInFlightTail,
             switchInFlight:
               $gatewaySwitching.get() ||
               Boolean($gatewaySwapTarget.get()) ||

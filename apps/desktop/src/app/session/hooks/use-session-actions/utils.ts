@@ -1747,8 +1747,10 @@ export function goneSessionVerdict(options: {
   stillListed: boolean
   /** A profile swap or connection switch is in flight (or just targeted). */
   switchInFlight: boolean
+  /** A same-session interrupted-turn reconciliation is still recovering. */
+  reconciliationInFlight?: boolean
 }): 'draft' | 'retry' {
-  return options.createdThisRun || options.stillListed || options.switchInFlight ? 'retry' : 'draft'
+  return options.reconciliationInFlight || options.createdThisRun || options.stillListed || options.switchInFlight ? 'retry' : 'draft'
 }
 
 /**

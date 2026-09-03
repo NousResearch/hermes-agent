@@ -249,7 +249,7 @@ class TestCliApprovalUi:
              patch.object(cli_module, "_cprint"), \
              patch.object(cli_module, "ChatConsole") as chat_console:
             chat_console.return_value.print = MagicMock()
-            cli._handle_background_command("/btw check weather")
+            cli._handle_background_command("/bg check weather")
 
             # Join the worker thread deterministically rather than polling a
             # wall-clock deadline — under load the thread's finally-block pop

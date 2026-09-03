@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -213,35 +214,62 @@ def test_standard_backend_does_not_spawn_an_embedded_daemon():
     assert unrestricted._embedded_daemon is not None
 
 
-def test_standard_existing_profile_grant_owns_private_macos_runtime():
-    from tools.computer_use.cua_backend import _standard_runtime_launch_args
+def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypatch):
+    from tools.computer_use.cua_backend import _AsyncBridge, _CuaDriverSession
 
-    args, socket_path = _standard_runtime_launch_args(
-        ["mcp"],
-        grant_existing_profile=True,
-        platform="darwin",
-        socket_path="/tmp/hermes-cua-test.sock",
+    (tmp_path / "config.yaml").write_text(
+        "computer_use:\n  grant_existing_profile: true\n",
+        encoding="utf-8",
     )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    session = _CuaDriverSession(_AsyncBridge())
+    captured = {}
 
-    assert args == [
-        "mcp",
-        "--grant",
-        "existing-profile",
-        "--socket",
-        "/tmp/hermes-cua-test.sock",
-    ]
-    assert socket_path == "/tmp/hermes-cua-test.sock"
+    async def drive_lifecycle():
+        def capture_params(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
 
+        with patch(
+            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            return_value="/opt/cua-driver",
+        ), patch(
+            "tools.computer_use.cua_backend._resolve_mcp_invocation",
+            return_value=("/opt/cua-driver", ["mcp"]),
+        ), patch(
+            "mcp.StdioServerParameters", side_effect=capture_params
+        ), patch(
+            "mcp.client.stdio.stdio_client"
+        ) as stdio_client, patch(
+            "mcp.ClientSession"
+        ) as client_session:
+            stdio_client.return_value.__aenter__ = AsyncMock(
+                return_value=(MagicMock(), MagicMock())
+            )
+            stdio_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            live_session = MagicMock()
+            live_session.initialize = AsyncMock()
+            live_session.list_tools = AsyncMock(return_value=MagicMock(tools=[]))
+            client_session.return_value.__aenter__ = AsyncMock(
+                return_value=live_session
+            )
+            client_session.return_value.__aexit__ = AsyncMock(return_value=None)
 
-def test_standard_existing_profile_grant_stays_in_process_off_macos():
-    from tools.computer_use.cua_backend import _standard_runtime_launch_args
+            async def stop_when_ready():
+                while session._shutdown_event is None:
+                    await asyncio.sleep(0)
+                session._shutdown_event.set()
 
-    args, socket_path = _standard_runtime_launch_args(
-        ["mcp"], grant_existing_profile=True, platform="linux"
-    )
+            stop_task = asyncio.create_task(stop_when_ready())
+            try:
+                await session._lifecycle_coro()
+            finally:
+                await stop_task
 
-    assert args == ["mcp", "--grant", "existing-profile"]
-    assert socket_path is None
+    asyncio.run(drive_lifecycle())
+
+    assert captured["command"] == "/opt/cua-driver"
+    assert captured["args"] == ["mcp"]
 
 
 def test_transport_reset_invalidates_native_capabilities():

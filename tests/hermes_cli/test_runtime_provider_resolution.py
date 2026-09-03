@@ -115,7 +115,7 @@ class TestCustomProviderPoolLoopbackNoKeyExemption:
         ('123') for a local Ollama endpoint must resolve to the same
         "no-key-required" placeholder every other local no-auth path uses,
         not the raw unusable value."""
-        monkeypatch.setattr(rp, "get_custom_provider_pool_key", lambda base_url, provider_name=None: "custom:local-ollama")
+        monkeypatch.setattr(rp, "custom_provider_pool_key_candidates", lambda base_url, provider_name=None: ["custom:local-ollama"])
         monkeypatch.setattr(rp, "load_pool", lambda pool_key: self._pool_with("123"))
 
         result = rp._try_resolve_from_custom_pool("http://localhost:11434/v1", "custom", None)
@@ -124,7 +124,7 @@ class TestCustomProviderPoolLoopbackNoKeyExemption:
         assert result["api_key"] == "no-key-required"
 
     def test_single_char_placeholder_key_also_exempted(self, monkeypatch):
-        monkeypatch.setattr(rp, "get_custom_provider_pool_key", lambda base_url, provider_name=None: "custom:local")
+        monkeypatch.setattr(rp, "custom_provider_pool_key_candidates", lambda base_url, provider_name=None: ["custom:local"])
         monkeypatch.setattr(rp, "load_pool", lambda pool_key: self._pool_with("m"))
 
         result = rp._try_resolve_from_custom_pool("http://127.0.0.1:11434/v1", "custom", None)
@@ -136,7 +136,7 @@ class TestCustomProviderPoolLoopbackNoKeyExemption:
         remote endpoint with a genuinely-too-short key must NOT get a
         free pass. The short value passes through unchanged, so the
         downstream has_usable_secret() gate still catches it."""
-        monkeypatch.setattr(rp, "get_custom_provider_pool_key", lambda base_url, provider_name=None: "custom:remote")
+        monkeypatch.setattr(rp, "custom_provider_pool_key_candidates", lambda base_url, provider_name=None: ["custom:remote"])
         monkeypatch.setattr(rp, "load_pool", lambda pool_key: self._pool_with("xy"))
 
         result = rp._try_resolve_from_custom_pool("https://api.remote-vendor.example/v1", "custom", None)
@@ -147,7 +147,7 @@ class TestCustomProviderPoolLoopbackNoKeyExemption:
         """Sanity: a genuinely usable key for a loopback endpoint (a real
         API key happens to be configured for a local proxy, say) must not
         be silently overwritten."""
-        monkeypatch.setattr(rp, "get_custom_provider_pool_key", lambda base_url, provider_name=None: "custom:local")
+        monkeypatch.setattr(rp, "custom_provider_pool_key_candidates", lambda base_url, provider_name=None: ["custom:local"])
         monkeypatch.setattr(rp, "load_pool", lambda pool_key: self._pool_with("sk-genuinely-long-real-key-12345"))
 
         result = rp._try_resolve_from_custom_pool("http://localhost:11434/v1", "custom", None)
@@ -632,6 +632,8 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
                     "name": "Local",
                     "base_url": "http://1.2.3.4:1234/v1",
                     "api_key": "local-provider-key",
+                    "model": "gpt-5.6",
+                    "capabilities": {"openai_native_compaction": True},
                 }
             ]
         },
@@ -653,7 +655,41 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["base_url"] == "http://1.2.3.4:1234/v1"
     assert resolved["api_key"] == "local-provider-key"
     assert resolved["requested_provider"] == "local"
+    assert resolved["capabilities"] == {"openai_native_compaction": True}
     assert resolved["source"] == "custom_provider:Local"
+
+
+def test_named_custom_provider_filters_capabilities_at_lookup_boundary(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "local": {
+                    "name": "Local",
+                    "base_url": "http://1.2.3.4:1234/v1",
+                    "capabilities": {
+                        "openai_native_compaction": True,
+                        "invalid-value": "yes",
+                        42: True,
+                    },
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    provider = rp._get_named_custom_provider("local")
+
+    assert provider["capabilities"] == {"openai_native_compaction": True}
 
 
 def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):

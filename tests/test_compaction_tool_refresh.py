@@ -81,8 +81,10 @@ class TestCompactionWiring(unittest.TestCase):
         """The commit boundary invokes the refresh and a raising refresh
         must not break compaction (wrapped in try/except at the call site).
         Pin the call-site contract by source: the helper call sits between
-        _invalidate_system_prompt and the prompt rebuild, inside a
-        try/except."""
+        _invalidate_system_prompt and the always-rebuild of the prompt
+        (post-#95681: the keep-prompt containment branch is gone — the
+        rebuilt prompt is compared byte-for-byte and only object identity
+        is preserved on equality)."""
         import inspect
         from agent import conversation_compression as cc
 
@@ -90,7 +92,7 @@ class TestCompactionWiring(unittest.TestCase):
         i_invalidate = src.find("agent._invalidate_system_prompt()")
         i_refresh = src.find("_refresh_agent_tool_definitions(agent)",
                              i_invalidate)
-        i_rebuild = src.find("_cached_prompt_reflects_builtin_memory(agent",
+        i_rebuild = src.find("rebuilt_system_prompt = agent._build_system_prompt(",
                              i_refresh)
         self.assertGreater(i_refresh, i_invalidate,
                            "refresh must follow prompt invalidation")

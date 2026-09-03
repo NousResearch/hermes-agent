@@ -30,10 +30,16 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_cli.archive_safe import (
+    archive_root_dirs,
+    make_targz,
+    normalize_archive_parts,
+    safe_extract_targz,
+)
 from hermes_constants import (
     clear_named_profile_deleted,
     mark_named_profile_deleted,
@@ -832,6 +838,22 @@ def _check_gateway_running(profile_dir: Path) -> bool:
         return False
 
 
+def _served_by_running_multiplexer(profile_name: str) -> bool:
+    """True when the live default gateway multiplexes ``profile_name``.
+
+    A served named profile has no gateway.pid of its own, so
+    ``_check_gateway_running`` alone reports it stopped while the default
+    multiplexer is actually its inbound process. Single shared lookup with the
+    named-profile start guard and cron liveness (#97120).
+    """
+    try:
+        from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+
+        return named_profile_served_by_running_multiplexer(profile_name)
+    except Exception:
+        return False
+
+
 # In-process cache for skill counts. Walking ``skills_dir.rglob("SKILL.md")``
 # recurses the entire skill tree (each skill carries references/scripts/assets
 # sub-trees); the default profile alone has ~270 skills, and ``list_profiles``
@@ -1078,7 +1100,10 @@ def list_profiles() -> List[ProfileInfo]:
                 name=name,
                 path=entry,
                 is_default=False,
-                gateway_running=_check_gateway_running(entry),
+                gateway_running=(
+                    _check_gateway_running(entry)
+                    or _served_by_running_multiplexer(name)
+                ),
                 model=model,
                 provider=provider,
                 has_env=(entry / ".env").exists(),
@@ -1255,6 +1280,18 @@ def create_profile(
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)
+        # A clone-all copies auth.json and .anthropic_oauth.json verbatim.
+        # Single-use OAuth grants (Anthropic / Codex / xAI) forked that way
+        # are one credential with two owners: the first profile to refresh
+        # revokes the pair for every sibling (#100339). Drop the copies; the
+        # clone reads the root grant through the credential-pool fallback.
+        from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+        stripped = strip_cloned_single_use_oauth_grants(profile_dir)
+        if any(stripped.values()):
+            logger.info(
+                "profile %s: dropped cloned single-use OAuth grants %s "
+                "(inherits the root grant instead)", canon, stripped,
+            )
     else:
         # Bootstrap directory structure
         profile_dir.mkdir(parents=True, exist_ok=True)
@@ -1619,7 +1656,11 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
         return
 
     try:
-        from gateway.status import _pid_exists, terminate_pid as _terminate_pid
+        from gateway.status import (
+            _pid_exists,
+            get_process_start_time,
+            terminate_pid as _terminate_pid,
+        )
     except Exception:
         return
 
@@ -1639,7 +1680,11 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
     for pid in pids:
         if _pid_exists(pid):
             try:
-                _terminate_pid(pid, force=True)
+                _terminate_pid(
+                    pid,
+                    force=True,
+                    expected_start_time=get_process_start_time(pid),
+                )
             except (ProcessLookupError, PermissionError, OSError):
                 pass
 
@@ -1994,6 +2039,19 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         raw = pid_file.read_text(encoding="utf-8").strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
+        # Cross-profile kill refusal (#89315): the record's hermes_home stamp
+        # names the gateway's TRUE owner. A contaminated/poisoned gateway.pid
+        # inside this profile dir can point at another profile's live gateway
+        # — killing it starts the mutual SIGTERM restart loop from the issue.
+        from gateway.status import recorded_gateway_home_conflicts
+
+        if recorded_gateway_home_conflicts(data, expected_home=profile_dir):
+            print(
+                f"✗ Refusing to stop PID {pid}: its recorded HERMES_HOME "
+                f"belongs to a different profile than {profile_dir} "
+                "(stale/poisoned PID record, #89315)."
+            )
+            return
         # Route through terminate_pid so Windows uses the appropriate
         # primitive (taskkill / TerminateProcess) — raw os.kill with
         # _signal.SIGKILL raises AttributeError at import time on Windows,
@@ -2001,6 +2059,11 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         # the same way taskkill /T does.
         from gateway.status import terminate_pid as _terminate_pid
         from gateway.status import _pid_exists
+        expected_start_time = data.get("start_time")
+        if expected_start_time is None:
+            from gateway.status import get_process_start_time
+
+            expected_start_time = get_process_start_time(pid)
         _terminate_pid(pid)  # graceful first
         # Wait up to 10s for graceful shutdown. On Windows, os.kill(pid, 0)
         # is NOT a no-op — use the handle-based existence check.
@@ -2011,7 +2074,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
                 return
         # Force kill
         try:
-            _terminate_pid(pid, force=True)
+            _terminate_pid(pid, force=True, expected_start_time=expected_start_time)
         except (ProcessLookupError, OSError):
             pass
         print(f"✓ Gateway force-stopped (PID {pid})")
@@ -2096,6 +2159,88 @@ def get_active_profile_name() -> str:
 # Export / Import
 # ---------------------------------------------------------------------------
 
+def _inside_git_checkout(path: Path) -> bool:
+    """Return True when *path* lies inside a Git checkout.
+
+    Walks the path's OWN resolved ancestry for a ``.git`` marker (a directory
+    for normal clones, a file for worktrees/submodules).  Anchoring on the
+    candidate path — not on ``Path.cwd()`` — keeps the safety proof valid when
+    ``HERMES_HOME`` points inside a checkout but the process runs from
+    somewhere else entirely (cron, a service manager, an absolute-path
+    invocation).  On resolution failure we conservatively report True so the
+    caller falls through to a provably safe candidate.
+    """
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        # RuntimeError: symlink loops on Python <= 3.12; fail closed either way.
+        return True
+    return any(
+        (candidate / ".git").exists() for candidate in (resolved, *resolved.parents)
+    )
+
+
+def _profile_export_directory() -> Path:
+    """Choose an export directory that cannot become source-tree input."""
+    import tempfile
+
+    export_dir = _get_default_hermes_home() / "profile-exports"
+    if not _inside_git_checkout(export_dir):
+        return export_dir
+
+    # A custom deployment may point HERMES_HOME at its source checkout.  Do
+    # not put the automatic archive under that tree; use a sibling store and
+    # fall back to the OS temp directory only for the unusual case where the
+    # user's home itself is a checkout (e.g. a dotfiles repo).
+    # Per-uid temp name: a fixed /tmp/hermes-profile-exports is a predictable
+    # shared path another local user could pre-create (or symlink) before us.
+    uid_suffix = f"-{os.getuid()}" if hasattr(os, "getuid") else ""
+    candidates = (
+        Path.home() / ".hermes-profile-exports",
+        Path(tempfile.gettempdir()) / f"hermes-profile-exports{uid_suffix}",
+    )
+    for candidate in candidates:
+        if not _inside_git_checkout(candidate):
+            return candidate
+    # Fail closed: writing a secret-bearing archive into a source tree is the
+    # incident this helper exists to prevent (#92457). A warning on stderr
+    # would not stop a scripted export from recreating it.
+    raise ValueError(
+        "No safe automatic export destination: every candidate directory is "
+        "inside a Git checkout. Provide an explicit output path outside the "
+        "checkout (CLI: -o /path/outside/repo/profile.tar.gz)."
+    )
+
+
+def get_profile_export_path(name: str, *, timestamp: Optional[str] = None) -> Path:
+    """Return a managed destination for an export with no explicit output.
+
+    Keep automatic exports outside the current working directory and outside
+    every named profile.  The CLI is commonly run from a source checkout; its
+    old ``<name>.tar.gz`` default therefore made a profile snapshot look like
+    a repository artifact and allowed it to be committed accidentally.
+    """
+    canon = normalize_profile_name(name)
+    validate_profile_name(canon)
+    export_dir = _profile_export_directory()
+    export_dir.mkdir(parents=True, exist_ok=True)
+    # exist_ok=True would silently accept a directory (or symlink) another
+    # local user pre-created at a predictable path; refuse to write a
+    # secret-bearing archive anywhere we don't own.
+    if export_dir.is_symlink():
+        raise ValueError(
+            f"Export directory {export_dir} is a symlink; refusing to write "
+            "a profile archive through it. Provide an explicit output path."
+        )
+    if hasattr(os, "getuid") and export_dir.stat().st_uid != os.getuid():
+        raise ValueError(
+            f"Export directory {export_dir} is owned by another user; "
+            "refusing to write a profile archive there. Provide an explicit "
+            "output path."
+        )
+    stamp = timestamp or time.strftime("%Y%m%d-%H%M%S")
+    return export_dir / f"{canon}-{stamp}.tar.gz"
+
 def _default_export_ignore(root_dir: Path):
     """Return an *ignore* callable for :func:`shutil.copytree`.
 
@@ -2132,23 +2277,6 @@ def _default_export_ignore(root_dir: Path):
         return ignored
 
     return _ignore
-
-
-def _make_profile_archive(base: str, root_dir: str, base_dir: str) -> str:
-    """Create ``<base>.tar.gz`` of ``root_dir/base_dir`` — GNU tar format.
-
-    Not :func:`shutil.make_archive`: that writes PAX (Python's tarfile default
-    since 3.8), whose fractional-mtime records macOS Archive Utility rejects —
-    double-clicking an exported profile threw "Error 94 - Bad message." GNU
-    format keeps long paths working (longlink extensions) and stays integer-
-    mtime, so Finder, bsdtar, and gnutar all extract it.
-    """
-    import tarfile
-
-    archive_path = f"{base}.tar.gz"
-    with tarfile.open(archive_path, "w:gz", format=tarfile.GNU_FORMAT) as tf:
-        tf.add(str(Path(root_dir) / base_dir), arcname=base_dir)
-    return archive_path
 
 
 # Text / config suffixes walked during export secret scrubbing. Binary DBs,
@@ -2249,7 +2377,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
 
     def _stage_extras(staged: Path) -> None:
         for rel, content in (extra_files or {}).items():
-            parts = _normalize_profile_archive_parts(rel)
+            parts = normalize_archive_parts(rel)
             target = staged.joinpath(*parts)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
@@ -2268,7 +2396,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
             )
             _stage_extras(staged)
             _scrub_export_secrets(staged)
-            result = _make_profile_archive(base, tmpdir, "default")
+            result = make_targz(base, tmpdir, "default")
             return Path(result)
 
     # Named profiles — stage a filtered copy to exclude credentials
@@ -2283,85 +2411,8 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
         )
         _stage_extras(staged)
         _scrub_export_secrets(staged)
-        result = _make_profile_archive(base, tmpdir, canon)
+        result = make_targz(base, tmpdir, canon)
         return Path(result)
-
-
-def _normalize_profile_archive_parts(member_name: str) -> List[str]:
-    """Return safe path parts for a profile archive member."""
-    normalized_name = member_name.replace("\\", "/")
-    posix_path = PurePosixPath(normalized_name)
-    windows_path = PureWindowsPath(member_name)
-
-    if (
-        not normalized_name
-        or posix_path.is_absolute()
-        or windows_path.is_absolute()
-        or windows_path.drive
-    ):
-        raise ValueError(f"Unsafe archive member path: {member_name}")
-
-    parts = [part for part in posix_path.parts if part not in {"", "."}]
-    if not parts or any(part == ".." for part in parts):
-        raise ValueError(f"Unsafe archive member path: {member_name}")
-    return parts
-
-
-def _safe_extract_profile_archive(archive: Path, destination: Path) -> None:
-    """Extract a profile archive without allowing path escapes or links."""
-    import tarfile
-
-    with tarfile.open(archive, "r:gz") as tf:
-        for member in tf.getmembers():
-            parts = _normalize_profile_archive_parts(member.name)
-            target = destination.joinpath(*parts)
-
-            if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
-                continue
-
-            if not member.isfile():
-                raise ValueError(
-                    f"Unsupported archive member type: {member.name}"
-                )
-
-            target.parent.mkdir(parents=True, exist_ok=True)
-            extracted = tf.extractfile(member)
-            if extracted is None:
-                raise ValueError(f"Cannot read archive member: {member.name}")
-
-            with extracted, open(target, "wb") as dst:
-                shutil.copyfileobj(extracted, dst)
-
-            try:
-                os.chmod(target, member.mode & 0o777)
-            except OSError:
-                pass
-
-
-def _inspect_profile_archive_roots(archive: Path) -> set[str]:
-    """Return the archive's top-level directory names.
-
-    Profile imports expect exactly one root directory. Inspecting the archive
-    before extraction lets us stage the import safely instead of mutating a
-    live profile tree first and reconciling names later.
-    """
-    import tarfile
-
-    with tarfile.open(archive, "r:gz") as tf:
-        top_dirs = {
-            parts[0]
-            for member in tf.getmembers()
-            for parts in [_normalize_profile_archive_parts(member.name)]
-            if len(parts) > 1 or member.isdir()
-        }
-        if not top_dirs:
-            top_dirs = {
-                _normalize_profile_archive_parts(member.name)[0]
-                for member in tf.getmembers()
-                if member.isdir()
-            }
-    return top_dirs
 
 
 def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
@@ -2376,7 +2427,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
 
-    top_dirs = _inspect_profile_archive_roots(archive)
+    top_dirs = archive_root_dirs(archive)
     archive_root = top_dirs.pop() if len(top_dirs) == 1 else None
     inferred_name = name or archive_root
     if not inferred_name:
@@ -2409,7 +2460,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
     with tempfile.TemporaryDirectory(prefix="hermes_profile_import_") as tmpdir:
         staging_root = Path(tmpdir)
-        _safe_extract_profile_archive(archive, staging_root)
+        safe_extract_targz(archive, staging_root)
 
         extracted = staging_root / archive_root
         if not extracted.is_dir():

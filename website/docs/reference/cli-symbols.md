@@ -42,7 +42,7 @@ The single line at the bottom of the TUI. Segments appear only when relevant and
 | `⏱` | Per-prompt elapsed time while the turn runs, e.g. `⏱ 12s/3m 45s` (turn time / session time). |
 | `⏲` | The same timer, frozen after the turn completes. |
 | `cmp N` | The session has been auto-compressed N times. |
-| `▶ N` | N `/background` tasks currently running. |
+| `▶ N` | N `/bg` tasks currently running. |
 | `⚠ YOLO` | YOLO mode is on (auto-approval). Also shown in the startup banner. |
 | `⛓ N` | N subagents currently active. |
 | `↩ resumes when subagent finishes` | Reassurance shown while you are idle but delegated work is still in flight — the result returns on its own. |

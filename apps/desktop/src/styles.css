@@ -2846,6 +2846,37 @@ button[data-slot='aui_msg-reactions'] svg {
   pointer-events: auto;
 }
 
+/* A held band is the interface — clarify / approval / a live turn. It must
+   take clicks even if the composer never received focus. On click-through
+   hosts that is a deliberate dead zone over the game; on a prompt it is a
+   surface you cannot use. */
+[data-hud-shell][data-hud-held] [data-slot='composer-bounds'] {
+  pointer-events: auto;
+}
+
+/* Linux X11 is a solid window: ignore-mouse cannot restore, so a visible
+   band that still has pointer-events:none swallows the click and does
+   nothing. Once the band is up it is the surface. */
+[data-hud-shell][data-hud-input='solid'][data-hud-recent] [data-slot='composer-bounds'] {
+  pointer-events: auto;
+}
+
+/* Widgets and links opt in even when the band is a ghost, so a click-through
+   HUD can still answer a clarify option or open an OAuth URL without sitting
+   in the composer first. Children inherit auto from these roots. */
+[data-hud-shell]
+  :is(
+    [data-slot='clarify-inline'],
+    [data-clarify-choices],
+    [data-clarify-batch],
+    [data-slot='tool-approval-inline'],
+    [data-slot='tool-approval-fallback'],
+    [data-slot='tool-approval-actions'],
+    a[href]
+  ) {
+  pointer-events: auto;
+}
+
 /* Three states, not two. A turn landing brings the transcript up, but only part
    way — it is there to be glanced at over whatever you are actually doing, and
    full-strength text over another app reads as the HUD demanding attention it
@@ -3466,11 +3497,14 @@ html:has([data-hud-shell]) [data-slot='popover-content'] [class*='max-h-'] {
   max-height: max(5rem, calc(100dvh - 9rem)) !important;
 }
 
-/* The menu panels themselves: never taller than the window minus the bar. */
+/* The menu panels themselves: never taller than the window minus the bar.
+   Portalled out of the shell, they must still take the pointer — the HUD
+   defaults to none and a right-click menu that cannot be clicked is dead. */
 html:has([data-hud-shell]) [data-slot='dropdown-menu-content'],
 html:has([data-hud-shell]) [data-slot='popover-content'] {
   max-height: calc(100dvh - 4.5rem) !important;
   overflow-y: auto;
+  pointer-events: auto;
 }
 
 /* Hide the scrollbar — a HUD with a visible track stops reading as an overlay. */

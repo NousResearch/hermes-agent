@@ -15,7 +15,7 @@ Train sparse autoencoders to interpret model features.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/saelens` |
-| Path | `optional-skills/mlops/saelens` |
+| Path | `optional-skills/mlops\saelens` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -401,9 +401,9 @@ For detailed API documentation, tutorials, and advanced usage, see the `referenc
 
 | File | Contents |
 |------|----------|
-| [references/README.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/saelens/references/README.md) | Overview and quick start guide |
-| [references/api.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/saelens/references/api.md) | Complete API reference for SAE, TrainingSAE, configurations |
-| [references/tutorials.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/saelens/references/tutorials.md) | Step-by-step tutorials for training, analysis, steering |
+| [references/README.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\saelens/references/README.md) | Overview and quick start guide |
+| [references/api.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\saelens/references/api.md) | Complete API reference for SAE, TrainingSAE, configurations |
+| [references/tutorials.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\saelens/references/tutorials.md) | Step-by-step tutorials for training, analysis, steering |
 
 ## External Resources
 

@@ -7,7 +7,6 @@ or a temp file (local).
 """
 
 import codecs
-import hashlib
 import json
 import logging
 import os
@@ -25,7 +24,13 @@ from typing import IO, Callable, Iterable, Protocol
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
-from tools.interrupt import is_interrupted
+from tools.interrupt import is_interrupted, is_thread_interrupted
+from tools.environments.path_utils import (
+    _SANDBOX_DIR_HASH_LEN,
+    _SANDBOX_DIR_MAX_LEN,
+    _SANDBOX_DIR_UNSAFE_RE,
+    sanitize_task_id_for_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +39,14 @@ logger = logging.getLogger(__name__)
 # every is_interrupted() state change from _wait_for_process.  Off by default
 # to avoid flooding production gateway logs.
 _DEBUG_INTERRUPT = bool(os.getenv("HERMES_DEBUG_INTERRUPT"))
+
+# Extra seconds the ``run_bounded_sync`` backstop waits past the inner
+# ``_wait_for_process`` deadline. The inner poll loop is what returns
+# partial output + returncode 124; this outer bound only exists for when
+# that loop itself never returns (family A of #94285: a blocked wait
+# that silently disables asyncio timers). Keep it small so a healthy
+# timeout still comes from the inner path.
+_EXECUTE_WAIT_BOUND_GRACE_S = 2.0
 
 if _DEBUG_INTERRUPT:
     # AIAgent's quiet_mode path (run_agent.py) forces the `tools` logger to
@@ -293,58 +306,6 @@ def get_sandbox_dir() -> Path:
         p = get_hermes_home() / "sandboxes"
     p.mkdir(parents=True, exist_ok=True)
     return p
-
-
-# A persistent sandbox's host directory is named after task_id, and that name
-# then becomes the source half of a `-v <source>:<target>` spec (Docker) or a
-# writable-overlay directory (Singularity). Docker splits the spec on ':', so
-# a colon-bearing name arrives as extra mount fields and the run is refused
-# outright ("invalid spec ... too many colons" / "invalid mode", exit 125).
-# Path separators would additionally escape the sandbox root, and Windows
-# forbids ':' in path segments entirely.
-_SANDBOX_DIR_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
-_SANDBOX_DIR_MAX_LEN = 128
-_SANDBOX_DIR_HASH_LEN = 12
-
-
-def sanitize_task_id_for_path(task_id: str) -> str:
-    """Return a bind-mountable directory name for *task_id*'s sandbox.
-
-    Shared by every environment backend that turns a task id into a host
-    filesystem path component (Docker persistent sandboxes, Singularity
-    persistent overlays). Names that are already safe are returned verbatim,
-    so the shared ``default`` sandbox and RL/benchmark task ids keep resolving
-    to the directory they have always used — no installed package or ``/root``
-    state moves. Only ids that could never have produced a working bind mount
-    are rewritten.
-
-    A rewrite also appends a digest of the original id, because the character
-    substitution alone is not injective: ``a:b`` and ``a_b`` would otherwise
-    share one persistent sandbox and leak one session's ``/root`` into
-    another's container. The digest is a pure function of the id, so the same
-    session resolves to the same directory in every process — cross-process
-    container reuse depends on that.
-    """
-    value = task_id if isinstance(task_id, str) else ""
-    if not value:
-        # An empty component collapses the path onto the sandbox root, which
-        # would bind-mount every task's state at once.
-        return "default"
-
-    cleaned = _SANDBOX_DIR_UNSAFE_RE.sub("_", value)
-    if (
-        cleaned == value
-        and len(value) <= _SANDBOX_DIR_MAX_LEN
-        and value not in {".", ".."}
-        # Windows silently strips trailing dots/spaces, aliasing two ids onto
-        # one directory.
-        and not value.endswith((".", " "))
-    ):
-        return value
-
-    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:_SANDBOX_DIR_HASH_LEN]
-    stem = cleaned[: _SANDBOX_DIR_MAX_LEN - _SANDBOX_DIR_HASH_LEN - 1].strip("._")
-    return f"{stem or 'task'}-{digest}"
 
 
 # ---------------------------------------------------------------------------
@@ -1046,7 +1007,12 @@ class BaseEnvironment(ABC):
     # ------------------------------------------------------------------
 
     def _wait_for_process(
-        self, proc: ProcessHandle, timeout: int = 120, *, bounded_capture: bool = False
+        self,
+        proc: ProcessHandle,
+        timeout: int = 120,
+        *,
+        bounded_capture: bool = False,
+        watch_interrupt_tid: int | None = None,
     ) -> dict:
         """Poll-based wait with interrupt checking and stdout draining.
 
@@ -1063,6 +1029,11 @@ class BaseEnvironment(ABC):
         Fires the ``activity_callback`` (if set on this instance) every 10s
         while the process is running so the gateway's inactivity timeout
         doesn't kill long-running commands.
+
+        ``watch_interrupt_tid`` is the tool-worker thread that submitted this
+        wait. ``execute()`` may move the wait onto a ``run_bounded_sync``
+        worker; ``/stop`` still interrupts the original worker tid, so the
+        poll loop must honor that bit as well as the current thread's.
 
         Also wraps the poll loop in a ``try/finally`` that guarantees we
         call ``self._kill_process(proc)`` if we exit via ``KeyboardInterrupt``
@@ -1260,7 +1231,7 @@ class BaseEnvironment(ABC):
             _poll_sleep = 0.005
             while proc.poll() is None:
                 _iter_count += 1
-                if is_interrupted():
+                if is_interrupted() or is_thread_interrupted(watch_interrupt_tid):
                     if _DEBUG_INTERRUPT:
                         logger.info(
                             "[interrupt-debug] _wait_for_process INTERRUPT DETECTED "
@@ -1436,6 +1407,10 @@ class BaseEnvironment(ABC):
         if cwd_path:
             self.cwd = cwd_path
             result["cwd_observed"] = True
+            # Keep the observation on this command's result as well as on the
+            # shared environment. Concurrent callers must not read self.cwd
+            # after another command has already updated it.
+            result["cwd"] = cwd_path
 
         # Strip the marker line AND the \n we injected before it.
         # The wrapper emits: printf '\n__MARKER__%s__MARKER__\n'
@@ -1487,6 +1462,10 @@ class BaseEnvironment(ABC):
         full-fidelity consumers — file operations ``cat`` reads that feed
         the patch engine, code-execution RPC reads, log reads — MUST leave
         it False: truncating those corrupts data, not just display.
+
+        The wait is bounded by ``agent.deadline.run_bounded_sync`` so a
+        wedged poll loop cannot hang past ``timeout`` and silently disable
+        every asyncio timer in the process (#94285).
         """
         self._before_execute()
 
@@ -1519,12 +1498,85 @@ class BaseEnvironment(ABC):
         # unless login itself is broken — then non-login is the only path.
         login = not self._snapshot_ready and not self._prefer_nonlogin
 
-        proc = self._run_bash(
-            wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
-        )
-        result = self._wait_for_process(
-            proc, timeout=effective_timeout, bounded_capture=bounded_capture
-        )
+        parent_tid = threading.current_thread().ident
+        # Activity callback is thread-local (see set_activity_callback). The
+        # wait runs on the deadline worker, so copy it across or long
+        # commands look idle to cron/gateway heartbeats.
+        parent_activity_cb = get_activity_callback()
+        proc_holder: list = []
+
+        def _spawn_and_wait() -> dict:
+            if parent_activity_cb is not None:
+                set_activity_callback(parent_activity_cb)
+            spawned = self._run_bash(
+                wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
+            )
+            proc_holder.append(spawned)
+            return self._wait_for_process(
+                spawned,
+                timeout=effective_timeout,
+                bounded_capture=bounded_capture,
+                watch_interrupt_tid=parent_tid,
+            )
+
+        def _on_timeout() -> None:
+            if not proc_holder:
+                return
+            spawned = proc_holder[0]
+            try:
+                self._kill_process(spawned)
+            except Exception:
+                logger.debug(
+                    "terminal wait-bound kill_process failed", exc_info=True
+                )
+            pid = getattr(spawned, "pid", None)
+            if not pid:
+                return
+            try:
+                from agent.deadline import kill_process_tree
+
+                kill_process_tree(int(pid))
+            except Exception:
+                logger.debug(
+                    "terminal wait-bound kill_process_tree failed", exc_info=True
+                )
+
+        # Hard wall-clock backstop (#94285): ``_wait_for_process`` already
+        # polls to ``effective_timeout``, but that loop runs on the tool
+        # thread. If that thread is the event-loop thread — or the wait
+        # itself never returns (Windows pipe/poll hang) — every asyncio
+        # timer in the process is silently disabled, including the 420s
+        # sequential-tool deadline and the cron inactivity monitor.
+        # ``run_bounded_sync`` drives expiry from a daemon worker +
+        # ``Event.wait`` so a blocked loop cannot disable it. Grace lets
+        # the inner poll return the partial-output 124 path on a healthy
+        # timeout; the outer bound only fires when that loop is wedged.
+        from agent.deadline import run_bounded_sync
+
+        try:
+            bound_s = float(effective_timeout) + _EXECUTE_WAIT_BOUND_GRACE_S
+        except (TypeError, ValueError):
+            # Defensive: a non-numeric timeout must not silently disable the
+            # backstop (that would recreate the unbounded wait this bound
+            # exists to prevent). Fall back to the module's 120s wait default.
+            bound_s = 120.0 + _EXECUTE_WAIT_BOUND_GRACE_S
+
+        try:
+            bounded = run_bounded_sync(
+                _spawn_and_wait,
+                bound_s,
+                label=f"terminal.wait:{type(self).__name__}",
+                on_timeout=_on_timeout,
+            )
+        except (KeyboardInterrupt, SystemExit):
+            _on_timeout()
+            raise
+
+        if bounded.timed_out:
+            timeout_msg = f"\n[Command timed out after {effective_timeout}s]"
+            result = {"output": timeout_msg.lstrip(), "returncode": 124}
+        else:
+            result = bounded.value
         self._update_cwd(result)
 
         return result

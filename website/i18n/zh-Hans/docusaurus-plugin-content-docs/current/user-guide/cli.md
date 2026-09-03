@@ -69,7 +69,7 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 | 上下文进度条 | 带颜色阈值编码的可视填充指示器 |
 | 费用 | 预估会话费用（未知或零价格模型显示 `n/a`） |
 | 🗜️ N | **上下文压缩次数**——当前运行会话被自动压缩的次数。首次压缩触发后显示。 |
-| ▶ N | **活跃后台任务数**——当前会话中仍在运行的 `/background` prompt（提示词）数量。至少有一个任务进行中时显示。 |
+| ▶ N | **活跃后台任务数**——当前会话中仍在运行的 `/bg` prompt（提示词）数量。至少有一个任务进行中时显示。 |
 | 时长 | 会话已用时间 |
 | ⚠ YOLO | **YOLO 模式警告**——当 `HERMES_YOLO_MODE` 开启时显示（通过启动时的 `hermes --yolo` 或会话中的 `/yolo` 切换）。与横幅行警告保持同步，确保你不会忘记自己处于自动批准模式。 |
 
@@ -122,7 +122,8 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 | `/model` | 显示或更改当前模型 |
 | `/tools` | 列出当前可用工具 |
 | `/skills browse` | 浏览 skill 中心和官方可选 skill |
-| `/background <prompt>` | 在独立后台会话中运行一个 prompt |
+| `/bg <prompt>` | 在独立后台会话中运行一个 prompt |
+| `/btw <question>` | 在不打断当前对话的情况下，就当前对话提出顺带问题 |
 | `/skin` | 显示或切换当前 CLI 皮肤 |
 | `/voice on` | 启用 CLI 语音模式（按 `Ctrl+B` 录音） |
 | `/voice tts` | 切换 Hermes 回复的语音播放 |
@@ -383,7 +384,7 @@ auxiliary:
 在独立的后台会话中运行 prompt，同时继续使用 CLI 进行其他工作：
 
 ```
-/background Analyze the logs in /var/log and summarize any errors from today
+/bg Analyze the logs in /var/log and summarize any errors from today
 ```
 
 Hermes 立即确认任务并将提示符还给你：
@@ -395,7 +396,7 @@ Hermes 立即确认任务并将提示符还给你：
 
 ### 工作原理
 
-每个 `/background` prompt 会在守护线程中生成一个**完全独立的 agent 会话**：
+每个 `/bg` prompt 会在守护线程中生成一个**完全独立的 agent 会话**：
 
 - **隔离对话**——后台 agent 不了解当前会话的历史。它只接收你提供的 prompt。
 - **相同配置**——后台 agent 继承当前会话的模型、提供商、工具集、推理设置和回退模型。
@@ -419,8 +420,8 @@ Hermes 立即确认任务并将提示符还给你：
 
 ### 使用场景
 
-- **长时间研究**——"/background research the latest developments in quantum error correction"，同时继续编写代码
-- **文件处理**——"/background analyze all Python files in this repo and list any security issues"，同时继续对话
+- **长时间研究**——"/bg research the latest developments in quantum error correction"，同时继续编写代码
+- **文件处理**——"/bg analyze all Python files in this repo and list any security issues"，同时继续对话
 - **并行调查**——同时启动多个后台任务，从不同角度探索问题
 
 :::info

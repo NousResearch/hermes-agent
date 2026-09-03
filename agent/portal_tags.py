@@ -56,6 +56,48 @@ _conversation_id: ContextVar[Optional[str]] = ContextVar(
 )
 
 
+# ── Ambient routing/affinity scope ───────────────────────────────────────────
+#
+# Separate from the conversation id above, which is an ATTRIBUTION value: it
+# names the conversation a request belongs to and is sent to the Portal as
+# ``conversation=<id>``. The affinity scope is a ROUTING value — OpenRouter's
+# sticky ``session_id``, Nous Portal's sticky key and xAI's ``x-grok-conv-id``
+# use it to pin one conversation to one backend/prompt cache.
+#
+# The two agree for every host that keeps one session id per conversation, so
+# the providers historically read the attribution id for both. They diverge
+# for a host that mints one physical session per RESPONSE: attribution still
+# resolves per row, while routing must follow the key the host declared for
+# the whole chat (``agent.prompt_cache_scope.declared_conversation_scope``,
+# issue #96811). Only that declared value is published here — unset means
+# "no declaration", and consumers fall back to the conversation id exactly as
+# before, so delegate trees keep sharing their parent's sticky key.
+_affinity_scope: ContextVar[Optional[str]] = ContextVar(
+    "hermes_affinity_scope", default=None
+)
+
+
+def set_affinity_scope(scope: Optional[str]):
+    """Publish the declared routing/affinity scope for this turn.
+
+    Returns the ContextVar token; pair with :func:`reset_affinity_scope`.
+    """
+    return _affinity_scope.set(scope or None)
+
+
+def reset_affinity_scope(token) -> None:
+    """Restore the previous affinity scope (pair with ``set_affinity_scope``)."""
+    try:
+        _affinity_scope.reset(token)
+    except Exception:
+        _affinity_scope.set(None)
+
+
+def get_affinity_scope() -> Optional[str]:
+    """Return the declared routing/affinity scope, or ``None`` when unset."""
+    return _affinity_scope.get()
+
+
 def set_conversation_context(conversation_id: Optional[str]):
     """Publish the active conversation id for ambient Portal tagging.
 

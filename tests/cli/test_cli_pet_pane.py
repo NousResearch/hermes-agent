@@ -53,6 +53,9 @@ def _make_cli():
     cli_obj._pet_cols = 18
     cli_obj._pet_scale = 0.7
     cli_obj._pet_frames_cache = {}
+    cli_obj._pet_kitty_cache = {}
+    cli_obj._pet_kitty_image_id = 0
+    cli_obj._pet_kitty_pending = ""
     cli_obj._pet_frame_idx = 0
     cli_obj._agent_running = False
     # Transient-beat + reasoning state (set by HermesCLI.__init__ in production).
@@ -134,3 +137,129 @@ def test_pet_resolve_config_enables_and_disables(boba_like):
     cli_obj._pet_resolve_config()
     assert cli_obj._pet_enabled is False
     assert cli_obj._pet_renderer is None
+
+
+def test_pet_fragments_render_kitty_placeholders(boba_like):
+    from agent.pet import render
+
+    cli_obj = _make_cli()
+    pet = store.load_pet("boba")
+    assert pet is not None
+    cli_obj._pet_renderer = PetRenderer(str(pet.spritesheet), mode="kitty", scale=0.4)
+    cli_obj._pet_slug = "boba"
+    cli_obj._pet_kitty_image_id = render.kitty_image_id("boba")
+    cli_obj._pet_enabled = True
+
+    frags = cli_obj._pet_fragments()
+    assert frags
+    assert any("\U0010eeee" in text for _, text in frags)
+    payload = cli_obj._pet_kitty_payload_for("idle")
+    assert payload is not None
+    color = render.kitty_color_hex(payload["image_id"])
+    assert all(f"fg:{color}" in style for style, text in frags if text != "\n")
+    assert cli_obj._pet_widget_height() > 0
+
+    cli_obj._pet_queue_kitty_frame("idle")
+    assert cli_obj._pet_kitty_pending.startswith("\x1b_G")
+
+    class Output:
+        def __init__(self):
+            self.raw = ""
+            self.flushed = False
+
+        def write_raw(self, text):
+            self.raw += text
+
+        def flush(self):
+            self.flushed = True
+
+    class App:
+        output = Output()
+
+    app = App()
+    cli_obj._pet_flush_kitty_frame(app)
+    assert app.output.raw.startswith("\x1b_G")
+    assert app.output.flushed is True
+    assert cli_obj._pet_kitty_pending == ""
+
+
+def test_pet_off_clears_pending_kitty_frame(boba_like):
+    from hermes_cli.config import load_config, save_config
+
+    cli_obj = _make_cli()
+    cli_obj._pet_kitty_pending = "stale-apc"
+    cfg = load_config()
+    cfg.setdefault("display", {}).setdefault("pet", {}).update(
+        {"enabled": True, "slug": "boba", "render_mode": "off"}
+    )
+    save_config(cfg)
+
+    cli_obj._pet_resolve_config()
+
+    assert cli_obj._pet_enabled is False
+    assert cli_obj._pet_renderer is None
+    assert cli_obj._pet_kitty_pending == ""
+
+
+def test_pet_resolve_wezterm_stays_unicode(boba_like, monkeypatch):
+    from hermes_cli.config import load_config, save_config
+
+    monkeypatch.delenv("KITTY_WINDOW_ID", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("TERM_PROGRAM", "WezTerm")
+    cli_obj = _make_cli()
+    cfg = load_config()
+    cfg.setdefault("display", {}).setdefault("pet", {}).update(
+        {"enabled": True, "slug": "boba", "render_mode": "auto"}
+    )
+    save_config(cfg)
+
+    cli_obj._pet_resolve_config()
+
+    assert cli_obj._pet_renderer is not None
+    assert cli_obj._pet_renderer.mode == "unicode"
+
+
+def test_pet_resolve_ghostty_uses_kitty(boba_like, monkeypatch):
+    from hermes_cli.config import load_config, save_config
+
+    monkeypatch.delenv("WEZTERM_PANE", raising=False)
+    monkeypatch.delenv("KITTY_WINDOW_ID", raising=False)
+    monkeypatch.setenv("TERM", "xterm-ghostty")
+    monkeypatch.setenv("TERM_PROGRAM", "ghostty")
+    cli_obj = _make_cli()
+    cfg = load_config()
+    cfg.setdefault("display", {}).setdefault("pet", {}).update(
+        {"enabled": True, "slug": "boba", "render_mode": "auto"}
+    )
+    save_config(cfg)
+
+    cli_obj._pet_resolve_config()
+
+    assert cli_obj._pet_renderer is not None
+    assert cli_obj._pet_renderer.mode == "kitty"
+
+
+def test_force_full_redraw_requeues_kitty_frame(boba_like, monkeypatch):
+    from agent.pet import render
+
+    cli_obj = _make_cli()
+    pet = store.load_pet("boba")
+    assert pet is not None
+    cli_obj._pet_renderer = PetRenderer(str(pet.spritesheet), mode="kitty", scale=0.4)
+    cli_obj._pet_enabled = True
+    cli_obj._pet_kitty_image_id = render.kitty_image_id("boba")
+    cli_obj._terminal_io_broken = False
+    cli_obj._clear_prompt_toolkit_screen = lambda *a, **k: None
+    cli_obj._redraw_rebuilds_scrollback = lambda: False
+
+    class App:
+        def invalidate(self):
+            self.invalidated = True
+
+    cli_obj._app = App()
+    monkeypatch.setattr("cli._replay_output_history", lambda: None)
+
+    cli_obj._force_full_redraw()
+
+    assert cli_obj._pet_kitty_pending.startswith("\x1b_G")

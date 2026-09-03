@@ -287,6 +287,247 @@ class TestProviderEnvBlocklist:
         assert result_env["MY_CUSTOM_VAR"] == "keep-this"
 
 
+class TestTerminalFirstPartyPlatformEnv:
+    """BUZZ_* first-party platform credentials must reach terminal children —
+    but ONLY in a Buzz agent context.
+
+    Issue #78026: Buzz platform agents could not use the ``buzz`` CLI from the
+    terminal tool because BUZZ_PRIVATE_KEY / BUZZ_AUTH_TAG / BUZZ_RELAY_URL
+    (and the other BUZZ_* vars) are stripped by _HERMES_PROVIDER_ENV_BLOCKLIST
+    and env_passthrough refuses to re-allow them (GHSA-rhgp-j443-p4rf).
+
+    The carve-out is TERMINAL-ONLY and CONTEXT-GATED: it applies when the
+    process is a Buzz-ACP managed agent (BUZZ_MANAGED_AGENT set by the
+    buzz-acp harness, #76243) or the live session's platform is ``buzz``.
+    Foreground (_make_run_env) and background/PTY (_sanitize_subprocess_env)
+    children then get the BUZZ_* vars; execute_code, hermes_subprocess_env,
+    docker, and env_passthrough registration stay sealed, and non-Buzz
+    sessions/processes keep stripping the vars. The blocklist itself is NOT
+    modified.
+    """
+
+    def test_make_run_env_preserves_buzz_vars(self):
+        """Foreground terminal children get the BUZZ_* credentials when the
+        process is a Buzz-managed agent (BUZZ_MANAGED_AGENT set)."""
+        from tools.environments.local import _make_run_env
+
+        buzz_vars = {
+            "BUZZ_PRIVATE_KEY": "nsec1faketestkey",
+            "BUZZ_AUTH_TAG": '["tag","data","kind","sig"]',
+            "BUZZ_RELAY_URL": "https://mycommunity.communities.buzz.xyz",
+        }
+        with patch.dict(
+            os.environ,
+            {**buzz_vars, "BUZZ_MANAGED_AGENT": "1", "PATH": "/usr/bin:/bin"},
+            clear=True,
+        ):
+            run_env = _make_run_env({})
+
+        for var, value in buzz_vars.items():
+            assert run_env.get(var) == value, (
+                f"{var} missing from foreground terminal env (issue #78026)"
+            )
+
+    def test_sanitize_subprocess_env_preserves_buzz_vars(self, monkeypatch):
+        """Background/PTY terminal children get the BUZZ_* credentials when
+        the process is a Buzz-managed agent."""
+        from tools.environments.local import _sanitize_subprocess_env
+
+        monkeypatch.setenv("BUZZ_MANAGED_AGENT", "1")
+        buzz_vars = {
+            "BUZZ_PRIVATE_KEY": "nsec1faketestkey",
+            "BUZZ_AUTH_TAG": '["tag","data","kind","sig"]',
+            "BUZZ_RELAY_URL": "https://mycommunity.communities.buzz.xyz",
+        }
+        result = _sanitize_subprocess_env({**buzz_vars, "HOME": "/home/user"})
+
+        for var, value in buzz_vars.items():
+            assert result.get(var) == value, (
+                f"{var} missing from background/PTY terminal env (issue #78026)"
+            )
+
+    def test_buzz_vars_stripped_without_buzz_context(self, monkeypatch):
+        """NEGATIVE gate: with no Buzz context signal (no BUZZ_MANAGED_AGENT,
+        session platform not buzz), the BUZZ_* credentials stay stripped from
+        BOTH terminal scrub paths — a Telegram/CLI/cron session on a host that
+        also runs a Buzz gateway must not see BUZZ_PRIVATE_KEY."""
+        from gateway.session_context import _SESSION_PLATFORM
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        monkeypatch.delenv("BUZZ_MANAGED_AGENT", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+        buzz_vars = {
+            "BUZZ_PRIVATE_KEY": "nsec1faketestkey",
+            "BUZZ_AUTH_TAG": '["tag","data","kind","sig"]',
+            "BUZZ_RELAY_URL": "https://mycommunity.communities.buzz.xyz",
+        }
+        for var, value in buzz_vars.items():
+            monkeypatch.setenv(var, value)
+        # Bind a non-buzz session platform (ContextVar-authoritative).
+        token = _SESSION_PLATFORM.set("telegram")
+        try:
+            run_env = _make_run_env({})
+            sanitized = _sanitize_subprocess_env({**buzz_vars, "HOME": "/home/user"})
+        finally:
+            _SESSION_PLATFORM.reset(token)
+
+        for var in buzz_vars:
+            assert var not in run_env, f"{var} leaked into non-Buzz foreground env"
+            assert var not in sanitized, f"{var} leaked into non-Buzz background env"
+
+    def test_session_platform_buzz_enables_carveout(self, monkeypatch):
+        """A live gateway session whose platform is ``buzz`` gets the
+        carve-out even without BUZZ_MANAGED_AGENT (native buzz gateway
+        plugin path), via the concurrency-safe session ContextVar."""
+        from gateway.session_context import _SESSION_PLATFORM
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        monkeypatch.delenv("BUZZ_MANAGED_AGENT", raising=False)
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1faketestkey")
+        token = _SESSION_PLATFORM.set("buzz")
+        try:
+            run_env = _make_run_env({})
+            sanitized = _sanitize_subprocess_env(
+                {"BUZZ_PRIVATE_KEY": "nsec1faketestkey", "HOME": "/home/user"}
+            )
+        finally:
+            _SESSION_PLATFORM.reset(token)
+
+        assert run_env.get("BUZZ_PRIVATE_KEY") == "nsec1faketestkey"
+        assert sanitized.get("BUZZ_PRIVATE_KEY") == "nsec1faketestkey"
+
+    def test_buzz_vars_stay_in_blocklist(self):
+        """The carve-out is a scrub-path exemption, NOT a blocklist removal —
+        BUZZ_* must remain blocked for every non-terminal surface (execute_code,
+        hermes_subprocess_env, env_passthrough registration)."""
+        assert {"BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG", "BUZZ_RELAY_URL"} <= \
+            _HERMES_PROVIDER_ENV_BLOCKLIST
+
+    def test_buzz_vars_use_plain_value_under_multiplex_without_scope(self, monkeypatch):
+        """First-party platform vars are the process's own env values: with
+        multiplex active and NO profile secret scope installed, the terminal
+        scrub paths must forward the plain env value — NOT raise
+        UnscopedSecretError (the fail-closed regression where the webhook-
+        filter script runner crashed instead of running without the var)."""
+        from agent import secret_scope as ss
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        monkeypatch.setenv("BUZZ_MANAGED_AGENT", "1")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec-plain-value")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        ss.set_multiplex_active(True)
+        try:
+            run_env = _make_run_env({})
+            sanitized = _sanitize_subprocess_env(
+                {"BUZZ_PRIVATE_KEY": "nsec-plain-value", "HOME": "/home/user"}
+            )
+        finally:
+            ss.set_multiplex_active(False)
+
+        assert run_env["BUZZ_PRIVATE_KEY"] == "nsec-plain-value"
+        assert sanitized["BUZZ_PRIVATE_KEY"] == "nsec-plain-value"
+
+    def test_buzz_vars_are_not_scope_resolved(self, monkeypatch):
+        """First-party matches bypass the profile secret scope: a scope value
+        for BUZZ_PRIVATE_KEY must NOT override the process env value — only
+        skill/config passthrough names are scope-resolved."""
+        from agent import secret_scope as ss
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        monkeypatch.setenv("BUZZ_MANAGED_AGENT", "1")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec-process-env")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"BUZZ_PRIVATE_KEY": "nsec-scoped"})
+        try:
+            run_env = _make_run_env({})
+            sanitized = _sanitize_subprocess_env(
+                {"BUZZ_PRIVATE_KEY": "nsec-process-env", "HOME": "/home/user"}
+            )
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert run_env["BUZZ_PRIVATE_KEY"] == "nsec-process-env"
+        assert sanitized["BUZZ_PRIVATE_KEY"] == "nsec-process-env"
+
+
+class TestTerminalFirstPartySnapshotIsolation:
+    """BUZZ_* first-party vars must not persist in the shared terminal
+    snapshot — a cross-profile leak under a multiplexed gateway.
+
+    The terminal login-shell snapshot (init_session ``export -p`` dump and the
+    per-command re-dump) captures the child env, which now includes
+    BUZZ_PRIVATE_KEY. The exclusion set is derived from get_all_passthrough()
+    plus backend-specific additions — and BUZZ_* can never be in it, because
+    env_passthrough refuses blocklisted names (GHSA-rhgp-j443-p4rf). Without
+    an exclusion, profile A's BUZZ_PRIVATE_KEY lands in hermes-snap-<id>.sh
+    and profile B's later command on the same collapsed LocalEnvironment
+    sources it. Fix: LocalEnvironment treats first-party terminal env names
+    like profile-scoped passthrough names — excluded from the dump and
+    save/restored per command.
+    """
+
+    def test_snapshot_exclusion_set_includes_first_party_names(self, monkeypatch):
+        """Under multiplex, BUZZ_* names present in the env are added to the
+        snapshot exclusion set, so the dump excludes them and _wrap_command
+        save/restores them per command."""
+        from agent import secret_scope as ss
+        from tools.environments.local import LocalEnvironment
+
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec-profile-a")
+        env = LocalEnvironment.__new__(LocalEnvironment)
+        env.env = {}
+        env._snapshot_passthrough_names = set()
+        ss.set_multiplex_active(True)
+        try:
+            excluded = env._snapshot_excluded_passthrough_names()
+        finally:
+            ss.set_multiplex_active(False)
+
+        assert "BUZZ_PRIVATE_KEY" in excluded
+        # The set is monotonic for the environment lifetime: the name stays
+        # excluded (and unset-guarded per command) even once it leaves the env.
+        assert "BUZZ_PRIVATE_KEY" in env._snapshot_passthrough_names
+
+    def test_buzz_secret_never_reaches_second_profile_via_snapshot(self, monkeypatch, tmp_path):
+        """Multiplex regression, end-to-end with real bash: (a) the snapshot
+        file never contains profile A's BUZZ_PRIVATE_KEY, and (b) profile B
+        sharing the same LocalEnvironment does not see profile A's
+        BUZZ_PRIVATE_KEY in its terminal env."""
+        import shutil
+        if not shutil.which("bash"):
+            pytest.skip("bash required")
+
+        from agent import secret_scope as ss
+        from tools.environments.local import LocalEnvironment
+
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec-profile-a")
+        ss.set_multiplex_active(True)
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
+        try:
+            # Profile A's command re-dumps the snapshot; the exclusion must
+            # keep BUZZ_PRIVATE_KEY out of BOTH the initial dump and the
+            # per-command re-dump.
+            env.execute("true")
+
+            snap = Path(env._snapshot_path)
+            assert snap.exists()
+            snap_text = snap.read_text(encoding="utf-8", errors="replace")
+            assert "nsec-profile-a" not in snap_text
+            assert "BUZZ_PRIVATE_KEY" not in snap_text
+
+            # Profile B: no BUZZ_PRIVATE_KEY in its env, same LocalEnvironment
+            # (same snapshot file). It must not see profile A's value.
+            monkeypatch.delenv("BUZZ_PRIVATE_KEY")
+            result = env.execute("printf '%s' \"${BUZZ_PRIVATE_KEY-unset}\"")
+            assert "nsec-profile-a" not in result["output"]
+            assert "unset" in result["output"]
+        finally:
+            env.cleanup()
+            ss.set_multiplex_active(False)
+
+
 class TestForceEnvOptIn:
     """Callers can opt in to passing a blocked var via _HERMES_FORCE_ prefix."""
 

@@ -261,6 +261,12 @@ class SessionKernel:
         self.sentinel: str = ""
         self.tool_call_log: List = []
         self.tool_call_counter: List[int] = [0]
+        # Cells currently attached to this kernel (bumped under _KERNELS_LOCK
+        # when a caller selects it, dropped when its cell settles). Reaping
+        # and cap-eviction skip kernels with attached cells: tearing one down
+        # mid-spawn rmtree'd the staging dir under the spawner
+        # (FileNotFoundError) and killed live cells (Sep 2026).
+        self.attached: int = 0
         self.response_q: "queue.Queue[dict]" = queue.Queue()
         self.raw_chunks: List[bytes] = []
         self.raw_bytes = [0]
@@ -272,6 +278,17 @@ class SessionKernel:
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
+
+    def dead(self) -> bool:
+        """True only once a spawned process has exited.
+
+        A kernel whose ``proc`` is still ``None`` is mid-spawn, not dead:
+        parallel cells for one owner race the first cell's ``_spawn``, and
+        treating the pending kernel as dead made every racer replace it,
+        orphaning the winner's process outside the registry (110 live
+        kernels under one 4-capped process, Sep 2026).
+        """
+        return self.proc is not None and self.proc.poll() is not None
 
 
 _KERNELS: Dict[Tuple, SessionKernel] = {}
@@ -380,18 +397,18 @@ def _reap_unlocked() -> List[SessionKernel]:
     doomed = [
         key
         for key, kernel in _KERNELS.items()
-        if now - kernel.last_used > idle_timeout
+        if kernel.attached == 0 and now - kernel.last_used > idle_timeout
     ]
     return [_KERNELS.pop(key) for key in doomed]
 
 
 def _evict_over_cap_unlocked(keep: Tuple) -> List[SessionKernel]:
-    """Pop least-recently-used kernels beyond the process-wide cap."""
+    """Pop least-recently-used idle kernels beyond the process-wide cap."""
     cap, _ = _lifecycle_limits()
     if len(_KERNELS) <= cap:
         return []
     by_age = sorted(
-        (key for key in _KERNELS if key != keep),
+        (key for key in _KERNELS if key != keep and _KERNELS[key].attached == 0),
         key=lambda key: _KERNELS[key].last_used,
     )
     doomed = by_age[: len(_KERNELS) - cap]
@@ -664,18 +681,60 @@ def execute_in_session_kernel(
     with _KERNELS_LOCK:
         expired = _reap_unlocked()
         kernel = _KERNELS.get(key)
-        if kernel is not None and (reset or not kernel.alive()):
+        if kernel is not None and (reset or kernel.dead()):
             _KERNELS.pop(key, None)
-            expired.append(kernel)
+            if kernel.attached == 0:
+                expired.append(kernel)
             kernel = None
             state_reset = True
         if kernel is None:
             kernel = SessionKernel(key)
             _KERNELS[key] = kernel
         kernel.last_used = time.monotonic()
+        kernel.attached += 1
         expired.extend(_evict_over_cap_unlocked(keep=key))
     for doomed in expired:
         _teardown(doomed)
+    try:
+        return _run_cell(
+            kernel, key, code, task_id=task_id, child_python=child_python,
+            child_cwd=child_cwd, sandbox_tools=sandbox_tools, timeout=timeout,
+            max_tool_calls=max_tool_calls, is_interrupted=is_interrupted,
+            exec_start=exec_start, state_reset=state_reset,
+        )
+    finally:
+        with _KERNELS_LOCK:
+            kernel.attached -= 1
+            kernel.last_used = time.monotonic()
+            # Dropped from the registry (reset/dead/reaped) while cells were
+            # still attached: the last one out owns the teardown.
+            orphaned = kernel.attached == 0 and _KERNELS.get(key) is not kernel
+        if orphaned:
+            _teardown(kernel)
+
+
+def _run_cell(
+    kernel: SessionKernel,
+    key: Tuple,
+    code: str,
+    *,
+    task_id: str,
+    child_python: str,
+    child_cwd: str,
+    sandbox_tools: frozenset,
+    timeout: int,
+    max_tool_calls: int,
+    is_interrupted,
+    exec_start: float,
+    state_reset: bool,
+) -> str:
+    from tools.code_execution_tool import (
+        _sandbox_failure_hint,
+        _truncate_stdout_text,
+    )
+    from agent.redact import redact_sensitive_text
+    from tools.ansi_strip import strip_ansi
+
     reused = kernel.proc is not None
 
     # Captured on the calling thread BEFORE the cell runs — the same
@@ -731,7 +790,8 @@ def execute_in_session_kernel(
                 # No safe way to interrupt one cell in place: kill the kernel,
                 # report the state loss, let the next call respawn.
                 with _KERNELS_LOCK:
-                    _KERNELS.pop(key, None)
+                    if _KERNELS.get(key) is kernel:
+                        _KERNELS.pop(key, None)
                 _teardown(kernel)
 
             duration = round(time.monotonic() - exec_start, 2)
@@ -810,7 +870,8 @@ def execute_in_session_kernel(
             elif cell_status == "exit":
                 # The cell called sys.exit(): honor it as end-of-kernel.
                 with _KERNELS_LOCK:
-                    _KERNELS.pop(key, None)
+                    if _KERNELS.get(key) is kernel:
+                        _KERNELS.pop(key, None)
                 _teardown(kernel)
                 result["kernel"]["ended"] = True
                 if cell_stderr:
@@ -822,7 +883,8 @@ def execute_in_session_kernel(
                     + (": " + stderr_raw.strip() if stderr_raw.strip() else ".")
                 )
                 with _KERNELS_LOCK:
-                    _KERNELS.pop(key, None)
+                    if _KERNELS.get(key) is kernel:
+                        _KERNELS.pop(key, None)
                 _teardown(kernel)
             elif cell_stderr:
                 result["output"] = stdout_text + "\n--- stderr ---\n" + cell_stderr
@@ -831,7 +893,8 @@ def execute_in_session_kernel(
         except Exception as exc:  # pragma: no cover - defensive parity with per-call
             logger.error("session kernel failed: %s: %s", type(exc).__name__, exc, exc_info=True)
             with _KERNELS_LOCK:
-                _KERNELS.pop(key, None)
+                if _KERNELS.get(key) is kernel:
+                    _KERNELS.pop(key, None)
             _teardown(kernel)
             return json.dumps({
                 "status": "error",

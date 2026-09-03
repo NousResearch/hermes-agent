@@ -379,3 +379,50 @@ class TestRegistration:
         invalidate_check_fn_cache()
         defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_call_service"})
         assert len(defs) == 3
+
+
+class TestServiceCallTimeout:
+    def test_default_timeout_resolved(self):
+        from tools.homeassistant_tool import _get_service_call_timeout
+        assert _get_service_call_timeout() == 15.0
+
+    def test_per_call_timeout_override(self):
+        from tools.homeassistant_tool import _get_service_call_timeout
+        assert _get_service_call_timeout(60.0) == 60.0
+        # Clamped bounds:
+        assert _get_service_call_timeout(0.5) == 1.0
+        assert _get_service_call_timeout(500.0) == 300.0
+
+    def test_config_timeout_override(self, monkeypatch):
+        from tools.homeassistant_tool import _get_service_call_timeout
+        with patch("hermes_cli.config.load_config", return_value={"homeassistant": {"service_call_timeout": 45}}):
+            assert _get_service_call_timeout() == 45.0
+            # Per-call still overrides config:
+            assert _get_service_call_timeout(90.0) == 90.0
+
+    @patch("tools.homeassistant_tool._async_call_service", new_callable=AsyncMock)
+    def test_handle_call_service_passes_timeout(self, mock_call_service):
+        mock_call_service.return_value = {"success": True}
+        result = json.loads(_handle_call_service({
+            "domain": "script",
+            "service": "launch_player_living_room",
+            "timeout": 60,
+        }))
+        assert result["result"]["success"] is True
+        mock_call_service.assert_awaited_once_with(
+            "script",
+            "launch_player_living_room",
+            None,
+            None,
+            timeout=60.0,
+        )
+
+    def test_handle_call_service_invalid_timeout(self):
+        result = json.loads(_handle_call_service({
+            "domain": "script",
+            "service": "launch_player_living_room",
+            "timeout": "not-a-number",
+        }))
+        assert "error" in result
+        assert "Invalid timeout" in result["error"]
+

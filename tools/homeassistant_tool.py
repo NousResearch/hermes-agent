@@ -71,6 +71,30 @@ def _get_headers(token: str = "") -> Dict[str, str]:
     }
 
 
+_DEFAULT_SERVICE_CALL_TIMEOUT: float = 15.0
+_MIN_SERVICE_CALL_TIMEOUT: float = 1.0
+_MAX_SERVICE_CALL_TIMEOUT: float = 300.0
+
+
+def _get_service_call_timeout(per_call_timeout: Optional[float] = None) -> float:
+    """Resolve effective service call timeout: per-call > config > default (clamped 1-300s)."""
+    if per_call_timeout is not None:
+        try:
+            val = float(per_call_timeout)
+            return max(_MIN_SERVICE_CALL_TIMEOUT, min(_MAX_SERVICE_CALL_TIMEOUT, val))
+        except (ValueError, TypeError):
+            pass
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        cfg = load_config()
+        configured = cfg_get(cfg, "homeassistant", "service_call_timeout", default=None)
+        if configured is not None:
+            return max(_MIN_SERVICE_CALL_TIMEOUT, min(_MAX_SERVICE_CALL_TIMEOUT, float(configured)))
+    except Exception:
+        pass
+    return _DEFAULT_SERVICE_CALL_TIMEOUT
+
+
 # ---------------------------------------------------------------------------
 # Async helpers (called from sync handlers via run_until_complete)
 # ---------------------------------------------------------------------------
@@ -180,23 +204,31 @@ async def _async_call_service(
     service: str,
     entity_id: Optional[str] = None,
     data: Optional[Dict[str, Any]] = None,
+    timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Call a Home Assistant service."""
     import aiohttp
 
+    effective_timeout = _get_service_call_timeout(timeout)
     hass_url, hass_token = _get_config()
     url = f"{hass_url}/api/services/{domain}/{service}"
     payload = _build_service_payload(entity_id, data)
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(
-            url,
-            headers=_get_headers(hass_token),
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            resp.raise_for_status()
-            result = await resp.json()
+        try:
+            async with session.post(
+                url,
+                headers=_get_headers(hass_token),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=effective_timeout),
+            ) as resp:
+                resp.raise_for_status()
+                result = await resp.json()
+        except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
+            raise TimeoutError(
+                f"Home Assistant service call {domain}.{service} timed out after {effective_timeout:.0f}s. "
+                "The remote script or service may still be executing in Home Assistant."
+            ) from e
 
     return _parse_service_response(domain, service, result)
 
@@ -205,7 +237,7 @@ async def _async_call_service(
 # Sync wrappers (handler signature: (args, **kw) -> str)
 # ---------------------------------------------------------------------------
 
-def _run_async(coro):
+def _run_async(coro, timeout: Optional[float] = None):
     """Run an async coroutine from a sync handler."""
     try:
         loop = asyncio.get_running_loop()
@@ -217,7 +249,8 @@ def _run_async(coro):
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
-            return future.result(timeout=30)
+            outer_timeout = (timeout + 15.0) if timeout is not None else 30.0
+            return future.result(timeout=outer_timeout)
     else:
         return asyncio.run(coro)
 
@@ -281,9 +314,26 @@ def _handle_call_service(args: dict, **kw) -> str:
         except json.JSONDecodeError as e:
             return tool_error(f"Invalid JSON string in 'data' parameter: {e}")
 
+    timeout_arg = args.get("timeout")
+    timeout = None
+    if timeout_arg is not None:
+        try:
+            timeout = float(timeout_arg)
+        except (ValueError, TypeError):
+            return tool_error(f"Invalid timeout parameter: {timeout_arg!r}")
+
     try:
-        result = _run_async(_async_call_service(domain, service, entity_id, data))
+        eff_timeout = _get_service_call_timeout(timeout)
+        coro = (
+            _async_call_service(domain, service, entity_id, data, timeout=timeout)
+            if timeout is not None
+            else _async_call_service(domain, service, entity_id, data)
+        )
+        result = _run_async(coro, timeout=eff_timeout)
         return json.dumps({"result": result})
+    except TimeoutError as e:
+        logger.warning("ha_call_service timeout: %s", e)
+        return tool_error(str(e))
     except Exception as e:
         logger.error("ha_call_service error: %s", e)
         return tool_error(f"Failed to call {domain}.{service}: {e}")
@@ -463,6 +513,13 @@ HA_CALL_SERVICE_SCHEMA = {
                     '{"brightness": 255, "color_name": "blue"} for lights, '
                     '{"temperature": 22, "hvac_mode": "heat"} for climate, '
                     '{"volume_level": 0.5} for media players.'
+                ),
+            },
+            "timeout": {
+                "type": "number",
+                "description": (
+                    "Optional timeout in seconds for this service call (1-300s). "
+                    "Use a higher timeout for long-running scripts (e.g. device boot or sequence scripts)."
                 ),
             },
         },

@@ -751,6 +751,44 @@ def _interim_metadata(
     return merged
 
 
+def _build_progress_metadata(
+    *,
+    thread_metadata: Optional[Dict[str, Any]],
+    platform: Any,
+    source: Any,
+    slack_task_cards_enabled: bool,
+) -> Optional[Dict[str, Any]]:
+    """Compose ``ctx._progress_metadata`` for tool-progress/status bubbles.
+
+    Issue #102271: tool-invocation progress bubbles were assembled without
+    ``_interim_send`` and therefore sealed the open native stream on
+    stream-is-the-message adapters the moment the first bubble fired.
+    Centralising the composition here guarantees every consumer (the
+    progress drain, ``send_typing``, the Slack native task-card path, the
+    fallback edit/send cycle) sees the same marker; the truthiness gate
+    ``if ctx._progress_metadata:`` still fires because the result is
+    always either a marker-bearing dict or ``None`` (preserved on the
+    relay-prospective path which carries its own anchor dict).
+
+    Composition order matters — ``_non_conversational_metadata`` must run
+    first so Discord's ``non_conversational`` flag composes correctly with
+    the interim marker, then ``_interim_metadata`` wraps the result so
+    every platform picks up the seal-skip signal.
+    """
+    merged = _non_conversational_metadata(thread_metadata, platform=platform)
+    if slack_task_cards_enabled and source is not None:
+        merged = dict(merged or {})
+        if getattr(source, "scope_id", None):
+            merged.setdefault("recipient_team_id", source.scope_id)
+            merged.setdefault("slack_team_id", source.scope_id)
+        if getattr(source, "user_id", None):
+            merged.setdefault("recipient_user_id", source.user_id)
+    # ``_interim_metadata(None)`` returns ``{"_interim_send": True}`` so the
+    # truthiness gate downstream keeps working when no thread metadata
+    # could be resolved.
+    return _interim_metadata(merged)
+
+
 def _seed_hygiene_system_prompt(
     agent: Any,
     session_row: Optional[Dict[str, Any]],
@@ -31738,16 +31776,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # No real thread yet, but the connector will auto-thread on the
             # reply anchor; carry it so progress joins that thread.
             _progress_metadata = {"reply_to_message_id": event_message_id}
-        _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
-        if _native_slack_task_cards:
-            # chat.startStream in channels requires the recipient team/user
-            # pair; harmless extras elsewhere, so stamp them whenever known.
-            _progress_metadata = dict(_progress_metadata or {})
-            if source.scope_id:
-                _progress_metadata.setdefault("recipient_team_id", source.scope_id)
-                _progress_metadata.setdefault("slack_team_id", source.scope_id)
-            if source.user_id:
-                _progress_metadata.setdefault("recipient_user_id", source.user_id)
+        # Issue #102271: every tool-progress/status bubble must carry
+        # ``_interim_send`` so stream-is-the-message adapters (relay Slack
+        # native) skip seal-interception; centralising the composition here
+        # covers the drain loop, ``send_typing``, the Slack native task-card
+        # path, and the fallback edit/send cycle in one shot.
+        _progress_metadata = _build_progress_metadata(
+            thread_metadata=_progress_metadata,
+            platform=source.platform,
+            source=source,
+            slack_task_cards_enabled=bool(_native_slack_task_cards),
+        ) if _progress_metadata is not None else None
         _progress_reply_to = (
             event_message_id
             if (

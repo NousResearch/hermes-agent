@@ -55,6 +55,24 @@ _DEFAULT_ENTITY_CONTEXT = (
 )
 
 
+def _is_credit_exhaustion_error(exc: BaseException) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code == 402
+    try:
+        from supermemory import APIStatusError
+    except Exception:
+        return False
+    return isinstance(exc, APIStatusError) and getattr(exc.response, "status_code", None) == 402
+
+
+def _credit_exhaustion_message(operation: str) -> str:
+    return (
+        f"Supermemory {operation} failed because the API returned HTTP 402 Payment Required. "
+        "Supermemory credits may be exhausted; add credits or wait for the billing reset "
+        "before relying on long-term memory writes."
+    )
+
+
 def _default_config() -> dict:
     return {
         "container_tag": _DEFAULT_CONTAINER_TAG,
@@ -539,6 +557,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._turn_count = 0
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
+        self._credit_warning_lock = threading.Lock()
+        self._credit_exhaustion_warning = ""
         self._prefetch_thread: Optional[threading.Thread] = None
         self._sync_thread: Optional[threading.Thread] = None
         self._write_thread: Optional[threading.Thread] = None
@@ -653,6 +673,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._hermes_home = kwargs.get("hermes_home") or str(get_hermes_home())
         self._session_id = session_id
         self._turn_count = 0
+        with self._credit_warning_lock:
+            self._credit_exhaustion_warning = ""
         self._config = _load_supermemory_config(self._hermes_home)
         self._api_key = get_secret("SUPERMEMORY_API_KEY", "") or ""
 
@@ -718,6 +740,30 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 lines.append(f"\n{self._custom_container_instructions}")
         return "\n".join(lines)
 
+    def _record_credit_exhaustion(self, operation: str) -> str:
+        message = _credit_exhaustion_message(operation)
+        with self._credit_warning_lock:
+            self._credit_exhaustion_warning = message
+        logger.warning("%s", message)
+        return message
+
+    def _take_credit_exhaustion_warning(self) -> str:
+        with self._credit_warning_lock:
+            warning = self._credit_exhaustion_warning
+            self._credit_exhaustion_warning = ""
+        if not warning:
+            return ""
+        return (
+            "## Supermemory warning\n"
+            f"- {warning}\n"
+            "- Do not claim new long-term memories were saved until a later Supermemory operation succeeds."
+        )
+
+    def _format_operation_error(self, exc: BaseException, operation: str) -> str:
+        if _is_credit_exhaustion_error(exc):
+            return _credit_exhaustion_message(operation)
+        return str(exc)
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not self._active or not self._auto_recall or not self._client or not query.strip():
             return ""
@@ -730,10 +776,13 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 search_results=profile["search_results"],
                 max_results=self._max_recall_results,
             )
-            return context
-        except Exception:
+            warning = self._take_credit_exhaustion_warning()
+            return "\n\n".join(part for part in (warning, context) if part)
+        except Exception as exc:
             logger.debug("Supermemory prefetch failed", exc_info=True)
-            return ""
+            if _is_credit_exhaustion_error(exc):
+                self._record_credit_exhaustion("prefetch")
+            return self._take_credit_exhaustion_warning()
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         if not self._active or not self._auto_capture or not self._write_enabled or not self._client:
@@ -772,10 +821,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
                     "message_count": len(cleaned),
                 },
             )
-        except urllib.error.HTTPError:
-            logger.warning("Supermemory session ingest failed", exc_info=True)
-        except Exception:
-            logger.warning("Supermemory session ingest failed", exc_info=True)
+        except Exception as exc:
+            if _is_credit_exhaustion_error(exc):
+                self._record_credit_exhaustion("session ingest")
+            else:
+                logger.warning("Supermemory session ingest failed", exc_info=True)
 
         # Clear buffer so shutdown() doesn't duplicate on normal exit
         self._session_turns = []
@@ -817,8 +867,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
                         "partial": not reset,
                     },
                 )
-            except Exception:
-                logger.debug("Supermemory session-switch ingest failed", exc_info=True)
+            except Exception as exc:
+                if _is_credit_exhaustion_error(exc):
+                    self._record_credit_exhaustion("session switch ingest")
+                else:
+                    logger.debug("Supermemory session-switch ingest failed", exc_info=True)
 
         # Reset for new session
         self._session_id = str(new_session_id or "").strip() or old_session_id
@@ -838,8 +891,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
                     metadata={"target": target, "type": "explicit_memory"},
                     entity_context=self._entity_context,
                 )
-            except Exception:
-                logger.debug("Supermemory on_memory_write failed", exc_info=True)
+            except Exception as exc:
+                if _is_credit_exhaustion_error(exc):
+                    self._record_credit_exhaustion("memory write")
+                else:
+                    logger.debug("Supermemory on_memory_write failed", exc_info=True)
 
         if self._write_thread and self._write_thread.is_alive():
             self._write_thread.join(timeout=2.0)
@@ -953,7 +1009,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 resp["container_tag"] = tag
             return json.dumps(resp)
         except Exception as exc:
-            return tool_error(f"Failed to store memory: {exc}")
+            return tool_error(f"Failed to store memory: {self._format_operation_error(exc, 'store memory')}")
 
     def _tool_search(self, args: dict) -> str:
         query = str(args.get("query") or "").strip()
@@ -983,7 +1039,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 resp["container_tag"] = tag
             return json.dumps(resp)
         except Exception as exc:
-            return tool_error(f"Search failed: {exc}")
+            return tool_error(f"Search failed: {self._format_operation_error(exc, 'search')}")
 
     def _tool_forget(self, args: dict) -> str:
         memory_id = str(args.get("id") or "").strip()
@@ -1000,7 +1056,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 return json.dumps({"forgotten": True, "id": memory_id})
             return json.dumps(self._client.forget_by_query(query, container_tag=tag))
         except Exception as exc:
-            return tool_error(f"Forget failed: {exc}")
+            return tool_error(f"Forget failed: {self._format_operation_error(exc, 'forget')}")
 
     def _tool_profile(self, args: dict) -> str:
         query = str(args.get("query") or "").strip() or None
@@ -1024,7 +1080,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 resp["container_tag"] = tag
             return json.dumps(resp)
         except Exception as exc:
-            return tool_error(f"Profile failed: {exc}")
+            return tool_error(f"Profile failed: {self._format_operation_error(exc, 'profile')}")
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         if not self._active or not self._client:

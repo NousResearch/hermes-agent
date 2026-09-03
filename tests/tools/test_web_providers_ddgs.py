@@ -33,6 +33,10 @@ def _install_fake_ddgs(monkeypatch, *, text_results=None, text_raises=None, text
     fake = types.ModuleType("ddgs")
 
     class _FakeDDGS:
+        # Last kwargs received by text() — lets option-forwarding tests
+        # assert exactly what the provider passed through (#102412).
+        last_text_kwargs: dict = {}
+
         def __init__(self, **kwargs):
             # Accept timeout= (and any other constructor kwargs) — the provider
             # now passes DDGS(timeout=10).
@@ -41,7 +45,8 @@ def _install_fake_ddgs(monkeypatch, *, text_results=None, text_raises=None, text
             return self
         def __exit__(self, *_a):
             return False
-        def text(self, query, max_results=5):
+        def text(self, query, max_results=5, **kwargs):
+            type(self).last_text_kwargs = dict(kwargs)
             if text_sleep is not None:
                 _time.sleep(text_sleep)
             if text_raises is not None:
@@ -64,7 +69,7 @@ def _force_inprocess_search(monkeypatch, prov):
     monkeypatch.setattr(
         prov,
         "_run_ddgs_search_bounded",
-        lambda query, safe_limit: prov._run_ddgs_search(query, safe_limit),
+        lambda query, safe_limit, **opts: prov._run_ddgs_search(query, safe_limit, **opts),
         raising=True,
     )
 
@@ -152,6 +157,136 @@ class TestDDGSProviderSearch:
         assert result["success"] is True
         assert result["data"]["web"][0]["url"] == "https://e.com"
         assert result["data"]["web"][0]["title"] == "T"
+
+
+# ---------------------------------------------------------------------------
+# web.ddgs_* search options (#102412)
+# ---------------------------------------------------------------------------
+
+
+class TestDDGSSearchOptions:
+    """Configured ``web.ddgs_*`` knobs flow through to ``DDGS().text()``.
+
+    Blank/absent keys must be omitted so the ddgs library defaults — and
+    therefore existing behaviour — are unchanged.
+    """
+
+    def test_options_forwarded_to_text(self, monkeypatch):
+        _install_fake_ddgs(monkeypatch, text_results=[
+            {"title": "T", "href": "https://e.com", "body": "B"},
+        ])
+        import plugins.web.ddgs.provider as prov
+        _force_inprocess_search(monkeypatch, prov)
+        monkeypatch.setattr(
+            prov,
+            "_read_ddgs_options",
+            lambda: {
+                "region": "de-ch",
+                "safesearch": "off",
+                "timelimit": "m",
+                "backend": "html",
+            },
+            raising=True,
+        )
+
+        result = prov.DDGSWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is True
+        assert sys.modules["ddgs"].DDGS.last_text_kwargs == {
+            "region": "de-ch",
+            "safesearch": "off",
+            "timelimit": "m",
+            "backend": "html",
+        }
+
+    def test_no_options_by_default_keeps_text_call_minimal(self, monkeypatch):
+        _install_fake_ddgs(monkeypatch, text_results=[
+            {"title": "T", "href": "https://e.com", "body": "B"},
+        ])
+        import plugins.web.ddgs.provider as prov
+        _force_inprocess_search(monkeypatch, prov)
+        monkeypatch.setattr(prov, "_read_ddgs_options", lambda: {}, raising=True)
+
+        result = prov.DDGSWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is True
+        assert sys.modules["ddgs"].DDGS.last_text_kwargs == {}
+
+    def test_read_ddgs_options_skips_blank_values(self, monkeypatch):
+        import plugins.web.ddgs.provider as prov
+        from agent import web_search_registry as reg
+
+        values = {
+            ("web", "ddgs_region"): "de-ch",
+            ("web", "ddgs_safesearch"): None,   # blank — must be dropped
+            ("web", "ddgs_timelimit"): None,
+            ("web", "ddgs_backend"): None,
+        }
+        monkeypatch.setattr(reg, "_read_config_key", lambda *path: values.get(tuple(path)))
+
+        assert prov._read_ddgs_options() == {"region": "de-ch"}
+
+    def test_bounded_worker_request_includes_options(self, monkeypatch):
+        """The JSON request handed to the worker process carries the options."""
+        import plugins.web.ddgs.provider as prov
+
+        captured: dict = {}
+
+        class _FakeProc:
+            pid = 4242
+            def __init__(self, *args, **kwargs):
+                pass
+            def communicate(self, input=None):
+                captured["payload"] = input
+                return (json.dumps({"ok": True, "results": []}), None)
+            def poll(self):
+                return 0
+            def terminate(self):
+                pass
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(prov.subprocess, "Popen", _FakeProc, raising=True)
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+
+        results = prov._run_ddgs_search_bounded("q", 5, region="de-ch", timelimit="w")
+
+        assert results == []
+        payload = json.loads(captured["payload"])
+        assert payload == {"query": "q", "safe_limit": 5, "region": "de-ch", "timelimit": "w"}
+
+    def test_worker_forwards_options_to_search(self, monkeypatch, capsys):
+        """The worker entrypoint parses the options out of the request JSON."""
+        import io
+
+        import plugins.web.ddgs._search_worker as worker
+        import plugins.web.ddgs.provider as prov
+
+        captured: dict = {}
+
+        def _fake_run(query, safe_limit, **opts):
+            captured.update(query=query, safe_limit=safe_limit, opts=opts)
+            return [{"title": "T", "url": "https://e.com", "description": "B", "position": 1}]
+
+        monkeypatch.setattr(prov, "_run_ddgs_search", _fake_run, raising=True)
+        request = json.dumps({
+            "query": "q",
+            "safe_limit": 5,
+            "region": "de-ch",
+            "safesearch": "off",
+        })
+        monkeypatch.setattr("sys.stdin", io.StringIO(request))
+
+        rc = worker.main()
+
+        assert rc == 0
+        envelope = json.loads(capsys.readouterr().out)
+        assert envelope["ok"] is True
+        assert captured == {
+            "query": "q",
+            "safe_limit": 5,
+            "opts": {"region": "de-ch", "safesearch": "off"},
+        }
 
 
 # ---------------------------------------------------------------------------

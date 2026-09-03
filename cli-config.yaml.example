@@ -530,6 +530,24 @@ browser:
   # snapshot_threshold: 15000
 
 # =============================================================================
+# Web Search / Extract Backends
+# =============================================================================
+# Blank backend = auto-detect (API keys first, then the keyless free-tier
+# ring; ddgs is the keyless last resort for search). All keys optional.
+web:
+  # Shared fallback for both capabilities, or per-capability overrides:
+  # backend: ""            # e.g. "searxng" — applies to search AND extract
+  # search_backend: ""     # e.g. "ddgs", "brave-free", "searxng" — web_search only
+  # extract_backend: ""    # e.g. "native", "firecrawl" — web_extract only
+
+  # ddgs search backend knobs (only used when search resolves to ddgs).
+  # Blank = ddgs library default, so an unset config changes nothing.
+  # ddgs_region: ""        # region code, e.g. "de-ch", "uk-en" (default us-en)
+  # ddgs_safesearch: ""    # "on" | "moderate" | "off"
+  # ddgs_timelimit: ""     # result freshness: "d" | "w" | "m" | "y"
+  # ddgs_backend: ""       # engine hint, e.g. "html" or "auto,html"
+
+# =============================================================================
 # Tool Loop Guardrails
 # =============================================================================
 # Soft warnings are enabled by default. They append guidance to repeated failed

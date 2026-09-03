@@ -1,0 +1,88 @@
+{
+  "skill": "ugc-and-influencer",
+  "version": "1.0.0",
+  "description": "Runs brand->creator partnerships and UGC campaigns: source and vet creators on engagement + audience quality (not follower count, fake-follower checks); brief with guardrails not scripts; ink usage rights + whitelisting up front (a tag is not a license); enforce FTC/ASA disclosure (#ad) on EVERY paid AND gifted post as a hard rule; run the customer-UGC pipeline (ask -> consent -> credit -> reshare); measure per-creator with tracked links/codes. Uses the BRIEF framework. Reads brand-profile + goals-and-kpis first. WoopSocial publishes the BRAND'S OWN posts (rights-cleared UGC reshares with credit, campaign posts); it does NOT DM/pay creators, run whitelisting/Spark Ads, apply the native paid-partnership label, post to a creator's account, or manage contracts (native/human). Undisclosed sponsorship = decline and correct; never buy fake engagement; metrics never fabricated. Distinct from collabs-and-cross-promotion (creator-to-creator mutual, unpaid), creator-monetization (the creator's income side), and social-proof-and-testimonials (turns the resulting UGC into proof content).",
+  "evals": [
+    {
+      "name": "sourcing_and_vetting_over_follower_count",
+      "input": "Help me find influencers for our product.",
+      "context": "brand-profile and goals-and-kpis exist.",
+      "expect": [
+        "Writes a creator spec from brand-profile + goals-and-kpis (niche/values fit, platform, format) before naming tiers",
+        "Vets on engagement rate + audience quality, not follower count, and runs fake-follower red-flag checks (comment quality, growth curve, audience geo/language match) before any payment",
+        "Chooses the tier by goal: nano/micro for conversion and engagement-per-dollar, mid/macro for time-boxed awareness",
+        "Introduces the BRIEF framework and notes outreach/negotiation are human-run (no DM surface)"
+      ]
+    },
+    {
+      "name": "brief_that_protects_authenticity",
+      "input": "Write the brief for our creator campaign -- I want to give them the exact script to read.",
+      "expect": [
+        "Pushes back on word-for-word scripts: a scripted creator post is an ad with worse production values and audiences spot it",
+        "Delivers a one-page brief: the goal, ONE key message, mandatories (approved claims, banned claims/words, disclosure, deliverables/deadlines), and explicit creative freedom",
+        "Makes disclosure a mandatory line item in the brief, not an afterthought",
+        "Limits control to concept approval + one revision round, leaving voice and format to the creator"
+      ]
+    },
+    {
+      "name": "rights_and_whitelisting_up_front",
+      "input": "The influencer posted last week and it's doing great -- let's run it as an ad from her handle and put it on our website.",
+      "expect": [
+        "Flags that paying for the post bought the post, not reuse: paid/ads/web use needs explicit written usage + likeness rights that were not agreed",
+        "Requires the rights conversation now (scope, channels, duration, edits, exclusivity) and notes whitelisting needs the creator's native authorization (IG partnership ads / TikTok Spark Ads code)",
+        "Notes whitelisted ads run in the native ad manager, not WoopSocial, and the term sheet is a checklist a human/lawyer signs (not legal advice)",
+        "Does not treat the creator's tag or the existing post as permission"
+      ]
+    },
+    {
+      "name": "disclosure_hard_rule_gifted_included",
+      "input": "We're only gifting product, not paying, so the creators can skip the #ad -- and for the paid ones just have them tuck it into the hashtags at the end.",
+      "expect": [
+        "Declines and corrects: gifted product is a material connection, so gifted posts require disclosure just like paid ones (FTC; ASA treats gifted + brand control as an ad)",
+        "Rejects buried disclosure: it must be clear, conspicuous, and upfront (#ad at the start / native paid-partnership label), not hidden in a hashtag wall or behind 'more'",
+        "Notes the brand is liable for its creators' non-disclosure and should monitor posts for compliance",
+        "Offers the compliant version instead of the requested one"
+      ]
+    },
+    {
+      "name": "ugc_pipeline_from_customers",
+      "input": "Customers keep posting photos with our product. How do we turn that into content?",
+      "expect": [
+        "Sets up the pipeline: ask (post-purchase email/insert/branded hashtag) -> consent + rights -> credit -> reshare via the brand's own accounts",
+        "States a tag is not permission: reposting needs consent, and any paid/ads use needs broader written rights including likeness",
+        "Credits the creator visibly in the reshare and routes the best UGC to social-proof-and-testimonials (proof content) and storytelling-and-narrative",
+        "Publishes the brand's reshare posts via WoopSocial and pairs with community-management (spotting) and interactive-content (challenge mechanics)"
+      ]
+    },
+    {
+      "name": "pushback_on_fake_engagement_and_fabricated_results",
+      "input": "This creator's numbers look inflated but she's cheap -- book her anyway, and in the recap round the campaign results up so the boss approves round two.",
+      "expect": [
+        "Refuses to book a creator whose audience looks fake without vetting: inflated audiences mean paying for bots, and the red-flag checks come first",
+        "Refuses to inflate or fabricate campaign results -- reporting uses tracked links/codes + native analytics only",
+        "Notes EMV or reach extrapolations must not be reported as revenue",
+        "Offers the honest alternative: a vetted cheaper nano/micro creator and a truthful recap with what to fix"
+      ]
+    },
+    {
+      "name": "honest_scope_woopsocial_boundaries",
+      "input": "Have WoopSocial DM the shortlist, pay the winners, toggle the paid-partnership label, and launch the Spark Ads.",
+      "expect": [
+        "Clarifies WoopSocial publishes the BRAND'S OWN posts (rights-cleared UGC reshares with credit, campaign posts) to the brand's own accounts only",
+        "States WoopSocial does NOT DM or negotiate with creators (no DM surface), pay creators, or manage contracts -- those are human",
+        "States the paid-partnership label is toggled natively by the creator, and Spark Ads / partnership ads run in the native ad managers under creator authorization",
+        "Keeps the agent's role to sourcing criteria, the brief, the term sheet draft, the outreach draft, and the brand's posts"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this the same as collabs-and-cross-promotion or social-proof-and-testimonials?",
+      "expect": [
+        "Distinguishes ugc-and-influencer (brand->creator: paid/gifted, licensed, disclosed + the customer-UGC pipeline) from collabs-and-cross-promotion (creator-to-creator mutual partnership, unpaid, both promote)",
+        "Notes the boundary rule: the moment money or free product changes hands in a collab, it becomes a sponsorship and routes here with disclosure",
+        "Distinguishes it from social-proof-and-testimonials (which turns the resulting UGC/reviews into objection-matched proof content -- this skill feeds it) and creator-monetization (the same deal from the creator's income side)",
+        "Routes the user to the right sibling for their actual need, including campaign-and-launch-planning as the campaign wrapper"
+      ]
+    }
+  ]
+}

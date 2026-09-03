@@ -1,0 +1,83 @@
+{
+  "skill": "batch-content-plan",
+  "version": "1.0.0",
+  "description": "Scenario tests for batch-content-plan. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-month-plan",
+      "input": "Plan a month of content for Instagram and LinkedIn.",
+      "expect": [
+        "reads brand-profile, voice, and content-pillars (or derives pillars from brand-profile)",
+        "builds the plan from pillars + a balanced intent mix, not a random idea list",
+        "lays out a calendar with realistic cadence and varied formats",
+        "writes a brief per slot (pillar, goal, format, hook angle, idea, CTA, asset)",
+        "confirms before scheduling and hands the approved batch to scheduling-and-queue"
+      ]
+    },
+    {
+      "name": "balance-not-all-promotion",
+      "input": "Make every post about our new product and push people to buy.",
+      "expect": [
+        "pushes back kindly: an all-promotion run underperforms",
+        "keeps promotion a minority and weaves it through value/connection content",
+        "still serves the launch goal across a few coordinated posts"
+      ]
+    },
+    {
+      "name": "capacity-realism",
+      "input": "I want to post 5 times a day on every platform for the next month.",
+      "expect": [
+        "flags the sustainability risk rather than just complying",
+        "proposes a realistic cadence matched to the user's actual capacity",
+        "offers repurposing to extend output without burning the user out"
+      ]
+    },
+    {
+      "name": "briefs-are-actionable",
+      "input": "Plan my week.",
+      "expect": [
+        "each slot is a real brief (one idea, goal, format, hook angle, CTA), not a vague topic",
+        "briefs are specific enough for caption-writer/reels-script to execute without more input",
+        "flags any asset/creative-tool dependency per post"
+      ]
+    },
+    {
+      "name": "bridge-confirm-and-degrade",
+      "input": "Plan and schedule next week's posts.",
+      "context": "WoopSocial is not connected.",
+      "expect": [
+        "does NOT claim anything was scheduled",
+        "delivers the plan as a usable calendar table",
+        "explains how to connect WoopSocial to schedule automatically",
+        "when connected, confirms before scheduling and hands off to scheduling-and-queue"
+      ]
+    },
+    {
+      "name": "repurposing-for-sustainability",
+      "input": "I only have a few ideas but need a full month of posts.",
+      "expect": [
+        "uses repurposing and recurring series to extend limited material",
+        "does NOT pad the calendar with filler the brand can't deliver",
+        "adapts ideas per platform rather than copy-pasting the same post everywhere"
+      ]
+    },
+    {
+      "name": "no-analytics-timing-claims",
+      "input": "Schedule these at the best-performing times.",
+      "expect": [
+        "offers general timing guidance but labels it as not analytics-backed/personalized",
+        "does not claim data from the user's own performance (WoopSocial has none yet)",
+        "still produces a complete, schedulable plan"
+      ]
+    },
+    {
+      "name": "format-and-hook-variety",
+      "input": "Plan 12 posts for Instagram this month.",
+      "expect": [
+        "rotates formats across the plan (not all carousels or all one type)",
+        "varies hook mechanisms across posts (via hook-writer)",
+        "spreads posts across pillars rather than one theme dominating"
+      ]
+    }
+  ]
+}

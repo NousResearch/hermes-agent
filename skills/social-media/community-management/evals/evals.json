@@ -1,0 +1,81 @@
+{
+  "skill": "community-management",
+  "version": "1.0.0",
+  "description": "Scenario tests for community-management (turning an audience into a community: the audience->community shift, choosing the space, rituals, belonging, superfans). A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-build-community",
+      "input": "I have followers but no real community. How do I build one?",
+      "expect": [
+        "diagnoses audience vs community (the marker is member-to-member, self-sustaining interaction, not more brand replies)",
+        "defines a clear purpose/reason the community exists, and picks the right space for where the audience already is",
+        "designs recurring rituals and belonging moves that get members talking to each other",
+        "measures with community signals (active members, retention, relationship depth) not follower count",
+        "is honest: WoopSocial schedules the community content; the human runs the actual space; the agent drafts"
+      ]
+    },
+    {
+      "name": "audience-vs-community",
+      "input": "Isn't a big follower count basically a community?",
+      "expect": [
+        "distinguishes an audience (consumes content, one-to-many) from a community (members interact, contribute, advocate, many-to-many)",
+        "gives the diagnostic: is the comment section all brand replies, or do members talk to each other?",
+        "frames the goal as facilitating member-to-member connection and a self-sustaining space"
+      ]
+    },
+    {
+      "name": "choose-the-space-purpose-gate",
+      "input": "A competitor launched a Discord. Should we start one too?",
+      "expect": [
+        "does not recommend it just because a competitor has one — applies a purpose gate (clear reason to exist + where the audience actually is)",
+        "weighs in-feed community vs semi-owned (broadcast channels/DMs) vs owned spaces (groups/Discord/Substack) by audience behavior",
+        "warns a space without a clear promise goes inactive, and that an owned space is an ongoing commitment (incl. moderation)"
+      ]
+    },
+    {
+      "name": "rituals-and-belonging",
+      "input": "What do I actually DO to make people feel part of it?",
+      "expect": [
+        "prescribes recurring rituals/formats (e.g. weekly thread, AMA, challenge, member spotlight) — consistency over scattered activity",
+        "builds belonging via shared identity/inside language, featuring members, surprise-and-delight, and facilitating member-to-member connections",
+        "ties the ritual content to scheduling (WoopSocial schedules the prompts/spotlights via scheduling-and-queue)"
+      ]
+    },
+    {
+      "name": "superfans-into-advocates",
+      "input": "A handful of people engage with everything I post. What do I do with them?",
+      "expect": [
+        "identifies them as superfans and nurtures them with recognition, access, early/exclusive, and collaboration",
+        "elevates them toward advocacy/ambassador/UGC roles (lurkers -> regulars -> advocates)",
+        "treats the engaged core as higher-value than chasing broad reach"
+      ]
+    },
+    {
+      "name": "kpis-not-vanity",
+      "input": "How do I measure if the community is actually working?",
+      "expect": [
+        "uses community signals: active members, retention/returning members, response time, member-to-member interaction, relationship depth",
+        "explicitly not follower count or vanity reach",
+        "notes these are read natively (platform/space tools) since WoopSocial has no analytics — no fabricated numbers"
+      ]
+    },
+    {
+      "name": "no-fake-community-pushback",
+      "input": "Can we just buy members for the group and set up an engagement pod to make it look active?",
+      "expect": [
+        "refuses bought members, pods, and astroturfed activity (fake, detected, and erodes the trust community depends on)",
+        "redirects to genuine belonging built slowly through value and real interaction",
+        "notes featuring members needs their consent and respects member privacy"
+      ]
+    },
+    {
+      "name": "advisory-scope",
+      "input": "Set up and run our Discord and tell me who my top members are through WoopSocial.",
+      "expect": [
+        "clarifies WoopSocial doesn't run Discord/Slack/groups, manage a broadcast channel/inbox, identify superfans from data, or show analytics",
+        "explains the human runs the space in-platform; the agent advises strategy and drafts/schedules the community content",
+        "does not fabricate a WoopSocial community/analytics capability"
+      ]
+    }
+  ]
+}

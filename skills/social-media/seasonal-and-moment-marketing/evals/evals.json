@@ -1,0 +1,89 @@
+{
+  "skill": "seasonal-and-moment-marketing",
+  "version": "1.0.0",
+  "description": "The annual moment-planning skill -- map the few seasonal/cultural/commercial moments that genuinely fit your brand, gate them for fit + authenticity, tier them by weight, and plan them far in advance. The planned, predictable counterpart to trend-jacking's reactivity. Core truth: not every holiday deserves a post, and not every brand deserves a voice in every conversation -- silence on the wrong day beats noise on the wrong topic. Uses the DATES framework. Reads brand-profile + audience-research first. The agent builds the brand's moment calendar + applies the fit + authenticity gate + tiers by commercial weight + plans the angle/lead-time + feeds the content-calendar. Big commercial moments (Black Friday/Cyber Monday, Christmas, Halloween, Valentine's, Mother's) run as multi-week series and route to campaign-and-launch-planning + paid; the reactive ~50% routes to trend-jacking; the cultural-moment craft routes to meme-and-culture; the visual to the image tools/design-and-templates. WoopSocial schedules the planned content in advance -- it does NOT pick the moments, judge authenticity, build the calendar, or run paid amplification. Lead times: 8-12 weeks for major moments, 2-4 weeks for minor. Never participate in identity/cause moments (Pride, MLK, Juneteenth, Earth Day) without genuine year-round standing (performative/rainbow-washing backlash); non-promotional respect for solemn/cultural days; never fabricate a tie-in or a metric. No integration file. Distinct from trend-jacking (the reactive counterpart), content-calendar (the operational scheduling system it feeds), and campaign-and-launch-planning (the multi-post arc big moments route to).",
+  "evals": [
+    {
+      "name": "build_moment_calendar",
+      "input": "Help me plan my seasonal content for the year.",
+      "context": "brand-profile + audience-research exist.",
+      "expect": [
+        "Builds the brand's OWN moment calendar -- the few that fit (seasons, retail anchors, relevant awareness months, industry events, company milestones), not every internet holiday",
+        "Applies the fit + authenticity gate and tiers moments by commercial weight + sensitivity",
+        "Plans lead times in advance (8-12 weeks for major, 2-4 for minor)",
+        "Introduces the DATES framework and reads brand-profile + audience-research first"
+      ]
+    },
+    {
+      "name": "reads_brand_audience_first",
+      "input": "Make me a holiday content plan.",
+      "context": "brand-profile + audience-research exist.",
+      "expect": [
+        "Pulls brand-profile + audience-research to decide which moments actually fit",
+        "Rejects a generic dump of 300+ holidays in favor of the relevant few",
+        "Maps each chosen moment to a format + channel + goal",
+        "Treats the visual + the scheduling as downstream (image tools / content-calendar / WoopSocial)"
+      ]
+    },
+    {
+      "name": "fit_and_tier",
+      "input": "Which of these holidays should we actually post on?",
+      "expect": [
+        "Runs the fit gate (brand/audience/goal match; can we answer 'why us, why this moment?')",
+        "Tiers them: commercial/fun (go) vs authentic-alignment-required vs cultural/solemn (non-promotional respect)",
+        "Says to skip the ones with no real reason to show up -- not every internet holiday warrants a post",
+        "Offers the few that genuinely fit instead of a blanket calendar"
+      ]
+    },
+    {
+      "name": "lead_time_and_campaign",
+      "input": "When should I start on Black Friday and the holidays?",
+      "expect": [
+        "Says 8-12 weeks ahead for major commercial moments (2-4 for minor)",
+        "Frames Black Friday/Cyber Monday and Christmas as a multi-week content series, not a single seasonal-visual post",
+        "Routes BFCM to campaign-and-launch-planning as a dedicated campaign (+ notes paid amplification)",
+        "Schedules the planned content ahead via WoopSocial / the content-calendar"
+      ]
+    },
+    {
+      "name": "pushback_on_performative_and_blanket_posting",
+      "input": "Post a rainbow logo for Pride and a Juneteenth sale even though we've never engaged year-round, blanket-post every national food day, invent a reason our brand fits [a solemn remembrance day], and have WoopSocial auto-pick the holidays.",
+      "expect": [
+        "Refuses performative Pride/Juneteenth participation without genuine year-round standing -- it reads as rainbow-washing/authenticity theater and a Juneteenth SALE is especially tone-deaf (if you can't answer 'why us, why this moment', stay quiet)",
+        "Refuses blanket-posting every food day -- hollow, off-brand spam; pick the few that fit",
+        "Refuses to invent a fake tie-in to a solemn remembrance day -- non-promotional respect or sit out",
+        "Clarifies WoopSocial schedules but doesn't pick moments or judge fit; offers the disciplined version"
+      ]
+    },
+    {
+      "name": "edge_case_sit_out_no_standing",
+      "input": "Everyone in our industry is posting for [an identity/cause month]. Won't we look bad if we stay silent?",
+      "expect": [
+        "Explains that without genuine year-round standing, performative participation is the bigger risk (backlash + authenticity-theater)",
+        "Notes silence on the wrong day beats noise on the wrong topic",
+        "Suggests earning the standing with real year-round commitment first (so next year it's credible), or finding a moment the brand authentically fits",
+        "Frames sitting out as a valid, often stronger call"
+      ]
+    },
+    {
+      "name": "honest_scope_plan_vs_schedule",
+      "input": "Do my seasonal posting end to end.",
+      "expect": [
+        "Clarifies the agent maps the moments + gates fit/authenticity + tiers + plans the angle/lead-time + feeds the content-calendar",
+        "Routes big commercial moments to campaign-and-launch-planning and the visual to the image tools/design-and-templates",
+        "States WoopSocial schedules the planned content ahead; it doesn't pick moments, judge authenticity, build the calendar, or run paid",
+        "Measures against the moment's goal natively and never fabricates a tie-in or metric"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just trend-jacking or content-calendar or campaign-and-launch-planning?",
+      "expect": [
+        "Distinguishes seasonal-and-moment-marketing (the PLANNED, predictable, advance-planned moment map) from trend-jacking (the REACTIVE counterpart -- the ~50% open calendar)",
+        "Notes content-calendar is the operational scheduling system this feeds",
+        "Notes campaign-and-launch-planning is the multi-post arc that big moments route to, and meme-and-culture is the cultural-moment craft",
+        "Routes the user to the right sibling for their actual need"
+      ]
+    }
+  ]
+}

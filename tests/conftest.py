@@ -468,6 +468,16 @@ def _hermetic_environment(tmp_path, monkeypatch):
     for name in _HERMES_BEHAVIORAL_VARS:
         monkeypatch.delenv(name, raising=False)
 
+    # 2b. Clear per-session TTS opt-in (#78523). Env blanking alone is not
+    # enough once enablement is stored on ``_voice_tts_enabled_sids``.
+    try:
+        from tui_gateway import server as _tui_server
+
+        with _tui_server._voice_tts_sids_lock:
+            _tui_server._voice_tts_enabled_sids.clear()
+    except Exception:
+        pass
+
     # Honcho's fallback host/config resolution legitimately reads the user's
     # global ~/.honcho/config.json. Keep HOME stable (subprocess tests depend
     # on it), but pin the host so ordinary tests cannot inherit a developer's

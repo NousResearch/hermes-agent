@@ -311,7 +311,10 @@ def _(rid, params: dict) -> dict:
             typed_stop = False
         if typed_stop:
             os.environ["HERMES_VOICE"] = "0"
-            os.environ["HERMES_VOICE_TTS"] = "0"
+            try:
+                _voice_tts_clear_all()
+            except Exception:
+                os.environ["HERMES_VOICE_TTS"] = "0"
             try:
                 from hermes_cli.voice import stop_continuous
 

@@ -61,7 +61,8 @@ def _git_proc_running() -> bool:
         if os.name == "nt":
             out = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq git.exe", "/FO", "CSV"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=10,
             ).stdout.lower()
             return "git.exe" in out
         out = subprocess.run(

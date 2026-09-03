@@ -1053,17 +1053,17 @@ def _install_neutts_deps() -> bool:
     from hermes_cli.tools_config import _pip_install
 
     try:
-        result = _pip_install(["-U", "neutts[all]", "--quiet"], timeout=300)
+        result = _pip_install(["neutts[all]", "--quiet"], timeout=300)
     except Exception as e:
         print_error(f"Failed to install neutts: {e}")
-        print_info("Try manually: uv pip install -U 'neutts[all]'")
+        print_info("Try manually: uv pip install 'neutts[all]'")
         return False
     if result.returncode == 0:
         print_success("neutts installed successfully")
         return True
     err = (result.stderr or "").strip()
     print_error(f"Failed to install neutts: {err[:300] if err else 'install failed'}")
-    print_info("Try manually: uv pip install -U 'neutts[all]'")
+    print_info("Try manually: uv pip install 'neutts[all]'")
     return False
 
 
@@ -1081,17 +1081,17 @@ def _install_kittentts_deps() -> bool:
     from hermes_cli.tools_config import _pip_install
 
     try:
-        result = _pip_install(["-U", wheel_url, "soundfile", "--quiet"], timeout=300)
+        result = _pip_install([wheel_url, "soundfile", "--quiet"], timeout=300)
     except Exception as e:
         print_error(f"Failed to install kittentts: {e}")
-        print_info(f"Try manually: uv pip install -U '{wheel_url}' soundfile")
+        print_info(f"Try manually: uv pip install '{wheel_url}' soundfile")
         return False
     if result.returncode == 0:
         print_success("kittentts installed successfully")
         return True
     err = (result.stderr or "").strip()
     print_error(f"Failed to install kittentts: {err[:300] if err else 'install failed'}")
-    print_info(f"Try manually: uv pip install -U '{wheel_url}' soundfile")
+    print_info(f"Try manually: uv pip install '{wheel_url}' soundfile")
     return False
 
 

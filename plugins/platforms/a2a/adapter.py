@@ -1310,8 +1310,8 @@ class A2AAdapter(BasePlatformAdapter):
             self._resolve_task(task_id, protocol.STATE_FAILED, "[agent processing failed]")
         elif outcome == ProcessingOutcome.CANCELLED:
             self._resolve_task(task_id, protocol.STATE_CANCELED, "")
-        else:
-            self._resolve_task(task_id, protocol.STATE_COMPLETED, "")
+        # SUCCESS may occur before the final notify-marked reply. Keep the
+        # task pending; send() completes it once that reply is available.
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         return None

@@ -688,6 +688,20 @@ class TestReplyCapture:
         finally:
             adapter._pop_pending("task-ok")
 
+    def test_success_before_final_reply_keeps_task_pending(self):
+        """Async gateways may report success before emitting the final reply."""
+        from gateway.platforms.base import ProcessingOutcome
+
+        adapter = _bare_adapter()
+        fut = adapter._add_pending("task-early-success", "ctx-early-success")
+        event = SimpleNamespace(message_id="task-early-success")
+
+        try:
+            asyncio.run(adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS))
+            assert fut.done() is False
+        finally:
+            adapter._pop_pending("task-early-success")
+
 
 # --------------------------------------------------------------------------
 # Adapter RPC handlers (driven directly, no HTTP)

@@ -3,7 +3,9 @@
 import json
 import stat
 import sys
+import threading
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -159,6 +161,168 @@ class TestHermesTokenStorage:
 
         import asyncio
         assert asyncio.run(storage.get_tokens()) is None
+
+    def test_restore_rejects_legacy_client_backup(self, tmp_path, monkeypatch):
+        """Rollback must not recreate the secret-bearing legacy backup."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir(parents=True)
+        token_path = token_dir / "srv.json"
+        token_path.write_bytes(b'{"access_token":"still-valid"}')
+
+        with pytest.raises(ValueError, match="Invalid OAuth snapshot filename"):
+            storage.restore({"srv.client.json.bak": b"secret-bearing"})
+
+        assert not (token_dir / "srv.client.json.bak").exists()
+        assert token_path.read_bytes() == b'{"access_token":"still-valid"}'
+
+    def test_restore_rejects_paths_outside_token_directory(self, tmp_path, monkeypatch):
+        """Rollback filenames must be exact basenames within mcp-tokens/."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        token_dir = tmp_path / "mcp-tokens"
+        outside = tmp_path / "escape.txt"
+
+        with pytest.raises(ValueError, match="Invalid OAuth snapshot filename"):
+            storage.restore({"../escape.txt": b"secret"})
+
+        assert not outside.exists()
+        assert not token_dir.exists()
+    def test_restore_only_if_absent_serializes_against_successful_writer(
+        self, tmp_path, monkeypatch
+    ):
+        """A successful token write racing rollback must win the lifecycle lock."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir(parents=True)
+        token_path = token_dir / "srv.json"
+        absence_checked = threading.Event()
+        writer_done = threading.Event()
+        original_exists = Path.exists
+
+        def observe_absence(path):
+            if path == token_path and not absence_checked.is_set():
+                absence_checked.set()
+                writer_done.wait(timeout=2)
+            return original_exists(path)
+
+        def write_new_tokens():
+            absence_checked.wait(timeout=2)
+            token = MagicMock()
+            token.model_dump.return_value = {
+                "access_token": "new",
+                "token_type": "Bearer",
+            }
+            asyncio.run(storage.set_tokens(token))
+            writer_done.set()
+
+        writer = threading.Thread(target=write_new_tokens)
+        writer.start()
+        with patch.object(Path, "exists", observe_absence):
+            storage.restore(
+                {"srv.json": b'{"access_token":"old"}'},
+                only_if_absent=True,
+            )
+        writer.join(timeout=3)
+
+        assert writer_done.is_set()
+        assert json.loads(token_path.read_text())["access_token"] == "new"
+
+    def test_restore_failure_leaves_durable_incomplete_marker(self, tmp_path, monkeypatch):
+        """A partial restore is non-success and visibly marked for recovery."""
+        import tools.mcp_oauth_storage as storage_mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir(parents=True)
+        snapshot = {
+            "srv.json": b'{"access_token":"token"}',
+            "srv.client.json": b'{"client_id":"client"}',
+            "srv.meta.json": b'{"token_endpoint":"https://idp/token"}',
+        }
+        original_open = storage_mod.os.open
+
+        def fail_client_open(path, flags, mode=0o666, *args):
+            if Path(path).name == "srv.client.json":
+                raise OSError("injected restore write failure")
+            return original_open(path, flags, mode, *args)
+
+        with patch.object(storage_mod.os, "open", fail_client_open):
+            with pytest.raises(OSError, match="injected restore write failure"):
+                storage.restore(snapshot)
+
+        assert (token_dir / "srv.lifecycle-incomplete").exists()
+
+    def test_snapshot_refuses_symlinked_primary_without_reading_target(
+        self, tmp_path, monkeypatch
+    ):
+        """Snapshot never follows a symlink to an outside secret file."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir(parents=True)
+        outside = tmp_path / "outside.json"
+        outside.write_bytes(b"outside-secret")
+        try:
+            (token_dir / "srv.json").symlink_to(outside)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation is unavailable on this Windows host")
+
+        with pytest.raises(OSError):
+            storage.snapshot()
+        assert outside.read_bytes() == b"outside-secret"
+
+    def test_restore_refuses_symlinked_token_directory_without_outside_write(
+        self, tmp_path, monkeypatch
+    ):
+        """Restore never stages or writes through a reparse-point directory."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        token_dir = tmp_path / "mcp-tokens"
+        try:
+            token_dir.symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("directory symlink creation is unavailable on this Windows host")
+
+        with pytest.raises(OSError):
+            storage.restore({"srv.json": b"must-not-escape"})
+        assert not (outside / "srv.json").exists()
+
+    @pytest.mark.parametrize(
+        "failed_name",
+        [
+            "srv.json",
+            "srv.client.json",
+            "srv.meta.json",
+            "srv.cimd-off",
+            "srv.client.json.bak",
+        ],
+    )
+    def test_remove_failure_leaves_durable_incomplete_marker(
+        self, tmp_path, monkeypatch, failed_name
+    ):
+        """Every cleanup unlink boundary remains visibly incomplete on failure."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir(parents=True)
+        (token_dir / failed_name).write_bytes(b"state")
+        original_unlink = Path.unlink
+
+        def fail_one(path, missing_ok=False):
+            if path.name == failed_name:
+                raise OSError("injected cleanup failure")
+            return original_unlink(path, missing_ok=missing_ok)
+
+        with patch.object(Path, "unlink", fail_one):
+            with pytest.raises(OSError, match="injected cleanup failure"):
+                storage.remove()
+        assert (token_dir / "srv.lifecycle-incomplete").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1040,25 +1204,37 @@ class TestWaitForCallbackSkipIntegration:
 # ---------------------------------------------------------------------------
 
 class TestPoisonClientRegistration:
-    def test_poison_backs_up_and_removes_client_and_meta(self, tmp_path, monkeypatch):
+    def test_r3_cand_004_red_1_no_legacy_backup_survives_lifecycle(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("srv")
         d = tmp_path / "mcp-tokens"
         d.mkdir(parents=True)
         (d / "srv.json").write_text('{"access_token": "keep-me"}')
         (d / "srv.client.json").write_text('{"client_id": "dead"}')
+        (d / "srv.client.json.bak").write_text('{"client_id": "stale"}')
         (d / "srv.meta.json").write_text('{"token_endpoint": "https://idp/token"}')
 
         removed = storage.poison_client_registration()
 
         assert removed is True
-        # Client + metadata gone, forcing re-registration on the next flow.
         assert not (d / "srv.client.json").exists()
+        assert not (d / "srv.client.json.bak").exists()
         assert not (d / "srv.meta.json").exists()
-        # Backup of the client file kept for recovery.
-        assert (d / "srv.client.json.bak").read_text() == '{"client_id": "dead"}'
-        # Tokens are intentionally preserved.
         assert (d / "srv.json").read_text() == '{"access_token": "keep-me"}'
+
+        # Explicit logout/remove must not leave recoverable state behind.
+        storage.remove()
+        assert not any(d.glob("srv*"))
+
+        # Rollback is limited to the three primary files and cannot resurrect .bak.
+        (d / "srv.client.json").write_text('{"client_id": "new"}')
+        (d / "srv.client.json.bak").write_text('{"client_id": "legacy"}')
+        snapshot = storage.snapshot()
+        assert set(snapshot) <= {"srv.json", "srv.client.json", "srv.meta.json"}
+        storage.remove()
+        storage.restore(snapshot)
+        assert not (d / "srv.client.json.bak").exists()
+        assert (d / "srv.client.json").read_text() == '{"client_id": "new"}'
 
 
 def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):

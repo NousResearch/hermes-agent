@@ -282,9 +282,35 @@ def test_invalid_client_at_token_endpoint_poisons(tmp_path, monkeypatch):
     asyncio.run(provider._maybe_flag_poisoned_client(resp))
 
     assert not (d / "srv.client.json").exists()
-    assert (d / "srv.client.json.bak").exists()
+    assert not (d / "srv.client.json.bak").exists()
     assert provider._initialized is False
     assert provider.context.client_info is None
+
+
+def test_r3_cand_004_red_2_cleanup_failure_is_hard_stop(tmp_path, monkeypatch):
+    """Cleanup failure must not be swallowed as a successful invalid_client heal."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    d = tmp_path / "mcp-tokens"
+    d.mkdir(parents=True)
+    (d / "srv.client.json").write_text('{"client_id": "dead"}')
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+    resp = _fake_response(
+        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_client"}'
+    )
+    before_client = provider.context.client_info
+    monkeypatch.setattr(
+        type(provider.context.storage),
+        "poison_client_registration",
+        lambda _storage: (_ for _ in ()).throw(OSError("legacy backup cleanup refused")),
+    )
+
+    with pytest.raises(OSError, match="legacy backup cleanup refused"):
+        asyncio.run(provider._maybe_flag_poisoned_client(resp))
+
+    assert provider.context.client_info is before_client
+    assert provider._initialized is True
 
 
 def test_invalid_client_metadata_does_not_trip(tmp_path, monkeypatch):

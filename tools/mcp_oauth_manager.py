@@ -441,9 +441,8 @@ def _make_hermes_provider_class() -> Optional[type]:
               * the body carries the ``invalid_client`` error code
                 (word-boundary match, so RFC 7591's ``invalid_client_metadata``
                 registration error does not trip it).
-            Pre-registered (config-supplied) clients are never poisoned.
-            Fully best-effort: any failure here is swallowed so a detection
-            miss never breaks the live auth flow.
+            Detection failures are best-effort, but storage cleanup failures
+            propagate so stale secret-bearing state cannot be hidden.
 
             Covers both the authorization-code token exchange and the
             preemptive refresh — but only when ``token_endpoint`` was
@@ -488,27 +487,35 @@ def _make_hermes_provider_class() -> Optional[type]:
                 # clears the marker, so a fixed document gets another chance.
                 cimd_url = getattr(self.context, "client_metadata_url", None)
                 rejected_id = getattr(self.context.client_info, "client_id", None)
-                if cimd_url and rejected_id == cimd_url:
-                    logger.warning(
-                        "MCP OAuth '%s': authorization server rejected our "
-                        "Client ID Metadata Document (%s) with invalid_client "
-                        "— falling back to dynamic client registration.",
-                        self._hermes_server_name, cimd_url,
-                    )
-                    self.context.client_metadata_url = None
-                    if isinstance(storage, HermesTokenStorage):
-                        storage.mark_cimd_rejected()
-
-                if isinstance(storage, HermesTokenStorage):
-                    storage.poison_client_registration()
-                # Drop the in-memory client so the SDK re-registers next flow.
-                self.context.client_info = None
-                self._initialized = False
+                cimd_rejected = bool(cimd_url and rejected_id == cimd_url)
             except Exception as exc:  # pragma: no cover — defensive, must not throw
                 logger.debug(
                     "MCP OAuth '%s': invalid_client detection failed (non-fatal): %s",
-                    self._hermes_server_name, exc,
+                    self._hermes_server_name,
+                    exc,
                 )
+                return
+
+            # Keep cleanup outside the detection guard: a failure here is a
+            # secret-bearing state failure, not a detection miss.
+            if isinstance(storage, HermesTokenStorage):
+                storage.poison_client_registration()
+
+            if cimd_rejected:
+                logger.warning(
+                    "MCP OAuth '%s': authorization server rejected our "
+                    "Client ID Metadata Document (%s) with invalid_client "
+                    "— falling back to dynamic client registration.",
+                    self._hermes_server_name,
+                    cimd_url,
+                )
+                self.context.client_metadata_url = None
+                if isinstance(storage, HermesTokenStorage):
+                    storage.mark_cimd_rejected()
+
+            # Drop the in-memory client only after storage cleanup succeeds.
+            self.context.client_info = None
+            self._initialized = False
 
         async def async_auth_flow(self, request):  # type: ignore[override]
             # Pre-flow hook: ask the manager to refresh from disk if needed.

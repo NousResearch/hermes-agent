@@ -1113,6 +1113,53 @@ class TestGitHubTokenCheck:
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
 
 
+    def test_gh_auth_status_uses_exit_code_not_json_flag(self, monkeypatch, tmp_path):
+        """gh CLI 2.98+ removed the `authenticated` JSON field, so the doctor
+        must invoke plain `gh auth status` (exit-code based) rather than
+        `gh auth status --json authenticated`. Pins the command shape so a
+        future re-addition of `--json authenticated` fails this test."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        import shutil
+        real_which = shutil.which
+        monkeypatch.setattr(
+            shutil, "which",
+            lambda cmd: "/usr/local/bin/gh" if cmd == "gh" else real_which(cmd),
+        )
+
+        gh_calls = []
+
+        def mock_run(cmd, **kwargs):
+            if cmd and cmd[0] == "gh":
+                gh_calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+
+        auth_status_calls = [
+            c for c in gh_calls
+            if c[:3] == ["gh", "auth", "status"]
+        ]
+        assert auth_status_calls, f"gh auth status was not invoked: {gh_calls}"
+        for cmd in auth_status_calls:
+            assert "--json" not in cmd, (
+                f"gh auth status must not use --json (removed in gh 2.98): {cmd}"
+            )
+            assert "authenticated" not in cmd[3:], (
+                f"gh auth status must not request the removed 'authenticated' field: {cmd}"
+            )
+
+
 def _run_doctor_with_healthy_oauth_fallback(
     monkeypatch,
     tmp_path,

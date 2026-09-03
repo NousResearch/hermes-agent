@@ -188,6 +188,34 @@ class TestBusySessionAck:
         # Verify agent interrupt was called
         agent.interrupt.assert_called_once_with("Are you working?")
 
+    def test_a2a_task_queues_while_session_busy_never_interrupts_active_turn(self):
+        """A task-bearing protocol message cannot pre-empt unrelated live work."""
+
+        async def run():
+            runner, _sentinel = _make_runner()
+            runner._busy_input_mode = "interrupt"
+            runner._queue_or_replace_pending_event = MagicMock()
+            adapter = _make_adapter(platform_val="a2a")
+
+            event = _make_event(text="independent task", platform_val="a2a")
+            sk = build_session_key(event.source)
+            agent = MagicMock()
+            agent.get_activity_summary.return_value = {"seconds_since_activity": 1.0}
+            runner._running_agents[sk] = agent
+            runner._running_agents_ts[sk] = time.time()
+            runner.adapters[event.source.platform] = adapter
+
+            handled = await runner._handle_active_session_busy_message(event, sk)
+
+            assert handled is True
+            runner._queue_or_replace_pending_event.assert_called_once_with(sk, event)
+            agent.interrupt.assert_not_called()
+            content = adapter._send_with_retry.call_args.kwargs["content"]
+            assert "Queued" in content or "queued" in content
+
+        import asyncio
+        asyncio.run(run())
+
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self, monkeypatch):

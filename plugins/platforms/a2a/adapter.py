@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -41,7 +42,7 @@ import time
 import urllib.parse
 import urllib.request
 from collections import deque
-from concurrent.futures import Future
+from concurrent.futures import CancelledError, Future
 from concurrent.futures import TimeoutError as FuturesTimeout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
@@ -61,17 +62,24 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 9900
 _ORPHAN_TIMEOUT = 300  # seconds before a pending task is considered orphaned
+_ORPHAN_GRACE = 60  # slack beyond reply/route deadlines
 _WATCHDOG_INTERVAL = 60  # seconds between orphaned task watchdog runs
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
 
 
+def _parse_reply_timeout(value: Any, fallback: float = 300.0) -> float:
+    """Return a finite positive reply timeout or the safe fallback."""
+    try:
+        parsed = float(value)
+    except (ValueError, TypeError):
+        return fallback
+    return parsed if math.isfinite(parsed) and parsed >= 1.0 else fallback
+
+
 def _reply_timeout() -> float:
     """Seconds to wait for the agent to answer an inbound task."""
-    try:
-        return max(1.0, float(os.getenv("A2A_REPLY_TIMEOUT", "300")))
-    except (ValueError, TypeError):
-        return 300.0
+    return _parse_reply_timeout(os.getenv("A2A_REPLY_TIMEOUT", "300"))
 
 
 def _profile_scoped() -> bool:
@@ -377,6 +385,10 @@ class A2AAdapter(BasePlatformAdapter):
         self._security_context = security.A2ASecurityContext.capture()
         _port_env = None if _profile_scoped() else os.getenv("A2A_PORT")
         self.port = int(_port_env or extra.get("port", _DEFAULT_PORT))
+        self.reply_timeout = _parse_reply_timeout(
+            extra.get("reply_timeout", _reply_timeout()),
+            fallback=_reply_timeout(),
+        )
         self.host = self._security_context.resolve_bind_host()
         self.agent_name = _default_agent_name()
         self._advertised_toolsets = [
@@ -410,7 +422,7 @@ class A2AAdapter(BasePlatformAdapter):
         # requests sharing a context).
         self._pending: Dict[str, tuple[str, Future]] = {}
         self._pending_order: Dict[str, deque[str]] = {}
-        self._pending_lock = threading.Lock()
+        self._pending_lock = threading.RLock()
 
         # Orphaned task watchdog
         self._watchdog_stop = threading.Event()
@@ -506,12 +518,36 @@ class A2AAdapter(BasePlatformAdapter):
 
     # ── Orphaned task watchdog ─────────────────────────────────────────────
 
+    def _orphan_timeout_for(self, rec: dict) -> float:
+        """Never reap a task while its live reply future is still registered.
+
+        After a process restart no such future exists, so genuinely abandoned
+        records still age out through the normal timeout.
+        """
+        task_id = str(rec.get("task_id") or "")
+        with self._pending_lock:
+            if any(task_id in queue for queue in self._pending_order.values()):
+                return math.inf
+        agent = self._agents.get(str(rec.get("agent_slug") or "")) or {}
+        try:
+            route_timeout = float(agent.get("timeout") or 0)
+        except (TypeError, ValueError):
+            route_timeout = 0
+        return int(max(
+            _ORPHAN_TIMEOUT,
+            self.reply_timeout + _ORPHAN_GRACE,
+            route_timeout + _ORPHAN_GRACE,
+        ))
+
     def _watchdog_loop(self) -> None:
         """Background thread that fails orphaned tasks (keeps them queryable)."""
         while not self._watchdog_stop.wait(_WATCHDOG_INTERVAL):
             try:
-                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT):
-                    logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, _ORPHAN_TIMEOUT)
+                for tid in self.tasks.fail_orphans(
+                    _ORPHAN_TIMEOUT,
+                    timeout_for=self._orphan_timeout_for,
+                ):
+                    logger.warning("A2A: orphaned task %s marked failed", tid)
                     protocol.metrics.tasks_failed += 1
             except Exception:
                 logger.debug("A2A: watchdog error", exc_info=True)
@@ -970,40 +1006,64 @@ class A2AAdapter(BasePlatformAdapter):
         self._send_push_notification(task_id, context_id, reply, state)
         return state, reply
 
+    def _finalize_when_reply_arrives(self, pending: dict) -> None:
+        """Bind terminal task state to the reply future, never an RPC timer.
+
+        ``reply_timeout`` is an observation budget for an open RPC/stream. It
+        must not become the execution deadline of the underlying A2A task.
+        """
+        future = pending["future"]
+
+        def _on_reply(done: Future) -> None:
+            try:
+                state, text = done.result()
+            except CancelledError:
+                state, text = protocol.STATE_CANCELED, "Task canceled"
+            except Exception as exc:
+                logger.warning(
+                    "A2A reply future failed for %s: %s", pending["task_id"], exc
+                )
+                state, text = protocol.STATE_FAILED, f"Agent reply failed: {exc}"
+            self._finalize_task(pending, state, text)
+
+        future.add_done_callback(_on_reply)
+
     def _await_reply(self, pending: dict, keepalive=None) -> tuple[str, str]:
-        """Block until the task's future resolves (or times out).
+        """Observe a reply for one RPC window without terminalizing its task.
 
         ``keepalive`` is an optional zero-arg callable invoked every
         _SSE_KEEPALIVE seconds while waiting (used by the SSE paths); if it
         raises, the client is gone and we stop waiting.
         """
         fut: Future = pending["future"]
-        deadline = pending["started"] + _reply_timeout()
+        deadline = pending["started"] + self.reply_timeout
         while True:
             try:
                 return fut.result(timeout=_SSE_KEEPALIVE if keepalive else max(0.0, deadline - time.time()))
             except FuturesTimeout:
                 if time.time() >= deadline:
-                    return (protocol.STATE_FAILED, "[agent did not reply in time]")
+                    return (protocol.STATE_WORKING, "")
                 if keepalive:
                     try:
                         keepalive()
                     except Exception:
-                        return (protocol.STATE_FAILED, "[client disconnected]")
-            except Exception:
-                return (protocol.STATE_FAILED, "[agent did not reply in time]")
+                        return (protocol.STATE_WORKING, "")
+            except Exception as exc:
+                return (protocol.STATE_FAILED, f"Agent reply failed: {exc}")
 
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         terminal, pending = self._prepare_task(params, peer, agent=agent)
         if terminal is not None:
             result = protocol.send_message_response(terminal) if v1_response else terminal
             return protocol.jsonrpc_result(req_id, result)
-        state, reply = self._await_reply(pending)
-        state, reply = self._finalize_task(pending, state, reply)
-        task = protocol.build_task(
-            pending["task_id"], pending["context_id"], state, reply,
-            created_at=pending["created_iso"],
-        )
+        assert pending is not None
+
+        # The RPC only returns a task receipt. Terminal state follows the
+        # gateway reply future and is independent of any observation budget.
+        self._finalize_when_reply_arrives(pending)
+        rec = self.tasks.get(pending["task_id"], *self._scope_for_agent(agent))
+        assert rec is not None
+        task = protocol.TaskStore.to_task(rec)
         result = protocol.send_message_response(task) if v1_response else task
         return protocol.jsonrpc_result(req_id, result)
 
@@ -1057,16 +1117,26 @@ class A2AAdapter(BasePlatformAdapter):
                 )
                 return
 
+            assert pending is not None
             task_id, context_id = pending["task_id"], pending["context_id"]
-            self._sse_write(handler, protocol.sse_data(protocol.stream_task(
-                protocol.build_task(task_id, context_id, protocol.STATE_SUBMITTED, created_at=pending["created_iso"])),
-                req_id))
+            self._finalize_when_reply_arrives(pending)
+            rec = self.tasks.get(task_id, *self._scope_for_agent(agent))
+            assert rec is not None
+            initial_task = protocol.TaskStore.to_task(rec)
+            initial_task["status"] = {
+                "state": protocol.STATE_SUBMITTED,
+                "timestamp": protocol.now_iso(),
+            }
+            self._sse_write(handler, protocol.sse_data(
+                protocol.stream_task(initial_task), req_id))
             self._sse_write(handler, protocol.sse_data(
                 protocol.status_update(task_id, context_id, protocol.STATE_WORKING), req_id))
 
             state, reply = self._await_reply(
                 pending, keepalive=lambda: self._sse_write(handler, ": keepalive\n\n"))
-            state, reply = self._finalize_task(pending, state, reply)
+            # ``_finalize_when_reply_arrives`` owns terminal persistence. An
+            # observation timeout leaves the task working and merely closes
+            # this stream with its current state.
             self._emit_terminal(handler, task_id, context_id, state, reply, req_id=req_id)
         except (BrokenPipeError, ConnectionResetError):
             logger.debug("A2A: stream client disconnected")

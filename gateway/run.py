@@ -11288,6 +11288,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return True  # handled (silently dropped); do not fall through
 
         effective_mode = self._effective_busy_input_mode(event.source)
+        # A2A messages are independent protocol tasks with durable receipts,
+        # not interactive steering. They must wait behind the active turn so
+        # one peer cannot pre-empt another peer's live task.
+        platform_value = str(getattr(event.source.platform, "value", event.source.platform)).lower()
+        if platform_value == "a2a":
+            effective_mode = "queue"
 
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:

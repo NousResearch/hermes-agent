@@ -13,9 +13,11 @@ import asyncio
 import hashlib
 import hmac
 import json
+import math
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import Future
@@ -24,7 +26,122 @@ from types import SimpleNamespace
 
 import pytest
 
+from plugins.platforms.a2a import adapter as a2a_adapter
 from plugins.platforms.a2a import protocol, security, tools
+
+
+def test_reply_timeout_can_be_configured_without_environment(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    monkeypatch.delenv("A2A_REPLY_TIMEOUT", raising=False)
+    adapter = a2a_adapter.A2AAdapter(
+        PlatformConfig(enabled=True, extra={"reply_timeout": 900})
+    )
+
+    assert adapter.reply_timeout == 900.0
+
+
+def test_non_finite_reply_timeout_falls_back_safely(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    monkeypatch.delenv("A2A_REPLY_TIMEOUT", raising=False)
+    adapter = a2a_adapter.A2AAdapter(
+        PlatformConfig(enabled=True, extra={"reply_timeout": "inf"})
+    )
+
+    assert adapter.reply_timeout == 300.0
+
+
+def test_reply_wait_uses_configured_timeout(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    monkeypatch.delenv("A2A_REPLY_TIMEOUT", raising=False)
+    adapter = a2a_adapter.A2AAdapter(
+        PlatformConfig(enabled=True, extra={"reply_timeout": 900})
+    )
+
+    class CapturingFuture:
+        timeout = 0.0
+
+        def result(self, timeout):
+            self.timeout = timeout
+            return protocol.STATE_COMPLETED, "alive"
+
+    future = CapturingFuture()
+    state, reply = adapter._await_reply({"future": future, "started": time.time()})
+
+    assert (state, reply) == (protocol.STATE_COMPLETED, "alive")
+    assert 890 < future.timeout <= 900
+
+
+def test_message_send_observation_deadline_never_terminalizes_running_task(monkeypatch):
+    """An RPC observation budget is not the agent task's execution deadline."""
+    from gateway.config import PlatformConfig
+
+    monkeypatch.delenv("A2A_REPLY_TIMEOUT", raising=False)
+    adapter = a2a_adapter.A2AAdapter(
+        PlatformConfig(enabled=True, extra={"reply_timeout": 1})
+    )
+    task_id = "task-late-body"
+    context_id = "ctx-late-body"
+    future = adapter._add_pending(task_id, context_id)
+    adapter.tasks.create(task_id, context_id, "peer")
+    adapter.tasks.set_state(task_id, protocol.STATE_WORKING)
+    pending = {
+        "task_id": task_id,
+        "context_id": context_id,
+        "peer": "peer",
+        "future": future,
+        "created_iso": protocol.now_iso(),
+        "started": time.time(),
+    }
+    monkeypatch.setattr(adapter, "_prepare_task", lambda *args, **kwargs: (None, pending))
+
+    response = adapter._rpc_message_send("send-1", {"message": {}}, "peer")
+    assert response["result"]["status"]["state"] == protocol.STATE_WORKING
+
+    time.sleep(1.05)  # exceed the configured observation deadline
+    before = adapter.tasks.get(task_id)
+    assert before is not None
+    assert before["state"] == protocol.STATE_WORKING
+    assert math.isinf(adapter._orphan_timeout_for(before))
+
+    future.set_result((protocol.STATE_COMPLETED, "late body"))
+    deadline = time.monotonic() + 1
+    after = adapter.tasks.get(task_id)
+    while time.monotonic() < deadline:
+        after = adapter.tasks.get(task_id)
+        if after and after["state"] == protocol.STATE_COMPLETED:
+            break
+        time.sleep(0.01)
+    assert after is not None
+    assert after["state"] == protocol.STATE_COMPLETED
+    assert after["reply"] == "late body"
+
+
+def test_orphan_watchdog_outlives_routed_agent_timeout(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    monkeypatch.delenv("A2A_REPLY_TIMEOUT", raising=False)
+    adapter = a2a_adapter.A2AAdapter(PlatformConfig(enabled=True, extra={
+        "reply_timeout": 900,
+        "agents": {"slow": {"profile": "slow", "timeout": 1800}},
+    }))
+
+    assert adapter._orphan_timeout_for({"agent_slug": "slow"}) > 1800
+
+
+def test_task_store_uses_per_task_orphan_timeout():
+    store = protocol.TaskStore()
+    store.create("task-slow", "ctx", "peer", agent_slug="slow")
+    store._tasks["task-slow"]["created_at"] = time.time() - 500
+
+    failed = store.fail_orphans(300, timeout_for=lambda rec: 1860)
+
+    assert failed == []
+    record = store.get("task-slow")
+    assert record is not None
+    assert record["state"] == protocol.STATE_SUBMITTED
 
 
 def _free_port() -> int:
@@ -1493,13 +1610,23 @@ class TestV1SpecRegressionFixes:
             assert resp["id"] == "1"
             assert set(resp["result"].keys()) == {"task"}
             task = resp["result"]["task"]
-            assert task["status"]["state"] == protocol.STATE_COMPLETED
-            assert "hello v1" in protocol.extract_text(task["artifacts"][0])
-            get_resp = await asyncio.to_thread(_post_json, base + "/", {
-                "jsonrpc": "2.0", "id": "2", "method": "GetTask",
-                "params": {"id": task["id"]},
-            }, {"A2A-Version": "1.0"})
+            assert task["status"]["state"] in {
+                protocol.STATE_SUBMITTED, protocol.STATE_WORKING,
+            }
+            deadline = time.monotonic() + 5
+            get_resp = None
+            while time.monotonic() < deadline:
+                get_resp = await asyncio.to_thread(_post_json, base + "/", {
+                    "jsonrpc": "2.0", "id": "2", "method": "GetTask",
+                    "params": {"id": task["id"]},
+                }, {"A2A-Version": "1.0"})
+                if get_resp["result"]["status"]["state"] == protocol.STATE_COMPLETED:
+                    break
+                await asyncio.sleep(0.02)
+            assert get_resp is not None
             assert get_resp["result"]["id"] == task["id"]
+            assert get_resp["result"]["status"]["state"] == protocol.STATE_COMPLETED
+            assert "hello v1" in protocol.extract_text(get_resp["result"]["artifacts"][0])
             list_resp = await asyncio.to_thread(_post_json, base + "/", {
                 "jsonrpc": "2.0", "id": "3", "method": "ListTasks",
                 "params": {"contextId": task["contextId"], "pageSize": 10},

@@ -189,6 +189,11 @@ VALID_HOOKS: Set[str] = {
     # verification-stop nudge; this hook is for user/plugin policy and is
     # bounded by agent.max_verify_nudges.
     "pre_verify",
+    # Let plugins replace or suppress the flat skill index in the system prompt.
+    # Fired inside build_system_prompt_parts, before the index is built and cached.
+    # Callbacks receive: agent, skills_prompt (default built index), valid_tool_names.
+    # Return {"skills_prompt": str, "identity": str, "guidance": str} (all optional).
+    "build_skills_index",
     "pre_api_request",
     "post_api_request",
     "api_request_error",

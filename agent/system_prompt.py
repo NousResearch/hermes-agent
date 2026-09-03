@@ -45,6 +45,8 @@ from agent.prompt_builder import (
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
+    SKILL_GRAPH_GUIDANCE,
+    SKILL_GRAPH_IDENTITY,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
     TELEGRAM_RICH_MESSAGES_HINT,
@@ -209,19 +211,8 @@ def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
 
         rendered = tuple(render_system_prompt_sections(_plugin_session_info(agent)))
     except Exception as exc:
-        # Fail-open: a plugin whose render raises at a rebuild boundary
-        # keeps its last good bytes (stashed by invalidate_system_prompt)
-        # instead of silently vanishing from the prompt.
-        previous = getattr(agent, "_plugin_system_prompt_sections_previous", None)
-        if previous:
-            logger.warning(
-                "Plugin system prompt sections failed to re-render (%s); "
-                "keeping the previous frozen sections", exc,
-            )
-            rendered = previous
-        else:
-            logger.warning("Plugin system prompt sections could not be rendered: %s", exc)
-            rendered = ()
+        logger.warning("Plugin system prompt sections could not be rendered: %s", exc)
+        rendered = ()
     setattr(agent, attr, rendered)
     return rendered
 
@@ -282,89 +273,6 @@ def _plugin_section_blocks(sections: tuple, position: str) -> List[str]:
     selected = [section for section in sections if section.position == position]
     block = format_system_prompt_sections(selected)
     return [block] if block else []
-
-
-def _session_start_like(agent: Any, now: Any) -> Any:
-    """Best-known conversation start time, or ``now`` as a fallback.
-
-    ``Conversation started:`` must reference when the conversation actually
-    began, not when the system prompt was last (re)built.  The prompt is
-    rebuilt on compression, fresh-agent gateway turns, and resume paths, and
-    stamping build time made the date drift forward across midnight (a chat
-    that started on Wednesday read as "Conversation started: Thursday" after
-    a Thursday-morning resume), contradicting the fresh per-turn time hint.
-    Prefer, in order:
-
-    0. the LINEAGE-ROOT session id's embedded timestamp — compaction can
-       rotate the session id, and each rotated id embeds its OWN mint time,
-       so after months of compactions rung 1 alone would quietly re-birth
-       the conversation at its latest rotation. Walking to the lineage root
-       (same walk as ``_conversation_root_id``) recovers the ORIGINAL
-       birth stamp — a Bot Mode forever-chat keeps knowing when it was
-       first born, across every compaction (maintainer-directed, #98426);
-    1. the timestamp embedded in ``session_id`` (``YYYYMMDD_HHMMSS_...``) —
-       immutable for the life of the session, so the line is byte-stable
-       across every rebuild boundary (preserving prefix-cache KV);
-    2. ``agent.session_start`` (session-creation stamp);
-    3. ``now`` (initial/legacy build without either).
-
-    Session-id and ``session_start`` stamps are recorded in the box's local
-    wall-clock; attach that zone first, then convert to the configured /
-    rendered zone (``now``'s tzinfo) so the displayed date is consistent with
-    the per-turn clock even when the box's TZ differs from the configured one.
-    """
-    from datetime import datetime
-
-    try:
-        machine_local_tz = datetime.now().astimezone().tzinfo
-    except (ValueError, OSError):
-        machine_local_tz = None
-
-    def _to_display_tz(dt: Any) -> Any:
-        if machine_local_tz is not None and dt.tzinfo is None:
-            try:
-                dt = dt.replace(tzinfo=machine_local_tz)
-            except ValueError:
-                pass
-        if getattr(now, "tzinfo", None) is not None and dt.tzinfo is not None:
-            try:
-                dt = dt.astimezone(now.tzinfo)
-            except (ValueError, OSError):
-                pass
-        return dt
-
-    # 0. Lineage root: compaction rotation mints NEW ids with NEW embedded
-    # stamps. Walk to the root id (cached on the agent — the lineage only
-    # grows at compaction, and this function runs at that exact boundary,
-    # so one walk per rebuild is fresh enough) and prefer ITS embedded
-    # timestamp: the conversation's true birth. Fail-open to rung 1.
-    session_id = getattr(agent, "session_id", None)
-    root_id = None
-    try:
-        db = getattr(agent, "_session_db", None)
-        if db is not None and isinstance(session_id, str) and session_id:
-            root_id = db.get_conversation_root(session_id)
-    except Exception:
-        root_id = None
-    for candidate in (root_id, session_id):
-        if isinstance(candidate, str) and candidate:
-            m = re.match(r"^(\d{8})_(\d{6})", candidate)
-            if m:
-                try:
-                    embedded = datetime.strptime(
-                        f"{m.group(1)}_{m.group(2)}", "%Y%m%d_%H%M%S"
-                    )
-                    return _to_display_tz(embedded)
-                except ValueError:
-                    pass
-
-    # 2. Session-creation stamp set by the runner.
-    session_start = getattr(agent, "session_start", None)
-    if hasattr(session_start, "astimezone"):
-        return _to_display_tz(session_start)
-
-    # 3. Fallback: build time.
-    return now
 
 
 def _agent_home(agent: Any) -> Optional[Path]:
@@ -486,16 +394,27 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
-    # Pointer to the docs (and, when it exists, the hermes-agent skill) for
-    # user questions about Hermes itself. The skill_view() pointer is a
-    # dangling reference in two cases — no skill tools in the toolset
-    # (Blank Slate) OR the hermes-agent skill not installed — so the
-    # variant is chosen AFTER the skills index is built (see below) and
-    # this slot holds its position. Toolset and skill set are fixed
-    # per-session, so cache-safe either way.
+    # ── Skill index hook ─────────────────────────────────────────────
+    # ``build_skills_index`` lets plugins replace the flat skill index,
+    # inject identity protocol, and/or inject tool guidance — all before
+    # the system prompt is cached.  The hook fires after the default
+    # index is built (so plugins see it) and before it's appended to the
+    # volatile tier.  Each callback may return a dict with any of:
+    #   {"skills_prompt": str,   # replace the index ("" to suppress)
+    #    "identity": str,        # append to stable_parts
+    #    "guidance": str}        # append to tool_guidance
+    _skills_identity_parts: list[str] = []
+    _skills_guidance_parts: list[str] = []
+
+    # Pointer to the hermes-agent skill + docs for user questions about Hermes
+    # itself. When the session has no skill tools (Blank Slate with the skills
+    # toolset off), skill_view() would be a dangling reference — inject the
+    # docs-only variant instead. Toolset is fixed per-session, so cache-safe.
     _has_skill_view = "skill_view" in (agent.valid_tool_names or set())
-    _help_guidance_slot = len(stable_parts)
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
+    stable_parts.append(
+        HERMES_AGENT_HELP_GUIDANCE if _has_skill_view
+        else HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
+    )
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
@@ -538,6 +457,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:
         tool_guidance.append(SKILLS_GUIDANCE)
+    # Skill-graph GUIDANCE moved to build_skills_index hook (below).
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see
@@ -555,6 +475,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # agent has tools. Static text → byte-stable prompt (no cache hit).
     if agent.valid_tool_names:
         stable_parts.append(STEER_CHANNEL_NOTE)
+
+    # Computer-use — goes in as its own block rather than being merged into
+    # tool_guidance because the content is multi-paragraph. The guidance is
+    # rendered for the host platform so Windows/Linux hosts don't see
+    # macOS-only wording (Mac, Space, cmd+s).
+    if "computer_use" in agent.valid_tool_names:
+        from agent.prompt_builder import computer_use_guidance
+        stable_parts.append(computer_use_guidance())
 
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
@@ -616,7 +544,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             from agent.prompt_builder import execution_guidance_text
             stable_parts.append(execution_guidance_text(agent.valid_tool_names))
 
+    # Build the default flat skill index.
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
+
     if has_skills_tools:
         avail_toolsets = {
             toolset
@@ -625,10 +555,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
             if toolset
         }
-        # Focus mode (opt-in) demotes non-coding skill categories to
-        # names-only in the index (never hidden — skill_view/skills_list
-        # reach everything, and every name stays visible for recall). The
-        # default coding posture leaves the index untouched.
         _compact_cats = frozenset()
         try:
             from agent.coding_context import coding_compact_skill_categories
@@ -644,16 +570,48 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             compact_categories=_compact_cats or None,
             skills_dir_override=_agent_skills_dir(agent),
         )
+        if skills_prompt:
+            import re as _re
+            _skill_names = _re.findall(r'^\s+- (.+?)(?::\s|$)', skills_prompt, _re.MULTILINE)
+            logger.info(
+                "skill-graph: built flat skill index with %d skills: %s",
+                len(_skill_names),
+                ", ".join(_skill_names[:30]) + ("..." if len(_skill_names) > 30 else ""),
+            )
     else:
         skills_prompt = ""
 
-    # Resolve the help-guidance variant now that the skills index exists:
-    # the skill-pointer variant requires BOTH skill_view in the toolset AND
-    # the hermes-agent skill actually present in the index (gating on the
-    # rendered index line keeps this a pure string check — no second
-    # filesystem scan, and it inherits the index cache's stability).
-    if _has_skill_view and "- hermes-agent:" in skills_prompt:
-        stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
+    # ── build_skills_index hook ──────────────────────────────────────
+    # Plugins may replace the index, inject identity protocol, and/or
+    # inject tool guidance.  This is the single extension point for
+    # skill-discovery plugins (skill-graph, semantic search, etc.).
+    try:
+        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        _index_results = _invoke_hook(
+            "build_skills_index",
+            agent=agent,
+            skills_prompt=skills_prompt,
+            valid_tool_names=set(agent.valid_tool_names),
+        )
+        for _r_hook in (_index_results or []):
+            if not isinstance(_r_hook, dict):
+                continue
+            if "skills_prompt" in _r_hook:
+                skills_prompt = _r_hook["skills_prompt"]
+            _identity = _r_hook.get("identity")
+            if _identity:
+                _skills_identity_parts.append(_identity)
+            _guidance = _r_hook.get("guidance")
+            if _guidance:
+                _skills_guidance_parts.append(_guidance)
+    except Exception as exc:
+        logger.warning("build_skills_index hook failed: %s", exc)
+
+    # Apply hook-injected identity and guidance.
+    for _part in _skills_identity_parts:
+        stable_parts.append(_part)
+    for _part in _skills_guidance_parts:
+        tool_guidance.append(_part)
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt
@@ -821,7 +779,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
             f"different session run from a different shell. Do NOT modify "
             f"another profile's skills/plugins/cron/memories unless the user "
-            f"explicitly directs you to."
+            f"explicitly directs you to. The cross-profile write guard will "
+            f"refuse such writes by default; pass cross_profile=True only "
+            f"after explicit direction."
         )
 
     platform_key = (agent.platform or "").lower().strip()
@@ -990,26 +950,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _offset:  # '-0400' -> 'UTC-04:00'
         _zone_bits.append(f"UTC{_offset[:3]}:{_offset[3:]}")
     _zone_suffix = f" ({', '.join(_zone_bits)})" if _zone_bits else ""
-    _start = _session_start_like(agent, now)
     timestamp_line = (
-        f"Conversation started: {_start.strftime('%A, %B %d, %Y')}{_zone_suffix}"
+        f"Conversation started: {now.strftime('%A, %B %d, %Y')}{_zone_suffix}"
     )
-    # Second line (maintainer design, salvaging #96224's anchor): long-lived
-    # sessions — Bot Mode forever-chats, messenger channels people never
-    # close — span many days and many compactions. A lone birth date leads
-    # the model to believe it is still living in that old day. The prompt is
-    # rebuilt at every compaction boundary, so stamp the rebuild day too:
-    # 'started' stays anchored and byte-stable, 'as of' refreshes exactly
-    # when the cache prefix is already being invalidated (compaction), so
-    # the added line costs no extra cache churn. Same-day sessions skip the
-    # second line entirely — nothing to correct, and the single-line shape
-    # stays byte-identical for the day (prefix-cache safe).
-    if now.strftime("%Y%m%d") != _start.strftime("%Y%m%d"):
-        timestamp_line += (
-            f"\nToday's date (as of the last context rebuild): "
-            f"{now.strftime('%A, %B %d, %Y')} — trust this over the start "
-            f"date for what day it is now; query tools for exact time."
-        )
     # Bot Chat sessions are effectively eternal — a birth date frozen in the
     # prompt becomes confidently-wrong misinformation within days. Timeless
     # prompts keep the identity lines but drop the date (the timezone still
@@ -1066,21 +1009,10 @@ def invalidate_system_prompt(agent: Any) -> None:
     """Invalidate the cached system prompt, forcing a rebuild on the next turn.
 
     Called after context compression events. Also reloads memory from disk
-    so the rebuilt prompt captures any writes from this session, and clears
-    the frozen plugin-section snapshot so plugins re-render at the same
-    boundary (maintainer-directed, #95681 arc): a plugin section is just
-    another prompt block carrying state — freezing it while memory, skills,
-    and guidance refresh would recreate the stale-block disease inside
-    plugin-land. The previous bytes are stashed so a plugin whose render
-    RAISES falls back to its last good section instead of vanishing
-    (fail-open guard, not a freeze).
+    so the rebuilt prompt captures any writes from this session.
     """
     agent._cached_system_prompt = None
     agent._cached_system_prompt_static = None
-    _snapshot_attr = "_plugin_system_prompt_sections_snapshot"
-    if hasattr(agent, _snapshot_attr):
-        agent._plugin_system_prompt_sections_previous = getattr(agent, _snapshot_attr)
-        delattr(agent, _snapshot_attr)
     if agent._memory_store:
         agent._memory_store.load_from_disk()
 

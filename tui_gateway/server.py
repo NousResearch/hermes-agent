@@ -8827,6 +8827,38 @@ def _agent_fallback_model(agent):
     return _load_fallback_model()
 
 
+def _load_prefill_messages() -> list:
+    """Return configured ephemeral prefill messages for TUI-created agents.
+
+    Maintains parity with HermesCLI and gateway/run.py: resolves the prefill
+    messages file from HERMES_PREFILL_MESSAGES_FILE env var, top-level
+    prefill_messages_file key, or legacy agent.prefill_messages_file key.
+    """
+    file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "").strip()
+    if not file_path:
+        cfg = _load_cfg()
+        file_path = str(cfg.get("prefill_messages_file", "") or "").strip()
+        if not file_path:
+            agent_cfg = cfg.get("agent")
+            if isinstance(agent_cfg, dict):
+                file_path = str(agent_cfg.get("prefill_messages_file", "") or "").strip()
+    if not file_path:
+        return []
+    path = Path(file_path).expanduser()
+    if not path.is_absolute():
+        path = get_hermes_home() / path
+    if not path.exists():
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+    except Exception as e:
+        logger.warning("Failed to load prefill messages from %s: %s", path, e)
+    return []
+
+
 def _background_agent_kwargs(agent, task_id: str) -> dict:
     cfg = _load_cfg()
 
@@ -8848,6 +8880,9 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "quiet_mode": True,
         "verbose_logging": False,
         "ephemeral_system_prompt": getattr(agent, "ephemeral_system_prompt", None)
+        or None,
+        "prefill_messages": getattr(agent, "prefill_messages", None)
+        or _load_prefill_messages()
         or None,
         "providers_allowed": getattr(agent, "providers_allowed", None),
         "providers_ignored": getattr(agent, "providers_ignored", None),
@@ -9358,6 +9393,7 @@ def _make_agent(
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
+        prefill_messages=_load_prefill_messages() or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),

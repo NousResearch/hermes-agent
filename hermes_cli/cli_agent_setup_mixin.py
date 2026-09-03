@@ -521,6 +521,17 @@ class CLIAgentSetupMixin:
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
+            if getattr(self, "prefill_messages", None) is None:
+                try:
+                    from hermes_cli.config import load_config
+                    from cli import _load_prefill_messages, _resolve_prefill_messages_file
+
+                    cfg = load_config() or {}
+                    prefill_file = _resolve_prefill_messages_file(cfg)
+                    self.prefill_messages = _load_prefill_messages(prefill_file) or None
+                except Exception as e:
+                    logger.debug("Failed to resolve prefill messages in CLI agent setup: %s", e)
+
             effective_model = model_override or self.model
             self.agent = AIAgent(
                 model=effective_model,

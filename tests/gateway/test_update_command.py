@@ -5,13 +5,14 @@ the _send_update_notification startup hook (sends results after restart).
 """
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionSource
 
 
@@ -133,6 +134,7 @@ class TestHandleUpdateCommand:
         assert data["chat_id"] == "99999"
         assert data["chat_type"] == "dm"
         assert data["message_id"] == "m-update"
+        assert data["initiating_gateway_pid"] == os.getpid()
         assert "timestamp" in data
         assert not (hermes_home / ".update_exit_code").exists()
 
@@ -348,8 +350,8 @@ class TestSendUpdateNotification:
 
 
     @pytest.mark.asyncio
-    async def test_cleans_up_on_error(self, tmp_path):
-        """Files are cleaned up even if notification fails."""
+    async def test_preserves_markers_when_notification_send_fails(self, tmp_path):
+        """A transient send failure remains retryable after restart."""
         runner = _make_runner()
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
@@ -369,12 +371,95 @@ class TestSendUpdateNotification:
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
-            await runner._send_update_notification()
+            result = await runner._send_update_notification()
 
-        # Files should still be cleaned up (finally block)
+        assert result is False
+        assert pending_path.exists()
+        assert output_path.exists()
+        assert exit_code_path.exists()
+        assert not (hermes_home / ".update_pending.claimed.json").exists()
+
+
+    @pytest.mark.asyncio
+    async def test_preserves_markers_when_notification_returns_failure(self, tmp_path):
+        """SendResult(success=False) is a failed delivery, not a completed send."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        pending_path.write_text(json.dumps({
+            "platform": "telegram", "chat_id": "111", "user_id": "222",
+        }))
+        output_path.write_text("✓ Done")
+        exit_code_path.write_text("0")
+        mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = SendResult(
+            success=False,
+            error="Telegram temporarily unavailable",
+        )
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            result = await runner._send_update_notification()
+
+        assert result is False
+        assert pending_path.exists()
+        assert output_path.exists()
+        assert exit_code_path.exists()
+        assert not (hermes_home / ".update_pending.claimed.json").exists()
+
+
+    @pytest.mark.asyncio
+    async def test_initiating_gateway_defers_success_until_restart(self, tmp_path):
+        """The old process cannot consume the new process's completion marker."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        pending_path = hermes_home / ".update_pending.json"
+        pending_path.write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "111",
+            "initiating_gateway_pid": 101,
+        }))
+        (hermes_home / ".update_exit_code").write_text("0")
+        runner.adapters = {Platform.TELEGRAM: AsyncMock()}
+
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.os.getpid", return_value=101):
+            result = await runner._send_update_notification()
+
+        assert result is False
+        assert pending_path.exists()
+        runner.adapters[Platform.TELEGRAM].send.assert_not_called()
+
+
+    @pytest.mark.asyncio
+    async def test_restarted_gateway_sends_final_online_notification(self, tmp_path):
+        """A new PID delivers the definitive completion and then cleans up."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        pending_path = hermes_home / ".update_pending.json"
+        pending_path.write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "111",
+            "initiating_gateway_pid": 101,
+        }))
+        (hermes_home / ".update_exit_code").write_text("0")
+        adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.os.getpid", return_value=202):
+            result = await runner._send_update_notification()
+
+        assert result is True
+        message = adapter.send.await_args.args[1]
+        assert "Gateway restarted and is back online" in message
         assert not pending_path.exists()
-        assert not output_path.exists()
-        assert not exit_code_path.exists()
+        assert not (hermes_home / ".update_exit_code").exists()
 
 
     @pytest.mark.asyncio

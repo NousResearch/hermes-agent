@@ -51,6 +51,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
+from hermes_cli.oauth_callback_page import render_callback_page_bytes
+
 # Session registry: session_id -> record. A record wraps the shared
 # DashboardOAuthFlow bridge plus a bit of gateway bookkeeping.
 _sessions: Dict[str, Dict[str, Any]] = {}
@@ -132,12 +134,19 @@ def _start_loopback_listener(flow) -> "http.server.HTTPServer":
             code = (qs.get("code") or [None])[0]
             state = (qs.get("state") or [None])[0]
             error = (qs.get("error") or [None])[0]
-            body = b"<h1>Authorization received</h1><p>You can close this tab and return to Hermes.</p>"
+            body = render_callback_page_bytes(
+                "Authorization received",
+                "You can close this tab and return to Hermes.",
+            )
             status = 200
             try:
                 flow.deliver_callback(code=code, state=state, error=error)
             except Exception:
-                body = b"<h1>OAuth callback rejected</h1><p>The callback was invalid or already used.</p>"
+                body = render_callback_page_bytes(
+                    "OAuth callback rejected",
+                    "The callback was invalid or already used.",
+                    status="error",
+                )
                 status = 400
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")

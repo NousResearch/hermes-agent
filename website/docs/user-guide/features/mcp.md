@@ -310,6 +310,19 @@ Then run `hermes mcp login googledrive` — with the pre-registered client, Herm
 
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
 
+### Branding the callback page
+
+The page the provider redirects your browser to at the end of any OAuth flow — MCP, Spotify, honcho — is a centered card that follows your system light/dark preference. Drop an image at `$HERMES_HOME/branding/oauth-logo.png` and it appears above the confirmation message:
+
+```bash
+mkdir -p ~/.hermes/branding
+cp /path/to/your-logo.png ~/.hermes/branding/oauth-logo.png
+```
+
+`.svg`, `.jpg`, `.webp`, and `.gif` work too. Add `oauth-logo-dark.*` alongside it to swap in a second mark under `prefers-color-scheme: dark` — useful when your primary logo is dark ink that disappears on a dark background.
+
+The image is inlined into the page rather than linked, so keep it small (under 1 MB; anything larger is skipped). Because branding lives in `$HERMES_HOME` rather than the repo, it survives `hermes update` and is per-profile.
+
 ## mTLS / client certificates
 
 Remote HTTP MCP servers that require mutual TLS (client-certificate authentication) are supported via `client_cert` / `client_key`. Hermes passes the resolved certificate to the underlying HTTP client for the TLS handshake.

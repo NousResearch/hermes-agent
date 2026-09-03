@@ -60,6 +60,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from hermes_cli.oauth_callback_page import render_callback_page
 from hermes_constants import secure_parent_dir
 
 logger = logging.getLogger(__name__)
@@ -774,12 +775,13 @@ def _make_callback_handler() -> tuple[type, dict]:
             result["error"] = error
             result["iss"] = iss
 
-            body = (
-                "<html><body><h2>Authorization Successful</h2>"
-                "<p>You can close this tab and return to Hermes.</p></body></html>"
-            ) if code else (
-                "<html><body><h2>Authorization Failed</h2>"
-                f"<p>Error: {error or 'unknown'}</p></body></html>"
+            body = render_callback_page(
+                "Authorization received",
+                "You can close this tab and return to Hermes.",
+            ) if code else render_callback_page(
+                "Authorization failed",
+                f"The provider reported: {error or 'unknown error'}",
+                status="error",
             )
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")

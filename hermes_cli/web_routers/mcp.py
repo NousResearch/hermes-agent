@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional  # noqa: F401
 from fastapi import APIRouter, HTTPException, Request  # noqa: F401
 from fastapi.responses import HTMLResponse  # noqa: F401
 
+from hermes_cli.oauth_callback_page import render_callback_page
 from hermes_cli.web_deps import late, LateState
 from hermes_cli.web_models import (
     MCPCatalogInstall,
@@ -358,20 +359,42 @@ async def mcp_oauth_callback(
         None,
     )
     if flow is None:
-        return HTMLResponse("<h1>OAuth flow expired</h1><p>Return to Hermes and try again.</p>", status_code=404)
+        return HTMLResponse(
+            render_callback_page(
+                "OAuth flow expired",
+                "Return to Hermes and try again.",
+                status="error",
+            ),
+            status_code=404,
+        )
     try:
         flow.deliver_callback(code=code, state=state, error=error)
     except ValueError as exc:
         reason = str(exc)
         status_code = 409 if "already received" in reason else 400
         return HTMLResponse(
-            "<h1>OAuth callback rejected</h1>"
-            "<p>The callback was invalid or already used.</p>",
+            render_callback_page(
+                "OAuth callback rejected",
+                "The callback was invalid or already used.",
+                status="error",
+            ),
             status_code=status_code,
         )
     if error:
-        return HTMLResponse("<h1>Authorization failed</h1><p>Return to Hermes for details.</p>", status_code=400)
-    return HTMLResponse("<h1>Authorization received</h1><p>You can close this tab and return to Hermes.</p>")
+        return HTMLResponse(
+            render_callback_page(
+                "Authorization failed",
+                "Return to Hermes for details.",
+                status="error",
+            ),
+            status_code=400,
+        )
+    return HTMLResponse(
+        render_callback_page(
+            "Authorization received",
+            "You can close this tab and return to Hermes.",
+        )
+    )
 
 
 @router.put("/api/mcp/servers/{name}/enabled")

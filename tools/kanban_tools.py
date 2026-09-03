@@ -2259,11 +2259,12 @@ KANBAN_CREATE_SCHEMA = {
             },
             "initial_status": {
                 "type": "string",
-                "enum": ["running", "blocked"],
+                "enum": ["running", "blocked", "todo"],
                 "description": (
-                    "Initial card status. Use 'blocked' for tasks that "
-                    "require immediate human ops (R3 gate) to skip the "
-                    "brief running-to-blocked transition. Defaults to "
+                    "Initial card status. Use 'todo' to park a task without "
+                    "auto-promotion or dispatch until manual promotion. Use "
+                    "'blocked' for tasks that require immediate human ops "
+                    "(R3 gate). Defaults to "
                     "'running', which preserves the usual dispatch path."
                 ),
             },

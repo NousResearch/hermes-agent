@@ -344,6 +344,25 @@ model:
 kanban:
   review_dispatch: true
 
+  # Optional bounds on the task graph. Omitting `graph_limits` preserves the
+  # historical unbounded behaviour. Once the key is present, all three values
+  # are mandatory positive integers, so a typo cannot silently disable one
+  # guard. Enforced atomically at creation, at manual linking and at
+  # decomposition -- a bound that only covers the creation path is not a bound.
+  # graph_limits:
+  #   depth: 3     # longest ancestor chain
+  #   fanout: 6    # direct children of a single task
+  #   nodes: 20    # tasks in one connected component
+
+  # Optional allowlist of workflow templates eligible for automatic dispatch.
+  # Unset preserves the historical behaviour of dispatching every ready or
+  # review task. Once configured it must be a non-empty list of non-empty
+  # strings; an invalid explicit policy raises rather than degrading to
+  # "dispatch everything". The dashboard's manual promotion follows the same
+  # rule, so it cannot be used to step around automatic dispatch.
+  # dispatch_workflow_template_allowlist:
+  #   - "my-org.mission/v2"
+
 # =============================================================================
 # Terminal Tool Configuration
 # =============================================================================

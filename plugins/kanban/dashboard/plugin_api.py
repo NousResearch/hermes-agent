@@ -43,7 +43,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
 from fastapi.responses import FileResponse
@@ -616,6 +616,7 @@ class CreateTaskBody(BaseModel):
     # Per-task thinking depth (none|minimal|…|ultra). None = inherit the
     # assigned profile's own agent.reasoning_effort.
     reasoning_effort: Optional[str] = None
+    initial_status: Literal["running", "blocked", "todo"] = "running"
     # Explicit project link; when omitted, create_task inherits the board's
     # scoped project (if any) so a project-scoped board anchors every task.
     project_id: Optional[str] = None
@@ -646,6 +647,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             model_override=payload.model_override,
             provider_override=payload.provider_override,
             reasoning_effort=payload.reasoning_effort,
+            initial_status=payload.initial_status,
             project_id=payload.project_id,
             board=board,
         )
@@ -930,9 +932,16 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 current = kanban_db.get_task(conn, task_id)
                 if current and current.status in ("blocked", "scheduled"):
                     ok = kanban_db.unblock_task(conn, task_id)
+                elif current and current.status == "todo":
+                    ok, _ = kanban_db.promote_task(
+                        conn,
+                        task_id,
+                        actor="dashboard",
+                        reason="manual dashboard promotion",
+                    )
                 else:
                     reopened = _reopen_if_review(conn, task_id, current)
-                    # Direct status write for drag-drop (todo -> ready etc).
+                    # Direct status write for remaining drag-drop states.
                     ok = reopened if reopened is not None else _set_status_direct(conn, task_id, "ready")
             elif s == "archived":
                 ok = kanban_db.archive_task(conn, task_id)

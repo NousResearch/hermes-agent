@@ -100,7 +100,7 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
-VALID_INITIAL_STATUSES = {"running", "blocked"}
+VALID_INITIAL_STATUSES = {"running", "blocked", "todo"}
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
@@ -133,6 +133,153 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+
+
+def _configured_graph_limits() -> Optional[tuple[int, int, int]]:
+    """Return optional ``(depth, fanout, nodes)`` limits from config.
+
+    Omitting ``kanban.graph_limits`` preserves the historical unbounded
+    behaviour. Once the key is present, all three values are mandatory
+    positive integers so a typo cannot silently disable one guard.
+    """
+    from hermes_cli.config import load_config_readonly
+
+    raw = (load_config_readonly().get("kanban") or {}).get("graph_limits")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("kanban.graph_limits must be a mapping")
+    values = tuple(raw.get(key) for key in ("depth", "fanout", "nodes"))
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 1
+        for value in values
+    ):
+        raise ValueError(
+            "kanban.graph_limits requires positive integer depth, fanout, and nodes"
+        )
+    return values
+
+
+def _configured_dispatch_workflow_template_allowlist() -> Optional[tuple[str, ...]]:
+    """Return workflow templates eligible for automatic dispatch.
+
+    ``None`` preserves Hermes' historical behavior and dispatches every ready
+    or review task. Once configured, the allowlist must be a non-empty list of
+    non-empty strings. Invalid explicit policy fails closed by raising before
+    a task can be claimed.
+    """
+    from hermes_cli.config import load_config_readonly
+
+    raw = (load_config_readonly().get("kanban") or {}).get(
+        "dispatch_workflow_template_allowlist"
+    )
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(
+            "kanban.dispatch_workflow_template_allowlist must be a non-empty list"
+        )
+    normalized: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                "kanban.dispatch_workflow_template_allowlist entries must be "
+                "non-empty strings"
+            )
+        candidate = value.strip()
+        if candidate not in normalized:
+            normalized.append(candidate)
+    return tuple(normalized)
+
+
+def _dispatch_workflow_sql() -> tuple[str, tuple[str, ...]]:
+    allowlist = _configured_dispatch_workflow_template_allowlist()
+    if allowlist is None:
+        return "", ()
+    placeholders = ", ".join("?" for _ in allowlist)
+    return f" AND workflow_template_id IN ({placeholders})", allowlist
+
+
+def _assert_graph_limits(
+    conn: sqlite3.Connection,
+    *,
+    extra_nodes: Iterable[str] = (),
+    extra_edges: Iterable[tuple[str, str]] = (),
+) -> None:
+    """Validate the touched active component against configured bounds."""
+    limits = _configured_graph_limits()
+    if limits is None:
+        return
+    max_depth, max_fanout, max_nodes = limits
+    active_rows = conn.execute(
+        "SELECT id FROM tasks WHERE status != 'archived'"
+    ).fetchall()
+    nodes = {str(row["id"]) for row in active_rows}
+    added_nodes = {str(node) for node in extra_nodes}
+    nodes.update(added_nodes)
+    edge_rows = conn.execute(
+        "SELECT parent_id, child_id FROM task_links"
+    ).fetchall()
+    edges = {
+        (str(row["parent_id"]), str(row["child_id"]))
+        for row in edge_rows
+        if str(row["parent_id"]) in nodes and str(row["child_id"]) in nodes
+    }
+    added_edges = {(str(parent), str(child)) for parent, child in extra_edges}
+    edges.update(added_edges)
+    impacted = added_nodes | {node for edge in added_edges for node in edge}
+    if not impacted:
+        return
+
+    children = {node: set() for node in nodes}
+    undirected = {node: set() for node in nodes}
+    for parent, child in edges:
+        if parent not in nodes or child not in nodes:
+            raise ValueError("kanban graph contains an orphan edge")
+        children[parent].add(child)
+        undirected[parent].add(child)
+        undirected[child].add(parent)
+
+    component: set[str] = set()
+    pending = list(impacted)
+    while pending:
+        node = pending.pop()
+        if node in component:
+            continue
+        component.add(node)
+        pending.extend(undirected[node] - component)
+    if len(component) > max_nodes:
+        raise ValueError(
+            f"kanban graph node limit exceeded: {len(component)} > {max_nodes}"
+        )
+    fanout = max((len(children[node]) for node in component), default=0)
+    if fanout > max_fanout:
+        raise ValueError(
+            f"kanban graph fanout limit exceeded: {fanout} > {max_fanout}"
+        )
+
+    visiting: set[str] = set()
+    memo: dict[str, int] = {}
+
+    def depth(node: str) -> int:
+        if node in memo:
+            return memo[node]
+        if node in visiting:
+            raise ValueError("kanban graph cycle detected")
+        visiting.add(node)
+        value = 1 + max(
+            (depth(child) for child in children[node] if child in component),
+            default=0,
+        )
+        visiting.remove(node)
+        memo[node] = value
+        return value
+
+    graph_depth = max((depth(node) for node in component), default=0)
+    if graph_depth > max_depth:
+        raise ValueError(
+            f"kanban graph depth limit exceeded: {graph_depth} > {max_depth}"
+        )
 
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
@@ -1141,6 +1288,9 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Explicitly parked ``todo`` cards opt out of dependency promotion until
+    # an operator calls ``promote_task``.
+    auto_promote: bool = True
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1234,6 +1384,11 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            auto_promote=(
+                bool(row["auto_promote"])
+                if "auto_promote" in keys and row["auto_promote"] is not None
+                else True
             ),
         )
 
@@ -1422,7 +1577,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Explicitly parked todo cards are not eligible for automatic promotion.
+    -- Existing rows retain the historical auto-promoting behaviour.
+    auto_promote         INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2690,6 +2848,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "auto_promote" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "auto_promote",
+            "auto_promote INTEGER NOT NULL DEFAULT 1",
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -3190,6 +3356,7 @@ def create_task(
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
+    workflow_template_id: Optional[str] = None,
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
@@ -3199,6 +3366,8 @@ def create_task(
 
     Returns the new task id.  Status is ``ready`` when there are no
     parents (or all parents already ``done``), otherwise ``todo``.
+    ``initial_status="todo"`` explicitly parks the task in ``todo`` and
+    disables automatic promotion until an operator promotes it.
     If ``triage=True``, status is forced to ``triage`` regardless of
     parents — a specifier/triager is expected to promote the task to
     ``todo`` once the spec is fleshed out.
@@ -3404,11 +3573,8 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
+    # Idempotency fast path. The lookup is repeated under the write lock below
+    # so concurrent creators cannot both insert the same active key.
     if idempotency_key:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
@@ -3449,11 +3615,26 @@ def create_task(
             # compose create_task calls under one outer commit so the
             # dispatcher can never observe a partially constructed graph.
             with write_txn(conn, allow_nested=True):
+                if idempotency_key:
+                    existing = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? "
+                        "AND status != 'archived' "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (idempotency_key,),
+                    ).fetchone()
+                    if existing:
+                        return existing["id"]
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
                 if initial_status == "blocked":
                     task_status = "blocked"
+                    if parents:
+                        missing = _find_missing_parents(conn, parents)
+                        if missing:
+                            raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
+                elif initial_status == "todo":
+                    task_status = "todo"
                     if parents:
                         missing = _find_missing_parents(conn, parents)
                         if missing:
@@ -3480,6 +3661,12 @@ def create_task(
                     missing = _find_missing_parents(conn, parents)
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
+
+                _assert_graph_limits(
+                    conn,
+                    extra_nodes=(task_id,),
+                    extra_edges=((parent, task_id) for parent in parents),
+                )
 
                 # Project-linked worktree: a fresh worktree dir under the repo
                 # plus a deterministic branch (project slug + task id). Together
@@ -3508,8 +3695,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id,
+                        workflow_template_id, auto_promote
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3535,6 +3723,8 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        workflow_template_id,
+                        0 if initial_status == "todo" else 1,
                     ),
                 )
                 for pid in parents:
@@ -3848,6 +4038,7 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             raise ValueError(
                 f"linking {parent_id} -> {child_id} would create a cycle"
             )
+        _assert_graph_limits(conn, extra_edges=((parent_id, child_id),))
         conn.execute(
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
@@ -4555,12 +4746,14 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, auto_promote "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if cur_status == "todo" and not bool(row["auto_promote"]):
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for explicit human intervention — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -6833,7 +7026,7 @@ def promote_task(
 
     with write_txn(conn):
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
+            "UPDATE tasks SET status = 'ready', auto_promote = 1 "
             "WHERE id = ? AND status IN ('todo', 'blocked')",
             (task_id,),
         )
@@ -7430,8 +7623,8 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by, auto_promote) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -7442,6 +7635,7 @@ def decompose_triage_task(
                     tenant,
                     now,
                     (author or "decomposer"),
+                    1 if auto_promote else 0,
                 ),
             )
             _append_event(
@@ -7476,6 +7670,10 @@ def decompose_triage_task(
                 "VALUES (?, ?)",
                 (cid, task_id),
             )
+
+        # Decomposition writes rows and links directly for atomic fan-out, so
+        # validate the resulting component before committing the transaction.
+        _assert_graph_limits(conn, extra_nodes=child_ids)
 
         # Flip the root: triage -> todo, set assignee to the orchestrator.
         sets = ["status = 'todo'"]
@@ -9562,10 +9760,13 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     importable (e.g. partial install) — preserves the old behavior so
     the warning still fires in degraded environments.
     """
+    workflow_sql, workflow_params = _dispatch_workflow_sql()
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
+        + workflow_sql,
+        workflow_params,
     ).fetchall()
     if not rows:
         return False
@@ -9588,10 +9789,13 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     used by the health telemetry to decide whether the dispatcher
     should have spawned a review agent.
     """
+    workflow_sql, workflow_params = _dispatch_workflow_sql()
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
         "WHERE status = 'review' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
+        + workflow_sql,
+        workflow_params,
     ).fetchall()
     if not rows:
         return False
@@ -10044,10 +10248,13 @@ def _dispatch_once_locked(
             )
             spawn_budget = 1
 
+    workflow_sql, workflow_params = _dispatch_workflow_sql()
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
+        + workflow_sql
+        + " ORDER BY priority DESC, created_at ASC",
+        workflow_params,
     ).fetchall()
     # Review rows are enumerated up front (not after the ready loop) so the
     # budget split below can see whether review work exists at all.
@@ -10056,7 +10263,9 @@ def _dispatch_once_locked(
         review_rows = conn.execute(
             "SELECT id, assignee FROM tasks "
             "WHERE status = 'review' AND claim_lock IS NULL "
-            "ORDER BY priority DESC, created_at ASC"
+            + workflow_sql
+            + " ORDER BY priority DESC, created_at ASC",
+            workflow_params,
         ).fetchall()
     # Review-lane reservation (OOF-30 review finding): the ready loop runs
     # first and used to consume the ENTIRE shared budget, so a sustained

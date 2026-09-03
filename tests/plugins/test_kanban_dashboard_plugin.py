@@ -116,6 +116,41 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_create_task_api_can_park_todo_until_dashboard_promotion(client):
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "manual API root",
+            "assignee": "reviewer",
+            "initial_status": "todo",
+        },
+    )
+    assert response.status_code == 200
+    task_id = response.json()["task"]["id"]
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, task_id)
+        assert task.status == "todo"
+        assert task.auto_promote is False
+        assert kb.recompute_ready(conn) == 0
+    finally:
+        conn.close()
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}", json={"status": "ready"}
+    )
+    assert response.status_code == 200
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, task_id)
+        assert task.status == "ready"
+        assert task.auto_promote is True
+    finally:
+        conn.close()
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")
@@ -1228,5 +1263,4 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
-
 

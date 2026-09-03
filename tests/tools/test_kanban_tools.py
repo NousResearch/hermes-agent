@@ -416,6 +416,34 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_supports_explicit_todo_without_reusing_workflow_step(worker_env):
+    from tools import kanban_tools as kt
+
+    assert "todo" in kt.KANBAN_CREATE_SCHEMA["parameters"]["properties"][
+        "initial_status"
+    ]["enum"]
+
+    out = kt._handle_create({
+        "title": "manual root",
+        "assignee": "peer",
+        "initial_status": "todo",
+    })
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    assert payload["status"] == "todo"
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        assert kb.recompute_ready(conn) == 0
+        task = kb.get_task(conn, payload["task_id"])
+        assert task.status == "todo"
+        assert task.current_step_key is None
+        assert task.current_run_id is None
+    finally:
+        conn.close()
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()

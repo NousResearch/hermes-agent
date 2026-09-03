@@ -1121,6 +1121,19 @@ def kanban_command(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+        # A pinned process — the dispatcher→worker handoff sets
+        # HERMES_KANBAN_DB — resolves its database before any board scope is
+        # consulted. Scoping here would therefore change the printed header
+        # and NOT the database: the command would read and write the pinned
+        # board while reporting the board that was asked for, with nothing in
+        # the output to reveal it. A dispatched worker ran
+        # `--board life comment <id>` against its own board and reported in
+        # good faith that it had updated a card on `life`. Fail instead.
+        try:
+            kb.kanban_db_path(normed)
+        except kb.BoardPinConflict as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 2
         board_scope = kb.scoped_current_board(normed)
 
     # Auto-initialize the DB before dispatching any subcommand. init_db

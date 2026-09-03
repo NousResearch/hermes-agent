@@ -710,6 +710,15 @@ def board_exists(board: Optional[str] = None) -> bool:
     return (d / "board.json").exists() or (d / "kanban.db").exists()
 
 
+class BoardPinConflict(RuntimeError):
+    """An explicit board was requested while the process is pinned elsewhere.
+
+    Raised instead of silently honouring the pin, so a cross-board request
+    fails visibly rather than reading or writing the wrong board under the
+    requested board's name.
+    """
+
+
 def kanban_db_path(board: Optional[str] = None) -> Path:
     """Return the path to the ``kanban.db`` for ``board``.
 
@@ -723,10 +732,40 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
        :func:`get_current_board` is used.
     3. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
        Other boards → ``<root>/kanban/boards/<slug>/kanban.db``.
+
+    An EXPLICIT ``board`` that contradicts the override raises
+    :class:`BoardPinConflict` rather than silently returning the override.
+    The override still wins for ``board=None`` — a pinned worker keeps its
+    board — but a caller that named a board is asking a question this
+    function must not answer wrongly. Silently discarding it let a dispatched
+    worker run ``--board life create`` against its own board while the CLI
+    printed "Board: life", so the write went to the wrong board and reported
+    success. Nothing in the output could reveal it.
     """
     override = os.environ.get("HERMES_KANBAN_DB", "").strip()
     if override:
-        return Path(override).expanduser()
+        pinned = Path(override).expanduser()
+        slug = _normalize_board_slug(board)
+        if slug is not None:
+            wanted = (
+                kanban_home() / "kanban.db" if slug == DEFAULT_BOARD
+                else board_dir(slug) / "kanban.db"
+            )
+            try:
+                same = wanted.resolve() == pinned.resolve()
+            except OSError:          # unresolvable path: compare literally
+                same = wanted == pinned
+            if not same:
+                raise BoardPinConflict(
+                    f"board {slug!r} was requested, but this process is pinned "
+                    f"to {pinned} by HERMES_KANBAN_DB. Refusing to read or "
+                    f"write the pinned board under another board's name. "
+                    f"A dispatched worker cannot reach another board; if this "
+                    f"is a deliberate cross-board operation, drop the pin "
+                    f"explicitly (env -u HERMES_KANBAN_DB -u "
+                    f"HERMES_KANBAN_BOARD) so the intent is visible."
+                )
+        return pinned
     slug = _normalize_board_slug(board)
     if slug is None:
         slug = get_current_board()

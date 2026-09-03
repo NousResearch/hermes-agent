@@ -725,7 +725,7 @@ class InProcessCronScheduler(CronScheduler):
 
         initialized_homes: set[str] = set()
 
-        def initialize_profile(entry) -> None:
+        def initialize_profile(entry) -> bool:
             home = entry[1] if isinstance(entry, tuple) else entry
             home_token = set_hermes_home_override(str(home))
             try:
@@ -738,6 +738,7 @@ class InProcessCronScheduler(CronScheduler):
                             home,
                         )
                     record_ticker_heartbeat()
+                return True
             except BaseException as e:
                 logger.error(
                     "Cron startup recovery error for profile at %s: %s",
@@ -745,6 +746,7 @@ class InProcessCronScheduler(CronScheduler):
                     e,
                     exc_info=True,
                 )
+                return False
             finally:
                 reset_hermes_home_override(home_token)
 
@@ -760,8 +762,7 @@ class InProcessCronScheduler(CronScheduler):
             for entry in entries:
                 home = entry[1] if isinstance(entry, tuple) else entry
                 key = str(home)
-                if key not in initialized_homes:
-                    initialize_profile(entry)
+                if key not in initialized_homes and initialize_profile(entry):
                     initialized_homes.add(key)
             return [
                 entry

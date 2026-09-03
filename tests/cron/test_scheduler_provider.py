@@ -889,6 +889,9 @@ def test_multiplex_recovery_isolates_profile_failures(tmp_path):
         thread.join(timeout=5)
 
     assert not thread.is_alive()
-    assert recovery_homes == [str(failing_home), str(healthy_home)]
-    # The failing profile stays in rotation: its ledger may still hold jobs.
-    assert set(tick_homes) == {str(failing_home), str(healthy_home)}
+    assert recovery_homes[:2] == [str(failing_home), str(healthy_home)]
+    assert recovery_homes.count(str(failing_home)) >= 2
+    assert recovery_homes.count(str(healthy_home)) == 1
+    # Recovery failures are retried without blocking a healthy sibling, but
+    # the failed profile must not tick until its ledger can be recovered.
+    assert set(tick_homes) == {str(healthy_home)}

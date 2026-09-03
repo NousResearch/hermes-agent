@@ -750,13 +750,15 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_clients[111] = mock_vc
 
         mock_receiver = MagicMock()
-        mock_receiver.flush_pending.side_effect = lambda: events.append("flush") or [(42, b"pcm")]
+        mock_receiver.flush_pending.side_effect = (
+            lambda **_kwargs: events.append("flush") or [(42, b"pcm", None)]
+        )
         mock_receiver.stop.side_effect = lambda: events.append("stop")
         adapter._voice_receivers[111] = mock_receiver
         adapter._voice_listen_tasks[111] = MagicMock()
         adapter._is_allowed_user = MagicMock(return_value=True)
 
-        async def process(guild_id, user_id, pcm_data):
+        async def process(guild_id, user_id, pcm_data, *, playback_token=None):
             events.append("process")
 
         adapter._process_voice_input = process
@@ -794,6 +796,9 @@ class TestDiscordVoiceChannelMethods:
         adapter._cancel_liveness_task = cancel_liveness_task
         adapter._cancel_bot_task = cancel_bot_task
         adapter.leave_voice_channel = leave_voice_channel
+        adapter._close_voice_streaming_kws_manager = (
+            lambda: events.append("close_streaming_kws_manager")
+        )
         adapter._client.close = close
         adapter._voice_clients[111] = MagicMock()
         adapter._ready_event = MagicMock()
@@ -806,6 +811,7 @@ class TestDiscordVoiceChannelMethods:
             "cancel_liveness_task",
             "leave_voice_channel:111",
             "cancel_bot_task",
+            "close_streaming_kws_manager",
             "close_client",
         ]
 

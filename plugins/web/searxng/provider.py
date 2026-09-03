@@ -44,6 +44,19 @@ def _searxng_url() -> str:
     return (val or "").strip()
 
 
+def _searxng_api_key() -> str:
+    """Return SEARXNG_API_KEY from Hermes config-aware env, falling back to process env."""
+    try:
+        from hermes_cli.config import get_env_value
+
+        val = get_env_value("SEARXNG_API_KEY")
+    except Exception:
+        val = None
+    if val is None:
+        val = os.getenv("SEARXNG_API_KEY", "")
+    return (val or "").strip()
+
+
 class SearXNGWebSearchProvider(WebSearchProvider):
     """Search via a user-hosted SearXNG instance."""
 
@@ -79,12 +92,17 @@ class SearXNGWebSearchProvider(WebSearchProvider):
             "pageno": 1,
         }
 
+        headers = {"Accept": "application/json"}
+        api_key = _searxng_api_key()
+        if api_key:
+            headers["X-Searx-Token"] = api_key
+
         try:
             resp = httpx.get(
                 f"{base_url}/search",
                 params=params,
                 timeout=15,
-                headers={"Accept": "application/json"},
+                headers=headers,
             )
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:

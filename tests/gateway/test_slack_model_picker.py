@@ -150,7 +150,10 @@ class TestSlackModelPickerSend:
         assert elements[0]["type"] == "static_select"
         assert elements[0]["action_id"] == "hermes_model_provider"
         assert len(elements[0]["options"]) == 2
-        assert elements[0]["options"][0]["value"] == "openrouter"
+        # Option values are list indices, never raw slugs (75-char value cap)
+        assert elements[0]["options"][0]["value"] == "0"
+        assert elements[0]["options"][1]["value"] == "1"
+        assert "OpenRouter" in elements[0]["options"][0]["text"]["text"]
         assert elements[1]["type"] == "button"
         assert elements[1]["action_id"] == "hermes_model_cancel"
 
@@ -201,6 +204,57 @@ class TestSlackModelPickerSend:
         )
         assert result.success is False
 
+    @pytest.mark.asyncio
+    async def test_long_custom_slug_never_reaches_option_value(self):
+        """A custom provider slug >75 chars would fail the whole picker post
+        with invalid_blocks if it were used as an option value; index values
+        keep every value well under the cap."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1234.5678"})
+
+        long_slug = "custom-" + "x" * 100
+        providers = _PROVIDERS + [
+            {"slug": long_slug, "name": "CustomCo", "models": ["m1"], "total_models": 1},
+        ]
+
+        result = await adapter.send_model_picker(
+            chat_id="C1", providers=providers, current_model="m",
+            current_provider="openrouter", session_key="s",
+            on_model_selected=AsyncMock(),
+        )
+
+        assert result.success is True
+        options = (
+            mock_client.chat_postMessage.call_args[1]["blocks"][1]["elements"][0]["options"]
+        )
+        assert len(options) == 3
+        assert all(len(o["value"]) <= 75 for o in options)
+        assert [o["value"] for o in options] == ["0", "1", "2"]
+        assert "CustomCo" in options[2]["text"]["text"]
+
+    @pytest.mark.asyncio
+    async def test_provider_stage_hint_when_over_option_cap(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1234.5678"})
+
+        providers = [
+            {"slug": f"p{i}", "name": f"P{i}", "models": [f"m{i}"], "total_models": 1}
+            for i in range(120)
+        ]
+
+        result = await adapter.send_model_picker(
+            chat_id="C1", providers=providers, current_model="m",
+            current_provider="p0", session_key="s", on_model_selected=AsyncMock(),
+        )
+
+        assert result.success is True
+        blocks = mock_client.chat_postMessage.call_args[1]["blocks"]
+        options = blocks[1]["elements"][0]["options"]
+        assert len(options) == 100  # static_select caps at 100 options
+        assert "20 more available" in blocks[0]["text"]["text"]
+
 
 # ===========================================================================
 # _handle_model_picker_action — drill-down dispatch
@@ -237,7 +291,7 @@ class TestSlackModelPickerAction:
         ack = AsyncMock()
         action = {
             "action_id": "hermes_model_provider",
-            "selected_option": {"value": "openrouter"},
+            "selected_option": {"value": "0"},  # index 0 = openrouter
         }
 
         await adapter._handle_model_picker_action(ack, _interaction_body(), action)
@@ -274,7 +328,7 @@ class TestSlackModelPickerAction:
         ack = AsyncMock()
         action = {
             "action_id": "hermes_model_provider",
-            "selected_option": {"value": "openrouter"},
+            "selected_option": {"value": "0"},  # index 0 = openrouter
         }
 
         await adapter._handle_model_picker_action(ack, _interaction_body(), action)
@@ -302,7 +356,7 @@ class TestSlackModelPickerAction:
         ack = AsyncMock()
         action = {
             "action_id": "hermes_model_provider",
-            "selected_option": {"value": "empty"},
+            "selected_option": {"value": "0"},  # the single seeded provider
         }
 
         await adapter._handle_model_picker_action(ack, _interaction_body(), action)
@@ -346,6 +400,7 @@ class TestSlackModelPickerAction:
         # chat_update called twice: "Switching..." then the confirmation
         assert mock_client.chat_update.call_count == 2
         last_update = mock_client.chat_update.call_args_list[-1][1]
+        assert "⚙ Model Switched" in last_update["text"]
         assert "Switched to claude-sonnet-4" in last_update["text"]
 
     @pytest.mark.asyncio
@@ -368,10 +423,42 @@ class TestSlackModelPickerAction:
         await adapter._handle_model_picker_action(ack, _interaction_body(), action)
 
         last_update = mock_client.chat_update.call_args_list[-1][1]
+        assert "⚙ Model Switch Failed" in last_update["text"]
         assert "Model switch failed" in last_update["text"]
 
     @pytest.mark.asyncio
-    async def test_model_select_invalid_index_is_ignored(self):
+    async def test_model_select_gateway_error_return_uses_failure_header(self):
+        """The gateway's error-prefixed return (in-place swap rollback,
+        #50163) must get the failed header too — both failure shapes.
+        """
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        async def on_selected(chat_id, model_id, provider_slug):
+            return f"Error: Model switch to {model_id} failed (boom); staying on old."
+
+        self._seed_state(
+            adapter, stage="model", selected_provider="openrouter", on_selected=on_selected
+        )
+
+        ack = AsyncMock()
+        action = {"action_id": "hermes_model_model", "selected_option": {"value": "0"}}
+
+        await adapter._handle_model_picker_action(ack, _interaction_body(), action)
+
+        last_update = mock_client.chat_update.call_args_list[-1][1]
+        assert last_update["text"].startswith("⚙ Model Switch Failed")
+        assert "staying on old" in last_update["text"]
+
+    @pytest.mark.asyncio
+    async def test_model_select_invalid_index_expires_picker(self):
+        """An unresolvable option value means message↔state desync.
+
+        The picker can no longer resolve, so it dies visibly (expired
+        notice) instead of leaving a dead control.
+        """
         adapter = _make_adapter()
         _attach_auth_runner(adapter)
         mock_client = adapter._team_clients["T1"]
@@ -391,10 +478,60 @@ class TestSlackModelPickerAction:
 
         ack.assert_called_once()
         on_selected.assert_not_called()
-        mock_client.chat_update.assert_not_called()
-        # State is left intact so a corrected re-pick still resolves.
-        state = adapter._model_picker_state[("T1", "1234.5678")]
-        assert state["stage"] == "model"
+        mock_client.chat_update.assert_called_once()
+        assert "expired" in mock_client.chat_update.call_args[1]["text"].lower()
+        assert ("T1", "1234.5678") not in adapter._model_picker_state
+
+    @pytest.mark.asyncio
+    async def test_model_select_out_of_range_index_expires_picker(self):
+        """Out-of-range and negative indices must not resolve (or wrap)."""
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+        on_selected = AsyncMock()
+        self._seed_state(
+            adapter, stage="model", selected_provider="openrouter", on_selected=on_selected
+        )
+
+        for token in ("2", "-1"):
+            ack = AsyncMock()
+            action = {
+                "action_id": "hermes_model_model",
+                "selected_option": {"value": token},
+            }
+            # Re-seed: the first miss pops the entry.
+            if ("T1", "1234.5678") not in adapter._model_picker_state:
+                self._seed_state(
+                    adapter, stage="model", selected_provider="openrouter",
+                    on_selected=on_selected,
+                )
+
+            await adapter._handle_model_picker_action(ack, _interaction_body(), action)
+
+            on_selected.assert_not_called()
+        assert "expired" in mock_client.chat_update.call_args[1]["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_provider_select_invalid_index_expires_picker(self):
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+        self._seed_state(adapter)
+
+        ack = AsyncMock()
+        action = {
+            "action_id": "hermes_model_provider",
+            "selected_option": {"value": "7"},  # only 2 providers seeded
+        }
+
+        await adapter._handle_model_picker_action(ack, _interaction_body(), action)
+
+        ack.assert_called_once()
+        mock_client.chat_update.assert_called_once()
+        assert "expired" in mock_client.chat_update.call_args[1]["text"].lower()
+        assert ("T1", "1234.5678") not in adapter._model_picker_state
 
     @pytest.mark.asyncio
     async def test_cancel_clears_state(self):
@@ -436,17 +573,26 @@ class TestSlackModelPickerAction:
         assert state["selected_provider_slug"] == ""
 
     @pytest.mark.asyncio
-    async def test_state_not_found_silently_returns(self):
+    async def test_state_not_found_shows_expiry(self):
+        """A click with missing picker state must visibly kill the control.
+
+        The dict is the picker's only state (no gateway-side registry), so a
+        gateway restart or aged-out entry would otherwise leave a
+        live-looking dropdown that silently swallows clicks.
+        """
         adapter = _make_adapter()
         _attach_auth_runner(adapter)
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
         ack = AsyncMock()
-        action = {"action_id": "hermes_model_provider", "selected_option": {"value": "openrouter"}}
+        action = {"action_id": "hermes_model_provider", "selected_option": {"value": "0"}}
 
         await adapter._handle_model_picker_action(
             ack, _interaction_body(msg_ts="nonexistent"), action
         )
         ack.assert_called_once()
-        # No crash
+        mock_client.chat_update.assert_called_once()
+        assert "expired" in mock_client.chat_update.call_args[1]["text"].lower()
 
     @pytest.mark.asyncio
     async def test_unauthorized_user_blocked(self, monkeypatch):
@@ -517,7 +663,7 @@ class TestSlackModelPickerGatewayIntegration:
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
         monkeypatch.setattr(
-            "hermes_cli.model_switch.list_picker_providers",
+            "hermes_cli.model_switch_providers.list_picker_providers",
             lambda **kw: [{"slug": "openrouter", "name": "OR", "models": ["m1"], "total_models": 1}],
         )
 
@@ -568,7 +714,7 @@ class TestSlackModelPickerGatewayIntegration:
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
         monkeypatch.setattr(
-            "hermes_cli.model_switch.list_authenticated_providers",
+            "hermes_cli.model_switch_providers.list_authenticated_providers",
             lambda **kw: [],
         )
 

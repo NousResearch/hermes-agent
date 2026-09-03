@@ -1105,6 +1105,30 @@ def find_profile_gateway_processes(
     return processes
 
 
+_NON_GATEWAY_SUPERVISOR_SERVICES = frozenset(
+    {
+        # The Windows Task Scheduler ("Schedule") is a shared host whose
+        # svchost is an ancestor of every scheduled task, including a
+        # Scheduled-Task run Hermes gateway. It is not a gateway-owned
+        # service: `sc stop Schedule` always fails with ERROR 5 (Access
+        # denied) even as an administrator, so the updater must never treat
+        # it as a service supervising a gateway.
+        "schedule",
+    }
+)
+
+
+def _is_gateway_supervisor_service(service_name: str) -> bool:
+    """Return True if *service_name* could plausibly supervise a gateway.
+
+    Filters out shared svchost-hosted services that can never be stopped as
+    part of gateway management. Only add services here when a real Shared
+    Task / login-item deployment actually surfaces them, so the denylist
+    stays small and intentional.
+    """
+    return service_name.lower() not in _NON_GATEWAY_SUPERVISOR_SERVICES
+
+
 def find_windows_gateway_services(
     *,
     psutil_module=None,
@@ -1199,6 +1223,9 @@ def find_windows_gateway_services(
                     pid
                     for pid in ancestor_pids
                     if len(service_names_by_pid.get(pid, set())) == 1
+                    and _is_gateway_supervisor_service(
+                        next(iter(service_names_by_pid.get(pid, set())))
+                    )
                 ),
                 None,
             )

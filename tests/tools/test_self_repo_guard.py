@@ -104,6 +104,20 @@ class TestBlocksMutationsInSourceRepo:
         hit, _ = _detect(command, repo, repo)
         assert hit is True
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh repo sync",
+            "hub repo sync",
+            "gh repo sync --force",
+            "gh repo sync --branch main",
+            "gh repo sync -b main --force",
+        ],
+    )
+    def test_repo_sync_without_destination_clients(self, repo, command):
+        hit, _ = _detect(command, repo, repo)
+        assert hit is True
+
     def test_explicit_work_tree_targeting_repo(self, repo, tmp_path):
         command = f"git --git-dir={repo / '.git'} --work-tree={repo} checkout main"
         hit, _ = _detect(command, tmp_path, repo)
@@ -209,6 +223,26 @@ class TestAllowsSafeCommands:
 
     def test_pr_checkout_words_in_other_gh_command_are_safe(self, repo):
         hit, _ = _detect("gh api /repos/example/pr/checkout", repo, repo)
+        assert hit is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh repo sync owner/repo",
+            "gh repo sync owner/repo --force",
+            "gh repo sync owner/repo --branch main",
+            "gh repo sync --source upstream/repo owner/repo",
+        ],
+    )
+    def test_repo_sync_with_explicit_destination_is_safe(self, repo, command):
+        """A destination-repository argument targets a *remote* repo via the
+        GitHub API and never touches this checkout — unlike bare `gh repo
+        sync`, which fast-forwards/resets the local repo in place."""
+        hit, _ = _detect(command, repo, repo)
+        assert hit is False
+
+    def test_repo_sync_words_in_other_gh_command_are_safe(self, repo):
+        hit, _ = _detect("gh api /repos/example/repo/sync", repo, repo)
         assert hit is False
 
     @pytest.mark.parametrize(

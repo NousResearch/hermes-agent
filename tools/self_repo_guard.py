@@ -637,6 +637,19 @@ def _inspect_github_cli(
     index = _consume_options(args, 0, frozenset({"-R", "--repo", "--hostname"}))
     if args[index : index + 2] == ["pr", "checkout"]:
         return f"{name} pr checkout"
+    if args[index : index + 2] == ["repo", "sync"]:
+        # Without a destination-repository argument, `gh repo sync`
+        # fast-forwards (or, with --force, hard-resets) the LOCAL checkout
+        # to match its upstream — the same "module-version skew under the
+        # live interpreter" hazard `git pull`/`git reset --hard` are
+        # blocked for. `gh repo sync owner/repo` targets a *remote* repo
+        # via the API and never touches this checkout, so only the
+        # destination-omitted form is flagged.
+        sync_index = _consume_options(
+            args, index + 2, frozenset({"-b", "--branch", "-s", "--source"})
+        )
+        if sync_index >= len(args):
+            return f"{name} repo sync"
     return None
 
 

@@ -23,6 +23,11 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
 
   const out: Msg[] = []
   let pending: string[] = []
+  const flushPendingTools = () => {
+    if (!pending.length) return
+    out.push({ kind: 'trail', role: 'assistant', text: '', tools: pending })
+    pending = []
+  }
 
   for (const row of rows) {
     if (!row || typeof row !== 'object') {
@@ -51,22 +56,22 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     }
 
     if (display_kind === 'model_switch') {
+      flushPendingTools()
       out.push({ kind: 'event', role: 'system', text: 'model changed' })
-      pending = []
 
       continue
     }
 
     if (display_kind === 'auto_continue') {
+      flushPendingTools()
       out.push({ kind: 'event', role: 'system', text: 'resumed interrupted turn' })
-      pending = []
 
       continue
     }
 
     if (display_kind === 'personality_switch') {
+      flushPendingTools()
       out.push({ kind: 'event', role: 'system', text: 'personality changed' })
-      pending = []
 
       continue
     }
@@ -80,8 +85,8 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
           ? 'background agent work finished'
           : `${count} background agent${count === 1 ? '' : 's'} finished`
 
+      flushPendingTools()
       out.push({ kind: 'event', role: 'system', text: label })
-      pending = []
 
       continue
     }
@@ -90,11 +95,12 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       out.push({ role, text, ...(createdAt !== undefined && { createdAt }), ...(pending.length && { tools: pending }) })
       pending = []
     } else if (role === 'user' || role === 'system') {
+      flushPendingTools()
       out.push({ role, text, ...(createdAt !== undefined && { createdAt }) })
-      pending = []
     }
   }
 
+  flushPendingTools()
   return out
 }
 

@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_state import SessionDB
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +191,18 @@ def test_dashboard_markdown_html_is_sanitized_before_render():
     assert "dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || \"\") }" not in js
 
 
+def test_running_task_drawer_opens_profile_scoped_worker_chat():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text(encoding="utf-8")
+
+    assert 'tx(i18n, "openWorkChat", "Open work chat")' in js
+    assert 'const workerSession = props.data.worker_session || null;' in js
+    assert 'params.set("profile", workerSession.profile);' in js
+    assert 'window.open(`/chat?${params.toString()}`, "_blank", "noopener,noreferrer");' in js
+    assert 'workerSession && t.status === "running"' not in js
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------
@@ -218,6 +231,74 @@ def test_task_detail_includes_links_and_events(client):
 
     # Events exist from creation.
     assert len(data["events"]) >= 1
+
+
+def test_running_task_detail_resolves_live_worker_session(client, kanban_home):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "active worker", "assignee": "coder"},
+    ).json()["task"]
+
+    with kb.connect() as conn:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'running' WHERE id = ?",
+                (task["id"],),
+            )
+
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    session = SessionDB(db_path=profile_home / "state.db")
+    try:
+        session.create_session(session_id="worker-session", source="kanban")
+        session.append_message(
+            session_id="worker-session",
+            role="user",
+            content=f"work kanban task {task['id']}",
+        )
+    finally:
+        session.close()
+
+    response = client.get(f"/api/plugins/kanban/tasks/{task['id']}")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["worker_session"] == {
+        "session_id": "worker-session",
+        "profile": "coder",
+        "active": True,
+    }
+
+
+def test_completed_task_detail_keeps_durable_worker_session(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "completed worker", "assignee": "coder"},
+    ).json()["task"]
+
+    with kb.connect() as conn:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (task["id"],))
+        claimed = kb.claim_task(conn, task["id"], claimer="test-worker")
+        assert claimed is not None
+        run = kb.latest_run(conn, task["id"])
+        assert run is not None
+        assert kb.complete_task(
+            conn,
+            task["id"],
+            summary="done",
+            metadata={"worker_session_id": "completed-worker-session"},
+            expected_run_id=run.id,
+        )
+
+    response = client.get(f"/api/plugins/kanban/tasks/{task['id']}")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["worker_session"] == {
+        "session_id": "completed-worker-session",
+        "profile": "coder",
+        "active": False,
+    }
 
 
 # ---------------------------------------------------------------------------

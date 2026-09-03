@@ -29,6 +29,16 @@ def test_env_can_disable(clear_kanban_env):
     assert build_kanban_stop_nudge(messages=[]) is None
 
 
+def test_delegated_child_does_not_receive_parent_worker_stop_nudge(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_parent")
+
+    from agent.delegation_context import delegated_child_context
+
+    with delegated_child_context("child-session"):
+        assert kanban_stop_nudge_enabled() is False
+        assert build_kanban_stop_nudge(messages=[]) is None
+
+
 def test_nudge_when_no_terminal_tool(clear_kanban_env):
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_46be8aa5")
     messages = [

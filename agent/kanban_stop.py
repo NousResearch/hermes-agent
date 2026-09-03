@@ -31,6 +31,17 @@ def kanban_stop_nudge_enabled() -> bool:
     env = os.environ.get("HERMES_KANBAN_STOP_NUDGE")
     if env is not None and env.strip().lower() in {"0", "false", "no", "off"}:
         return False
+
+    from agent.delegation_context import (
+        is_delegated_child_process_context,
+        is_dispatcher_owned_worker_context,
+    )
+
+    if (
+        is_delegated_child_process_context()
+        or not is_dispatcher_owned_worker_context()
+    ):
+        return False
     task = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
     return bool(task)
 

@@ -28,6 +28,41 @@ describe('toTranscriptMessages', () => {
     expect(toTranscriptMessages(rows)[1]?.tools?.[0]).toContain('Search Files')
   })
 
+  it('keeps tool-only worker progress visible before the next prompt', () => {
+    const rows = [
+      { role: 'user', text: 'work kanban task t_example' },
+      { role: 'assistant', text: '' },
+      { role: 'tool', context: 'tests', name: 'terminal', text: 'passed' },
+      { role: 'assistant', text: '' },
+      { role: 'tool', context: 'HANDOVER.md', name: 'patch', text: 'updated' },
+      { role: 'user', text: 'final review' }
+    ]
+
+    const result = toTranscriptMessages(rows)
+
+    expect(result.map(msg => [msg.kind, msg.role, msg.text])).toEqual([
+      [undefined, 'user', 'work kanban task t_example'],
+      ['trail', 'assistant', ''],
+      [undefined, 'user', 'final review']
+    ])
+    expect(result[1]?.tools).toHaveLength(2)
+    expect(result[1]?.tools?.[0]).toContain('Terminal')
+    expect(result[1]?.tools?.[1]).toContain('Patch')
+  })
+
+  it('keeps trailing tool-only worker progress visible while the task is running', () => {
+    const rows = [
+      { role: 'user', text: 'work kanban task t_example' },
+      { role: 'tool', context: 'npm test', name: 'terminal', text: 'passed' },
+      { role: 'assistant', text: '' }
+    ]
+
+    const result = toTranscriptMessages(rows)
+
+    expect(result.at(-1)).toMatchObject({ kind: 'trail', role: 'assistant', text: '' })
+    expect(result.at(-1)?.tools?.[0]).toContain('Terminal')
+  })
+
   it('skips hidden display_kind rows entirely', () => {
     const rows = [
       { role: 'user', text: 'visible prompt' },

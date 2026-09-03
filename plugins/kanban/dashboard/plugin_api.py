@@ -235,6 +235,80 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
     }
 
 
+def _worker_session_dict(
+    task: kanban_db.Task,
+    runs: list[kanban_db.Run],
+) -> Optional[dict[str, Any]]:
+    """Resolve the live chat session for one running kanban worker.
+
+    Completed workers stamp ``worker_session_id`` into run metadata. While a
+    worker is still running that handoff may not exist yet, so fall back to the
+    assignee profile's session store and locate the kanban session by its exact
+    dispatcher prompt. Fail closed: a missing profile/store/session simply
+    hides the UI affordance instead of breaking the task drawer.
+    """
+    latest_run = runs[-1] if runs else None
+    profile = (latest_run.profile if latest_run else None) or task.assignee
+    if not profile:
+        return None
+
+    for run in reversed(runs):
+        metadata = run.metadata if isinstance(run.metadata, dict) else {}
+        session_id = metadata.get("worker_session_id")
+        if isinstance(session_id, str) and session_id.strip():
+            return {
+                "session_id": session_id.strip(),
+                "profile": run.profile or profile,
+                "active": run.ended_at is None,
+            }
+
+    # Running workers may not have stamped their session id into run metadata
+    # yet, so resolve the live session from the assignee's store. Completed
+    # runs must use their durable metadata and never guess from an old session.
+    if task.status != "running":
+        return None
+
+    try:
+        from hermes_cli.profiles import resolve_profile_env
+
+        state_db = Path(resolve_profile_env(profile)) / "state.db"
+        if not state_db.is_file():
+            return None
+        session_conn = sqlite3.connect(
+            f"file:{state_db.resolve().as_posix()}?mode=ro",
+            uri=True,
+            timeout=1.0,
+        )
+        session_conn.row_factory = sqlite3.Row
+        try:
+            row = session_conn.execute(
+                """
+                SELECT s.id, s.ended_at
+                FROM sessions AS s
+                JOIN messages AS m ON m.session_id = s.id
+                WHERE s.source = 'kanban'
+                  AND m.role = 'user'
+                  AND m.content = ?
+                ORDER BY (s.ended_at IS NULL) DESC, s.last_activity_at DESC
+                LIMIT 1
+                """,
+                (f"work kanban task {task.id}",),
+            ).fetchone()
+        finally:
+            session_conn.close()
+    except Exception as exc:
+        log.debug("could not resolve worker session for %s: %s", task.id, exc)
+        return None
+
+    if row is None:
+        return None
+    return {
+        "session_id": row["id"],
+        "profile": profile,
+        "active": row["ended_at"] is None,
+    }
+
+
 # Hallucination-warning event kinds — see complete_task() in kanban_db.py.
 # completion_blocked_hallucination: kernel rejected created_cards with
 #   phantom ids; task stays in prior state.
@@ -571,6 +645,12 @@ def get_task(
         if diag_list:
             task_d["diagnostics"] = diag_list
             task_d["warnings"] = _warnings_summary_from_diagnostics(diag_list)
+        runs = kanban_db.list_runs(
+            conn,
+            task_id,
+            state_type=run_state_type,
+            state_name=run_state_name,
+        )
         return {
             "task": task_d,
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
@@ -578,15 +658,8 @@ def get_task(
             "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],
             "links": links,
             "child_results": child_results,
-            "runs": [
-                _run_dict(r)
-                for r in kanban_db.list_runs(
-                    conn,
-                    task_id,
-                    state_type=run_state_type,
-                    state_name=run_state_name,
-                )
-            ],
+            "runs": [_run_dict(r) for r in runs],
+            "worker_session": _worker_session_dict(task, runs),
         }
     finally:
         conn.close()

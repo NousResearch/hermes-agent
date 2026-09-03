@@ -3874,6 +3874,14 @@
     const attachments = props.data.attachments || [];
     const links = props.data.links || { parents: [], children: [] };
     const childResults = props.data.child_results || [];
+    const workerSession = props.data.worker_session || null;
+
+    function openWorkerSession() {
+      if (!workerSession || !workerSession.session_id) return;
+      const params = new URLSearchParams({ resume: workerSession.session_id });
+      if (workerSession.profile) params.set("profile", workerSession.profile);
+      window.open(`/chat?${params.toString()}`, "_blank", "noopener,noreferrer");
+    }
 
     return h("div", { className: "hermes-kanban-drawer-body" },
       h("div", { className: "hermes-kanban-drawer-title" },
@@ -3914,6 +3922,16 @@
         }) : null,
         t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
       ),
+      workerSession ? h("div", {
+        className: "flex items-center gap-2 mb-3",
+      },
+        h(Button, {
+          size: "sm",
+          variant: "outline",
+          onClick: openWorkerSession,
+          title: tx(i18n, "openWorkChatTitle", "Open this worker session in a new tab"),
+        }, tx(i18n, "openWorkChat", "Open work chat")),
+      ) : null,
       h(StatusActions, {
         task: t,
         onPatch: props.onPatch,

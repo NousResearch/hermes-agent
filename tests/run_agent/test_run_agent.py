@@ -1958,6 +1958,86 @@ class TestExecuteToolCalls:
         assert "Rate limit reached" not in output
 
 
+class TestTerminalRateLimitGuidance:
+    class _APIError(Exception):
+        def __init__(self, status_code):
+            super().__init__("Provider returned error")
+            self.status_code = status_code
+
+    @staticmethod
+    def _run_failure(agent, *, model, status_code, streaming=False):
+        agent.provider = "openrouter"
+        agent.model = model
+        agent._api_max_retries = 1
+        failing_call = MagicMock(
+            side_effect=TestTerminalRateLimitGuidance._APIError(status_code)
+        )
+        if streaming:
+            agent._has_stream_consumers = MagicMock(return_value=True)
+            agent._interruptible_streaming_api_call = failing_call
+        else:
+            agent._interruptible_api_call = failing_call
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_try_recover_primary_transport", return_value=False),
+            patch("run_agent.time.sleep", return_value=None),
+        ):
+            return agent.run_conversation("hello")
+
+    def test_free_model_rate_limit_has_switch_and_reset_guidance(self, agent):
+        result = self._run_failure(
+            agent,
+            model="minimax/minimax-m3:FREE",
+            status_code=429,
+        )
+
+        final = result["final_response"]
+        assert result["failure_reason"] == "rate_limit"
+        assert "minimax/minimax-m3:FREE" in final
+        assert "free tier" in final.lower()
+        assert "`/model minimax/minimax-m3 --provider openrouter`" in final
+        assert "quota resets" in final.lower()
+
+    def test_paid_model_rate_limit_has_backoff_and_quota_guidance(self, agent):
+        result = self._run_failure(agent, model="openai/gpt-5", status_code=429)
+
+        final = result["final_response"]
+        assert result["failure_reason"] == "rate_limit"
+        assert "openai/gpt-5" in final
+        assert "retry later" in final.lower()
+        assert "provider dashboard" in final.lower()
+        assert "free tier" not in final.lower()
+
+    def test_non_rate_limit_failure_keeps_generic_response(self, agent):
+        result = self._run_failure(agent, model="openai/gpt-5", status_code=500)
+
+        final = result["final_response"]
+        assert final.startswith("API call failed after 1 retries:")
+        assert "provider dashboard" not in final.lower()
+        assert "free tier" not in final.lower()
+
+    @pytest.mark.parametrize(
+        ("status_code", "expected_guidance"),
+        [(429, True), (500, False)],
+    )
+    def test_streaming_worker_failure_uses_terminal_rate_limit_guidance(
+        self, agent, status_code, expected_guidance
+    ):
+        result = self._run_failure(
+            agent,
+            model="minimax/minimax-m3:free",
+            status_code=status_code,
+            streaming=True,
+        )
+
+        final = result["final_response"]
+        assert ("Rate limit reached" in final) is expected_guidance
+        assert ("`/model minimax/minimax-m3 --provider openrouter`" in final) is expected_guidance
+
+
 class TestRetryAfterCap:
     """#26293: the conversation loop owns rate-limit backoff and honors the
     Retry-After header up to a 600s ceiling (was 120s, which retried before

@@ -113,6 +113,31 @@ _TITLE_RESPONSE_FORMAT = {
     },
 }
 
+
+def _title_response_format() -> dict:
+    """Return the ``response_format`` body for the title call.
+
+    DeepSeek's API rejects ``json_schema`` with HTTP 400 "This response_format
+    type is unavailable now" — it only supports ``json_object``. The title
+    prompt already says "Reply with JSON only", so ``json_object`` is
+    compliant and the loose JSON scan in ``_extract_title_text`` still has a
+    fallback. Every other provider keeps the strict schema.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+        title_cfg = (config.get("auxiliary") or {}).get("title_generation") or {}
+        provider = str(title_cfg.get("provider") or "").strip().lower()
+        if not provider or provider == "auto":
+            # auto resolves to the main model's provider.
+            provider = str((config.get("model") or {}).get("provider") or "").strip().lower()
+        if provider == "deepseek":
+            return {"type": "json_object"}
+    except Exception:
+        logger.debug("Failed to resolve title response_format", exc_info=True)
+    return _TITLE_RESPONSE_FORMAT
+
 # Control-tag wrappers that surround machine-authored content inside what is
 # nominally a "user" message. Titling from these is what produces a session
 # named after a slash command or an injected reminder rather than the user's
@@ -409,7 +434,7 @@ def generate_title(
             temperature=0.3,
             timeout=timeout,
             main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            extra_body={"response_format": _title_response_format()},
         )
         content = response.choices[0].message.content or ""
         title = _clean_title(_extract_title_text(content))

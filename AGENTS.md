@@ -503,16 +503,18 @@ Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. Se
 
 ### Dev Commands
 
+Run these from the repository root. The script names are defined in
+`ui-tui/package.json` and selected through npm's workspace flag:
+
 ```bash
-cd ui-tui
-npm install       # first time
-npm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
-npm start         # production
-npm run build     # full build (hermes-ink + tsc)
-npm run typecheck # typecheck only (tsc --noEmit)
-npm run lint      # eslint
-npm run fmt       # prettier
-npm test          # vitest
+npm install                            # first time; installs workspace dependencies
+npm run --workspace ui-tui dev         # watch mode (rebuilds hermes-ink + tsx --watch)
+npm start --workspace ui-tui           # production
+npm run --workspace ui-tui build       # full build (hermes-ink + tsc)
+npm run --workspace ui-tui typecheck   # typecheck only (tsc --noEmit)
+npm run --workspace ui-tui lint        # eslint
+npm run --workspace ui-tui fmt         # prettier
+npm test --workspace ui-tui            # vitest
 ```
 
 ### TUI in the Dashboard (`hermes dashboard` → `/chat`)

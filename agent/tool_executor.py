@@ -2345,6 +2345,54 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_window_below', function_args, tool_duration, result=function_result)}")
+        elif function_name == "annotate_screen":
+            def _execute(next_args: dict) -> Any:
+                from tools.annotate_screen_tool import annotate_screen_tool as _annotate_screen_tool
+                return _annotate_screen_tool(
+                    action=next_args.get("action", "draw"),
+                    target=next_args.get("target"),
+                    frame_width=next_args.get("frame_width"),
+                    frame_height=next_args.get("frame_height"),
+                    shapes=next_args.get("shapes"),
+                    ttl_seconds=next_args.get("ttl_seconds"),
+                    callback=getattr(agent, "annotate_screen_callback", None),
+                )
+            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=tool_call_id,
+                execute=_execute,
+                scope_block=_ts_scope_block,
+                display_index=i,
+            ))
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('annotate_screen', function_args, tool_duration, result=function_result)}")
+        elif function_name == "subtitle_overlay":
+            def _execute(next_args: dict) -> Any:
+                from tools.subtitle_overlay_tool import subtitle_overlay_tool as _subtitle_overlay_tool
+                return _subtitle_overlay_tool(
+                    action=next_args.get("action", "status"),
+                    language=next_args.get("language"),
+                    target=next_args.get("target"),
+                    band_fraction=next_args.get("band_fraction"),
+                    callback=getattr(agent, "subtitle_overlay_callback", None),
+                )
+            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=tool_call_id,
+                execute=_execute,
+                scope_block=_ts_scope_block,
+                display_index=i,
+            ))
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('subtitle_overlay', function_args, tool_duration, result=function_result)}")
         elif function_name == "gui_tour":
             def _execute(next_args: dict) -> Any:
                 from tools.tour_tool import tour_tool as _tour_tool

@@ -97,6 +97,13 @@ class AudioTranscriptionRequest(BaseModel):
     mime_type: Optional[str] = None
 
 
+class SubtitleProcessRequest(BaseModel):
+    image_data_url: str
+    language: str
+    prev_text: str = ""
+    stream_id: str = ""
+
+
 class ManagedFileUpload(BaseModel):
     path: str
     data_url: str

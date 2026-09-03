@@ -333,6 +333,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { createScreenAnnotationsController, registerScreenAnnotationsIpc } from './screen-annotations-window'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -354,6 +355,7 @@ import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstra
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createStreamThrottle } from './stream-throttle'
+import { createSubtitleCaptureController, registerSubtitleCaptureIpc } from './subtitle-capture-session'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import {
@@ -13325,6 +13327,43 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
   wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
 })
 
+// The agent's on-screen marks (annotate_screen tool): a transparent,
+// click-through, always-on-top overlay covering the display of whatever
+// window the marks anchor to. Gateway-less like the wake cue — the chat
+// renderer that received the tool's request forwards it over IPC
+// (hermes:screen:annotate) and this controller does the native work.
+const screenAnnotationsController = createScreenAnnotationsController({
+  devServer: DEV_SERVER,
+  isMac: IS_MAC,
+  loadWindowUrl,
+  log: rememberLog,
+  preloadPath: PRELOAD_PATH,
+  rendererIndex: resolveRendererIndex,
+  titlesAvailable: () => (IS_MAC ? systemPreferences.getMediaAccessStatus?.('screen') === 'granted' : true),
+  // Same opt-out as the other helper overlays: global UI zoom would rescale
+  // the renderer and drag every mark off its screen coordinate.
+  wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('petOverlay'))
+})
+
+registerScreenAnnotationsIpc(screenAnnotationsController)
+
+// Live subtitles (subtitle_overlay tool): periodic snapshots of the target
+// window's subtitle band, OCR + translation on the backend, painted through
+// the annotation overlay's `subtitles` channel. The agent only starts/stops
+// the session; the per-line loop never touches a model conversation.
+const subtitleCaptureController = createSubtitleCaptureController({
+  annotations: screenAnnotationsController,
+  log: rememberLog,
+  postToBackend: async (path, body) => {
+    const connection = await ensureBackend(undefined)
+
+    return postJsonForBackend(connection, path, body)
+  },
+  titlesAvailable: () => (IS_MAC ? systemPreferences.getMediaAccessStatus?.('screen') === 'granted' : true)
+})
+
+registerSubtitleCaptureIpc(subtitleCaptureController)
+
 // The pet overlay: a single transparent, frameless, always-on-top window that
 // hosts ONLY the floating mascot. Shift-clicking the in-window pet "pops it out"
 // here so it can leave the app's bounds and stay visible while Hermes is
@@ -17910,6 +17949,14 @@ app.on('before-quit', event => {
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
   wakeIndicatorController.close()
+
+  // Same for the agent's screen-annotation overlay — marks floating over a
+  // quit app would be pure ghost UI.
+  screenAnnotationsController.close()
+
+  // And the live-subtitle session: the hidden capture worker and its screen
+  // stream must not outlive the app.
+  subtitleCaptureController.close()
 
   // Same for the HUD — an always-on-top panel outliving the app would leave a
   // floating composer with nothing behind it. Close it directly rather than via

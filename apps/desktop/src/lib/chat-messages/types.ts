@@ -136,6 +136,21 @@ export type GatewayEventPayload = {
   side?: string
   steps?: unknown
   step_index?: number
+  // screen.annotate.request (annotate_screen tool — marks on the transparent
+  // screen overlay). `action` is shared with tour above; `frame` is the pixel
+  // size of the screenshot the shape coordinates come from, `target` names
+  // the window to anchor them to, and `shapes` is the mark list main maps
+  // onto the live window bounds.
+  frame?: unknown
+  shapes?: unknown
+  target?: string
+  ttl_seconds?: number
+  // subtitles.control.request (subtitle_overlay tool — the live-subtitle
+  // session). `action`/`target` are shared with the fields above; `language`
+  // is the translation target, `band_fraction` how much of the window's
+  // bottom the capture watches.
+  language?: string
+  band_fraction?: number
   // preview.act.request (drive_preview tool — agent clicking/typing/scrolling in
   // the in-app browser). `action` names the verb and `selector` is shared with
   // tour above; `ref` addresses an element from the last inventory.

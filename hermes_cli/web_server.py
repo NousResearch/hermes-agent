@@ -1834,6 +1834,7 @@ from hermes_cli.web_models import (  # noqa: F401
     WhatsAppOnboardingStart,
     WhatsAppOnboardingApply,
     AudioTranscriptionRequest,
+    SubtitleProcessRequest,
     ManagedFileUpload,
     ChatImageUpload,
     ManagedDirectoryCreate,
@@ -5450,6 +5451,60 @@ async def transcribe_audio_upload(
         "transcript": str(result.get("transcript") or "").strip(),
         "provider": result.get("provider"),
     }
+
+
+# One subtitle-band crop is well under a megabyte at the desktop's 1280px ship
+# cap; 8 MiB tolerates an uncompressed worst case without letting the endpoint
+# become a file-upload channel.
+_MAX_SUBTITLE_FRAME_BYTES = 8 * 1024 * 1024
+
+
+@app.post("/api/subtitles/process")
+async def process_subtitle_frame(
+    payload: SubtitleProcessRequest, profile: Optional[str] = None
+):
+    """OCR + translate one subtitle-band crop for the desktop's live overlay.
+
+    The per-line hot path of the live-subtitle feature: the desktop posts a
+    crop only when the band's text plausibly changed, and this endpoint
+    answers with the translation and the pixel box to cover. Heavy work runs
+    in the executor; agent/subtitle_pipeline.py owns the decisions.
+    """
+    from agent.subtitle_pipeline import decode_image_data_url, process_frame
+
+    language = (payload.language or "").strip()
+    if not language:
+        raise HTTPException(status_code=400, detail="language is required")
+
+    try:
+        image_bytes = decode_image_data_url(
+            payload.image_data_url, _MAX_SUBTITLE_FRAME_BYTES
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    def _process_scoped():
+        # Home-only scope, matching the transcribe endpoint above: the
+        # pipeline blocks for OCR + one translation round-trip and only needs
+        # config/.env resolution.
+        with _config_profile_scope(profile):
+            return process_frame(
+                image_bytes,
+                language,
+                prev_text=payload.prev_text or "",
+                stream_id=payload.stream_id or "",
+            )
+
+    try:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _process_scoped)
+    except RuntimeError as exc:
+        # The pipeline's own actionable failures (OCR dep missing, engine
+        # startup) — the desktop shows these verbatim.
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as exc:
+        _log.exception("Subtitle frame processing failed")
+        raise HTTPException(status_code=500, detail=f"Subtitle processing failed: {exc}")
 
 
 @app.get("/api/audio/voice-config")

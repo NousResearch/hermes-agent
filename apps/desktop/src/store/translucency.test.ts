@@ -438,7 +438,7 @@ describe('isChatWindow', () => {
   })
 
   it('rejects every special-purpose window kind', () => {
-    for (const win of ['hud', 'pet', 'quick-entry', 'wake', 'anything-new']) {
+    for (const win of ['hud', 'overlay', 'annotate', 'quick', 'wake', 'anything-new']) {
       expect(isChatWindow(`?win=${win}`), win).toBe(false)
     }
   })

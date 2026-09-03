@@ -192,6 +192,10 @@ fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
 # ElevenLabs / OpenAI / MiniMax instead).
 edge-tts = ["edge-tts==7.2.7"]
+# Live-subtitle OCR (desktop subtitle_overlay tool). rapidocr does NOT declare
+# an inference engine dependency — onnxruntime rides along, pinned to the same
+# version the wake extra uses (one onnxruntime fleet-wide).
+subtitles = ["rapidocr==3.9.2", "onnxruntime==1.27.0"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
@@ -532,6 +536,7 @@ python-olm = false
 python-telegram-bot = false
 pyyaml = false
 qrcode = false
+rapidocr = false
 requests = false
 rich = false
 ruamel-yaml = false

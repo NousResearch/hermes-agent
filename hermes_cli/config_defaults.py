@@ -1287,6 +1287,18 @@ DEFAULT_CONFIG = {
             "timeout": 8,
             "extra_body": {},
         },
+        # Live-subtitle translation (desktop subtitle_overlay tool). One short
+        # call per NEW subtitle line — latency is the whole game, so this task
+        # defaults to the provider's fast tier when one exists.
+        "subtitles": {
+            "provider": "auto",
+            "model": "",
+            "prefer_fast_model": True,
+            "base_url": "",
+            "api_key": "",
+            "timeout": 8,
+            "extra_body": {},
+        },
         "tts_audio_tags": {
             "provider": "auto",
             "model": "",
@@ -1951,6 +1963,15 @@ DEFAULT_CONFIG = {
             "voice": "default",
             # "base_url": "",  # override DEEPINFRA_BASE_URL for TTS only
         },
+    },
+
+    # Live subtitle translation (desktop HUD: subtitle_overlay tool). The
+    # desktop OCRs the subtitle band of the window behind Hermes and paints a
+    # translation over it; these knobs shape that loop. The translation model
+    # is configured separately under auxiliary.subtitles.
+    "subtitles": {
+        "max_chars_per_line": 42,   # wrap width for the painted translation
+        "min_ocr_confidence": 0.5,  # OCR lines below this are treated as noise
     },
 
     "stt": {

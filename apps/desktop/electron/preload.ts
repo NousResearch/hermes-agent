@@ -51,6 +51,26 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:wake-indicator:state', listener)
     }
   },
+  subtitleCapture: {
+    // Chat renderer → main: start/stop/status of the live-subtitle session
+    // (subtitle_overlay tool). Resolves with the outcome JSON.
+    control: payload => ipcRenderer.invoke('hermes:subtitles:control', payload)
+  },
+  screenAnnotations: {
+    // Chat renderer → main: draw/clear the agent's marks on the transparent
+    // screen overlay (annotate_screen tool). Resolves with the outcome JSON.
+    annotate: payload => ipcRenderer.invoke('hermes:screen:annotate', payload),
+    // Overlay renderer pulls the latest shapes on mount — its lazy chunk can
+    // attach the listener after main's did-finish-load push already fired.
+    getState: () => ipcRenderer.invoke('hermes:screen-annotations:get'),
+    // Overlay subscribes to shape pushes (new draws, clears, TTL expiry).
+    onState: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:screen-annotations:state', listener)
+
+      return () => ipcRenderer.removeListener('hermes:screen-annotations:state', listener)
+    }
+  },
   petOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is
     // `{ bounds, screen }`; resolves with the screen bounds it actually used.

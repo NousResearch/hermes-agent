@@ -2500,6 +2500,8 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("drive_preview", {"action": "elements"}),
         ("annotate_preview", {"action": "clear"}),
         ("read_window_below", {}),
+        ("annotate_screen", {"action": "clear"}),
+        ("subtitle_overlay", {"action": "status"}),
         ("setup_mcp", {"server": "linear", "action": "install"}),
         ("gui_tour", {"action": "stop"}),
         ("delegate_task", {"goal": "Check the child path"}),
@@ -2555,6 +2557,14 @@ class TestAgentRuntimePostHookOwnershipSync:
         )
         monkeypatch.setattr(
             "tools.read_window_tool.read_window_below_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tools.annotate_screen_tool.annotate_screen_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tools.subtitle_overlay_tool.subtitle_overlay_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)

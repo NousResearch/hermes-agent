@@ -1,6 +1,7 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { ScreenAnnotationShape } from './app/screen-annotations/shapes'
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,
@@ -232,6 +233,20 @@ declare global {
           title: string
         } | null
       } | null>
+      /** annotate_screen tool: the agent's marks on the transparent screen overlay. Absent on older shells. */
+      screenAnnotations?: {
+        /** Chat renderer → main: draw/clear; resolves with the outcome JSON the tool reports back. */
+        annotate: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>
+        /** Overlay renderer: pull the latest shapes on mount. */
+        getState: () => Promise<{ shapes: ScreenAnnotationShape[] }>
+        /** Overlay renderer: subscribe to shape pushes (draws, clears, TTL expiry). */
+        onState: (callback: (payload: { shapes: ScreenAnnotationShape[] }) => void) => () => void
+      }
+      /** subtitle_overlay tool: the live-subtitle capture session. Absent on older shells. */
+      subtitleCapture?: {
+        /** Chat renderer → main: start/stop/status; resolves with the outcome JSON the tool reports back. */
+        control: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>
+      }
       readFileDataUrl: (filePath: string) => Promise<string>
       /** Remote non-image attach: higher dedicated cap than preview/Settings default. */
       readFileDataUrlForAttach?: (filePath: string) => Promise<string>

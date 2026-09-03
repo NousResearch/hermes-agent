@@ -572,6 +572,8 @@ def init_agent(
     read_preview_callback: callable = None,
     drive_preview_callback: callable = None,
     read_window_below_callback: callable = None,
+    annotate_screen_callback: callable = None,
+    subtitle_overlay_callback: callable = None,
     setup_mcp_callback: callable = None,
     tour_callback: callable = None,
     step_callback: callable = None,
@@ -876,6 +878,8 @@ def init_agent(
     agent.read_preview_callback = read_preview_callback
     agent.drive_preview_callback = drive_preview_callback
     agent.read_window_below_callback = read_window_below_callback
+    agent.annotate_screen_callback = annotate_screen_callback
+    agent.subtitle_overlay_callback = subtitle_overlay_callback
     agent.setup_mcp_callback = setup_mcp_callback
     agent.tour_callback = tour_callback
     agent.step_callback = step_callback

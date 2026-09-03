@@ -4943,6 +4943,8 @@ def _block(
         "window.read.request",
         "mcp.setup.request",
         "tour.request",
+        "screen.annotate.request",
+        "subtitles.control.request",
     }:
         _emit(
             f"{event.removesuffix('.request')}.expire",
@@ -5009,72 +5011,229 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     )
 
 
+# Consecutive unanswered probes before a bridge is declared dead for the
+# session. Two, not one: the probe deadline is short by design, and the very
+# call it judges is the one that pays a first-time cost (injecting the tour
+# engine into a live page, spawning the annotation overlay window). On a cold
+# or loaded machine that can outrun the probe on a perfectly capable client,
+# and latching on that single miss reports "your app is too old" — a wrong
+# diagnosis the user cannot act on, for the rest of the session. Same reasoning
+# as FAILURES_BEFORE_GIVING_UP in the desktop's hud-game-overlay watch.
+_BRIDGE_PROBE_STRIKES = 2
+
+
+def _probed_bridge_request(
+    sid: str,
+    payload: dict,
+    *,
+    method: str,
+    state_key: str,
+    timeout: float,
+    probe_timeout: float,
+    retry_error: str,
+    dead_error: str,
+) -> str:
+    """Bridge a desktop tool callback onto _block, without paying a full
+    timeout per call for a client that cannot answer it.
+
+    These handlers (``tour.request``, ``screen.annotate.request``) ship in the
+    desktop bundle, but the tools are offered by this backend — and the two
+    update on different clocks. Against an app older than the tool the event
+    lands in a renderer with no branch for it, nobody ever responds, and the
+    agent blocks for the full deadline. The model then does what the schema
+    tells it to and tries the next action, so one turn stacks those waits (the
+    timeouts reported against #89620).
+
+    So an unproven client is held to the short probe deadline, and after
+    ``_BRIDGE_PROBE_STRIKES`` consecutive misses the bridge is marked dead for
+    the session: later calls return immediately, telling the user what to
+    actually fix instead of stalling again. Misses before that return the
+    retry-worthy error, since the deadline may simply have beaten a cold start.
+    Once a client answers, real actions get the full deadline back, the strike
+    count resets, and a single slow one no longer condemns it. The verdict
+    lives on the session record, so it dies with the session and a new one
+    re-probes.
+    """
+    # A detached caller has no session record. The throwaway keeps the code
+    # below total, and its verdict is simply discarded: such a caller re-probes
+    # on every call and never latches.
+    session = _sessions.get(sid)
+    if session is None:
+        session = {}
+    state = session.get(state_key)
+
+    if state == "dead":
+        return dead_error
+
+    answer = _block(
+        method,
+        sid,
+        dict(payload),
+        timeout=timeout if state == "answered" else probe_timeout,
+    )
+
+    if answer:
+        session[state_key] = "answered"
+        session[f"{state_key}_misses"] = 0
+        return answer
+
+    # A client that has already answered is never condemned by a later miss —
+    # it has proven the bridge exists, so the miss is about this one action.
+    if state == "answered":
+        return retry_error
+
+    misses = session.get(f"{state_key}_misses", 0) + 1
+    session[f"{state_key}_misses"] = misses
+    if misses >= _BRIDGE_PROBE_STRIKES:
+        session[state_key] = "dead"
+        return dead_error
+
+    return retry_error
+
+
 # A tour action is a DOM operation the renderer performs and answers straight
 # back, so a client that implements the bridge replies in milliseconds. The
 # generous deadline exists for one case only: a preview tour's first action
 # injects the engine into a live page.
 _TOUR_TIMEOUT_S = 45
 # Until a session's client has proven it answers at all, hold it to a deadline
-# a working renderer cannot miss. See _tour_request.
+# a working renderer cannot miss. See _probed_bridge_request.
 _TOUR_PROBE_TIMEOUT_S = 10
+
+_TOUR_BRIDGE_SLOW = json.dumps(
+    {
+        "success": False,
+        "error": (
+            f"No Hermes Desktop window answered the tour request within "
+            f"{_TOUR_PROBE_TIMEOUT_S}s. A preview tour's first action pays for "
+            "injecting the tour engine into the page, which can outrun that "
+            "deadline on a busy machine. If the desktop app is running, try "
+            "this action once more."
+        ),
+    }
+)
 
 _TOUR_BRIDGE_UNAVAILABLE = json.dumps(
     {
         "success": False,
         "error": (
-            "No Hermes Desktop window answered the tour request. The tour is "
-            "driven by the desktop app's renderer, which updates separately "
-            "from this backend, so an app build older than the tour tool has "
-            "nothing listening. Update the Hermes Desktop app and start a new "
-            "session. Do not retry tour in this session."
+            "No Hermes Desktop window answered the tour request, twice. The "
+            "tour is driven by the desktop app's renderer, which updates "
+            "separately from this backend, so an app build older than the tour "
+            "tool has nothing listening. Update the Hermes Desktop app and "
+            "start a new session. Do not retry tour in this session."
         ),
     }
 )
 
 
 def _tour_request(sid: str, payload: dict) -> str:
-    """Bridge the tour tool callback onto _block, without paying for a client
-    that cannot answer it.
-
-    The renderer's ``tour.request`` handler ships in the desktop bundle, but
-    the tool is offered by this backend — and the two update on different
-    clocks. Against an app older than the tool the event lands in a renderer
-    with no branch for it, nobody ever calls ``tour.respond``, and the agent
-    blocks for the full deadline. The model then does what the schema tells it
-    to and tries the next action, so a single "give me a tour" turn stacks
-    those waits (the timeouts reported against #89620).
-
-    A session's first action therefore gets the probe deadline, and an
-    unanswered probe marks the bridge unavailable for that session: every later
-    call returns immediately, telling the user what to actually fix instead of
-    stalling again. Once a client has answered, real actions get the full
-    deadline back and a single slow one no longer condemns it. The verdict
-    lives on the session record, so it dies with the session and a new one
-    re-probes.
-    """
-    # A detached caller has no session record; the throwaway keeps it on the
-    # plain bridge, unprobed.
-    session = _sessions.get(sid)
-    if session is None:
-        session = {}
-    state = session.get("tour_bridge")
-
-    if state == "unanswered":
-        return _TOUR_BRIDGE_UNAVAILABLE
-
-    answer = _block(
-        "tour.request",
+    return _probed_bridge_request(
         sid,
-        dict(payload),
-        timeout=_TOUR_TIMEOUT_S if state == "answered" else _TOUR_PROBE_TIMEOUT_S,
+        payload,
+        method="tour.request",
+        state_key="tour_bridge",
+        timeout=_TOUR_TIMEOUT_S,
+        probe_timeout=_TOUR_PROBE_TIMEOUT_S,
+        retry_error=_TOUR_BRIDGE_SLOW,
+        dead_error=_TOUR_BRIDGE_UNAVAILABLE,
     )
 
-    if answer:
-        session["tour_bridge"] = "answered"
-    elif state != "answered":
-        session["tour_bridge"] = "unanswered"
 
-    return answer or _TOUR_BRIDGE_UNAVAILABLE
+# A screen annotation is a native round-trip the renderer forwards to its main
+# process — enumerate windows, position a transparent overlay, paint. Fast on
+# a working client; the deadline only pays for a first-time overlay window
+# spawn on a slow machine.
+_ANNOTATE_SCREEN_TIMEOUT_S = 30
+# Same probe discipline as the tour bridge: until this session's client has
+# answered once, hold it to a deadline a working renderer cannot miss.
+_ANNOTATE_SCREEN_PROBE_TIMEOUT_S = 10
+
+_ANNOTATE_SCREEN_BRIDGE_SLOW = json.dumps(
+    {
+        "success": False,
+        "error": (
+            f"No Hermes Desktop window answered the screen-annotation request "
+            f"within {_ANNOTATE_SCREEN_PROBE_TIMEOUT_S}s. A session's first "
+            "annotation pays for spawning the overlay window, which can outrun "
+            "that deadline on a busy machine. If the desktop app is running, "
+            "try this call once more."
+        ),
+    }
+)
+
+_ANNOTATE_SCREEN_BRIDGE_UNAVAILABLE = json.dumps(
+    {
+        "success": False,
+        "error": (
+            "No Hermes Desktop window answered the screen-annotation request, "
+            "twice. The overlay is drawn by the desktop app, which updates "
+            "separately from this backend, so an app build older than the "
+            "annotate_screen tool has nothing listening. Update the Hermes "
+            "Desktop app and start a new session. Do not retry annotate_screen "
+            "in this session."
+        ),
+    }
+)
+
+
+def _annotate_screen_request(sid: str, payload: dict) -> str:
+    return _probed_bridge_request(
+        sid,
+        payload,
+        method="screen.annotate.request",
+        state_key="screen_annotate_bridge",
+        timeout=_ANNOTATE_SCREEN_TIMEOUT_S,
+        probe_timeout=_ANNOTATE_SCREEN_PROBE_TIMEOUT_S,
+        retry_error=_ANNOTATE_SCREEN_BRIDGE_SLOW,
+        dead_error=_ANNOTATE_SCREEN_BRIDGE_UNAVAILABLE,
+    )
+
+
+# A subtitle control action is one native round-trip: resolve the target
+# window and spawn/stop the hidden capture worker. The capture loop itself
+# never crosses this bridge — only start/stop/status do.
+_SUBTITLES_CONTROL_TIMEOUT_S = 20
+_SUBTITLES_CONTROL_PROBE_TIMEOUT_S = 10
+
+_SUBTITLES_BRIDGE_SLOW = json.dumps(
+    {
+        "success": False,
+        "error": (
+            f"No Hermes Desktop window answered the subtitle request within "
+            f"{_SUBTITLES_CONTROL_PROBE_TIMEOUT_S}s, which can happen on a "
+            "busy machine. If the desktop app is running, try this call once "
+            "more."
+        ),
+    }
+)
+
+_SUBTITLES_BRIDGE_UNAVAILABLE = json.dumps(
+    {
+        "success": False,
+        "error": (
+            "No Hermes Desktop window answered the subtitle request, twice. "
+            "Live subtitles are run by the desktop app, which updates "
+            "separately from this backend, so an app build older than the "
+            "subtitle_overlay tool has nothing listening. Update the Hermes "
+            "Desktop app and start a new session. Do not retry "
+            "subtitle_overlay in this session."
+        ),
+    }
+)
+
+
+def _subtitles_control_request(sid: str, payload: dict) -> str:
+    return _probed_bridge_request(
+        sid,
+        payload,
+        method="subtitles.control.request",
+        state_key="subtitles_bridge",
+        timeout=_SUBTITLES_CONTROL_TIMEOUT_S,
+        probe_timeout=_SUBTITLES_CONTROL_PROBE_TIMEOUT_S,
+        retry_error=_SUBTITLES_BRIDGE_SLOW,
+        dead_error=_SUBTITLES_BRIDGE_UNAVAILABLE,
+    )
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -8567,6 +8726,21 @@ def _agent_cbs(sid: str) -> dict:
         # preview pane's webview — and answers tour.respond with the outcome
         # (did the selector match, which step is active).
         "tour_callback": lambda payload: _tour_request(sid, payload),
+        # annotate_screen tool (desktop GUI): the renderer forwards the shapes
+        # to its main process, which resolves the target window and paints a
+        # transparent click-through overlay, then answers
+        # screen.annotate.respond with the outcome.
+        "annotate_screen_callback": lambda payload: _annotate_screen_request(
+            sid, payload
+        ),
+        # subtitle_overlay tool (desktop GUI): start/stop/status of the live
+        # subtitle session. The renderer forwards to its main process, which
+        # owns the capture worker and the overlay, and answers
+        # subtitles.control.respond with the outcome. Only control crosses
+        # this bridge — the per-line capture loop never touches the agent.
+        "subtitle_overlay_callback": lambda payload: _subtitles_control_request(
+            sid, payload
+        ),
     }
 
     # Interim assistant commentary (text alongside tool calls, or the attempted

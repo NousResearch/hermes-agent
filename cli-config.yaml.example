@@ -816,7 +816,7 @@ prompt_caching:
 #                            # high, xhigh, max, ultra. Empty = provider default.
 #                            # Works on every auxiliary task block (vision,
 #                            # web_extract, compression, title_generation, curator,
-#                            # background_review, moa_reference, ...). Example: run
+#                            # background_review, moa_reference, subtitles, ...). Example: run
 #                            # compression at "low" and vision at "none" to cut
 #                            # side-task latency/cost on reasoning models.
 #
@@ -831,6 +831,15 @@ prompt_caching:
 #     provider: "auto"       # empty model = your main chat model
 #     model: ""
 #     timeout: 30
+#
+#   # Live subtitle translation (desktop subtitle_overlay tool). One short
+#   # call per NEW caption line — latency is the whole game, so this task
+#   # defaults to the provider's fast tier when one exists.
+#   subtitles:
+#     provider: "auto"
+#     model: ""
+#     prefer_fast_model: true
+#     timeout: 8
 #
 #   # Automatic session title generation after the first exchange
 #   title_generation:
@@ -1509,6 +1518,17 @@ platform_toolsets:
 #     optimize_streaming_latency: 0  # 0-2, trades quality for lower latency
 #     sample_rate: 24000    # 22050 / 24000 / 44100 / 48000
 #     bit_rate: 128000      # MP3 bitrate (codec=mp3 only)
+
+# =============================================================================
+# Live subtitle translation (desktop HUD)
+# =============================================================================
+# The desktop OCRs the subtitle band of the window behind Hermes and paints a
+# translation over it. Used by the subtitle_overlay tool. Translation model is
+# configured separately under auxiliary.subtitles. Requires the optional extra:
+#   pip install 'hermes-agent[subtitles]'
+# subtitles:
+#   max_chars_per_line: 42   # wrap width for the painted translation
+#   min_ocr_confidence: 0.5  # OCR lines below this are treated as noise
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)

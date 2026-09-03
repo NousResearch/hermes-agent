@@ -19,7 +19,7 @@ import pytest
 from agent.prompt_builder import hud_surface_note
 from tui_gateway import server
 
-FULL_KIT = {"read_window_below", "computer_use", "browser_navigate"}
+FULL_KIT = {"read_window_below", "computer_use", "browser_navigate", "annotate_screen", "subtitle_overlay"}
 
 
 def _tool_def(name: str) -> dict:
@@ -56,6 +56,8 @@ class TestNoteContents:
         assert "read_window_below" in note
         assert "computer_use" in note
         assert "browser_navigate" in note
+        assert "annotate_screen" in note
+        assert "subtitle_overlay" in note
 
     def test_no_note_at_all_without_the_tool_it_rests_on(self):
         assert hud_surface_note({"computer_use", "browser_navigate"}) == ""
@@ -71,6 +73,53 @@ class TestNoteContents:
 
         assert "computer_use" in note
         assert "browser_navigate" not in note
+
+    def test_drawing_offer_needs_the_annotation_tool(self):
+        note = hud_surface_note({"read_window_below", "computer_use"})
+
+        assert "annotate_screen" not in note
+
+    def test_offers_to_draw_even_without_computer_use(self):
+        """The two are independent affordances — seeing the app behind the HUD
+        and drawing on it gate on different tools."""
+        note = hud_surface_note({"read_window_below", "annotate_screen"})
+
+        assert "annotate_screen" in note
+        assert "computer_use" not in note
+        assert "chart" in note
+        assert "180" in note
+        assert "how to" in note
+        assert "step=" in note
+
+    def test_teach_without_computer_use_does_not_name_that_tool(self):
+        """The note only names tools this agent has — see hud_surface_note."""
+        note = hud_surface_note({"read_window_below", "annotate_screen"})
+
+        assert "computer_use" not in note
+
+    def test_teach_with_computer_use_leaves_the_mouse_to_the_user(self):
+        note = hud_surface_note({"read_window_below", "annotate_screen", "computer_use"})
+
+        assert "leave the mouse" in note
+        assert "computer_use" in note
+
+    def test_chart_offer_needs_the_annotation_tool(self):
+        note = hud_surface_note({"read_window_below"})
+
+        assert "chart" not in note
+        assert "annotate_screen" not in note
+
+    def test_subtitle_offer_needs_the_subtitle_tool(self):
+        note = hud_surface_note({"read_window_below", "annotate_screen"})
+
+        assert "subtitle_overlay" not in note
+
+    def test_offers_subtitles_independently_of_the_other_affordances(self):
+        note = hud_surface_note({"read_window_below", "subtitle_overlay"})
+
+        assert "subtitle_overlay" in note
+        assert "annotate_screen" not in note
+        assert "computer_use" not in note
 
     def test_no_tools_at_all(self):
         assert hud_surface_note(None) == ""

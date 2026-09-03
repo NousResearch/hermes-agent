@@ -123,6 +123,9 @@ let _verificationStopIndex = 0
 /** Per-server counter for the task-panel warm-resume script. */
 let _taskPanelResumeIndex = 0
 
+/** Per-server counter for the screen-annotation script. */
+let _annotateScriptIndex = 0
+
 /** User messages received by the mock, for E2E assertions on real submits. */
 const _receivedUserTexts: string[] = []
 
@@ -135,6 +138,7 @@ function resetScriptIndex(): void {
   _correctionSwitchIndex = 0
   _verificationStopIndex = 0
   _taskPanelResumeIndex = 0
+  _annotateScriptIndex = 0
   _receivedUserTexts.length = 0
 }
 
@@ -142,6 +146,49 @@ function resetScriptIndex(): void {
 export function receivedUserTexts(): readonly string[] {
   return _receivedUserTexts
 }
+
+// ─── Screen-annotation script ──────────────────────────────────────────
+//
+// Exercises the annotate_screen tool end-to-end: the scripted tool call rides
+// the REAL path — agent → gateway screen.annotate.request → desktop renderer
+// bridge → preload IPC → Electron main → transparent overlay window. The
+// target is 'screen' (whole display) so the test never depends on which other
+// OS windows happen to be open on the machine running the suite.
+
+export const ANNOTATE_TRIGGER = 'E2E_ANNOTATE_TRIGGER'
+
+/** Long enough for the spec to find and inspect the overlay, short enough
+ *  that the same spec can watch the TTL expiry take it down. */
+export const ANNOTATE_TTL_SECONDS = 8
+
+export const ANNOTATE_TEXTS = {
+  interim: 'Drawing the move on your screen now.',
+  final: 'Marked the move on your screen: pawn to b4.',
+} as const
+
+const ANNOTATE_SCRIPT: ScriptedTurn[] = [
+  {
+    text: ANNOTATE_TEXTS.interim,
+    toolCalls: [
+      {
+        name: 'annotate_screen',
+        args: {
+          action: 'draw',
+          target: 'screen',
+          frame_width: 1000,
+          frame_height: 1000,
+          shapes: [
+            { kind: 'circle', x: 300, y: 700, radius: 60, label: 'pawn' },
+            { kind: 'arrow', from_x: 300, from_y: 700, to_x: 300, to_y: 480 },
+            { kind: 'label', x: 500, y: 120, text: 'E2E annotation' },
+          ],
+          ttl_seconds: ANNOTATE_TTL_SECONDS,
+        },
+      },
+    ],
+  },
+  { text: ANNOTATE_TEXTS.final },
+]
 
 // ─── Sidebar-states script ─────────────────────────────────────────────
 //
@@ -484,6 +531,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             _receivedUserTexts.push(userText)
           }
           const isInterimTrigger = userText.includes('E2E_INTERIM_TRIGGER')
+          const isAnnotateTrigger = userText.includes(ANNOTATE_TRIGGER)
           const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
           const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
           const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
@@ -607,6 +655,17 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           if (isInterimTrigger) {
             const turn = INTERIM_SCRIPT[_scriptIndex] ?? INTERIM_SCRIPT[INTERIM_SCRIPT.length - 1]
             _scriptIndex++
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
+            }
+            return
+          }
+
+          if (isAnnotateTrigger) {
+            const turn = ANNOTATE_SCRIPT[_annotateScriptIndex] ?? ANNOTATE_SCRIPT[ANNOTATE_SCRIPT.length - 1]
+            _annotateScriptIndex++
             if (stream) {
               streamScriptedTurn(res, model, turn)
             } else {

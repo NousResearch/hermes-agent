@@ -16,16 +16,33 @@
       // module graph has executed — i.e. the "white flash" on every new
       // window. applyTheme() in src/themes/context.tsx keeps these keys fresh.
       try {
-        let bg = localStorage.getItem('hermes-boot-background')
-        let scheme = localStorage.getItem('hermes-boot-color-scheme')
-        if (!bg) {
-          const dark = window.matchMedia('(prefers-color-scheme: dark)').matches
-          bg = dark ? '#111111' : '#f7f7f7'
-          scheme = dark ? 'dark' : 'light'
-        }
-        document.documentElement.style.backgroundColor = bg
-        if (scheme === 'dark' || scheme === 'light') {
-          document.documentElement.style.colorScheme = scheme
+        // Transparent helper windows (HUD, overlays, capture workers) must
+        // never receive the opaque anti-flash backing. The annotate overlay
+        // covers the whole display; painting #f7f7f7 there is a white sheet
+        // over whatever the user is watching, and on macOS/Electron 40 a
+        // window that composites opaque on first paint often will not go
+        // transparent again when CSS later asks it to.
+        var winKind = new URLSearchParams(location.search).get('win')
+        var transparentHost =
+          winKind === 'annotate' ||
+          winKind === 'overlay' ||
+          winKind === 'hud' ||
+          winKind === 'wake' ||
+          winKind === 'quick'
+        if (transparentHost) {
+          document.documentElement.style.backgroundColor = 'transparent'
+        } else {
+          let bg = localStorage.getItem('hermes-boot-background')
+          let scheme = localStorage.getItem('hermes-boot-color-scheme')
+          if (!bg) {
+            const dark = window.matchMedia('(prefers-color-scheme: dark)').matches
+            bg = dark ? '#111111' : '#f7f7f7'
+            scheme = dark ? 'dark' : 'light'
+          }
+          document.documentElement.style.backgroundColor = bg
+          if (scheme === 'dark' || scheme === 'light') {
+            document.documentElement.style.colorScheme = scheme
+          }
         }
       } catch {
         // localStorage unavailable — keep UA defaults.

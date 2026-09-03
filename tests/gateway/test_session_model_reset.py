@@ -1,7 +1,7 @@
 """Tests that /new (and its /reset alias) clears session-scoped overrides."""
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -24,7 +24,7 @@ def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
 
 
-def _make_runner():
+def _make_runner(source: SessionSource | None = None):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
@@ -41,7 +41,7 @@ def _make_runner():
     runner._pending_model_notes = {}
     runner._background_tasks = set()
 
-    session_key = build_session_key(_make_source())
+    session_key = build_session_key(source or _make_source())
     session_entry = SessionEntry(
         session_key=session_key,
         session_id="sess-1",
@@ -100,3 +100,26 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.lifecycle.invoke_hook")
+async def test_new_command_lifecycle_hook_includes_gateway_route(mock_invoke_hook):
+    """Plugins can identify and rebuild the exact gateway workspace on reset."""
+    source = _make_source()
+    source.thread_id = "thread-7"
+    source.scope_id = "workspace-3"
+    source.message_id = "message-9"
+    runner = _make_runner(source)
+    event = MessageEvent(text="/new", source=source, message_id="message-9")
+
+    await runner._handle_reset_command(event)
+
+    reset_calls = [
+        call
+        for call in mock_invoke_hook.call_args_list
+        if call.args and call.args[0] == "on_session_reset"
+    ]
+    assert len(reset_calls) == 1
+    assert reset_calls[0].kwargs["session_key"] == build_session_key(source)
+    assert reset_calls[0].kwargs["source"] == source.to_dict()

@@ -852,6 +852,8 @@ def finalize_turn(
             turn_exit_reason=_turn_exit_reason,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            session_key=getattr(agent, "_gateway_session_key", None) or "",
+            source=dict(getattr(agent, "_gateway_session_source", None) or {}),
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)

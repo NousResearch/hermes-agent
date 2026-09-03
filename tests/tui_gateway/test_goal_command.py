@@ -170,6 +170,52 @@ def _compression_failure():
     }
 
 
+def _max_iterations_fallback(final_response="fallback summary"):
+    return {
+        "final_response": final_response,
+        "completed": False,
+        "failed": False,
+        "turn_exit_reason": "max_iterations_reached(3/3)",
+    }
+
+
+@pytest.mark.parametrize(
+    ("result", "status", "raw", "expected"),
+    [
+        (_max_iterations_fallback(), "complete", "fallback summary", True),
+        (
+            {
+                "completed": True,
+                "failed": False,
+                "turn_exit_reason": "text_response(finish_reason=stop)",
+            },
+            "complete",
+            "normal response",
+            True,
+        ),
+        (
+            {**_max_iterations_fallback(), "failed": True},
+            "complete",
+            "fallback summary",
+            False,
+        ),
+        (
+            {**_max_iterations_fallback(), "turn_exit_reason": "budget_exhausted"},
+            "complete",
+            "fallback summary",
+            False,
+        ),
+        (_max_iterations_fallback(), "error", "fallback summary", False),
+        (_max_iterations_fallback(), "interrupted", "fallback summary", False),
+        (_max_iterations_fallback(), "complete", "   ", False),
+    ],
+)
+def test_successful_goal_turn_accepts_only_valid_completion_outcomes(
+    server, result, status, raw, expected
+):
+    assert server._is_successful_goal_turn(result, status, raw) is expected
+
+
 # ── command.dispatch /goal ────────────────────────────────────────────
 
 
@@ -251,6 +297,57 @@ def test_pending_input_commands_includes_goal(server):
     """Guard: _PENDING_INPUT_COMMANDS must list 'goal' — removing it would
     silently re-break the TUI."""
     assert "goal" in server._PENDING_INPUT_COMMANDS
+
+
+def test_iteration_limit_fallback_is_judged_and_can_continue(
+    server, turn_env, monkeypatch
+):
+    from hermes_cli.goals import GoalManager
+
+    session_key = "goal-iteration-limit-fallback"
+    mgr = GoalManager(session_key)
+    mgr.set("finish the current task")
+    continuation = mgr.next_continuation_prompt()
+    seen_prompts = []
+    judged = []
+    results = iter([
+        _max_iterations_fallback(),
+        {
+            "final_response": "finished normally",
+            "completed": True,
+            "failed": False,
+            "turn_exit_reason": "text_response(finish_reason=stop)",
+        },
+    ])
+
+    def run_conversation(message, **_kwargs):
+        seen_prompts.append(message)
+        return next(results)
+
+    def evaluate(self, response, **_kwargs):
+        judged.append(response)
+        if len(judged) == 1:
+            return {
+                "message": "",
+                "should_continue": True,
+                "continuation_prompt": continuation,
+            }
+        return {"message": "", "should_continue": False}
+
+    monkeypatch.setattr(GoalManager, "evaluate_after_turn", evaluate)
+    agent = types.SimpleNamespace(
+        session_id=session_key,
+        run_conversation=run_conversation,
+        clear_interrupt=lambda: None,
+    )
+    session = _turn_session(agent, session_key)
+
+    server._run_prompt_submit("rid", "sid", session, "initial work")
+
+    assert seen_prompts == ["initial work", continuation]
+    assert judged == ["fallback summary", "finished normally"]
+    completes = [p for event, _sid, p in turn_env if event == "message.complete"]
+    assert [p["status"] for p in completes] == ["complete", "complete"]
 
 
 # ── active-goal recovery after compression exhaustion ───────────────

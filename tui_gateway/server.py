@@ -13023,12 +13023,25 @@ _GOAL_COMPRESSION_RECOVERY_LIMIT = 1
 
 def _is_successful_goal_turn(result: Any, status: str, raw: Any) -> bool:
     """Return whether a turn produced a real response the goal judge can use."""
+    turn_exit_reason = (
+        result.get("turn_exit_reason") if isinstance(result, dict) else None
+    )
+    iteration_limit_fallback = (
+        isinstance(result, dict)
+        and result.get("completed") is False
+        and isinstance(turn_exit_reason, str)
+        and turn_exit_reason.startswith("max_iterations_reached(")
+    )
     return bool(
         status == "complete"
         and isinstance(raw, str)
         and raw.strip()
-        and not (isinstance(result, dict) and result.get("failed"))
-        and not (isinstance(result, dict) and result.get("completed") is False)
+        and (not isinstance(result, dict) or result.get("failed") is not True)
+        and (
+            not isinstance(result, dict)
+            or result.get("completed") is not False
+            or iteration_limit_fallback
+        )
     )
 
 

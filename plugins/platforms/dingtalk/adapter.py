@@ -187,7 +187,7 @@ def ensure_dingtalk_deps() -> bool:
     re-creating the #79812 deadlock for extra-configured setups.
     """
     global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage
-    global HTTPX_AVAILABLE, httpx
+    global HTTPX_AVAILABLE, httpx, _IncomingHandler
     if DINGTALK_STREAM_AVAILABLE and HTTPX_AVAILABLE:
         return True
     try:
@@ -209,6 +209,22 @@ def ensure_dingtalk_deps() -> bool:
     httpx = _httpx
     DINGTALK_STREAM_AVAILABLE = True
     HTTPX_AVAILABLE = True
+
+    # _IncomingHandler may have been defined while dingtalk-stream was
+    # unavailable, permanently freezing its base class to object. Rebind it
+    # once the lazy install succeeds so SDK dispatch methods such as
+    # raw_process() are available in the same process.
+    if not issubclass(_IncomingHandler, dingtalk_stream.ChatbotHandler):
+        stale_handler_cls = _IncomingHandler
+        _IncomingHandler = type(
+            "_IncomingHandler",
+            (stale_handler_cls, dingtalk_stream.ChatbotHandler),
+            {
+                "__module__": __name__,
+                "__doc__": stale_handler_cls.__doc__,
+            },
+        )
+
     return True
 
 

@@ -283,6 +283,109 @@ class TestHandlerProcessIsAsync:
         assert asyncio.iscoroutinefunction(_IncomingHandler.process)
 
 
+class TestLazyDependencyRecovery:
+    """Regression coverage for SDKs that become available after module import."""
+
+    @pytest.mark.asyncio
+    async def test_connect_uses_sdk_handler_after_lazy_install(self, monkeypatch):
+        import sys
+        from types import ModuleType
+
+        import plugins.platforms.dingtalk.adapter as dt
+        import tools.lazy_deps
+
+        # Reproduce the import-time failure from #78597: the adapter module
+        # already exists, but its handler was created without the SDK base.
+        class FrozenIncomingHandler:
+            def __init__(self, adapter, loop=None):
+                self._adapter = adapter
+                self._loop = loop
+
+            async def process(self, message):
+                return 200, "OK"
+
+        monkeypatch.setattr(dt, "DINGTALK_STREAM_AVAILABLE", False)
+        monkeypatch.setattr(dt, "dingtalk_stream", None)
+        monkeypatch.setattr(dt, "_IncomingHandler", FrozenIncomingHandler)
+
+        # Fake the SDK that becomes importable after the lazy install.
+        fake_sdk = ModuleType("dingtalk_stream")
+        fake_frames = ModuleType("dingtalk_stream.frames")
+
+        class FakeChatbotHandler:
+            async def raw_process(self, message):
+                return await self.process(message)
+
+        class FakeChatbotMessage:
+            TOPIC = "fake-chatbot-topic"
+
+        class FakeCallbackMessage:
+            pass
+
+        class FakeAckMessage:
+            STATUS_OK = 200
+            STATUS_SYSTEM_EXCEPTION = 500
+
+        class FakeStreamClient:
+            def __init__(self, credential):
+                self.credential = credential
+                self.registered_handler = None
+
+            def register_callback_handler(self, topic, handler):
+                self.registered_handler = handler
+
+        fake_sdk.ChatbotHandler = FakeChatbotHandler
+        fake_sdk.ChatbotMessage = FakeChatbotMessage
+        fake_sdk.Credential = lambda client_id, client_secret: (
+            client_id,
+            client_secret,
+        )
+        fake_sdk.DingTalkStreamClient = FakeStreamClient
+
+        fake_frames.CallbackMessage = FakeCallbackMessage
+        fake_frames.AckMessage = FakeAckMessage
+
+        # Make Python's import system see our newly "installed" SDK.
+        monkeypatch.setitem(sys.modules, "dingtalk_stream", fake_sdk)
+        monkeypatch.setitem(sys.modules, "dingtalk_stream.frames", fake_frames)
+
+        # The real package installation is irrelevant to this regression test.
+        monkeypatch.setattr(
+            tools.lazy_deps,
+            "ensure",
+            lambda *args, **kwargs: True,
+        )
+
+        assert dt.ensure_dingtalk_deps() is True
+        assert dt.DINGTALK_STREAM_AVAILABLE is True
+
+        adapter = dt.DingTalkAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                },
+            )
+        )
+
+        # Do not start a real WebSocket loop.
+        async def fake_run_stream():
+            return None
+
+        monkeypatch.setattr(adapter, "_run_stream", fake_run_stream)
+
+        connected = await adapter.connect()
+
+        assert connected is True
+
+        handler = adapter._stream_client.registered_handler
+
+        assert handler is not None
+        assert hasattr(handler, "raw_process")
+        assert await handler.raw_process(object()) == (200, "OK")
+
+
 class TestExtractText:
     """_extract_text must handle both legacy and current SDK payload shapes.
 

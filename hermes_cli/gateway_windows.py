@@ -421,7 +421,6 @@ def _build_gateway_cmd_script(
     lines.append(f'set "HERMES_HOME={hermes_home}"')
     lines.append('set "PYTHONIOENCODING=utf-8"')
     lines.append('set "HERMES_GATEWAY_DETACHED=1"')
-    lines.append('set "HERMES_SUPERVISED_CHILD=1"')
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # VIRTUAL_ENV lets the gateway's own python detection find the venv
     # if someone imports hermes_constants-based logic during startup.
@@ -507,7 +506,6 @@ def _build_gateway_vbs_script(
         f"env.Item({_quote_vbs_string('HERMES_HOME')}) = {_quote_vbs_string(hermes_home)}",
         f"env.Item({_quote_vbs_string('PYTHONIOENCODING')}) = {_quote_vbs_string('utf-8')}",
         f"env.Item({_quote_vbs_string('HERMES_GATEWAY_DETACHED')}) = {_quote_vbs_string('1')}",
-        f"env.Item({_quote_vbs_string('HERMES_SUPERVISED_CHILD')}) = {_quote_vbs_string('1')}",
         f"env.Item({_quote_vbs_string('VIRTUAL_ENV')}) = {_quote_vbs_string(_preserve_hermes_home_path(venv_dir))}",
         # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%``: chain onto
         # whatever PYTHONPATH the task environment already carries, at runtime.
@@ -822,7 +820,6 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
         "HERMES_HOME": hermes_home,
         "PYTHONIOENCODING": "utf-8",
         "HERMES_GATEWAY_DETACHED": "1",
-        "HERMES_SUPERVISED_CHILD": "1",
         "VIRTUAL_ENV": _preserve_hermes_home_path(venv_dir),
     }
     _prepend_pythonpath(
@@ -1811,7 +1808,7 @@ def _windows_stop_drain_timeout() -> float:
 def _force_terminate_known_gateway_pids(pids: list[int]) -> int:
     """Force-kill known gateway PIDs without a broad process sweep."""
     try:
-        from gateway.status import _pid_exists, get_process_start_time, terminate_pid
+        from gateway.status import _pid_exists, terminate_pid
     except ImportError:
         return 0
 
@@ -1825,11 +1822,7 @@ def _force_terminate_known_gateway_pids(pids: list[int]) -> int:
         try:
             if not _pid_exists(pid):
                 continue
-            terminate_pid(
-                pid,
-                force=True,
-                expected_start_time=get_process_start_time(pid),
-            )
+            terminate_pid(pid, force=True)
             killed += 1
         except ProcessLookupError:
             continue
@@ -1926,16 +1919,138 @@ def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -
     return get_running_pid() is None and not _gateway_pids()
 
 
+def _cli_runs_under_gateway(gateway_pid) -> bool:
+    """True when this process is a descendant of the live gateway process.
+
+    The agent-triggered ``hermes gateway restart`` runs as a child of the very
+    gateway it stops, so the stop path (marker drain / ``taskkill /T /F`` force
+    escalation) tears the restart command down before it reaches its own
+    ``start()`` -- the #99215 silent outage. ``_is_supervised_gateway_process``
+    cannot detect this: it is False for a detached Startup-folder / Scheduled-
+    Task gateway launched with ``HERMES_GATEWAY_DETACHED=1`` and no systemd/
+    launchd/external-supervisor marker (the exact reporter config), even when
+    the restart command itself owns the gateway PID. A descendant check closes
+    that gap. A restart issued from a clean shell has no gateway in its ancestor
+    chain, so it is unaffected.
+    """
+    try:
+        gw = int(gateway_pid or 0)
+    except (TypeError, ValueError):
+        return False
+    if gw <= 0:
+        return False
+    from hermes_cli.gateway import _get_ancestor_pids
+
+    return gw in _get_ancestor_pids()
+
+
+def _arm_gateway_restart_watch(old_pids) -> bool:
+    """Arm a detached relaunch for the running gateway(s) *before* they are killed.
+
+    A ``hermes gateway restart`` issued from inside the gateway runs as a
+    child of the very process it is about to stop, so the stop path (marker
+    drain / ``taskkill /T /F`` force escalation) tears the restart command down
+    before it reaches its own ``start()`` -- a silent outage with nothing to
+    relaunch (#99215). Arming the same detached restart watcher that
+    ``hermes update`` and the ``/restart`` command already use (#95194) means a
+    surviving, console-detached process brings the gateway back the instant it
+    exits, so the outcome no longer depends on the restart command itself
+    surviving the teardown.
+
+    Replays each gateway's own captured command line via
+    ``launch_detached_gateway_restart_by_cmdline`` -- the identical mechanism
+    the Windows post-update restart already uses for Scheduled-Task /
+    profile-ambiguous gateways -- with the respawn argv derived from the
+    process's own ``sys.argv`` rather than a profile→PID mapping, so the
+    detached Startup / Scheduled-Task gateways that ``_is_supervised_gateway_
+    process`` cannot detect are covered. Returns True only if at least one
+    watcher was actually armed, so callers can fall back to the synchronous
+    restart; it never raises and never blocks.
+    """
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return False
+
+    from gateway.status import looks_like_gateway_command_line
+    from hermes_cli.gateway import launch_detached_gateway_restart_by_cmdline
+
+    # Respawn each gateway with its OWN captured command line (``... gateway
+    # run``), read live before it dies. Never fall back to this CLI's argv --
+    # that is ``... gateway restart`` and replaying it would respawn the restart
+    # command recursively instead of the gateway. A PID whose cmdline can't be
+    # read or doesn't look like a gateway is skipped so we never respawn garbage.
+    armed = False
+    for pid in old_pids:
+        # Snapshot the live argv first: once the process is killed its
+        # command line is unrecoverable, and it is what the detached watcher
+        # replays to respawn this gateway.
+        try:
+            argv = list(psutil.Process(pid).cmdline() or [])
+        except Exception:
+            continue
+        if not argv or not looks_like_gateway_command_line(" ".join(argv)):
+            continue
+        try:
+            if launch_detached_gateway_restart_by_cmdline(pid, list(argv)):
+                armed = True
+        except Exception:
+            continue
+    return armed
+
+
 def restart() -> None:
     """Stop the gateway then start it again.
 
-    Waits for the old gateway to be authoritatively gone before relaunching --
-    otherwise ``start()``'s "already running" guard sees the still-draining old
-    process and no-ops, and when that process later exits nothing replaces it (a
-    silent outage). Fails loudly if the process can't be cleared or the relaunch
+    Normal case (a restart issued from a shell outside the gateway): stop, wait
+    for the old gateway to be authoritatively gone, then relaunch. The wait
+    matters -- otherwise ``start()``'s "already running" guard sees the still-
+    draining old process and no-ops, and when that process later exits nothing
+    replaces it. Fails loudly if the process can't be cleared or the relaunch
     doesn't produce a running gateway.
+
+    Agent-initiated case (``hermes gateway restart`` run from inside a
+    gateway-hosted agent turn): the restart command is a *child* of the gateway
+    it stops, so it is torn down before its own ``start()`` ever runs -- the
+    #99215 silent outage. Detect this by testing whether the live gateway PID is
+    in our ancestor chain, and hand the relaunch to a detached survivor instead
+    of attempting a synchronous restart that cannot survive its own teardown.
     """
     _assert_windows()
+
+    from gateway.status import get_running_pid
+
+    # Agent-initiated restart: the relauncher is a descendant of the gateway it
+    # stops and will be killed before it can relaunch, so hand the relaunch to a
+    # detached survivor instead. (#99215)
+    gw_pid = get_running_pid(cleanup_stale=False)
+    if gw_pid and _cli_runs_under_gateway(gw_pid):
+        old_pids = [pid for pid in [gw_pid, *_gateway_pids()] if pid]
+        if _arm_gateway_restart_watch(old_pids):
+            print(
+                "↻ Agent-initiated gateway restart: armed a detached relaunch "
+                "watcher (survives the gateway's teardown), then stopping the "
+                "gateway so the watcher can bring it back. Sessions resume on "
+                "the new gateway."
+            )
+            # Signal the running gateway to drain and exit via the planned-stop
+            # marker. stop() tree-kills any *sibling* gateway (taskkill /T /F),
+            # but never this process (its own PID is excluded, and the gateway
+            # being stopped is our ancestor, not our child), so this CLI reaches
+            # the wait below and the detached watcher performs the relaunch.
+            stop()
+            if not _wait_for_gateway_ready(timeout_s=90.0):
+                raise RuntimeError(
+                    "Gateway restart watcher was armed but no gateway process "
+                    "came back within 90s. Check logs/gateway.log and run "
+                    "`hermes gateway status`."
+                )
+            print("✓ Gateway restarted (relaunched by detached watcher)")
+            return
+        print(
+            "⚠ Could not arm a detached relaunch watcher; falling back to the "
+            "synchronous stop/start path."
+        )
 
     stop()
 

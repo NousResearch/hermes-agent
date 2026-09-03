@@ -6233,9 +6233,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history.append({"role": str(entry["role"]), "content": entry_content})
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+            explicit_history_provided = bool(raw_history)
 
         stored_session_id = None
-        if not explicit_history_provided and previous_response_id:
+        # An empty history is a common client default, not an instruction to
+        # erase a chained transcript. Preserve previous_response_id/session
+        # continuation when callers send conversation_history: [].
+        if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored:
                 conversation_history = list(stored.get("conversation_history", []))

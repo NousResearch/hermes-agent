@@ -245,6 +245,10 @@ FEISHU_REQUIRE_MENTION=false
 
 For per-chat control, set `require_mention` on a `group_rules` entry — see [Per-Group Access Control](#per-group-access-control) below.
 
+#### Smart mention gating
+
+When several bots share one group, disabling the mention requirement entirely makes the bot react to messages addressed to other bots. `FEISHU_SMART_MENTION=true` (or `smart_mention: true`) refines this: a group message that explicitly @-mentions someone else (a user or another bot) is silently dropped, while messages with **no mention at all** (the sender may have forgotten to @ anyone) still reach the bot, as do messages that @ this bot or @all. The default is `false`, which preserves the existing behavior.
+
 ### Bot Identity
 
 Hermes auto-detects the bot's `open_id` and display name on startup. You only need to set these manually when auto-detection cannot reach the Feishu API, or when your app uses tenant-scoped user IDs:
@@ -526,6 +530,8 @@ platforms:
 
 Set `require_mention: false` on a `group_rules` entry to skip the @-mention requirement for that specific chat. When omitted, the chat inherits the global `FEISHU_REQUIRE_MENTION` value.
 
+Set `smart_mention: true` on a `group_rules` entry to enable smart mention gating for that chat (drop messages that @ someone else; keep messages with no mention or @ this bot / @all). When omitted, the chat inherits the global `FEISHU_SMART_MENTION` value (default `false`).
+
 Groups not listed in `group_rules` fall back to `default_group_policy` (defaults to the value of `FEISHU_GROUP_POLICY`).
 
 ## Deduplication
@@ -547,6 +553,7 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `FEISHU_ALLOWED_USERS` | — | _(empty)_ | Comma-separated open_id list for user allowlist |
 | `FEISHU_ALLOW_BOTS` | — | `none` | Accept messages from other bots: `none`, `mentions`, or `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | Whether group messages must @mention the bot |
+| `FEISHU_SMART_MENTION` | — | `false` | Drop group messages that @ someone else (keep unmentioned ones) |
 | `FEISHU_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |
 | `FEISHU_ENCRYPT_KEY` | — | _(empty)_ | Encrypt key for webhook signature verification |
 | `FEISHU_VERIFICATION_TOKEN` | — | _(empty)_ | Verification token for webhook payload auth |

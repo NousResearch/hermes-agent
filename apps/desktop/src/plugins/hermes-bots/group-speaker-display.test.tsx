@@ -6,6 +6,7 @@ import type * as avatarModule from './avatar'
 import { speakerEvent, speakerMember, speakerReplay, speakerRoom } from './group-speaker-test-fixtures'
 import { translateBots } from './i18n-test-helper'
 import type { GroupChat, GroupMember } from './types'
+import { canonicalUser, optimisticUser, USER_TEXT, userRoom } from './user-event-test-fixtures'
 
 const { host, sendToGroupChatDurably } = vi.hoisted(() => ({
   host: { notify: vi.fn(), requestAgent: vi.fn(), requestProfile: vi.fn() },
@@ -57,6 +58,38 @@ async function show(room: GroupChat, members: GroupMember[] = room.members || []
 }
 
 describe('room speaker click and sidebar preview', () => {
+  it('renders one user entry after actual room merge heals a cold optimistic/canonical cache', async () => {
+    const chat = await import('./group-chat')
+
+    const cold = JSON.parse(
+      JSON.stringify(chat.durableGroupChatRooms({ Board: userRoom([optimisticUser(), canonicalUser()]) }))
+    )
+
+    const projection = chat.groupChatSyncSnapshot(cold)
+    const restored = chat.mergeRemoteGroupChatSnapshotIntoRooms(projection, cold).Board
+
+    await show(restored)
+
+    expect(screen.getAllByText(USER_TEXT, { exact: true })).toHaveLength(1)
+    expect(screen.getAllByText('You', { exact: true })).toHaveLength(1)
+    expect(sendToGroupChatDurably).not.toHaveBeenCalled()
+    expect(host.requestAgent).not.toHaveBeenCalled()
+  })
+
+  it('renders both genuinely sequenced user events even when their text is identical', async () => {
+    const chat = await import('./group-chat')
+    const canonical = userRoom([canonicalUser('older-event', 4), canonicalUser()])
+
+    const restored = chat.mergeRemoteGroupChatSnapshotIntoRooms(chat.groupChatSyncSnapshot({ Board: canonical }), {
+      Board: canonical
+    }).Board
+
+    await show(restored)
+
+    expect(screen.getAllByText(USER_TEXT, { exact: true })).toHaveLength(2)
+    expect(screen.getAllByText('You', { exact: true })).toHaveLength(2)
+  })
+
   it('reveals Product (@pm) from real replay, never the display label as a handle', async () => {
     const { $botMeta } = await import('./data')
     const { botAppearance } = await import('./avatar')

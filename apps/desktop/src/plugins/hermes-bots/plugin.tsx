@@ -57,6 +57,7 @@ import {
 import { renameGroupChat } from './group-chat-view'
 import { groupWorkspaceOwnerKey } from './group-membership'
 import { startHostedRoomRuntime, stopHostedRoomRuntime } from './hosted-room-runtime'
+import { reconcileHostedUserEvents, storedHostedUserEvent } from './hosted-user-events'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
 import { displayName } from './labels'
@@ -264,10 +265,13 @@ export default {
 
             for (const [name, room] of Object.entries(value)) {
               if (room && Array.isArray(room.log)) {
+                const log = room.log.map(storedHostedUserEvent)
                 rooms[name] = {
                   // Pre-thread entries get synthetic thread ids on hydrate so
                   // every UI/engine path can assume entry.thread exists.
-                  log: assignLegacyThreads(room.log),
+                  log: assignLegacyThreads(
+                    room.roomId && room.hosted ? reconcileHostedUserEvents(room.roomId, log) : log
+                  ),
                   watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
                   sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
                   sessionOwners: room.sessionOwners && typeof room.sessionOwners === 'object' ? room.sessionOwners : {},

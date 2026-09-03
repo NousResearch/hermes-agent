@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as DataModule from './data'
 import type * as RoutingModule from './routing'
+import { canonicalUser, optimisticUser, userRoom } from './user-event-test-fixtures'
 
 const mocks = vi.hoisted(() => ({
   botChatOwnsWorkspace: vi.fn(() => false),
@@ -188,6 +189,20 @@ describe('the Bots pane dock', () => {
 })
 
 describe('hosted Group Chat startup', () => {
+  it('heals a cold duplicated user cache before any gateway replay is available', async () => {
+    paneStores()
+    const cold = JSON.parse(JSON.stringify({ Board: userRoom([optimisticUser(), canonicalUser()]) }))
+    const harness = recordingContext(async key => (key === 'group-chats' ? cold : undefined))
+    const { $groupChats } = await import('./group-chat')
+
+    plugin.register(harness.ctx)
+    await settle()
+
+    expect($groupChats.get().Board.log).toEqual([canonicalUser()])
+    expect(mocks.startHostedRoomRuntime).toHaveBeenCalled()
+    harness.dispose()
+  })
+
   it.each([true, false, undefined, 'true'])(
     'restores local membership verification before projection pull: %s',
     async value => {

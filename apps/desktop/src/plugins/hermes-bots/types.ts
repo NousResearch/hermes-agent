@@ -168,6 +168,10 @@ export interface GroupMessage {
   at: number
   /** Stable gateway event identity after a hosted-room replay. */
   eventId?: string
+  /** Hosted room scope, never a dispatch route. */
+  roomId?: string
+  /** Untrusted legacy display metadata; never proof of outgoing intent. */
+  clientEventId?: string
   from: GroupMessageAuthor
   id?: string
   images?: Attachment[]

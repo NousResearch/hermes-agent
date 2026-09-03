@@ -15,7 +15,7 @@ import {
   $groupChats,
   applyHostedRoomAuthority,
   groupChatHostedGateway,
-  mergeGroupChatSyncEntries,
+  mergeGroupChatRoomEntries,
   uniqueGroupChatName,
   updateGroupChat
 } from './group-chat'
@@ -72,6 +72,7 @@ import {
   withHostedRoomCommandOrder,
   withHostedRoomOutboxDispatch
 } from './hosted-room-outbox'
+import { hostedUserEventReceipt, outgoingHostedUserEvent, restoreHostedUserOutboxIntents } from './hosted-user-events'
 import { botsText } from './i18n'
 import { requestForBot } from './routing'
 import type { Attachment, GroupChat, GroupMember, GroupMessage, GroupPrompt, ProfileRoute } from './types'
@@ -420,6 +421,7 @@ function replayMessages(messages: ReturnType<typeof createHostedRoomReplayState>
     from: message.from,
     id: message.eventId,
     eventId: message.eventId,
+    ...(message.roomId ? { roomId: message.roomId } : {}),
     seq: message.seq,
     text: message.text,
     thread: message.thread,
@@ -885,7 +887,11 @@ export async function refreshHostedRooms() {
               members: memberDescriptors,
               hostedMembersVerified: true,
               hostedMembersNeedRefresh: false,
-              log: mergeGroupChatSyncEntries(current.log || [], replayMessages(replay.state.messages)),
+              log: mergeGroupChatRoomEntries(
+                current,
+                restoreHostedUserOutboxIntents(current, $hostedRoomOutbox.get()),
+                replayMessages(replay.state.messages)
+              ),
               hostedConnectionId: connectionId,
               hostedSeq: replay.state.cursor,
               hostedStatus: commandFailure
@@ -1208,13 +1214,30 @@ export function dispatchHostedRoomOutbox(): Promise<void> {
                 : command.payload
 
       try {
-        await requestHostedConnection(route, method[command.kind], params)
+        const reply = await requestHostedConnection(route, method[command.kind], params)
 
         // Keep the persisted in-flight command untouched when the window is
         // disposed mid-request. Rehydration returns it to pending with the
         // same idempotency key, covering an unknown server outcome safely.
         if (hostedRoomSyncDisposed) {
           return
+        }
+
+        const receipt = hostedUserEventReceipt(command, reply)
+
+        const local =
+          receipt &&
+          Object.entries($groupChats.get()).find(
+            ([, room]) =>
+              room.roomId === command.roomId &&
+              (!command.authorityId || groupChatHostedGateway(room) === command.authorityId)
+          )
+
+        if (receipt && local) {
+          updateGroupChat(local[0], current => ({
+            ...current,
+            log: mergeGroupChatRoomEntries(current, current.log || [], [receipt])
+          }))
         }
 
         state = await transitionHostedRoomOutbox({
@@ -1636,14 +1659,23 @@ async function hostedGroupChatSendCommand(group: string, message: GroupMessage, 
     throw new Error(botsText().group.hostRouteMissing)
   }
 
+  const commandId = String(message.id || '')
+
+  if (message.from.kind === 'user' && !message.seq && !message.eventId && room.log.includes(message)) {
+    updateGroupChat(group, current => ({
+      ...current,
+      log: (current.log || []).map(entry =>
+        entry === message ? outgoingHostedUserEvent(entry, room.roomId!, commandId) : entry
+      )
+    }))
+  }
+
   const route = await hostedRouteForRoom(room)
   const connectionId = String(route?.connectionId || room.hostedConnectionId || '')
 
   if (!connectionId) {
     throw new Error(botsText().group.hostRouteMissing)
   }
-
-  const commandId = String(message.id || '')
 
   const attachments = Array.isArray(message.images)
     ? message.images.filter((attachment): attachment is Attachment => Boolean(attachment?.data))

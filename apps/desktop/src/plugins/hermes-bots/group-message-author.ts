@@ -31,7 +31,16 @@ export function compatibleGroupMessageCopies(left: GroupMessage, right: GroupMes
     return false
   }
 
+  if (left.roomId && right.roomId && left.roomId !== right.roomId) {
+    return false
+  }
+
+  if ((left.roomId || right.roomId) && left.from?.kind !== right.from?.kind) {
+    return false
+  }
+
   const hosted =
+    ((left.roomId || right.roomId) && sequences.size > 0) ||
     left.from?.hostedIdentity ||
     right.from?.hostedIdentity ||
     left.from?.hostedIdentityEvidence ||

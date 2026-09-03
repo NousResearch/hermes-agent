@@ -5870,10 +5870,17 @@ def run_job(
         # no_agent jobs — every deliver=telegram/all script job failed with
         # "no delivery target resolved". load_hermes_dotenv does not override
         # already-set vars, so the gateway's in-process tick is unaffected.
+        # Under an active profile multiplexer the reload must be skipped:
+        # it would push the firing profile's .env values into the shared
+        # process-global os.environ, where every OTHER profile's subprocesses
+        # would inherit them after this fire. The firing profile's secrets
+        # are already authoritative through the secret scope (#87575).
         try:
+            from agent.secret_scope import is_multiplex_active
             from hermes_cli.env_loader import load_hermes_dotenv
 
-            load_hermes_dotenv(hermes_home=_get_hermes_home())
+            if not is_multiplex_active():
+                load_hermes_dotenv(hermes_home=_get_hermes_home())
         except Exception:
             logger.debug(
                 "Job '%s': no_agent .env reload failed", job_id, exc_info=True
@@ -6243,12 +6250,19 @@ def run_job(
         # is set (mirrors startup), and the Bitwarden value-cache keeps the
         # forced re-pull off the network. load_hermes_dotenv also handles the
         # utf-8/latin-1 encoding fallback internally.
+        # Under an active profile multiplexer this reload is skipped: the
+        # firing profile's .env must never leak into the shared process-global
+        # os.environ, where other profiles' subprocesses would inherit it.
+        # The secret scope installed for this fire already makes the firing
+        # profile's secrets authoritative (#87575).
+        from agent.secret_scope import is_multiplex_active
         from hermes_cli.env_loader import (
             load_hermes_dotenv,
             reset_secret_source_cache,
         )
         reset_secret_source_cache()
-        load_hermes_dotenv(hermes_home=_get_hermes_home())
+        if not is_multiplex_active():
+            load_hermes_dotenv(hermes_home=_get_hermes_home())
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:

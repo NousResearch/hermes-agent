@@ -190,6 +190,85 @@ async def test_status_command_uses_dominant_persisted_model_route(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_status_command_includes_account_limits_from_cached_agent(monkeypatch):
+    session_key = build_session_key(_make_source())
+    session_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    agent = SimpleNamespace(
+        model="gpt-5.6",
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="test-token",
+        context_compressor=SimpleNamespace(last_prompt_tokens=123, context_length=272_000),
+    )
+    runner._agent_cache[session_key] = (agent, "sig")
+    snapshot = object()
+    fetch = MagicMock(return_value=snapshot)
+    monkeypatch.setattr("gateway.slash_commands.fetch_account_usage", fetch)
+    monkeypatch.setattr(
+        "gateway.slash_commands.render_account_usage_lines",
+        MagicMock(return_value=["📈 **Account limits**", "Weekly: 87% remaining"]),
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    fetch.assert_called_once_with(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="test-token",
+    )
+    assert "📈 **Account limits**" in result
+    assert "Weekly: 87% remaining" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_account_limits_from_persisted_route(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "model": "gpt-5.6",
+        "billing_provider": "openai-codex",
+        "billing_base_url": "https://chatgpt.com/backend-api/codex",
+    }
+    runner._session_db._db.get_dominant_session_model_route.return_value = {
+        "model": "gpt-5.6",
+        "billing_provider": "openai-codex",
+        "billing_base_url": "https://chatgpt.com/backend-api/codex",
+    }
+    snapshot = object()
+    fetch = MagicMock(return_value=snapshot)
+    monkeypatch.setattr("gateway.slash_commands.fetch_account_usage", fetch)
+    monkeypatch.setattr(
+        "gateway.slash_commands.render_account_usage_lines",
+        MagicMock(return_value=["📈 **Account limits**", "Session: 100% remaining"]),
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    fetch.assert_called_once_with(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key=None,
+    )
+    assert "📈 **Account limits**" in result
+    assert "Session: 100% remaining" in result
+
+
+@pytest.mark.asyncio
 async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
     session_key = build_session_key(_make_source())
     session_entry = SessionEntry(

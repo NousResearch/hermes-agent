@@ -579,6 +579,29 @@ class GatewaySlashCommandsMixin:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    async def _fetch_account_usage_lines(
+        self,
+        provider: Optional[str],
+        *,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> list[str]:
+        """Fetch account-limit lines without blocking the gateway event loop."""
+        if not provider:
+            return []
+        try:
+            snapshot = await asyncio.to_thread(
+                fetch_account_usage,
+                provider,
+                base_url=base_url,
+                api_key=api_key,
+            )
+        except Exception:
+            return []
+        if not snapshot:
+            return []
+        return render_account_usage_lines(snapshot, markdown=True)
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
@@ -773,6 +796,17 @@ class GatewaySlashCommandsMixin:
             "",
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
+
+        # Keep /status aligned with /usage.  status_agent covers both a live
+        # turn and the between-turn cache; provider_name/base_url already use
+        # the persisted dominant route and active profile config fallbacks.
+        account_lines = await self._fetch_account_usage_lines(
+            provider_name or None,
+            base_url=base_url or None,
+            api_key=getattr(status_agent, "api_key", None) if status_agent else None,
+        )
+        if account_lines:
+            lines.extend(["", *account_lines])
 
         return "\n".join(lines)
 
@@ -5823,22 +5857,13 @@ class GatewaySlashCommandsMixin:
             )
             return result.message
 
-        # Fetch account usage off the event loop so slow provider APIs don't
-        # block the gateway. Failures are non-fatal -- account_lines stays [].
-        account_lines: list[str] = []
+        # Shared with /status so the two commands cannot drift apart again.
+        account_lines = await self._fetch_account_usage_lines(
+            provider,
+            base_url=base_url,
+            api_key=api_key,
+        )
         credits_lines: list[str] = []
-        if provider:
-            try:
-                account_snapshot = await asyncio.to_thread(
-                    fetch_account_usage,
-                    provider,
-                    base_url=base_url,
-                    api_key=api_key,
-                )
-            except Exception:
-                account_snapshot = None
-            if account_snapshot:
-                account_lines = render_account_usage_lines(account_snapshot, markdown=True)
 
         # ── Nous credits magnitudes + monthly-grant % gauge ─────────────
         # Shared with the CLI / TUI /usage block via nous_credits_lines(): a single

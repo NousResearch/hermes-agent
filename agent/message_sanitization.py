@@ -192,47 +192,12 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
 _FULL_ARGS_LOG_BOUND = 100_000
 
 
+from agent.double_escape_repair import (
+    args_look_double_escaped,
+    remove_extra_escape_layer,
+    value_has_double_escape_signature,
+)
 
-
-_DOUBLE_ESCAPE_RE = re.compile(r'\\\\\\\\(?:\\\\\\"|\")')
-
-
-def _looks_double_escaped_value(value: str) -> bool:
-    """True when a string value carries the double-escape signature:
-    a run of 2+ backslashes immediately followed by an escaped quote
-    (``\\\\\\\\"`` — i.e. `5c5c5c22` after one JSON decode)."""
-    if not isinstance(value, str) or len(value) < 2:
-        return False
-    return bool(_DOUBLE_ESCAPE_RE.search(value))
-
-
-def _looks_double_escaped(parsed) -> bool:
-    """True when any top-level string value of a parsed arguments object
-    carries the double-escape signature."""
-    if not isinstance(parsed, dict):
-        return False
-    return any(
-        _looks_double_escaped_value(v) for v in parsed.values() if isinstance(v, str)
-    )
-
-
-def _unescape_once(value: str) -> str:
-    """Remove one layer of JSON string escaping from a value.
-
-    Re-serialise the value as a JSON string, strip the surrounding
-    quotes, and decode once — the inverse of one extra escape layer.
-    Bounded and safe: a value that cannot round-trip is returned as-is.
-    """
-    try:
-        encoded = json.dumps(value)
-        if not (encoded.startswith('"') and encoded.endswith('"')):
-            return value
-        inner = json.loads('"' + encoded[1:-1] + '"')
-        # one unescape layer: re-encode with the outer quotes, then interpret
-        raw = encoded[1:-1]
-        return json.loads('"' + raw.replace('\\\\', '\\') + '"') if raw != inner else value
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return value
 
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
@@ -268,28 +233,26 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
                 "Repaired unescaped control chars in tool_call arguments for %s",
                 tool_name,
             )
-        # Double-escape repair (#100730): some providers/proxies emit a
-        # VALID JSON blob whose string values were re-escaped once before
-        # serialisation. The blob parses cleanly, so it passes through and
-        # every intended `\` + `"` in a value lands on disk as `\\\\\\"`
-        # (3 backslashes + quote). Detect the signature — a string value
-        # that itself parses as a JSON string encoding MORE escapes — and
-        # unescape one layer before returning. Only fires when a value
-        # contains doubled backslashes followed by an escaped quote and
-        # unescaping yields a strictly shorter string with no parse loss.
-        if _looks_double_escaped(parsed):
-            unescaped = {
-                k: (_unescape_once(v) if isinstance(v, str) and _looks_double_escaped_value(v) else v)
-                for k, v in parsed.items()
-                if isinstance(parsed, dict)
-            }
-            if isinstance(parsed, dict) and unescaped != parsed:
-                logger.warning(
-                    "Repaired double-escaped tool_call arguments for %s "
-                    "(values were re-escaped once before serialisation)",
-                    tool_name,
+        # Double-escape repair (#100730): a VALID blob whose string
+        # values were re-escaped once before serialisation parses cleanly
+        # and would pass through here untouched — every intended
+        # backslash+quote then lands on disk as three backslashes + quote.
+        # Detect the signature and strip exactly one escape layer.
+        if args_look_double_escaped(parsed):
+            repaired_values = {
+                k: (
+                    remove_extra_escape_layer(v)
+                    if value_has_double_escape_signature(v)
+                    else v
                 )
-                return json.dumps(unescaped, separators=(",", ":"))
+                for k, v in parsed.items()
+            }
+            logger.warning(
+                "Repaired double-escaped tool_call arguments for %s "
+                "(string values carried one extra escape layer)",
+                tool_name,
+            )
+            return json.dumps(repaired_values, separators=(",", ":"))
         return reserialised
     except (json.JSONDecodeError, TypeError, ValueError):
         pass

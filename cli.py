@@ -22376,9 +22376,35 @@ def main(
                         _exit_code = 0
                         if isinstance(result, dict) and result.get("failed"):
                             _exit_code = 1
-                            if os.environ.get("HERMES_KANBAN_TASK") and result.get(
-                                "failure_reason"
-                            ) in ("rate_limit", "billing"):
+                            _failure_reason = result.get("failure_reason")
+                            if (
+                                os.environ.get("HERMES_KANBAN_TASK")
+                                and _failure_reason not in ("rate_limit", "billing")
+                            ):
+                                # Fallback when the failing turn never stamped
+                                # failure_reason (e.g. quota exhaustion surfacing
+                                # through a path that only carries prose): a
+                                # missing key must not turn a quota wall into a
+                                # generic exit 1, which the dispatcher reads as
+                                # "crashed" and redispatches into the same quota
+                                # window until the circuit breaker trips (#101800).
+                                # Keyword-only, kanban-workers-only; an explicit
+                                # failure_reason above always wins.
+                                _err_text = str(result.get("error") or "")
+                                _quota_signals = (
+                                    "rate limit", "rate_limit", "rate-limited",
+                                    "429", "quota", "usage limit", "usage_limit",
+                                    "billing", "credits exhausted", "insufficient",
+                                )
+                                if any(
+                                    _sig in _err_text.lower()
+                                    for _sig in _quota_signals
+                                ):
+                                    _failure_reason = "rate_limit"
+                            if os.environ.get("HERMES_KANBAN_TASK") and _failure_reason in (
+                                "rate_limit",
+                                "billing",
+                            ):
                                 try:
                                     from hermes_cli.kanban_db import (
                                         KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,

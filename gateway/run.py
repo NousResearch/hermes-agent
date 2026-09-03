@@ -3684,6 +3684,24 @@ def _build_media_placeholder(event) -> str:
     return "\n".join(parts)
 
 
+def _build_reply_to_disambiguation_prefix(event) -> str:
+    """Build the ``[Replying to: ...]`` pointer prefix for an event, or ''.
+
+    Always inject the reply-to pointer — even when the quoted text already
+    appears in history. The prefix isn't deduplication, it's disambiguation:
+    it tells the agent *which* prior message the user is referencing. History
+    can contain the same or similar text multiple times, and without an
+    explicit pointer the agent has to guess (or answer for both subjects).
+    Token overhead is minimal.
+    """
+    if not (getattr(event, "reply_to_text", None) and event.reply_to_message_id):
+        return ""
+    reply_snippet = event.reply_to_text[:500]
+    if getattr(event, "reply_to_is_own_message", False):
+        return f'[Replying to your previous message: "{reply_snippet}"]\n\n'
+    return f'[Replying to: "{reply_snippet}"]\n\n'
+
+
 def _build_document_context_note(
     display_name: str,
     agent_path: str,
@@ -11250,22 +11268,89 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         echo respects the count-based ledger.  If steering later falls back
         to queue mode, the drain path reuses the cached transcript instead of
         paying for a second STT call or re-echoing the same line.
+
+        A steered follow-up bypasses ``_prepare_inbound_message_text``, so the
+        same enrichment that path applies must happen here: the shared-session
+        sender label (#97569) and the reply-to disambiguation pointer (#101866)
+        — otherwise a mid-turn reply-quote reaches the agent as bare text and
+        the agent has to guess which prior message is being referenced. The
+        prefix ordering matches the normal inbound path (reply-to pointer
+        outermost, sender label inside). Enrichment only applies to a non-empty
+        payload: an empty steer text must keep falling back to queue semantics.
         """
         text = (event.text or "").strip()
         if not self._pending_event_audio_paths(event):
-            return text
-
-        adapter = self._adapter_for_source(event.source)
-        enriched_text, successful_transcripts = await self._transcribe_and_echo_pending_voice(
-            event,
-            adapter,
-            event.source,
-            text,
-            log_context="Busy-steer",
+            steer_text = text
+        else:
+            adapter = self._adapter_for_source(event.source)
+            enriched_text, successful_transcripts = await self._transcribe_and_echo_pending_voice(
+                event,
+                adapter,
+                event.source,
+                text,
+                log_context="Busy-steer",
+            )
+            steer_text = (enriched_text or text).strip() if successful_transcripts else text
+        if not steer_text:
+            return steer_text
+        # Steered text skips the normal inbound pipeline (and its
+        # "inbound message:" log line), so log the injection here instead.
+        logger.debug(
+            "inbound message (busy-steer): platform=%s user=%s chat=%s msg=%r reply_to_id=%s",
+            getattr(getattr(event, "source", None), "platform", None),
+            getattr(getattr(event, "source", None), "user_name", None),
+            getattr(getattr(event, "source", None), "chat_id", None),
+            steer_text[:80],
+            getattr(event, "reply_to_message_id", None),
         )
-        if not successful_transcripts:
+        labeled = self._label_shared_session_sender_text(steer_text, event.source)
+        return f"{_build_reply_to_disambiguation_prefix(event)}{labeled}"
+
+    def _label_shared_session_sender_text(
+        self, text: str, source: SessionSource
+    ) -> str:
+        """Prefix ``text`` with the shared-session sender label, if any.
+
+        Busy-path ``steer()``/``redirect()`` payloads bypass
+        ``_prepare_inbound_message_text``, so mid-turn follow-ups in shared
+        multi-user sessions reached the agent (and the persisted transcript)
+        with no sender attribution while messages sent between turns carried
+        theirs (#97569). This is the same labeling the normal inbound path
+        applies, kept as one shared method so the untrusted-name
+        neutralization and the Slack user-id enrichment cannot drift between
+        the two paths. DMs and per-user-isolated sessions label nothing,
+        leaving single-user behavior byte-identical.
+        """
+        if not text:
             return text
-        return (enriched_text or text).strip()
+        _is_shared_multi_user = is_shared_multi_user_session(
+            source,
+            group_sessions_per_user=getattr(
+                self.config, "group_sessions_per_user", True
+            ),
+            thread_sessions_per_user=getattr(
+                self.config, "thread_sessions_per_user", False
+            ),
+        )
+        if not (_is_shared_multi_user and source.user_name):
+            return text
+        # source.user_name is the platform display name — attacker-
+        # influenceable on any platform that lets participants set their
+        # own name. Neutralize embedded newlines/control chars before
+        # interpolating it into the message, or a hostile name can
+        # masquerade as a fake markdown section (same treatment as in
+        # build_session_context_prompt via _format_untrusted_prompt_value).
+        _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
+        # On Slack, expose the current author's verifiable user ID next to
+        # the display name (#17916): display names are ambiguous and
+        # historical mentions may point at someone else. The user_id comes
+        # from the Slack event envelope (not user-editable text), so it
+        # does not need neutralization.
+        if source.platform == Platform.SLACK and source.user_id:
+            _safe_user_name = (
+                f"{_safe_user_name} | Slack user <@{source.user_id}>"
+            )
+        return f"[{_safe_user_name}] {text}"
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
@@ -11502,7 +11587,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and hasattr(running_agent, "redirect")
         ):
             try:
-                redirected = bool(running_agent.redirect((event.text or "").strip()))
+                # Active-turn redirect bypasses _prepare_inbound_message_text,
+                # so the reply-to disambiguation prefix wraps the labeled
+                # payload here too — same ordering as the steer path (#101866).
+                _redirect_text = (event.text or "").strip()
+                if _redirect_text:
+                    _redirect_text = (
+                        f"{_build_reply_to_disambiguation_prefix(event)}"
+                        f"{self._label_shared_session_sender_text(_redirect_text, event.source)}"
+                    )
+                redirected = bool(running_agent.redirect(_redirect_text))
             except Exception as exc:
                 logger.warning("Gateway redirect failed for session %s: %s", session_key, exc)
                 redirected = False
@@ -20526,8 +20620,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _pending_stt_prepared
             else event.text
         ) or ""
-        _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
-        _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
         # Prefer the already resolved session key from the caller so this write
         # key matches the consume key at the run_conversation site. Fall back
         # to deriving it here for tests and legacy standalone callers.
@@ -20536,31 +20628,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
 
-        _is_shared_multi_user = is_shared_multi_user_session(
-            source,
-            group_sessions_per_user=_group_sessions_per_user,
-            thread_sessions_per_user=_thread_sessions_per_user,
-        )
-        if _is_shared_multi_user and source.user_name:
-            # source.user_name is the platform display name — attacker-
-            # influenceable on any platform that lets participants set their
-            # own name. Neutralize embedded newlines/control chars before
-            # interpolating it into every message in the shared session, or
-            # a hostile name can masquerade as a fake markdown section
-            # (mirrors the same field's treatment in
-            # build_session_context_prompt via _format_untrusted_prompt_value).
-            _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
-            # On Slack, expose the current author's verifiable user ID next to
-            # the display name (#17916): "mention me again" requests need a
-            # trusted `<@U...>` target for the CURRENT speaker — display names
-            # are ambiguous and historical mentions may point at someone else.
-            # The user_id comes from the Slack event envelope (not
-            # user-editable text), so it does not need neutralization.
-            if source.platform == Platform.SLACK and source.user_id:
-                _safe_user_name = (
-                    f"{_safe_user_name} | Slack user <@{source.user_id}>"
-                )
-            message_text = f"[{_safe_user_name}] {message_text}"
+        # Sender attribution for shared multi-user sessions — shared with the
+        # busy steer/redirect path via _label_shared_session_sender_text so
+        # mid-turn follow-ups carry the same label as between-turn ones
+        # (#97569).
+        message_text = self._label_shared_session_sender_text(message_text, source)
 
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
@@ -20793,21 +20865,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"{message_text}"
                 )
 
-        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            # Always inject the reply-to pointer — even when the quoted text
-            # already appears in history. The prefix isn't deduplication, it's
-            # disambiguation: it tells the agent *which* prior message the user
-            # is referencing. History can contain the same or similar text
-            # multiple times, and without an explicit pointer the agent has to
-            # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
-            if getattr(event, "reply_to_is_own_message", False):
-                message_text = (
-                    f'[Replying to your previous message: "{reply_snippet}"]\n\n'
-                    f"{message_text}"
-                )
-            else:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+        message_text = (
+            f"{_build_reply_to_disambiguation_prefix(event)}{message_text}"
+        )
 
         if "@" in message_text:
             try:

@@ -22,6 +22,7 @@ from gateway.config import (
     SessionResetPolicy,
     StreamingConfig,
     _apply_env_overrides,
+    _validate_gateway_config,
     load_gateway_config,
     persist_home_channel,
 )
@@ -189,6 +190,15 @@ class TestSessionResetPolicy:
         assert restored.at_hour == 4
         assert restored.idle_minutes == 1440
         assert restored.bg_process_max_age_hours == 24
+
+    def test_environment_idle_timeout_is_bounded_after_overrides(self, monkeypatch):
+        monkeypatch.setenv("SESSION_IDLE_MINUTES", str(10**20))
+        config = GatewayConfig()
+
+        _apply_env_overrides(config)
+        _validate_gateway_config(config)
+
+        assert config.default_reset_policy.idle_minutes == 1440
 
 
 class TestStreamingConfig:

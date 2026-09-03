@@ -164,6 +164,9 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
 
 
+MAX_SESSION_IDLE_MINUTES = 525_600_000  # 1,000 years; safely below datetime limits.
+
+
 def _coerce_optional_positive_int(value: Any, key: str) -> Optional[int]:
     """Coerce an optional positive integer config value.
 
@@ -542,9 +545,11 @@ class SessionResetPolicy:
     Controls when sessions reset (lose context).
     
     Modes:
-    - "daily": Reset at a specific hour each day
+    - "daily": Reset at a specific hour each day (regardless of activity)
     - "idle": Reset after N minutes of inactivity
     - "both": Whichever triggers first (daily boundary OR idle timeout)
+    - "daily_and_idle": Reset only when the session predates the latest daily
+      boundary AND has been idle for `idle_minutes`.
     - "none": Never auto-reset (context managed only by compression)
 
     Default is "none" — sessions never auto-reset unless the user opts in
@@ -552,7 +557,7 @@ class SessionResetPolicy:
     overrides). Changed July 2026 from "both" (24h idle + daily 4am), which
     surprised users who expected their conversations to persist.
     """
-    mode: str = "none"  # "daily", "idle", "both", or "none"
+    mode: str = "none"  # "daily", "idle", "both", "daily_and_idle", or "none"
     at_hour: int = 4  # Hour for daily reset (0-23, local time)
     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
     notify: bool = True  # Send a notification to the user when auto-reset occurs
@@ -584,6 +589,47 @@ class SessionResetPolicy:
         notify = data.get("notify")
         exclude = data.get("notify_exclude_platforms")
         bg_max_age = data.get("bg_process_max_age_hours")
+        # Defensive validation: an unrecognized mode would silently fall through
+        # every expiry check in SessionStore._is_session_expired and never reset
+        # (effectively "none" without telling the user). Warn + fall back instead.
+        _VALID_RESET_MODES = {"none", "idle", "daily", "both", "daily_and_idle"}
+        if isinstance(mode, str):
+            mode = mode.strip().lower()
+        if mode is not None and (not isinstance(mode, str) or mode not in _VALID_RESET_MODES):
+            logger.warning(
+                "Ignoring invalid session_reset mode %r (expected one of %s); "
+                "falling back to 'none'",
+                mode,
+                sorted(_VALID_RESET_MODES),
+            )
+            mode = "none"
+        # at_hour must be a valid hour; a YAML value outside [0,23] would raise a
+        # cryptic ValueError from datetime.replace() at session-check time.
+        if at_hour is not None:
+            try:
+                if isinstance(at_hour, bool) or isinstance(at_hour, float):
+                    raise ValueError(at_hour)
+                at_hour_int = int(at_hour.strip(), 10) if isinstance(at_hour, str) else int(at_hour)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                logger.warning("Ignoring invalid at_hour %r; falling back to 4", at_hour)
+                at_hour_int = 4
+            if not 0 <= at_hour_int <= 23:
+                logger.warning("Ignoring out-of-range at_hour %r; falling back to 4", at_hour)
+                at_hour_int = 4
+            at_hour = at_hour_int
+        if idle_minutes is not None:
+            try:
+                if isinstance(idle_minutes, bool) or isinstance(idle_minutes, float):
+                    raise ValueError(idle_minutes)
+                idle_minutes_int = int(idle_minutes.strip(), 10) if isinstance(idle_minutes, str) else int(idle_minutes)
+                if not 0 < idle_minutes_int <= MAX_SESSION_IDLE_MINUTES:
+                    raise ValueError(idle_minutes)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                logger.warning(
+                    "Ignoring invalid idle_minutes %r; falling back to 1440", idle_minutes
+                )
+                idle_minutes_int = 1440
+            idle_minutes = idle_minutes_int
         return cls(
             mode=mode if mode is not None else "none",
             at_hour=at_hour if at_hour is not None else 4,
@@ -1933,10 +1979,11 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
         )
         policy.at_hour = 4
 
-    if policy.idle_minutes is None or policy.idle_minutes <= 0:
+    if not isinstance(policy.idle_minutes, int) or not 0 < policy.idle_minutes <= MAX_SESSION_IDLE_MINUTES:
         logger.warning(
-            "Invalid idle_minutes=%s (must be positive). Using default 1440.",
+            "Invalid idle_minutes=%s (must be an integer from 1 to %s). Using default 1440.",
             policy.idle_minutes,
+            MAX_SESSION_IDLE_MINUTES,
         )
         policy.idle_minutes = 1440
 

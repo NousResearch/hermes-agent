@@ -792,6 +792,7 @@ in to automatic resets via the `session_reset` section in `config.yaml`:
 - **idle** — reset after N minutes of inactivity
 - **daily** — reset at a specific hour each day
 - **both** — reset on whichever comes first (idle or daily)
+- **daily_and_idle** — reset only when a session predates the latest daily boundary and has also been idle for the configured timeout
 
 Before a session is auto-reset, the agent is given a turn to save any important memories or skills from the conversation.
 

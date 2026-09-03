@@ -202,6 +202,7 @@ _RESET_END_REASONS = (
     "session_switch",
     "idle",
     "daily",
+    "daily_and_idle",
     "suspended",
     "resume_pending_expired",
 )

@@ -260,9 +260,9 @@ with the `session_reset` section in `~/.hermes/config.yaml`:
 
 ```yaml
 session_reset:
-  mode: idle        # "idle", "daily", "both", or "none" (default)
-  idle_minutes: 1440  # for idle/both: minutes of inactivity before reset
-  at_hour: 4          # for daily/both: hour of day (0-23, local time)
+  mode: idle        # "idle", "daily", "both", "daily_and_idle", or "none" (default)
+  idle_minutes: 1440  # for idle/both/daily_and_idle: minutes of inactivity before reset
+  at_hour: 4          # for daily/both/daily_and_idle: hour of day (0-23, local time)
 ```
 
 | Mode | Description |
@@ -271,6 +271,7 @@ session_reset:
 | `daily` | Reset at a specific hour each day |
 | `idle` | Reset after N minutes of inactivity |
 | `both` | Whichever triggers first |
+| `daily_and_idle` | Reset only when both the daily boundary and idle timeout have passed |
 
 A live background process (started with `terminal(background=true)`) normally
 protects its session from resetting so output isn't lost. To stop a forgotten

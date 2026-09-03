@@ -927,11 +927,12 @@ memory:
 #   "idle"  - Reset after N minutes of inactivity
 #   "daily" - Reset at a fixed hour each day
 #   "both"  - Reset on EITHER inactivity timeout or daily boundary
+#   "daily_and_idle" - Reset only after both the daily boundary and idle timeout
 #
 session_reset:
-  mode: none           # "none", "idle", "daily", or "both"
-  idle_minutes: 1440   # Inactivity timeout in minutes (used by "idle"/"both")
-  at_hour: 4           # Daily reset hour, 0-23 local time (used by "daily"/"both")
+  mode: none           # "none", "idle", "daily", "both", or "daily_and_idle"
+  idle_minutes: 1440   # Inactivity timeout (used by "idle"/"both"/"daily_and_idle")
+  at_hour: 4           # Daily boundary hour (used by "daily"/"both"/"daily_and_idle")
 
 # Maximum number of simultaneously active chat sessions across CLI, TUI,
 # dashboard chat, and messaging gateway. Set to null, 0, or omit to allow

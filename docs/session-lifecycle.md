@@ -302,7 +302,8 @@ Reset policies control when a session automatically loses context (gets a new `s
 | `"none"` | Never auto-reset. Context managed only by compression. | — |
 | `"idle"` | Reset after N minutes of inactivity from `updated_at`. | `idle_minutes: 1440` (24h) |
 | `"daily"` | Reset at a specific hour each day (local time). | `at_hour: 4` (4 AM) |
-| `"both"` | Whichever triggers first — daily boundary OR idle timeout. | **(default)** |
+| `"both"` | Whichever triggers first — daily boundary OR idle timeout. | — |
+| `"daily_and_idle"` | Reset only when the session predates the latest daily boundary AND its idle timeout has elapsed. | `at_hour: 4`, `idle_minutes: 1440` |
 
 ### Policy Evaluation
 
@@ -316,6 +317,13 @@ today_reset = now.replace(hour=policy.at_hour, minute=0, second=0, microsecond=0
 if now.hour < policy.at_hour:
     today_reset -= timedelta(days=1)  # Reset hasn't happened yet today
 if entry.updated_at < today_reset: return "daily"
+
+# Daily + idle check
+if (
+    entry.updated_at < today_reset
+    and now > entry.updated_at + timedelta(minutes=policy.idle_minutes)
+):
+    return "daily_and_idle"
 ```
 
 ### Per-Platform/Per-Type Policies
@@ -678,9 +686,9 @@ mode and the explicit repair procedure.
 
 ```yaml
 session_reset:
-  mode: none            # none (default) | idle | daily | both
-  at_hour: 4            # daily reset hour (local time)
-  idle_minutes: 1440    # idle timeout (24h)
+  mode: none            # none (default) | idle | daily | both | daily_and_idle
+  at_hour: 4            # daily/daily_and_idle boundary hour (local time)
+  idle_minutes: 1440    # idle/both/daily_and_idle timeout (24h)
   notify: true          # notify user on auto-reset
 ```
 

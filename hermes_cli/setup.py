@@ -1797,6 +1797,7 @@ def _apply_default_agent_settings(config: dict):
 
 def setup_agent_settings(config: dict):
     """Configure agent behavior: iterations, progress display, compression, session reset."""
+    from gateway.config import MAX_SESSION_IDLE_MINUTES
 
     print_header("Agent Settings")
     print_info(f"   Guide: {_DOCS_BASE}/user-guide/configuration")
@@ -1897,6 +1898,7 @@ def setup_agent_settings(config: dict):
         "Inactivity + daily reset (reset whichever comes first)",
         "Inactivity only (reset after N minutes of no messages)",
         "Daily only (reset at a fixed hour each day)",
+        "Daily + inactivity (reset after the fixed hour once also idle)",
         "Never auto-reset (recommended - context lives until /reset or context compression)",
         "Keep current settings",
     ]
@@ -1906,7 +1908,7 @@ def setup_agent_settings(config: dict):
     current_idle = current_policy.get("idle_minutes", 1440)
     current_hour = current_policy.get("at_hour", 4)
 
-    default_reset = {"both": 0, "idle": 1, "daily": 2, "none": 3}.get(current_mode, 3)
+    default_reset = {"both": 0, "idle": 1, "daily": 2, "daily_and_idle": 3, "none": 4}.get(current_mode, 4)
 
     reset_idx = prompt_choice("Session reset mode:", reset_choices, default_reset)
 
@@ -1917,7 +1919,7 @@ def setup_agent_settings(config: dict):
         idle_str = prompt("  Inactivity timeout (minutes)", str(current_idle))
         try:
             idle_val = int(idle_str)
-            if idle_val > 0:
+            if 0 < idle_val <= MAX_SESSION_IDLE_MINUTES:
                 config["session_reset"]["idle_minutes"] = idle_val
         except ValueError:
             pass
@@ -1936,7 +1938,7 @@ def setup_agent_settings(config: dict):
         idle_str = prompt("  Inactivity timeout (minutes)", str(current_idle))
         try:
             idle_val = int(idle_str)
-            if idle_val > 0:
+            if 0 < idle_val <= MAX_SESSION_IDLE_MINUTES:
                 config["session_reset"]["idle_minutes"] = idle_val
         except ValueError:
             pass
@@ -1955,7 +1957,27 @@ def setup_agent_settings(config: dict):
         print_success(
             f"Sessions reset daily at {config['session_reset'].get('at_hour', 4)}:00"
         )
-    elif reset_idx == 3:  # None
+    elif reset_idx == 3:  # Daily + idle
+        config["session_reset"]["mode"] = "daily_and_idle"
+        idle_str = prompt("  Inactivity timeout before daily reset (minutes)", str(current_idle))
+        try:
+            idle_val = int(idle_str)
+            if 0 < idle_val <= MAX_SESSION_IDLE_MINUTES:
+                config["session_reset"]["idle_minutes"] = idle_val
+        except ValueError:
+            pass
+        hour_str = prompt("  Daily reset hour (0-23, local time)", str(current_hour))
+        try:
+            hour_val = int(hour_str)
+            if 0 <= hour_val <= 23:
+                config["session_reset"]["at_hour"] = hour_val
+        except ValueError:
+            pass
+        print_success(
+            f"Sessions reset at {config['session_reset'].get('at_hour', 4)}:00 "
+            f"only if also idle for {config['session_reset'].get('idle_minutes', 1440)} min"
+        )
+    elif reset_idx == 4:  # None
         config["session_reset"]["mode"] = "none"
         print_info(
             "Sessions will never auto-reset. Context is managed only by compression."
@@ -1963,7 +1985,7 @@ def setup_agent_settings(config: dict):
         print_warning(
             "Long conversations will grow in cost. Use /reset manually when needed."
         )
-    # else: keep current (idx == 4)
+    # else: keep current (idx == 5)
 
     save_config(config)
 

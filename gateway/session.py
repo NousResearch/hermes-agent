@@ -2661,16 +2661,35 @@ class SessionStore:
                 return True
 
         if policy.mode in {"daily", "both"}:
-            today_reset = now.replace(
-                hour=policy.at_hour,
-                minute=0, second=0, microsecond=0,
-            )
-            if now.hour < policy.at_hour:
-                today_reset -= timedelta(days=1)
-            if entry.updated_at < today_reset:
+            if entry.updated_at < self._daily_reset_boundary(now, policy.at_hour):
+                return True
+
+        if policy.mode == "daily_and_idle":
+            if self._daily_and_idle_expired(entry, now, policy):
                 return True
 
         return False
+
+    @staticmethod
+    def _daily_reset_boundary(now: "datetime", at_hour: int) -> "datetime":
+        """Most recent daily-reset timestamp at or before ``now``.
+
+        With ``at_hour=4`` and ``now`` at 04:30, returns today's 04:00. With
+        ``now`` at 03:30, returns yesterday's 04:00. Shared by the ``daily``,
+        ``both`` and ``daily_and_idle`` reset modes so the boundary math lives
+        in exactly one place.
+        """
+        boundary = now.replace(hour=at_hour, minute=0, second=0, microsecond=0)
+        if now.hour < at_hour:
+            boundary -= timedelta(days=1)
+        return boundary
+
+    @staticmethod
+    def _daily_and_idle_expired(entry: SessionEntry, now: "datetime", policy) -> bool:
+        """Whether a session predates the daily boundary and idle deadline."""
+        if entry.updated_at >= SessionStore._daily_reset_boundary(now, policy.at_hour):
+            return False
+        return now > entry.updated_at + timedelta(minutes=policy.idle_minutes)
 
     def is_session_finalizable(self, entry: SessionEntry) -> bool:
         """Return True if the expiry watcher will *ever* finalize this session.
@@ -2767,18 +2786,13 @@ class SessionStore:
                 return "idle"
         
         if policy.mode in {"daily", "both"}:
-            today_reset = now.replace(
-                hour=policy.at_hour, 
-                minute=0, 
-                second=0, 
-                microsecond=0
-            )
-            if now.hour < policy.at_hour:
-                today_reset -= timedelta(days=1)
-            
-            if entry.updated_at < today_reset:
+            if entry.updated_at < self._daily_reset_boundary(now, policy.at_hour):
                 return "daily"
-        
+
+        if policy.mode == "daily_and_idle":
+            if self._daily_and_idle_expired(entry, now, policy):
+                return "daily_and_idle"
+
         return None
     
     def _compression_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:

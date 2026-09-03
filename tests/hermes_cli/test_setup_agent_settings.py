@@ -22,7 +22,7 @@ def test_setup_agent_settings_uses_displayed_max_iterations_value(tmp_path, monk
     prompt_answers = iter(["60", "all", "0.5"])
 
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_answers))
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 4)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 5)
     monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *args, **kwargs: None)
     monkeypatch.setattr("hermes_cli.setup.remove_env_value", lambda *args, **kwargs: None)
     monkeypatch.setattr("hermes_cli.setup.save_config", lambda *args, **kwargs: None)
@@ -58,7 +58,7 @@ def test_setup_agent_settings_prefers_config_over_stale_env(tmp_path, monkeypatc
         lambda key: "60" if key == "HERMES_MAX_ITERATIONS" else "",
     )
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_answers))
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 4)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 5)
     monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *args, **kwargs: None)
 
     removed_keys: list[str] = []
@@ -76,3 +76,45 @@ def test_setup_agent_settings_prefers_config_over_stale_env(tmp_path, monkeypatc
     assert "Press Enter to keep 60." not in out
     # And the stale .env entry gets cleaned up
     assert "HERMES_MAX_ITERATIONS" in removed_keys
+
+
+def test_setup_agent_settings_configures_daily_and_idle(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = {
+        "agent": {"max_turns": 60},
+        "display": {"tool_progress": "all"},
+        "compression": {"threshold": 0.50},
+        "session_reset": {"mode": "both", "idle_minutes": 1440, "at_hour": 4},
+    }
+    prompt_answers = iter(["60", "all", "0.5", "120", "5"])
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_answers))
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 3)
+    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup.remove_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup.save_config", lambda *args, **kwargs: None)
+
+    setup_agent_settings(config)
+
+    assert config["session_reset"] == {
+        "mode": "daily_and_idle", "idle_minutes": 120, "at_hour": 5
+    }
+
+
+def test_setup_agent_settings_rejects_oversized_idle_timeout(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = {
+        "agent": {"max_turns": 60},
+        "display": {"tool_progress": "all"},
+        "compression": {"threshold": 0.50},
+        "session_reset": {"mode": "both", "idle_minutes": 1440, "at_hour": 4},
+    }
+    prompt_answers = iter(["60", "all", "0.5", str(10**20), "5"])
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_answers))
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 3)
+    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup.remove_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup.save_config", lambda *args, **kwargs: None)
+
+    setup_agent_settings(config)
+
+    assert config["session_reset"]["idle_minutes"] == 1440

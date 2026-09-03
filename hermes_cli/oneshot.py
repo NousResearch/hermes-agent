@@ -354,6 +354,54 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _run_oneshot_conversation(agent, prompt: str, lifecycle) -> dict:
+    """Run the turn while enriching the loop-owned session-start dispatch."""
+    original_invoke_hook = lifecycle.invoke_hook
+
+    def invoke_oneshot_lifecycle_hook(hook_name: str, **kwargs):
+        if hook_name == "on_session_start":
+            kwargs.setdefault("session_id", getattr(agent, "session_id", None))
+            kwargs.setdefault("platform", getattr(agent, "platform", None) or "cli")
+            kwargs.setdefault("model", getattr(agent, "model", None))
+            kwargs.setdefault("provider", getattr(agent, "provider", None))
+        return original_invoke_hook(hook_name, **kwargs)
+
+    lifecycle.invoke_hook = invoke_oneshot_lifecycle_hook
+    try:
+        return agent.run_conversation(prompt)
+    finally:
+        lifecycle.invoke_hook = original_invoke_hook
+
+
+def _notify_successful_oneshot_lifecycle(agent, result: dict, lifecycle) -> None:
+    """Emit the normal end/finalize pair only after a completed turn."""
+    if (
+        not result.get("final_response")
+        or result.get("failed")
+        or result.get("partial")
+        or result.get("interrupted")
+    ):
+        return
+
+    lifecycle_context = {
+        "session_id": getattr(agent, "session_id", None),
+        "platform": getattr(agent, "platform", None) or "cli",
+        "model": getattr(agent, "model", None),
+        "provider": getattr(agent, "provider", None),
+        "completed": True,
+        "interrupted": False,
+        "reason": "shutdown",
+    }
+    try:
+        lifecycle.invoke_hook("on_session_end", **lifecycle_context)
+    except Exception:
+        logging.debug("oneshot on_session_end hook failed", exc_info=True)
+    try:
+        lifecycle.finalize_session(**lifecycle_context)
+    except Exception:
+        logging.debug("oneshot on_session_finalize hook failed", exc_info=True)
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -366,11 +414,19 @@ def _run_agent(
     run a single conversation.  Returns ``(final_response, run_result)``."""
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
+    from hermes_cli.plugins import discover_plugins
     from hermes_cli.config import load_config
     from hermes_cli.models import detect_provider_for_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
+    from hermes_cli import lifecycle
+
+    # One-shot bypasses HermesCLI._init_agent(), so establish the same
+    # synchronous discovery barrier before resolving toolsets or constructing
+    # the agent.  This joins any launcher background scan and targets the
+    # currently active profile manager.
+    discover_plugins()
 
     cfg = load_config()
 
@@ -523,7 +579,8 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
-        result = agent.run_conversation(prompt)
+        result = _run_oneshot_conversation(agent, prompt, lifecycle)
+        _notify_successful_oneshot_lifecycle(agent, result, lifecycle)
         return (result.get("final_response") or "", result)
     finally:
         # Ordering deliberately mirrors gateway/run.py:_cleanup_agent_resources,

@@ -388,6 +388,13 @@ class CLIAgentSetupMixin:
         self.finalize_preloaded_skills()
 
         _prepare_deferred_agent_startup()
+        # The launcher may only have started discovery in the background (and
+        # the deferred path is intentionally opt-in).  Join that work and
+        # synchronously discover against the active profile before the agent
+        # snapshots its hooks and tool registry.
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
         self._install_tool_callbacks()
         self._ensure_tirith_security()
 

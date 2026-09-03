@@ -1289,6 +1289,21 @@ class PhotonAdapter(BasePlatformAdapter):
                 [],
             )
 
+        # spectrum 12.x threaded replies: {type: "reply", content: <Content>,
+        # target: <Message>}. Unwrap to the inner content so the human's
+        # actual words reach the agent; keep a light pointer to the quoted
+        # message for reply context (#100663).
+        reply_target_id = None
+        reply_target_text = None
+        if content.get("type") == "reply":
+            inner = content.get("content")
+            if isinstance(inner, dict) and inner.get("type"):
+                target = content.get("target")
+                if isinstance(target, dict):
+                    reply_target_id = target.get("messageId") or target.get("id")
+                    reply_target_text = target.get("text")
+                content = inner
+
         ctype = content.get("type")
         if ctype == "reaction":
             # Route only tapbacks on messages WE sent — those are implicitly
@@ -1479,6 +1494,8 @@ class PhotonAdapter(BasePlatformAdapter):
             timestamp=timestamp,
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_message_id=reply_target_id,
+            reply_to_text=reply_target_text,
         )
         await self.handle_message(message_event)
 

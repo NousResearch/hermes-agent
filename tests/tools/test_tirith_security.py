@@ -151,6 +151,7 @@ class TestOSErrorFailOpen:
         result = check_command_security("echo hi")
         assert result["action"] == "allow"
         assert "unavailable" in result["summary"]
+        assert _tirith_mod._resolved_path is None
 
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
@@ -938,8 +939,11 @@ class TestSpawnWarningDedup:
     """
 
     @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._resolve_tirith_path", return_value="tirith")
     @patch("tools.tirith_security._load_security_config")
-    def test_repeated_spawn_failure_logs_once(self, mock_cfg, mock_run, caplog):
+    def test_repeated_spawn_failure_logs_once(
+        self, mock_cfg, _mock_resolve, mock_run, caplog
+    ):
         mock_cfg.return_value = {
             "tirith_enabled": True, "tirith_path": "tirith",
             "tirith_timeout": 5, "tirith_fail_open": True,
@@ -1056,6 +1060,25 @@ class TestAppTldSuppression:
         result = check_command_security("curl https://bit.ly/test.app")
         assert result["action"] == "warn"
         assert len(result["findings"]) == 2
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_non_app_finding_beyond_display_cap_preserves_warn(
+        self, mock_cfg, mock_run
+    ):
+        """Suppression must consider findings that are not returned to callers."""
+        mock_cfg.return_value = _CFG
+        findings = [
+            {"rule_id": "lookalike_tld", "value": ".app"}
+            for _ in range(_tirith_mod._MAX_FINDINGS)
+        ]
+        findings.append({"rule_id": "shortened_url", "severity": "medium"})
+        mock_run.return_value = _mock_run(2, _json_stdout(findings, "mixed"))
+
+        result = check_command_security("curl https://bit.ly/test.app")
+
+        assert result["action"] == "warn"
+        assert len(result["findings"]) == _tirith_mod._MAX_FINDINGS
 
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")

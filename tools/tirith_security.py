@@ -1824,7 +1824,7 @@ def check_command_security(command: str) -> dict:
     Returns:
         {"action": "allow"|"warn"|"block", "findings": [...], "summary": str}
     """
-    global _crash_count, _circuit_open
+    global _crash_count, _circuit_open, _resolved_path
 
     cfg = _load_security_config()
 
@@ -1876,6 +1876,12 @@ def check_command_security(command: str) -> dict:
         )
     except OSError as exc:
         # Covers FileNotFoundError, PermissionError, exec format error.
+        # Invalidate only the path this call actually tried. A managed binary
+        # may have been repaired concurrently, in which case its newer cached
+        # path must win. Clearing a stale cache lets the next command re-run
+        # local discovery (and, when allowed, start managed recovery).
+        if _resolved_path == tirith_path:
+            _resolved_path = None
         # Dedupe by ``(errno, exc class)`` so a transient failure mode
         # surfaces once but doesn't drown the log on every command —
         # commonly seen on Windows when the configured path "tirith"
@@ -1924,6 +1930,7 @@ def check_command_security(command: str) -> dict:
 
     # Parse JSON for enrichment (never overrides the exit code verdict)
     findings = []
+    raw_findings = []
     summary = ""
     try:
         data = json.loads(result.stdout) if result.stdout.strip() else {}
@@ -1943,8 +1950,10 @@ def check_command_security(command: str) -> dict:
     # and the "can be confused with file extensions" heuristic generates false
     # positives for normal API calls.  Any other finding (including other
     # lookalike_tld entries for non-.app TLDs) preserves the warn action.
-    if action == "warn" and findings:
-        non_suppressible = [f for f in findings if not _is_app_tld_finding(f)]
+    if action == "warn" and raw_findings:
+        non_suppressible = [
+            f for f in raw_findings if not _is_app_tld_finding(f)
+        ]
         if not non_suppressible:
             action = "allow"
             findings = []

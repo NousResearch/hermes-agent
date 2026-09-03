@@ -386,6 +386,106 @@ class TestMultiplexProfileScope:
         assert result.get("success") is True
         assert calls["relay"] == "https://profile.relay"
 
+    def test_secondary_reply_to_mode_wins_over_default_profile_env(
+        self, multiplex_scope, default_profile_env, monkeypatch
+    ):
+        """reply_to_mode is a first-class PlatformConfig field, not an extra
+        key, but must still respect profile scope like every other setting:
+        the default profile's BUZZ_REPLY_TO_MODE bridge output must not
+        override the secondary profile's own reply_to_mode."""
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setenv("BUZZ_REPLY_TO_MODE", "first")
+        multiplex_scope()
+        adapter = BuzzAdapter(PlatformConfig(enabled=True, reply_to_mode="off", extra={}))
+        assert adapter._reply_to_mode == "off"
+
+    def test_secondary_reply_in_thread_wins_over_default_profile_env(
+        self, multiplex_scope, default_profile_env, monkeypatch
+    ):
+        """extra.reply_in_thread must win over the default profile's
+        BUZZ_REPLY_IN_THREAD bridge output under a secondary profile scope."""
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setenv("BUZZ_REPLY_IN_THREAD", "true")
+        multiplex_scope()
+        adapter = BuzzAdapter(
+            PlatformConfig(enabled=True, extra={"reply_in_thread": False})
+        )
+        assert adapter._reply_to_mode == "off"
+
+    def test_secondary_reaction_only_users_wins_over_default_profile_env(
+        self, multiplex_scope, default_profile_env, monkeypatch
+    ):
+        """reaction_only_users must respect profile scope like allowed_users
+        (#98738): the default profile's BUZZ_REACTION_ONLY_USERS bridge
+        output must not override the secondary profile's own
+        extra.reaction_only_users."""
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setenv("BUZZ_REACTION_ONLY_USERS", "default-user-npub")
+        multiplex_scope()
+        adapter = BuzzAdapter(
+            PlatformConfig(enabled=True, extra={"reaction_only_users": [SELF_NPUB]})
+        )
+        assert adapter._reaction_only_pubkeys == {SELF_PUBKEY}
+
+    def test_apply_yaml_config_scoped_skips_reply_settings_env_bridge(
+        self, multiplex_scope, default_profile_env, monkeypatch
+    ):
+        """Same first-writer-wins protection as
+        test_apply_yaml_config_scoped_skips_env_bridge, for the
+        reply_to_mode / reply_in_thread bridge lines specifically."""
+        for var in ("BUZZ_REPLY_TO_MODE", "BUZZ_REPLY_IN_THREAD"):
+            monkeypatch.delenv(var, raising=False)
+        multiplex_scope()
+        _buzz_mod._apply_yaml_config(
+            {},
+            {"extra": {"reply_to_mode": "off", "reply_in_thread": False}},
+        )
+        import os as _os
+
+        assert "BUZZ_REPLY_TO_MODE" not in _os.environ
+        assert "BUZZ_REPLY_IN_THREAD" not in _os.environ
+
+    def test_standalone_send_scoped_reply_to_mode_uses_profile_config(
+        self, multiplex_scope, default_profile_env, monkeypatch, tmp_path
+    ):
+        """cron delivery (out-of-process _standalone_send) must honor the
+        profile's own reply_to_mode, not the default profile's
+        BUZZ_REPLY_TO_MODE bridge output."""
+        monkeypatch.setenv("BUZZ_REPLY_TO_MODE", "first")
+        monkeypatch.delenv("BUZZ_REPLY_IN_THREAD", raising=False)
+        multiplex_scope()
+        from gateway.config import PlatformConfig
+
+        cli = tmp_path / "buzz"
+        cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        calls = {}
+
+        async def fake_exec(cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=None):
+            calls["args"] = args
+            return 0, '{"accepted": true, "event_id": "e1"}', ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+        monkeypatch.setattr(
+            _buzz_mod, "_resolve_private_key", lambda extra=None: "nsec1profile"
+        )
+        result = asyncio.run(
+            _standalone_send(
+                PlatformConfig(
+                    enabled=True,
+                    reply_to_mode="off",
+                    extra={"relay_url": "https://profile.relay", "cli_path": str(cli)},
+                ),
+                "chan-x",
+                "hello",
+                thread_id="parent-event-id",
+            )
+        )
+        assert result.get("success") is True
+        assert "--reply-to" not in calls["args"]
+
     def test_secondary_partial_extra_fills_missing_keys_from_defaults(
         self, multiplex_scope, default_profile_env
     ):

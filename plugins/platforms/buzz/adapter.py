@@ -841,15 +841,19 @@ class BuzzAdapter(BasePlatformAdapter):
         # id, "off" posts every reply as a normal top-level channel message.
         # Mirrors the Discord/Telegram adapters, which already honor this
         # PlatformConfig field; without it Buzz threaded unconditionally.
-        # Env (BUZZ_REPLY_TO_MODE) overrides config.yaml.
-        _rtm = (os.getenv("BUZZ_REPLY_TO_MODE") or getattr(config, "reply_to_mode", "first")
-                or "first")
+        # Env (BUZZ_REPLY_TO_MODE) overrides config.yaml; under a secondary
+        # multiplex profile scope env is not consulted (same rule as the
+        # other settings above) — reply_to_mode is a first-class
+        # PlatformConfig field, not an extra key, so it reads getattr(config)
+        # rather than going through _scoped_platform_setting.
+        _rtm_env = None if _profile_scoped() else os.getenv("BUZZ_REPLY_TO_MODE")
+        _rtm = (_rtm_env or getattr(config, "reply_to_mode", "first") or "first")
         self._reply_to_mode: str = str(_rtm).strip().lower()
         # Slack-convention alias: platforms.buzz.extra.reply_in_thread: false
         # (the key users already know from Slack) opts out of threading the
         # same way reply_to_mode: off does. Env (BUZZ_REPLY_IN_THREAD)
         # overrides config.yaml. See #95842 / #75082.
-        _rit_raw = os.getenv("BUZZ_REPLY_IN_THREAD")
+        _rit_raw = _scoped_platform_setting("BUZZ_REPLY_IN_THREAD", extra, "reply_in_thread")
         _rit = extra.get("reply_in_thread") if _rit_raw is None else _rit_raw
         if _rit is not None and str(_rit).strip().lower() in ("false", "0", "no", "off"):
             self._reply_to_mode = "off"
@@ -881,10 +885,15 @@ class BuzzAdapter(BasePlatformAdapter):
         # intact while providing receipt visibility for agent-authored notes.
         # If a pubkey appears in both sets, allowed_users takes precedence: the
         # normal authorized dispatch path runs and this reaction-only path does not.
-        raw_reaction_only = (
-            os.getenv("BUZZ_REACTION_ONLY_USERS")
-            or extra.get("reaction_only_users", [])
+        # Same multiplex-profile scoping as allowed_users above (#98738) — under
+        # a secondary profile scope env is not consulted, so a missing key
+        # falls back to this profile's own extra.reaction_only_users instead of
+        # silently borrowing the default profile's allowlist.
+        raw_reaction_only = _scoped_platform_setting(
+            "BUZZ_REACTION_ONLY_USERS", extra, "reaction_only_users"
         )
+        if raw_reaction_only is None:
+            raw_reaction_only = extra.get("reaction_only_users", [])
         if isinstance(raw_reaction_only, str):
             raw_reaction_only = raw_reaction_only.split(",")
         self._reaction_only_pubkeys: set = {
@@ -3147,9 +3156,9 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
         os.environ["BUZZ_ALLOW_ALL_USERS"] = str(extra["allow_all_users"]).lower()
     if "require_mention" in extra and not _skip_env_bridge and not os.getenv("BUZZ_REQUIRE_MENTION"):
         os.environ["BUZZ_REQUIRE_MENTION"] = str(extra["require_mention"]).lower()
-    if "reply_in_thread" in extra and not os.getenv("BUZZ_REPLY_IN_THREAD"):
+    if "reply_in_thread" in extra and not _skip_env_bridge and not os.getenv("BUZZ_REPLY_IN_THREAD"):
         os.environ["BUZZ_REPLY_IN_THREAD"] = str(extra["reply_in_thread"]).lower()
-    if "reply_to_mode" in extra and not os.getenv("BUZZ_REPLY_TO_MODE"):
+    if "reply_to_mode" in extra and not _skip_env_bridge and not os.getenv("BUZZ_REPLY_TO_MODE"):
         os.environ["BUZZ_REPLY_TO_MODE"] = str(extra["reply_to_mode"]).lower()
     return None
 
@@ -3234,13 +3243,14 @@ async def _standalone_send(
         return {"error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"}
 
     args = ["messages", "send", "--channel", target, "--content", "-"]
-    # Same reply_to_mode / reply_in_thread gate as the live adapter, so
-    # out-of-process cron delivery (deliver=buzz) doesn't thread when the
-    # operator asked for flat channel replies.
-    _rtm = (os.getenv("BUZZ_REPLY_TO_MODE")
-            or getattr(pconfig, "reply_to_mode", "first") or "first")
+    # Same reply_to_mode / reply_in_thread gate as the live adapter (and the
+    # same multiplex-profile scoping, #98738 -- env is not consulted inside a
+    # secondary profile scope), so out-of-process cron delivery (deliver=buzz)
+    # doesn't thread when the operator asked for flat channel replies.
+    _rtm_env = None if _profile_scoped() else os.getenv("BUZZ_REPLY_TO_MODE")
+    _rtm = (_rtm_env or getattr(pconfig, "reply_to_mode", "first") or "first")
     _rtm = str(_rtm).strip().lower()
-    _rit = os.getenv("BUZZ_REPLY_IN_THREAD")
+    _rit = _scoped_platform_setting("BUZZ_REPLY_IN_THREAD", extra, "reply_in_thread")
     if _rit is None:
         _rit = extra.get("reply_in_thread")
     if _rit is not None and str(_rit).strip().lower() in ("false", "0", "no", "off"):

@@ -7689,21 +7689,80 @@ class SlackAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
 
+    def _append_feedback_record(self, record: Dict[str, Any]) -> None:
+        """Persist a feedback-button click as one JSONL line under the home.
+
+        The rotating agent/gateway logs age feedback history out under real
+        traffic, so the durable sink lives in its own append-only file next
+        to them. Failures never break the click path — a lost record must
+        not cost the ack or the hook event.
+        """
+        try:
+            from hermes_constants import get_hermes_home, mkdir_under_hermes_home
+
+            log_dir = mkdir_under_hermes_home(get_hermes_home() / "logs")
+            with open(log_dir / "feedback.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            logger.debug("[Slack] feedback record persist failed", exc_info=True)
+
     async def _handle_feedback_action(self, ack, body, action) -> None:
-        """Ack Slack AI feedback button clicks and log the choice."""
+        """Record Slack AI feedback button clicks for later analysis.
+
+        The click is acked immediately, appended to the durable feedback log
+        (``$HERMES_HOME/logs/feedback.jsonl``), and forwarded to the gateway
+        hook surface as ``feedback:received`` so operators can build their
+        own follow-ups — e.g. asking what went wrong on a negative click.
+        """
         await ack()
 
         value = str(action.get("value") or "")
         message = body.get("message", {}) or {}
         channel_id = (body.get("channel") or {}).get("id", "")
         user_id = (body.get("user") or {}).get("id", "")
+        msg_ts = str(message.get("ts") or "")
+        thread_ts = str(message.get("thread_ts") or "")
+        team_id = self._event_team_id({}, body)
+        record = {
+            "platform": "slack",
+            "value": value,
+            "user_id": user_id,
+            "channel_id": channel_id,
+            "message_ts": msg_ts,
+            "thread_ts": thread_ts,
+            "team_id": team_id,
+            "timestamp": time.time(),
+        }
+        self._append_feedback_record(record)
         logger.info(
             "[Slack] Feedback button clicked: value=%s user=%s channel=%s ts=%s",
             value,
             user_id,
             channel_id,
-            message.get("ts", ""),
+            msg_ts,
         )
+
+        # Forward through the shared gateway hook surface (the same one
+        # reaction:added/removed uses). getattr-guard: tests build adapters
+        # via object.__new__ without running __init__.
+        feedback_handler = getattr(self, "_reaction_handler", None)
+        if feedback_handler is not None:
+            try:
+                await feedback_handler(
+                    {
+                        "platform": "slack",
+                        "event_name": "feedback:received",
+                        "value": value,
+                        "user_id": user_id,
+                        "channel_id": channel_id,
+                        "message_ts": msg_ts,
+                        "thread_ts": thread_ts,
+                        "team_id": team_id,
+                        "raw_event": body,
+                    }
+                )
+            except Exception:  # pragma: no cover - hook contract is non-blocking
+                logger.debug("[Slack] feedback hook forwarding failed", exc_info=True)
 
     async def _handle_approval_action(self, ack, body, action) -> None:
         """Handle an approval button click from Block Kit."""

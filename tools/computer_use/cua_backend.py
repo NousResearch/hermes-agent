@@ -218,6 +218,7 @@ _NON_APP_WINDOW_TITLE_PREFIXES = (
 # Setting it to "0" disables telemetry; absence => the binary's own default
 # (telemetry ON upstream).
 _CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
+_CUA_NATIVE_WAYLAND_ENV_VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 
 
 def _computer_use_cfg() -> Dict[str, Any]:
@@ -356,15 +357,20 @@ def _computer_use_max_image_dimension() -> Optional[int]:
 def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Return the environment dict for spawning cua-driver.
 
-    Starts from ``base_env`` (defaults to ``os.environ``) and, when telemetry
-    is disabled (the default), injects ``CUA_DRIVER_RS_TELEMETRY_ENABLED=0``.
-    When the user has opted in, the var is left untouched so cua-driver uses
-    its own default. Used by every cua-driver spawn site (MCP backend, status,
-    doctor, install) so the policy is applied consistently.
+    Starts from ``base_env`` (defaults to ``os.environ``), applies the Hermes
+    telemetry policy, and bridges an explicit native-Wayland config opt-in only
+    when the child has a Wayland display. Used by every cua-driver spawn site
+    so CLI and gateway runtimes share one policy.
     """
     env = dict(base_env if base_env is not None else os.environ)
     if _cua_telemetry_disabled():
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
+    if (
+        sys.platform == "linux"
+        and env.get("WAYLAND_DISPLAY")
+        and bool(_computer_use_cfg().get("native_wayland", False))
+    ):
+        env[_CUA_NATIVE_WAYLAND_ENV_VAR] = "1"
     return env
 
 

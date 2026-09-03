@@ -3451,8 +3451,10 @@ def _cmd_repair(args: argparse.Namespace) -> int:
         print(f"  corrupt copy quarantined at: {report.backup_path}",
               file=sys.stderr)
     print(
-        "  Recover manually (e.g. `sqlite3 kanban.db \".recover\"` into a "
-        "fresh file) or move the file aside to start a new board.",
+        "  Recover manually (copy kanban.db aside FIRST, then run "
+        "`sqlite3 <copy> \".recover\"` into a fresh file — never against "
+        "the live path, a WAL-reset-vulnerable sqlite3 CLI can corrupt it "
+        "further) or move the file aside to start a new board.",
         file=sys.stderr,
     )
     return 1

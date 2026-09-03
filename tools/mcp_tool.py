@@ -1073,32 +1073,281 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     return resolved_command, resolved_env
 
 
-def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
-    """Wrap a stdio MCP server command in the parent-death watchdog supervisor.
+def _npx_bin_candidates(bin_dir: str, name: str, *, windows: Optional[bool] = None) -> list:
+    """Launcher paths to try for *name* inside an npx cache's ``.bin``, in order.
 
-    On POSIX, the watchdog records this process's PID and later detects parent
-    death directly through ``getppid()``. Returns the (command, args) unchanged
-    on non-POSIX platforms or if the PID cannot be read.
+    On Windows that directory holds three siblings per bin — the extensionless
+    sh script, ``<name>.cmd`` and ``<name>.ps1``. Spawning the sh one from a
+    Windows process fails, and ``os.access(X_OK)`` there is effectively an
+    existence check, so it cannot tell them apart. Select by extension instead,
+    the same precedence ``hermes_constants._candidate_node_command_names``
+    already uses for npm/npx/node; when no launcher exists the caller falls
+    back to npx rather than spawning something that will not run.
+
+    ``windows`` is injectable so the platform branch is testable without
+    monkeypatching ``os.name`` (which breaks path handling process-wide).
+    """
+    is_windows = os.name == "nt" if windows is None else windows
+    if is_windows:
+        return [os.path.join(bin_dir, name + ext) for ext in (".cmd", ".exe")]
+    return [os.path.join(bin_dir, name)]
+
+
+def _npx_cached_bin(args: list) -> Optional[tuple]:
+    """Resolve ``npx -y <pkg>`` to the already-installed binary, or None.
+
+    ``npx`` resolves the package and then FORKS: it stays resident as the
+    parent of the real server for the whole process lifetime, doing no work.
+    Measured on a 4-agent host, that is ~48 MB of private memory per MCP
+    server — and it buys nothing here, because Hermes already supervises the
+    child itself (the shared death supervisor), so npx's supervision is a
+    second parent nobody reads.
+
+    When the package is already in npx's cache we can spawn its binary
+    directly and drop the middle process. A cache miss returns None and the
+    caller falls back to ``npx`` unchanged, so the first run still installs
+    and nothing regresses on a cold machine.
+
+    Deliberately conservative — returns None for anything unusual:
+    a version-pinned spec (``pkg@1.2.3``), extra npx flags, a package whose
+    manifest declares no single obvious bin, or any unreadable cache entry.
+
+    Returns ``(binary_path, remaining_args)`` or None.
+    """
+    if not isinstance(args, list) or not args:
+        return None
+
+    rest = list(args)
+    while rest and rest[0] in ("-y", "--yes"):
+        rest.pop(0)
+    if not rest:
+        return None
+
+    # `npx pkg -y` (flag AFTER the spec) is an unusual shape: those args are
+    # forwarded verbatim to the resolved binary, which would hand the server a
+    # flag npx would have eaten. Leave anything like that to npx.
+    if any(str(a) in ("-y", "--yes") for a in rest[1:]):
+        return None
+
+    spec = str(rest[0])
+    # A version pin means the user asked for a specific build; npx owns that
+    # resolution and the cache key may not match. Scoped names keep their
+    # leading '@', so only an '@' AFTER the scope is a version separator.
+    if "@" in (spec[1:] if spec.startswith("@") else spec):
+        return None
+    if not spec or spec.startswith("-"):
+        return None
+
+    cache_root = os.environ.get("npm_config_cache") or os.path.join(
+        os.path.expanduser("~"), ".npm"
+    )
+    npx_root = os.path.join(cache_root, "_npx")
+    if not os.path.isdir(npx_root):
+        return None
+
+    try:
+        entries = os.listdir(npx_root)
+    except OSError:
+        return None
+
+    for entry in entries:
+        manifest = os.path.join(npx_root, entry, "package.json")
+        try:
+            with open(manifest, "r", encoding="utf-8") as fh:
+                deps = (json.load(fh) or {}).get("dependencies") or {}
+        except (OSError, ValueError, TypeError):
+            continue
+        if spec not in deps:
+            continue
+
+        pkg_json = os.path.join(npx_root, entry, "node_modules", spec, "package.json")
+        try:
+            with open(pkg_json, "r", encoding="utf-8") as fh:
+                bin_field = (json.load(fh) or {}).get("bin")
+        except (OSError, ValueError, TypeError):
+            continue
+
+        if isinstance(bin_field, str):
+            names = [os.path.basename(spec)]
+        elif isinstance(bin_field, dict) and len(bin_field) == 1:
+            names = list(bin_field.keys())
+        else:
+            # Zero or several bins: which one npx would pick is not ours to
+            # guess. Let npx decide.
+            continue
+
+        bin_dir = os.path.join(npx_root, entry, "node_modules", ".bin")
+        for candidate in _npx_bin_candidates(bin_dir, names[0]):
+            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                return candidate, rest[1:]
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Shared parent-death supervisor
+# ---------------------------------------------------------------------------
+# If this Hermes process dies without running its cleanup path (kill -9, OOM,
+# crash, force-quit), stdio MCP children reparent to init and run forever.
+# macOS has no PR_SET_PDEATHSIG, so something has to outlive us and reap them.
+#
+# We keep ONE supervisor process for all stdio servers and tell it which process
+# groups to reap over a pipe.  It detects our death as EOF on that pipe -- exact
+# and instant -- rather than by polling getppid().  This replaced a design that
+# wrapped every server command in its own poller, which cost ~10 MB resident per
+# server (measured 9.8 MB physical footprint on macOS/arm64) and needed a signal
+# forwarding layer, because wrapping put the real server in a different session
+# from the pgid we tracked for killpg.  See tools/mcp_death_supervisor.py.
+#
+# POSIX-only (relies on process groups), matching the platform scope of the
+# killpg-based orphan cleanup below.
+_death_supervisor = None  # Optional[subprocess.Popen]
+_death_supervisor_lock = threading.Lock()
+# Process groups the supervisor is currently reaping on our behalf.  Replayed
+# verbatim if the supervisor has to be respawned, so a respawn never silently
+# drops coverage for servers that are still running.
+_supervised_pgids: set = set()
+
+
+def _spawn_death_supervisor():
+    """Start the shared supervisor, or return None if it cannot be started."""
+    import subprocess
+
+    supervisor = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "mcp_death_supervisor.py"
+    )
+    try:
+        # start_new_session=True is load-bearing, not hygiene: shutdown paths
+        # killpg this process's own group, which would kill the supervisor
+        # before it could reap anything.
+        return subprocess.Popen(
+            [sys.executable, supervisor, "--parent-pgid", str(os.getpgid(0))],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=_get_mcp_stderr_log(),
+            start_new_session=True,
+            close_fds=True,
+            text=True,
+        )
+    except Exception:
+        # Never let supervisor bookkeeping failure block a real MCP connection.
+        # The graceful shutdown paths still reap normally; we only lose the
+        # ungraceful-exit safety net.
+        logger.debug("Could not start the MCP parent-death supervisor", exc_info=True)
+        return None
+
+
+def _prune_dead_supervised_pgids() -> set:
+    """Forget supervised groups that have no members left; return what went.
+
+    Caller must hold ``_death_supervisor_lock``.  Probing with signal 0 is a
+    pure existence question -- it cannot terminate anything -- so this is safe
+    to run on every registration change.  It narrows, but cannot close, the
+    window where a group dies and its pgid is recycled before we notice; see
+    the residual-risk note in ``tools/mcp_death_supervisor.py``.
+    """
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:  # windows-footgun: ok - POSIX-only, guarded
+        return set()
+    stale = set()
+    for pgid in list(_supervised_pgids):
+        try:
+            killpg(pgid, 0)
+        except ProcessLookupError:
+            stale.add(pgid)
+        except (PermissionError, OSError):
+            # Exists but is not ours to signal, or the probe itself failed.
+            # Keep it: dropping coverage on an ambiguous answer is the more
+            # expensive mistake of the two.
+            pass
+    _supervised_pgids.difference_update(stale)
+    return stale
+
+
+def _update_death_supervisor(verb: str, pgids) -> None:
+    """Register or unregister process groups with the shared supervisor.
+
+    ``verb`` is ``"register"`` or ``"unregister"``.  Failures are swallowed:
+    losing the ungraceful-exit safety net must never fail a live MCP session.
     """
     if os.name != "posix":
-        # Relies on process groups (os.getpgid/os.killpg); no POSIX
-        # equivalent wired up here yet, matching the existing killpg-based
-        # orphan cleanup's platform scope (Windows falls back to plain
-        # os.kill there too).
-        return command, args
-    try:
-        my_pid = os.getpid()
-    except Exception:
-        # Never let watchdog bookkeeping failure block a real MCP connection.
-        return command, args
-    watchdog_args = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_stdio_watchdog.py"),
-        "--ppid", str(my_pid),
-        "--",
-        command,
-        *args,
-    ]
-    return sys.executable, watchdog_args
+        return
+    wanted = {int(pgid) for pgid in pgids}
+    if not wanted:
+        return
+
+    global _death_supervisor
+    with _death_supervisor_lock:
+        if verb == "register":
+            _supervised_pgids.update(wanted)
+        else:
+            _supervised_pgids.difference_update(wanted)
+
+        # Drop groups with nothing left alive. A registration outlives the
+        # server only while some member survives -- e.g. an orphaned grandchild
+        # that teardown failed to kill, which we deliberately keep registered.
+        # Once that group is finally empty the pgid can be recycled by an
+        # unrelated process, and a stale registration would have us reap a
+        # stranger. The orphan sweep already unregisters what it reaps, but it
+        # is not guaranteed to run in a given process, so prune here too --
+        # signal 0 cannot kill anything, it only asks whether the group exists.
+        stale = _prune_dead_supervised_pgids()
+
+        proc = _death_supervisor
+        if proc is None or proc.poll() is not None:
+            if not _supervised_pgids:
+                # Nothing left to cover, so there is nothing to tell -- and
+                # nothing to respawn a supervisor for. Keyed on the SET, not
+                # on the verb: after a broken-pipe write dropped the
+                # supervisor while groups were still registered, an
+                # unregister of one of them must still rebuild coverage for
+                # the survivors (review finding on #93517).
+                return
+            proc = _spawn_death_supervisor()
+            _death_supervisor = proc
+            if proc is None:
+                return
+            # A fresh supervisor knows nothing. Replay live coverage, which
+            # already reflects this call's mutation and the prune above, so
+            # pruned groups simply never reach the replacement.
+            payload = "".join(f"register {pgid}\n" for pgid in _supervised_pgids)
+        else:
+            payload = "".join(f"{verb} {pgid}\n" for pgid in wanted)
+            payload += "".join(f"unregister {pgid}\n" for pgid in stale)
+
+        try:
+            proc.stdin.write(payload)
+            proc.stdin.flush()
+        except (BrokenPipeError, ValueError, OSError):
+            # It exited between poll() and write(). Drop it so the next call
+            # respawns and replays, rather than writing into a dead pipe.
+            # Recovery is deliberately two-step: this call gives up, and the
+            # next one sees ``poll()`` non-None and rebuilds coverage from
+            # ``_supervised_pgids``. Nothing is lost in between because that
+            # set, not the pipe, is the record of what needs reaping.
+            _death_supervisor = None
+            return
+
+        if not _supervised_pgids:
+            # Nothing left to reap: release the supervisor instead of keeping
+            # a ~15 MB process and a pipe resident for the life of a gateway
+            # that once connected a stdio server. Closing our write end is
+            # the same EOF signal parent death sends; with an empty set the
+            # supervisor reaps nothing and exits. The next register respawns
+            # and replays from ``_supervised_pgids`` as it already does.
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+            # Reap it, or the exited supervisor stays a zombie until the next
+            # Popen in this process (CPython only collects abandoned children
+            # opportunistically). It exits on EOF with nothing to do, so this
+            # returns promptly; the timeout keeps a wedged one from stalling us.
+            try:
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001 - timeout or already gone; either way we drop it
+                pass
+            _death_supervisor = None
 
 
 # ---------------------------------------------------------------------------
@@ -1278,6 +1527,35 @@ def _cache_mcp_audio_block(block) -> str:
         logger.warning("MCP audio block cache failed: %s", exc)
         return ""
     return f"MEDIA:{audio_path}"
+
+
+def _render_mcp_dropped_block_notice(block, block_type: str) -> str:
+    """Render an inline notice for an unsupported MCP content block.
+
+    Ported from MoonshotAI/kimi-code#3227: silently dropping a block leaves
+    the model unaware content went missing, with no way to recover it. The
+    notice carries whatever handles the block exposes — mime type, size,
+    uri — so the agent can fetch or reason about the missing content (for
+    link-shaped blocks the uri lets it retrieve the data itself).
+    """
+    details = [f"type={block_type}"]
+    mime = mcp_field(block, "mime_type", "mimeType", None)
+    if mime:
+        details.append(f"mimeType={mime}")
+    uri = getattr(block, "uri", None) or getattr(
+        getattr(block, "resource", None), "uri", None
+    )
+    if uri:
+        details.append(f"uri={uri}")
+    for size_attr in ("size", "sizeInBytes"):
+        size = getattr(block, size_attr, None)
+        if isinstance(size, int):
+            details.append(f"size={size}")
+            break
+    name = getattr(block, "name", None)
+    if name and isinstance(name, str):
+        details.append(f"name={name}")
+    return f"[MCP content dropped: unsupported block ({', '.join(details)})]"
 
 
 def _render_mcp_resource_block(block, server_name: str = "") -> str:
@@ -3243,9 +3521,10 @@ class MCPServerTask:
         # it with a wall-clock timeout so a stalled SSL handshake can't freeze
         # MCP discovery / gateway startup (#29184). The check is fail-open, so
         # on timeout we log and proceed rather than blocking indefinitely.
-        # NOTE: must run against the REAL command/args — the watchdog wrap
-        # below rewrites argv to `python -m tools.mcp_stdio_watchdog …`,
-        # which would silently turn the preflight into a no-op.
+        # NOTE: must run against the REAL command/args. Anything that rewrites
+        # argv to point at a wrapper or a resolved binary has to happen AFTER
+        # this call, or the preflight silently inspects the wrapper instead of
+        # the package and becomes a no-op.
         from tools.osv_check import check_package_for_malware
         try:
             malware_error = await asyncio.wait_for(
@@ -3264,17 +3543,24 @@ class MCPServerTask:
                 f"MCP server '{self.name}': {malware_error}"
             )
 
-        # Wrap the real command in a parent-death watchdog supervisor so an
-        # ungraceful exit of this Hermes process (kill -9, crash, force-quit)
-        # can't leave the stdio MCP child (and its own descendants, e.g.
-        # mcp-remote's spawned `node`) running forever. On a clean exit,
-        # MCPServerTask.shutdown() / _kill_orphaned_mcp_children() still do
-        # the reaping as before -- this only covers the case where that code
-        # never gets to run. POSIX-only (relies on process groups); no-op
-        # elsewhere, matching existing killpg-based cleanup's platform scope.
-        # Applied AFTER the OSV preflight so the check inspects the real
-        # package, not the watchdog wrapper.
-        command, args = _wrap_command_with_watchdog(command, args)
+        # npx resolves the package and then FORKS, staying resident as the
+        # real server's parent for nothing (~48 MB per MCP server, measured).
+        # Hermes already supervises the child (shared death supervisor), so
+        # when the package is cached we spawn its binary directly and drop
+        # that middle process.
+        # Deliberately AFTER the OSV preflight: the check keys off the command
+        # basename being `npx`, so swapping first would silently turn the
+        # malware gate into a no-op. Cache miss leaves npx untouched.
+        if os.path.basename(command).lower().startswith("npx"):
+            cached = _npx_cached_bin(args)
+            if cached:
+                direct_command, direct_args = cached
+                logger.debug(
+                    "MCP server '%s': using cached npx binary %s (skipping the "
+                    "resident `npm exec` parent)",
+                    self.name, direct_command,
+                )
+                command, args = direct_command, direct_args
 
         server_params = StdioServerParameters(
             command=command,
@@ -3340,9 +3626,17 @@ class MCPServerTask:
                     for _pid in new_pids:
                         try:
                             new_pgids[_pid] = os.getpgid(_pid)
-                        except (AttributeError, ProcessLookupError, OSError):
+                        except ProcessLookupError:
+                            # The child raced and already exited. The MCP SDK
+                            # spawns stdio servers with start_new_session=True,
+                            # so the child was its own group leader (pgid ==
+                            # pid); keep that group covered rather than drop
+                            # it -- any descendant it left behind still has
+                            # to be reaped, and the prune forgets the group
+                            # once nothing in it is alive.
+                            new_pgids[_pid] = _pid
+                        except (AttributeError, OSError):
                             # AttributeError: Windows (os.getpgid is POSIX-only)
-                            # ProcessLookupError: child raced and already exited
                             pass
                     with _lock:
                         for _pid in new_pids:
@@ -3365,6 +3659,14 @@ class MCPServerTask:
                                 _pid,
                                 exc_info=True,
                             )
+                    # Hand the pgroups to the shared parent-death supervisor so
+                    # an ungraceful exit of this process (kill -9, crash,
+                    # force-quit) can't leave this server -- or its own
+                    # descendants, e.g. mcp-remote's spawned `node` -- running
+                    # forever. The graceful paths (MCPServerTask.shutdown,
+                    # _kill_orphaned_mcp_children) still reap as before; this
+                    # only covers the case where they never get to run.
+                    _update_death_supervisor("register", new_pgids.values())
                 # Track the spawned children on the connection object for
                 # fast-fail of in-flight calls when the subprocess dies
                 # (#81995).
@@ -3417,6 +3719,11 @@ class MCPServerTask:
             if new_pids:
                 from gateway.status import _pid_exists
                 _killpg = getattr(os, "killpg", None)
+                # Groups with nothing left alive; the supervisor is told to
+                # forget them after the lock is released. Groups that ARE still
+                # alive stay registered on purpose, so the supervisor still
+                # reaps them if this process dies before the orphan sweep runs.
+                released_pgids: list = []
                 with _lock:
                     for _pid in new_pids:
                         _stdio_pids.pop(_pid, None)
@@ -3442,7 +3749,10 @@ class MCPServerTask:
                         else:
                             # Nothing left to reap — drop the pgid entry so
                             # PID-reuse can't surface stale pgroup state later.
-                            _stdio_pgids.pop(pid, None)
+                            dropped = _stdio_pgids.pop(pid, None)
+                            if dropped is not None:
+                                released_pgids.append(dropped)
+                _update_death_supervisor("unregister", released_pgids)
 
     # Content types a real MCP Streamable-HTTP endpoint may return on the
     # initial POST/GET. Anything else on a 2xx response means the URL is not
@@ -6460,17 +6770,29 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # Hermes' MEDIA tag + cache_image_from_bytes) was the cleaner of
             # the two — plugs into existing infrastructure.
             parts: List[str] = []
+            # Count only *real* rendered content toward the
+            # content-vs-structuredContent arbitration below — drop notices
+            # for unsupported block types are appended to ``parts`` so the
+            # model knows content went missing, but they must not suppress
+            # a structuredContent fallback on their own.
+            usable_parts = 0
             for block in (result.content or []):
                 if hasattr(block, "text") and block.text:
                     parts.append(strip_unicode_tags(block.text))
+                    if block.text.strip():
+                        # Whitespace-only text renders but is not usable
+                        # content for arbitration purposes (kimi-code#3234).
+                        usable_parts += 1
                     continue
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:
                     parts.append(image_tag)
+                    usable_parts += 1
                     continue
                 audio_tag = _cache_mcp_audio_block(block)
                 if audio_tag:
                     parts.append(audio_tag)
+                    usable_parts += 1
                     continue
                 # ResourceLink / EmbeddedResource blocks (PDFs, archives,
                 # office docs, ...). Previously these were silently dropped,
@@ -6479,6 +6801,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 resource_text = _render_mcp_resource_block(block, server_name)
                 if resource_text:
                     parts.append(resource_text)
+                    usable_parts += 1
                     continue
                 # Benign empty renders (empty text blocks, empty text
                 # resources, audio in a process without the gateway cache)
@@ -6495,16 +6818,31 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                         "MCP %s: dropping unsupported content block type %r",
                         server_name, block_type,
                     )
+                    # Surface the drop to the MODEL, not just the log
+                    # (ported from MoonshotAI/kimi-code#3227): a silent
+                    # drop leaves the agent believing the tool returned
+                    # less than it did, with no way to recover. Carry
+                    # whatever handles the block exposes (mime, uri) so
+                    # the agent can fetch the content itself.
+                    parts.append(_render_mcp_dropped_block_notice(block, block_type))
             text_result = "\n".join(parts) if parts else ""
 
             # Hard-cap pathological payloads before they propagate (#56059);
             # ordinary large results pass untouched to the spillover layer.
             text_result = _truncate_mcp_text_result(text_result)
 
-            # Combine content + structuredContent when both are present.
-            # MCP spec: content is model-oriented (text), structuredContent
-            # is machine-oriented (JSON metadata).  For an AI agent, content
-            # is the primary payload; structuredContent supplements it.
+            # content and structuredContent are ALTERNATIVES — never both
+            # forwarded (ported from MoonshotAI/kimi-code#3234). Spec-following
+            # servers already render their data into content (the verbatim
+            # dual-emit SHOULD, or a faithful human reorganisation), so
+            # forwarding both sent the same information to the model twice.
+            # content wins whenever it rendered anything usable; there is no
+            # reliable signal that the structured payload is richer than what
+            # the server put in content (semantic equality misses faithful
+            # reorganisations, size ratios misjudge both directions), so no
+            # heuristic is attempted. structuredContent fills in only when
+            # the content blocks rendered effectively empty, which keeps
+            # structuredContent-only servers working.
             #
             # Server-level `_meta` is also surfaced (ported from
             # MoonshotAI/kimi-code#2596): servers return namespaced metadata
@@ -6531,6 +6869,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 if _structured_json is not None and len(_structured_json) > _MCP_HARD_RESULT_CAP_CHARS:
                     structured = _truncate_mcp_text_result(_structured_json)
             meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
+            # Arbitration (kimi-code#3234): forward structuredContent only
+            # when the content blocks rendered nothing usable. Drop notices
+            # appended above do not count as usable content.
+            if structured is not None and usable_parts > 0:
+                structured = None
             if structured is not None or meta is not None:
                 payload: Dict[str, Any] = {}
                 if text_result:
@@ -8050,7 +8393,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
-def discover_mcp_tools() -> List[str]:
+def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
     Called from ``model_tools`` after ``discover_builtin_tools()``. Safe to call even when
@@ -8058,6 +8401,19 @@ def discover_mcp_tools() -> List[str]:
 
     Idempotent for already-connected servers. If some servers failed on a
     previous call, only the missing ones are retried.
+
+    Args:
+        allowed_mcp_names: If provided, only spawn MCP servers whose names
+            appear in this list. Built-in toolset names (e.g. "web", "memory")
+            in the list are ignored — only matching MCP-server names trigger
+            spawning. Pass ``None`` (default) to spawn all configured servers
+            for backwards compatibility.
+
+            This is used by ``hermes -z -t <toolsets>`` to skip cold-starting
+            MCP subprocesses that the caller doesn't need — saving 10-60s of
+            startup wait per non-needed server. The full set of MCP names is
+            still discoverable via the ``-t`` validation path; this filter
+            only affects which servers are actually started.
 
     Returns:
         List of all registered MCP tool names.
@@ -8067,8 +8423,28 @@ def discover_mcp_tools() -> List[str]:
         logger.debug("No MCP servers configured")
         return []
 
+    if allowed_mcp_names is not None:
+        # Filter by MCP-server-name match. Built-in toolset names that aren't
+        # MCP servers will simply not match — that's fine; they don't need
+        # MCP spawning anyway.
+        allowed_set = {str(n) for n in allowed_mcp_names}
+        filtered = {name: cfg for name, cfg in servers.items() if name in allowed_set}
+        skipped_count = len(servers) - len(filtered)
+        if skipped_count:
+            logger.debug(
+                "MCP discovery filter: spawning %d/%d configured server(s) per --toolsets filter "
+                "(skipped: %s)",
+                len(filtered), len(servers),
+                ",".join(sorted(set(servers) - set(filtered))),
+            )
+        servers = filtered
+        if not servers:
+            logger.debug("No MCP servers in --toolsets filter; skipping MCP load entirely")
+            return []
+
     # SDK import is deferred to HERE so a config with zero MCP servers (the
-    # default) never pays the ~260ms `mcp` import on CLI startup.
+    # default) — or a -t/--toolsets filter that keeps none — never pays the
+    # ~260ms `mcp` import on CLI startup.
     if not _ensure_mcp_sdk():
         logger.debug("MCP SDK not available -- skipping MCP tool discovery")
         return []
@@ -8895,6 +9271,10 @@ def _kill_orphaned_mcp_children(
             "Force-killed MCP process %d (%s) after SIGTERM timeout",
             pid, server_name,
         )
+
+    # These groups are reaped. Release them last, so a crash partway through
+    # the SIGTERM/SIGKILL dance still leaves the supervisor holding them.
+    _update_death_supervisor("unregister", pgids.values())
 
 
 def _stop_mcp_loop_if_idle() -> bool:

@@ -1980,7 +1980,25 @@ def _reasoning_config_for_wire(agent):
 
 
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
-    """Build the keyword arguments dict for the active API mode."""
+    """Build the keyword arguments dict for the active API mode.
+
+    Wraps the per-api_mode builder so the OpenCode ``x-opencode-session``
+    affinity header rides on every OpenCode request regardless of transport
+    (chat_completions / codex_responses / anthropic_messages all route
+    OpenCode models). No-op for every other provider.
+    """
+    from agent.opencode_affinity import merge_opencode_session_headers
+
+    kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
+    return merge_opencode_session_headers(
+        kwargs,
+        getattr(agent, "provider", None),
+        getattr(agent, "base_url", None),
+        getattr(agent, "session_id", None),
+    )
+
+
+def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
     # One-shot continuation override — consumed exactly once, on the FIRST
     # request this call builds (only one api_mode branch runs per invocation).
     _wire_reasoning_config = _reasoning_config_for_wire(agent)
@@ -3270,6 +3288,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # tool_call was summarized away; Responses API rejects that as
         # "No tool call found for function call output".
         api_messages = agent._sanitize_api_messages(api_messages)
+        # Same send-path vision eviction as the main loop (#89296).
+        from agent.context_compressor import evict_stale_outbound_tool_images
+
+        evict_stale_outbound_tool_images(api_messages)
 
         # Same safety net as the main loop: drop thinking-only assistant
         # turns so Anthropic-family providers don't 400 the summary call.
@@ -4222,6 +4244,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _conn_cap = min(_base_timeout, 60.0) if _provider_timeout_cfg is not None else 30.0
         content_parts: list = []
         tool_calls_acc: dict = {}
+        tool_argument_parts: dict[int, list[str]] = {}
         tool_gen_notified: set = set()
         # Ollama-compatible endpoints reuse index 0 for every tool call
         # in a parallel batch, distinguishing them only by id.  Track
@@ -4328,7 +4351,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             last_chunk_time["t"] = time.time()
             return True
 
+        def _materialize_tool_arguments() -> None:
+            for index, parts in tool_argument_parts.items():
+                tool_calls_acc[index]["function"]["arguments"] = "".join(parts)
+
         def _relay_final_response() -> dict[str, Any]:
+            _materialize_tool_arguments()
             tool_calls = [tool_calls_acc[index] for index in sorted(tool_calls_acc)]
             return {
                 "model": model_name,
@@ -4597,6 +4625,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "function": {"name": "", "arguments": ""},
                             "extra_content": None,
                         }
+                        tool_argument_parts[idx] = []
                     entry = tool_calls_acc[idx]
                     tc_id = getattr(tc_delta, "id", None)
                     if tc_id is not None:
@@ -4620,7 +4649,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             entry["function"]["name"] = function_name
                         function_arguments = getattr(tc_function, "arguments", None)
                         if function_arguments:
-                            entry["function"]["arguments"] += function_arguments
+                            tool_argument_parts[idx].append(function_arguments)
                     extra = getattr(tc_delta, "extra_content", None)
                     if extra is None and hasattr(tc_delta, "model_extra"):
                         extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
@@ -4696,6 +4725,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         mock_tool_calls = None
         has_truncated_tool_args = False
         if tool_calls_acc:
+            _materialize_tool_arguments()
             mock_tool_calls = []
             for idx in sorted(tool_calls_acc):
                 tc = tool_calls_acc[idx]

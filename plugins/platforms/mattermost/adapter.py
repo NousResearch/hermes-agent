@@ -966,18 +966,18 @@ class MattermostAdapter(BasePlatformAdapter):
                 ) as resp:
                     if resp.status < 400:
                         file_data = await resp.read()
-                        from gateway.platforms.base import cache_image_from_bytes, cache_document_from_bytes
+                        from gateway.platforms.base import cache_image_from_bytes_async, cache_document_from_bytes_async
                         if mime.startswith("image/"):
-                            local_path = cache_image_from_bytes(file_data, ext or ".png")
+                            local_path = await cache_image_from_bytes_async(file_data, ext or ".png")
                             media_urls.append(local_path)
                             media_types.append(mime)
                         elif mime.startswith("audio/"):
-                            from gateway.platforms.base import cache_audio_from_bytes
-                            local_path = cache_audio_from_bytes(file_data, ext or ".ogg")
+                            from gateway.platforms.base import cache_audio_from_bytes_async
+                            local_path = await cache_audio_from_bytes_async(file_data, ext or ".ogg")
                             media_urls.append(local_path)
                             media_types.append(mime)
                         else:
-                            local_path = cache_document_from_bytes(file_data, fname)
+                            local_path = await cache_document_from_bytes_async(file_data, fname)
                             media_urls.append(local_path)
                             media_types.append(mime)
                     else:

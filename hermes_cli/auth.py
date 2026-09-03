@@ -1260,6 +1260,22 @@ def _same_path(left: Path, right: Path) -> bool:
         return left == right
 
 
+def _is_same_auth_store(left: Path, right: Path) -> bool:
+    """True when two auth paths name ONE store rather than two copies.
+
+    ``_same_path`` resolves symlinks and ``..``; ``samefile`` adds hardlinks
+    and bind-mounts (same inode under two resolved names). Used by the
+    forked-grant heal: a shared store has no "other side" to consolidate
+    (#101356).
+    """
+    if _same_path(left, right):
+        return True
+    try:
+        return left.samefile(right)
+    except OSError:
+        return False
+
+
 def _auth_lock_holder_for(target_path: Path) -> threading.local:
     """Return a reentrancy tracker keyed to one canonical auth-store path."""
     try:
@@ -2024,6 +2040,16 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
     if fingerprint[1] is None and fingerprint[2] is None:
         _oauth_heal_clean_marks[provider_id] = fingerprint
         return None
+    if _is_same_auth_store(profile_path, root_path):
+        # The profile's auth.json IS the root store (symlink/hardlink alias —
+        # a deliberate way to share one grant). Both "sides" below would read
+        # the same file, every OAuth row would match itself, and the strip
+        # would write through the alias and delete the shared credential.
+        # Nothing to consolidate (#101356); the mtime mark keeps this off the
+        # per-call hot path until the shared file changes.
+        _oauth_heal_clean_marks[provider_id] = fingerprint
+        logger.debug("%s: forked-OAuth heal skipped, %s is the root store", provider_id, profile_path)
+        return None
 
     summary: Dict[str, Any] = {"adopted": False, "stripped_ids": [], "files": [], "providers_block": False}
     log_bits: List[str] = []
@@ -2114,7 +2140,13 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
                         summary["providers_block"] = True
 
             # ── profile-local .anthropic_oauth.json singleton ───────────
-            if profile_singleton is not None and profile_singleton.exists():
+            if (
+                profile_singleton is not None
+                and profile_singleton.exists()
+                # An aliased singleton pair is one shared grant, not a fork
+                # (#101356): never self-compare or unlink it.
+                and not (root_singleton is not None and _is_same_auth_store(profile_singleton, root_singleton))
+            ):
                 p_single = _singleton_as_row(profile_singleton)
                 root_has_grant = bool(r_oauth) or root_singleton_row is not None
                 if p_single is not None and root_has_grant:

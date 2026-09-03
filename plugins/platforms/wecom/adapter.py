@@ -68,8 +68,8 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
-    cache_document_from_bytes,
-    cache_image_from_bytes,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
 )
 from utils import env_float
 
@@ -1612,13 +1612,13 @@ class WeComAdapter(BasePlatformAdapter):
             if kind == "image":
                 ext = self._detect_image_ext(raw)
                 try:
-                    return cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="image/jpeg")
+                    return await cache_image_from_bytes_async(raw, ext), self._mime_for_ext(ext, fallback="image/jpeg")
                 except ValueError as exc:
                     logger.warning("[%s] Rejected non-image bytes: %s", self.name, exc)
                     return None
 
             filename = str(media.get("filename") or media.get("name") or "wecom_file")
-            return cache_document_from_bytes(raw, filename), mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            return await cache_document_from_bytes_async(raw, filename), mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
         url = str(media.get("url") or "").strip()
         if not url:
@@ -1642,13 +1642,13 @@ class WeComAdapter(BasePlatformAdapter):
         if kind == "image":
             ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
             try:
-                return cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+                return await cache_image_from_bytes_async(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
             except ValueError as exc:
                 logger.warning("[%s] Rejected non-image bytes from %s: %s", self.name, url, exc)
                 return None
 
         filename = self._guess_filename(url, headers.get("content-disposition"), content_type)
-        return cache_document_from_bytes(raw, filename), content_type
+        return await cache_document_from_bytes_async(raw, filename), content_type
 
     @staticmethod
     def _decode_base64(data: str) -> bytes:

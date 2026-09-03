@@ -161,13 +161,13 @@ dependencies = [
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
-  # First-party lifecycle and shared-metrics runtime. Relay 0.6 is the minimum
-  # lossless provider-codec contract. Managed calls pass request/response data
-  # through this native module in-process; shared metrics installs no network
-  # exporter and consumes only its bounded projection. Relay publishes wheels
-  # only (no sdist), so this marker must stay false anywhere no wheel tag can
-  # match — otherwise installing Python dependencies fails resolution outright
-  # instead of falling back to the no-op Relay host (#76469, Termux).
+  # First-party lifecycle and shared-metrics runtime. Relay 0.8 is the supported
+  # native runtime and provider-codec baseline. Managed calls pass request and
+  # response data through this native module in-process; shared metrics installs
+  # no network exporter and consumes only its bounded projection. This marker
+  # must stay false anywhere no compatible native wheel tag can match; otherwise
+  # installing Python dependencies fails instead of falling back to the no-op
+  # Relay host (#76469, Termux).
   # Termux Python reports plain linux/aarch64 but runs on Bionic
   # libc, which satisfies neither manylinux nor musllinux, hence the
   # `'android' not in platform_release` guard on the linux arms: Android GKI
@@ -175,7 +175,7 @@ dependencies = [
   # 738 CPython reports sys_platform == 'android' and never matched.) Pre-GKI
   # devices can still slip through; they get the same resolution failure as
   # before, worked around by installing with `--no-deps` or an older release.
-  "nemo-relay>=0.7.1,<0.8; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
+  "nemo-relay>=0.8.3,<0.9; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
 ]
 
 [project.optional-dependencies]

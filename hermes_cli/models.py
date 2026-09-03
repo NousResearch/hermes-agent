@@ -3603,7 +3603,7 @@ _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 # Zen / Go re-expose dozens of upstream vendors and rotate them frequently, so
 # their stale curated entries must not pollute the top of the picker. (#49129)
 _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
-    {"opencode-zen", "opencode-go"}
+    {"opencode-zen", "opencode-go", "meta-ai"}
 )
 
 

@@ -1336,9 +1336,9 @@ class TestAttachmentSSRFGuard:
         monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
         from plugins.platforms.google_chat import adapter as gc_mod
         monkeypatch.setattr(
-            gc_mod, "cache_document_from_bytes",
-            lambda data, ext=None, filename=None: str(tmp_path / "out.pdf"),
-            raising=False,
+            gc_mod,
+            "cache_document_from_bytes_async",
+            AsyncMock(return_value=str(tmp_path / "out.pdf")),
         )
 
         path, mime = await adapter._download_attachment(attachment)

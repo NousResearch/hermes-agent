@@ -754,6 +754,11 @@ DEFAULT_CONFIG = {
     # and override the dynamic behavior. Separate from read_file tool limits.
     "context_file_max_chars": None,
 
+    # Seconds to wait for a single context file read before skipping it with a
+    # warning. Guards startup against network-backed filesystems (iCloud Drive,
+    # OneDrive, NFS) that can block a cold read on an evicted file.
+    "context_file_read_timeout": 5.0,
+
     # Maximum characters returned by a single read_file call.  Reads that
     # exceed this are rejected with guidance to use offset+limit.
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
@@ -3894,6 +3899,7 @@ DEFAULT_CONFIG = {
         # every invocation (MCP backend, status, doctor, install). Set true
         # to let cua-driver use its own default (telemetry on).
         "cua_telemetry": False,
+        "native_wayland": False,
         # Cap driver screenshot longest edge (pixels) via set_config on
         # session start. Shrinks SOM multimodal payloads; 0 disables.
         "max_image_dimension": 1456,

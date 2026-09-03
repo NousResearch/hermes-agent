@@ -307,6 +307,31 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
             stale.proc.wait(timeout=10)
             self.assertFalse(stale.alive())
 
+    def test_parallel_cells_share_one_kernel_process(self):
+        """Parallel cells for one owner race the first spawn. Each racer
+        used to see proc=None as 'dead', replace the registry entry, and
+        orphan the winner's process — 110 live kernels under a 4-capped
+        process (Sep 2026). Every kernel process must stay registry-owned."""
+        import subprocess
+        import threading
+
+        results = []
+        with _kernel_config():
+            def _cell():
+                results.append(self._run_as("conv-a", "import time; time.sleep(0.3)", task_id="t"))
+            threads = [threading.Thread(target=_cell) for _ in range(6)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual([r["status"] for r in results], ["success"] * 6)
+        self.assertEqual(len(_KERNELS), 1)
+        live = subprocess.run(
+            ["pgrep", "-fc", "-P", str(os.getpid()), "hermes_kernel_runner"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual(live, "1")
+
 
 class TestPerCellRpcAuthority(unittest.TestCase):
     """Interpreter state persists across cells; RPC authority must not."""

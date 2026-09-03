@@ -14386,26 +14386,35 @@ async def list_credential_pool():
     from agent.credential_pool import load_pool
     from hermes_cli.auth import read_credential_pool
 
-    providers = []
-    # read_credential_pool(None) lists every provider that has pooled entries;
-    # load_pool() then gives us the rich PooledCredential objects per provider.
-    raw_pool = read_credential_pool()
-    for provider_id in sorted(raw_pool.keys()):
-        try:
-            pool = load_pool(provider_id)
-        except Exception:
-            _log.exception("load_pool(%s) failed", provider_id)
-            continue
-        entries = pool.entries()
-        if not entries:
-            continue
-        providers.append({
-            "provider": provider_id,
-            "entries": [
-                _pool_entry_summary(e, i) for i, e in enumerate(entries, start=1)
-            ],
-        })
-    return {"providers": providers}
+    # load_pool() may hit the network synchronously (Copilot token exchange
+    # over raw urllib). urllib's timeout does NOT bound DNS resolution
+    # (getaddrinfo blocks in C), so on a networkless Windows host this froze
+    # the uvicorn event loop for 17 minutes (2026-08-22 00:03-00:20 stall).
+    # Keep every provider load off the loop - same pattern as
+    # get_memory_status below.
+    def _run():
+        providers = []
+        # read_credential_pool(None) lists every provider that has pooled entries;
+        # load_pool() then gives us the rich PooledCredential objects per provider.
+        raw_pool = read_credential_pool()
+        for provider_id in sorted(raw_pool.keys()):
+            try:
+                pool = load_pool(provider_id)
+            except Exception:
+                _log.exception("load_pool(%s) failed", provider_id)
+                continue
+            entries = pool.entries()
+            if not entries:
+                continue
+            providers.append({
+                "provider": provider_id,
+                "entries": [
+                    _pool_entry_summary(e, i) for i, e in enumerate(entries, start=1)
+                ],
+            })
+        return {"providers": providers}
+
+    return await asyncio.to_thread(_run)
 
 
 @app.post("/api/credentials/pool")
@@ -14424,40 +14433,46 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
     if not provider or not api_key:
         raise HTTPException(status_code=400, detail="provider and api_key are required")
 
-    try:
-        pool = load_pool(provider)
-        label = (body.label or "").strip() or f"key #{len(pool.entries()) + 1}"
-        entry = PooledCredential(
-            provider=provider,
-            id=_uuid.uuid4().hex[:6],
-            label=label,
-            auth_type=AUTH_TYPE_API_KEY,
-            priority=0,
-            source=SOURCE_MANUAL,
-            access_token=api_key,
-        )
-        pool.add_entry(entry)
-        # Re-adding a credential is an explicit re-engagement signal: lift
-        # every suppression for this provider so a source deleted earlier
-        # (via DELETE below or `hermes auth remove`) can seed again.
-        # Mirrors the `hermes auth add` behaviour in auth_commands.py.
-        if not provider.startswith(CUSTOM_POOL_PREFIX):
-            try:
-                from hermes_cli.auth import (
-                    _load_auth_store,
-                    unsuppress_credential_source,
-                )
-                suppressed = _load_auth_store().get("suppressed_sources", {})
-                for src in list(suppressed.get(provider, []) or []):
-                    unsuppress_credential_source(provider, src)
-            except Exception:
-                _log.exception("unsuppress after pool add failed (non-fatal)")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        _log.exception("POST /api/credentials/pool failed")
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "provider": provider, "count": len(pool.entries())}
+    # load_pool() may run synchronous OAuth token exchanges (network I/O);
+    # keep it off the event loop - see list_credential_pool (2026-08-22
+    # 17-minute stall fix).
+    def _run():
+        try:
+            pool = load_pool(provider)
+            label = (body.label or "").strip() or f"key #{len(pool.entries()) + 1}"
+            entry = PooledCredential(
+                provider=provider,
+                id=_uuid.uuid4().hex[:6],
+                label=label,
+                auth_type=AUTH_TYPE_API_KEY,
+                priority=0,
+                source=SOURCE_MANUAL,
+                access_token=api_key,
+            )
+            pool.add_entry(entry)
+            # Re-adding a credential is an explicit re-engagement signal: lift
+            # every suppression for this provider so a source deleted earlier
+            # (via DELETE below or `hermes auth add`) can seed again.
+            # Mirrors the `hermes auth add` behaviour in auth_commands.py.
+            if not provider.startswith(CUSTOM_POOL_PREFIX):
+                try:
+                    from hermes_cli.auth import (
+                        _load_auth_store,
+                        unsuppress_credential_source,
+                    )
+                    suppressed = _load_auth_store().get("suppressed_sources", {})
+                    for src in list(suppressed.get(provider, []) or []):
+                        unsuppress_credential_source(provider, src)
+                except Exception:
+                    _log.exception("unsuppress after pool add failed (non-fatal)")
+            return {"ok": True, "provider": provider, "count": len(pool.entries())}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _log.exception("POST /api/credentials/pool failed")
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return await asyncio.to_thread(_run)
 
 
 @app.delete("/api/credentials/pool/{provider}/{index}")
@@ -14478,44 +14493,50 @@ async def remove_credential_pool_entry(provider: str, index: int):
     from hermes_cli.auth import suppress_credential_source
 
     provider = (provider or "").strip().lower()
-    try:
-        pool = load_pool(provider)
-        removed = pool.remove_index(index)
-    except Exception as exc:
-        _log.exception("DELETE /api/credentials/pool failed")
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if removed is None:
-        raise HTTPException(status_code=404, detail="No pool entry at that index")
-
-    cleaned: List[str] = []
-    hints: List[str] = []
-    step = find_removal_step(provider, removed.source or "")
-    if step is not None:
+    # load_pool() may run synchronous token exchanges and the removal steps do
+    # blocking disk writes - keep them off the event loop (see
+    # list_credential_pool; 2026-08-22 17-minute stall fix).
+    def _run():
         try:
-            result = step.remove_fn(provider, removed)
-            cleaned = list(result.cleaned)
-            hints = list(result.hints)
-            if result.suppress:
-                suppress_credential_source(provider, removed.source)
-        except Exception:
-            # Cleanup is best-effort, but suppression is the actual bug fix —
-            # without it the entry resurrects on the next load_pool().  Apply
-            # it even when source-specific cleanup blew up.
-            _log.exception(
-                "credential source cleanup failed for %s/%s; suppressing anyway",
-                provider, removed.source,
-            )
+            pool = load_pool(provider)
+            removed = pool.remove_index(index)
+        except Exception as exc:
+            _log.exception("DELETE /api/credentials/pool failed")
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if removed is None:
+            raise HTTPException(status_code=404, detail="No pool entry at that index")
+
+        cleaned: List[str] = []
+        hints: List[str] = []
+        step = find_removal_step(provider, removed.source or "")
+        if step is not None:
             try:
-                suppress_credential_source(provider, removed.source)
+                result = step.remove_fn(provider, removed)
+                cleaned = list(result.cleaned)
+                hints = list(result.hints)
+                if result.suppress:
+                    suppress_credential_source(provider, removed.source)
             except Exception:
-                _log.exception("suppress_credential_source failed")
-    return {
-        "ok": True,
-        "provider": provider,
-        "count": len(pool.entries()),
-        "cleaned": cleaned,
-        "hints": hints,
-    }
+                # Cleanup is best-effort, but suppression is the actual bug fix -
+                # without it the entry resurrects on the next load_pool(). Apply
+                # it even when source-specific cleanup blew up.
+                _log.exception(
+                    "credential source cleanup failed for %s/%s; suppressing anyway",
+                    provider, removed.source,
+                )
+                try:
+                    suppress_credential_source(provider, removed.source)
+                except Exception:
+                    _log.exception("suppress_credential_source failed")
+        return {
+            "ok": True,
+            "provider": provider,
+            "count": len(pool.entries()),
+            "cleaned": cleaned,
+            "hints": hints,
+        }
+
+    return await asyncio.to_thread(_run)
 
 
 # ---------------------------------------------------------------------------

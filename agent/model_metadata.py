@@ -3652,13 +3652,29 @@ def estimate_tokens_rough(text: str) -> int:
     if text.isascii():
         # O(1) fast path — ASCII text cannot contain token-dense CJK chars.
         return (len(text) + 3) // 4
-    dense = len(text) - len(_CJK_DENSE_RE.sub("", text))
+    stripped = _CJK_DENSE_RE.sub("", text)
+    dense = len(text) - len(stripped)
     if not dense:
-        # Non-ASCII but no CJK (accents, Cyrillic, emoji, ...): keep the
-        # classic ~4 chars/token rule.
-        return (len(text) + 3) // 4
-    sparse = len(text) - dense
-    return dense + ((sparse + 3) // 4)
+        # Non-ASCII but no CJK (accents, Cyrillic, emoji, ...): count UTF-8
+        # BYTES at ~4/token instead of characters. The byte width is the
+        # corrective: Cyrillic/Greek/Arabic are 2 bytes per char, so they
+        # count as ~chars/2 — matching their real BPE cost (~2-3 chars per
+        # token) where chars/4 under-counted them ~2x and let sessions ride
+        # the provider's context ceiling below the compaction threshold.
+        # ASCII spans inside mixed text still count at 1 byte each.
+        #
+        # Calibrated against cl100k/o200k/Qwen2.5 (estimate / mean real):
+        # Russian 0.67->1.24, Ukrainian 0.55->1.03, Arabic 0.53->0.96,
+        # Hindi 0.34->0.90, Greek 0.37->0.68, Polish 0.63->0.69; accented
+        # Latin barely moves (French 1.02->1.03, German 0.99->1.02,
+        # Spanish 1.04->1.07) because only the accented chars widen.
+        # Pure-ASCII prose already over-counts at ~1.4 on the same rule.
+        # errors="replace": lone surrogates (routine in tool output; see
+        # message_sanitization) must not turn an estimate into a raise.
+        return (len(text.encode("utf-8", "replace")) + 3) // 4
+    # Mixed CJK + other: dense chars stay ~1 token each; the sparse
+    # remainder is byte-counted for the same corrective.
+    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // 4)
 
 
 def estimate_messages_tokens_rough(

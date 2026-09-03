@@ -493,6 +493,7 @@ def _should_idle_compact(
     tokens: int,
     floor_tokens: int,
     cooldown_active: bool,
+    last_compaction_tokens: int = 0,
 ) -> bool:
     """Decide whether an idle-triggered compaction should run this turn.
 
@@ -508,6 +509,23 @@ def _should_idle_compact(
     *to*), so a small idle thread never pays for a summarisation that saves
     nothing, and it defers to an active compression-failure cooldown.
 
+    ``floor_tokens`` alone is a *theoretical* target (``threshold_tokens ×
+    summary_target_ratio``) that a real pass routinely misses: the system
+    prompt, the tool schemas and the protected head/tail are an
+    incompressible floor. A session that compacted to well above that target
+    therefore stays above it forever, so every later idle resume re-runs a
+    full summarisation over a transcript that has not grown — minutes of
+    silently blocked prompt on a slow route, reclaiming nothing (#97239).
+
+    ``last_compaction_tokens`` is what the previous pass on this session
+    actually produced (``ContextCompressor.last_compression_rough_tokens``,
+    the same ``estimate_request_tokens_rough`` shape as ``tokens``). When it
+    is known, require the transcript to have accumulated at least one
+    ``floor_tokens`` worth of *new* content on top of it before paying for
+    another pass. ``0`` — no compaction recorded yet, or the counter reset by
+    a rebind/recalibration — keeps the original floor semantics exactly, so
+    the first idle compaction of any session is unaffected.
+
     Pure predicate so the policy is unit-testable without a live agent.
     """
     if not enabled or idle_after_seconds <= 0:
@@ -516,7 +534,10 @@ def _should_idle_compact(
         return False
     if cooldown_active:
         return False
-    return tokens > floor_tokens
+    effective_floor = floor_tokens
+    if last_compaction_tokens > 0:
+        effective_floor = max(effective_floor, last_compaction_tokens + floor_tokens)
+    return tokens > effective_floor
 
 
 @dataclass
@@ -960,6 +981,18 @@ def build_turn_context(
             _idle_cooldown = getattr(
                 _compressor, "get_active_compression_failure_cooldown", lambda: None
             )()
+            # What the previous pass on this session actually produced — the
+            # honest floor, versus the theoretical ``_idle_floor`` above. Type
+            # pin: minimal compressor doubles (SimpleNamespace / MagicMock)
+            # expose truthy non-ints here, and only a real int may raise the
+            # floor. Anything else falls back to 0 = original semantics.
+            _idle_last_compaction = getattr(
+                _compressor, "last_compression_rough_tokens", 0
+            )
+            if not isinstance(_idle_last_compaction, int) or isinstance(
+                _idle_last_compaction, bool
+            ):
+                _idle_last_compaction = 0
             if _should_idle_compact(
                 enabled=agent.compression_enabled,
                 idle_after_seconds=_idle_after,
@@ -967,14 +1000,16 @@ def build_turn_context(
                 tokens=_idle_tokens,
                 floor_tokens=_idle_floor,
                 cooldown_active=bool(_idle_cooldown),
+                last_compaction_tokens=_idle_last_compaction,
             ):
                 logger.info(
                     "Idle compaction: %ss idle >= %ss, ~%s tokens > %s floor "
-                    "(session %s)",
+                    "(last compaction produced ~%s) (session %s)",
                     int(_idle_gap),
                     _idle_after,
                     f"{_idle_tokens:,}",
                     f"{_idle_floor:,}",
+                    f"{_idle_last_compaction:,}" if _idle_last_compaction > 0 else "n/a",
                     agent.session_id or "none",
                 )
                 _idle_status = automatic_compaction_status_message(

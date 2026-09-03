@@ -229,10 +229,10 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
-    cache_audio_from_bytes,
-    cache_document_from_bytes,
-    cache_image_from_bytes,
-    cache_video_from_bytes,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
+    cache_video_from_bytes_async,
 )
 
 
@@ -2115,13 +2115,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
         else:
             ext = ""
         if mime.startswith("image/"):
-            local = cache_image_from_bytes(data, ext=ext or ".jpg")
+            local = await cache_image_from_bytes_async(data, ext=ext or ".jpg")
         elif mime.startswith("audio/"):
-            local = cache_audio_from_bytes(data, ext=ext or ".ogg")
+            local = await cache_audio_from_bytes_async(data, ext=ext or ".ogg")
         elif mime.startswith("video/"):
-            local = cache_video_from_bytes(data, ext=ext or ".mp4")
+            local = await cache_video_from_bytes_async(data, ext=ext or ".mp4")
         else:
-            local = cache_document_from_bytes(data, filename)
+            local = await cache_document_from_bytes_async(data, filename)
         return local, mime
 
     # ------------------------------------------------------------------

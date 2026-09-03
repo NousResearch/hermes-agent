@@ -18,7 +18,7 @@ interface ComputerUsePanelProps {
 // Per-OS one-liner shown when there's no TCC grant flow (Windows/Linux). macOS
 // drives the permission rows instead, so it has no entry here.
 const PLATFORM_NOTE: Record<string, string> = {
-  linux: 'Drives your desktop via the X11/XWayland accessibility stack — no permission prompt.',
+  linux: 'Uses native Wayland only when the current compositor, portal session, and target-safety checks pass. Hermes never injects into an unverified target.',
   win32: 'First run may trigger a Windows SmartScreen prompt for the cua-driver UIAccess worker — allow it.'
 }
 
@@ -164,6 +164,11 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
   }
 
   const failingChecks = status.checks.filter(c => c.status !== 'ok')
+  const wayland = status.platform === 'linux' ? status.linux_wayland : undefined
+  const waylandProblems = [
+    ...(wayland?.capabilities?.hard_failures ?? []),
+    ...(wayland?.capabilities?.degraded_reasons ?? [])
+  ]
 
   return (
     <div className="grid gap-2">
@@ -206,6 +211,42 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
             {status.ready === true ? 'Ready' : status.ready === false ? 'Not ready' : 'Unknown'}
           </Pill>
         </div>
+      )}
+
+      {wayland && (
+        <div className="grid gap-1 rounded-lg bg-background/55 p-2.5 text-[0.7rem] text-muted-foreground">
+          <span className="text-sm font-medium text-foreground">Linux desktop session</span>
+          <span>
+            {wayland.session?.kind ?? 'unknown'}
+            {wayland.session?.desktop ? ` · ${wayland.session.desktop}` : ''}
+            {wayland.native_wayland_enabled ? ' · native Wayland enabled' : ' · native Wayland not enabled'}
+          </span>
+          <span>Capture: {wayland.capabilities?.capture_path ?? 'unavailable'} · Input: {wayland.capabilities?.input_path ?? 'unavailable'}</span>
+          <span>
+            Input delivery: {wayland.capabilities?.foreground_pointer_input && wayland.capabilities?.foreground_keyboard_input
+              ? 'ready'
+              : wayland.capabilities?.input_path?.includes('_candidate')
+                ? 'candidate — cua-driver must verify it'
+                : 'unavailable'}
+          </span>
+          <span>Accessibility: {wayland.atspi_dbus_available ? 'ready' : 'unavailable'} · Portal: {wayland.portal_dbus_available ? 'ready' : 'unavailable'}</span>
+          <span>Driver features: native Wayland {wayland.driver_features?.wayland_native ? 'yes' : 'no'} · portal input {wayland.driver_features?.portal_input ? 'yes' : 'no'} · portal capture {wayland.driver_features?.portal_capture ? 'yes' : 'no'}</span>
+          {wayland.capabilities?.consent_expected && <span>Desktop permission may be requested before capture or input.</span>}
+        </div>
+      )}
+
+      {waylandProblems.map(problem => (
+        <p className="px-1 text-[0.7rem] text-muted-foreground" key={problem}>
+          <AlertTriangle className="mr-1 inline size-3" />
+          {problem}
+        </p>
+      ))}
+
+      {status.remediation && (
+        <p className="px-1 text-[0.7rem] text-muted-foreground">
+          <AlertTriangle className="mr-1 inline size-3" />
+          {status.remediation}
+        </p>
       )}
 
       {failingChecks.map(c => (

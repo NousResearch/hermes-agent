@@ -54,7 +54,7 @@ class HealthReportUnavailable(RuntimeError):
     """
 
 
-def _cua_child_env() -> Dict[str, str]:
+def _cua_child_env(driver_cmd: Optional[str] = None) -> Dict[str, str]:
     """cua-driver child env with the Hermes telemetry policy applied.
 
     Delegates to ``cua_backend.cua_driver_child_env`` (telemetry disabled by
@@ -64,12 +64,12 @@ def _cua_child_env() -> Dict[str, str]:
     try:
         from tools.computer_use.cua_backend import cua_driver_child_env
 
-        return cua_driver_child_env()
+        return cua_driver_child_env(driver_cmd=driver_cmd)
     except Exception:
         return dict(os.environ)
 
 
-def _sanitized_cua_env() -> Dict[str, str]:
+def _sanitized_cua_env(driver_cmd: Optional[str] = None) -> Dict[str, str]:
     """Telemetry-policy env with Hermes provider secrets stripped.
 
     cua-driver is a third-party binary — it must never inherit provider
@@ -77,7 +77,7 @@ def _sanitized_cua_env() -> Dict[str, str]:
     telemetry env if the sanitizer can't be imported, so doctor keeps
     working in stripped-down environments.
     """
-    env = _cua_child_env()
+    env = _cua_child_env(driver_cmd)
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
@@ -116,7 +116,7 @@ def _read_cli_version(binary: str, *, timeout: float = 5.0) -> Optional[str]:
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            env=_sanitized_cua_env(),
+            env=_sanitized_cua_env(binary),
         )
     except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
         return None
@@ -217,7 +217,7 @@ def _open_mcp(binary: str) -> subprocess.Popen:
         errors="replace",
         bufsize=1,
         creationflags=windows_hide_flags(),
-        env=_sanitized_cua_env(),
+        env=_sanitized_cua_env(binary),
     )
 
 
@@ -318,7 +318,7 @@ def _cli_driver_version(binary: str, timeout: float = 5.0) -> Tuple[str, Optiona
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            env=_sanitized_cua_env(),
+            env=_sanitized_cua_env(binary),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         return "fail", f"--version failed: {e}"
@@ -345,7 +345,7 @@ def _cli_doctor_snippet(binary: str, timeout: float = 8.0) -> Optional[str]:
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            env=_sanitized_cua_env(),
+            env=_sanitized_cua_env(binary),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

@@ -158,6 +158,25 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
     elif doctor is not None:
         # No TCC model off macOS — readiness is driver health.
         out["ready"] = doctor["ok"]
+
+    if plat == "linux":
+        try:
+            from tools.computer_use.linux_wayland import arch_install_hint, diagnose_linux_computer_use
+            from hermes_cli.config import load_config as _load_cfg
+            linux = diagnose_linux_computer_use(binary, config=_load_cfg() or {})
+            out["linux_wayland"] = linux
+            hint = arch_install_hint(linux)
+            if hint:
+                out["remediation"] = hint
+            # A real native Wayland session with an explicit emergency disable,
+            # stale socket, or absent graphical bus is not "ready" merely
+            # because the driver's legacy X11 probe passed.
+            session_kind = linux["session"]["kind"]
+            hard_failures = linux["capabilities"]["hard_failures"]
+            if session_kind.startswith("wayland") and hard_failures:
+                out["ready"] = False
+        except Exception as exc:
+            out["linux_wayland_error"] = str(exc)
     return out
 
 

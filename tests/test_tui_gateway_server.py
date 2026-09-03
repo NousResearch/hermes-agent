@@ -2863,6 +2863,90 @@ def test_history_to_messages_ships_full_tool_args():
     assert "args" not in argless[0]
 
 
+def test_history_to_messages_surfaces_clarify_user_response():
+    # The clarify tool returns the user's answer inside its result JSON, so
+    # the transcript carries it only on the role="tool" row — which the
+    # display projection collapsed to a name+args row, dropping the content.
+    # A reloaded session showed the question and the assistant's reaction but
+    # never the user's actual answer (#102267).
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "clarify",
+                        "arguments": json.dumps(
+                            {"question": "Which channels?", "choices": ["a", "b"]}
+                        ),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "tool_name": "clarify",
+            "content": json.dumps(
+                {
+                    "question": "Which channels?",
+                    "choices_offered": ["a", "b"],
+                    "user_response": "grab the DeepState mirror only",
+                }
+            ),
+        },
+        {"role": "assistant", "content": "got it — skipping the rest"},
+    ]
+
+    rows = server._history_to_messages(history)
+    assert rows[0]["role"] == "tool"
+    assert rows[1] == {
+        "role": "user",
+        "text": "grab the DeepState mirror only",
+        "display_kind": "clarify_response",
+    }
+    assert rows[2]["text"] == "got it — skipping the rest"
+
+
+def test_history_to_messages_clarify_projection_edge_shapes():
+    # Batch results project one user row per answered question; blanks (skips,
+    # walked-away timeouts) stay hidden; multi_select lists join into one row;
+    # non-clarify tool results and unparseable content are never projected.
+    batch = json.dumps(
+        {
+            "responses": [
+                {"question": "q1", "user_response": ["red", "blue"]},
+                {"question": "q2", "user_response": ""},
+            ]
+        }
+    )
+    rows = server._history_to_messages(
+        [{"role": "tool", "tool_name": "clarify", "content": batch}]
+    )
+    assert [r["role"] for r in rows] == ["tool", "user"]
+    assert rows[1]["text"] == "red, blue"
+
+    # Timeout sentinel is the tool narrating, not the user — stay hidden.
+    from tools.clarify_tool import TIMEOUT_RESPONSE
+
+    sentinel = json.dumps(
+        {"question": "q", "choices_offered": None, "user_response": TIMEOUT_RESPONSE}
+    )
+    assert server._history_to_messages(
+        [{"role": "tool", "tool_name": "clarify", "content": sentinel}]
+    ) == [{"role": "tool", "name": "clarify", "context": ""}]
+
+    # Other tools' results and non-JSON content never project user rows.
+    assert server._history_to_messages(
+        [{"role": "tool", "tool_name": "terminal", "content": "ok"}]
+    )[0]["role"] == "tool"
+    assert server._history_to_messages(
+        [{"role": "tool", "tool_name": "clarify", "content": "not json"}]
+    )[0]["role"] == "tool"
+
+
 def test_tool_start_ships_full_args(monkeypatch):
     # The desktop rebuilds the expanded row's `$` transcript from args. When
     # only the 80-char `context` preview shipped, the expanded command was

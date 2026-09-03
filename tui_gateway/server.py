@@ -9846,6 +9846,55 @@ def _legacy_display_kind(role: str, text: str) -> str | None:
     return None
 
 
+def _clarify_response_display_lines(tool_name: str, content) -> list[dict]:
+    """Re-surface the user's clarify answer(s) from a persisted tool result.
+
+    The clarify tool returns the user's reply inside its result JSON, so the
+    durable transcript carries the answer only on the ``role="tool"`` row —
+    which this projection collapses to a name+args row, dropping the content.
+    A reloaded session therefore showed the question and the assistant's
+    reaction but never what the user actually answered (#102267). Project each
+    non-empty answer as a user-authored line; renderers that don't know the
+    ``clarify_response`` display kind fall back to a plain user row, which is
+    exactly the shape the thread was missing.
+    """
+    if tool_name != "clarify" or not isinstance(content, str) or not content.strip():
+        return []
+    try:
+        parsed = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    try:
+        from tools.clarify_tool import TIMEOUT_RESPONSE
+    except Exception:  # pragma: no cover - stdlib-only module, always importable
+        TIMEOUT_RESPONSE = None
+    answers: list = []
+    responses = parsed.get("responses")
+    if isinstance(responses, list):  # Batch shape: {"responses": [...]}.
+        answers.extend(
+            entry.get("user_response") for entry in responses if isinstance(entry, dict)
+        )
+    else:
+        answers.append(parsed.get("user_response"))
+    lines: list[dict] = []
+    for answer in answers:
+        if isinstance(answer, list):  # multi_select answers are lists
+            text = ", ".join(str(a).strip() for a in answer if str(a).strip())
+        elif isinstance(answer, str):
+            text = answer.strip()
+        else:
+            # None (unanswered / timed out) and non-text values stay hidden;
+            # the timeout sentinel is the tool talking, not the user.
+            continue
+        if text and text != TIMEOUT_RESPONSE:
+            lines.append(
+                {"role": "user", "text": text, "display_kind": "clarify_response"}
+            )
+    return lines
+
+
 def _history_to_messages(history: list[dict]) -> list[dict]:
     messages = []
     tool_call_args = {}
@@ -9895,6 +9944,10 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             if args:
                 tool_msg["args"] = args
             messages.append(tool_msg)
+            # The user's clarify answer lives in the tool result content this
+            # projection otherwise drops; re-surface it as a user row so the
+            # reloaded thread reads question → answer → reaction (#102267).
+            messages.extend(_clarify_response_display_lines(name, content_text))
             continue
         # An assistant turn may carry only reasoning/thinking content with no
         # visible text (extended-thinking turns, thinking-only recovery

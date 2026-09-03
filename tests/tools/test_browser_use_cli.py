@@ -889,6 +889,43 @@ class TestBrowserExec:
         result = json.loads(bu_cli.browser_exec("print(1)", timeout_s=1))
         assert "timed out" in result["error"]
 
+    def test_exec_subprocess_decodes_stdout_as_utf8(self, tmp_path, monkeypatch):
+        """Windows text=True defaults to locale encoding; CLI emits UTF-8 (#87152)."""
+        cli = _fake_cli(tmp_path, "cat > /dev/null\necho ok\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        captured = {}
+        real_run = bu_cli.subprocess.run
+
+        def _spy(*args, **kwargs):
+            captured.update(kwargs)
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(bu_cli.subprocess, "run", _spy)
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+        assert result["success"] is True
+        assert captured.get("encoding") == "utf-8"
+        assert captured.get("errors") == "replace"
+        assert captured.get("text") is True
+
+    def test_exec_preserves_non_ascii_utf8_stdout(self, tmp_path, monkeypatch):
+        # Euro + em dash: UTF-8 bytes that crash cp1252 if decoded as locale.
+        import stat as _stat
+
+        cli = tmp_path / "browser-use-utf8"
+        body = (
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "sys.stdin.read()\n"
+            "sys.stdout.buffer.write('price \u20ac9 \u2014 done\\n'.encode('utf-8'))\n"
+        )
+        cli.write_text(body, encoding="utf-8")
+        cli.chmod(cli.stat().st_mode | _stat.S_IXUSR)
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [str(cli)])
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+        assert result["success"] is True
+        assert "\u20ac9" in result["output"]
+        assert "\u2014" in result["output"]
+
 
 class TestFindCliManagedBin:
     """MANAGED-FIRST: _find_cli probes $HERMES_HOME/bin before PATH and

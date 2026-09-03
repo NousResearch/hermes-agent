@@ -831,6 +831,12 @@ def browser_exec(
             input=code,
             capture_output=True,
             text=True,
+            # Match install_cli / other Windows-safe call sites: text=True without
+            # encoding= uses locale preferred encoding (cp1252/cp936), and the
+            # Browser Use CLI emits UTF-8 — non-ASCII stdout kills the reader
+            # thread with UnicodeDecodeError and empty tool output (#87152).
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             env=env,
             **popen_extra,

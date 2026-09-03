@@ -276,8 +276,34 @@ def test_removing_codex_native_compaction_restores_false(monkeypatch):
     assert session["agent"].codex_responses_native_compaction is False
 
 
-def test_removing_codex_native_threshold_restores_default(monkeypatch):
+def test_removing_codex_native_threshold_restores_automatic_default(monkeypatch):
+    """Absence must restore agent_init.py's current construction-time
+    default: None, meaning "derive automatically from the local compression
+    trigger" (a2af8405d1) — not the old absolute 200000 this hot-apply path
+    fell back to before that construction-time semantics change ever
+    reached it. codex_responses_compact_threshold's raw value (None vs. an
+    absolute int) is what resolve_compact_threshold() at request time
+    branches on, so restoring the wrong one silently reverts an
+    already-running native-compaction session to a fixed 200000 threshold
+    on every live config reload instead of the intended local-trigger-
+    derived one.
+    """
     session, _ = _neutral_session()
     session["agent"].codex_responses_compact_threshold = 120_000
     _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert session["agent"].codex_responses_compact_threshold == 200_000
+    assert session["agent"].codex_responses_compact_threshold is None
+
+
+def test_invalid_codex_native_threshold_falls_back_to_automatic_default(monkeypatch):
+    """Mirrors agent_init.py's invalid-value handling exactly: an
+    unparseable/non-positive/bool/float value must fall back to None
+    (automatic), not the old absolute 200000."""
+    session, _ = _neutral_session()
+    for bad_value in ("garbage", True, -5, 1.5, 0):
+        session["agent"].codex_responses_compact_threshold = 120_000
+        _sync_with_cfg(
+            monkeypatch,
+            session,
+            {"compression": {"codex_responses_compact_threshold": bad_value}},
+        )
+        assert session["agent"].codex_responses_compact_threshold is None, bad_value

@@ -7030,22 +7030,28 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     agent.codex_responses_native_compaction = is_truthy_value(
         compression.get("codex_responses_native", False)
     )
-    native_threshold_raw = compression.get(
-        "codex_responses_compact_threshold", 200_000
-    )
-    try:
-        if isinstance(native_threshold_raw, bool):
-            raise ValueError
-        native_threshold = int(native_threshold_raw)
-        if native_threshold <= 0:
-            raise ValueError
-    except (TypeError, ValueError):
-        logger.warning(
-            "Invalid compression.codex_responses_compact_threshold=%r; "
-            "using 200000.",
-            native_threshold_raw,
-        )
-        native_threshold = 200_000
+    # None/omitted derives automatically from the local compression trigger
+    # at request time (agent_init.py's construction-time default since
+    # a2af8405d1) — this hot-apply path must mirror that derivation, not
+    # fall back to an absolute 200000, or a live config reload silently
+    # reverts an already-running native-compaction session from the
+    # auto-derived threshold back to the old fixed one.
+    native_threshold_raw = compression.get("codex_responses_compact_threshold")
+    native_threshold = None
+    if native_threshold_raw is not None:
+        try:
+            if isinstance(native_threshold_raw, (bool, float)):
+                raise ValueError
+            native_threshold = int(native_threshold_raw)
+            if native_threshold <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid compression.codex_responses_compact_threshold=%r; "
+                "using the automatic threshold derived from local compression.",
+                native_threshold_raw,
+            )
+            native_threshold = None
     agent.codex_responses_compact_threshold = native_threshold
 
     # Absence restores the agent_init/config default (0 = disabled).

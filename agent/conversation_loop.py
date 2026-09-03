@@ -1316,9 +1316,11 @@ _LENGTH_CONTINUATION_NETWORK_STUB = (
     "Finish the answer directly.]"
 )
 _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
-    "[System: Your previous response was truncated by the output "
-    "length limit. Continue exactly where you left off. Do not "
-    "restart or repeat prior text. Finish the answer directly.]"
+    "[System: The runtime reported finish_reason='length'. This is an "
+    "authoritative runtime signal that your previous response was truncated by the "
+    "output length limit, even if its final sentence looked complete. Continue exactly "
+    "where you left off; complete the missing content. Do not restart or repeat prior "
+    "text. Do not claim that the answer was already complete. Finish the answer directly.]"
 )
 # The dropped-tools variant interpolates the tool name list right after this
 # prefix, so it can't be exact-matched — this stable prefix is what

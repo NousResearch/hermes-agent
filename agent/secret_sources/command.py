@@ -181,19 +181,26 @@ def _run_helper(
         return None
 
     # User-configured secret-helper command: runs with the user's full shell
-    # env by design (it may need any credential to resolve the secret).
+    # env minus AI provider credentials (provider-scrub mode).  A hard
+    # allowlist is too restrictive — the helper may need SSH_AUTH_SOCK,
+    # DBUS_SESSION_BUS_ADDRESS, GPG, or other shell credentials — but AI
+    # provider API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.) must not
+    # leak into the child.
     source_env = get_source_environment()
     if source_env is os.environ:
-        # Legacy single-profile startup intentionally preserves the existing
-        # helper contract, which may rely on the user's full environment.
+        # Legacy single-profile startup — scrub only provider credentials
+        # so the user's configured helper still gets its shell env.
         from tools.environments.local import build_subprocess_env
-        env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+        env = build_subprocess_env(
+            scrub_secrets="provider", inherit_profile_home=False,
+        )
     else:
         # A multiplex profile must never inherit sibling secrets from the
         # process-global environment.  hydrate_profile_secret_sources seeds
         # only global-safe values plus this profile's own .env.
         env = dict(source_env)
-    env["HERMES_SECRET_KEY"] = secret_key
+    if secret_key:
+        env["HERMES_SECRET_KEY"] = secret_key
 
     try:
         proc = subprocess.Popen(  # noqa: S602 — command is the user's own config

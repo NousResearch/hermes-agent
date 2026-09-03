@@ -27,6 +27,7 @@ import stat
 import sys
 import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -188,8 +189,101 @@ def test_apply_dotenv_blob_sets_environ(tmp_path):
     assert os.environ["CMDTEST_TOKEN"] == "tok-applied"
 
 
+# ---------------------------------------------------------------------------
+# build_subprocess_env("provider") — used by _run_helper to build a
+# provider-scrubbed but otherwise full-shell env for the user's helper.
+# ---------------------------------------------------------------------------
 
 
+class TestHelperChildEnv:
+    """Verify the env passed to the command helper via
+    ``build_subprocess_env(scrub_secrets="provider")`` — it must strip AI
+    provider credentials (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.) while
+    preserving the full user shell environment (SSH_AUTH_SOCK, DBUS,
+    locale, PATH, HOME, etc.) that a configured helper may need."""
+
+    def test_strips_provider_credentials(self, monkeypatch):
+        from tools.environments.local import build_subprocess_env
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-leak-check")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-leak")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv("HOME", "/home/test")
+        env = build_subprocess_env(
+            scrub_secrets="provider", inherit_profile_home=False,
+        )
+        assert "OPENAI_API_KEY" not in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert env["PATH"] == "/usr/bin"
+        assert env["HOME"] == "/home/test"
+
+    def test_preserves_shell_credentials(self, monkeypatch):
+        from tools.environments.local import build_subprocess_env
+        monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/bus")
+        monkeypatch.setenv("GPG_TTY", "/dev/pts/1")
+        monkeypatch.setenv("MY_CUSTOM_VAR", "hello")
+        env = build_subprocess_env(
+            scrub_secrets="provider", inherit_profile_home=False,
+        )
+        assert env["SSH_AUTH_SOCK"] == "/tmp/ssh-agent.sock"
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/bus"
+        assert env["GPG_TTY"] == "/dev/pts/1"
+        assert env["MY_CUSTOM_VAR"] == "hello"
+
+    def test_strips_hermes_internal_dynamic_secrets(self, monkeypatch):
+        from tools.environments.local import build_subprocess_env
+        monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "sk-aux-leak")
+        monkeypatch.setenv("GATEWAY_RELAY_SECRET", "secret-leak")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        env = build_subprocess_env(
+            scrub_secrets="provider", inherit_profile_home=False,
+        )
+        assert "AUXILIARY_VISION_API_KEY" not in env
+        assert "GATEWAY_RELAY_SECRET" not in env
+        assert env["PATH"] == "/usr/bin"
+
+    def test_strips_always_strip_keys(self, monkeypatch):
+        from tools.environments.local import build_subprocess_env
+        monkeypatch.setenv("GH_TOKEN", "ghp_leak")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        env = build_subprocess_env(
+            scrub_secrets="provider", inherit_profile_home=False,
+        )
+        assert "GH_TOKEN" not in env
+        assert "TELEGRAM_BOT_TOKEN" not in env
+        assert env["PATH"] == "/usr/bin"
+
+    def test_sets_secret_key_when_provided(self):
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.communicate.return_value = (b"K=val", b"")
+            mock_proc.returncode = 0
+            mock_popen.return_value = mock_proc
+            _run_helper("echo test", "MY_SECRET_KEY", 3.0, 1024 * 1024)
+            env = mock_popen.call_args[1]["env"]
+            assert env["HERMES_SECRET_KEY"] == "MY_SECRET_KEY"
+
+    def test_omits_secret_key_when_empty(self):
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.communicate.return_value = (b"K=val", b"")
+            mock_proc.returncode = 0
+            mock_popen.return_value = mock_proc
+            _run_helper("echo test", "", 3.0, 1024 * 1024)
+            env = mock_popen.call_args[1]["env"]
+            assert "HERMES_SECRET_KEY" not in env
+
+    def test_hostile_key_name_is_inert_data(self):
+        hostile = '"; rm -rf /; echo "'
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.communicate.return_value = (b"K=val", b"")
+            mock_proc.returncode = 0
+            mock_popen.return_value = mock_proc
+            _run_helper("echo test", hostile, 3.0, 1024 * 1024)
+            env = mock_popen.call_args[1]["env"]
+            assert env["HERMES_SECRET_KEY"] == hostile
 
 
 # ---------------------------------------------------------------------------

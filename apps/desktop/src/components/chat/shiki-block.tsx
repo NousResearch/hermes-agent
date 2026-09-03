@@ -23,10 +23,7 @@ import { bundledLanguages, getSingletonHighlighter } from 'shiki'
 import type { BundledLanguage, BundledTheme, Highlighter } from 'shiki'
 import { createOnigurumaEngine } from 'shiki/engine/oniguruma'
 
-import {
-  SHIKI_HIGHLIGHT_SCOPE,
-  SHIKI_THEME
-} from '@/components/chat/shiki-config'
+import { SHIKI_HIGHLIGHT_SCOPE, SHIKI_THEME } from '@/components/chat/shiki-config'
 import { highlightCache, highlightCacheKey } from '@/components/chat/shiki-highlight-cache'
 
 /** Same debounce react-shiki's `delay` used to throttle highlight work with. */
@@ -108,11 +105,7 @@ async function highlightToHtml(
 }
 
 function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
 /** Never let a highlight failure blank a block — degrade to escaped plain text. */
@@ -120,12 +113,7 @@ function plainTextHtml(code: string): string {
   return `<pre class="shiki" style="background-color:transparent;margin:0"><code>${escapeHtml(code)}</code></pre>`
 }
 
-export default function CachedShikiBlock({
-  language,
-  code,
-  theme,
-  colorReplacements
-}: CachedShikiBlockProps) {
+export default function CachedShikiBlock({ language, code, theme, colorReplacements }: CachedShikiBlockProps) {
   const themeConfig = theme ?? SHIKI_THEME
   const replacements = colorReplacements ?? NO_COLOR_REPLACEMENTS
 

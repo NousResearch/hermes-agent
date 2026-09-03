@@ -578,6 +578,32 @@ def test_dispatch_derives_max_in_progress_when_unset(client, monkeypatch):
     assert captured.get("max_in_progress") == 2
 
 
+def test_dispatch_derives_max_in_progress_when_config_load_fails(client, monkeypatch):
+    """A config read failure must retain the safe memory-derived host cap."""
+    import sys
+
+    def fail_config_load():
+        raise OSError("config unavailable")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", fail_config_load)
+    monkeypatch.setattr(kb, "derive_default_max_in_progress", lambda sample=None: 2)
+
+    captured: dict = {}
+
+    def fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return kb.DispatchResult()
+
+    monkeypatch.setattr(kb, "dispatch_once", fake_dispatch_once)
+    plugin_mod = sys.modules.get("hermes_dashboard_plugin_kanban_test")
+    assert plugin_mod is not None
+    monkeypatch.setattr(plugin_mod.kanban_db, "dispatch_once", fake_dispatch_once)
+
+    r = client.post("/api/plugins/kanban/dispatch?dry_run=true")
+    assert r.status_code == 200
+    assert captured.get("max_in_progress") == 2
+
+
 def test_dispatch_max_query_overrides_config_max_spawn(client, monkeypatch):
     """?max=N overrides kanban.max_spawn but must still pass max_in_progress."""
     import sys

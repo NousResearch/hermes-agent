@@ -2307,12 +2307,7 @@ def _dispatch_concurrency_from_config() -> dict[str, Any]:
         if not isinstance(kanban_cfg, dict):
             kanban_cfg = {}
     except Exception:
-        return {
-            "max_in_progress": None,
-            "max_in_progress_per_profile": None,
-            "max_spawn": None,
-            "default_assignee": None,
-        }
+        kanban_cfg = {}
     return {
         "max_in_progress": kanban_db.resolve_max_in_progress(
             _coerce_positive_int(kanban_cfg.get("max_in_progress"))
@@ -2335,19 +2330,19 @@ def dispatch(
 
     Honours the same concurrency config as the gateway / CLI:
 
-    - ``kanban.max_in_progress`` — board-wide running cap
+    - ``kanban.max_in_progress`` — host-wide live worker cap
     - ``kanban.max_in_progress_per_profile`` — per-assignee cap
-    - ``kanban.max_spawn`` — per-tick spawn budget (overridden by ``?max=``)
+    - ``kanban.max_spawn`` — board-wide live worker cap (overridden by ``?max=``)
     - ``kanban.default_assignee`` — fallback for unassigned ready tasks
 
-    ``?max=N`` is an explicit per-tick spawn budget (same as
+    ``?max=N`` is an explicit board-wide live worker cap (same as
     ``hermes kanban dispatch --max N``); it does **not** bypass
     ``max_in_progress``.
     """
     board = _resolve_board(board)
     caps = _dispatch_concurrency_from_config()
     # Explicit ?max= wins over config max_spawn (same as CLI --max). Pass the
-    # integer through — including 0, which means "spawn nothing this tick" —
+    # integer through — including 0, which means "spawn nothing" —
     # rather than coercing non-positive values to None (unlimited).
     if max_n is not None and max_n < 0:
         raise HTTPException(

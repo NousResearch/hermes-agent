@@ -1087,10 +1087,21 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         action="store_true",
         help=(
             "With --apply, copy config.yaml/.env/SOUL.md/skills into mapped "
-            "HERMES_HOME via install(1). Never prints file contents. Default is "
-            "a manual gate: --apply does not copy profile files."
+            "HERMES_HOME via install(1) plus bounded copy-tree for skills. "
+            "Never prints file contents. Default is a manual gate."
         ),
     )
+    p_os_setup.add_argument(
+        "--migrate-shared-db",
+        action="store_true",
+        help=(
+            "Include sqlite backup of the live kanban.db into the dedicated "
+            "shared directory. Never raw-copies WAL/SHM. Does not stop the gateway."
+        ),
+    )
+    p_os_setup.add_argument("--flutter-sdk", default=None)
+    p_os_setup.add_argument("--android-sdk", default=None)
+    p_os_setup.add_argument("--jdk-home", default=None)
     p_os_probe = os_sub.add_parser(
         "probe",
         help="Fail-closed target-UID probe (WAL lifecycle as the mapped user)",
@@ -1103,6 +1114,20 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--path", dest="probe_path", required=True,
         help="Absolute path to the shared kanban.db",
     )
+    p_os_mig = os_sub.add_parser(
+        "migrate-db",
+        help="Online-safe sqlite backup into the dedicated shared directory",
+    )
+    p_os_mig.add_argument("--from", dest="migrate_from", required=True)
+    p_os_mig.add_argument("--to", dest="migrate_to", required=True)
+    p_os_copy = os_sub.add_parser(
+        "copy-tree",
+        help="Bounded directory copy that rejects symlinks and never prints contents",
+    )
+    p_os_copy.add_argument("--src", dest="copy_src", required=True)
+    p_os_copy.add_argument("--dst", dest="copy_dst", required=True)
+    p_os_copy.add_argument("--owner", dest="copy_owner", required=True)
+    p_os_copy.add_argument("--group", dest="copy_group", required=True)
     os_sub.add_parser("sudoers", help="Print the sudoers drop-in")
     os_sub.add_parser("rollback", help="Print rollback steps")
 

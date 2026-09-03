@@ -335,8 +335,10 @@ def test_cli_setup_dry_run_does_not_require_root(capsys):
     assert rc == 0
     assert "Dry-run only" in out
     assert "/home/matt/Documents/WorkoutTracker" in out
-    assert "sysadmin is NOT granted" in out
-    assert "sudo hermes kanban os-users setup --apply" in out
+    assert "sysadmin not granted" in out
+    assert "world-readable is not isolation" in out
+    assert "Do not use `sudo hermes`" in out
+    assert "kanban os-users setup --apply" in out
     assert "MANUAL GATE" in out
     assert "--gid hermes-kanban" not in out
     assert "-g hermes-dev" in out

@@ -97,7 +97,7 @@ def test_plan_setup_uses_private_groups_not_shared_gid():
     assert any("-g" in a and a[a.index("-g") + 1] == "hermes-dev" for a in installs)
 
 
-def test_plan_setup_acls_actual_db_parent_not_kanban_subdir(tmp_path):
+def test_plan_setup_acls_dedicated_dir_not_hermes_root(tmp_path):
     paths = _board_paths(tmp_path)
     steps = plan_setup_steps(
         mapping=MAPPING,
@@ -105,25 +105,24 @@ def test_plan_setup_acls_actual_db_parent_not_kanban_subdir(tmp_path):
         board_paths=paths,
     )
     blob = _argv_blob(steps)
-    db_parent = str(paths["kanban_db"].parent)
+    hermes_root = str(paths["hermes_root"])
     kdir = str(paths["kanban_dir"])
     assert f"g:{DEFAULT_GROUP}:wx" in blob
-    assert db_parent in blob
-    assert (
-        f"g:{DEFAULT_GROUP}:rwx" not in blob
-        or kdir not in blob.split(f"g:{DEFAULT_GROUP}:rwx")[-1][:200]
-    )
+    assert kdir in blob
     setfacls = [s.argv for s in steps if s.argv and s.argv[0] == "setfacl"]
-    db_parent_acls = [a for a in setfacls if a[-1] == db_parent]
-    assert any("g:hermes-kanban:wx" in a for a in db_parent_acls)
-    assert any("-d" in a and "g:hermes-kanban:rw" in a for a in db_parent_acls)
+    root_acls = [a for a in setfacls if a[-1] == hermes_root]
+    assert any("g:hermes-kanban:--x" in a for a in root_acls)
+    assert not any("g:hermes-kanban:wx" in a for a in root_acls)
+    kdir_acls = [a for a in setfacls if a[-1] == kdir]
+    assert any("g:hermes-kanban:wx" in a for a in kdir_acls)
+    assert any("-d" in a and "g:hermes-kanban:rw" in a for a in kdir_acls)
     kdir_wal = [
         a for a in setfacls if a[-1] == kdir and "g:hermes-kanban:rwx" in " ".join(a)
     ]
     assert kdir_wal == []
     ancestors = [a for a in setfacls if "g:hermes-kanban:--x" in a]
     assert ancestors
-    assert any(str(paths["hermes_root"].parent) == a[-1] for a in ancestors)
+    assert any(hermes_root == a[-1] for a in ancestors)
 
 
 def test_plan_setup_workspace_ancestor_acl_not_sysadmin():
@@ -135,7 +134,8 @@ def test_plan_setup_workspace_ancestor_acl_not_sysadmin():
     )
     setfacls = [s.argv for s in steps if s.argv and s.argv[0] == "setfacl"]
     titles = " ".join(s.title for s in steps)
-    assert "sysadmin is NOT granted" in titles
+    assert "world-readable is not isolation" in titles
+    assert "sysadmin not granted" in titles
     assert any(a[-1] == "/home/matt" and "u:hermes-dev:--x" in a for a in setfacls)
     assert any(
         a[-1] == "/home/matt/Documents" and "u:hermes-dev:--x" in a for a in setfacls
@@ -183,8 +183,16 @@ def test_mocked_apply_command_sequence(tmp_path):
     )
     assert any("-G hermes-kanban" in line for line in flat)
     assert any(
-        "g:hermes-kanban:wx" in line and str(paths["kanban_db"].parent) in line
-        for line in flat
+        a[0] == "setfacl"
+        and "g:hermes-kanban:wx" in " ".join(a)
+        and a[-1] == str(paths["kanban_dir"])
+        for a in recorded
+    )
+    assert not any(
+        a[0] == "setfacl"
+        and "g:hermes-kanban:wx" in " ".join(a)
+        and a[-1] == str(paths["hermes_root"])
+        for a in recorded
     )
     assert any("u:hermes-dev:--x" in line and "/home/matt" in line for line in flat)
     assert any("-R" in a and WORKSPACE in a for a in recorded)

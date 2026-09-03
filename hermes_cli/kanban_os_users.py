@@ -65,6 +65,14 @@ DEFAULT_TEST_BIN = "/usr/bin/test"
 DEFAULT_STATE_PATH = "/var/lib/hermes/kanban-os-users-state.json"
 REQUIRED_MAPPED_HOME_FILES = ("config.yaml", ".env", "SOUL.md")
 REQUIRED_MAPPED_HOME_DIRS = ("skills",)
+DEFAULT_DEV_WORKSPACE = "/home/matt/Documents/WorkoutTracker"
+DEFAULT_FLUTTER_SDK = "/home/matt/flutter"
+DEFAULT_ANDROID_SDK = "/home/matt/Android/Sdk"
+DEFAULT_JDK_HOME = "/home/matt/.local/opt/jdk-17"
+DEFAULT_GH_BIN = "/usr/bin/gh"
+DEFAULT_GIT_BIN = "/usr/bin/git"
+VERSIONED_RUNTIME_ROOT = "/opt/hermes/kanban-os-users"
+GITHUB_LS_REMOTE_URL = "https://github.com/NousResearch/hermes-agent.git"
 
 # Env vars the mapped worker must inherit through sudo env_reset.
 SUDO_ENV_KEEP = (
@@ -91,6 +99,12 @@ SUDO_ENV_KEEP = (
     "LANG",
     "LC_ALL",
     "TZ",
+    "PUB_CACHE",
+    "GRADLE_USER_HOME",
+    "ANDROID_SDK_ROOT",
+    "ANDROID_HOME",
+    "JAVA_HOME",
+    "FLUTTER_ROOT",
 )
 
 
@@ -775,6 +789,7 @@ def render_sudoers(
     gateway_user: Optional[str] = None,
     mapping: Optional[Mapping[str, str]] = None,
     hermes_argv: Optional[Sequence[str]] = None,
+    extra_bins: Optional[Sequence[str]] = None,
 ) -> str:
     gw = gateway_user or _gateway_user()
     users = sorted(set(resolve_setup_targets(mapping).values()))
@@ -799,8 +814,11 @@ def render_sudoers(
         f"{gw} ALL=({runas}) NOPASSWD:SETENV: {id_cmd}",
         f"{gw} ALL=({runas}) NOPASSWD:SETENV: {test_cmd}",
         f"{gw} ALL=({runas}) NOPASSWD:SETENV: {cmd}",
-        "",
     ]
+    for bin_path in extra_bins or ():
+        quoted = _quote_cmd([str(bin_path)])
+        lines.append(f"{gw} ALL=({runas}) NOPASSWD:SETENV: {quoted}")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -869,6 +887,10 @@ def plan_setup_steps(
     dev_workspace: Optional[str] = None,
     hermes_argv: Optional[Sequence[str]] = None,
     board_paths: Optional[Mapping[str, Path]] = None,
+    flutter_sdk: Optional[str] = None,
+    android_sdk: Optional[str] = None,
+    jdk_home: Optional[str] = None,
+    include_db_migration: bool = False,
 ) -> list[SetupStep]:
     targets = resolve_setup_targets(mapping)
     gw = gateway_user or _gateway_user()
@@ -945,65 +967,102 @@ def plan_setup_steps(
         except Exception:
             paths = None
     if paths:
-        db_path = Path(paths["kanban_db"])
-        db = str(db_path)
-        db_parent = db_path.parent
-        kdir = str(paths["kanban_dir"])
+        from hermes_cli.kanban_os_users_rollout import (
+            migrate_db_argv,
+            reject_write_acl_on_hermes_root,
+            self_hermes_argv,
+            shared_board_acl_layout,
+        )
+
+        layout = shared_board_acl_layout(paths)
+        writable_dir = Path(layout["writable_dir"])
+        target_db = Path(layout["target_db"])
+        live_db = Path(layout["live_db"])
+        kdir = Path(layout["kanban_dir"])
+        hermes_root = layout.get("hermes_root")
+        argv_self = self_hermes_argv(hermes_argv)
         steps.append(
             SetupStep(
-                "kanban metadata dir",
-                ["install", "-d", "-m", "2770", "-o", gw, "-g", group, kdir],
+                "dedicated shared kanban dir (group wx lives here, never on ~/.hermes)",
+                ["install", "-d", "-m", "2770", "-o", gw, "-g", group, str(kdir)],
             )
         )
-        # Least privilege on the *actual* DB parent (kanban.db, not kanban/).
-        # Traverse-only on ancestors; wx (no listdir) on the parent so WAL/SHM
-        # sidecars can be created without making the whole Hermes tree readable.
-        for ancestor in _acl_traverse_ancestors(db_parent):
+        # Traverse-only on Hermes root and ancestors. Write ACLs only on the
+        # dedicated kanban directory so specialists cannot create/rename files
+        # in the default Hermes root.
+        traverse_targets: list[Path] = []
+        if hermes_root is not None:
+            traverse_targets.append(Path(hermes_root))
+            traverse_targets.extend(_acl_traverse_ancestors(Path(hermes_root)))
+        traverse_targets.extend(_acl_traverse_ancestors(writable_dir))
+        seen_traverse: set[str] = set()
+        for ancestor in traverse_targets:
+            key = str(ancestor)
+            if key in seen_traverse:
+                continue
+            seen_traverse.add(key)
+            if hermes_root is not None and str(ancestor) == str(writable_dir):
+                continue
             steps.append(
                 SetupStep(
-                    f"traverse ACL on {ancestor} for {group} (execute only; no listdir)",
+                    f"traverse ACL on {ancestor} for {group} (execute only; no listdir, no write)",
                     ["setfacl", "-m", f"g:{group}:--x", str(ancestor)],
                     creates=f"acl:{ancestor}",
                 )
             )
         steps.extend([
             SetupStep(
-                f"ACL on DB parent {db_parent} (group wx for WAL/shm; no listdir)",
-                ["setfacl", "-m", f"g:{group}:wx", str(db_parent)],
-                creates=f"acl:{db_parent}",
+                f"ACL on dedicated DB parent {writable_dir} (group wx for WAL/shm; no listdir)",
+                ["setfacl", "-m", f"g:{group}:wx", str(writable_dir)],
+                creates=f"acl:{writable_dir}",
             ),
             SetupStep(
-                f"default ACL on DB parent {db_parent} for new WAL/shm files",
-                ["setfacl", "-d", "-m", f"g:{group}:rw", str(db_parent)],
-                creates=f"acl:{db_parent}",
+                f"default ACL on dedicated DB parent {writable_dir} for new WAL/shm files",
+                ["setfacl", "-d", "-m", f"g:{group}:rw", str(writable_dir)],
+                creates=f"acl:{writable_dir}",
             ),
             SetupStep(
-                "ACL on kanban.db (SQLite needs sibling -wal/-shm)",
-                ["setfacl", "-m", f"g:{group}:rw", db],
-                creates=f"acl:{db}",
+                "ACL on dedicated kanban.db (SQLite needs sibling -wal/-shm)",
+                ["setfacl", "-m", f"g:{group}:rw", str(target_db)],
+                creates=f"acl:{target_db}",
+                optional=True,
             ),
         ])
-        ws = str(paths["workspaces"])
+        if include_db_migration:
+            steps.append(
+                SetupStep(
+                    f"sqlite backup {live_db} -> {target_db} (never cp a live DB/WAL/SHM)",
+                    migrate_db_argv(live_db, target_db, hermes_argv=argv_self),
+                    optional=True,
+                )
+            )
+        ws = (
+            str(paths["workspaces"])
+            if "workspaces" in paths
+            else str(kdir / "workspaces")
+        )
         steps.append(
             SetupStep(
                 "shared workspaces root (group rwx, no world)",
                 ["install", "-d", "-m", "2770", "-o", gw, "-g", group, ws],
             )
         )
+        if hermes_root is not None:
+            reject_write_acl_on_hermes_root(steps, Path(hermes_root))
     if dev_workspace:
         dev_user = targets.get("dev", "hermes-dev")
         ws_path = Path(dev_workspace)
         for ancestor in _acl_traverse_ancestors(ws_path):
             steps.append(
                 SetupStep(
-                    f"dev-only traverse ACL on {ancestor} (sysadmin is NOT granted this)",
+                    f"dev-only traverse ACL on {ancestor} (not confidentiality; world-readable trees are not isolation)",
                     ["setfacl", "-m", f"u:{dev_user}:--x", str(ancestor)],
                     creates=f"acl:{ancestor}",
                 )
             )
         steps.extend([
             SetupStep(
-                f"dev-only recursive ACL on {dev_workspace} (sysadmin is NOT granted this)",
+                f"dev-only recursive ACL on {dev_workspace} (sysadmin not granted; world-readable is not isolation)",
                 ["setfacl", "-R", "-m", f"u:{dev_user}:rwx", str(ws_path)],
                 creates=f"acl:{ws_path}",
             ),
@@ -1013,6 +1072,60 @@ def plan_setup_steps(
                 creates=f"acl:{ws_path}",
             ),
         ])
+    if flutter_sdk or android_sdk or jdk_home:
+        dev_user = targets.get("dev", "hermes-dev")
+        for label, raw in (
+            ("flutter", flutter_sdk),
+            ("android-sdk", android_sdk),
+            ("jdk", jdk_home),
+        ):
+            if not raw:
+                continue
+            tool = Path(raw)
+            for ancestor in _acl_traverse_ancestors(tool):
+                steps.append(
+                    SetupStep(
+                        f"dev-only traverse ACL on {ancestor} for {label} (not a grant of /home/matt)",
+                        ["setfacl", "-m", f"u:{dev_user}:--x", str(ancestor)],
+                        creates=f"acl:{ancestor}",
+                    )
+                )
+            steps.extend([
+                SetupStep(
+                    f"dev-only read/execute ACL on {tool} (no write; not recursive on /home/matt)",
+                    ["setfacl", "-R", "-m", f"u:{dev_user}:r-x", str(tool)],
+                    creates=f"acl:{tool}",
+                    optional=True,
+                ),
+                SetupStep(
+                    f"dev-only default r-x ACL on {tool}",
+                    ["setfacl", "-d", "-m", f"u:{dev_user}:r-x", str(tool)],
+                    creates=f"acl:{tool}",
+                    optional=True,
+                ),
+            ])
+        for cache in (
+            ".cache/flutter",
+            ".cache/pub",
+            ".cache/gradle",
+            ".cache/android",
+        ):
+            steps.append(
+                SetupStep(
+                    f"private {cache} for {dev_user}",
+                    [
+                        "install",
+                        "-d",
+                        "-m",
+                        "0700",
+                        "-o",
+                        dev_user,
+                        "-g",
+                        dev_user,
+                        f"/home/{dev_user}/{cache}",
+                    ],
+                )
+            )
     steps.append(
         SetupStep(
             f"add {gw} to {group} for admin visibility",
@@ -1113,9 +1226,12 @@ def format_plan(steps: Sequence[SetupStep], *, heading: str) -> str:
         lines.append(f"{i}. {step.title}")
         lines.append(f"   {_quote_cmd(step.argv)}")
     lines.append("")
-    lines.append("Do not cat/print .env, auth.json, or SSH keys. Copy with install(1).")
+    lines.append("Do not cat/print .env, auth.json, gh tokens, or SSH keys.")
     lines.append(
         "MANUAL GATE: setup --apply does not copy profile files unless --migrate-profile-files."
+    )
+    lines.append(
+        "Skills use bounded copy-tree (no per-file flood). Shared DB uses sqlite backup, not cp."
     )
     lines.append(
         "Required in mapped HERMES_HOME before check can report ready: "
@@ -1139,8 +1255,12 @@ def plan_migrate_steps(
     mapping: Mapping[str, str],
     *,
     source_root: Optional[Path] = None,
+    hermes_argv: Optional[Sequence[str]] = None,
 ) -> list[SetupStep]:
+    from hermes_cli.kanban_os_users_rollout import copy_tree_argv, self_hermes_argv
+
     root = _source_hermes_root(source_root)
+    argv_self = self_hermes_argv(hermes_argv)
     steps: list[SetupStep] = []
     for profile, user in mapping.items():
         src = root / "profiles" / profile
@@ -1165,45 +1285,17 @@ def plan_migrate_steps(
             )
         steps.append(
             SetupStep(
-                f"migrate skills dir for {profile}",
-                [
-                    "install",
-                    "-d",
-                    "-m",
-                    "0700",
-                    "-o",
-                    user,
-                    "-g",
-                    user,
-                    str(dst / "skills"),
-                ],
+                f"bounded copy-tree skills for {profile} (rejects symlinks; never prints contents)",
+                copy_tree_argv(
+                    src / "skills",
+                    dst / "skills",
+                    owner=user,
+                    group=user,
+                    hermes_argv=argv_self,
+                ),
+                optional=True,
             )
         )
-        skills_src = src / "skills"
-        if skills_src.is_dir():
-            for child in sorted(skills_src.rglob("*")):
-                if not child.is_file():
-                    continue
-                rel = child.relative_to(skills_src)
-                dest_file = dst / "skills" / rel
-                steps.append(
-                    SetupStep(
-                        f"migrate skills/{rel} for {profile}",
-                        [
-                            "install",
-                            "-D",
-                            "-m",
-                            "0600",
-                            "-o",
-                            user,
-                            "-g",
-                            user,
-                            str(child),
-                            str(dest_file),
-                        ],
-                        optional=True,
-                    )
-                )
     return steps
 
 
@@ -1211,16 +1303,31 @@ def migrate_profile_files_commands(
     mapping: Mapping[str, str],
     *,
     source_root: Optional[Path] = None,
+    hermes_argv: Optional[Sequence[str]] = None,
 ) -> list[str]:
-    """Print install(1) copy commands; never dump file contents."""
-    steps = plan_migrate_steps(mapping, source_root=source_root)
+    """Summarize planned copy roots/counts; never dump file contents or per-file argv."""
+    from hermes_cli.kanban_os_users_rollout import summarize_tree
+
+    root = _source_hermes_root(source_root)
+    steps = plan_migrate_steps(
+        mapping, source_root=source_root, hermes_argv=hermes_argv
+    )
     lines = [
         "# Credential/config migration (contents are never printed)",
         "# MANUAL GATE: setup --apply does not copy these unless --migrate-profile-files.",
         "# Review each source path. Skip files that should stay gateway-only.",
         "# Required in mapped HERMES_HOME before check can report ready:",
         "#   config.yaml, .env, SOUL.md, skills/",
+        "# Dry-run summarizes counts/roots; it does not emit per-file install(1) lines.",
     ]
+    for profile, user in mapping.items():
+        src = root / "profiles" / profile
+        dst = Path(f"/home/{user}") / ".hermes" / "profiles" / profile
+        skills = summarize_tree(src / "skills")
+        lines.append(
+            f"# {profile}: {src} -> {dst}; skills files={skills['files']} "
+            f"dirs={skills['dirs']} rejected_symlinks={skills['symlinks']}"
+        )
     for step in steps:
         lines.append(_quote_cmd(step.argv))
     return lines
@@ -1291,6 +1398,12 @@ def audit_mapping(
     hooks: Optional[LaunchHooks] = None,
     board_paths: Optional[Mapping[str, Path]] = None,
     wal_prover: Optional[Callable[[str, str], None]] = None,
+    host_gates: bool = False,
+    hermes_argv: Optional[Sequence[str]] = None,
+    flutter_sdk: Optional[str] = None,
+    android_sdk: Optional[str] = None,
+    jdk_home: Optional[str] = None,
+    dev_workspace: Optional[str] = None,
 ) -> list[AuditItem]:
     items: list[AuditItem] = []
     if mapping is None:
@@ -1392,9 +1505,30 @@ def audit_mapping(
                     )
                 )
     try:
+        from hermes_cli.kanban_os_users_rollout import shared_board_acl_layout
+
         paths = board_paths if board_paths is not None else shared_board_paths()
-        db = Path(paths["kanban_db"])
-        parent = db.parent
+        layout = shared_board_acl_layout(paths)
+        db = Path(layout["target_db"])
+        parent = Path(layout["writable_dir"])
+        hermes_root = layout.get("hermes_root")
+        if hermes_root is not None:
+            try:
+                same_root = parent.resolve() == Path(hermes_root).resolve()
+            except OSError:
+                same_root = str(parent) == str(hermes_root)
+            items.append(
+                AuditItem(
+                    "board-not-hermes-root",
+                    not same_root,
+                    (
+                        f"dedicated shared dir {parent}"
+                        if not same_root
+                        else f"WRITE PARENT IS HERMES ROOT {hermes_root}"
+                    ),
+                    isolation=not same_root,
+                )
+            )
         parent_ok = parent.is_dir()
         parent_bits = [f"board parent {parent}"]
         if not parent_ok:
@@ -1435,6 +1569,156 @@ def audit_mapping(
             )
     except Exception as exc:
         items.append(AuditItem("board", False, str(exc)))
+    if host_gates:
+        items.extend(
+            _host_continuity_gates(
+                targets=targets,
+                pw_by_user=pw_by_user,
+                homes_by_profile=homes_by_profile,
+                hooks=h,
+                hermes_argv=hermes_argv,
+                flutter_sdk=flutter_sdk,
+                android_sdk=android_sdk,
+                jdk_home=jdk_home,
+                dev_workspace=dev_workspace,
+            )
+        )
+    return items
+
+
+def _host_continuity_gates(
+    *,
+    targets: Mapping[str, str],
+    pw_by_user: Mapping[str, PasswdEntry],
+    homes_by_profile: Mapping[str, str],
+    hooks: LaunchHooks,
+    hermes_argv: Optional[Sequence[str]] = None,
+    flutter_sdk: Optional[str] = None,
+    android_sdk: Optional[str] = None,
+    jdk_home: Optional[str] = None,
+    dev_workspace: Optional[str] = None,
+) -> list[AuditItem]:
+    from hermes_cli.kanban_os_users_rollout import (
+        DEFAULT_ANDROID_SDK,
+        DEFAULT_DEV_WORKSPACE,
+        DEFAULT_FLUTTER_SDK,
+        DEFAULT_GH_BIN,
+        DEFAULT_GIT_BIN,
+        DEFAULT_JDK_HOME,
+        GITHUB_LS_REMOTE_URL,
+        feature_source_sha,
+        hermes_argv_covers_feature,
+        self_hermes_argv,
+    )
+
+    items: list[AuditItem] = []
+    argv = list(hermes_argv) if hermes_argv else self_hermes_argv()
+    covers = hermes_argv_covers_feature(argv)
+    sha = feature_source_sha() or "(unknown)"
+    items.append(
+        AuditItem(
+            "runtime-sha",
+            covers,
+            f"reviewed sha {sha}; argv={argv!r}. Isolation is false until the live dispatcher uses this commit.",
+            isolation=covers,
+        )
+    )
+
+    def _cmd_ok(username: str, inner: list[str]) -> tuple[bool, str]:
+        a = build_sudo_argv(username, inner, sudo_bin=hooks.sudo_bin)
+        assert hooks.run is not None
+        try:
+            proc = hooks.run(a, timeout=30)
+        except Exception as exc:
+            return False, f"{inner[0]} probe failed: {exc}"
+        rc = int(getattr(proc, "returncode", 1))
+        if rc == 0:
+            return True, f"{username} {inner[0]} ok (stdout omitted)"
+        return False, f"{username} {inner[0]} failed (exit {rc}; stdout omitted)"
+
+    dev_user = targets.get("dev")
+    if dev_user and dev_user in pw_by_user:
+        ok_gh, d_gh = _cmd_ok(dev_user, [DEFAULT_GH_BIN, "api", "user"])
+        items.append(AuditItem("github-api", ok_gh, d_gh, isolation=False))
+        ok_git, d_git = _cmd_ok(
+            dev_user, [DEFAULT_GIT_BIN, "ls-remote", GITHUB_LS_REMOTE_URL, "HEAD"]
+        )
+        items.append(AuditItem("github-ls-remote", ok_git, d_git, isolation=False))
+        ok_ssh, d_ssh = probe_user_access(
+            dev_user, "/home/matt/.ssh", mode="r", hooks=hooks, expect_ok=False
+        )
+        items.append(AuditItem("deny-matt-ssh", ok_ssh, d_ssh, isolation=ok_ssh))
+        for key_path in ("/home/matt/.ssh/id_ed25519", "/home/matt/.ssh/id_rsa"):
+            if Path(key_path).exists():
+                ok_k, d_k = probe_user_access(
+                    dev_user, key_path, mode="r", hooks=hooks, expect_ok=False
+                )
+                items.append(
+                    AuditItem(
+                        f"deny-key:{Path(key_path).name}", ok_k, d_k, isolation=ok_k
+                    )
+                )
+        sys_user = targets.get("sysadmin")
+        if sys_user and "dev" in homes_by_profile:
+            envp = str(Path(homes_by_profile["dev"]) / ".env")
+            ok_sc, d_sc = probe_user_access(
+                sys_user, envp, mode="r", hooks=hooks, expect_ok=False
+            )
+            items.append(
+                AuditItem("deny-sysadmin-dev-env", ok_sc, d_sc, isolation=ok_sc)
+            )
+        ws = Path(dev_workspace or DEFAULT_DEV_WORKSPACE)
+        if ws.exists():
+            try:
+                world = bool(stat.S_IMODE(ws.stat().st_mode) & 0o004)
+            except OSError:
+                world = False
+            items.append(
+                AuditItem(
+                    "workspace-modes",
+                    True,
+                    f"{ws} world-readable={world}; not an isolation claim",
+                    isolation=False,
+                )
+            )
+            ok_ws, d_ws = probe_user_access(
+                dev_user, str(ws), mode="x", hooks=hooks, expect_ok=True
+            )
+            items.append(
+                AuditItem("dev-workspace-traverse", ok_ws, d_ws, isolation=False)
+            )
+        for label, raw in (
+            (
+                "flutter",
+                flutter_sdk
+                or (
+                    DEFAULT_FLUTTER_SDK if Path(DEFAULT_FLUTTER_SDK).exists() else None
+                ),
+            ),
+            (
+                "android-sdk",
+                android_sdk
+                or (
+                    DEFAULT_ANDROID_SDK if Path(DEFAULT_ANDROID_SDK).exists() else None
+                ),
+            ),
+            (
+                "jdk",
+                jdk_home
+                or (DEFAULT_JDK_HOME if Path(DEFAULT_JDK_HOME).exists() else None),
+            ),
+        ):
+            if not raw:
+                continue
+            ok_x, d_x = probe_user_access(
+                dev_user, str(raw), mode="x", hooks=hooks, expect_ok=True
+            )
+            items.append(AuditItem(f"toolchain-{label}", ok_x, d_x, isolation=False))
+        cache = f"/home/{dev_user}/.cache"
+        ok_w, d_w = probe_user_access(
+            dev_user, cache, mode="w", hooks=hooks, expect_ok=True
+        )
+        items.append(AuditItem("dev-private-cache", ok_w, d_w, isolation=False))
     return items
 
 
@@ -1528,8 +1812,16 @@ def execute_setup_plan(
 
     for step in steps:
         argv = list(step.argv)
-        if step.optional and argv and os.path.basename(str(argv[0])) == "install":
-            src = str(argv[-2]) if len(argv) >= 2 else ""
+        if step.optional:
+            src = ""
+            if "copy-tree" in argv and "--src" in argv:
+                src = str(argv[argv.index("--src") + 1])
+            elif "migrate-db" in argv and "--from" in argv:
+                src = str(argv[argv.index("--from") + 1])
+            elif (
+                argv and os.path.basename(str(argv[0])) == "install" and len(argv) >= 2
+            ):
+                src = str(argv[-2])
             if src.startswith("/") and not Path(src).exists():
                 print(f"# skip optional missing source {src}")
                 continue
@@ -1613,6 +1905,51 @@ def run_os_users_cli(
         Path(state_path) if state_path is not None else Path(DEFAULT_STATE_PATH)
     )
 
+    if action == "migrate-db":
+        from hermes_cli.kanban_os_users_rollout import sqlite_backup_copy
+
+        src = getattr(args, "migrate_from", None)
+        dst = getattr(args, "migrate_to", None)
+        if not src or not dst:
+            print(
+                "kanban os-users migrate-db: --from and --to are required",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            sqlite_backup_copy(str(src), str(dst))
+        except Exception as exc:
+            print(f"kanban os-users migrate-db failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"sqlite backup ok {src} -> {dst} (WAL/SHM not raw-copied)")
+        return 0
+
+    if action == "copy-tree":
+        from hermes_cli.kanban_os_users_rollout import copy_tree_reject_symlinks
+
+        src = getattr(args, "copy_src", None)
+        dst = getattr(args, "copy_dst", None)
+        owner = getattr(args, "copy_owner", None) or "root"
+        group = getattr(args, "copy_group", None) or owner
+        if not src or not dst:
+            print(
+                "kanban os-users copy-tree: --src and --dst are required",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            stats = copy_tree_reject_symlinks(
+                str(src), str(dst), owner=owner, group=group
+            )
+        except Exception as exc:
+            print(f"kanban os-users copy-tree failed: {exc}", file=sys.stderr)
+            return 1
+        print(
+            f"copy-tree ok files={stats['files']} dirs={stats['dirs']} "
+            f"rejected_symlinks={stats['rejected_symlinks']}"
+        )
+        return 0
+
     if action == "probe":
         kind = getattr(args, "probe_kind", None) or "wal"
         path = getattr(args, "probe_path", None)
@@ -1631,11 +1968,19 @@ def run_os_users_cli(
         return 0
 
     if action == "check":
+        from hermes_cli.kanban_os_users_rollout import self_hermes_argv
+
         items = audit_mapping(
             mapping=mapping or None,
             homes=homes,
             hooks=hooks,
             board_paths=board_paths,
+            host_gates=True,
+            hermes_argv=self_hermes_argv(),
+            flutter_sdk=getattr(args, "flutter_sdk", None),
+            android_sdk=getattr(args, "android_sdk", None),
+            jdk_home=getattr(args, "jdk_home", None),
+            dev_workspace=getattr(args, "dev_workspace", None),
         )
         if getattr(args, "json", False):
             print(
@@ -1682,24 +2027,60 @@ def run_os_users_cli(
         return 0
 
     if action == "setup":
+        from hermes_cli.kanban_os_users_rollout import (
+            apply_command_hint,
+            default_toolchain_if_present,
+            extra_sudoers_bins,
+            format_rollout_and_rollback,
+            github_manual_gate_lines,
+            self_hermes_argv,
+        )
+
         gw = getattr(args, "gateway_user", None)
         dev_ws = getattr(args, "dev_workspace", None)
+        if not dev_ws and Path(DEFAULT_DEV_WORKSPACE).exists():
+            dev_ws = DEFAULT_DEV_WORKSPACE
         migrate = bool(getattr(args, "migrate_profile_files", False))
+        include_db = bool(getattr(args, "migrate_shared_db", False))
+        toolchain = default_toolchain_if_present()
+        flutter = getattr(args, "flutter_sdk", None) or toolchain.get("flutter_sdk")
+        android = getattr(args, "android_sdk", None) or toolchain.get("android_sdk")
+        jdk = getattr(args, "jdk_home", None) or toolchain.get("jdk_home")
+        argv_self = self_hermes_argv()
+        extra_bins = extra_sudoers_bins(
+            flutter_sdk=flutter, android_sdk=android, jdk_home=jdk
+        )
         targets = mapping or default_mapping_example()
         steps = plan_setup_steps(
             mapping=mapping or None,
             gateway_user=gw,
             dev_workspace=dev_ws,
             board_paths=board_paths,
+            hermes_argv=argv_self,
+            flutter_sdk=flutter,
+            android_sdk=android,
+            jdk_home=jdk,
+            include_db_migration=include_db,
         )
         print(format_plan(steps, heading="Kanban profile_os_users setup (dry-run)"))
         print("")
-        print("\n".join(migrate_profile_files_commands(targets)))
+        print(format_rollout_and_rollback(hermes_argv=argv_self))
+        print("")
+        print("\n".join(migrate_profile_files_commands(targets, hermes_argv=argv_self)))
+        print("")
+        print("\n".join(github_manual_gate_lines(targets.get("dev", "hermes-dev"))))
         print("")
         print("Sudoers snippet:")
-        print(render_sudoers(mapping=mapping or None, gateway_user=gw))
+        sudoers_text = render_sudoers(
+            mapping=mapping or None,
+            gateway_user=gw,
+            hermes_argv=argv_self,
+            extra_bins=extra_bins,
+        )
+        print(sudoers_text)
+        hint = apply_command_hint(argv_self)
         if migrate:
-            steps = list(steps) + plan_migrate_steps(targets)
+            steps = list(steps) + plan_migrate_steps(targets, hermes_argv=argv_self)
             print(
                 "Will copy profile files (--migrate-profile-files). "
                 "Contents are never printed."
@@ -1707,7 +2088,7 @@ def run_os_users_cli(
         else:
             print(
                 "MANUAL GATE: profile files were NOT copied. Re-run with "
-                "--migrate-profile-files after review, or copy with install(1)."
+                "--migrate-profile-files after review, or copy with copy-tree."
             )
             print(
                 "Check cannot report ready without config.yaml, .env, SOUL.md, skills/."
@@ -1715,20 +2096,21 @@ def run_os_users_cli(
         apply = bool(getattr(args, "apply", False))
         if not apply:
             print("Dry-run only. Re-run as root with --apply after review.")
-            print("  sudo hermes kanban os-users setup --apply")
+            print(f"  {hint}")
+            print("Do not use `sudo hermes`; that may invoke the old installed CLI.")
             return 0
         if os.geteuid() != 0:
             print(
                 "kanban os-users: --apply requires euid 0. Not prompting for a password.",
                 file=sys.stderr,
             )
-            print("  sudo hermes kanban os-users setup --apply", file=sys.stderr)
+            print(f"  {hint}", file=sys.stderr)
             return 1
         rc = execute_setup_plan(
             steps,
             hooks=hooks,
             state_path=resolved_state,
-            sudoers_text=render_sudoers(mapping=mapping or None, gateway_user=gw),
+            sudoers_text=sudoers_text,
         )
         if rc == 0:
             print("Apply complete. Run: hermes kanban os-users check")

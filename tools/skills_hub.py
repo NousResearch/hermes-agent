@@ -4190,7 +4190,9 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
         if isinstance(file_content, bytes):
             file_dest.write_bytes(file_content)
         else:
-            file_dest.write_text(file_content, encoding="utf-8")
+            # newline="" prevents implicit platform CRLF translation so the
+            # written bytes stay hash-symmetric with the in-memory bundle.
+            file_dest.write_text(file_content, encoding="utf-8", newline="")
 
     return dest
 

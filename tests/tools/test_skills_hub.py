@@ -525,9 +525,9 @@ class TestCheckForSkillUpdates:
         )
         skill_dir = tmp_path / "demo-skill"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("same content")
+        (skill_dir / "SKILL.md").write_text("same content", encoding="utf-8", newline="")
         (skill_dir / "references").mkdir()
-        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
+        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n", encoding="utf-8", newline="")
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 

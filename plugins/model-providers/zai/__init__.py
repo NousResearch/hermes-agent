@@ -22,6 +22,12 @@ two enabled levels — ``high`` and ``max`` — on the OpenAI-compatible endpoin
 (per Z.AI / BigModel docs).  Hermes' richer effort scale is collapsed onto
 those two so the user's effort preference actually reaches the model instead
 of being silently dropped.
+
+GLM-5.3 dropped ``thinking.type: "disabled"``. PAYG and the China
+``open.bigmodel.cn`` endpoint return HTTP 400 (code 1210) if that field is
+sent. The native effort levels are ``low`` / ``medium`` / ``high`` / ``max``.
+Turning thinking off maps to ``enabled`` + ``low``, the lightest legal
+request. GLM-5.2 still accepts a real ``disabled`` on api.z.ai.
 """
 
 from __future__ import annotations
@@ -135,7 +141,13 @@ class ZaiProfile(ProviderProfile):
         # keeps the server default (enabled) exactly as before.
         if isinstance(reasoning_config, dict):
             enabled = reasoning_config.get("enabled") is not False
-            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+            # GLM-5.3 always thinks. ``thinking.type=disabled`` is HTTP 400
+            # code 1210 (issue #85890 / #96373). Clamp "off" to enabled + low.
+            if not enabled and _is_glm_5_3(model):
+                extra_body["thinking"] = {"type": "enabled"}
+                top_level["reasoning_effort"] = "low"
+            else:
+                extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
 
         if _is_glm_5_2(model):
             effort = _glm_5_2_reasoning_effort(reasoning_config, model=model)

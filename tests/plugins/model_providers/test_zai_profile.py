@@ -181,6 +181,41 @@ class TestZaiGLM53ReasoningEffort:
         )
         assert top_level == {"reasoning_effort": "high"}
 
+    def test_no_preference_omits_thinking(self, zai_profile):
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config=None, model="glm-5.3"
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "glm-5.3",
+            "glm-5.3-flash",
+            "z-ai/glm-5.3",
+            "z-ai/glm-5.3-flash",
+            "glm-5-3",
+            "glm-5p3",
+        ],
+    )
+    def test_disabled_becomes_enabled_plus_low(self, zai_profile, model):
+        """#85890 / #96373 — 5.3 rejects thinking.type=disabled (HTTP 400 / 1210)."""
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model=model,
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": "low"}
+
+    def test_glm_5_2_still_sends_disabled(self, zai_profile):
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="glm-5.2",
+        )
+        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert top_level == {}
+
 
 class TestZaiModelGating:
     """GLM 4.5+ get thinking; earlier GLM models are left untouched."""
@@ -221,4 +256,19 @@ class TestZaiFullKwargsIntegration:
             provider_name="zai",
         )
         assert kwargs["reasoning_effort"] == "max"
+        assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+
+    def test_glm_5_3_flash_off_reaches_enabled_plus_low(self, zai_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="glm-5.3-flash",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=zai_profile,
+            reasoning_config={"enabled": False},
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            provider_name="zai",
+        )
+        assert kwargs["reasoning_effort"] == "low"
         assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}

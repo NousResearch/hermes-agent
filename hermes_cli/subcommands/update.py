@@ -100,6 +100,18 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         ),
     )
     update_parser.add_argument(
+        "--stay-on-branch",
+        action="store_true",
+        default=False,
+        help=(
+            "Stay on the update target branch after the update finishes "
+            "instead of switching back to the branch you were on. Used by "
+            "the desktop app so a product update always ends on main; "
+            "uncommitted changes stashed before the switch are left in the "
+            "stash (not auto-restored onto the target branch)."
+        ),
+    )
+    update_parser.add_argument(
         "--force",
         action="store_true",
         default=False,

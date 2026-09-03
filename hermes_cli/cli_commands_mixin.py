@@ -3794,10 +3794,19 @@ class CLICommandsMixin:
             /reasoning <level> --global  Persist reasoning effort to config.yaml
             /reasoning show|on      Show model thinking/reasoning in output
             /reasoning hide|off     Hide model thinking/reasoning from output
-            /reasoning full         Show complete thinking (no 10-line clamp)
-            /reasoning clamp        Collapse long thinking to the first 10 lines
+            /reasoning full         Show complete thinking (no line clamp)
+            /reasoning clamp [N]    Collapse long thinking to the first N lines (default 10)
         """
-        from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _parse_reasoning_config, save_config_value
+        from cli import (
+            CLI_CONFIG,
+            _ACCENT,
+            _DIM,
+            _RST,
+            _coerce_reasoning_clamp_lines,
+            _cprint,
+            _parse_reasoning_config,
+            save_config_value,
+        )
         parts = cmd.strip().split(maxsplit=1)
 
         if len(parts) < 2:
@@ -3810,10 +3819,11 @@ class CLICommandsMixin:
             else:
                 level = rc.get("effort", "medium")
             display_state = "on ✓" if self.show_reasoning else "off"
-            full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
+            clamp_lines = _coerce_reasoning_clamp_lines(getattr(self, "reasoning_clamp_lines", None))
+            full_state = "full" if getattr(self, "reasoning_full", False) else f"clamped to {clamp_lines} lines"
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra|show|hide|full|clamp> [--global]{_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra|show|hide|full|clamp [N]> [--global]{_RST}")
             return
 
         arg = parts[1].strip().lower()
@@ -3850,14 +3860,28 @@ class CLICommandsMixin:
             self.reasoning_full = True
             save_config_value("display.reasoning_full", True)
             _cprint(f"  {_ACCENT}✓ Reasoning display: FULL (saved){_RST}")
-            _cprint(f"  {_DIM}  The post-response recap box will print complete thinking.{_RST}")
+            _cprint(f"  {_DIM}  Streamed and post-response reasoning will print complete thinking.{_RST}")
             if not self.show_reasoning:
                 _cprint(f"  {_DIM}  Note: reasoning display is OFF — run /reasoning show to see it.{_RST}")
             return
-        if arg in {"clamp", "collapse", "short"}:
+        clamp_tokens = arg.split()
+        if clamp_tokens and clamp_tokens[0] in {"clamp", "collapse", "short"}:
+            if len(clamp_tokens) > 2:
+                _cprint(f"  {_DIM}Usage: /reasoning clamp [lines]{_RST}")
+                return
+            if len(clamp_tokens) == 2:
+                raw_lines = clamp_tokens[1]
+                clamp_lines = _coerce_reasoning_clamp_lines(raw_lines, default=0)
+                if clamp_lines < 1:
+                    _cprint(f"  {_DIM}(._.) Clamp line count must be a positive integer, got: {raw_lines}{_RST}")
+                    return
+                self.reasoning_clamp_lines = clamp_lines
+                save_config_value("display.reasoning_clamp_lines", clamp_lines)
+            else:
+                clamp_lines = _coerce_reasoning_clamp_lines(getattr(self, "reasoning_clamp_lines", None))
             self.reasoning_full = False
             save_config_value("display.reasoning_full", False)
-            _cprint(f"  {_ACCENT}✓ Reasoning display: CLAMPED to 10 lines (saved){_RST}")
+            _cprint(f"  {_ACCENT}✓ Reasoning display: CLAMPED to {clamp_lines} lines (saved){_RST}")
             return
 
         # Effort level change
@@ -3865,7 +3889,7 @@ class CLICommandsMixin:
         if parsed is None:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
             _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh, max, ultra{_RST}")
-            _cprint(f"  {_DIM}Display:      show, hide{_RST}")
+            _cprint(f"  {_DIM}Display:      show, hide, full, clamp [N]{_RST}")
             _cprint(f"  {_DIM}Scope:        session-scoped by default, --global to persist{_RST}")
             return
 

@@ -78,9 +78,11 @@ class RealtimeSession:
         """Open WS and send session.update with voice+instructions."""
         connect = _require_websockets()
         url = f"{REALTIME_URL}?model={self.model}"
+        # GA protocol only: the beta interface (OpenAI-Beta: realtime=v1) was
+        # retired 2026-05-07; sending the header now gets the socket closed
+        # with beta_api_shape_disabled (4000).
         headers = [
             ("Authorization", f"Bearer {self.api_key}"),
-            ("OpenAI-Beta", "realtime=v1"),
         ]
         # websockets.sync.client.connect accepts either additional_headers=
         # (newer) or extra_headers= depending on version; try the newer
@@ -90,15 +92,23 @@ class RealtimeSession:
         except TypeError:
             self._ws = connect(url, extra_headers=headers)
 
+        # GA session shape: type is required, modalities/formats moved under
+        # output_modalities and audio.{input,output}.format. 24 kHz PCM16
+        # matches what the audio bridge downstream expects (beta pcm16 default).
         self._send_json(
             {
                 "type": "session.update",
                 "session": {
-                    "voice": self.voice,
+                    "type": "realtime",
                     "instructions": self.instructions,
-                    "modalities": ["audio", "text"],
-                    "output_audio_format": "pcm16",
-                    "input_audio_format": "pcm16",
+                    "output_modalities": ["audio"],
+                    "audio": {
+                        "input": {"format": {"type": "audio/pcm", "rate": 24000}},
+                        "output": {
+                            "format": {"type": "audio/pcm", "rate": 24000},
+                            "voice": self.voice,
+                        },
+                    },
                 },
             }
         )
@@ -135,12 +145,9 @@ class RealtimeSession:
                 },
             }
         )
-        self._send_json(
-            {
-                "type": "response.create",
-                "response": {"modalities": ["audio"]},
-            }
-        )
+        # Output modalities come from the GA session config; response.create
+        # takes no per-response modalities override here.
+        self._send_json({"type": "response.create"})
 
         bytes_written = 0
         sink_fp = None
@@ -166,7 +173,8 @@ class RealtimeSession:
                 if not isinstance(frame, dict):
                     continue
                 ftype = frame.get("type")
-                if ftype == "response.audio.delta":
+                # GA event name (beta's response.audio.delta no longer exists).
+                if ftype == "response.output_audio.delta":
                     b64 = frame.get("delta") or frame.get("audio") or ""
                     if b64 and sink_fp is not None:
                         try:
@@ -188,9 +196,9 @@ class RealtimeSession:
                 elif ftype == "error":
                     err = frame.get("error") or frame
                     raise RuntimeError(f"realtime error: {err}")
-                # All other frames (response.created, response.output_item.*,
-                # response.audio_transcript.delta, rate_limits.updated, ...)
-                # are ignored for v2.
+                # All other frames (response.output_item.*, response.output_
+                # audio_transcript.delta, rate_limits.updated, ...) are
+                # ignored for v2.
         finally:
             if sink_fp is not None:
                 sink_fp.close()

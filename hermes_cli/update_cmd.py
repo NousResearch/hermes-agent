@@ -783,6 +783,7 @@ _UPDATE_CRITICAL_MODULES = (
     "run_agent",
     "model_tools",
     "toolsets",
+    "hermes_cli.tools_config",
 )
 
 
@@ -9555,11 +9556,37 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _m().PROJECT_ROOT
         )
         if not import_ok:
-            print()
-            print(f"  ⚠ {failing_module} still fails to import after updating:")
-            print(f"      {import_error}")
-            print("    Run `hermes update` again — if it persists, reinstall:")
-            print("    https://hermes-agent.nousresearch.com")
+            # Self-healing: if a first-party module file is missing from the
+            # working tree (e.g. a stash restore re-applied a local deletion
+            # from before the update — issue #97787), try restoring it from
+            # HEAD before falling through to the warning.  This catches the
+            # specific case where `git stash apply` silently re-deletes a
+            # file that the update just pulled in.
+            if failing_module and "." in failing_module:
+                module_path = failing_module.replace(".", "/") + ".py"
+                module_full_path = _m().PROJECT_ROOT / module_path
+                if not module_full_path.exists():
+                    restore_result = subprocess.run(
+                        git_cmd + ["checkout", "HEAD", "--", module_path],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if restore_result.returncode == 0:
+                        # Re-validate after restoring the file.
+                        import_ok, _, _ = _validate_critical_modules_import(
+                            _m().PROJECT_ROOT
+                        )
+                        if import_ok:
+                            print()
+                            print(f"  ✓ Restored missing {module_path} from HEAD")
+                            print("    (a pre-update stash had marked it deleted)")
+            if not import_ok:
+                print()
+                print(f"  ⚠ {failing_module} still fails to import after updating:")
+                print(f"      {import_error}")
+                print("    Run `hermes update` again — if it persists, reinstall:")
+                print("    https://hermes-agent.nousresearch.com")
 
         node_failures = _update_node_dependencies()
         _m()._build_web_ui(_m().PROJECT_ROOT / "web")

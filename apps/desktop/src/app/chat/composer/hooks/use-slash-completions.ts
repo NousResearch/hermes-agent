@@ -17,7 +17,7 @@ import {
 } from '@/lib/desktop-slash-commands'
 import { $slashCompletionsEpoch, cachedSlashCompletion, hasCachedSlashCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
-import { $sessions } from '@/store/session'
+import { $activeSessionId, $sessions } from '@/store/session'
 
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
@@ -69,13 +69,31 @@ export function useSlashCompletions(options: {
   const enabled = Boolean(gateway)
   const epoch = useStore($slashCompletionsEpoch)
 
+  // Helper to build session-aware params so project skills are discovered
+  // from the active session's project (fix for #101786). The gateway's
+  // commands.catalog / complete.slash now scopes find_project_root to the
+  // session cwd via _SESSION_CWD.
+  const sessionParams = useCallback(() => {
+    const sid = $activeSessionId.get()
+    if (!sid) return {} as Record<string, string>
+    const sess = $sessions.get().find(s => s.id === sid) as unknown as { cwd?: string } | undefined
+    const out: Record<string, string> = { session_id: sid }
+    const cwd = sess?.cwd
+    if (cwd && typeof cwd === 'string' && cwd.trim()) {
+      out.cwd = cwd.trim()
+    }
+    return out
+  }, [epoch])
+
   // Warm argument_mode before the first `/` so Space treats /review as text.
   useEffect(() => {
     if (!gateway) {
       return
     }
 
-    void cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
+    const params = sessionParams()
+    const cacheKey = params.cwd ? `catalog:${params.cwd}` : 'catalog'
+    void cachedSlashCompletion(cacheKey, () => gateway.request<CommandsCatalogLike>('commands.catalog', params))
       .then(catalog => {
         filterDesktopCommandsCatalog(catalog)
       })
@@ -153,8 +171,10 @@ export function useSlashCompletions(options: {
 
       try {
         if (!query) {
+          const params = sessionParams()
+          const cacheKey = params.cwd ? `catalog:${params.cwd}` : 'catalog'
           const catalog = filterDesktopCommandsCatalog(
-            await cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
+            await cachedSlashCompletion(cacheKey, () => gateway.request<CommandsCatalogLike>('commands.catalog', params))
           )
 
           // Prefer the categorized layout so the popover renders section headers
@@ -194,8 +214,10 @@ export function useSlashCompletions(options: {
           return { items, query }
         }
 
-        const result = await cachedSlashCompletion(`slash:${text.toLowerCase()}`, () =>
-          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', { text })
+        const params = sessionParams()
+        const slashCacheKey = params.cwd ? `slash:${text.toLowerCase()}:${params.cwd}` : `slash:${text.toLowerCase()}`
+        const result = await cachedSlashCompletion(slashCacheKey, () =>
+          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', { text, ...params })
         )
 
         // Arg-completion items (replace_from > 1) carry just the arg stub —
@@ -251,7 +273,7 @@ export function useSlashCompletions(options: {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin]
+    [gateway, skinThemes, activeSkin, sessionParams]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {
@@ -293,9 +315,12 @@ export function useSlashCompletions(options: {
         return true
       }
 
-      return hasCachedSlashCompletion(query ? `slash:${text.toLowerCase()}` : 'catalog')
+      const params = sessionParams()
+      const catalogKey = params.cwd ? `catalog:${params.cwd}` : 'catalog'
+      const slashKey = params.cwd ? `slash:${text.toLowerCase()}:${params.cwd}` : `slash:${text.toLowerCase()}`
+      return hasCachedSlashCompletion(query ? slashKey : catalogKey)
     },
-    [skinThemes]
+    [skinThemes, sessionParams]
   )
 
   return useLiveCompletionAdapter({ enabled, epoch, fetcher, isCached, toItem })

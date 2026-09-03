@@ -463,7 +463,7 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
 
 
 @router.get("/api/skills")
-async def get_skills(profile: Optional[str] = None):
+async def get_skills(profile: Optional[str] = None, cwd: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
     from tools.skill_usage import (
@@ -473,17 +473,38 @@ async def get_skills(profile: Optional[str] = None):
         load_usage,
     )
     def _run():
-        with _profile_scope(profile):
-            config = load_config()
-            disabled = get_disabled_skills(config)
-            skills = _find_all_skills(skip_disabled=True)
-            usage = load_usage()
-            # Set-based provenance (same classification as skill_usage.provenance,
-            # without a per-skill manifest read): hub > bundled > agent, where
-            # "agent" covers agent-authored AND local hand-made skills — the ones
-            # the user may edit/delete from the UI.
-            bundled_names = _read_bundled_manifest_names()
-            hub_names = _read_hub_installed_names()
+        # Project skills are discovered from the session cwd (#101786).
+        # When the desktop fetches /api/skills it now passes ?cwd=<session cwd>
+        # so the backend scopes find_project_root() to that project even when
+        # the dashboard backend was launched from the Hermes repo itself.
+        token = None
+        try:
+            if cwd and cwd.strip():
+                try:
+                    from agent.runtime_cwd import set_session_cwd
+
+                    token = set_session_cwd(cwd.strip())
+                except Exception:
+                    pass
+            with _profile_scope(profile):
+                config = load_config()
+                disabled = get_disabled_skills(config)
+                skills = _find_all_skills(skip_disabled=True)
+                usage = load_usage()
+                # Set-based provenance (same classification as skill_usage.provenance,
+                # without a per-skill manifest read): hub > bundled > agent, where
+                # "agent" covers agent-authored AND local hand-made skills — the ones
+                # the user may edit/delete from the UI.
+                bundled_names = _read_bundled_manifest_names()
+                hub_names = _read_hub_installed_names()
+        finally:
+            if token is not None:
+                try:
+                    from agent.runtime_cwd import _SESSION_CWD
+
+                    _SESSION_CWD.reset(token)
+                except Exception:
+                    pass
         for s in skills:
             s["enabled"] = s["name"] not in disabled
             s["usage"] = activity_count(usage.get(s["name"], {}))

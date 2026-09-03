@@ -756,10 +756,25 @@ def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """
     try:
         if start is None:
-            from agent.runtime_cwd import scope_terminal_cwd
+            # Project skills are session-scoped (#101786): when the gateway
+            # or dashboard has pinned a per-session cwd (runtime_cwd's
+            # _SESSION_CWD), that wins over the process-global
+            # TERMINAL_CWD so a project session discovers its own skills
+            # even when the launch cwd is the Hermes repo itself.
+            try:
+                from agent.runtime_cwd import _session_cwd_override, scope_terminal_cwd
 
-            env_cwd = scope_terminal_cwd()
-            start = Path(env_cwd) if env_cwd else Path.cwd()
+                session_cwd = _session_cwd_override()
+                if session_cwd:
+                    start = Path(session_cwd)
+                else:
+                    env_cwd = scope_terminal_cwd()
+                    start = Path(env_cwd) if env_cwd else Path.cwd()
+            except Exception:
+                from agent.runtime_cwd import scope_terminal_cwd
+
+                env_cwd = scope_terminal_cwd()
+                start = Path(env_cwd) if env_cwd else Path.cwd()
         cur = Path(start).resolve()
     except OSError:
         return None

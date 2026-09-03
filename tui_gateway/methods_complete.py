@@ -333,7 +333,27 @@ def _(rid, params: dict) -> dict:
     if not text.startswith("/"):
         return _ok(rid, {"items": []})
 
+    _slash_cwd_token = None
     try:
+        try:
+            from agent.runtime_cwd import set_session_cwd
+
+            _cwd_val = None
+            if params.get("cwd"):
+                _cwd_val = str(params.get("cwd")).strip()
+            elif params.get("session_id"):
+                _s = _sessions.get(str(params.get("session_id")))
+                if _s and _s.get("cwd"):
+                    _cwd_val = str(_s.get("cwd"))
+            if not _cwd_val:
+                try:
+                    _cwd_val = _completion_cwd(params)
+                except Exception:
+                    _cwd_val = None
+            if _cwd_val and _cwd_val.strip():
+                _slash_cwd_token = set_session_cwd(_cwd_val.strip())
+        except Exception:
+            pass
         from hermes_cli.commands import SlashCommandCompleter
         from prompt_toolkit.document import Document
         from prompt_toolkit.formatted_text import to_plain_text
@@ -450,19 +470,42 @@ def _(rid, params: dict) -> dict:
 
         details_items = _details_completions(text)
         if details_items is not None:
-            return _ok(
+            _res = _ok(
                 rid,
                 {
                     "items": details_items,
                     "replace_from": text.rfind(" ") + 1 if " " in text else len(text),
                 },
             )
+            if _slash_cwd_token is not None:
+                try:
+                    from agent.runtime_cwd import _SESSION_CWD
 
-        return _ok(
+                    _SESSION_CWD.reset(_slash_cwd_token)
+                except Exception:
+                    pass
+            return _res
+
+        _res2 = _ok(
             rid,
             {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1},
         )
+        if _slash_cwd_token is not None:
+            try:
+                from agent.runtime_cwd import _SESSION_CWD
+
+                _SESSION_CWD.reset(_slash_cwd_token)
+            except Exception:
+                pass
+        return _res2
     except Exception as e:
+        if _slash_cwd_token is not None:
+            try:
+                from agent.runtime_cwd import _SESSION_CWD
+
+                _SESSION_CWD.reset(_slash_cwd_token)
+            except Exception:
+                pass
         return _err(rid, 5020, str(e))
 
 

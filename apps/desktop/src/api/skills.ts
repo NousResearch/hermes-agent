@@ -11,10 +11,19 @@ import type { ActionResponse } from '@/types/hermes'
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
 
-export function getSkills(profile?: ProfileScope): Promise<SkillInfo[]> {
+export function getSkills(profile?: ProfileScope, cwd?: string): Promise<SkillInfo[]> {
+  const normalizedCwd = cwd?.trim()
+  const basePath = '/api/skills'
+  // Profile routing is handled by the Electron preload's path rewriting
+  // (registry-primary-profile-scope), but cwd is a plain query param that
+  // must be forwarded so the backend can scope project skill discovery to
+  // the active session's project (fix for #101786).
+  const path = normalizedCwd
+    ? `${basePath}?cwd=${encodeURIComponent(normalizedCwd)}`
+    : basePath
   return window.hermesDesktop.api<SkillInfo[]>({
     ...capabilityScoped(profile),
-    path: '/api/skills'
+    path
   })
 }
 

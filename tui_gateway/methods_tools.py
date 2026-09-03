@@ -256,7 +256,31 @@ def _(rid, params: dict) -> dict:
 @method("commands.catalog")
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata for the TUI — categorized, no aliases."""
+    _catalog_cwd_token = None
     try:
+        try:
+            from agent.runtime_cwd import set_session_cwd
+
+            _cwd_val = None
+            if params.get("cwd"):
+                _cwd_val = str(params.get("cwd")).strip()
+            elif params.get("session_id"):
+                _s = _sessions.get(str(params.get("session_id")))
+                if _s and _s.get("cwd"):
+                    _cwd_val = str(_s.get("cwd"))
+            if not _cwd_val:
+                try:
+                    _cwd_val = _completion_cwd(params)
+                except Exception:
+                    _cwd_val = None
+            if _cwd_val and _cwd_val.strip():
+                # Scope project skill discovery to this session's project
+                # (#101786): find_project_root now checks _SESSION_CWD first
+                # so a session inside a project discovers its project skills
+                # even when the dashboard was launched elsewhere.
+                _catalog_cwd_token = set_session_cwd(_cwd_val.strip())
+        except Exception:
+            pass
         from hermes_cli.commands import (
             COMMAND_REGISTRY,
             SUBCOMMANDS,
@@ -389,7 +413,7 @@ def _(rid, params: dict) -> dict:
             categories.append({"name": cat, "pairs": cat_map[cat]})
 
         sub = {k: v[:] for k, v in SUBCOMMANDS.items()}
-        return _ok(
+        result = _ok(
             rid,
             {
                 "pairs": all_pairs,
@@ -402,7 +426,22 @@ def _(rid, params: dict) -> dict:
                 "warning": warning,
             },
         )
+        if _catalog_cwd_token is not None:
+            try:
+                from agent.runtime_cwd import _SESSION_CWD
+
+                _SESSION_CWD.reset(_catalog_cwd_token)
+            except Exception:
+                pass
+        return result
     except Exception as e:
+        if _catalog_cwd_token is not None:
+            try:
+                from agent.runtime_cwd import _SESSION_CWD
+
+                _SESSION_CWD.reset(_catalog_cwd_token)
+            except Exception:
+                pass
         return _err(rid, 5020, str(e))
 
 

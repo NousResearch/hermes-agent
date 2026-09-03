@@ -166,7 +166,7 @@ class RealtimeSession:
                 if not isinstance(frame, dict):
                     continue
                 ftype = frame.get("type")
-                if ftype == "response.audio.delta":
+                if ftype == "response.output_audio.delta":
                     b64 = frame.get("delta") or frame.get("audio") or ""
                     if b64 and sink_fp is not None:
                         try:

@@ -639,10 +639,16 @@ class EmailAdapter(BasePlatformAdapter):
 
         # Optional authserv-id to pin Authentication-Results to the operator's
         # own receiving server (defends against an injected header that sorts
-        # first). Defaults to the From-domain of the agent's own address.
-        self._authserv_id = (
+        # first). Defaults to the From-domain of the agent's own address —
+        # the fallback the comment always promised: with an empty value the
+        # pinning loop in _verify_sender_authentication skips its check and
+        # trusts the first header on the message unconditionally (#98599).
+        authserv_raw = (
             extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")
-        ).strip().lower()
+        ).strip()
+        if not authserv_raw:
+            authserv_raw = self._address.rsplit("@", 1)[-1] if "@" in self._address else ""
+        self._authserv_id = authserv_raw.lower()
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()

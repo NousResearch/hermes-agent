@@ -149,6 +149,31 @@ class TestDispatchMessage(unittest.TestCase):
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
+    def test_authserv_id_defaults_to_own_from_domain(self):
+        """With no explicit authserv_id, the pinning value must derive from the
+        agent's own address domain — not stay empty (which silently disables
+        the Authentication-Results pinning check)."""
+        adapter = self._make_adapter()
+        self.assertEqual(adapter._authserv_id, "test.com")
+
+    def test_authserv_id_explicit_value_wins(self):
+        """An explicit EMAIL_AUTHSERV_ID must override the domain default."""
+        import os
+        from unittest.mock import patch
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_IMAP_PORT": "993",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_SMTP_PORT": "587",
+            "EMAIL_AUTHSERV_ID": "mx.custom.org",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        self.assertEqual(adapter._authserv_id, "mx.custom.org")
+
     def test_self_message_filtered(self):
         """Messages from the agent's own address should be skipped."""
         import asyncio

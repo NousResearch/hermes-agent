@@ -511,6 +511,17 @@ Complex cases are documented under `{glob_reference}`.
 
 class TestCheckForSkillUpdates:
     def test_bundle_content_hash_matches_installed_content_hash(self, tmp_path):
+        """An installed bundle must hash on disk exactly as it hashes in memory.
+
+        The files are written through the real writer (quarantine_bundle)
+        rather than hand-rolled write_text calls. Path.write_text translates
+        LF to os.linesep on Windows, so a hand-rolled copy would compare
+        bytes the installer never produces -- and would hide a byte-fidelity
+        regression in quarantine_bundle, which is what makes
+        check_for_skill_updates() report a freshly installed skill as
+        "update_available" forever.
+        """
+        import tools.skills_hub as hub
         from tools.skills_guard import content_hash
 
         bundle = SkillBundle(
@@ -523,13 +534,19 @@ class TestCheckForSkillUpdates:
             identifier="owner/repo/demo-skill",
             trust_level="community",
         )
-        skill_dir = tmp_path / "demo-skill"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("same content")
-        (skill_dir / "references").mkdir()
-        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
 
-        assert bundle_content_hash(bundle) == content_hash(skill_dir)
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            skill_dir = quarantine_bundle(bundle)
+
+            assert (skill_dir / "references" / "checklist.md").read_bytes() == b"- [ ] security\n"
+            assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
 
     def test_reports_update_when_remote_hash_differs(self):
@@ -860,8 +877,12 @@ class TestOptionalSkillSourceBinaryAssets:
         (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.wav").write_bytes(
             wav_bytes
         )
+        # newline="" so the bytes on disk are exactly what is asserted below.
+        # Without it, universal-newline translation writes "hello\r\n" on
+        # Windows and the byte-preservation assertion fails on the fixture
+        # rather than on the behaviour under test.
         (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.txt").write_text(
-            "hello\n", encoding="utf-8"
+            "hello\n", encoding="utf-8", newline=""
         )
         pycache_dir = skill_dir / "assets" / "neutts-cli" / "src" / "neutts_cli" / "__pycache__"
         pycache_dir.mkdir(parents=True)

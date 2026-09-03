@@ -2695,6 +2695,10 @@ DEFAULT_CONFIG = {
         # callback. Shell hooks keep their own per-entry ``timeout``. Set to 0
         # to disable the cap (sync call on the agent thread). Capped at 600.
         "hook_callback_timeout": 30,
+        # Max concurrent in-flight workers per (hook, callback) for fail-open
+        # hooks before further invocations are dropped and counted as
+        # overflow rather than run unbounded. Capped at 64.
+        "hook_callback_max_concurrency": 4,
     },
 
     # Shell-script hooks — declarative bridge that invokes shell scripts

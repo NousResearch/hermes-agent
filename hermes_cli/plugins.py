@@ -3669,6 +3669,47 @@ class PluginContext:
 _HOOK_CALLBACK_TIMEOUT_SECS = 30.0
 _MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
 
+# Cap on concurrent in-flight workers per (hook, callback) for fail-open
+# hooks, so a sustained event burst cannot fan out unbounded workers once a
+# callback's duration exceeds its arrival rate. Overridden by
+# ``plugins.hook_callback_max_concurrency``. Does not apply to fail-closed
+# hooks (``pre_tool_call``), which already skip on any overlap.
+_HOOK_CALLBACK_MAX_CONCURRENCY = 4
+_MAX_HOOK_CALLBACK_MAX_CONCURRENCY = 64
+
+
+def _resolve_hook_callback_max_concurrency() -> int:
+    """Return the effective per-callback concurrency cap for fail-open hooks.
+
+    Reads ``plugins.hook_callback_max_concurrency`` via the cached readonly
+    config loader. Falls back to ``_HOOK_CALLBACK_MAX_CONCURRENCY``. Values
+    ``< 1`` are clamped to 1; values above
+    ``_MAX_HOOK_CALLBACK_MAX_CONCURRENCY`` are clamped down.
+    """
+    limit = _HOOK_CALLBACK_MAX_CONCURRENCY
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        plugins_cfg = (load_config_readonly() or {}).get("plugins")
+        if isinstance(plugins_cfg, dict) and "hook_callback_max_concurrency" in plugins_cfg:
+            raw = plugins_cfg.get("hook_callback_max_concurrency")
+            if raw is not None:
+                limit = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "plugins.hook_callback_max_concurrency is not an int; using default %d",
+            _HOOK_CALLBACK_MAX_CONCURRENCY,
+        )
+        limit = _HOOK_CALLBACK_MAX_CONCURRENCY
+    except Exception:
+        limit = _HOOK_CALLBACK_MAX_CONCURRENCY
+
+    if limit < 1:
+        return 1
+    if limit > _MAX_HOOK_CALLBACK_MAX_CONCURRENCY:
+        return _MAX_HOOK_CALLBACK_MAX_CONCURRENCY
+    return limit
+
 
 def _resolve_hook_callback_timeout() -> float:
     """Return the effective hook-callback timeout in seconds.
@@ -3789,9 +3830,15 @@ class PluginManager:
         self._slack_action_handlers: List[tuple] = []
         # In-flight / recently-timed-out hook callbacks. Keyed by
         # (hook_name, id(cb)) so a stuck policy hook cannot spawn a new
-        # abandoned daemon thread on every subsequent fire.
-        self._hook_running_callbacks: Dict[tuple, object] = {}
+        # abandoned daemon thread on every subsequent fire. Each value is
+        # the set of tokens for workers currently in flight for that
+        # callback (fail-open hooks may have more than one concurrently).
+        self._hook_running_callbacks: Dict[tuple, Set[object]] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
+        # Count of invocations dropped for exceeding
+        # ``hook_callback_max_concurrency`` — distinct from a confirmed
+        # timeout — keyed the same as ``_hook_running_callbacks``.
+        self._hook_overflow_counts: Dict[tuple, int] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
         # Registration handles are kept both per plugin (ownership lookup) and
@@ -4186,6 +4233,7 @@ class PluginManager:
             with self._hook_timeout_lock:
                 self._hook_running_callbacks.clear()
                 self._hook_timeout_suppressed_until.clear()
+                self._hook_overflow_counts.clear()
             self._discovered = False
         else:
             for key in target_keys:
@@ -5586,7 +5634,16 @@ class PluginManager:
         ``plugins.hook_callback_timeout`` (default 30s). On timeout the worker
         is abandoned (not joined) so we do not reintroduce the #6622 hang.
         Timed-out or still-running ``pre_tool_call`` callbacks fail closed
-        with a block directive; other bounded hooks fail open (skip).
+        with a block directive. Other bounded hooks fail open: a confirmed
+        timeout is still skipped (bounding duplicate workers of a hung
+        callback), but a healthy invocation still in flight from an earlier
+        call runs concurrently on its own worker rather than being dropped —
+        up to ``plugins.hook_callback_max_concurrency`` (default 4) in-flight
+        workers per callback. Invocations beyond that cap are dropped and
+        counted in ``_hook_overflow_counts`` rather than mislabeled as a
+        timeout. Concurrent workers for the same callback may complete out
+        of order; callbacks that depend on ordering must serialize
+        themselves (e.g. via ``_HOOK_CALLER_THREAD_HOOKS``).
 
         ``subagent_stop`` (and any hook in ``_HOOK_CALLER_THREAD_HOOKS``)
         always runs on the caller thread to preserve the documented parent-
@@ -5625,26 +5682,62 @@ class PluginManager:
                 if use_timeout:
                     token = object()
                     now = time.monotonic()
+                    max_concurrency = _resolve_hook_callback_max_concurrency()
                     with self._hook_timeout_lock:
                         suppressed_until = self._hook_timeout_suppressed_until.get(
                             callback_key
                         )
-                        running = callback_key in self._hook_running_callbacks
-                        if (
+                        timed_out = (
                             suppressed_until is not None and suppressed_until > now
-                        ) or running:
-                            logger.warning(
-                                "Hook '%s' callback %s skipped after previous "
-                                "timeout or while still running",
-                                hook_name,
-                                callback_name,
-                            )
+                        )
+                        # A confirmed timeout must not spawn unbounded duplicates
+                        # of a hung worker, and pre_tool_call must fail closed on
+                        # any overlap. But "running" alone just means a healthy
+                        # invocation of a fail-open observer hook hasn't returned
+                        # yet — dropping it here silently loses telemetry (#98382).
+                        running_tokens = self._hook_running_callbacks.get(
+                            callback_key
+                        )
+                        running_count = len(running_tokens) if running_tokens else 0
+                        running = running_count > 0
+                        # Fail-open hooks still bound total concurrent workers
+                        # per callback so a sustained burst can't fan out
+                        # unboundedly once callback duration exceeds arrival
+                        # rate. This is bookkept separately from a confirmed
+                        # timeout so queue saturation is never mislabeled as
+                        # a hang.
+                        overflow = (
+                            not fail_closed and running_count >= max_concurrency
+                        )
+                        if timed_out or (running and fail_closed) or overflow:
+                            if overflow and not timed_out:
+                                self._hook_overflow_counts[callback_key] = (
+                                    self._hook_overflow_counts.get(callback_key, 0)
+                                    + 1
+                                )
+                                logger.warning(
+                                    "Hook '%s' callback %s skipped: %d worker(s) "
+                                    "already in flight (max concurrency %d)",
+                                    hook_name,
+                                    callback_name,
+                                    running_count,
+                                    max_concurrency,
+                                )
+                            else:
+                                logger.warning(
+                                    "Hook '%s' callback %s skipped after previous "
+                                    "timeout or while still running",
+                                    hook_name,
+                                    callback_name,
+                                )
                             if fail_closed:
                                 results.append(_pre_tool_call_timeout_block())
                             continue
                         if suppressed_until is not None:
                             self._hook_timeout_suppressed_until.pop(callback_key, None)
-                        self._hook_running_callbacks[callback_key] = token
+                        self._hook_running_callbacks.setdefault(
+                            callback_key, set()
+                        ).add(token)
 
                     context = contextvars.copy_context()
                     done = threading.Event()
@@ -5667,8 +5760,11 @@ class PluginManager:
                             failure["exc"] = exc
                         finally:
                             with self._hook_timeout_lock:
-                                if self._hook_running_callbacks.get(_key) is _token:
-                                    self._hook_running_callbacks.pop(_key, None)
+                                tokens = self._hook_running_callbacks.get(_key)
+                                if tokens is not None:
+                                    tokens.discard(_token)
+                                    if not tokens:
+                                        self._hook_running_callbacks.pop(_key, None)
                             done.set()
 
                     thread = threading.Thread(

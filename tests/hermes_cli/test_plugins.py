@@ -1144,6 +1144,103 @@ class TestForceReloadSymmetry:
         assert elapsed < 5.0
         hold.set()
 
+    def test_concurrent_healthy_invocations_both_processed(self, monkeypatch):
+        """Two healthy overlapping calls to a fail-open hook must both run.
+
+        Regression for #98382: ``running`` was treated the same as a
+        confirmed timeout, so a second concurrent invocation of an observer
+        hook was silently dropped even though the first callback was well
+        within its timeout budget.
+        """
+        import time
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+
+        calls = []
+        lock = threading.Lock()
+
+        def slow(**kwargs):
+            time.sleep(0.3)
+            with lock:
+                calls.append(kwargs.get("marker"))
+            return kwargs.get("marker")
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [slow]
+
+        results = {}
+
+        def _invoke(marker):
+            results[marker] = mgr.invoke_hook("post_tool_call", marker=marker)
+
+        t1 = threading.Thread(target=_invoke, args=("first",))
+        t1.start()
+        time.sleep(0.15)
+        t2 = threading.Thread(target=_invoke, args=("second",))
+        t2.start()
+        t1.join(timeout=5.0)
+        t2.join(timeout=5.0)
+
+        assert sorted(calls) == ["first", "second"]
+        assert results["first"] == ["first"]
+        assert results["second"] == ["second"]
+
+    def test_burst_beyond_max_concurrency_is_bounded_and_counted(self, monkeypatch):
+        """A burst past ``hook_callback_max_concurrency`` is bounded, not fanned out.
+
+        Follow-up to #98382/#98385: fail-open concurrency is now capped per
+        callback so a sustained burst faster than callback duration can't
+        spawn unbounded workers. Overflow must be counted separately from a
+        confirmed timeout (``_hook_timeout_suppressed_until`` stays empty).
+        """
+        import time
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_max_concurrency", lambda: 2
+        )
+
+        in_flight = []
+        max_in_flight = []
+        lock = threading.Lock()
+
+        def slow(**_kwargs):
+            with lock:
+                in_flight.append(1)
+                max_in_flight.append(len(in_flight))
+            time.sleep(0.3)
+            with lock:
+                in_flight.pop()
+            return "ran"
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [slow]
+        callback_key = ("post_tool_call", id(slow))
+
+        results = {}
+
+        def _invoke(marker):
+            results[marker] = mgr.invoke_hook("post_tool_call")
+
+        threads = [
+            threading.Thread(target=_invoke, args=(i,)) for i in range(4)
+        ]
+        for t in threads:
+            t.start()
+            time.sleep(0.05)
+        for t in threads:
+            t.join(timeout=5.0)
+
+        assert max(max_in_flight) <= 2
+        assert sum(r == ["ran"] for r in results.values()) == 2
+        assert sum(r == [] for r in results.values()) == 2
+        assert mgr._hook_overflow_counts.get(callback_key) == 2
+        assert callback_key not in mgr._hook_timeout_suppressed_until
+
     def test_pre_tool_call_timeout_fail_closed(self, monkeypatch):
         """Timed-out pre_tool_call must return a block directive, not allow."""
         import time

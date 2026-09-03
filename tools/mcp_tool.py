@@ -3665,8 +3665,14 @@ class MCPServerTask:
                     # descendants, e.g. mcp-remote's spawned `node` -- running
                     # forever. The graceful paths (MCPServerTask.shutdown,
                     # _kill_orphaned_mcp_children) still reap as before; this
-                    # only covers the case where they never get to run.
-                    _update_death_supervisor("register", new_pgids.values())
+                    # only covers the case where they never get to run. Run in
+                    # a worker thread like the orphan reaper above: spawning
+                    # the supervisor and waiting on its exit (release path)
+                    # are both blocking and would otherwise stall the shared
+                    # MCP event loop for every other connected server.
+                    await asyncio.to_thread(
+                        _update_death_supervisor, "register", new_pgids.values()
+                    )
                 # Track the spawned children on the connection object for
                 # fast-fail of in-flight calls when the subprocess dies
                 # (#81995).
@@ -3752,7 +3758,12 @@ class MCPServerTask:
                             dropped = _stdio_pgids.pop(pid, None)
                             if dropped is not None:
                                 released_pgids.append(dropped)
-                _update_death_supervisor("unregister", released_pgids)
+                # Same rationale as the register call above: this can spawn a
+                # supervisor or block on proc.wait(timeout=5) releasing one,
+                # so it must not run directly on the shared MCP event loop.
+                await asyncio.to_thread(
+                    _update_death_supervisor, "unregister", released_pgids
+                )
 
     # Content types a real MCP Streamable-HTTP endpoint may return on the
     # initial POST/GET. Anything else on a 2xx response means the URL is not

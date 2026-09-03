@@ -677,6 +677,54 @@ def test_a_server_that_exited_is_released_on_teardown():
 
 
 @pytest.mark.skipif(not mcp_tool._MCP_AVAILABLE, reason="MCP SDK not installed")
+def test_register_and_unregister_run_off_the_mcp_event_loop():
+    """``_update_death_supervisor`` can spawn a subprocess (register, when no
+    supervisor is running yet) or block on ``proc.wait(timeout=5)`` releasing
+    one (unregister, when nothing is left to reap) -- both real blocking
+    work. It must not run directly on the shared MCP event loop, where every
+    other connected server's tool calls share that same loop -- the same
+    reasoning already applied to the orphan reaper a few lines above the
+    register call site in ``_run_stdio`` (``asyncio.to_thread(_kill_orphaned_
+    mcp_children)``).
+    """
+    fake = _FakeSupervisor()
+    seen: list = []
+    real = mcp_tool._update_death_supervisor
+
+    def probing(verb, pgids):
+        try:
+            asyncio.get_running_loop()
+            seen.append((verb, True))
+        except RuntimeError:
+            seen.append((verb, False))
+        return real(verb, pgids)
+
+    child = subprocess.Popen(_VICTIM, start_new_session=True)
+    try:
+        with (
+            patch("tools.mcp_tool._update_death_supervisor", probing),
+            _stdio_connection(child.pid, fake) as server,
+        ):
+
+            async def _connect_then_lose_the_child():
+                await server.start({"command": "echo", "args": ["hi"]})
+                child.kill()
+                child.wait(timeout=10)
+                await server.shutdown()
+
+            asyncio.run(_connect_then_lose_the_child())
+    finally:
+        _kill(child.pid)
+
+    assert ("register", False) in seen, (
+        f"register ran on the MCP event loop instead of a worker thread: {seen}"
+    )
+    assert ("unregister", False) in seen, (
+        f"unregister ran on the MCP event loop instead of a worker thread: {seen}"
+    )
+
+
+@pytest.mark.skipif(not mcp_tool._MCP_AVAILABLE, reason="MCP SDK not installed")
 def test_a_server_that_survived_teardown_stays_registered():
     # The case the whole module exists for: teardown did not manage to kill it.
     # Releasing it here would hand the orphan back to nobody.

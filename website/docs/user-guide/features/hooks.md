@@ -447,9 +447,9 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
-| `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
-| `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
-| `api_request_error` | Observer | On each failed provider attempt; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`, `error`, `request` | Error text may contain provider/user data; `request` is intended to be sanitized. |
+| `pre_api_request` | Observer | Per main or auxiliary provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request`; auxiliary attempts add `request_kind`, `auxiliary_task`, `auxiliary_call_id`, `attempt_index`, `attempt_reason` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
+| `post_api_request` | Observer | After normalized main or auxiliary provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count`; auxiliary attempts add `request_kind`, `auxiliary_task`, `auxiliary_call_id`, `attempt_index`, `attempt_reason` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
+| `api_request_error` | Observer | On each failed main or auxiliary provider attempt; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`, `error`, `request`; auxiliary attempts add `request_kind`, `auxiliary_task`, `auxiliary_call_id`, `attempt_index`, `attempt_reason` | Error text may contain provider/user data; `request` is intended to be sanitized. |
 | `on_stream_start` | Observer | Dispatched when a streaming LLM response begins; delivered off the token path via a host-owned bounded queue with one worker per callback; return ignored. | `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Identifiers and routing metadata only. |
 | `on_stream_delta` | Observer | Dispatched per normalized streaming text delta via the bounded observer queue; a stalled callback drops only its own oldest events; return ignored. | `delta`, `kind` (`text` or `reasoning`), `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Delta text is raw model output; reasoning deltas require the `plugins.stream_reasoning_deltas` opt-in. |
 | `on_stream_end` | Observer | Dispatched when a streaming response finishes or errors, after the stream closes; return ignored. | `final_text`, `finished`, `error`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full assembled response text; error text may include provider data. |
@@ -1531,6 +1531,19 @@ The hook is guarded on a non-empty, non-interrupted response — it will not fir
 
 ### API-request observer hooks
 
+`pre_api_request`, `post_api_request`, and `api_request_error` expose each
+physical model-provider attempt — main-loop calls plus auxiliary tasks such as
+compression, vision, title generation, and session search. Unlike the
+turn-level LLM hooks, these events include retries and provider fallbacks.
+Hermes dispatches them through the shared lifecycle layer, so first-party
+observers run before enabled compatibility plugins.
+
+Each `pre_api_request` has exactly one matching `post_api_request` or
+`api_request_error`. Auxiliary retries share an `auxiliary_call_id` and receive
+distinct `api_request_id` values. Main-loop retries retain one
+`api_request_id`; use `retry_count` on pre/error events plus event order to
+distinguish those attempts.
+
 #### `pre_api_request`
 
 Fires for each provider attempt immediately before sending it. This is observer-only. The legacy `user_message`, `conversation_history`, and `request_messages` fields are raw and intentionally unsanitized for compatibility; new consumers should prefer the sanitized `request` envelope.
@@ -1542,6 +1555,39 @@ Fires after a provider response has been normalized successfully. This is observ
 #### `api_request_error`
 
 Fires for a failed provider attempt with status/retry timing, an `error` object, and sanitized `request`. This is observer-only. Error messages may still contain provider or user data.
+
+#### Auxiliary attempts
+
+One auxiliary lifecycle event represents one Hermes retry or provider-fallback
+attempt. Progress-aware stream negotiation inside `_create_with_progress` may
+try a streamed request and then its built-in plain fallback within that same
+event. Auxiliary-specific fields:
+
+| Parameter | Description |
+|-----------|-------------|
+| `request_kind` | `"auxiliary"` for side-model work; omitted on legacy/main events |
+| `auxiliary_call_id` | Stable identifier grouping retries/fallbacks for one auxiliary call |
+| `auxiliary_task` | Task such as `compression`, `vision`, or `title_generation` |
+| `attempt_index` | Zero-based physical-attempt index within the auxiliary call |
+| `attempt_reason` | Why this attempt ran, such as `initial`, a retry, or a fallback |
+| `session_id`, `task_id`, `turn_id`, `platform` | Correlation inherited from the active outer turn; bounded standalone fallbacks are used outside a turn |
+
+The MoA acting aggregator runs inside the outer main-loop request lifecycle, so
+that call explicitly suppresses a duplicate auxiliary lifecycle whether it is
+streaming or non-streaming. The one-shot `/moa <prompt>` aggregator and MoA
+reference-model calls remain observable as auxiliary attempts. A future
+standalone streaming auxiliary caller must add terminal-event handling before
+it can make the same lifecycle guarantee.
+
+```python
+def observe_attempt(request_kind="", api_request_id="", auxiliary_task="", **kwargs):
+    print(request_kind or "main", auxiliary_task, api_request_id)
+
+def register(ctx):
+    ctx.register_hook("pre_api_request", observe_attempt)
+    ctx.register_hook("post_api_request", observe_attempt)
+    ctx.register_hook("api_request_error", observe_attempt)
+```
 
 ### `on_skill_lifecycle`
 

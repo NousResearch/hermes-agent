@@ -216,6 +216,26 @@ class TestBridgeEventMetadata:
         assert event.raw_message["quotedRemoteJid"] == "15551234567@s.whatsapp.net"
         assert event.raw_message["hasQuotedMessage"] is True
 
+    @pytest.mark.asyncio
+    async def test_stanza_id_preserves_reply_when_inline_quote_is_absent(self):
+        adapter = _make_adapter()
+        data = {
+            "messageId": "incoming-msg",
+            "chatId": "15551234567@s.whatsapp.net",
+            "senderId": "15551234567@s.whatsapp.net",
+            "body": "/queue send it",
+            "hasMedia": False,
+            "mediaUrls": [],
+            "quotedMessageId": "outbound-msg",
+            "hasQuotedMessage": False,
+        }
+
+        event = await adapter._build_message_event(data)
+
+        assert event is not None
+        assert event.reply_to_message_id == "outbound-msg"
+        assert event.reply_to_text is None
+
 
 # ---------------------------------------------------------------------------
 # display_config tier classification
@@ -228,4 +248,3 @@ class TestWhatsAppTier:
         from gateway.display_config import resolve_display_setting
         # TIER_MEDIUM has streaming: None (follow global), not False
         assert resolve_display_setting({}, "whatsapp", "streaming") is None
-

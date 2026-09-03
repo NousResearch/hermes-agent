@@ -32,7 +32,7 @@ from typing import Any, Optional, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
-from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
+from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel, teams_skips_operator_sends
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
@@ -3297,6 +3297,9 @@ class GatewaySlashCommandsMixin:
         chat_name = source.chat_name or chat_id
         if source.platform is None:
             return t("gateway.set_home.save_failed", error="Missing logical platform")
+        if teams_skips_operator_sends(source.platform):
+            logger.info("Refusing /sethome on teams")
+            return ""
 
         via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
         if via_relay:

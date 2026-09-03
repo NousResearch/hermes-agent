@@ -654,7 +654,7 @@ from enum import Enum
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, teams_skips_operator_sends
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
@@ -6332,6 +6332,12 @@ class BasePlatformAdapter(ABC):
             # condition fix — issue #18912).  Previously the send happened
             # after cancel_session_processing, which could silently drop the
             # "/new" confirmation when an agent was actively running.
+            if _text and event.get_command() and teams_skips_operator_sends(event.source.platform):
+                logger.info(
+                    "[%s] skipping slash-command operator reply on teams",
+                    self.name,
+                )
+                _text = None
             if _text:
                 logger.info(
                     "[%s] Sending command '/%s' response (%d chars) to %s",
@@ -6467,6 +6473,12 @@ class BasePlatformAdapter(ABC):
                     _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                     response = await self._message_handler(event)
                     _text, _eph_ttl = self._unwrap_ephemeral(response)
+                    if _text and event.get_command() and teams_skips_operator_sends(event.source.platform):
+                        logger.info(
+                            "[%s] skipping slash-command operator reply on teams",
+                            self.name,
+                        )
+                        _text = None
                     if _text:
                         _r = await self._send_with_retry(
                             chat_id=event.source.chat_id,
@@ -6520,6 +6532,12 @@ class BasePlatformAdapter(ABC):
                         )
                         response = await self._message_handler(event)
                         _text, _eph_ttl = self._unwrap_ephemeral(response)
+                        if _text and event.get_command() and teams_skips_operator_sends(event.source.platform):
+                            logger.info(
+                                "[%s] skipping slash-command operator reply on teams",
+                                self.name,
+                            )
+                            _text = None
                         if _text:
                             _r = await self._send_with_retry(
                                 chat_id=event.source.chat_id,
@@ -6678,6 +6696,16 @@ class BasePlatformAdapter(ABC):
             # string, and remember the TTL + platform capability so the
             # post-send block can schedule the deletion.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+            if (
+                response
+                and event.get_command()
+                and teams_skips_operator_sends(event.source.platform)
+            ):
+                logger.info(
+                    "[%s] skipping slash-command operator reply on teams",
+                    self.name,
+                )
+                response = None
 
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or

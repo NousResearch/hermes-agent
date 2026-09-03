@@ -1,7 +1,7 @@
 name: teams-platform
 label: Microsoft Teams
 kind: platform
-version: 1.0.0
+version: 1.0.1
 description: >
   Microsoft Teams gateway adapter for Hermes Agent.
   Connects to Microsoft Teams via the Bot Framework and relays messages

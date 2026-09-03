@@ -3115,6 +3115,7 @@ from gateway.config import (
     PlatformConfig,
     _getenv,
     load_gateway_config,
+    teams_skips_operator_sends,
 )
 from gateway.session import (
     AsyncSessionStore,
@@ -18287,6 +18288,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter = self._adapter_for_source(source)
         if not adapter:
             return
+        if teams_skips_operator_sends(getattr(source, "platform", None)):
+            logger.info("Skipping Teams platform notice")
+            return
 
         config = getattr(self, "config", None)
         if (
@@ -18948,6 +18952,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         elif not self._is_user_authorized_for_source(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
+            # Teams never posts pairing text into the chat.
+            if teams_skips_operator_sends(source.platform):
+                return None
             if (
                 source.chat_type == "dm"
                 and self._get_unauthorized_dm_behavior(
@@ -19841,7 +19848,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             try:
                 adapter = self._adapter_for_source(source)
-                if adapter:
+                if adapter and not teams_skips_operator_sends(source.platform):
                     _ack_meta = self._thread_metadata_for_source(source)
                     await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
             except Exception:
@@ -19872,7 +19879,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             try:
                 adapter = self._adapter_for_source(source)
-                if adapter:
+                if adapter and not teams_skips_operator_sends(source.platform):
                     _ack_meta = self._thread_metadata_for_source(source)
                     await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
             except Exception:
@@ -19914,7 +19921,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _ack:
                     try:
                         adapter = self._adapter_for_source(source)
-                        if adapter:
+                        if adapter and not teams_skips_operator_sends(source.platform):
                             _ack_meta = self._thread_metadata_for_source(source)
                             await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
                     except Exception:

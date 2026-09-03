@@ -471,6 +471,16 @@ def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bo
     return True
 
 
+def teams_skips_operator_sends(platform: Optional["Platform"] | str | None) -> bool:
+    """True when operator/setup text must not be posted into the chat.
+
+    Teams never sends platform notices, pairing offers, or slash-command
+    operator replies. Agent replies to ordinary turns are unaffected.
+    """
+    value = getattr(platform, "value", platform)
+    return str(value or "").strip().lower() == "teams"
+
+
 @dataclass
 class HomeChannel:
     """

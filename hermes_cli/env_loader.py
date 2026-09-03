@@ -591,6 +591,47 @@ def load_hermes_dotenv(
     return loaded
 
 
+def get_effective_env_paths(
+    *,
+    hermes_home: str | os.PathLike | None = None,
+    project_env: str | os.PathLike | None = None,
+) -> list[Path]:
+    """Return the .env files `load_hermes_dotenv()` would actually read.
+
+    Single source of truth for *display* paths, so `status`, `doctor` and
+    `config show` cannot drift from the loader. Mirrors the resolution in
+    `load_hermes_dotenv`: `HERMES_HOME/.env` (user env) and the project
+    `PROJECT_ROOT/.env` (dev fallback, created by `setup-hermes.sh` as
+    `cp .env.example .env`). Only existing files are returned, in load
+    precedence order (user first, project second). See #102023.
+
+    `get_env_path()` remains the *write* target for `config set`/`setup`;
+    this helper is for *read/display* only.
+    """
+
+    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    candidates: list[Path] = []
+    user_env = home_path / ".env"
+    # project_env is explicit when caller knows the project root (e.g.
+    # status.py's PROJECT_ROOT / ".env"); otherwise fall back to the
+    # repo root adjacent to this file (hermes_cli/..).
+    if project_env is not None:
+        project_env_path = Path(project_env)
+    else:
+        project_env_path = Path(__file__).resolve().parent.parent / ".env"
+        # Avoid duplicating user_env when HERMES_HOME happens to be the repo
+        # root (unlikely but keeps the list deduplicated).
+        if project_env_path.resolve() == user_env.resolve():
+            project_env_path = None
+    if user_env.exists():
+        candidates.append(user_env)
+    if project_env_path is not None and project_env_path.exists():
+        # Avoid double-counting when project_env == user_env
+        if not candidates or project_env_path.resolve() != candidates[0].resolve():
+            candidates.append(project_env_path)
+    return candidates
+
+
 def _reapply_terminal_config_bridge(home_path: Path) -> None:
     """Re-assert config.yaml's explicit ``terminal.*`` keys over reloaded .env.
 

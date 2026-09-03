@@ -100,7 +100,18 @@ def _(rid, params: dict) -> dict:
             "pending_title": title or None,
             "pending_hidden": is_truthy_value(params.get("hidden", False)),
             "room_plumbing": is_truthy_value(params.get("room_plumbing", False)),
-            "follow_profile_config": is_truthy_value(params.get("follow_profile_config", False)),
+            # Default follow when create did not pin a model (#101514). Desktop
+            # already omits default-sourced model/provider so a new chat must
+            # keep tracking the profile; without this, _ensure_session_db_row
+            # stamps _resolve_model() and resume restores it as model_override,
+            # freezing the chat on the old default forever. Explicit
+            # follow_profile_config (Bot Mode) still wins; an explicit create
+            # model pins the chat instead.
+            "follow_profile_config": (
+                is_truthy_value(params.get("follow_profile_config"))
+                if "follow_profile_config" in params
+                else not bool(create_model)
+            ),
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False,
             "session_key": key,

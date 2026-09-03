@@ -5865,6 +5865,12 @@ def _persist_live_session_runtime(session: dict | None) -> None:
             # normal and would otherwise erase the distinction on every live
             # metadata persist.
             model_config["service_tier"] = create_service_tier_override or "normal"
+        # Keep the follow_profile_config marker in sync with the live session.
+        # /model clears the flag; dropping it here lets resume restore the pin.
+        if session.get("follow_profile_config"):
+            model_config["follow_profile_config"] = True
+        else:
+            model_config.pop("follow_profile_config", None)
         model = str(getattr(agent, "model", "") or "").strip()
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
@@ -6765,6 +6771,11 @@ def _apply_model_switch(
             "api_key": result.api_key,
             "api_mode": result.api_mode,
         }
+        # An explicit /model pin must outrank the default follow_profile_config
+        # stamp from session.create (#101514). Clear the in-memory contract so
+        # _persist_live_session_runtime drops the marker from the row; otherwise
+        # resume keeps returning {} and the pin never sticks.
+        session["follow_profile_config"] = False
     if persist_global:
         _persist_model_switch(result)
     return {

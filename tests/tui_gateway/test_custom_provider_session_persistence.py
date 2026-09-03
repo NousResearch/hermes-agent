@@ -704,6 +704,49 @@ class TestFollowProfileConfigRuntimeOverrides:
         server._ensure_session_db_row(session)
         assert captured["model_config"].get("follow_profile_config") is None
 
+    def test_persist_live_runtime_drops_follow_marker_after_model_pin(self, monkeypatch):
+        """After /model clears follow_profile_config, the next runtime persist
+        must drop the marker so resume restores the pin (#101514)."""
+        import tui_gateway.server as server
+
+        captured = {}
+
+        class FakeDB:
+            def get_session(self, _key):
+                return {
+                    "model_config": json.dumps(
+                        {
+                            "model": "old-model",
+                            "provider": "nous",
+                            "follow_profile_config": True,
+                        }
+                    )
+                }
+
+            def update_session_meta(self, _key, model_config_json, model):
+                captured["model_config"] = json.loads(model_config_json)
+                captured["model"] = model
+
+        agent = types.SimpleNamespace(
+            model="claude-sonnet-4.6",
+            provider="anthropic",
+            base_url="",
+            api_mode="",
+            reasoning_config=None,
+            service_tier=None,
+            _session_db=FakeDB(),
+        )
+        session = {
+            "session_key": "key-3",
+            "agent": agent,
+            "follow_profile_config": False,
+            "model_override": {"model": "claude-sonnet-4.6", "provider": "anthropic"},
+        }
+        server._persist_live_session_runtime(session)
+        assert captured["model_config"].get("follow_profile_config") is None
+        assert captured["model"] == "claude-sonnet-4.6"
+        assert captured["model_config"]["model"] == "claude-sonnet-4.6"
+
 
 # --- Regression: model column vs model_config desync (stale provider) ----------
 #

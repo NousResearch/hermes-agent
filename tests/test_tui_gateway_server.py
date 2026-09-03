@@ -19250,12 +19250,44 @@ def test_session_create_records_ui_model_as_session_override(monkeypatch):
         normal_sess = server._sessions[normal["result"]["session_id"]]
         assert normal_sess["create_service_tier_override"] == ""
 
-        # No knobs → no overrides; the session builds from the profile default.
+        # No knobs → no model override; the session builds from the profile
+        # default and follows that profile on resume (#101514).
         plain = server._methods["session.create"]("r3", {"cols": 80})
         plain_sess = server._sessions[plain["result"]["session_id"]]
         assert plain_sess["model_override"] is None
         assert plain_sess["create_reasoning_override"] is None
         assert plain_sess["create_service_tier_override"] is None
+        assert plain_sess["follow_profile_config"] is True
+    finally:
+        server._sessions.clear()
+
+
+def test_session_create_defaults_follow_profile_config_without_model(monkeypatch):
+    """A create with no model must stamp follow_profile_config so resume does
+    not pin the row's stamped default (#101514). Explicit model or an explicit
+    follow flag still wins.
+    """
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    try:
+        plain = server._methods["session.create"]("r1", {"cols": 80, "title": "New Chat"})
+        assert server._sessions[plain["result"]["session_id"]]["follow_profile_config"] is True
+
+        pinned = server._methods["session.create"](
+            "r2", {"cols": 80, "model": "claude-sonnet-4.6", "provider": "anthropic"}
+        )
+        assert server._sessions[pinned["result"]["session_id"]]["follow_profile_config"] is False
+
+        forced = server._methods["session.create"](
+            "r3",
+            {"cols": 80, "model": "claude-sonnet-4.6", "follow_profile_config": True},
+        )
+        assert server._sessions[forced["result"]["session_id"]]["follow_profile_config"] is True
+
+        refused = server._methods["session.create"](
+            "r4", {"cols": 80, "follow_profile_config": False}
+        )
+        assert server._sessions[refused["result"]["session_id"]]["follow_profile_config"] is False
     finally:
         server._sessions.clear()
 

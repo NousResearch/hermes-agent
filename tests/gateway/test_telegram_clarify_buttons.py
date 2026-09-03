@@ -4,6 +4,7 @@ Mirrors test_telegram_approval_buttons.py for the new ``send_clarify`` and
 ``cl:`` callback dispatch added in feat/clarify-gateway-buttons.
 """
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -122,13 +123,15 @@ class TestTelegramClarifyCallback:
         _clear_clarify_state()
 
     @pytest.mark.asyncio
-    async def test_numeric_choice_resolves_with_choice_text(self):
+    async def test_successful_numeric_choice_resumes_typing_for_chat(self):
         from tools import clarify_gateway as cm
 
         adapter = _make_adapter()
         # Pre-register a clarify entry so the callback can look up the choice text
         cm.register("cidA", "sk-cb", "Pick", ["red", "green", "blue"])
         adapter._clarify_state["cidA"] = "sk-cb"
+        adapter.pause_typing_for_chat("12345")
+        assert "12345" in adapter._typing_paused
 
         query = AsyncMock()
         query.data = "cl:cidA:1"  # green
@@ -162,7 +165,135 @@ class TestTelegramClarifyCallback:
         assert entry.event.is_set()
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
+        assert "12345" not in adapter._typing_paused
 
+    @pytest.mark.asyncio
+    async def test_failed_numeric_choice_does_not_resume_typing(self):
+        """A stale adapter entry must not restart typing when resolution fails."""
+        adapter = _make_adapter()
+        adapter._clarify_state["cidStale"] = "sk-stale"
+        adapter.resume_typing_for_chat = MagicMock(wraps=adapter.resume_typing_for_chat)
+
+        query = AsyncMock()
+        query.data = "cl:cidStale:0"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.text = "Pick"
+        query.from_user = MagicMock()
+        query.from_user.id = "777"
+        query.from_user.first_name = "Tester"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        adapter.resume_typing_for_chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_successful_numeric_choice_without_chat_id_does_not_resume_typing(self):
+        """Resolution can succeed without message context, but cannot target typing."""
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        cm.register("cidNoChat", "sk-no-chat", "Pick", ["red"])
+        adapter._clarify_state["cidNoChat"] = "sk-no-chat"
+        adapter.resume_typing_for_chat = MagicMock(wraps=adapter.resume_typing_for_chat)
+
+        query = AsyncMock()
+        query.data = "cl:cidNoChat:0"
+        query.message = None
+        query.from_user = MagicMock()
+        query.from_user.id = "777"
+        query.from_user.first_name = "Tester"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        adapter.resume_typing_for_chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_follow_up_delivery_failure_keeps_typing_cleanup_with_turn_owner(self):
+        """Resolution resumes the existing loop; a failed final send does not own it."""
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        adapter.send_typing = AsyncMock(return_value=None)
+        stop_event = asyncio.Event()
+        typing_task = asyncio.create_task(
+            adapter._keep_typing("12345", interval=0.01, stop_event=stop_event)
+        )
+
+        try:
+            # The outer message-processing lifecycle starts this loop before
+            # the agent reaches clarify. Pausing must suppress refreshes
+            # without cancelling that owner task.
+            for _ in range(20):
+                if adapter.send_typing.await_count:
+                    break
+                await asyncio.sleep(0.01)
+            assert adapter.send_typing.await_count > 0
+            adapter.pause_typing_for_chat("12345")
+            paused_call_count = adapter.send_typing.await_count
+            await asyncio.sleep(0.03)
+            assert adapter.send_typing.await_count == paused_call_count
+            assert not typing_task.done()
+
+            cm.register("cidDelivery", "sk-delivery", "Pick", ["red"])
+            adapter._clarify_state["cidDelivery"] = "sk-delivery"
+
+            query = AsyncMock()
+            query.data = "cl:cidDelivery:0"
+            query.message = MagicMock()
+            query.message.chat_id = 12345
+            query.message.text = "Pick"
+            query.from_user = MagicMock()
+            query.from_user.id = "777"
+            query.from_user.first_name = "Tester"
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+
+            update = MagicMock()
+            update.callback_query = query
+
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+                await adapter._handle_callback_query(update, MagicMock())
+
+            # The callback only releases the pause. The same loop resumes and
+            # remains owned by the original turn even if its final delivery
+            # subsequently fails.
+            for _ in range(20):
+                if adapter.send_typing.await_count > paused_call_count:
+                    break
+                await asyncio.sleep(0.01)
+            assert adapter.send_typing.await_count > paused_call_count
+            assert not typing_task.done()
+
+            adapter._should_attempt_rich = MagicMock(return_value=False)
+            assert adapter._bot is not None
+            adapter._bot.send_message = AsyncMock(
+                side_effect=RuntimeError("follow-up delivery failed")
+            )
+            delivery = await adapter.send(
+                "12345", "follow-up", metadata={"notify": True}
+            )
+
+            assert delivery.success is False
+            assert "12345" not in adapter._typing_paused
+            assert not typing_task.done()
+        finally:
+            stop_event.set()
+            await asyncio.wait_for(typing_task, timeout=1)
+
+        assert "12345" not in adapter._typing_paused
 
     @pytest.mark.asyncio
     async def test_unauthorized_user_rejected(self):

@@ -19,7 +19,7 @@ adapter's numbered-text fallback (which flips ``awaiting_text`` at send time)
 keep accepting free text.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -154,6 +154,35 @@ async def test_thread_prose_does_not_overwrite_concurrent_button_choice():
 
     assert entry.event.is_set()
     assert entry.response == "buttons"
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_exact_choice_label_resolves_and_resumes_typing():
+    """A non-numeric choice reply must release the clarify-owned typing pause."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    adapter.pause_typing_for_chat("D123")
+    adapter.resume_typing_for_chat = MagicMock(
+        wraps=adapter.resume_typing_for_chat
+    )
+    runner = _make_runner(adapter)
+    entry = cm.register(
+        "cl-label",
+        SESSION_KEY,
+        "Pick a UI variant",
+        ["buttons", "dropdown"],
+    )
+
+    result = await _dispatch(runner, _event("dropdown"))
+
+    assert result == ""
+    assert entry.event.is_set()
+    assert entry.response == "dropdown"
+    adapter.resume_typing_for_chat.assert_called_once_with("D123")
+    assert "D123" not in adapter._typing_paused
     _clear_clarify_state()
 
 

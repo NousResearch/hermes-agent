@@ -805,6 +805,137 @@ _SSL_TRANSIENT_PATTERNS = [
 ]
 
 
+# ── Nous fair-share (model-scoped) 429s ─────────────────────────────────
+#
+# Some Nous inference models are "fairshare-governed": each gets a per-identity
+# adaptive rate, and exceeding it returns a 429 that is specific to THAT model.
+# Other Nous models remain available and the caller's credential is healthy,
+# so the correct recovery is a model switch (or an honest ``retry_after``
+# wait) — never credential rotation, and never the cross-session Nous guard.
+#
+# Body extends the plain ``{status, message}`` envelope with ``reason``,
+# ``retry_after`` (seconds, exact), ``alternates`` (other fairshare model
+# slugs, best rate first; may be empty) and an optional ``upgrade_url``.
+# Headers carry ``Retry-After`` (authoritative) plus IETF draft
+# ``RateLimit: "fairshare";r=0;t=51`` / ``RateLimit-Policy: "fairshare";...``.
+#
+# The detection predicate requires BOTH ``reason`` (in the enum below) AND a
+# numeric ``retry_after`` so it is unreachable on today's ``{status, message}``
+# 429s — portal-wide per-key rpm/tph limits keep their existing handling.
+FAIRSHARE_REASONS = frozenset({
+    "rate_limited",
+    "admission_closed",
+    "at_capacity",
+    "model_not_free",
+    "feature_not_free",
+})
+
+_NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
+
+
+def _extract_response_headers(error: Exception) -> Dict[str, str]:
+    """Return lower-cased response headers from an SDK exception, or ``{}``."""
+    current = error
+    for _ in range(5):  # Match _extract_status_code() traversal depth.
+        response = getattr(current, "response", None)
+        headers = getattr(response, "headers", None) if response is not None else None
+        if headers is not None:
+            try:
+                return {str(k).lower(): str(v) for k, v in dict(headers).items()}
+            except Exception:
+                try:
+                    return {str(k).lower(): str(v) for k, v in headers.items()}
+                except Exception:
+                    return {}
+        cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if cause is None or cause is current:
+            break
+        current = cause
+    return {}
+
+
+def _coerce_seconds(value: Any) -> Optional[float]:
+    """Parse a non-negative seconds value; ``None`` when absent/invalid."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if seconds != seconds or seconds < 0:  # NaN / negative
+        return None
+    return seconds
+
+
+def parse_fairshare_refusal(
+    body: Any,
+    *,
+    provider: str = "",
+    headers: Optional[Dict[str, str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Detect a Nous fair-share (model-scoped) 429 body.
+
+    Returns an ``error_context`` dict when the body matches, else ``None``.
+    Only fires for Nous providers; a fairshare-shaped body from any other
+    provider is ignored so existing handling is untouched there.
+
+    Defensive by design (server-side rollout starts in shadow mode): every
+    field beyond ``reason`` + ``retry_after`` is optional, and malformed
+    optional fields degrade to empty/absent rather than rejecting the match.
+    """
+    if (provider or "").strip().lower() not in _NOUS_PROVIDERS:
+        return None
+    if not isinstance(body, dict):
+        return None
+    # Accept both the flat Nous envelope and an ``{"error": {...}}`` wrapper
+    # in case a proxy/SDK nests it.
+    payload = body
+    nested = body.get("error")
+    if "reason" not in payload and isinstance(nested, dict):
+        payload = nested
+
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or reason.strip().lower() not in FAIRSHARE_REASONS:
+        return None
+    retry_after = _coerce_seconds(payload.get("retry_after"))
+    if retry_after is None:
+        return None
+
+    lowered = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+    # ``Retry-After`` header is authoritative and unclamped; prefer it when
+    # it parses, otherwise keep the body value.
+    header_retry_after = _coerce_seconds(lowered.get("retry-after"))
+    if header_retry_after is not None:
+        retry_after = header_retry_after
+    header_confirmed = "fairshare" in lowered.get("ratelimit-policy", "").lower() or (
+        "fairshare" in lowered.get("ratelimit", "").lower()
+    )
+
+    raw_alternates = payload.get("alternates")
+    alternates: list = []
+    if isinstance(raw_alternates, (list, tuple)):
+        for alt in raw_alternates:
+            if isinstance(alt, str) and alt.strip() and alt.strip() not in alternates:
+                alternates.append(alt.strip())
+
+    upgrade_url = payload.get("upgrade_url")
+    if not isinstance(upgrade_url, str) or not upgrade_url.strip().lower().startswith(
+        ("https://", "http://")
+    ):
+        upgrade_url = None
+    else:
+        upgrade_url = upgrade_url.strip()
+
+    return {
+        "fairshare": True,
+        "fairshare_reason": reason.strip().lower(),
+        "retry_after": retry_after,
+        "alternates": alternates,
+        "upgrade_url": upgrade_url,
+        "fairshare_header_confirmed": header_confirmed,
+    }
+
+
 # ── Classification pipeline ─────────────────────────────────────────────
 
 def classify_api_error(
@@ -1095,6 +1226,7 @@ def classify_api_error(
             num_messages=num_messages,
             response_headers=response_headers,
             result_fn=_result,
+            headers=_extract_response_headers(error),
         )
         if classified is not None:
             return classified
@@ -1253,6 +1385,7 @@ def _classify_by_status(
     num_messages: int = 0,
     response_headers=None,
     result_fn,
+    headers: Optional[Dict[str, str]] = None,
 ) -> Optional[ClassifiedError]:
     """Classify based on HTTP status code with message-aware refinement."""
 
@@ -1369,6 +1502,24 @@ def _classify_by_status(
             return result_fn(
                 FailoverReason.overloaded,
                 retryable=True,
+            )
+        # Nous fair-share 429: scoped to ONE model — other Nous models are
+        # fully available and the credential is healthy.  Reuse the
+        # upstream_rate_limit recovery (model fallback, no credential
+        # rotation, no cross-session Nous guard) and carry the gateway's
+        # recovery hints in error_context.  Predicate is unreachable on a
+        # plain ``{status, message}`` Nous 429, which keeps the account-level
+        # rate_limit path below.
+        fairshare_ctx = parse_fairshare_refusal(
+            body, provider=provider, headers=headers,
+        )
+        if fairshare_ctx is not None:
+            return result_fn(
+                FailoverReason.upstream_rate_limit,
+                retryable=True,
+                should_rotate_credential=False,
+                should_fallback=True,
+                error_context=fairshare_ctx,
             )
         # Distinguish an OpenRouter-aggregator upstream 429 (an upstream model
         # like DeepSeek rate-limited OpenRouter's aggregate traffic) from an

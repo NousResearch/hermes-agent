@@ -718,6 +718,52 @@ class TestKimiCodeCredentialAutoDetect:
 class TestZaiEndpointAutoDetect:
     """Test that resolve_api_key_provider_credentials auto-detects Z.AI endpoints."""
 
+    def test_explicit_key_override_drives_endpoint_resolution(self, monkeypatch):
+        """The key used to resolve the endpoint must be the returned key."""
+        monkeypatch.setenv("GLM_API_KEY", "env-key")
+        detected_url = "https://api.z.ai/api/coding/paas/v4"
+        probed_keys = []
+
+        def _detect(api_key, *args, **kwargs):
+            probed_keys.append(api_key)
+            return {
+                "id": "coding-global",
+                "base_url": detected_url,
+                "model": "glm-5.2",
+                "label": "Global (Coding Plan)",
+            }
+
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", _detect)
+
+        creds = resolve_api_key_provider_credentials(
+            "zai", api_key_override="explicit-key"
+        )
+
+        assert creds["api_key"] == "explicit-key"
+        assert creds["base_url"] == detected_url
+        assert creds["source"] == "explicit"
+        assert probed_keys == ["explicit-key"]
+
+
+    def test_probe_success_returns_detected_url(self, monkeypatch):
+        monkeypatch.setenv("GLM_API_KEY", "glm-coding-key")
+        monkeypatch.setattr(
+            "hermes_cli.auth.detect_zai_endpoint",
+            lambda *a, **kw: {
+                "id": "coding-global",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                "model": "glm-4.7",
+                "label": "Global (Coding Plan)",
+            },
+        )
+        creds = resolve_api_key_provider_credentials("zai")
+        assert creds["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+
+    def test_probe_failure_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+        creds = resolve_api_key_provider_credentials("zai")
+        assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
 
     def test_env_override_skips_probe(self, monkeypatch):
         """GLM_BASE_URL should always win without probing."""

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import sys
 
 import pytest
+import inspect
 
 from gateway.config import PlatformConfig
 
@@ -200,6 +201,233 @@ async def test_auto_registers_plugin_commands_for_discord(adapter):
     await metricas_cmd.callback(interaction, args="dias:7 formato:json")
     adapter._run_simple_slash.assert_awaited_once_with(
         interaction, "/metricas dias:7 formato:json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_announce_slash_posts_exact_text_to_selected_channel(adapter):
+    """The native command should publish directly to the selected channel."""
+    adapter._register_slash_commands()
+
+    guild = SimpleNamespace(id=456, name="TestGuild")
+    sent_message = SimpleNamespace(
+        id=777,
+        jump_url="https://discord.com/channels/456/321/777",
+    )
+    target = SimpleNamespace(
+        id=321,
+        name="announcements",
+        guild=guild,
+        send=AsyncMock(return_value=sent_message),
+    )
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="operations"),
+        channel_id=123,
+        guild=guild,
+        guild_id=guild.id,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+        edit_original_response=AsyncMock(),
+    )
+
+    command = adapter._client.tree.commands["announce"]
+    await command(
+        interaction,
+        channel=target,
+        message="**Deploy complete**",
+        ping_everyone=False,
+    )
+
+    target.send.assert_awaited_once()
+    send_args, send_kwargs = target.send.await_args
+    assert send_args == ("**Deploy complete**",)
+    assert "allowed_mentions" in send_kwargs
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    interaction.edit_original_response.assert_awaited_once_with(
+        content=(
+            "Announcement posted in <#321>: "
+            "https://discord.com/channels/456/321/777"
+        )
+    )
+    assert "777" in adapter._nonconversational_messages
+
+
+def test_announce_slash_signature_matches_existing_guild_command(adapter):
+    """The callback must match Discord's installed guild-command payload."""
+    adapter._register_slash_commands()
+
+    callback = adapter._client.tree.commands["announce"]
+    assert list(inspect.signature(callback).parameters) == [
+        "interaction",
+        "channel",
+        "message",
+        "ping_everyone",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_announce_slash_suppresses_literal_mass_mentions_without_opt_in(adapter):
+    guild = SimpleNamespace(id=456, name="TestGuild")
+    sent_message = SimpleNamespace(id=777, jump_url="")
+    target = SimpleNamespace(
+        id=321,
+        name="announcements",
+        guild=guild,
+        send=AsyncMock(return_value=sent_message),
+    )
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="operations"),
+        channel_id=123,
+        guild=guild,
+        guild_id=guild.id,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+        edit_original_response=AsyncMock(),
+    )
+
+    mentions = object()
+    with patch(
+        "plugins.platforms.discord.adapter.discord.AllowedMentions",
+        return_value=mentions,
+    ) as allowed_mentions:
+        await adapter._handle_announce_slash(
+            interaction,
+            target,
+            "@everyone maintenance starts now",
+            ping_everyone=False,
+        )
+
+    allowed_mentions.assert_called_once_with(
+        everyone=False,
+        roles=False,
+        users=True,
+        replied_user=False,
+    )
+    target.send.assert_awaited_once_with(
+        "@everyone maintenance starts now",
+        allowed_mentions=mentions,
+    )
+
+
+@pytest.mark.asyncio
+async def test_announce_slash_rejects_cross_guild_destination(adapter):
+    source_guild = SimpleNamespace(id=456, name="SourceGuild")
+    target = SimpleNamespace(
+        id=321,
+        name="announcements",
+        guild=SimpleNamespace(id=999, name="OtherGuild"),
+        send=AsyncMock(),
+    )
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="operations"),
+        channel_id=123,
+        guild=source_guild,
+        guild_id=source_guild.id,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+    )
+
+    await adapter._handle_announce_slash(interaction, target, "Do not send")
+
+    target.send.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once_with(
+        "Choose a text channel in this server.", ephemeral=True
+    )
+
+
+@pytest.mark.parametrize(
+    ("handler_name", "handler_args", "command"),
+    [
+        ("_handle_music_play", ("song",), "/play"),
+        ("_handle_music_queue", (), "/musicqueue"),
+        ("_handle_music_admin", ("forceskip",), "/forceskip"),
+        ("_handle_music_admin", ("clear",), "/clearqueue"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_music_slash_commands_honor_command_policy(
+    adapter, handler_name, handler_args, command
+):
+    adapter.config.extra = {"group_allow_admin_from": ["99"]}
+    adapter._reject_slash = AsyncMock()
+    manager = SimpleNamespace(
+        add=AsyncMock(),
+        show_queue=AsyncMock(),
+        admin_action=AsyncMock(),
+    )
+    adapter._get_music_manager = MagicMock(return_value=manager)
+    guild = SimpleNamespace(id=456)
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="operations"),
+        guild=guild,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+    )
+
+    await getattr(adapter, handler_name)(interaction, *handler_args)
+
+    adapter._reject_slash.assert_awaited_once_with(
+        interaction,
+        command,
+        reason="command blocked by slash access policy",
+    )
+    manager.add.assert_not_awaited()
+    manager.show_queue.assert_not_awaited()
+    manager.admin_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_announce_slash_honors_admin_command_policy(adapter):
+    adapter.config.extra = {"group_allow_admin_from": ["99"]}
+    adapter._reject_slash = AsyncMock(return_value=False)
+    guild = SimpleNamespace(id=456, name="TestGuild")
+    target = SimpleNamespace(
+        id=321,
+        name="announcements",
+        guild=guild,
+        send=AsyncMock(),
+    )
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="operations"),
+        channel_id=123,
+        guild=guild,
+        guild_id=guild.id,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+    )
+
+    await adapter._handle_announce_slash(interaction, target, "Do not send")
+
+    target.send.assert_not_awaited()
+    adapter._reject_slash.assert_awaited_once_with(
+        interaction,
+        "/announce",
+        reason="command blocked by slash access policy",
+    )
+
+
+@pytest.mark.asyncio
+async def test_announce_slash_rejects_messages_over_discord_limit(adapter):
+    guild = SimpleNamespace(id=456, name="TestGuild")
+    target = SimpleNamespace(
+        id=321,
+        name="announcements",
+        guild=guild,
+        send=AsyncMock(),
+    )
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="operations"),
+        channel_id=123,
+        guild=guild,
+        guild_id=guild.id,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+        response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+    )
+
+    await adapter._handle_announce_slash(interaction, target, "x" * 2001)
+
+    target.send.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once_with(
+        "Announcement text must be 2,000 characters or fewer.",
+        ephemeral=True,
     )
 
 

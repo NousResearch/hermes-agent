@@ -632,6 +632,37 @@ class TestVoiceChannelCommands:
         assert event.source.chat_type == "channel"
 
     @pytest.mark.asyncio
+    async def test_spoken_natural_play_command_bypasses_agent_dispatch(self, runner):
+        """An addressed music command should control playback directly."""
+        from gateway.config import Platform
+
+        class VoiceMusicAdapter:
+            def __init__(self):
+                self._voice_text_channels = {111: 123}
+                self._voice_sources = {}
+                self._client = MagicMock()
+                self.handle_message = AsyncMock()
+                self.music_requests = []
+
+            async def _maybe_handle_natural_music_voice(
+                self, guild_id, user_id, transcript
+            ):
+                self.music_requests.append((guild_id, user_id, transcript))
+                return True
+
+        adapter = VoiceMusicAdapter()
+        runner.adapters[Platform.DISCORD] = adapter
+
+        await runner._handle_voice_channel_input(
+            111, 42, "Hey Jarvis play Paranoid by Rich Amiri"
+        )
+
+        assert adapter.music_requests == [
+            (111, 42, "Hey Jarvis play Paranoid by Rich Amiri")
+        ]
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_input_resolves_channel_prompt(self, runner):
         """Voice input must carry the bound text channel's channel_prompt (#50149)."""
         from gateway.config import Platform
@@ -680,6 +711,46 @@ class TestVoiceChannelCommands:
         assert event.source.chat_type == "group"
         assert event.source.chat_name == "Hermes Server / #general"
         assert event.source.user_id == "42"
+
+    @pytest.mark.asyncio
+    async def test_voice_input_does_not_inherit_linking_users_role_authorization(
+        self, runner
+    ):
+        from gateway.config import Platform
+
+        bound_source = SessionSource(
+            chat_id="123",
+            chat_type="group",
+            user_id="linking-user",
+            user_name="linking-user",
+            platform=Platform.DISCORD,
+            role_authorized=True,
+        )
+        class VoiceAuthAdapter:
+            def __init__(self):
+                self._voice_text_channels = {111: 123}
+                self._voice_sources = {111: bound_source.to_dict()}
+                self._client = MagicMock()
+                self._client.get_guild = MagicMock(
+                    return_value=SimpleNamespace(id=111)
+                )
+                self.handle_message = AsyncMock()
+                self.auth_calls = []
+
+            def _is_allowed_user(self, user_id, *, guild, is_dm):
+                self.auth_calls.append((user_id, guild, is_dm))
+                return False
+
+        adapter = VoiceAuthAdapter()
+        runner._is_user_authorized = lambda source: bool(source.role_authorized)
+        runner.adapters[Platform.DISCORD] = adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+
+        assert adapter.auth_calls == [
+            ("42", adapter._client.get_guild.return_value, False)
+        ]
+        adapter.handle_message.assert_not_awaited()
 
 
     # -- _get_guild_id --
@@ -757,6 +828,7 @@ class TestDiscordVoiceChannelMethods:
         adapter._is_allowed_user = MagicMock(return_value=True)
 
         async def process(guild_id, user_id, pcm_data):
+            assert not adapter._voice_locks[111].locked()
             events.append("process")
 
         adapter._process_voice_input = process
@@ -824,6 +896,58 @@ class TestDiscordVoiceChannelMethods:
         assert result is mock_vc
 
 
+    @pytest.mark.asyncio
+    async def test_unexpected_bot_voice_disconnect_clears_music_state(self):
+        adapter = self._make_adapter()
+        bot_user = SimpleNamespace(id=1, guild=SimpleNamespace(id=111))
+        adapter._client.user = bot_user
+        vc = MagicMock()
+        vc.is_connected.return_value = False
+        adapter._voice_clients[111] = vc
+        adapter._voice_text_channels[111] = 123
+        adapter._voice_sources[111] = {"chat_id": "123"}
+        manager = SimpleNamespace(on_voice_disconnected=AsyncMock())
+        adapter._music_manager = manager
+        member = bot_user
+        before = SimpleNamespace(channel=SimpleNamespace(id=12))
+        after = SimpleNamespace(channel=None)
+
+        handled = await adapter._handle_bot_voice_state_update(member, before, after)
+
+        assert handled is True
+        assert 111 not in adapter._voice_clients
+        assert 111 not in adapter._voice_text_channels
+        assert 111 not in adapter._voice_sources
+        manager.on_voice_disconnected.assert_awaited_once_with(111)
+
+
+    @pytest.mark.asyncio
+    async def test_unexpected_disconnect_marks_guild_leaving_before_deferred_cleanup(self):
+        adapter = self._make_adapter()
+        bot_user = SimpleNamespace(id=1, guild=SimpleNamespace(id=111))
+        adapter._client.user = bot_user
+        adapter._voice_clients[111] = SimpleNamespace(is_connected=lambda: False)
+        adapter._music_manager = SimpleNamespace(on_voice_disconnected=AsyncMock())
+        voice_lock = adapter._voice_locks.setdefault(111, asyncio.Lock())
+        await voice_lock.acquire()
+
+        handled = await adapter._handle_bot_voice_state_update(
+            bot_user,
+            SimpleNamespace(channel=SimpleNamespace(id=12)),
+            SimpleNamespace(channel=None),
+        )
+
+        assert handled is True
+        assert 111 in adapter._voice_leaving
+        voice_lock.release()
+        for _ in range(10):
+            if adapter._music_manager.on_voice_disconnected.await_count:
+                break
+            await asyncio.sleep(0)
+        adapter._music_manager.on_voice_disconnected.assert_awaited_once_with(111)
+        assert 111 not in adapter._voice_leaving
+
+
     def test_voice_timeout_zero_disables_auto_leave(self):
         adapter = self._make_adapter()
         adapter._voice_timeout_seconds = 0
@@ -834,6 +958,21 @@ class TestDiscordVoiceChannelMethods:
 
         existing_task.cancel.assert_called_once()
         assert adapter._voice_timeout_tasks == {}
+
+    def test_active_music_does_not_rearm_voice_inactivity_timeout(self):
+        adapter = self._make_adapter()
+        adapter._voice_timeout_seconds = 300
+        adapter._music_manager = SimpleNamespace(
+            sessions={111: SimpleNamespace(current=object())}
+        )
+
+        adapter._reset_voice_timeout(111)
+
+        try:
+            assert adapter._voice_timeout_tasks == {}
+        finally:
+            for task in adapter._voice_timeout_tasks.values():
+                task.cancel()
 
     def test_discord_voice_timeout_config_loaded(self):
         from plugins.platforms.discord.adapter import DiscordAdapter
@@ -885,6 +1024,29 @@ class TestDiscordVoiceChannelMethods:
         adapter._playback_timeout_for_audio.assert_awaited_once_with("/tmp/long.mp3")
         adapter._cancel_voice_timeout.assert_called_once_with(111)
         adapter._reset_voice_timeout.assert_called_once_with(111)
+
+
+    @pytest.mark.asyncio
+    async def test_tts_does_not_interrupt_active_music_playback(self):
+        adapter = self._make_adapter()
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        vc.is_playing.return_value = True
+        adapter._voice_clients[111] = vc
+        adapter._music_manager = SimpleNamespace(
+            sessions={111: SimpleNamespace(current=object())}
+        )
+        adapter._playback_timeout_for_audio = AsyncMock(return_value=30.0)
+        adapter._cancel_voice_timeout = MagicMock()
+        adapter._reset_voice_timeout = MagicMock()
+
+        result = await adapter.play_in_voice_channel(111, "/tmp/reply.mp3")
+
+        assert result is False
+        vc.stop.assert_not_called()
+        vc.play.assert_not_called()
+        adapter._playback_timeout_for_audio.assert_not_awaited()
+        adapter._cancel_voice_timeout.assert_not_called()
 
 
     def test_is_allowed_user_wildcard_only(self):

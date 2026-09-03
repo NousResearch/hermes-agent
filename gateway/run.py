@@ -25014,6 +25014,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 profile=getattr(adapter, "_owner_profile", None),
             )
 
+        # Never inherit the linked text user's role grant. Recompute admission
+        # for the actual speaker before the gateway-level authorization check.
+        source.role_authorized = False
+        voice_auth_checker = vars(type(adapter)).get("_is_allowed_user")
+        if callable(voice_auth_checker) and not inspect.iscoroutinefunction(
+            voice_auth_checker
+        ):
+            voice_guild = (
+                adapter._client.get_guild(guild_id)
+                if getattr(adapter, "_client", None) is not None
+                else None
+            )
+            source.role_authorized = bool(
+                voice_auth_checker(
+                    adapter,
+                    str(user_id),
+                    guild=voice_guild,
+                    is_dm=False,
+                )
+            )
+
         # Check authorization before processing voice input
         if not self._is_user_authorized(source):
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
@@ -25026,6 +25047,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_id,
                 transcript[:100],
             )
+            return
+
+        natural_music_handler = getattr(
+            type(adapter), "_maybe_handle_natural_music_voice", None
+        )
+        if callable(natural_music_handler) and await natural_music_handler(
+            adapter, guild_id, user_id, transcript
+        ):
             return
 
         # Show transcript in text channel (after auth, with mention sanitization)
@@ -25048,6 +25077,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if callable(resolver):
             try:
                 resolved = resolver(str(text_ch_id))
+                if inspect.isawaitable(resolved):
+                    resolved = await resolved
                 channel_prompt = resolved if isinstance(resolved, str) else None
             except Exception:
                 channel_prompt = None

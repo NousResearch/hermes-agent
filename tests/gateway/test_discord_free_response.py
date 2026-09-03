@@ -205,6 +205,46 @@ async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_explicit_jarvis_play_request_bypasses_discord_mention_gate(
+    adapter, monkeypatch
+):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._maybe_handle_natural_music_message = AsyncMock(return_value=True)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="Hey Jarvis play Paranoid by Rich Amiri",
+    )
+
+    handled = await adapter._handle_message(message)
+
+    assert handled is True
+    adapter._maybe_handle_natural_music_message.assert_awaited_once_with(
+        message, content="Hey Jarvis play Paranoid by Rich Amiri"
+    )
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovered_music_request_does_not_start_delayed_playback(
+    adapter, monkeypatch
+):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._maybe_handle_natural_music_message = AsyncMock(return_value=True)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="Hey Jarvis play Paranoid by Rich Amiri",
+    )
+
+    handled = await adapter._handle_message(message, recovered=True)
+
+    assert handled is True
+    adapter._maybe_handle_natural_music_message.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)

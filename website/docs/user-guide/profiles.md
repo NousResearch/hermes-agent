@@ -48,6 +48,20 @@ hermes profile create researcher --description "Reads source code and external d
 
 You can also set or auto-generate the description later with `hermes profile describe` — see the [Kanban guide](./features/kanban#auto-vs-manual-orchestration) for the full routing model.
 
+### Assistant presets (`--preset`)
+
+Skip hand-assembling a role. A preset bundles a persona (`SOUL.md`), a routable profile description, and suggested automations from the [Automation Blueprints](../guides/automation-blueprints.md) catalog into a single flag:
+
+```bash
+hermes profile presets                                    # list the catalog
+hermes profile create scout --preset research-scout       # persona + description
+hermes profile create mail --preset inbox-zero --with-automations
+```
+
+Shipped presets: `research-scout`, `inbox-zero`, `project-captain`, `finance-keeper`, `sales-pilot`. Without `--with-automations`, the suggested automations are printed as ready-to-paste `/blueprint` commands instead of being created. Automations seeded this way deliver locally until you set a delivery target (they're created outside any chat, so there is no origin channel yet). An explicit `--description` still wins over the preset's.
+
+Run several presets side by side — each is an isolated profile with its own memory, sessions, and cron jobs — and message them independently (`scout chat`, `mail gateway start`, or route kanban tasks by description).
+
 ### Clone config only (`--clone`)
 
 ```bash

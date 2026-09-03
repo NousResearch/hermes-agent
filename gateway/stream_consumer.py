@@ -354,6 +354,17 @@ class GatewayStreamConsumer:
         self._adapter_requires_finalize: bool = (
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
+        # Adapters that attach a rich payload (e.g. Slack Block Kit
+        # rich_blocks) only on the finalize=True edit need that edit to run
+        # even when the last streamed chunk already delivered the identical
+        # text — otherwise the payload is silently dropped on single-chunk
+        # messages (#77805).  Weaker than REQUIRES_EDIT_FINALIZE: a
+        # mid-stream finalize edit that DID run already attached the
+        # payload, so the got_done redundant-edit skip stays active for
+        # these adapters (no double finalize edit).
+        self._adapter_finalize_attaches_rich_payload: bool = (
+            getattr(adapter, "FINALIZE_EDIT_ATTACHES_RICH_PAYLOAD", False) is True
+        )
 
         # Session staleness guard — when set to False (e.g. after /new or
         # /stop), the run() loop will abandon the stream early instead of
@@ -3349,9 +3360,18 @@ class GatewayStreamConsumer:
                     # call (REQUIRES_EDIT_FINALIZE) must still receive the
                     # finalize=True edit even when content is unchanged, so
                     # their streaming UI can transition out of the in-
-                    # progress state.  Everyone else short-circuits.
+                    # progress state.  Adapters that attach a rich payload
+                    # only on the finalize edit (Slack Block Kit
+                    # rich_blocks, FINALIZE_EDIT_ATTACHES_RICH_PAYLOAD)
+                    # must also receive it — skipping here would silently
+                    # drop the block payload on single-chunk messages
+                    # (#77805).  Everyone else short-circuits.
                     if text == self._last_sent_text and not (
-                        finalize and self._adapter_requires_finalize
+                        finalize
+                        and (
+                            self._adapter_requires_finalize
+                            or self._adapter_finalize_attaches_rich_payload
+                        )
                     ):
                         return True
                     # Fresh-final for long-lived previews: when finalizing

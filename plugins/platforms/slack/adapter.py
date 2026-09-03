@@ -1121,6 +1121,12 @@ class SlackAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
+    # Slack's edit_message attaches Block Kit blocks (rich_blocks /
+    # markdown_blocks) only on the finalize=True edit.  Without this flag
+    # the stream consumer short-circuits when the last streamed chunk
+    # already delivered the identical text, silently dropping the block
+    # payload on single-chunk messages (#77805).
+    FINALIZE_EDIT_ATTACHES_RICH_PAYLOAD: bool = True
     # Slack's typing indicator is a text status line (assistant.threads
     # .setStatus), so the gateway feeds it live per-tool phrases.
     supports_status_text = True

@@ -5,6 +5,7 @@ Mirrors the ``transform_terminal_output`` hook tests from Phase 1 but
 targets the generic tool-result seam that runs for every tool dispatch.
 """
 
+import logging
 import os
 from pathlib import Path
 
@@ -63,6 +64,31 @@ def test_first_valid_string_return_replaces_result(monkeypatch):
         invoke_hook=lambda hook_name, **kw: [None, {"x": 1}, "first", "second"],
     )
     assert out == "first"
+
+
+def test_skipped_valid_results_log_runtime_warning(monkeypatch, caplog):
+    # The #64714 skipped-transform rule: a valid-but-losing replacement must
+    # surface in logs, never be silently shadowed. Non-string results are
+    # not "skipped valid" and must not count.
+    with caplog.at_level(logging.WARNING, logger=model_tools.logger.name):
+        out = _run_handle_function_call(
+            monkeypatch,
+            invoke_hook=lambda hook_name, **kw: [None, "first", "second"],
+        )
+    assert out == "first"
+    warnings = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "skipped 1 valid" in warnings[0]
+
+    # A lone winner is not a conflict: no warning.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=model_tools.logger.name):
+        out = _run_handle_function_call(
+            monkeypatch,
+            invoke_hook=lambda hook_name, **kw: ["only"],
+        )
+    assert out == "only"
+    assert not [r for r in caplog.records if "skipped" in r.getMessage()]
 
 
 def test_hook_receives_expected_kwargs(monkeypatch):

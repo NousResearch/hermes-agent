@@ -47,6 +47,56 @@ def test_is_session_expired_detects_session_not_found():
     assert _is_session_expired_error(RuntimeError("Unknown session: abc123")) is True
 
 
+def test_is_session_expired_detects_message_less_anyio_transport_errors():
+    """The bare AnyIO exceptions, not a RuntimeError carrying their name.
+
+    ``anyio.ClosedResourceError`` and friends are raised without an argument,
+    so ``str(exc)`` is ``""`` and marker matching alone cannot see them. This
+    is the exact shape both MCP transports emit when a stdio child dies or an
+    HTTP stream is torn down, so assert on the genuine types — a regression
+    here silently sends every post-teardown tool call to the caller as
+    ``ClosedResourceError`` instead of reconnecting (#61010).
+    """
+    import anyio
+
+    from tools.mcp_tool import _is_session_expired_error
+
+    for exc in (
+        anyio.ClosedResourceError(),
+        anyio.BrokenResourceError(),
+        anyio.EndOfStream(),
+    ):
+        assert str(exc) == ""  # guards the premise of this test
+        assert _is_session_expired_error(exc) is True, type(exc).__name__
+
+
+def test_is_session_expired_unwraps_message_less_error_inside_exception_group():
+    """AnyIO task groups surface transport failures inside an ExceptionGroup.
+
+    The group itself carries no session marker, so classification has to look
+    at the members. Same for the ``raise ... from exc`` wrapping the SDK does.
+    """
+    import anyio
+
+    from tools.mcp_tool import _is_session_expired_error
+
+    group = ExceptionGroup("unhandled errors in a TaskGroup", [anyio.ClosedResourceError()])
+    assert _is_session_expired_error(group) is True
+
+    wrapper = RuntimeError("transport failure")
+    wrapper.__cause__ = anyio.ClosedResourceError()
+    assert _is_session_expired_error(wrapper) is True
+
+
+def test_is_session_expired_ignores_unrelated_message_less_errors():
+    """Type-based detection must not turn every blank exception into a retry."""
+    from tools.mcp_tool import _is_session_expired_error
+
+    assert _is_session_expired_error(ValueError()) is False
+    assert _is_session_expired_error(KeyError()) is False
+    assert _is_session_expired_error(ExceptionGroup("boom", [ValueError()])) is False
+
+
 def test_is_session_expired_traversal_is_budget_bounded():
     """Pathologically long chains stop at the node budget without spinning."""
     import tools.mcp_tool as mcp_mod

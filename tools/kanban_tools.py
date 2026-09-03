@@ -166,6 +166,13 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
 
 
+def _worker_claim_lock(task_id: str) -> Optional[str]:
+    """Return this worker's dispatcher claim lock for its scoped task."""
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return None
+    return os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or None
+
+
 def _stamp_worker_session_metadata(
     task_id: str, metadata: Optional[dict]
 ) -> Optional[dict]:
@@ -785,6 +792,11 @@ def _handle_complete(args: dict, **kw) -> str:
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    expected_claim_lock=_worker_claim_lock(tid),
+                    # The tool handoff is the path the reported bypass
+                    # actually travels: a nested CLI inherits the claim
+                    # lock and completes its parent's card from here.
+                    expected_worker_pid=os.getpid(),
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(

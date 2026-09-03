@@ -5370,6 +5370,8 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True,
+    expected_claim_lock: Optional[str] = None,
+    expected_worker_pid: Optional[int] = None,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
 
@@ -5402,6 +5404,10 @@ def complete_task(
     Any suspected phantom references are recorded as a
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
+
+    When ``expected_claim_lock`` is provided, completion is fenced to the
+    worker that owns that claim. A retry after the successful commit returns
+    success without repeating completion side effects.
     """
     now = int(time.time())
     # Fail before validating cards or staging artifacts; re-check inside the
@@ -5450,7 +5456,91 @@ def complete_task(
             (task_id,),
         ).fetchone()
         prior_status = prior["status"] if prior else None
-        if expected_run_id is None:
+        if expected_claim_lock is not None:
+            current = conn.execute(
+                "SELECT status, claim_lock, current_run_id, worker_pid "
+                "FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            if current is None:
+                return False
+            if current["status"] == "done":
+                event_sql = (
+                    "SELECT payload FROM task_events "
+                    "WHERE task_id = ? AND kind = 'completed'"
+                )
+                event_params: list[Any] = [task_id]
+                if expected_run_id is not None:
+                    event_sql += " AND run_id = ?"
+                    event_params.append(int(expected_run_id))
+                event_sql += " ORDER BY id DESC LIMIT 1"
+                event_row = conn.execute(
+                    event_sql, tuple(event_params)
+                ).fetchone()
+                try:
+                    event_payload = (
+                        json.loads(event_row["payload"])
+                        if event_row and event_row["payload"]
+                        else {}
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    event_payload = {}
+                expected_digest = hashlib.sha256(
+                    expected_claim_lock.encode("utf-8")
+                ).hexdigest()
+                return (
+                    event_payload.get("completion_claim_lock_sha256")
+                    == expected_digest
+                )
+            if current["claim_lock"] != expected_claim_lock:
+                return False
+            # The claim lock reaches a nested CLI through the environment, so a
+            # child process can present a matching one and complete its parent's
+            # card. The pid of the process actually making the call cannot be
+            # inherited that way, which is what makes it worth checking.
+            # A row with no recorded pid is left alone on purpose. Reporting a
+            # pid from spawn_fn is a crash-detection nicety, not a contract, so
+            # a deployment whose spawn returns none never stamps one — and
+            # refusing those would reject the legitimate worker finishing its
+            # own task. Where no pid was ever recorded this fence is no weaker
+            # than it was before; where one was, it is strictly stronger.
+            if (
+                expected_worker_pid is not None
+                and current["worker_pid"] is not None
+                and current["worker_pid"] != int(expected_worker_pid)
+            ):
+                return False
+            if (
+                expected_run_id is not None
+                and current["current_run_id"] != int(expected_run_id)
+            ):
+                return False
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'done',
+                       result       = ?,
+                       completed_at = ?,
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL,
+                       block_kind   = NULL,
+                       block_recurrences = 0
+                 WHERE id = ?
+                   AND status IN ('running', 'ready', 'blocked')
+                   AND claim_lock = ?
+                   AND (? IS NULL OR worker_pid IS NULL OR worker_pid = ?)
+                """,
+                (
+                    result,
+                    now,
+                    task_id,
+                    expected_claim_lock,
+                    expected_worker_pid,
+                    expected_worker_pid,
+                ),
+            )
+        elif expected_run_id is None:
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -5539,6 +5629,10 @@ def complete_task(
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
         }
+        if expected_claim_lock is not None:
+            completed_payload["completion_claim_lock_sha256"] = hashlib.sha256(
+                expected_claim_lock.encode("utf-8")
+            ).hexdigest()
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
         # Carry artifact paths in the event payload so the gateway

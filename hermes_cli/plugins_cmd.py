@@ -1934,6 +1934,17 @@ def _plugin_status(name: str, enabled: set, disabled: set, key: str = "") -> str
         return "disabled"
     if name in enabled or key in enabled:
         return "enabled"
+    # A plugin can be active as the memory provider without appearing in
+    # plugins.enabled/disabled (the memory.provider config key activates it
+    # through the memory subsystem, not the plugin toggle).
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        provider = config.get("memory", {}).get("provider", "") if isinstance(config, dict) else ""
+        if provider and (name == provider or key == provider):
+            return "enabled"
+    except Exception:
+        pass
     return "not enabled"
 
 

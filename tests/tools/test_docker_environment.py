@@ -426,6 +426,142 @@ def test_egress_node_options_overrides_conflicting_ca_flag(monkeypatch):
     assert "--max-old-space-size=8192" in node_opts
 
 
+def test_egress_node_options_preserves_operator_tuning(monkeypatch):
+    """Non-conflicting operator NODE_OPTIONS survive the egress append-merge."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env, "_egress_proxy_args_for_docker",
+        lambda: ([], {"_HERMES_EGRESS_NODE_OPTIONS_APPEND": "--use-openssl-ca"}, []),
+    )
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(env={"NODE_OPTIONS": "--max-old-space-size=4096"})
+
+    node_opts = (_node_options_from_run(calls) or "").split()
+    assert "--use-openssl-ca" in node_opts
+    assert "--max-old-space-size=4096" in node_opts
+
+
+def test_docker_env_appears_in_init_env_args(monkeypatch):
+    """Explicit docker_env values should appear in _build_init_env_args."""
+    env = _make_execute_only_env()
+    env._env = {"MY_VAR": "my_value"}
+
+    args = env._build_init_env_args()
+    args_str = " ".join(args)
+
+    assert "MY_VAR=my_value" in args_str
+
+
+def test_redact_docker_env_args_preserves_keys_only():
+    redacted = docker_env._redact_docker_env_args([
+        "-e",
+        "MY_SECRET=sk-test-12345",
+        "--env",
+        "NO_VALUE",
+        "--env=TOKEN=oauth-token",
+        "-ePASSWORD=hunter2",
+        "-e=USERNAME=alice",
+        "--env-file",
+        "/tmp/env.list",
+    ])
+
+    assert redacted == [
+        "-e",
+        "MY_SECRET=***",
+        "--env",
+        "NO_VALUE",
+        "--env=TOKEN=***",
+        "-ePASSWORD=***",
+        "-e=USERNAME=***",
+        "--env-file",
+        "/tmp/env.list",
+    ]
+
+
+def test_redact_subprocess_error_preserves_keys_only():
+    cmd = [
+        "/usr/bin/docker",
+        "run",
+        "-e",
+        "MY_SECRET=sk-test-12345",
+        "--env=TOKEN=oauth-token",
+        "python:3.11",
+    ]
+    error = subprocess.CalledProcessError(125, cmd, stderr="daemon error")
+
+    message = docker_env._redact_subprocess_error(error)
+
+    assert "sk-test-12345" not in message
+    assert "oauth-token" not in message
+    assert "MY_SECRET=***" in message
+    assert "--env=TOKEN=***" in message
+
+
+def test_redact_subprocess_error_preserves_tuple_commands():
+    cmd = (
+        "/usr/bin/docker",
+        "run",
+        "-e",
+        "MY_SECRET=sk-test-12345",
+        "python:3.11",
+    )
+    error = subprocess.CalledProcessError(125, cmd, stderr="daemon error")
+
+    message = docker_env._redact_subprocess_error(error)
+
+    assert "sk-test-12345" not in message
+    assert "MY_SECRET=***" in message
+    assert "('/usr/bin/docker'" in message
+
+
+def test_docker_env_values_are_redacted_from_logs(monkeypatch, caplog):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG, logger="tools.environments.docker"):
+        _make_dummy_env(
+            env={"MY_SECRET": "sk-test-12345"},
+            persist_across_processes=False,
+        )
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "sk-test-12345" not in log_text
+    assert "MY_SECRET=***" in log_text
+
+    run_args = _run_args_from_calls(calls)
+    assert "MY_SECRET=sk-test-12345" in run_args
+
+
+def test_docker_run_failure_redacts_env_values_from_logs(monkeypatch, caplog):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "run":
+                raise subprocess.CalledProcessError(125, cmd, stderr="daemon error")
+            if sub == "rm":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
+        with pytest.raises(subprocess.CalledProcessError):
+            _make_dummy_env(
+                env={"MY_SECRET": "sk-test-12345"},
+                persist_across_processes=False,
+            )
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "sk-test-12345" not in log_text
+    assert "MY_SECRET=***" in log_text
+
+
 def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
     """docker_forward_env should override docker_env for the same key."""
     env = _make_execute_only_env(forward_env=["MY_KEY"])
@@ -1542,6 +1678,105 @@ def test_s6_image_skips_docker_init_and_mounts_run_exec(monkeypatch):
 # ---------------------------------------------------------------------------
 # Out-of-band container removal recovery (issue #36266, PR #36631)
 # ---------------------------------------------------------------------------
+
+
+def test_is_container_gone_matches_removal_errors(monkeypatch):
+    """``_is_container_gone`` recognizes the docker errors that mean the
+    container no longer exists, and does NOT match ordinary command failures.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+    env = _make_dummy_env()
+
+    # Positive: the daemon's "container gone" phrasings.
+    assert env._is_container_gone(
+        "Error response from daemon: No such container: hermes-abc123"
+    )
+    assert env._is_container_gone("Error: No such container: deadbeef")
+    assert env._is_container_gone(
+        "Error response from daemon: Container abc is not running"
+    )
+
+    # Control / negative: a real command failure must NOT be misclassified as
+    # the container being gone — otherwise every non-zero exit would trigger a
+    # spurious container recreation.
+    assert not env._is_container_gone("bash: nonsuch: command not found")
+    assert not env._is_container_gone("Traceback (most recent call last): ...")
+    assert not env._is_container_gone("")
+    assert not env._is_container_gone("permission denied")
+
+
+def test_recreate_container_failure_redacts_env_values_from_logs(monkeypatch, caplog):
+    env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
+    env._container_id = "old-container-id"
+    env._labels = {
+        "hermes-agent": "1",
+        "hermes-task-id": "task",
+        "hermes-profile": "default",
+    }
+    env._image = "python:3.11"
+    env._image_uses_s6_init = False
+    env._all_run_args = ["-e", "MY_SECRET=sk-test-12345"]
+    env._docker_exe = "/usr/bin/docker"
+    env.cwd = "/root"
+
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment,
+        "_find_reusable_container",
+        lambda self, task_label, profile_label, egress_mode: None,
+    )
+
+    def _run(cmd, **kwargs):
+        raise subprocess.CalledProcessError(125, cmd, stderr="daemon error")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with caplog.at_level(logging.ERROR, logger="tools.environments.docker"):
+        assert env._recreate_container() is False
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "sk-test-12345" not in log_text
+    assert "MY_SECRET=***" in log_text
+
+
+def test_execute_recovers_from_out_of_band_removal(monkeypatch):
+    """When a persistent container is removed out-of-band, ``execute`` detects
+    the "No such container" error, recreates the container, and retries once —
+    returning success transparently.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+    env = _make_dummy_env(
+        persistent_filesystem=True,
+        persist_across_processes=True,
+    )
+
+    # First execute() sees a dead container; second (post-recovery) succeeds.
+    outputs = iter([
+        {"output": "Error response from daemon: No such container: hermes-x", "returncode": 1},
+        {"output": "ok", "returncode": 0},
+    ])
+
+    def _fake_super_execute(self, command, cwd="", **kwargs):
+        return next(outputs)
+
+    recreate_calls = []
+
+    def _fake_recreate(self):
+        recreate_calls.append(True)
+        self._container_id = "recovered-container-id"
+        return True
+
+    monkeypatch.setattr(docker_env.BaseEnvironment, "execute", _fake_super_execute)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment, "_recreate_container", _fake_recreate
+    )
+
+    result = env.execute("echo hi")
+
+    assert recreate_calls == [True], "recovery should have been attempted exactly once"
+    assert result.get("returncode") == 0, f"expected success after recovery, got {result!r}"
+    assert result.get("output") == "ok"
 
 
 def test_execute_does_not_recover_when_not_persistent(monkeypatch):

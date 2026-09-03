@@ -168,6 +168,68 @@ def snapshot_tree(root: Path) -> dict:
     }
 
 
+CURSOR_AGENTS_MD = """# Cursor global instructions
+
+- Always run tests before committing
+"""
+
+CURSOR_RULE_MDC = """---
+description: Python style rules
+globs: "**/*.py"
+alwaysApply: false
+---
+
+- Use dataclasses for plain data containers
+- Never use mutable default arguments
+"""
+
+
+@pytest.fixture()
+def cursor_tree(profile_env):
+    """Build a fake ~/.cursor tree."""
+    root = profile_env / ".cursor"
+    root.mkdir()
+    (root / "AGENTS.md").write_text(CURSOR_AGENTS_MD, encoding="utf-8")
+    rules = root / "rules"
+    rules.mkdir()
+    (rules / "python.mdc").write_text(CURSOR_RULE_MDC, encoding="utf-8")
+    (rules / "general.md").write_text(
+        "- Prefer small focused commits\n", encoding="utf-8")
+    (root / "mcp.json").write_text(json.dumps({
+        "mcpServers": {
+            "linear": {
+                "command": "npx",
+                "args": ["-y", "linear-mcp"],
+                "env": {
+                    "LINEAR_API_KEY": "lin_SECRET",
+                    "LINEAR_TEAM": "hermes",
+                },
+            },
+            "remote-docs": {
+                "url": "https://mcp.example.com/http",
+                "headers": {
+                    "Authorization": "Bearer xyz",
+                    "X-Env": "prod",
+                },
+            },
+        },
+    }), encoding="utf-8")
+    # CLI credential file — must never be read
+    (root / "cli-config.json").write_text(
+        json.dumps({"apiKey": "cur_SUPERSECRET"}), encoding="utf-8")
+    # Flat skill
+    flat = root / "skills" / "tdd"
+    flat.mkdir(parents=True)
+    (flat / "SKILL.md").write_text(
+        "---\nname: tdd\n---\n\nRed, green, refactor.\n", encoding="utf-8")
+    # Nested (categorized) skill — identity is the folder holding SKILL.md
+    nested = root / "skills" / "shipping" / "land-it"
+    nested.mkdir(parents=True)
+    (nested / "SKILL.md").write_text(
+        "---\nname: land-it\n---\n\nLand the PR.\n", encoding="utf-8")
+    return root
+
+
 def run_import(agent, source, hermes_home, execute, overwrite=False):
     return AgentImporter(
         agent=agent,
@@ -186,10 +248,13 @@ class TestDetection:
     def test_detects_claude_and_codex(self, claude_tree, codex_tree):
         assert detect_agents() == ["claude-code", "codex"]
 
+    def test_detects_cursor(self, cursor_tree):
+        assert detect_agents() == ["cursor"]
+
 
     def test_unsupported_agent_raises(self, hermes_home, tmp_path):
         with pytest.raises(ValueError):
-            AgentImporter("cursor", tmp_path, hermes_home)
+            AgentImporter("windsurf", tmp_path, hermes_home)
 
 
 class TestRuleMapping:
@@ -296,6 +361,75 @@ class TestCodexImport:
 
     def test_skill_copied(self, report, hermes_home):
         assert (hermes_home / "skills" / "codex-imports" / "db-migrate" / "SKILL.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Cursor real run
+# ---------------------------------------------------------------------------
+
+class TestCursorImport:
+    @pytest.fixture()
+    def report(self, cursor_tree, hermes_home):
+        return run_import("cursor", cursor_tree, hermes_home, execute=True)
+
+    def test_agents_md_lands_in_memory(self, report, hermes_home):
+        memory = (hermes_home / "memories" / "MEMORY.md").read_text()
+        assert "Always run tests before committing" in memory
+
+    def test_rules_land_in_memory_with_frontmatter_stripped(
+            self, report, hermes_home):
+        memory = (hermes_home / "memories" / "MEMORY.md").read_text()
+        assert "mutable default arguments" in memory
+        assert "small focused commits" in memory
+        # .mdc frontmatter is routing metadata, not instructions
+        assert "alwaysApply" not in memory
+        assert "globs" not in memory
+
+    def test_mcp_servers_from_mcp_json(self, report, hermes_home):
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        linear = config["mcp_servers"]["linear"]
+        assert linear["command"] == "npx"
+        assert linear["env"] == {"LINEAR_TEAM": "hermes"}
+        remote = config["mcp_servers"]["remote-docs"]
+        assert remote["url"] == "https://mcp.example.com/http"
+        assert remote["headers"] == {"X-Env": "prod"}
+
+    def test_flat_and_nested_skills_copied(self, report, hermes_home):
+        root = hermes_home / "skills" / "cursor-imports"
+        assert (root / "tdd" / "SKILL.md").exists()
+        # nested category dir flattens to the SKILL.md-holding folder name
+        assert (root / "land-it" / "SKILL.md").exists()
+        assert not (root / "shipping").exists()
+
+    def test_no_secret_values_anywhere(self, cursor_tree, hermes_home):
+        run_import("cursor", cursor_tree, hermes_home, execute=True)
+        blob = "".join(
+            p.read_text(encoding="utf-8", errors="replace")
+            for p in sorted(hermes_home.rglob("*")) if p.is_file()
+        )
+        assert "lin_SECRET" not in blob
+        assert "cur_SUPERSECRET" not in blob
+        assert "Bearer xyz" not in blob
+
+    def test_dry_run_writes_nothing(self, cursor_tree, hermes_home):
+        before = snapshot_tree(hermes_home)
+        report = run_import("cursor", cursor_tree, hermes_home, execute=False)
+        assert snapshot_tree(hermes_home) == before
+        assert report["summary"]["imported"] > 0
+
+    def test_duplicate_nested_skill_name_conflicts(
+            self, cursor_tree, hermes_home):
+        dup = cursor_tree / "skills" / "debugging" / "tdd"
+        dup.mkdir(parents=True)
+        (dup / "SKILL.md").write_text(
+            "---\nname: tdd\n---\n\nOther tdd.\n", encoding="utf-8")
+        report = run_import("cursor", cursor_tree, hermes_home, execute=True)
+        skill_items = [i for i in report["items"] if i["kind"] == "skill"]
+        conflicts = [i for i in skill_items if i["status"] == "conflict"]
+        assert len(conflicts) == 1
+        assert "Duplicate skill name" in conflicts[0]["reason"]
+        # exactly one tdd landed
+        assert (hermes_home / "skills" / "cursor-imports" / "tdd" / "SKILL.md").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -704,7 +838,7 @@ class TestCliWiring:
         subparsers = parser.add_subparsers(dest="command")
         build_import_agent_parser(subparsers, cmd_import_agent=lambda a: None)
         with pytest.raises(SystemExit):
-            parser.parse_args(["import-agent", "cursor"])
+            parser.parse_args(["import-agent", "windsurf"])
 
     def test_command_dry_run_via_cli_writes_nothing(
             self, claude_tree, hermes_home, capsys):

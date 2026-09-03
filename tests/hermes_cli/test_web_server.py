@@ -3266,6 +3266,72 @@ class TestDenormalizeProviderSwitch:
         assert model["provider"] == "openrouter"
         assert model["context_length"] == 128000
 
+    def test_litellm_and_custom_provider_slugs_not_switched_to_openrouter(self):
+        """Proxy/custom providers (e.g. litellm with custom base_url) multiplex
+        vendor-prefixed slugs. A differing model string must never switch their
+        provider to openrouter or clear their base_url (#97579)."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "openrouter/paid-model",
+                "provider": "litellm",
+                "base_url": "http://127.0.0.1:4000/v1",
+            }
+        })
+
+        result = _denormalize_config_from_web({"model": "openrouter/flash-model"})
+        model = result["model"]
+        assert model["provider"] == "litellm"
+        assert model["default"] == "openrouter/flash-model"
+        assert model["base_url"] == "http://127.0.0.1:4000/v1"
+
+
+class TestDenormalizeUntouchedModelPreserved:
+    """Regression tests for #97579: saving unrelated configuration fields from
+    the web UI / REST endpoints must never clobber or re-infer the on-disk model
+    routing block."""
+
+    def test_denormalize_unrelated_field_omits_untouched_model(self):
+        """When the incoming payload repeats the on-disk model, denormalize
+        should omit 'model' from the returned dict so deep-merge preserves the
+        full on-disk model block (provider, base_url, subkeys) untouched."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "openrouter/paid-model",
+                "provider": "litellm",
+                "base_url": "http://gateway:4000/v1",
+            },
+            "mcp_servers": {},
+        })
+
+        result = _denormalize_config_from_web({
+            "model": "openrouter/paid-model",
+            "mcp_servers": {"gbrain": {"url": "http://127.0.0.1:8737/mcp", "enabled": True}},
+        })
+        # 'model' should be omitted from the denormalized diff so existing model is untouched
+        assert "model" not in result
+        assert result["mcp_servers"]["gbrain"]["enabled"] is True
+
+    def test_denormalize_with_bare_string_model_unchanged_omits_model(self):
+        """When disk config has a bare string model, repeating it omits 'model'."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({"model": "anthropic/claude-sonnet-4"})
+
+        result = _denormalize_config_from_web({
+            "model": "anthropic/claude-sonnet-4",
+            "terminal": {"backend": "docker"},
+        })
+        assert "model" not in result
+        assert result["terminal"]["backend"] == "docker"
+
+
 
 class TestModelContextLengthSchema:
     """Tests for model_context_length placement in CONFIG_SCHEMA."""

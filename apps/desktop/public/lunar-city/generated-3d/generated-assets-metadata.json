@@ -1,5 +1,8 @@
 {
   "assetCount": 23,
+  "productionUse": "reference_only",
+  "productionEligibility": "rejected_for_production",
+  "rejectionReason": "Raw scene-crop image-to-3D output produced floating blobby relief meshes that do not resemble the approved buildings, anthropomorphic leaders, robot workers, or environment. Production must start from full-resolution high-poly master assets and retopologize down.",
   "assets": [
     {
       "bounds": [

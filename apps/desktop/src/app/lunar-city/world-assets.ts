@@ -70,7 +70,18 @@ export interface WorldGenerated3DManifest {
   importedCount: number
   missingCount: number
   preview: string
+  productionEligibility: 'rejected_for_production'
+  productionUse: 'reference_only'
+  rejectionReason: string
   sourceManifest: string
+}
+
+export interface WorldProductionAssetPipeline {
+  highPolyMasterFirst: boolean
+  productionSource: 'full_resolution_high_poly_master_assets'
+  rejectedSources: Array<'raw_scene_crop_image_to_3d'>
+  retopology: 'derive_smart_low_poly_lods_from_master'
+  textureBake: 'bake_2k_default_4k_hero_pbr_from_master'
 }
 
 export interface WorldAssetManifest {
@@ -85,6 +96,7 @@ export interface WorldAssetManifest {
   heroAssetManifest?: string
   heroAssetPreview?: string
   profileManifest: string
+  productionAssetPipeline: WorldProductionAssetPipeline
   renderProfile: string
   scene: string
   schemaVersion: 2
@@ -261,6 +273,13 @@ export const LUNAR_CITY_ASSET_MANIFEST: WorldAssetManifest = {
   heroAssetManifest: 'lunar-city/hero-assets/hero-assets-manifest.json',
   heroAssetPreview: 'lunar-city/hero-assets/lunar-city-hero-assets.png',
   profileManifest: 'lunar-city/profile-assets.json',
+  productionAssetPipeline: {
+    highPolyMasterFirst: true,
+    productionSource: 'full_resolution_high_poly_master_assets',
+    rejectedSources: ['raw_scene_crop_image_to_3d'],
+    retopology: 'derive_smart_low_poly_lods_from_master',
+    textureBake: 'bake_2k_default_4k_hero_pbr_from_master'
+  },
   renderProfile: 'desktop-interactive',
   scene: 'lunar-city-baseline',
   schemaVersion: 2,

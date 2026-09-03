@@ -9,6 +9,13 @@
   "generated3dBoardGlb": "lunar-city/generated-3d/lunar-city-generated-assets-board.glb",
   "generated3dBoardPreview": "lunar-city/generated-3d/lunar-city-generated-assets-board.png",
   "profileManifest": "lunar-city/profile-assets.json",
+  "productionAssetPipeline": {
+    "highPolyMasterFirst": true,
+    "productionSource": "full_resolution_high_poly_master_assets",
+    "rejectedSources": ["raw_scene_crop_image_to_3d"],
+    "retopology": "derive_smart_low_poly_lods_from_master",
+    "textureBake": "bake_2k_default_4k_hero_pbr_from_master"
+  },
   "validation": {
     "blenderScript": "scripts/generate_lunar_city_baseline.py",
     "metadata": "lunar-city/lunar-city-scene-metadata.json",

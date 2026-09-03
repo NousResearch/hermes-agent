@@ -17,6 +17,13 @@ describe('Lunar City asset manifest', () => {
     expect(LUNAR_CITY_ASSET_MANIFEST.generated3dManifest).toBe(
       'lunar-city/generated-3d/generated-assets-metadata.json'
     )
+    expect(LUNAR_CITY_ASSET_MANIFEST.productionAssetPipeline).toEqual({
+      highPolyMasterFirst: true,
+      productionSource: 'full_resolution_high_poly_master_assets',
+      rejectedSources: ['raw_scene_crop_image_to_3d'],
+      retopology: 'derive_smart_low_poly_lods_from_master',
+      textureBake: 'bake_2k_default_4k_hero_pbr_from_master'
+    })
     expect(LUNAR_CITY_ASSET_MANIFEST.heroAssetGlb).toBe('lunar-city/hero-assets/lunar-city-hero-assets.glb')
     expect(LUNAR_CITY_ASSET_MANIFEST.heroAssetManifest).toBe('lunar-city/hero-assets/hero-assets-manifest.json')
     expect(LUNAR_CITY_ASSET_MANIFEST.heroAssetPreview).toBe('lunar-city/hero-assets/lunar-city-hero-assets.png')
@@ -171,6 +178,9 @@ describe('Lunar City asset manifest', () => {
         containsPrivateProfileIdentifiers: boolean
         usesRawSoulContent: boolean
       }
+      productionEligibility: string
+      productionUse: string
+      rejectionReason: string
     }
 
     expect(referenceManifest.cards).toHaveLength(23)
@@ -179,6 +189,9 @@ describe('Lunar City asset manifest', () => {
     expect(generatedManifest.assetCount).toBe(23)
     expect(generatedManifest.importedCount).toBe(23)
     expect(generatedManifest.missingCount).toBe(0)
+    expect(generatedManifest.productionUse).toBe('reference_only')
+    expect(generatedManifest.productionEligibility).toBe('rejected_for_production')
+    expect(generatedManifest.rejectionReason).toContain('full-resolution high-poly master assets')
     expect(generatedManifest.privacy.usesRawSoulContent).toBe(false)
     expect(generatedManifest.privacy.containsPrivateProfileIdentifiers).toBe(false)
 

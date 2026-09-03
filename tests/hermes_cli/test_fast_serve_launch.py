@@ -49,3 +49,50 @@ def test_fast_serve_launch_dispatches_only_unambiguous_serve(monkeypatch) -> Non
     monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: {"name": "managed"})
     assert main_mod._try_fast_serve_launch() is False
     assert len(captured) == 1
+
+
+def test_fast_serve_launch_registers_config_hooks(monkeypatch) -> None:
+    import agent.outbound_webhooks as outbound_webhooks
+    import agent.shell_hooks as shell_hooks
+    import hermes_cli.mcp_startup as mcp_startup
+    import hermes_cli.plugins as plugins
+    import hermes_cli.profiles as profiles
+    import hermes_cli.resource_limits as resource_limits
+    import hermes_cli.web_server as web_server
+
+    config = {"hooks": {"pre_tool_call": [{"command": "guard"}]}}
+    registrations = []
+
+    monkeypatch.setenv("HERMES_SERVE_HEADLESS", "0")
+    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
+    monkeypatch.setattr(config_mod, "require_parseable_user_config", lambda **_kwargs: None)
+    monkeypatch.setattr(config_mod, "load_config", lambda: config)
+    monkeypatch.setattr(config_mod, "apply_terminal_config_to_env", lambda: None)
+    monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "default")
+    monkeypatch.setattr(resource_limits, "apply_nofile_soft_limit", lambda: None)
+    monkeypatch.setattr(main_mod, "_sync_bundled_skills_quietly", lambda: None)
+    monkeypatch.setattr(main_mod, "_maybe_setup_dashboard_auth_interactively", lambda _args: None)
+    monkeypatch.setattr(plugins, "discover_plugins", lambda: None)
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **_kwargs: None)
+    monkeypatch.setattr(web_server, "start_server", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        shell_hooks,
+        "register_from_config",
+        lambda cfg, **kwargs: registrations.append(("shell", cfg, kwargs)),
+    )
+    monkeypatch.setattr(
+        outbound_webhooks,
+        "register_from_config",
+        lambda cfg: registrations.append(("outbound", cfg, {})),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "serve", "--host", "127.0.0.1", "--port", "0"],
+    )
+
+    assert main_mod._try_fast_serve_launch() is True
+    assert registrations == [
+        ("shell", config, {"accept_hooks": False}),
+        ("outbound", config, {}),
+    ]

@@ -12525,6 +12525,13 @@ def cmd_dashboard(args):
         # the missing-provider state if it matters.
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
 
+    # Dashboard and serve host agent turns in-process.  Register config-owned
+    # hooks here because the lean Desktop serve path bypasses the shared CLI
+    # startup preparation entirely.
+    _register_config_hooks(
+        accept_hooks=bool(getattr(args, "accept_hooks", False)),
+    )
+
     # Desktop chat uses the dashboard's in-process /api/ws gateway, which builds
     # agents via tui_gateway.server._make_agent.  That path only snapshots the
     # tool registry — it never starts MCP discovery (the stdio TUI does that in
@@ -12822,6 +12829,27 @@ def _should_background_mcp_startup(args) -> bool:
     return args.command in {None, "chat", "rl"}
 
 
+def _register_config_hooks(*, accept_hooks: bool = False) -> None:
+    """Register config-owned shell hooks and outbound webhooks once."""
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        hooks_cfg = load_config()
+        register_from_config(hooks_cfg, accept_hooks=accept_hooks)
+
+        from agent.outbound_webhooks import (
+            register_from_config as register_outbound_webhooks,
+        )
+
+        register_outbound_webhooks(hooks_cfg)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at CLI startup",
+            exc_info=True,
+        )
+
+
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
     # --yolo: chokepoint guarantee that HERMES_YOLO_MODE is set before ANY
@@ -12916,23 +12944,7 @@ def _prepare_agent_startup(args) -> None:
                 "MCP tool discovery failed at CLI startup",
                 exc_info=True,
             )
-    try:
-        from hermes_cli.config import load_config
-        from agent.shell_hooks import register_from_config
-
-        _hooks_cfg = load_config()
-        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
-
-        from agent.outbound_webhooks import (
-            register_from_config as register_outbound_webhooks,
-        )
-
-        register_outbound_webhooks(_hooks_cfg)
-    except Exception:
-        logger.debug(
-            "shell-hook registration failed at CLI startup",
-            exc_info=True,
-        )
+    _register_config_hooks(accept_hooks=_accept_hooks)
 
 
 def _apply_safe_mode(args) -> None:

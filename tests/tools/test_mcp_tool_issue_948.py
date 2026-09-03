@@ -124,11 +124,14 @@ def test_run_stdio_malware_check_does_not_block_event_loop():
 def test_run_stdio_malware_check_times_out_fail_open():
     """A check that hangs past the timeout must NOT freeze startup: it times
     out, logs, and proceeds (fail-open) so the server still starts."""
-    import time
+    import threading
     mock_stdio_cm, mock_session_cm = _stdio_mocks()
+    check_started = threading.Event()
+    release_check = threading.Event()
 
     def hung_check(_command, _args):
-        time.sleep(0.5)  # outlasts the 0.2s timeout 2.5x; short enough not to stall teardown
+        check_started.set()
+        release_check.wait(timeout=10)
         return "MALWARE"  # would block startup if awaited to completion
 
     async def _test():
@@ -138,11 +141,17 @@ def test_run_stdio_malware_check_times_out_fail_open():
              patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
              patch("tools.mcp_tool.ClientSession", return_value=mock_session_cm):
             server = MCPServerTask("srv")
-            start = time.monotonic()
-            await server.start({"command": "npx", "args": ["-y", "pkg"]})
-            elapsed = time.monotonic() - start
-            await server.shutdown()
-        # Returned shortly after the 0.2s timeout (fail-open), not the 0.5s hang.
-        assert elapsed < 1.0, f"startup did not fail-open promptly ({elapsed:.1f}s)"
+            try:
+                await asyncio.wait_for(
+                    server.start({"command": "npx", "args": ["-y", "pkg"]}),
+                    timeout=5.0,
+                )
+                assert check_started.is_set()
+                # The worker cannot finish until released. Reaching this line
+                # proves the internal timeout proceeded without awaiting it.
+                assert not release_check.is_set()
+            finally:
+                release_check.set()
+                await server.shutdown()
 
     asyncio.run(_test())

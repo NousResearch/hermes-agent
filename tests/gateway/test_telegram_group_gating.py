@@ -11,6 +11,7 @@ from gateway.session import SessionSource
 def _make_adapter(
     require_mention=None,
     free_response_chats=None,
+    require_mention_chats=None,
     free_response_topics=None,
     mention_patterns=None,
     exclusive_bot_mentions=None,
@@ -31,6 +32,8 @@ def _make_adapter(
         extra["require_mention"] = require_mention
     if free_response_chats is not None:
         extra["free_response_chats"] = free_response_chats
+    if require_mention_chats is not None:
+        extra["require_mention_chats"] = require_mention_chats
     if free_response_topics is not None:
         extra["free_response_topics"] = free_response_topics
     if mention_patterns is not None:
@@ -334,6 +337,35 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter_no_mention._should_process_message(_group_message("/status"), is_command=True) is True
 
 
+def test_require_mention_chats_opt_in_gates_specific_chat():
+    """require_mention_chats forces @mention gating in listed chats even when
+    require_mention is globally off — the opt-in counterpart to
+    free_response_chats (e.g. a multi-bot room where several agents share a
+    group and should not all answer every unaddressed message)."""
+    adapter = _make_adapter(require_mention=False, require_mention_chats=["-200"])
+
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200)) is False
+    mentioned = _group_message(
+        "hi @hermes_bot",
+        chat_id=-200,
+        entities=[_mention_entity("hi @hermes_bot")],
+    )
+    assert adapter._should_process_message(mentioned) is True
+    # Chats not listed keep the global chatty default.
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201)) is True
+
+
+def test_require_mention_chats_from_env(monkeypatch):
+    """TELEGRAM_REQUIRE_MENTION_CHATS feeds the per-chat opt-in when config is absent."""
+    monkeypatch.setenv("TELEGRAM_REQUIRE_MENTION_CHATS", "-200, -300")
+    adapter = _make_adapter(require_mention=False)
+
+    assert adapter._telegram_require_mention_chats() == {"-200", "-300"}
+    assert adapter._telegram_require_mention("-200") is True
+    assert adapter._telegram_require_mention("-999") is False
+    assert adapter._telegram_require_mention() is False
+
+
 def test_explicit_multi_bot_mentions_route_only_to_named_bots():
     text = "@research_bot @ops_bot hi"
     entities = _mention_entities(text, ["@research_bot", "@ops_bot"])
@@ -535,6 +567,8 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "    - \"^\\\\s*chompy\\\\b\"\n"
         "  free_response_chats:\n"
         "    - \"-123\"\n"
+        "  require_mention_chats:\n"
+        "    - \"-456\"\n"
         "  allowed_chats:\n"
         "    - \"-100\"\n"
         "  group_allowed_chats:\n"
@@ -557,6 +591,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "TELEGRAM_GUEST_MODE",
         "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES",
         "TELEGRAM_FREE_RESPONSE_CHATS",
+        "TELEGRAM_REQUIRE_MENTION_CHATS",
         "TELEGRAM_ALLOWED_CHATS",
         "TELEGRAM_GROUP_ALLOWED_CHATS",
         "TELEGRAM_ALLOWED_TOPICS",
@@ -583,10 +618,13 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert tg_cfg.extra.get("allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("group_allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("allowed_topics") == [8]
-    # free_response_chats is bridged to the env var only (not PlatformConfig.extra).
-    # TELEGRAM_FREE_RESPONSE_CHATS is not a key that appears in developer .env
-    # files, so asserting it via os.environ stays deterministic.
+    assert tg_cfg.extra.get("require_mention_chats") == ["-456"]
+    # free_response_chats/require_mention_chats are also bridged to their env
+    # vars. Neither TELEGRAM_FREE_RESPONSE_CHATS nor TELEGRAM_REQUIRE_MENTION_CHATS
+    # is a key that appears in developer .env files, so asserting them via
+    # os.environ stays deterministic.
     assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
+    assert __import__("os").environ["TELEGRAM_REQUIRE_MENTION_CHATS"] == "-456"
 
 
 def test_top_level_require_mention_bridges_to_telegram(monkeypatch, tmp_path):

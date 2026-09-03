@@ -1323,6 +1323,12 @@ platform_toolsets:
 #     # Default false; ordinary messages, replies, and regex wake words stay blocked.
 #     guest_mode: false
 #     # allowed_chats: ["-1001234567890"]
+#     # require_mention: false           # Global default: respond to every message (default: false)
+#     # free_response_chats: []          # Opt specific chats OUT of require_mention when it's true globally
+#     # require_mention_chats: []        # Opt specific chats INTO @mention-only gating when require_mention
+#     #                                   # is false globally — e.g. a multi-bot room where the bot should
+#     #                                   # stay quiet unless addressed. If a chat appears in both lists,
+#     #                                   # free_response_chats wins (fail open).
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in

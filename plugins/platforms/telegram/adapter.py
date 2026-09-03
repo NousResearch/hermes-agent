@@ -8964,8 +8964,17 @@ class TelegramAdapter(BasePlatformAdapter):
 
     # ── Group mention gating ──────────────────────────────────────────────
 
-    def _telegram_require_mention(self) -> bool:
-        """Return whether group chats should require an explicit bot trigger."""
+    def _telegram_require_mention(self, chat_id: Optional[str] = None) -> bool:
+        """Return whether group chats should require an explicit bot trigger.
+
+        When *chat_id* is supplied and appears in ``require_mention_chats``, the
+        mention requirement is forced on for that chat regardless of the global
+        setting — the per-chat opt-in counterpart to ``free_response_chats``.
+        Call sites check ``free_response_chats``/``free_response_topics`` first,
+        so a chat listed in both resolves to the chattier option.
+        """
+        if chat_id is not None and str(chat_id) in self._telegram_require_mention_chats():
+            return True
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
@@ -9012,6 +9021,24 @@ class TelegramAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
             raw = _scoped_gate_env("TELEGRAM_FREE_RESPONSE_CHATS")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _telegram_require_mention_chats(self) -> set[str]:
+        """Return group chat IDs that require an explicit bot trigger even when
+        ``require_mention`` is globally disabled.
+
+        This is the opt-in counterpart to ``free_response_chats``: it lets the
+        bot stay chatty everywhere by default while still requiring an @mention
+        in specific chats — e.g. a multi-bot room, or a group with outside
+        participants where the bot should observe silently and only speak when
+        addressed. DMs are never affected. Empty set means no per-chat override
+        (backward compatible).
+        """
+        raw = self.config.extra.get("require_mention_chats")
+        if raw is None:
+            raw = _scoped_gate_env("TELEGRAM_REQUIRE_MENTION_CHATS")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -9557,7 +9584,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         if self._telegram_is_free_response_topic(message):
             return False
-        if not self._telegram_require_mention():
+        if not self._telegram_require_mention(chat_id_str):
             return False
         if self._is_reply_to_bot(message):
             return False
@@ -9941,7 +9968,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         if self._telegram_is_free_response_topic(message):
             return True
-        if not self._telegram_require_mention():
+        if not self._telegram_require_mention(chat_id_str):
             return True
         if self._is_reply_to_bot(message):
             return True
@@ -11272,6 +11299,13 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
             frc = ",".join(str(v) for v in frc)
         if not _skip_env_bridge and not os.getenv("TELEGRAM_FREE_RESPONSE_CHATS"):
             os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
+    rmc = telegram_cfg.get("require_mention_chats")
+    if rmc is not None:
+        extras.setdefault("require_mention_chats", rmc)
+        if isinstance(rmc, list):
+            rmc = ",".join(str(v) for v in rmc)
+        if not _skip_env_bridge and not os.getenv("TELEGRAM_REQUIRE_MENTION_CHATS"):
+            os.environ["TELEGRAM_REQUIRE_MENTION_CHATS"] = str(rmc)
     frt = telegram_cfg.get("free_response_topics")
     if frt is not None:
         if isinstance(frt, list):

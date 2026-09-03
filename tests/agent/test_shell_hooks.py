@@ -9,6 +9,7 @@ covered in ``test_shell_hooks_consent.py``.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,25 @@ def _write_script(tmp_path: Path, name: str, body: str) -> Path:
     path.write_text(body)
     path.chmod(0o755)
     return path
+
+
+def _exec_command(tmp_path: Path, name: str, py_body: str) -> str:
+    """Write a hook script that actually runs, and return its command string.
+
+    ``_write_script`` is fine for tests that only need a path on disk, but a
+    ``#!/usr/bin/env bash`` shebang is not honoured on Windows: the bridge
+    spawns with ``shell=False``, so CreateProcess rejects a ``.sh`` file with
+    ``WinError 193 (%1 is not a valid Win32 application)`` no matter how the
+    path is written.  Hook bodies that must execute are therefore Python,
+    invoked through ``sys.executable``.
+
+    Paths are emitted with forward slashes and quoted so the command string
+    round-trips through the POSIX ``shlex`` tokenizer on every platform.
+    """
+    path = tmp_path / name
+    path.write_text(py_body, encoding="utf-8")
+    path.chmod(0o755)
+    return f'"{Path(sys.executable).as_posix()}" "{path.as_posix()}"'
 
 
 def _allowlist_pair(monkeypatch, tmp_path, event: str, command: str) -> None:
@@ -153,14 +173,13 @@ class TestCallbackSubprocess:
         must translate it to the canonical Hermes block shape so that
         get_pre_tool_call_block_message() surfaces the block.
         """
-        script = _write_script(
-            tmp_path, "blocker.sh",
-            "#!/usr/bin/env bash\n"
-            'printf \'{"decision": "block", "reason": "no terminal"}\\n\'\n',
+        command = _exec_command(
+            tmp_path, "blocker.py",
+            'print(\'{"decision": "block", "reason": "no terminal"}\')\n',
         )
         spec = shell_hooks.ShellHookSpec(
             event="pre_tool_call",
-            command=str(script),
+            command=command,
             matcher="terminal",
         )
         cb = shell_hooks._make_callback(spec)
@@ -173,10 +192,9 @@ class TestCallbackSubprocess:
         end-to-end control flow used by run_agent._invoke_tool."""
         from hermes_cli import plugins
 
-        script = _write_script(
-            tmp_path, "block.sh",
-            "#!/usr/bin/env bash\n"
-            'printf \'{"decision": "block", "reason": "blocked-by-shell"}\\n\'\n',
+        command = _exec_command(
+            tmp_path, "block.py",
+            'print(\'{"decision": "block", "reason": "blocked-by-shell"}\')\n',
         )
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -188,7 +206,7 @@ class TestCallbackSubprocess:
         cfg = {
             "hooks": {
                 "pre_tool_call": [
-                    {"matcher": "terminal", "command": str(script)},
+                    {"matcher": "terminal", "command": command},
                 ],
             },
         }
@@ -204,15 +222,16 @@ class TestCallbackSubprocess:
     def test_matcher_regex_filters_callback(self, tmp_path, monkeypatch):
         """A matcher set to 'terminal' must not fire for 'web_search'."""
         calls = tmp_path / "calls.log"
-        script = _write_script(
-            tmp_path, "log.sh",
-            f"#!/usr/bin/env bash\n"
-            f"echo \"$(cat -)\" >> {calls}\n"
-            f"printf '{{}}\\n'\n",
+        command = _exec_command(
+            tmp_path, "log.py",
+            "import sys\n"
+            f"with open(r'{calls.as_posix()}', 'a', encoding='utf-8') as fh:\n"
+            "    fh.write(sys.stdin.read() + '\\n')\n"
+            "print('{}')\n",
         )
         spec = shell_hooks.ShellHookSpec(
             event="pre_tool_call",
-            command=str(script),
+            command=command,
             matcher="terminal",
         )
         cb = shell_hooks._make_callback(spec)
@@ -225,12 +244,15 @@ class TestCallbackSubprocess:
 
     def test_payload_schema_delivered(self, tmp_path):
         capture = tmp_path / "payload.json"
-        script = _write_script(
-            tmp_path, "capture.sh",
-            f"#!/usr/bin/env bash\ncat - > {capture}\nprintf '{{}}\\n'\n",
+        command = _exec_command(
+            tmp_path, "capture.py",
+            "import sys\n"
+            f"with open(r'{capture.as_posix()}', 'w', encoding='utf-8') as fh:\n"
+            "    fh.write(sys.stdin.read())\n"
+            "print('{}')\n",
         )
         spec = shell_hooks.ShellHookSpec(
-            event="pre_tool_call", command=str(script),
+            event="pre_tool_call", command=command,
         )
         cb = shell_hooks._make_callback(spec)
         cb(
@@ -679,14 +701,14 @@ class TestEvaluateResult:
 
 class TestFailSemanticsEndToEnd:
     def test_exit_2_script_blocks(self, tmp_path):
-        script = _write_script(
-            tmp_path, "exit2.sh",
-            "#!/usr/bin/env bash\n"
-            'echo "rm -rf is not permitted" >&2\n'
-            "exit 2\n",
+        command = _exec_command(
+            tmp_path, "exit2.py",
+            "import sys\n"
+            "sys.stderr.write('rm -rf is not permitted\\n')\n"
+            "sys.exit(2)\n",
         )
         spec = shell_hooks.ShellHookSpec(
-            event="pre_tool_call", command=str(script),
+            event="pre_tool_call", command=command,
         )
         cb = shell_hooks._make_callback(spec)
         result = cb(tool_name="terminal", args={"command": "rm -rf /"})
@@ -707,14 +729,14 @@ class TestFailSemanticsEndToEnd:
 
     def test_run_once_reflects_exit_2_block(self, tmp_path):
         """hermes hooks test must mirror production semantics."""
-        script = _write_script(
-            tmp_path, "exit2.sh",
-            "#!/usr/bin/env bash\n"
-            'echo "denied" >&2\n'
-            "exit 2\n",
+        command = _exec_command(
+            tmp_path, "exit2.py",
+            "import sys\n"
+            "sys.stderr.write('denied\\n')\n"
+            "sys.exit(2)\n",
         )
         spec = shell_hooks.ShellHookSpec(
-            event="pre_tool_call", command=str(script),
+            event="pre_tool_call", command=command,
         )
         result = shell_hooks.run_once(
             spec, {"tool_name": "terminal", "args": {"command": "ls"}},
@@ -723,12 +745,12 @@ class TestFailSemanticsEndToEnd:
         assert result["parsed"] == {"action": "block", "message": "denied"}
 
     def test_run_once_reflects_fail_closed_timeout(self, tmp_path):
-        script = _write_script(
-            tmp_path, "sleepy.sh",
-            "#!/usr/bin/env bash\nsleep 5\n",
+        command = _exec_command(
+            tmp_path, "sleepy.py",
+            "import time\ntime.sleep(5)\n",
         )
         spec = shell_hooks.ShellHookSpec(
-            event="pre_tool_call", command=str(script),
+            event="pre_tool_call", command=command,
             timeout=1, fail_closed=True,
         )
         result = shell_hooks.run_once(

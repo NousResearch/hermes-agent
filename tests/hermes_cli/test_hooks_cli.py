@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,23 @@ def _hook_script(tmp_path: Path, body: str, name: str = "hook.sh") -> Path:
     p.write_text(body)
     p.chmod(0o755)
     return p
+
+
+def _exec_command(tmp_path: Path, py_body: str, name: str = "hook.py") -> str:
+    """Write a hook script that actually runs, and return its command string.
+
+    ``_hook_script`` is fine where only a path on disk is needed, but a
+    ``#!/usr/bin/env bash`` shebang is not honoured on Windows: hooks spawn
+    with ``shell=False``, so CreateProcess rejects a ``.sh`` file with
+    ``WinError 193 (%1 is not a valid Win32 application)``.  Bodies that
+    must execute are Python, invoked through ``sys.executable``, with
+    quoted forward-slash paths so the command round-trips through the
+    POSIX ``shlex`` tokenizer on every platform.
+    """
+    p = tmp_path / name
+    p.write_text(py_body, encoding="utf-8")
+    p.chmod(0o755)
+    return f'"{Path(sys.executable).as_posix()}" "{p.as_posix()}"'
 
 
 def _run(sub_args: SimpleNamespace) -> str:
@@ -87,11 +105,15 @@ class TestHooksTest:
         scripts tested with `hermes hooks test` saw different top-level
         keys than at runtime, silently breaking in production."""
         capture = tmp_path / "captured.json"
-        script = _hook_script(
+        command = _exec_command(
             tmp_path,
-            f"#!/usr/bin/env bash\ncat - > {capture}\nprintf '{{}}\\n'\n",
+            "import sys\n"
+            f"with open(r'{(tmp_path / 'captured.json').as_posix()}', 'w', "
+            "encoding='utf-8') as fh:\n"
+            "    fh.write(sys.stdin.read())\n"
+            "print('{}')\n",
         )
-        cfg = {"hooks": {"subagent_stop": [{"command": str(script)}]}}
+        cfg = {"hooks": {"subagent_stop": [{"command": command}]}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
             _run(SimpleNamespace(
                 hooks_action="test", event="subagent_stop",
@@ -112,16 +134,15 @@ class TestHooksTest:
         assert seen["tool_input"] is None
 
     def test_fires_real_subprocess_and_parses_block(self, tmp_path):
-        block_script = _hook_script(
+        block_command = _exec_command(
             tmp_path,
-            "#!/usr/bin/env bash\n"
-            'printf \'{"decision": "block", "reason": "nope"}\\n\'\n',
-            name="block.sh",
+            'print(\'{"decision": "block", "reason": "nope"}\')\n',
+            name="block.py",
         )
         cfg = {
             "hooks": {
                 "pre_tool_call": [
-                    {"matcher": "terminal", "command": str(block_script)},
+                    {"matcher": "terminal", "command": block_command},
                 ],
             },
         }
@@ -189,11 +210,14 @@ class TestHooksDoctor:
         script must not be executed during `doctor`."""
         sentinel = tmp_path / "executed"
         # Script would touch the sentinel if executed; we assert it wasn't.
-        script = _hook_script(
+        # It must be genuinely runnable, or the gate cannot fail: a script
+        # the platform refuses to exec leaves the sentinel absent either way.
+        command = _exec_command(
             tmp_path,
-            f"#!/usr/bin/env bash\ntouch {sentinel}\nprintf '{{}}\\n'\n",
+            f"open(r'{sentinel.as_posix()}', 'w').close()\n"
+            "print('{}')\n",
         )
-        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+        cfg = {"hooks": {"on_session_start": [{"command": command}]}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
 

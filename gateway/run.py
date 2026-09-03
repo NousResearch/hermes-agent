@@ -508,6 +508,38 @@ def _record_hygiene_cooldown(
         logger.debug("session hygiene cooldown persist failed: %s", exc)
 
 
+def _cooldown_is_active(
+    gateway,
+    session_id: str,
+) -> Optional[bool]:
+    """Return True if a compression-failure cooldown is active for session_id,
+    False if not, None if the check could not be performed (fail-open).
+
+    Fail-open is intentional: suppression is an optimisation that must never
+    prevent the user-facing notice from being sent if the check is unavailable.
+    """
+    _session_db = getattr(gateway, "_session_db", None)
+    if _session_db is None:
+        return None
+    _session_db = getattr(_session_db, "_db", _session_db)
+    _getter = getattr(_session_db, "get_compression_failure_cooldown", None)
+    if _getter is None:
+        return None
+    try:
+        _cd = _getter(session_id)
+        if _cd and _cd.get("remaining_seconds", 0) > 0:
+            logger.debug(
+                "Session hygiene turn-hold for %s: cooldown active (%.1fs remain) — "
+                "suppressing turnhold_deferred message",
+                session_id,
+                _cd["remaining_seconds"],
+            )
+            return True
+        return False
+    except Exception:
+        return None
+
+
 def _status_template_to_regex(template: str) -> str:
     """Compile a compression status template constant into a regex source.
 
@@ -22390,19 +22422,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             _turnhold_msg = t(
                                                 "gateway.compress.turnhold_deferred"
                                             )
-                                            try:
-                                                _adapter = self._adapter_for_source(source)
-                                                if _adapter and source.chat_id:
-                                                    await _adapter.send(
-                                                        source.chat_id,
-                                                        _turnhold_msg,
-                                                        metadata=_hyg_meta,
+                                            _send_turnhold = (
+                                                _cooldown_is_active(self, session_entry.session_id) is not True
+                                            )
+                                            if _send_turnhold:
+                                                try:
+                                                    _adapter = self._adapter_for_source(source)
+                                                    if _adapter and source.chat_id:
+                                                        await _adapter.send(
+                                                            source.chat_id,
+                                                            _turnhold_msg,
+                                                            metadata=_hyg_meta,
+                                                        )
+                                                except Exception as _werr:
+                                                    logger.warning(
+                                                        "Failed to deliver compression-turnhold "
+                                                        "notice to user: %s",
+                                                        _werr,
                                                     )
-                                            except Exception as _werr:
-                                                logger.warning(
-                                                    "Failed to deliver compression-turnhold "
-                                                    "notice to user: %s",
-                                                    _werr,
+                                            # Record the cooldown for Path 1 (fence was cancelled
+                                            # — no watermark-fence means nothing to keep). Path 2
+                                            # keep-admission is handled by the done-callback, which
+                                            # fires when the detached worker eventually finishes.
+                                            if _hyg_failure_cooldown_seconds >= 0 and not getattr(
+                                                _hyg_commit_fence, "commit_watermark_fenced", False
+                                            ):
+                                                _hyg_cooldown = _hygiene_cooldown_for_failure(
+                                                    self,
+                                                    session_entry.session_key,
+                                                    _hyg_failure_cooldown_seconds,
+                                                )
+                                                _record_hygiene_cooldown(
+                                                    self, session_entry.session_id,
+                                                    _hyg_cooldown,
+                                                    "hygiene compression deferred: "
+                                                    "turn-hold budget expired and the "
+                                                    "detached attempt did not commit",
                                                 )
                                             raise
                                         _cancelled = None
@@ -22471,20 +22526,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             _turnhold_msg = t(
                                                 "gateway.compress.turnhold_deferred"
                                             )
-                                            try:
-                                                _adapter = self._adapter_for_source(source)
-                                                if _adapter and source.chat_id:
-                                                    await _adapter.send(
-                                                        source.chat_id,
-                                                        _turnhold_msg,
-                                                        metadata=_hyg_meta,
+                                            _send_turnhold = (
+                                                _cooldown_is_active(self, session_entry.session_id) is not True
+                                            )
+                                            if _send_turnhold:
+                                                try:
+                                                    _adapter = self._adapter_for_source(source)
+                                                    if _adapter and source.chat_id:
+                                                        await _adapter.send(
+                                                            source.chat_id,
+                                                            _turnhold_msg,
+                                                            metadata=_hyg_meta,
+                                                        )
+                                                except Exception as _werr:
+                                                    logger.warning(
+                                                        "Failed to deliver compression-turnhold "
+                                                        "notice to user: %s",
+                                                        _werr,
                                                     )
-                                            except Exception as _werr:
-                                                logger.warning(
-                                                    "Failed to deliver compression-turnhold "
-                                                    "notice to user: %s",
-                                                    _werr,
-                                                )
                                             raise
                                     except asyncio.TimeoutError:
                                         _hyg_waited = time.monotonic() - _hyg_wait_started

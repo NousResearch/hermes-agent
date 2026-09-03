@@ -923,22 +923,26 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             except (TypeError, ValueError):
                 args_str = "{}"
             thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
-            call_key = json.dumps(
-                {
-                    "part_index": part_index,
-                    "name": name,
-                    "thought_signature": thought_signature,
-                },
-                sort_keys=True,
-            )
+            fc_id = str(fc.get("id")) if isinstance(fc.get("id"), str) and fc.get("id") else ""
+            if fc_id:
+                call_key = f"id:{fc_id}"
+            else:
+                call_key = json.dumps(
+                    {
+                        "part_index": part_index,
+                        "name": name,
+                        "args": args_str,
+                        "thought_signature": thought_signature,
+                    },
+                    sort_keys=True,
+                )
             slot = tool_call_indices.get(call_key)
             if slot is None:
                 slot = {
                     "index": len(tool_call_indices),
                     "id": (
-                        str(fc["id"])
-                        if isinstance(fc.get("id"), str) and fc.get("id")
-                        else f"call_{uuid.uuid4().hex[:12]}"
+                        fc_id
+                        or f"call_{uuid.uuid4().hex[:12]}"
                     ),
                     "last_arguments": "",
                 }

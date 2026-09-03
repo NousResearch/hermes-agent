@@ -400,6 +400,107 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[-1].choices[0].finish_reason == "tool_calls"
 
 
+def test_stream_event_parallel_tool_calls_across_chunks_have_distinct_slots():
+    """Parallel tool calls emitted across separate SSE chunks must not collide into index 0.
+
+    When Gemini emits parallel tool calls (e.g. search_files for 3 patterns),
+    each SSE chunk contains a single candidate with parts[0]. The slot key must
+    use the unique functionCall.id so chunks don't overwrite each other or
+    concatenate into invalid JSON.
+    """
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    event1 = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"id": "call_1", "name": "search_files", "args": {"pattern": "*a*"}}}
+                    ]
+                }
+            }
+        ]
+    }
+    event2 = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"id": "call_2", "name": "search_files", "args": {"pattern": "*b*"}}}
+                    ]
+                }
+            }
+        ]
+    }
+    event3 = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"id": "call_3", "name": "search_files", "args": {"pattern": "*c*"}}}
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ]
+    }
+
+    chunks1 = translate_stream_event(event1, model="gemini-3.7-flash", tool_call_indices=tool_call_indices)
+    chunks2 = translate_stream_event(event2, model="gemini-3.7-flash", tool_call_indices=tool_call_indices)
+    chunks3 = translate_stream_event(event3, model="gemini-3.7-flash", tool_call_indices=tool_call_indices)
+
+    assert len(tool_call_indices) == 3
+    assert chunks1[0].choices[0].delta.tool_calls[0].index == 0
+    assert chunks1[0].choices[0].delta.tool_calls[0].id == "call_1"
+    assert chunks1[0].choices[0].delta.tool_calls[0].function.arguments == '{"pattern": "*a*"}'
+
+    assert chunks2[0].choices[0].delta.tool_calls[0].index == 1
+    assert chunks2[0].choices[0].delta.tool_calls[0].id == "call_2"
+    assert chunks2[0].choices[0].delta.tool_calls[0].function.arguments == '{"pattern": "*b*"}'
+
+    assert chunks3[0].choices[0].delta.tool_calls[0].index == 2
+    assert chunks3[0].choices[0].delta.tool_calls[0].id == "call_3"
+    assert chunks3[0].choices[0].delta.tool_calls[0].function.arguments == '{"pattern": "*c*"}'
+
+
+def test_stream_event_legacy_gemini_without_ids_parallel_chunks_distinct_slots():
+    """Legacy Gemini (< 3) without tool call IDs must still assign distinct slots for different calls."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    event1 = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search_files", "args": {"pattern": "*a*"}}}
+                    ]
+                }
+            }
+        ]
+    }
+    event2 = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search_files", "args": {"pattern": "*b*"}}}
+                    ]
+                }
+            }
+        ]
+    }
+
+    chunks1 = translate_stream_event(event1, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+    chunks2 = translate_stream_event(event2, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+
+    assert len(tool_call_indices) == 2
+    assert chunks1[0].choices[0].delta.tool_calls[0].index == 0
+    assert chunks2[0].choices[0].delta.tool_calls[0].index == 1
+    assert chunks1[0].choices[0].delta.tool_calls[0].id != chunks2[0].choices[0].delta.tool_calls[0].id
+
+
 def test_build_gemini_request_preserves_explicit_max_tokens_without_thinking():
     from agent.gemini_native_adapter import build_gemini_request
 

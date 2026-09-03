@@ -653,9 +653,15 @@ def _escape_html(text: str) -> str:
         text = str(text)
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;")
 
-def _format_timestamp(ts: float) -> str:
-    if not ts: return "N/A"
-    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+def _format_timestamp(ts: Any) -> str:
+    if not ts:
+        return "N/A"
+    try:
+        return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except (OverflowError, OSError, TypeError, ValueError):
+        return str(ts)
+
 
 def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
     html_list = []

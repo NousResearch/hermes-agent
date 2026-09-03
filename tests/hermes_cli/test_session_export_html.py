@@ -61,6 +61,20 @@ def test_multi_session_export_keeps_switcher_script():
     assert 'id="view-bbbb2222"' in html
 
 
+def test_html_export_preserves_messages_with_corrupt_timestamp():
+    html = generate_html_export({
+        "id": "abc",
+        "messages": [
+            {"role": "user", "content": "damaged row", "timestamp": float("nan")},
+            {"role": "assistant", "content": "healthy row", "timestamp": 1700000002},
+        ],
+    })
+
+    assert "damaged row" in html
+    assert "nan" in html
+    assert "healthy row" in html
+
+
 def test_single_session_untitled_coalesces_none_title_and_model():
     """An un-named session (title/model still ``None`` until async title
     generation completes) is the default state, so the single-session export

@@ -95,6 +95,20 @@ def test_export_record_count_switches_unit_for_prompt_only_exports():
     )
 
 
+def test_markdown_export_preserves_messages_with_corrupt_timestamp():
+    session = _sample_session()
+    session["messages"] = [
+        {"role": "user", "content": "damaged row", "timestamp": 1e30},
+        {"role": "assistant", "content": "healthy row", "timestamp": 1700000002},
+    ]
+
+    rendered = render_sessions_export([session], fmt="markdown")
+
+    assert "damaged row" in rendered
+    assert "1e+30" in rendered
+    assert "healthy row" in rendered
+
+
 def test_sessions_export_cli_prompt_only_stdout(monkeypatch, capsys):
     import hermes_cli.main as main_mod
     import hermes_state
@@ -133,5 +147,4 @@ def test_sessions_export_cli_prompt_only_stdout(monkeypatch, capsys):
         "exported": "sess-123",
         "closed": True,
     }
-
 

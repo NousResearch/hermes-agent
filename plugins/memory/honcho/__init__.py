@@ -652,7 +652,9 @@ class HonchoMemoryProvider(MemoryProvider):
         parts = []
 
         # Session summary — session-scoped context, placed first for relevance
-        summary = ctx.get("summary", "")
+        from plugins.memory.honcho.session import usable_honcho_summary
+
+        summary = usable_honcho_summary(ctx.get("summary", ""))
         if summary:
             parts.append(f"## Session Summary\n{summary}")
 
@@ -832,7 +834,11 @@ class HonchoMemoryProvider(MemoryProvider):
                         base_context = formatted
 
             if base_context:
-                parts.append(base_context)
+                from plugins.memory.honcho.session import scrub_formatted_honcho_context
+
+                base_context = scrub_formatted_honcho_context(base_context)
+                if base_context:
+                    parts.append(base_context)
 
         # ----- Layer 2: Dialectic supplement -----
         # Turn 1 may briefly wait for dialectic; unfinished work remains async.
@@ -1617,7 +1623,11 @@ class HonchoMemoryProvider(MemoryProvider):
                     return json.dumps({"result": "No context available yet."})
                 parts = []
                 if ctx.get("summary"):
-                    parts.append(f"## Summary\n{ctx['summary']}")
+                    from plugins.memory.honcho.session import usable_honcho_summary
+
+                    summary = usable_honcho_summary(ctx["summary"])
+                    if summary:
+                        parts.append(f"## Summary\n{summary}")
                 if ctx.get("representation"):
                     parts.append(f"## Representation\n{ctx['representation']}")
                 if ctx.get("card"):

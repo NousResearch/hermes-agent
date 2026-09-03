@@ -43,6 +43,65 @@ _AUTH_ERROR_MARKERS = (
 # A 401 in text counts only with HTTP context ("HTTP 401", "status 401"), never as a bare number.
 _HTTP_401_RE = re.compile(r"\b(?:http|status(?:[ _]code)?\s*[:=]?)\s*401\b")
 
+_THINK_BLOCK_RE = re.compile(
+    r"<\s*(?:think|thinking|reasoning|thought|reasoning_scratchpad)\s*>"
+    r".*?"
+    r"<\s*/\s*(?:think|thinking|reasoning|thought|reasoning_scratchpad)\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_THINK_CLOSE_RE = re.compile(r"</\s*think\s*>", re.IGNORECASE)
+_PLANNING_HEAD_RE = re.compile(
+    r"^(?:i need to create a thorough|"
+    r"the instruction says to focus on capturing key facts|"
+    r"first, let me review)",
+    re.IGNORECASE,
+)
+
+
+def usable_honcho_summary(text: object) -> str | None:
+    """Return a session summary safe to inject, or None to omit it.
+
+    Honcho summarizers can persist the model's planning/`</think>` preamble
+    as the summary body (#97639). That text must not become trusted memory.
+    """
+    raw = "" if text is None else str(text)
+    if not raw.strip():
+        return None
+    # Observed payload starts inside a think block (no opening tag) then
+    # closes with ``</think>`` before the ordinary summary.
+    close = _THINK_CLOSE_RE.search(raw)
+    if close:
+        raw = raw[close.end() :]
+    cleaned = _THINK_BLOCK_RE.sub("", raw).strip()
+    if not cleaned:
+        return None
+    if "<think" in cleaned.lower() or "</think" in cleaned.lower():
+        return None
+    if _PLANNING_HEAD_RE.search(cleaned.lstrip()):
+        return None
+    return cleaned
+
+
+def scrub_formatted_honcho_context(formatted: str) -> str:
+    """Drop a cached ``## Session Summary`` section that is still contaminated."""
+    if not formatted:
+        return formatted
+    if "## Session Summary\n" not in formatted:
+        return formatted
+    chunks = re.split(r"(?=\n## )", "\n" + formatted.lstrip("\n"))
+    kept: list[str] = []
+    for chunk in chunks:
+        body = chunk.lstrip("\n")
+        if not body.strip():
+            continue
+        if body.startswith("## Session Summary\n"):
+            usable = usable_honcho_summary(body.split("\n", 1)[1])
+            if usable:
+                kept.append(f"## Session Summary\n{usable}")
+            continue
+        kept.append(body)
+    return "\n\n".join(kept)
+
 
 def _is_auth_error(exc: BaseException) -> bool:
     status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
@@ -1019,7 +1078,9 @@ class HonchoSessionManager:
                     lambda: self._sdk_session(session.honcho_session_id).context(summary=True),
                 )
                 if ctx.summary and getattr(ctx.summary, "content", None):
-                    result["summary"] = ctx.summary.content
+                    summary = usable_honcho_summary(ctx.summary.content)
+                    if summary:
+                        result["summary"] = summary
         except HonchoAuthError:
             # Auth is dead; the pop_auth_notice path tells the model why context is missing.
             return result
@@ -1377,7 +1438,9 @@ class HonchoSessionManager:
 
             # Summary
             if ctx.summary:
-                result["summary"] = ctx.summary.content
+                summary = usable_honcho_summary(getattr(ctx.summary, "content", ctx.summary))
+                if summary:
+                    result["summary"] = summary
 
             # Peer representation and card
             if ctx.peer_representation:

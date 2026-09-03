@@ -700,6 +700,15 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Durable Agent Computer runtime (BWM-796). New key — no version bump.
+    # "memory" is the process default so ordinary chat never launches Chrome.
+    # "chromium" uses the host Chromium-family binary on an identity-owned
+    # user-data-dir with loopback CDP. HERMES_AGENT_COMPUTER_RUNTIME remains
+    # a test/operator override only; user-facing docs point here.
+    "agent_computer": {
+        "runtime": "memory",
+    },
+
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
     # When enabled, the agent takes a snapshot of the working directory once
     # per conversation turn (on first write_file/patch call).  Use /rollback

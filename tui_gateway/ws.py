@@ -601,6 +601,14 @@ async def handle_ws(
                 )
             except Exception:
                 _log.exception("ws browser-controller disconnect failed peer=%s", peer)
+            try:
+                from gateway.agent_computer import release_owner_for_transport_if_active
+
+                await asyncio.to_thread(
+                    release_owner_for_transport_if_active, transport
+                )
+            except Exception:
+                _log.exception("ws agent-computer owner disconnect failed peer=%s", peer)
 
             transport.close()
 

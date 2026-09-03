@@ -30,6 +30,7 @@ def cli_obj(_isolate):
         obj.model = "test-model"
         obj.enabled_toolsets = ["hermes-core"]
         obj.compact = False
+        obj.show_startup_banner = True
         obj.console = MagicMock()
         obj.session_id = None
         obj.api_key = "test"

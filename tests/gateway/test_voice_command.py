@@ -316,8 +316,36 @@ class TestSendVoiceReply:
 
         mock_adapter.send_voice.assert_called_once()
         assert mock_tts.call_args.kwargs["output_path"].endswith(".ogg")
+        assert "provider" not in mock_tts.call_args.kwargs
         call_args = mock_adapter.send_voice.call_args
         assert call_args.kwargs.get("chat_id") == "123"
+
+
+    @pytest.mark.asyncio
+    async def test_forwards_tts_provider_override(self, runner):
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event()
+        event.source.platform = Platform.TELEGRAM
+        runner.adapters[event.source.platform] = mock_adapter
+
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(
+                event,
+                "Hello world",
+                tts_provider_override="irodori",
+            )
+
+        mock_adapter.send_voice.assert_called_once()
+        assert mock_tts.call_args.kwargs["provider"] == "irodori"
 
 
     @pytest.mark.asyncio

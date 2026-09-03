@@ -25141,7 +25141,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Return whether inbound voice/STT transcripts should be echoed to chat."""
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
+    async def _send_voice_reply(
+        self,
+        event: MessageEvent,
+        text: str,
+        *,
+        tts_provider_override: Optional[str] = None,
+    ) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
         audio_path = None
         actual_paths: List[str] = []
@@ -25159,9 +25165,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Ogg/Opus bytes for every provider. Others keep MP3.
             audio_path = build_auto_tts_output_path(event.source.platform)
 
-            result_json = await asyncio.to_thread(
-                text_to_speech_tool, text=tts_text, output_path=audio_path
-            )
+            tts_kwargs: Dict[str, Any] = {
+                "text": tts_text,
+                "output_path": audio_path,
+            }
+            if tts_provider_override is not None:
+                tts_kwargs["provider"] = tts_provider_override
+            result_json = await asyncio.to_thread(text_to_speech_tool, **tts_kwargs)
             try:
                 result = json.loads(result_json)
             except (json.JSONDecodeError, TypeError):

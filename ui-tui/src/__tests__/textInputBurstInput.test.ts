@@ -1,6 +1,48 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyPrintableInsert, shouldRouteMultiCharInputAsPaste } from '../components/textInput.js'
+import {
+  advancePrintableBurst,
+  applyPrintableInsert,
+  type PrintableBurstState,
+  shouldRouteMultiCharInputAsPaste
+} from '../components/textInput.js'
+
+describe('advancePrintableBurst', () => {
+  it('switches to frame batching for a sustained 2ms key stream', () => {
+    let state: PrintableBurstState | null = null
+    const decisions: boolean[] = []
+
+    for (let index = 0; index < 20; index++) {
+      const sample = advancePrintableBurst(state, index * 2)
+      state = sample.state
+      decisions.push(sample.rapid)
+    }
+
+    expect(decisions.slice(0, 7)).toEqual(Array.from({ length: 7 }, () => false))
+    expect(decisions.slice(7)).toEqual(Array.from({ length: 13 }, () => true))
+  })
+
+  it('resets to normal echo after an idle gap', () => {
+    let state: PrintableBurstState | null = null
+
+    for (let index = 0; index < 8; index++) {
+      state = advancePrintableBurst(state, index * 2).state
+    }
+
+    expect(state.rapid).toBe(true)
+    expect(advancePrintableBurst(state, 100).rapid).toBe(false)
+  })
+
+  it('does not classify ordinary typing as machine-speed input', () => {
+    let state: PrintableBurstState | null = null
+
+    for (let index = 0; index < 20; index++) {
+      const sample = advancePrintableBurst(state, index * 20)
+      state = sample.state
+      expect(sample.rapid).toBe(false)
+    }
+  })
+})
 
 describe('applyPrintableInsert', () => {
   it('applies non-bracketed multi-character bursts immediately', () => {

@@ -414,6 +414,8 @@ export const ja = defineLocale({
       reactionsTitle: 'メッセージリアクション',
       reactionsDesc:
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
+      stickyUserMessagesTitle: '固定ユーザーメッセージ',
+      stickyUserMessagesDesc: '長いスレッドをスクロール中に、最新のメッセージを会話上部に固定します。',
       tipsTitle: 'アプリ内ヒント',
       tipsDesc:
         'アプリの一部を指す小さな吹き出し。待機中にときどき、また役に立つときは Hermes からも表示します。閉じたヒントは二度と表示されません。',

@@ -583,6 +583,8 @@ export const ru = defineLocale({
       introSplashDesc: 'Логотип и подсказка, показываемые на пустом чате.',
       reactionsTitle: 'Реакции на сообщения',
       reactionsDesc: 'Эмодзи-тапбеки в стиле iMessage — реагируйте на сообщения, и Hermes сможет реагировать на ваши.',
+      stickyUserMessagesTitle: 'Закрепленные сообщения',
+      stickyUserMessagesDesc: 'Оставьте последнее сообщение закрепленным вверху разговора при прокрутке длинных обсуждений.',
       composerPopoutTitle: 'Плавающий композер',
       composerPopoutDesc: 'Позволяет вытягивать композер из его док-зоны. Отключите, чтобы он был закреплён снизу.',
       embedsTitle: 'Встроенные превью',

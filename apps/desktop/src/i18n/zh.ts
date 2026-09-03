@@ -576,6 +576,8 @@ export const zh: Translations = {
       introSplashDesc: '空白对话中显示的字标和提示语。',
       reactionsTitle: '消息回应',
       reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
+      stickyUserMessagesTitle: '固定用户消息',
+      stickyUserMessagesDesc: '在浏览长对话时，将您的最新消息固定在对话顶部。',
       tipsTitle: '应用内提示',
       tipsDesc: '指向应用某处的小气泡：空闲时偶尔出现，需要时 Hermes 也会给你一条。关掉一条就不再出现。',
       tipsReset: (count: number) => `恢复 ${count} 条已关闭的提示`,

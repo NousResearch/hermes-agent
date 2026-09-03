@@ -402,6 +402,8 @@ export const zhHant = defineLocale({
       introSplashDesc: '空白對話中顯示的字標和提示語。',
       reactionsTitle: '訊息回應',
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
+      stickyUserMessagesTitle: '固定使用者訊息',
+      stickyUserMessagesDesc: '在瀏覽長對話時，將您的最新訊息固定在對話頂部。',
       tipsTitle: '應用程式內提示',
       tipsDesc: '指向應用程式某處的小氣泡：閒置時偶爾出現，需要時 Hermes 也會給你一則。關掉一則就不再出現。',
       tipsReset: (count: number) => `復原 ${count} 則已關閉的提示`,

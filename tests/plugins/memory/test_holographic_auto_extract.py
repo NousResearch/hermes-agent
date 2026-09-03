@@ -137,3 +137,67 @@ def test_helper_detects_prefix_metadata_and_merged_forms():
     )
     assert not is_compaction_summary_message(_user(DECISION_MSG))
     assert not is_compaction_summary_message(_user(""))
+
+
+# ---------------------------------------------------------------------------
+# Defect 3 (#22907) — whole user messages stored verbatim instead of the span
+# ---------------------------------------------------------------------------
+
+
+def test_only_the_captured_span_is_stored_not_the_whole_message(tmp_path):
+    """The reported defect: add_fact received ``content[:400]`` — the entire
+    user turn — so fact_store filled with conversational text rather than
+    facts, and recall surfaced those fragments as learned preferences."""
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.on_session_end(
+        [_user("Since we're rewriting it anyway, I prefer tabs over spaces for indentation")]
+    )
+    facts = _fact_contents(provider)
+    assert facts == ["tabs over spaces for indentation"]
+    provider.shutdown()
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "I like that, sounds good",
+        "I like the approach, would you set it up on the staging server?",
+        "I want you to add tests for the new endpoint",
+        "I need it by Friday",
+        "we decided to go with that",
+    ],
+)
+def test_conversational_filler_is_not_stored(tmp_path, message):
+    """Every one of these matches a pattern but states nothing durable —
+    pronoun-led spans, second-person requests, and questions."""
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.on_session_end([_user(message)])
+    assert _fact_contents(provider) == []
+    provider.shutdown()
+
+
+def test_trailing_narrative_is_trimmed_to_the_first_sentence(tmp_path):
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.on_session_end(
+        [_user("I use PostgreSQL for everything. Anyway, back to the deploy question.")]
+    )
+    assert _fact_contents(provider) == ["PostgreSQL for everything"]
+    provider.shutdown()
+
+
+def test_decision_span_is_stored_without_the_surrounding_turn(tmp_path):
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.on_session_end(
+        [_user("After weighing the options we decided to use Redis for the queue backend")]
+    )
+    assert _fact_contents(provider) == ["Redis for the queue backend"]
+    provider.shutdown()
+
+
+def test_stored_span_never_exceeds_the_length_cap(tmp_path):
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.on_session_end([_user("I prefer " + "x" * 900)])
+    facts = _fact_contents(provider)
+    assert len(facts) == 1
+    assert len(facts[0]) <= 400
+    provider.shutdown()

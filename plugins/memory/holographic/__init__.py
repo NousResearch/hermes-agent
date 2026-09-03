@@ -398,6 +398,9 @@ class HolographicMemoryProvider(MemoryProvider):
             pre = pre.strip()
             return pre or None
 
+        # Each pattern captures the SPAN that carries the preference/decision,
+        # not the sentence containing it. The captured group is what gets
+        # stored — see _extracted_span() below.
         _PREF_PATTERNS = [
             re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
             re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
@@ -407,6 +410,49 @@ class HolographicMemoryProvider(MemoryProvider):
             re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
             re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
         ]
+
+        # Openers that make a match conversational rather than declarative.
+        # "I like that, ship it" and "I want you to add tests" both match
+        # _PREF_PATTERNS but state nothing durable about the user.
+        _FILLER_SPANS = re.compile(
+            r'^(?:'
+            r'that\b|this\b|it\b|these\b|those\b|'      # "I like that"
+            r'you\s+to\b|him\b|her\b|them\b|us\b'       # "I want you to ..."
+            r')',
+            re.IGNORECASE,
+        )
+
+        def _extracted_span(match) -> str | None:
+            """Return the storable fact span from a pattern match, or None.
+
+            Storing ``content[:400]`` — the whole user message — was the
+            defect: fact_store filled with conversational turns that merely
+            contained "I like" or "we decided", and holographic recall then
+            surfaced those chat fragments as learned preferences (#22907).
+
+            The regexes already capture the informative remainder; use it, and
+            drop matches whose span is pronoun-led filler or a question, since
+            neither states anything durable.
+            """
+            span = (match.group(1) or "").strip()
+
+            # A trailing question is a request, not a statement of preference:
+            # "I want you to add tests for the new endpoint?" / "can we ...?"
+            if span.endswith("?"):
+                return None
+
+            # Keep only the first sentence; the rest is narrative context.
+            span = re.split(r'(?<=[.!])\s+', span, maxsplit=1)[0].strip()
+            span = span.rstrip(".,;:!").strip()
+
+            # "we decided to use X" and "I prefer using X" both carry a leading
+            # verb that belongs to the matched phrase, not to the fact.
+            span = re.sub(r'^(?:to\s+)?(?:use|using|go\s+with|adopt)\s+', '', span, flags=re.IGNORECASE).strip()
+
+            if len(span) < 8 or _FILLER_SPANS.match(span):
+                return None
+
+            return span[:400]
 
         extracted = 0
         for msg in messages:
@@ -430,21 +476,27 @@ class HolographicMemoryProvider(MemoryProvider):
                 continue
 
             for pattern in _PREF_PATTERNS:
-                if pattern.search(content):
-                    try:
-                        self._store.add_fact(content[:400], category="user_pref")
-                        extracted += 1
-                    except Exception:
-                        pass
+                match = pattern.search(content)
+                if match:
+                    span = _extracted_span(match)
+                    if span:
+                        try:
+                            self._store.add_fact(span, category="user_pref")
+                            extracted += 1
+                        except Exception:
+                            pass
                     break
 
             for pattern in _DECISION_PATTERNS:
-                if pattern.search(content):
-                    try:
-                        self._store.add_fact(content[:400], category="project")
-                        extracted += 1
-                    except Exception:
-                        pass
+                match = pattern.search(content)
+                if match:
+                    span = _extracted_span(match)
+                    if span:
+                        try:
+                            self._store.add_fact(span, category="project")
+                            extracted += 1
+                        except Exception:
+                            pass
                     break
 
         if extracted:

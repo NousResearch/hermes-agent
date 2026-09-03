@@ -2261,6 +2261,22 @@ def _setup_webhooks():
     print_info("   Open config in your editor:  hermes config edit")
 
 
+def _gateway_setup_marker_path() -> Path:
+    """Path of the marker written after an installer-configured setup."""
+    home = os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")
+    return Path(home) / ".gateway_setup_done"
+
+
+def _write_gateway_setup_marker() -> None:
+    """Record an installer-requested gateway setup result, best-effort."""
+    if os.environ.get("HERMES_INSTALLER_GATEWAY_MARKER") != "1":
+        return
+    try:
+        _gateway_setup_marker_path().write_text("", encoding="utf-8")
+    except OSError:
+        logger.warning("Failed to write gateway setup marker.", exc_info=True)
+
+
 def setup_gateway(config: dict):
     """Configure messaging platform integrations."""
     from hermes_cli.gateway import _all_platforms, _platform_status, _configure_platform
@@ -2397,7 +2413,8 @@ def setup_gateway(config: dict):
                 print_error(f"  Restart failed: {e}")
     else:
         # Not running: install (if needed) and start, no questions asked.
-        ensure_gateway_service(context="setup")
+        if ensure_gateway_service(context="setup"):
+            _write_gateway_setup_marker()
 
     print_info("━" * 50)
 

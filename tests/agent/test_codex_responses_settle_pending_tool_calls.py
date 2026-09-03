@@ -397,3 +397,36 @@ def test_announced_non_function_item_precedes_pending_call():
     assert types == ["message", "function_call"], (
         f"announced message lost its leading position: {types}"
     )
+
+
+def test_done_with_different_item_id_does_not_duplicate_the_call():
+    """Copilot's Responses surface confirms a function call under a different
+    item id than it announced. Clearing pending by item id alone leaves the
+    announced entry behind, so settlement re-emits the SAME call_id a second
+    time with empty arguments; the duplicate fails on a missing required
+    field and trips the repeated-failure guardrail, halting the turn."""
+    events = _stream_completed_without_done()
+    events.insert(
+        -1,
+        SimpleNamespace(
+            type="response.output_item.done",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_DIFFERENT",
+                call_id="call_1",
+                name="get_weather",
+                arguments='{"city": "SF"}',
+            ),
+        ),
+    )
+    final = _consume_codex_event_stream(events, model="gpt-test")
+
+    calls = [
+        item for item in final.output if getattr(item, "type", "") == "function_call"
+    ]
+    assert len(calls) == 1, (
+        "the same call_id was emitted twice — the second copy carries empty "
+        "arguments and blocks the turn on the tool guardrail"
+    )
+    assert calls[0].arguments == '{"city": "SF"}'

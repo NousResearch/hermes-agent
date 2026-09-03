@@ -1313,6 +1313,24 @@ def _consume_codex_event_stream(
                 # Confirmed by the authoritative per-item done event; remove
                 # from pending so it is not settled twice.
                 pending_function_calls.pop(done_id, None)
+                # Some OpenAI-compatible backends (GitHub Copilot's Responses
+                # surface) announce a function_call under one item id and
+                # confirm it under another — or omit the item id on `.done`
+                # entirely. Identity-by-item-id then fails to clear the
+                # pending entry, and settlement re-emits the SAME call a
+                # second time with empty arguments. The duplicate executes,
+                # fails on a missing required field, and trips the
+                # repeated-failure guardrail, halting the turn. call_id is
+                # the stable identity of a call across both frames, so clear
+                # pending by call_id too.
+                done_call_id = str(_item_field(done_item, "call_id", "") or "")
+                if done_call_id:
+                    for pending_id, pending_entry in list(pending_function_calls.items()):
+                        pending_call_id = str(
+                            _item_field(pending_entry.get("item"), "call_id", "") or ""
+                        )
+                        if pending_call_id and pending_call_id == done_call_id:
+                            pending_function_calls.pop(pending_id, None)
                 done_phase = _item_field(done_item, "phase", None)
                 done_phase = done_phase.strip().lower() if isinstance(done_phase, str) else None
                 if done_phase == "commentary" and on_commentary_message is not None:

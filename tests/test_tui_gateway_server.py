@@ -5294,6 +5294,276 @@ def test_finalize_session_closes_slash_worker(monkeypatch):
     assert closed["count"] == 1
 
 
+def test_finalize_session_does_not_end_live_mid_turn_session(monkeypatch, tmp_path):
+    """#88197 Bug 1 — teardown must not stamp ended_at on a live session.
+
+    The shutdown path skips the turn-thread settle join by design because
+    the process is exiting, so _finalize_session can run while the turn
+    thread is still alive. Stamping ended_at makes later compression
+    rotation abort on the "parent already ended" guard. The row must stay
+    live until the turn is finalized or the session is otherwise closed.
+    """
+    ended = []
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    class _LiveThread:
+        def is_alive(self):
+            return True
+
+    class _DB:
+        def get_session(self, _key):
+            return {"id": _key, "source": "tui"}
+
+        def end_session(self, key, reason):
+            ended.append((key, reason))
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda **kw: _DB())
+
+    # Mid-turn finalize (running=True): must NOT end the row.
+    session = _session(
+        session_key="live-mid-turn",
+        profile_home=str(tmp_path / "profile-home"),
+        running=True,
+        _run_thread=_LiveThread(),
+    )
+    server._finalize_session(session)
+    assert ended == [], f"mid-turn finalize ended the row: {ended}"
+
+    # Idle finalize with a dead thread: must end the row as before.
+    class _DeadThread:
+        def is_alive(self):
+            return False
+
+    session2 = _session(
+        session_key="idle-session",
+        profile_home=str(tmp_path / "profile-home"),
+        running=False,
+        _run_thread=_DeadThread(),
+    )
+    server._finalize_session(session2)
+    assert ended == [("idle-session", "tui_close")]
+
+
+def test_finalize_session_does_not_end_live_turn_thread_session(monkeypatch, tmp_path):
+    """#88197 Bug 1 — running flag cleared but turn thread still alive.
+
+    The running flag is cleared under history_lock at the END of the
+    turn's finally block, but a teardown racing that window can observe
+    running=False while the thread is still unwinding. The thread-liveness
+    check is the backstop: a live thread means the session is not done.
+    """
+    ended = []
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    class _LiveThread:
+        def is_alive(self):
+            return True
+
+    class _DB:
+        def get_session(self, _key):
+            return {"id": _key, "source": "tui"}
+
+        def end_session(self, key, reason):
+            ended.append((key, reason))
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda **kw: _DB())
+
+    session = _session(
+        session_key="live-thread",
+        profile_home=str(tmp_path / "profile-home"),
+        running=False,  # flag already cleared, thread still unwinding
+        _run_thread=_LiveThread(),
+    )
+    server._finalize_session(session)
+    assert ended == [], f"live-thread finalize ended the row: {ended}"
+
+
+def test_finalize_session_does_not_end_mid_completion_compute_host_session(
+    monkeypatch, tmp_path
+):
+    """#94164 — a compute-host completion callback mid-flight must preserve the row.
+
+    ``_compute_host_active`` is only a sticky routing marker: it stays True
+    after the turn so later prompts route to the host, so it can never be the
+    finalize predicate. The completion-scoped latch
+    ``_compute_host_turn_done_in_progress`` is the real signal — a teardown
+    racing the callback must leave the durable row open even when the running
+    flag is already cleared and the turn thread is gone.
+    """
+    ended = []
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    class _DeadThread:
+        def is_alive(self):
+            return False
+
+    class _DB:
+        def get_session(self, _key):
+            return {"id": _key, "source": "tui"}
+
+        def end_session(self, key, reason):
+            ended.append((key, reason))
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda **kw: _DB())
+
+    # Mid-completion finalize: running flag cleared, thread dead, sticky
+    # routing marker set, but the completion latch is up. Must NOT end the row.
+    session = _session(
+        session_key="mid-completion",
+        profile_home=str(tmp_path / "profile-home"),
+        running=False,
+        _run_thread=_DeadThread(),
+        _compute_host_active=True,
+        _compute_host_turn_done_in_progress=True,
+    )
+    server._finalize_session(session)
+    assert ended == [], f"mid-completion finalize ended the row: {ended}"
+
+
+def test_finalize_session_ends_after_compute_host_completion(monkeypatch, tmp_path):
+    """#94164 — the sticky routing marker alone must NOT preserve the row.
+
+    Once the completion callback has finished, the latch is cleared in
+    finally. A later finalize of an idle session must end the row as before,
+    even though ``_compute_host_active`` is still True (it is only a routing
+    marker for the next prompt, not a liveness signal).
+    """
+    ended = []
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    class _DeadThread:
+        def is_alive(self):
+            return False
+
+    class _DB:
+        def get_session(self, _key):
+            return {"id": _key, "source": "tui"}
+
+        def end_session(self, key, reason):
+            ended.append((key, reason))
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda **kw: _DB())
+
+    session = _session(
+        session_key="post-completion",
+        profile_home=str(tmp_path / "profile-home"),
+        running=False,
+        _run_thread=_DeadThread(),
+        _compute_host_active=True,  # sticky marker only — must not block ending
+    )
+    server._finalize_session(session)
+    assert ended == [("post-completion", "tui_close")]
+
+
+def test_compute_host_turn_done_latch_cleared_in_finally(monkeypatch):
+    """#94164 — the completion latch is set/cleared in try/finally.
+
+    Even when the completion callback raises, the latch must be cleared so a
+    later finalize of the idle session ends the row normally. The latch is
+    visible to a racing teardown for the whole duration of the callback.
+    """
+    session = _session(
+        session_key="latch-session",
+        agent=None,
+        agent_ready=threading.Event(),
+        _compute_host_active=True,
+    )
+    server._sessions["latch-sid"] = session
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    seen = {}
+
+    def _exploding_impl(rid, sid, sess, frame):
+        seen["during"] = sess.get("_compute_host_turn_done_in_progress")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(server, "_on_compute_host_turn_done_impl", _exploding_impl)
+
+    try:
+        with pytest.raises(RuntimeError):
+            server._on_compute_host_turn_done(
+                "turn-1", "latch-sid", session, {"type": "turn.end"}
+            )
+        assert seen["during"] is True
+        assert session.get("_compute_host_turn_done_in_progress") is False
+    finally:
+        server._sessions.pop("latch-sid", None)
+
+
+def test_finalize_preserved_row_stays_open_for_resume(monkeypatch, tmp_path):
+    """#94164 — the durable contract: a preserved row stays open for resume.
+
+    Turn finalisation does not close the row; a later resume (reopen_session)
+    or the startup orphan sweep does. A mid-turn finalize must leave the row
+    with ``ended_at IS NULL`` so the resume path can reopen it.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("stored-session", source="tui")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+
+    class _LiveThread:
+        def is_alive(self):
+            return True
+
+    try:
+        session = _session(
+            session_key="stored-session",
+            running=True,
+            _run_thread=_LiveThread(),
+        )
+        server._finalize_session(session)
+
+        row = db.get_session("stored-session")
+        assert row["ended_at"] is None, "mid-turn finalize stamped ended_at"
+
+        # The resume path reopens the still-open row without error.
+        db.reopen_session("stored-session")
+        row = db.get_session("stored-session")
+        assert row["ended_at"] is None
+    finally:
+        db.close()
+
+
+def test_finalize_preserved_row_closed_by_startup_orphan_sweep(monkeypatch, tmp_path):
+    """#94164 — the durable contract: the startup TTL sweep closes preserved rows.
+
+    A row left open by the mid-turn guard is not stranded forever: the
+    startup orphan sweep (``_sweep_orphaned_session_rows``) closes it with
+    ``startup_orphan_reap`` once it is provably stale.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("stale-session", source="tui")
+    db.append_message("stale-session", role="user", content="hello")
+    old = time.time() - 8 * 3600  # well past the 6h TTL
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ? WHERE id = ?", (old, "stale-session")
+    )
+    db._conn.execute(
+        "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+        (old, "stale-session"),
+    )
+    db._conn.commit()
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_SESSION_TTL_S", 6 * 3600)
+
+    try:
+        swept = server._sweep_orphaned_session_rows()
+        assert "stale-session" in swept
+        row = db.get_session("stale-session")
+        assert row["ended_at"] is not None
+        assert row["end_reason"] == "startup_orphan_reap"
+    finally:
+        db.close()
+
+
 def test_close_transport_rebinds_session_to_remaining_viewer(monkeypatch):
     """Closing a pop-out window's transport must re-bind the session to a
     still-open window instead of stranding it on the drop sentinel (#83716)."""

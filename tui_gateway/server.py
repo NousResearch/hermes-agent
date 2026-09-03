@@ -1056,7 +1056,36 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                         if _is_gateway_owned_source(source):
                             _tui_owns_lifecycle = False
                         elif _tui_owns_lifecycle:
-                            db.end_session(session_id, end_reason)
+                            # #94164: this narrow durable-row guard complements
+                            # #86662, which prevents the broader shutdown sweep;
+                            # the boundary hook and finalization latch above remain
+                            # intentionally unchanged here.
+                            # #88197 Bug 1: never stamp a live session as ended.
+                            # A teardown can race with a running turn (the
+                            # shutdown path skips the settle join by design because
+                            # the process is exiting). Stamping ended_at then makes
+                            # later compression rotation abort on the "parent
+                            # already ended" guard. Leave the row live; a later
+                            # resume (reopen_session) or the startup orphan sweep
+                            # closes it. Turn finalisation does not close it.
+                            _mid_turn = bool(session.get("running"))
+                            if not _mid_turn:
+                                _run_thread = session.get("_run_thread")
+                                if _run_thread is not None and _run_thread.is_alive():
+                                    _mid_turn = True
+                            if not _mid_turn and session.get(
+                                "_compute_host_turn_done_in_progress"
+                            ):
+                                # #94164: a compute-host completion callback is
+                                # mid-flight. _compute_host_active is only a
+                                # sticky routing marker (it stays True after the
+                                # turn so later prompts route to the host), so it
+                                # can never be the finalize predicate; this
+                                # completion-scoped latch is set/cleared in
+                                # try/finally around _on_compute_host_turn_done.
+                                _mid_turn = True
+                            if not _mid_turn:
+                                db.end_session(session_id, end_reason)
             except Exception:
                 pass
 
@@ -2883,6 +2912,20 @@ def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> No
 
 
 def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -> None:
+    # #94164: completion-scoped latch. _compute_host_active is only a sticky
+    # routing marker (it stays True after the turn so later prompts route to
+    # the host), so it can never be the finalize predicate. This latch is set
+    # for the duration of the completion callback and cleared in finally, so a
+    # teardown racing the callback sees the session as mid-turn and leaves the
+    # durable row open (see _finalize_session).
+    session["_compute_host_turn_done_in_progress"] = True
+    try:
+        _on_compute_host_turn_done_impl(rid, sid, session, frame)
+    finally:
+        session["_compute_host_turn_done_in_progress"] = False
+
+
+def _on_compute_host_turn_done_impl(rid: str, sid: str, session: dict, frame: dict) -> None:
     is_error = frame.get("type") == "turn.error"
     with session["history_lock"]:
         if frame.get("session_key"):

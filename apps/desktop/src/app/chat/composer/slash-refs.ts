@@ -12,6 +12,7 @@
 import type { SlashChipKind } from '@/components/assistant-ui/directive-text'
 import {
   desktopSlashCommandArgumentMode,
+  desktopSlashCommandSequenceSegments,
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
@@ -70,6 +71,10 @@ export function slashCommandMatches(text: string, options: SlashCommandScanOptio
 
   const matches: SlashCommandMatch[] = []
 
+  const invocationStarts = new Set(
+    boundaryBefore && text.startsWith('/') ? desktopSlashCommandSequenceSegments(text).map(segment => segment.start) : []
+  )
+
   for (const match of text.matchAll(SLASH_COMMAND_RE)) {
     const start = match.index ?? 0
     const command = match[0]
@@ -82,11 +87,12 @@ export function slashCommandMatches(text: string, options: SlashCommandScanOptio
       continue
     }
 
-    // Only the FIRST token can be an invocation, and only when the text lands
-    // on a token boundary — `foo` + a pasted `/clean` is `foo/clean`.
-    const invocation = start === 0
+    // A built-in can invoke at each unambiguous command boundary in the
+    // leading sequence. Tokens inside a text/mixed command's prose are not
+    // sequence segments and remain inert references.
+    const invocation = invocationStarts.has(start)
 
-    if (invocation && !boundaryBefore) {
+    if (start === 0 && !boundaryBefore) {
       continue
     }
 

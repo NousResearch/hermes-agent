@@ -6,13 +6,16 @@ import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { parseCommandDispatch, parseSlashCommand, sessionTitle } from '@/lib/chat-runtime'
 import {
+  canonicalDesktopSlashCommand,
   type CommandsCatalogLike,
   type DesktopActionId,
   type DesktopCommandSurface,
   type DesktopPickerId,
   desktopSlashUnavailableMessage,
   isDesktopSlashCommand,
-  resolveDesktopCommand
+  rememberDesktopCommandsCatalog,
+  resolveDesktopCommand,
+  splitDesktopSlashCommandSequence
 } from '@/lib/desktop-slash-commands'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { setSessionYolo } from '@/lib/yolo-session'
@@ -141,6 +144,7 @@ interface SlashCommandDeps {
   copy: Translations['desktop']
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   getRoutedStoredSessionId: () => null | string
+  getRouteToken: () => string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   handleSkinCommand: (arg: string) => string
   handoffSession: (
@@ -171,6 +175,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     copy,
     createBackendSessionForSend,
     getRoutedStoredSessionId,
+    getRouteToken,
     getRuntimeIdForStoredSession,
     handleSkinCommand,
     handoffSession,
@@ -496,7 +501,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // new branch in a dispatch ladder.
       const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
         new: async () => {
+          const routeBefore = getRouteToken()
           startFreshSessionDraft()
+
+          // createBackendSessionForSend aborts if navigation changes while its
+          // request is in flight. Wait until React publishes `/new` before a
+          // sequenced command starts that request; a fixed one-tick yield is
+          // insufficient under a loaded renderer.
+          for (let attempt = 0; attempt < 20 && getRouteToken() === routeBefore; attempt += 1) {
+            await new Promise<void>(resolve => window.setTimeout(resolve, 0))
+          }
         },
         branch: async () => {
           await branchCurrentSession()
@@ -1217,7 +1231,48 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
       }
 
-      await runSlash(rawCommand, options?.sessionId, options?.recordInput ?? true)
+      let sequence = splitDesktopSlashCommandSequence(rawCommand)
+      const slashTokenCount = [...rawCommand.matchAll(/(?:^|\s)\/[^\s/]+/g)].length
+      let sessionHint = options?.sessionId ?? activeSessionIdRef.current ?? undefined
+
+      // The local table intentionally contains only Desktop-owned commands;
+      // backend-owned built-ins (for example /goal) get their argument grammar
+      // from commands.catalog. A fast paste+Enter can beat the completion
+      // request, so hydrate once here before deciding that a second slash token
+      // is merely part of the first command's argument.
+      if (slashTokenCount > 1) {
+        const catalogSessionId = sessionHint
+
+        try {
+          const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', {
+            ...(catalogSessionId ? { session_id: catalogSessionId } : {})
+          })
+
+          rememberDesktopCommandsCatalog(catalog)
+          sequence = splitDesktopSlashCommandSequence(rawCommand)
+        } catch {
+          // Preserve today's single-command interpretation if an older or
+          // disconnected backend cannot provide the grammar catalog.
+        }
+      }
+
+      for (const command of sequence) {
+        const activeBefore = activeSessionIdRef.current
+        await runSlash(command, sessionHint, options?.recordInput ?? true)
+
+        // Keep an ordinary sequence pinned to its invocation-time session even
+        // if the user navigates while an async command is running. Only a
+        // command whose purpose is to select/create another chat may re-home
+        // the remaining segments.
+        const commandName = canonicalDesktopSlashCommand(parseSlashCommand(command).name)
+
+        if (
+          ['/branch', '/new', '/resume'].includes(commandName) &&
+          activeSessionIdRef.current !== activeBefore
+        ) {
+          sessionHint = activeSessionIdRef.current ?? undefined
+        }
+      }
     },
     [
       activeSessionIdRef,
@@ -1227,6 +1282,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       copy,
       createBackendSessionForSend,
       getRoutedStoredSessionId,
+      getRouteToken,
       getRuntimeIdForStoredSession,
       handleSkinCommand,
       handoffSession,

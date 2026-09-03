@@ -198,7 +198,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: action('handoff'),
     argumentMode: 'options'
   },
-  { name: '/profile', description: 'Switch the active Hermes profile', surface: action('profile') },
+  {
+    name: '/profile',
+    description: 'Switch the active Hermes profile',
+    surface: action('profile'),
+    argumentMode: 'options'
+  },
   {
     name: '/skin',
     description: 'Switch desktop theme or cycle to the next one',
@@ -221,7 +226,13 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   },
 
   // Overlay pickers
-  { name: '/model', description: 'Switch the model for this session', surface: picker('model'), hidden: true },
+  {
+    name: '/model',
+    description: 'Switch the model for this session',
+    surface: picker('model'),
+    hidden: true,
+    argumentMode: 'text'
+  },
   {
     name: '/resume',
     description: 'Resume a saved session',
@@ -266,7 +277,8 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     name: '/hatch',
     description: 'Generate a new pet (opens the pet generator)',
     aliases: ['/generate-pet'],
-    surface: action('hatch')
+    surface: action('hatch'),
+    argumentMode: 'text'
   },
   {
     name: '/save',
@@ -591,6 +603,151 @@ export function desktopSlashDescription(command: string, fallback = ''): string 
 
 export function desktopSlashCommandArgumentMode(command: string): DesktopSlashArgumentMode | null {
   return resolveDesktopCommand(command)?.argumentMode ?? asArgumentMode(catalogMeta(command)?.argument_mode) ?? null
+}
+
+const SEQUENCE_ARGUMENT_MODE_OVERRIDES: Partial<
+  Record<string, DesktopSlashArgumentMode>
+> = {
+  // The backend catalog's coarse text mode predates subcommand sequencing;
+  // /worktree has bounded subcommands whose arguments end at the next command.
+  '/worktree': 'options'
+}
+
+/** A command slice in the original, untrimmed composer text. */
+export interface DesktopSlashCommandSequenceSegment {
+  end: number
+  start: number
+  text: string
+}
+
+/**
+ * Locate the unambiguous command slices in one Desktop composer submission.
+ * Bare commands consume only their token when another known command follows.
+ * Option commands retain every argument token up to the next known command, so
+ * multi-part forms such as `/browser connect <url>` and `/worktree new <name>`
+ * remain intact. The first text/mixed command owns the complete tail. Unknown
+ * extension commands also own the tail; their grammar belongs to the backend.
+ */
+export function desktopSlashCommandSequenceSegments(input: string): DesktopSlashCommandSequenceSegment[] {
+  const leading = input.search(/\S/)
+
+  if (leading < 0) {
+    return []
+  }
+
+  const text = input.slice(leading).trimEnd()
+
+  if (!text.startsWith('/')) {
+    return [{ end: leading + text.length, start: leading, text }]
+  }
+
+  const segments: DesktopSlashCommandSequenceSegment[] = []
+  let start = 0
+
+  const slashTokenAt = (index: number): { end: number; token: string } | null => {
+    const match = text.slice(index).match(/^\/[^\s/]+(?=\s|$)/)
+
+    return match ? { end: index + match[0].length, token: match[0] } : null
+  }
+
+  const tokenAt = (index: number): { end: number; local: boolean; spec: DesktopCommandSpec } | null => {
+    const token = slashTokenAt(index)
+
+    if (!token) {
+      return null
+    }
+
+    const canonical = canonicalDesktopSlashCommand(token.token)
+    const spec = resolveDesktopCommand(token.token)
+
+    return spec ? { end: token.end, local: SPEC_BY_NAME.has(canonical), spec } : null
+  }
+
+  const nextKnownCommand = (from: number): number => {
+    const re = /(?:^|\s)(\/[^\s/]+)(?=\s|$)/g
+    re.lastIndex = from
+
+    for (let match = re.exec(text); match; match = re.exec(text)) {
+      const index = (match.index ?? 0) + match[0].length - match[1].length
+
+      if (resolveDesktopCommand(match[1])) {
+        return index
+      }
+    }
+
+    return -1
+  }
+
+  const push = (from: number, to = text.length) => {
+    const raw = text.slice(from, to)
+    const end = from + raw.trimEnd().length
+    segments.push({ end: leading + end, start: leading + from, text: raw.trim() })
+  }
+
+  while (start < text.length) {
+    const current = tokenAt(start)
+
+    // A skill / quick command has backend-owned grammar. Keep it and all of its
+    // instruction text together instead of guessing where its arguments end.
+    if (!current) {
+      push(start)
+
+      break
+    }
+
+    const mode = current.local
+      ? current.spec.argumentMode ?? null
+      : (SEQUENCE_ARGUMENT_MODE_OVERRIDES[current.spec.name] ??
+        desktopSlashCommandArgumentMode(current.spec.name))
+
+    if (mode === 'text' || mode === 'mixed') {
+      push(start)
+
+      break
+    }
+
+    if (mode === 'options') {
+      const boundary = nextKnownCommand(current.end)
+
+      if (boundary < 0) {
+        push(start)
+
+        break
+      }
+
+      push(start, boundary)
+      start = boundary
+
+      continue
+    }
+
+    const next = text.slice(current.end).search(/\S/)
+
+    if (next < 0) {
+      push(start)
+
+      break
+    }
+
+    const boundary = current.end + next
+
+    // Bare commands only chain across adjacent slash tokens. Once ordinary
+    // prose starts, preserve the historical single-command interpretation.
+    if (!slashTokenAt(boundary)) {
+      push(start)
+
+      break
+    }
+
+    push(start, current.end)
+    start = boundary
+  }
+
+  return segments
+}
+
+export function splitDesktopSlashCommandSequence(input: string): string[] {
+  return desktopSlashCommandSequenceSegments(input).map(segment => segment.text)
 }
 
 export function desktopSkinSlashCompletions(

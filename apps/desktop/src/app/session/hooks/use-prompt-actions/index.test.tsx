@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getSession } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { requestGatewayForAgent } from '@/store/gateway'
@@ -125,6 +126,7 @@ function Harness({
   seedStreamId,
   seedTurnStartedAt,
   selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
+  startFreshSessionDraft,
   storedSessionId,
   activeSessionId,
   createBackendSessionForSend
@@ -150,6 +152,7 @@ function Harness({
   seedStreamId?: null | string
   seedTurnStartedAt?: null | number
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
+  startFreshSessionDraft?: () => void
   storedSessionId?: null | string
   activeSessionId?: null | string
   createBackendSessionForSend?: (preview?: null | string) => Promise<null | string>
@@ -202,7 +205,7 @@ function Harness({
     resumeStoredSession: resumeStoredSession ?? (() => undefined),
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
-    startFreshSessionDraft: () => undefined,
+    startFreshSessionDraft: startFreshSessionDraft ?? (() => undefined),
     sttEnabled: false,
     updateSessionState: (sessionId, updater, storedSessionId) => {
       // Seed with interrupted:true so we can prove a fresh submit clears it.
@@ -410,6 +413,183 @@ describe('usePromptActions /stop', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
     expect(requestGateway).toHaveBeenCalledWith('process.stop', {})
+  })
+})
+
+describe('usePromptActions slash sequencing', () => {
+  afterEach(() => {
+    cleanup()
+    dropSessionState('rt-sequenced')
+    $goalsBySession.set({})
+    rememberDesktopCommandsCatalog(undefined)
+    vi.restoreAllMocks()
+  })
+
+  it('runs /goal on the fresh session created by a preceding /new', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+
+    const startFreshSessionDraft = vi.fn(() => {
+      activeSessionIdRef.current = null
+      selectedStoredSessionIdRef.current = null
+    })
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = 'rt-sequenced'
+      selectedStoredSessionIdRef.current = 'stored-sequenced'
+      publishSessionState('rt-sequenced', createClientSessionState('stored-sequenced'))
+
+      return 'rt-sequenced'
+    })
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'commands.catalog') {
+        return { commands: { '/goal': { argument_mode: 'mixed', desktop: null } } } as never
+      }
+
+      if (method === 'slash.exec') {
+        return {
+          type: 'send',
+          notice: '⊙ Goal set (20-turn budget): ship the sequenced change',
+          message: 'ship the sequenced change'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    await handle!.submitText('/new /goal ship the sequenced change')
+
+    expect(startFreshSessionDraft).toHaveBeenCalledTimes(1)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    expect(calls).toContainEqual({
+      method: 'slash.exec',
+      params: { command: 'goal ship the sequenced change', session_id: 'rt-sequenced' }
+    })
+    expect(calls).toContainEqual({
+      method: 'prompt.submit',
+      params: expect.objectContaining({ session_id: 'rt-sequenced', text: 'ship the sequenced change' })
+    })
+    expect($goalsBySession.get()['rt-sequenced']).toMatchObject({
+      status: 'active',
+      title: 'ship the sequenced change'
+    })
+  })
+
+  it('hydrates an uncached catalog before splitting an option command from a later built-in', async () => {
+    rememberDesktopCommandsCatalog(undefined)
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'commands.catalog') {
+        return { commands: { '/goal': { argument_mode: 'mixed', desktop: null } } } as never
+      }
+
+      if (method === 'session.status') {
+        return { cwd: '/repo', status: 'idle' } as never
+      }
+
+      if (method === 'wake.status') {
+        return {
+          available: true,
+          configured_surface: 'gui',
+          enabled: false,
+          listening: false,
+          owner_surface: null,
+          phrase: 'hey hermes',
+          provider: 'openwakeword'
+        } as never
+      }
+
+      if (method === 'slash.exec') {
+        return { output: 'No active goal.' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/status /wake status /goal show')
+
+    expect(calls.map(call => call.method)).toEqual([
+      'commands.catalog',
+      'session.status',
+      'wake.status',
+      'slash.exec'
+    ])
+    expect(calls.at(-1)?.params).toEqual({ command: 'goal show', session_id: RUNTIME_SESSION_ID })
+  })
+
+  it('pins the sequence when navigation changes while the catalog hydrates', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'commands.catalog') {
+        activeSessionIdRef.current = 'rt-user-navigated'
+
+        return { commands: {} } as never
+      }
+
+      if (method === 'session.status') {
+        return { status: 'idle' } as never
+      }
+
+      if (method === 'session.interrupt') {
+        return { status: 'interrupted' } as never
+      }
+
+      if (method === 'process.stop') {
+        return { killed: 0 } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/status /stop')
+
+    expect(calls).toContainEqual({
+      method: 'session.interrupt',
+      params: { session_id: RUNTIME_SESSION_ID }
+    })
+    expect(calls).not.toContainEqual({
+      method: 'session.interrupt',
+      params: { session_id: 'rt-user-navigated' }
+    })
   })
 })
 

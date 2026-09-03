@@ -133,6 +133,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "consult": {
+        "description": (
+            "Get a second opinion from a configurable reference model "
+            "(auxiliary.consult in config.yaml) before a risky or uncertain "
+            "decision. Available to both the main agent and subagents."
+        ),
+        "tools": ["consult"],
+        "includes": []
+    },
+
     "video": {
         "description": "Video analysis and understanding tools (opt-in, not in default toolset)",
         "tools": ["video_analyze"],

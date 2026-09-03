@@ -304,6 +304,25 @@ class TestPlatformToolsetConsistency:
                 f"which is not defined in toolsets.py"
             )
 
+    def test_consult_toolset_is_reachable_via_hermes_tools(self):
+        """The `consult` toolset (registered in toolsets.py TOOLSETS) must
+        also appear in CONFIGURABLE_TOOLSETS, or `hermes tools enable consult`
+        rejects it as unknown and the toolset is only reachable via manual
+        platform_toolsets config editing / --toolsets consult, not the normal
+        `hermes tools` picker flow every other opt-in toolset (vision, video)
+        uses. Regression for the toolset shipping registered in TOOLSETS but
+        never added to the picker's CONFIGURABLE_TOOLSETS list."""
+        from toolsets import TOOLSETS
+
+        assert "consult" in TOOLSETS, "consult toolset must exist in toolsets.py"
+        configurable_keys = {key for key, _, _ in CONFIGURABLE_TOOLSETS}
+        assert "consult" in configurable_keys, (
+            "consult is registered in toolsets.py TOOLSETS but missing from "
+            "CONFIGURABLE_TOOLSETS in hermes_cli/tools_config.py -- "
+            "`hermes tools enable consult` will reject it as an unknown "
+            "toolset and it won't appear in the `hermes tools` picker"
+        )
+
     def test_gateway_toolset_includes_all_messaging_platforms(self):
         """hermes-gateway includes list should cover all messaging platforms."""
         from hermes_cli.tools_config import PLATFORMS

@@ -62,6 +62,14 @@ If the prompt times out part-way, answers the user already locked are kept: the 
 |------|-------------|----------------------|
 | `execute_code` | Run a Python script that can call Hermes tools programmatically. Use this when you need 3+ tool calls with processing logic between them, need to filter/reduce large tool outputs before they enter your context, need conditional branching (… | — |
 
+## `consult` toolset
+
+Opt-in toolset (not loaded in the default `hermes-cli` set). Enable via `hermes tools` → Consult (Second Opinion) or add `--toolsets consult`.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `consult` | Ask a configurable reference model (`auxiliary.consult` in config.yaml) for a second opinion on a specific, bounded question — sanity-check a plan, review a diff, or settle a genuinely uncertain judgment call — before committing to something risky. Refusals, empty responses, and call failures degrade to `unavailable: true` rather than erroring, so the agent proceeds on its own judgment. Available to the main agent and delegated subagents. | — |
+
 ## `cronjob` toolset
 
 | Tool | Description | Requires environment |

@@ -1390,6 +1390,16 @@ auxiliary:
     timeout: 30
     language: ""
 
+  # Consult tool — second opinion from a reference model (opt-in `consult` toolset).
+  # The canonical use: point it at an expensive frontier model that would be a poor
+  # main model but a great reviewer for a narrow, bounded question.
+  consult:
+    provider: "auto"           # "auto" = main chat model
+    model: ""                  # e.g. "anthropic/claude-opus-5"
+    base_url: ""
+    api_key: ""
+    timeout: 120
+
   # Skills hub — skill matching and search
   skills_hub:
     provider: "auto"

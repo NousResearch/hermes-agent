@@ -2079,3 +2079,55 @@ class TestCredentialPoolQueryLocking:
             inner.release()
 
         assert done.wait(timeout=2.0), f"{method}() did not complete after lock release"
+
+
+def test_reset_statuses_clears_unexpired_cooldown_on_disk(tmp_path, monkeypatch):
+    """``hermes auth reset`` must clear a cooldown that is still binding.
+
+    ``reset_statuses()`` persists rows whose status fields are None. The
+    disk-boundary merge in ``write_credential_pool`` reads that as a stale
+    snapshot and re-adopts the on-disk cooldown whenever it has not expired,
+    so an explicit user reset silently became a no-op until the cooldown
+    lapsed on its own.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", lambda: None)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "still-cooling",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "tok-1",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 60,
+                        "last_error_code": 400,
+                        "last_error_reason": "invalid_request_error",
+                        "last_error_reset_at": time.time() + 3600,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    assert pool.reset_statuses() == 1
+
+    on_disk = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    row = on_disk["credential_pool"]["openai-codex"][0]
+    assert row["last_status"] is None
+    assert row["last_status_at"] is None
+    assert row["last_error_code"] is None
+    assert row["last_error_reset_at"] is None
+
+    reloaded = load_pool("openai-codex")
+    entry = next(e for e in reloaded.entries() if e.id == "cred-1")
+    assert entry.last_status is None

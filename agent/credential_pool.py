@@ -863,8 +863,13 @@ def persist_pool_entries(
     payloads: List[Dict[str, Any]],
     *,
     removed_ids: Optional[Iterable[str]] = None,
+    merge_disk_status: bool = True,
 ) -> None:
     """Persist a provider's pool rows to the store that OWNS them.
+
+    ``merge_disk_status=False`` skips the ``_merge_disk_cooldown_state``
+    lost-update guard so an explicit status clear (``reset_statuses``) lands
+    on disk even while the on-disk cooldown is still binding.
 
     A named profile that sees a single-use-refresh provider (Anthropic,
     Codex, xAI OAuth) only through the global-root fallback must not
@@ -907,7 +912,11 @@ def persist_pool_entries(
                         if incoming is None:
                             merged.append(disk_entry)
                             continue
-                        updated = auth_mod._merge_disk_cooldown_state(incoming, disk_entry, provider)
+                        updated = (
+                            auth_mod._merge_disk_cooldown_state(incoming, disk_entry, provider)
+                            if merge_disk_status
+                            else incoming
+                        )
                         if updated != disk_entry:
                             changed = True
                         merged.append(updated)
@@ -925,7 +934,14 @@ def persist_pool_entries(
                     provider, exc,
                 )
                 return
-    write_credential_pool(provider, payloads, removed_ids=removed_ids)
+    if merge_disk_status:
+        # Keep the default call shape: test doubles and older callers replace
+        # write_credential_pool with a (provider, entries, *, removed_ids) stub.
+        write_credential_pool(provider, payloads, removed_ids=removed_ids)
+    else:
+        write_credential_pool(
+            provider, payloads, removed_ids=removed_ids, merge_disk_status=False
+        )
 
 
 class CredentialPool:
@@ -1058,7 +1074,12 @@ class CredentialPool:
                     self._entries[idx] = new
                     return
 
-    def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
+    def _persist(
+        self,
+        *,
+        removed_ids: Optional[List[str]] = None,
+        merge_disk_status: bool = True,
+    ) -> None:
         # Self-locking (RLock): snapshotting self._entries must not race a
         # concurrent rotation when called from the deferred refresh path.
         with self._lock:
@@ -1066,6 +1087,7 @@ class CredentialPool:
                 self.provider,
                 [entry.to_dict() for entry in self._entries],
                 removed_ids=removed_ids,
+                merge_disk_status=merge_disk_status,
             )
 
     def _is_terminal_auth_failure(
@@ -2939,7 +2961,11 @@ class CredentialPool:
                     new_entries.append(entry)
             if count:
                 self._entries = new_entries
-                self._persist()
+                # The user asked for the clear: bypass the disk-boundary
+                # cooldown merge, which would otherwise treat the None'd
+                # status fields as a stale snapshot and re-adopt the
+                # still-binding on-disk cooldown (reset became a no-op).
+                self._persist(merge_disk_status=False)
             return count
 
     def remove_index(self, index: int) -> Optional[PooledCredential]:

@@ -1222,6 +1222,16 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        # Suppress Discord's client-side link-preview embed cards on
+        # assistant-authored plain-text sends. Naming parity with Telegram's
+        # `extra.disable_link_previews` (see #60942); uses discord.py's
+        # native `suppress_embeds=True` kwarg on `channel.send()`, which is
+        # server-side and robust regardless of message formatting (unlike the
+        # angle-bracket `<url>` workaround). Opt-in / default off so existing
+        # deployments keep today's behavior.
+        self._disable_link_previews: bool = bool(
+            self.config.extra.get("disable_link_previews", False)
+        )
         # In-memory cache of the bot's last message ID per channel, used by
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
@@ -3596,6 +3606,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     msg = await channel.send(
                         content=chunk,
                         reference=chunk_reference,
+                        suppress_embeds=self._disable_link_previews,
                     )
                 except Exception as e:
                     err_text = str(e)
@@ -3618,6 +3629,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         msg = await channel.send(
                             content=chunk,
                             reference=None,
+                            suppress_embeds=self._disable_link_previews,
                         )
                     else:
                         raise
@@ -3692,6 +3704,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread = await forum_channel.create_thread(
                 name=thread_name,
                 content=starter_content,
+                suppress_embeds=self._disable_link_previews,
             )
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
@@ -3708,7 +3721,10 @@ class DiscordAdapter(BasePlatformAdapter):
         warnings: list[str] = []
         for chunk in chunks[1:]:
             try:
-                msg = await thread_channel.send(content=chunk)
+                msg = await thread_channel.send(
+                    content=chunk,
+                    suppress_embeds=self._disable_link_previews,
+                )
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
@@ -3986,7 +4002,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 # overflow continuations stay threaded.
                 reference = self._message_reference_from_ids(prev_msg.id, channel)
             try:
-                sent = await channel.send(content=chunk, reference=reference)
+                sent = await channel.send(
+                    content=chunk,
+                    reference=reference,
+                    suppress_embeds=self._disable_link_previews,
+                )
             except Exception as send_err:
                 # Drop the reply anchor and retry once — a deleted/expired
                 # anchor (10008) or system-message reply (50035) shouldn't lose
@@ -3996,7 +4016,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     self.name, send_err,
                 )
                 try:
-                    sent = await channel.send(content=chunk, reference=None)
+                    sent = await channel.send(
+                        content=chunk,
+                        reference=None,
+                        suppress_embeds=self._disable_link_previews,
+                    )
                 except Exception as retry_err:
                     logger.warning(
                         "[%s] Overflow split: stopped at %d/%d chunks delivered: %s",
@@ -10146,6 +10170,16 @@ async def _standalone_send(
     if not token:
         return {"error": "Discord standalone send: DISCORD_BOT_TOKEN is not set"}
 
+    # Same setting as DiscordAdapter._disable_link_previews (extra.disable_link_previews,
+    # #60942) -- suppress client-side link-preview embed cards. The live gateway
+    # adapter uses discord.py's suppress_embeds=True kwarg; this standalone REST path
+    # (used by cron/out-of-process sends) has no discord.py client to call, so it sets
+    # the equivalent MESSAGE_FLAGS.SUPPRESS_EMBEDS bit (1 << 2) directly in the JSON body.
+    _disable_link_previews = bool(
+        (getattr(pconfig, "extra", None) or {}).get("disable_link_previews", False)
+    )
+    _SUPPRESS_EMBEDS_FLAG = 1 << 2
+
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
@@ -10220,6 +10254,8 @@ async def _standalone_send(
                             for idx, path in enumerate(valid_media)
                         ]
                         starter_message = {"content": (caption or message), "attachments": attachments_meta}
+                        if _disable_link_previews:
+                            starter_message["flags"] = _SUPPRESS_EMBEDS_FLAG
                         payload_json = json.dumps({"name": thread_name, "message": starter_message})
 
                         form = aiohttp.FormData()
@@ -10254,7 +10290,11 @@ async def _standalone_send(
                             headers=json_headers,
                             json={
                                 "name": thread_name,
-                                "message": {"content": message},
+                                "message": (
+                                    {"content": message, "flags": _SUPPRESS_EMBEDS_FLAG}
+                                    if _disable_link_previews
+                                    else {"content": message}
+                                ),
                             },
                             **_req_kw,
                         ) as resp:
@@ -10287,7 +10327,10 @@ async def _standalone_send(
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             # Send text message (skip if empty and media is present)
             if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
+                _text_payload: Dict[str, Any] = {"content": message}
+                if _disable_link_previews:
+                    _text_payload["flags"] = _SUPPRESS_EMBEDS_FLAG
+                async with session.post(url, headers=json_headers, json=_text_payload, **_req_kw) as resp:
                     if resp.status not in {200, 201}:
                         body = await _standalone_read_text_limited(
                             resp,

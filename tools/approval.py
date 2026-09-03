@@ -3769,6 +3769,7 @@ def _run_approval_gate(
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
+    honor_yolo_bypass: bool = True,
 ) -> dict:
     """Shared human-approval gate for a flagged action (command or tool).
 
@@ -3814,8 +3815,13 @@ def _run_approval_gate(
     """
     # --yolo bypasses all approval prompts (session- or process-scoped).
     # Hardline blocks are handled by the caller BEFORE this gate, so yolo
-    # here only skips the recoverable approval layer.
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+    # here only skips the recoverable approval layer. Callers that carry
+    # an EXPLICIT user instruction to ask (approvals.tools: ask — the user
+    # named this tool in their policy) pass honor_yolo_bypass=False so the
+    # named rule beats the blanket bypass.
+    if honor_yolo_bypass and (
+        _YOLO_MODE_FROZEN or is_current_session_yolo_enabled()
+    ):
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
@@ -4169,6 +4175,7 @@ def request_tool_approval(
     *,
     rule_key: str = "",
     approval_callback=None,
+    honor_yolo_bypass: bool = True,
 ) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
@@ -4254,6 +4261,134 @@ def request_tool_approval(
             "but no interactive user or gateway is present to approve it. "
             "A plugin flagged this action for human confirmation."
         ),
+        honor_yolo_bypass=honor_yolo_bypass,
+    )
+
+
+# =========================================================================
+# Per-tool approval policy (approvals.tools in config.yaml)
+# =========================================================================
+# Inspired by Perplexity Computer's per-connector permission controls
+# (Aug 2026: every connected tool can be set to Allow / Always ask / Deny,
+# with one-off approvals, thread-level grants, and recurring runs
+# inheriting grants). Hermes' equivalent: a user-defined mapping of tool
+# names (fnmatch globs allowed) to a policy verb, enforced at the tool
+# dispatcher — the choke point every tool call funnels through — so it
+# covers built-in tools, MCP tools, and plugin tools alike.
+# Also addresses issue #35357 (approval gate does not cover non-shell
+# tools such as send_message / write_file).
+
+# Accepted policy verbs and their aliases (issue #35357 used always/auto).
+_TOOL_POLICY_ALIASES = {
+    "allow": "allow",
+    "auto": "allow",
+    "ask": "ask",
+    "always_ask": "ask",
+    "always-ask": "ask",
+    "always": "ask",
+    "deny": "deny",
+    "never": "deny",
+    "block": "deny",
+}
+
+
+def _get_tool_policy_map() -> dict:
+    """Read ``approvals.tools`` — a mapping of tool-name globs to verbs.
+
+    Returns an empty dict when unset or malformed (policy is opt-in).
+    """
+    try:
+        raw = _get_approval_config().get("tools") or {}
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _resolve_tool_policy(tool_name: str) -> str | None:
+    """Return the normalized policy verb for *tool_name*, or None.
+
+    Resolution order: an exact (case-insensitive) key match wins over glob
+    patterns; globs are checked in declaration order (YAML mappings
+    preserve order). Unknown verbs are ignored with a debug log rather
+    than guessed at.
+    """
+    policy_map = _get_tool_policy_map()
+    if not policy_map:
+        return None
+    name_lower = tool_name.lower()
+    glob_entries: list[tuple[str, str]] = []
+    for key, value in policy_map.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        key_norm = key.strip().lower()
+        verb = _TOOL_POLICY_ALIASES.get(value.strip().lower())
+        if not key_norm:
+            continue
+        if verb is None:
+            logger.debug(
+                "approvals.tools: unknown policy %r for %r — ignored",
+                value, key,
+            )
+            continue
+        if key_norm == name_lower:
+            return verb
+        glob_entries.append((key_norm, verb))
+    for pattern, verb in glob_entries:
+        if fnmatch.fnmatchcase(name_lower, pattern):
+            return verb
+    return None
+
+
+def check_tool_policy(tool_name: str, approval_callback=None) -> Optional[dict]:
+    """Evaluate the user's per-tool approval policy for a tool call.
+
+    Returns:
+        ``None`` when no policy applies (or policy is ``allow``) — the
+        call proceeds through the normal pipeline.
+        A ``check_dangerous_command``-shaped dict otherwise:
+        ``{"approved": False, "message": ...}`` for a deny match or a
+        declined/blocked ask, or ``{"approved": True, "message": None}``
+        when the user approved an ask (callers may treat this the same
+        as ``None``).
+
+    Semantics (mirrors ``approvals.deny`` / the plugin escalation gate):
+
+    - ``deny`` blocks unconditionally — BEFORE the --yolo / /yolo /
+      ``approvals.mode: off`` bypass, like ``approvals.deny`` command
+      globs. "Never let the agent use this tool."
+    - ``ask`` routes through the shared human-approval gate
+      (:func:`request_tool_approval`): [o]nce / [s]ession / [a]lways
+      persistence per tool, gateway button prompts, ``cron_mode``
+      honored, fail-closed when no human can answer. An ask rule is an
+      EXPLICIT user instruction naming this tool, so it fires even under
+      --yolo / /yolo (``honor_yolo_bypass=False``) — "run everything
+      unattended, but always ask before this one" is the whole point.
+    - ``allow`` / no match: no-op.
+    """
+    verb = _resolve_tool_policy(tool_name)
+    if verb is None or verb == "allow":
+        return None
+    if verb == "deny":
+        return {
+            "approved": False,
+            "user_deny": True,
+            "message": (
+                f"BLOCKED: the '{tool_name}' tool is set to 'deny' in the "
+                "user's per-tool approval policy (approvals.tools in "
+                "config.yaml). It cannot be used — not even with --yolo, "
+                "/yolo, or approvals.mode=off. Do NOT retry this tool; "
+                "the user has explicitly forbidden it."
+            ),
+        }
+    # verb == "ask" — reuse the shared gate; the per-tool rule_key gives
+    # each tool its own [a]lways / [s]ession allowlist grain.
+    return request_tool_approval(
+        tool_name,
+        f"Your approval policy requires confirmation before the "
+        f"'{tool_name}' tool runs (approvals.tools: ask)",
+        rule_key=f"tool_policy:{tool_name}",
+        approval_callback=approval_callback,
+        honor_yolo_bypass=False,
     )
 
 

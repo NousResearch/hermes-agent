@@ -2646,6 +2646,25 @@ DEFAULT_CONFIG = {
         #     - "git push --force*"
         #     - "*curl*|*sh*"
         "deny": [],
+        # Per-tool approval policy — inspired by Perplexity Computer's
+        # per-connector permission controls (Allow / Always ask / Deny,
+        # Aug 2026). Maps tool names (fnmatch globs allowed, e.g.
+        # "mcp_github_*") to one of:
+        #   allow (default) — tool runs normally
+        #   ask             — human approval required before every run;
+        #                     [o]nce/[s]ession/[a]lways persistence per
+        #                     tool; honored on CLI and gateway; cron jobs
+        #                     follow approvals.cron_mode; fails closed
+        #                     when nobody can answer
+        #   deny            — tool is blocked unconditionally, BEFORE the
+        #                     --yolo / /yolo / mode=off bypass (like
+        #                     approvals.deny command globs)
+        # Example:
+        #   tools:
+        #     send_message: ask
+        #     "mcp_gmail_*": ask
+        #     browser_exec: deny
+        "tools": {},
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system

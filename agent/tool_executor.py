@@ -670,6 +670,30 @@ def _run_agent_tool_execution_middleware(
                 else authorization_gate.run(_resolve_pre_tool_block)
             )
 
+        # User-defined per-tool approval policy (approvals.tools in
+        # config.yaml) — inspired by Perplexity Computer's per-connector
+        # Allow / Always ask / Deny permission controls (Aug 2026). This is
+        # the single funnel both the sequential and concurrent paths run
+        # through, so gating here covers every tool the agent loop can
+        # invoke (built-in, MCP, plugin). Direct handle_function_call
+        # callers outside the loop run the same check there, keyed off the
+        # same skip_pre_tool_call_hook single-fire contract as plugin hooks.
+        if block_message is None:
+            try:
+                from tools.approval import check_tool_policy
+
+                _policy_result = check_tool_policy(function_name)
+            except Exception:
+                _policy_result = None
+            if _policy_result is not None and not _policy_result.get(
+                "approved", True
+            ):
+                block_message = _policy_result.get("message") or (
+                    f"BLOCKED: tool '{function_name}' was not approved by "
+                    "the user's per-tool approval policy."
+                )
+                block_error_type = "tool_policy_block"
+
         guardrail_decision = None
         if block_message is None:
             guardrail_decision = agent._tool_guardrails.before_call(

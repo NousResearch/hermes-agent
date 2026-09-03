@@ -1448,6 +1448,41 @@ def handle_function_call(
         # the hook on that same pass. When skip=True, the caller already
         # fired it — do nothing here.
         if not skip_pre_tool_call_hook:
+            # User-defined per-tool approval policy (approvals.tools) —
+            # same single-fire contract as the plugin pre_tool_call hook:
+            # the agent loop runs this check in tool_executor and passes
+            # skip=True here, so direct callers (execute_code sandbox
+            # bridge, scripts, tests) get exactly one policy evaluation.
+            try:
+                from tools.approval import check_tool_policy
+
+                _policy_result = check_tool_policy(function_name)
+            except Exception:
+                _policy_result = None
+            if _policy_result is not None and not _policy_result.get(
+                "approved", True
+            ):
+                _policy_message = _policy_result.get("message") or (
+                    f"BLOCKED: tool '{function_name}' was not approved by "
+                    "the user's per-tool approval policy."
+                )
+                result = tool_error(_policy_message)
+                _emit_post_tool_call_hook(
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=result,
+                    task_id=task_id,
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    status="blocked",
+                    error_type="tool_policy_block",
+                    error_message=_policy_message,
+                    middleware_trace=list(_tool_middleware_trace),
+                )
+                return result
+
             block_message: Optional[str] = None
             try:
                 from hermes_cli.plugins import _dispatch_pre_tool_call_hooks

@@ -2500,12 +2500,15 @@ class HermesACPAgent(acp.Agent):
             approx_tokens = estimate_request_tokens_rough(
                 state.history, system_prompt=_sys_prompt, tools=_tools
             )
-            original_session_db = getattr(agent, "_session_db", None)
-
+            # Force in-place compaction so archive_and_compact() persists
+            # the compacted transcript under the same session id.  The old
+            # code set agent._session_db = None to suppress session rotation,
+            # but that also suppressed the in-place persistence path — the
+            # compacted history existed only in memory and was lost on
+            # process restart (#76215).
+            original_in_place = getattr(agent, "compression_in_place", True)
             try:
-                # ACP sessions must keep a stable session id, so avoid the
-                # SQLite session-splitting side effect inside _compress_context.
-                agent._session_db = None
+                agent.compression_in_place = True
                 compressed, _ = agent._compress_context(
                     state.history,
                     getattr(agent, "_cached_system_prompt", "") or "",
@@ -2514,7 +2517,7 @@ class HermesACPAgent(acp.Agent):
                     force=True,
                 )
             finally:
-                agent._session_db = original_session_db
+                agent.compression_in_place = original_in_place
 
             state.history = compressed
             self.session_manager.save_session(state.session_id)

@@ -4807,7 +4807,7 @@ def check_all_command_guards(command: str, env_type: str,
         if _is_single_query_approval_context():
             if _get_single_query_approval_mode() == "deny":
                 is_dangerous, _pk, description = detect_dangerous_command(command)
-                if is_dangerous:
+                if is_dangerous and not is_approved(get_current_session_key(), _pk):
                     return {
                         "approved": False,
                         "message": (

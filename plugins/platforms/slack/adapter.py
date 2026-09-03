@@ -7784,6 +7784,17 @@ class SlackAdapter(BasePlatformAdapter):
             )
             count = 0
 
+        # Interactive payloads expose Slack's legacy username (``user.name``),
+        # which may differ from the member's current profile display name.
+        # Resolve the approval first so a users.info lookup cannot delay or
+        # time out the command; preserve the payload name if lookup fails.
+        if count:
+            resolved_user_name = await self._resolve_user_name(
+                user_id, chat_id=channel_id, team_id=team_id
+            )
+            if resolved_user_name and resolved_user_name != user_id:
+                user_name = resolved_user_name
+
         # Update the message to show the decision and remove buttons
         label_map = {
             "once": f"✅ Approved once by {user_name}",

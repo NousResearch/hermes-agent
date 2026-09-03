@@ -406,6 +406,30 @@ const ROUTES = [
     expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
   },
   {
+    name: 'a read-only local session request reuses the primary backend',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET',
+      requestPath: '/api/sessions/session-1/messages?limit=20'
+    },
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
+  },
+  {
+    name: 'a local session write keeps its pooled backend',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'PATCH',
+      requestPath: '/api/sessions/session-1'
+    },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
     name: 'a profile-management request uses the primary without a query scope',
     profile: 'coder',
     opts: {
@@ -692,6 +716,20 @@ test('resolveProfileApiRequest keeps eligible local REST on the primary backend'
     {
       backendProfile: null,
       requestPath: '/api/config?view=desktop&profile=iris'
+    }
+  )
+})
+
+test('resolveProfileApiRequest scopes read-only session probes without spawning a profile backend', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/sessions/stored-session?include_compacted=true', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/sessions/stored-session?include_compacted=true&profile=iris'
     }
   )
 })

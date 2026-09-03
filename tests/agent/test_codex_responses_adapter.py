@@ -452,6 +452,35 @@ def test_chat_messages_to_responses_input_canonicalizes_fc_only_pair():
         assert len(call["call_id"]) <= 64
 
 
+def test_normalize_codex_response_deduplicates_repeated_function_call_item_ids():
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="function_call",
+                id="call_1",
+                call_id="call_1",
+                name="terminal",
+                arguments='{"command":"echo hi"}',
+            ),
+            SimpleNamespace(
+                type="function_call",
+                id="call_1",
+                call_id="call_1",
+                name="terminal",
+                arguments="{}",
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert assistant_message.tool_calls is not None
+    assert len(assistant_message.tool_calls) == 1
+    assert assistant_message.tool_calls[0].function.arguments == '{"command":"echo hi"}'
+
+
 def test_preflight_codex_input_items_sanitizes_replayed_fn_name():
     """The preflight choke-point also coerces invalid replayed names
     (covers callers that build input items without the chat converter)."""

@@ -1584,6 +1584,7 @@ def _normalize_codex_response(
     reasoning_items_raw: List[Dict[str, Any]] = []
     message_items_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
+    seen_tool_call_ids: set[str] = set()
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
     saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
     saw_commentary_phase = False
@@ -1736,6 +1737,13 @@ def _normalize_codex_response(
             if not isinstance(call_id, str) or not call_id.strip():
                 call_id = _deterministic_call_id(fn_name, arguments, len(tool_calls))
             call_id = call_id.strip()
+            if call_id in seen_tool_call_ids:
+                logger.warning(
+                    "Skipping duplicate Codex function_call item with call_id=%s",
+                    call_id,
+                )
+                continue
+            seen_tool_call_ids.add(call_id)
             response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
             response_item_id = _derive_responses_function_call_id(call_id, response_item_id)
             tool_calls.append(SimpleNamespace(
@@ -1757,6 +1765,13 @@ def _normalize_codex_response(
             if not isinstance(call_id, str) or not call_id.strip():
                 call_id = _deterministic_call_id(fn_name, arguments, len(tool_calls))
             call_id = call_id.strip()
+            if call_id in seen_tool_call_ids:
+                logger.warning(
+                    "Skipping duplicate Codex custom_tool_call item with call_id=%s",
+                    call_id,
+                )
+                continue
+            seen_tool_call_ids.add(call_id)
             response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
             response_item_id = _derive_responses_function_call_id(call_id, response_item_id)
             tool_calls.append(SimpleNamespace(

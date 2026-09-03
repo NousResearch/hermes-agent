@@ -43,6 +43,12 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         ),
     )
     update_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="With --plan, print the update plan as JSON instead of prose.",
+    )
+    update_parser.add_argument(
         "--no-backup",
         action="store_true",
         default=False,

@@ -80,7 +80,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
           <Typography
             className="hidden sm:inline text-display tracking-wide text-xs"
           >
-            {locale === "en" ? "EN" : current.name}
+            {current.short}
           </Typography>
         </span>
       </Button>

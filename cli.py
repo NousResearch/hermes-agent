@@ -332,8 +332,62 @@ def _assistant_content_as_text(content: Any) -> str:
     return str(content)
 
 
+# Order matters: the single-character alternative `[@-Z\\-_]` also covers `]`,
+# so the OSC branch must be tried first or `\x1B]0;title\x07` is only half
+# consumed and the title text survives into the clipboard.
+_ANSI_SEQUENCE = re.compile(
+    r"\x1B(?:\][^\x07]*(?:\x07|\x1B\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])"
+)
+
+
+def _clean_copied_text(text: str) -> str:
+    """Strip terminal-only decoration from text on its way to the clipboard.
+
+    The TUI draws answers with ANSI colour, box-drawing borders and icon glyphs
+    from a patched font. Those are display artifacts — pasted into a document or
+    an email they become mojibake and stray rules. Meaningful punctuation is
+    left alone: an arrow or an em dash carries content, only frame glyphs and
+    private-use icons are decoration.
+    """
+    text = _ANSI_SEQUENCE.sub("", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    def clean_line(line: str) -> str:
+        out: List[str] = []
+        replaced_decoration = False
+        for ch in line:
+            code = ord(ch)
+            is_control = (code < 0x20 or 0x7F <= code <= 0x9F) and ch not in ("\n", "\r", "\t")
+            is_decoration = (
+                0x2500 <= code <= 0x27BF        # box drawing, blocks, shapes, dingbats
+                or 0xE000 <= code <= 0xF8FF     # private use — nerd-font icons
+                or 0xF0000 <= code <= 0xFFFFD   # supplementary private use A
+                or 0x100000 <= code <= 0x10FFFD  # supplementary private use B
+            )
+            if is_control or ch == "�":
+                continue
+            if is_decoration:
+                # Mark that a glyph was removed; the replacement space is
+                # deferred until the next non-whitespace character, so an
+                # existing run of spaces is never widened.
+                replaced_decoration = True
+                continue
+            if replaced_decoration and not ch.isspace() and out and not out[-1].isspace():
+                out.append(" ")
+            replaced_decoration = False
+            out.append(ch)
+        return "".join(out).rstrip(" \t")
+
+    lines = [clean_line(line) for line in text.split("\n")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
 def _assistant_copy_text(content: Any) -> str:
-    return _strip_reasoning_tags(_assistant_content_as_text(content))
+    return _clean_copied_text(_strip_reasoning_tags(_assistant_content_as_text(content)))
 
 
 # =============================================================================

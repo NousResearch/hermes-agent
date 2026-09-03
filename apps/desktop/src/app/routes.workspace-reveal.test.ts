@@ -22,6 +22,7 @@ import {
   MESSAGING_ROUTE,
   navigateToWorkspacePage,
   NEW_CHAT_ROUTE,
+  primaryRouteSelectedSessionId,
   routePathname,
   ROUTES_AREA,
   routeSessionId,
@@ -93,6 +94,25 @@ describe('classification of targets carrying a query', () => {
   ])('%s is not a session route', (to, view) => {
     expect(routeSessionId(to)).toBeNull()
     expect(appViewForPath(to)).toBe(view)
+  })
+})
+
+describe('primaryRouteSelectedSessionId', () => {
+  it('clears the selected chat for workspace pages', () => {
+    expect(primaryRouteSelectedSessionId(ARTIFACTS_ROUTE, 'bot-session')).toBeNull()
+  })
+
+  it('clears the selected chat for contributed workspace pages', () => {
+    const dispose = contributeRoute()
+    try {
+      expect(primaryRouteSelectedSessionId(CONTRIBUTED_ROUTE, 'bot-session')).toBeNull()
+    } finally {
+      dispose()
+    }
+  })
+
+  it('preserves the selected chat for overlays', () => {
+    expect(primaryRouteSelectedSessionId(SETTINGS_ROUTE, 'bot-session')).toBe('bot-session')
   })
 })
 

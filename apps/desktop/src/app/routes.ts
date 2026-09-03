@@ -169,12 +169,12 @@ export function routeSessionId(pathname: string): string | null {
  * of truth for which chat is on screen, so prefer its (stable) stored session
  * id over a store selection that can be momentarily null/stale mid-switch
  * (#59305). A genuine new-chat route always wins with `null`, never falling
- * back to a leftover selection from the chat just left. A non-chat route
- * (settings, an overlay) has no session opinion, so the store selection passes
- * through unchanged.
+ * back to a leftover selection from the chat just left. Full workspace pages
+ * likewise clear selection; overlays have no session opinion, so the store
+ * selection passes through unchanged.
  */
 export function primaryRouteSelectedSessionId(pathname: string, storeSelectedSessionId: string | null): string | null {
-  if (isNewChatRoute(pathname)) {
+  if (isNewChatRoute(pathname) || isWorkspacePageRoute(pathname)) {
     return null
   }
 

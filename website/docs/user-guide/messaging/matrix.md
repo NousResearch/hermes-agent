@@ -98,6 +98,8 @@ matrix:
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
   max_message_length: 16000       # Outbound chunk size in chars (default: 16000, max: 65535)
+  history_backfill: true          # Prepend recent room scrollback on mention (default: true)
+  history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
 ```
 
 Or via environment variables:
@@ -113,6 +115,8 @@ MATRIX_SESSION_SCOPE=room       # recommended for stable project-room context
 MATRIX_AUTO_THREAD=true
 MATRIX_DM_MENTION_THREADS=false
 MATRIX_REACTIONS=true          # default: true — emoji reactions during processing
+MATRIX_HISTORY_BACKFILL=true
+MATRIX_HISTORY_BACKFILL_LIMIT=50
 MATRIX_ALLOW_ROOM_MENTIONS=false
 ```
 
@@ -127,6 +131,80 @@ Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@a
 :::note
 If you are upgrading from a version that did not have `MATRIX_REQUIRE_MENTION`, the bot previously responded to all messages in rooms. To preserve that behavior, set `MATRIX_REQUIRE_MENTION=false`.
 :::
+
+#### Multi-bot localpart collision
+
+When several bots share a homeserver, their Matrix user IDs may share a common
+prefix (for example `@hermes:example.org` and `@hermes-kelly:example.org`).
+Hermes uses two rules so the wrong bot is not woken:
+
+- **`m.mentions.user_ids` is exclusive.** When the sender's client includes
+  this field, only user IDs listed there count as mentions. Hermes does not
+  fall through to body-text heuristics when the list is present but does not
+  include this bot.
+- **Localpart matching respects hyphen boundaries.** A message to
+  `@hermes-kelly` does not match `@hermes`, while true `@hermes` and
+  `@hermes:example.org` mentions still work.
+
+#### `matrix.history_backfill`
+
+**Type:** boolean — **Default:** `true`
+
+When enabled, the bot recovers missed room messages on each dispatch that
+passes mention gating (or runs in a bot-participated thread, or is a reply).
+With `require_mention: true`, unmentioned room traffic is invisible to the
+session transcript. History backfill scans backwards through recent room
+history when the bot is triggered, collecting messages between the bot's last
+response and the current message, and includes them as context.
+
+Behavior by surface:
+
+- **Rooms** (with `require_mention: true`): backfill scans the room since the
+  bot's last message. Useful when other participants posted while the bot was
+  not addressed.
+- **Threads**: backfill runs for real Matrix threads (MSC3440) as well — the
+  scan uses the room timeline via the live Matrix client.
+- **DMs**: skipped. Every DM message triggers the bot, so the session
+  transcript is already complete.
+- **Free-response rooms** and **newly auto-threaded messages**: skipped when
+  there is no mention gap to fill (replies still hydrate context).
+
+Per-user sessions (`group_sessions_per_user: true`, the default) also
+benefit: a user's session is missing context posted by other room participants
+and their own messages from before they tagged the bot. Backfill fills both
+gaps.
+
+```yaml
+matrix:
+  history_backfill: true   # default
+```
+
+To turn it off:
+
+```yaml
+matrix:
+  history_backfill: false
+```
+
+> **Note:** Messages that arrive *while* the bot is processing (between a
+> trigger and its response) are not captured. Encrypted events that cannot be
+> decrypted yet are skipped rather than failing the turn.
+
+#### `matrix.history_backfill_limit`
+
+**Type:** integer — **Default:** `50`
+
+Maximum number of messages to scan backwards when recovering room context. In
+practice the scan usually stops much earlier — at the bot's own last message in
+the room, which is the natural boundary between turns. This limit is a safety
+cap for cold starts and long gaps where no prior bot message exists in recent
+history.
+
+```yaml
+matrix:
+  history_backfill: true
+  history_backfill_limit: 50
+```
 
 ### Project Room Isolation
 

@@ -206,10 +206,11 @@ const TranscriptPane = memo(function TranscriptPane({
 
               {row.msg.kind === 'intro' ? (
                 <Box flexDirection="column" paddingTop={1}>
-                  <Banner maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
+                  {firstUserIdx < 0 ? <Banner maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} /> : null}
 
                   {row.msg.info && (
                     <SessionPanel
+                      compact={firstUserIdx >= 0}
                       info={row.msg.info}
                       maxWidth={Math.max(1, composer.cols - 2)}
                       sid={ui.sid}

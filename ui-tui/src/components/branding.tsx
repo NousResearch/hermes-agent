@@ -209,7 +209,7 @@ const SKELETON_ROWS: readonly (readonly [number, number])[] = [
 const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
-export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
+export function SessionPanel({ compact = false, info, maxWidth, sid, t }: SessionPanelProps) {
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
@@ -226,7 +226,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const listFade = mix(t.color.muted, t.color.text, 0.5)
 
   // ── Local collapse state for each section ──
-  const [toolsOpen, setToolsOpen] = useState(true)
+  const [toolsOpen, setToolsOpen] = useState(false)
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [systemOpen, setSystemOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
@@ -284,6 +284,29 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   // hermes_cli/banner.py) and the "connected" label on the collapse toggle.
   const mcpServers = info.mcp_servers ?? []
   const mcpConnected = mcpServers.filter(s => s.connected).length
+
+  if (compact) {
+    const model = info.model.split('/').pop()
+    const toolsLabel = info.lazy && !toolsTotal ? '…' : String(toolsTotal)
+    const skillsLabel = info.lazy && !skillsTotal ? '…' : String(skillsTotal)
+
+    return (
+      <Box marginBottom={1}>
+        <Text color={t.color.muted} wrap="truncate-end">
+          <Text color={t.color.accent}>{model}</Text>
+          <Text color={t.color.muted}>
+            {' · '}
+            {toolsLabel} tools · {skillsLabel} skills
+            {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
+            {' · '}
+          </Text>
+          <Text color={t.color.muted} dim>
+            /help
+          </Text>
+        </Text>
+      </Box>
+    )
+  }
 
   const toolsBody = () => {
     if (info.lazy && toolEntries.length === 0) {
@@ -555,6 +578,7 @@ interface PanelProps {
 }
 
 interface SessionPanelProps {
+  compact?: boolean
   info: SessionInfo
   maxWidth?: number
   sid?: string | null

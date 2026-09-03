@@ -1187,7 +1187,6 @@ export const ToolTrail = memo(function ToolTrail({
                     color={group.color}
                     content={
                       <>
-                        <Text color={t.color.tool}>● </Text>
                         {toolLabel(group)}
                         <Text color={t.color.statusFg} dim>
                           {'  (/agents to monitor)'}

@@ -991,16 +991,19 @@ class GatewayAuthorizationMixin:
         2. Email defaults to ``"ignore"`` unless explicitly opted into
            pairing. Inboxes may contain arbitrary unread human messages, so
            replying with pairing codes is not a safe platform default.
-        3. Explicit global ``unauthorized_dm_behavior`` in config — wins for
+        3. Explicit WhatsApp ``self-chat`` mode defaults to ``"ignore"``.
+           The global default ``"pair"`` does not override this safety rule;
+           the per-platform override in step 1 still does.
+        4. Explicit global ``unauthorized_dm_behavior`` in config — wins for
            chat-shaped platforms when no per-platform override is set.
-        4. When an adapter-level DM policy opts into pairing or silent drop, honor it.
-        5. When an allowlist (``PLATFORM_ALLOWED_USERS``,
+        5. When an adapter-level DM policy opts into pairing or silent drop, honor it.
+        6. When an allowlist (``PLATFORM_ALLOWED_USERS``,
            ``PLATFORM_GROUP_ALLOWED_USERS`` / ``PLATFORM_GROUP_ALLOWED_CHATS``,
            or ``GATEWAY_ALLOWED_USERS``) is configured, default to ``"ignore"`` —
            the allowlist signals that the owner has deliberately restricted
            access; spamming unknown contacts with pairing codes is both noisy
            and a potential info-leak. (#9337)
-        6. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
+        7. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
         """
         config = getattr(self, "config", None)
 
@@ -1018,6 +1021,40 @@ class GatewayAuthorizationMixin:
         # match GatewayConfig.get_unauthorized_dm_behavior().
         if platform == Platform.EMAIL:
             return "ignore"
+
+        # Self-chat WhatsApp is the owner's personal number, not a public
+        # bot. Pairing codes sent to unknown DMs are confusing and leak that
+        # a bot is listening (#84706). Honor an explicit per-platform
+        # unauthorized_dm_behavior override above; the global default
+        # ``pair`` does not opt out of explicit self-chat safety.
+        if platform == Platform.WHATSAPP:
+            adapter = self._authorization_adapter(platform, profile)
+            mode = getattr(adapter, "_whatsapp_mode", None) if adapter is not None else None
+            mode_explicit = (
+                getattr(adapter, "_whatsapp_mode_explicit", None)
+                if adapter is not None
+                else None
+            )
+            if mode is None:
+                config = getattr(self, "config", None)
+                platform_cfg = (
+                    config.platforms.get(platform)
+                    if config is not None and hasattr(config, "platforms")
+                    else None
+                )
+                extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+                if isinstance(extra, dict) and extra.get("mode"):
+                    mode = extra.get("mode")
+                    mode_explicit = True
+                else:
+                    from agent.secret_scope import UnscopedSecretError, get_secret
+                    try:
+                        mode = get_secret("WHATSAPP_MODE")
+                    except UnscopedSecretError:
+                        mode = os.getenv("WHATSAPP_MODE")
+                    mode_explicit = bool(str(mode or "").strip())
+            if mode_explicit and str(mode).strip().lower() == "self-chat":
+                return "ignore"
 
         # Check for an explicit global config override.
         if config and hasattr(config, "unauthorized_dm_behavior"):

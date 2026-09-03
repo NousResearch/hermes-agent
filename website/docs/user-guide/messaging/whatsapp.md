@@ -130,6 +130,12 @@ whatsapp:
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
+Set `WHATSAPP_MODE` explicitly. In explicit `self-chat` mode, unauthorized DMs stay silent even when
+`WHATSAPP_DM_POLICY=pairing`, because the number is personal rather than a public bot. A per-platform
+`whatsapp.unauthorized_dm_behavior: pair` override can opt back in; the global `unauthorized_dm_behavior: pair`
+setting alone does not override the self-chat safety rule. Legacy installs that never set a mode retain the
+pairing handshake for compatibility; the setup wizard writes the selected mode explicitly.
+
 Then start the gateway:
 
 ```bash
@@ -252,7 +258,7 @@ Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables
 | **Bot stops working after WhatsApp update** | Update Hermes to get the latest bridge version, then re-pair. |
 | **macOS: "Node.js not installed" but node works in terminal** | launchd services don't inherit your shell PATH. Run `hermes gateway install` to re-snapshot your current PATH into the plist, then `hermes gateway start`. See the [Gateway Service docs](./index.md#macos-launchd) for details. |
 | **Messages not being received** | Verify `WHATSAPP_ALLOWED_USERS` includes the sender's number (with country code, no `+` or spaces), or set it to `*` to allow everyone. Set `WHATSAPP_DEBUG=true` in `.env` and restart the gateway to see raw message events in `bridge.log`. |
-| **Bot replies to strangers with a pairing code** | Set `whatsapp.unauthorized_dm_behavior: ignore` in `~/.hermes/config.yaml` if you want unauthorized DMs to be silently ignored instead. |
+| **Bot replies to strangers with a pairing code** | Set `WHATSAPP_MODE=self-chat` for a personal number, or set `whatsapp.unauthorized_dm_behavior: ignore` in `~/.hermes/config.yaml`. |
 
 ---
 
@@ -265,7 +271,7 @@ phone numbers (including country code, without the `+`), use `*` to allow everyo
 messages** as a safety measure.
 :::
 
-By default, unauthorized DMs still receive a pairing code reply. If you want a private WhatsApp number to stay completely silent to strangers, set:
+Bot mode keeps the pairing default for unauthorized DMs. For a private number, select self-chat explicitly; unauthorized DMs then stay completely silent. You can also set:
 
 ```yaml
 whatsapp:

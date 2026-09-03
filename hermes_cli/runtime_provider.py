@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from dataclasses import replace
 from urllib.parse import urlparse
 from typing import Any, Dict, Optional
 
@@ -2209,6 +2210,25 @@ def resolve_runtime_provider(
     if pool and pool.has_credentials():
         entry = pool.select()
         pool_api_key = ""
+        if provider == "copilot" and entry is not None:
+            source_token = str(getattr(entry, "refresh_token", "") or "").strip()
+            if source_token:
+                # Device-code login yields a GitHub OAuth source credential.
+                # Exchange it only while producing the runtime credential.
+                from hermes_cli.copilot_auth import exchange_copilot_token
+
+                api_token, _expires_at, enterprise_base_url = exchange_copilot_token(
+                    source_token
+                )
+                pconfig = PROVIDER_REGISTRY.get(provider)
+                entry = replace(
+                    entry,
+                    access_token=api_token,
+                    base_url=(
+                        enterprise_base_url
+                        or (pconfig.inference_base_url if pconfig else "")
+                    ),
+                )
         if entry is not None:
             pool_api_key = (
                 getattr(entry, "runtime_api_key", None)

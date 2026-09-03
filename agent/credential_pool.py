@@ -2558,7 +2558,15 @@ class CredentialPool:
                 # sanitized row read straight off disk) carries no access
                 # token.  The API-key guard at the top of the loop does not
                 # cover it, and leasing it would send an empty bearer.
-                continue
+                # Copilot entries persist the GitHub OAuth source token in
+                # ``refresh_token`` and exchange it at runtime (see
+                # ``resolve_runtime_provider``), so an empty access_token is
+                # expected for them and must not bench the entry.
+                if not (
+                    self.provider == "copilot"
+                    and (entry.refresh_token or "").strip()
+                ):
+                    continue
             available.append(entry)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)

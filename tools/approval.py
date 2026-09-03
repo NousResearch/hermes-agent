@@ -4727,6 +4727,68 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     return {"resolved": resolved, "choice": choice, "reason": entry.reason}
 
 
+def make_gateway_approval_callback(session_key: str = ""):
+    """Return a synchronous approval callback backed by a gateway session.
+
+    Codex app-server approval requests use the same callback contract as the
+    CLI, but gateway turns expose their UI through the per-session approval
+    queue instead of ``tools.terminal_tool``'s thread-local callback.  This
+    adapter bridges those two existing interfaces without weakening either
+    one's fail-closed behavior.
+
+    The notifier is looked up for every request rather than captured.  A
+    Codex session is reused across turns, while the gateway installs a fresh
+    notifier for each turn; retaining the first turn's notifier would send
+    later prompts through stale chat and event-loop state.
+    """
+    bound_session_key = session_key or get_current_session_key(default="")
+    if not bound_session_key:
+        return None
+
+    with _lock:
+        if _gateway_notify_cbs.get(bound_session_key) is None:
+            return None
+
+    def _gateway_approval_callback(
+        command: str,
+        description: str,
+        *,
+        allow_permanent: bool = True,
+    ) -> str:
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(bound_session_key)
+        if notify_cb is None:
+            return "deny"
+
+        from agent.redact import redact_sensitive_text
+
+        approval_data = {
+            "command": redact_sensitive_text(command),
+            "description": redact_sensitive_text(description),
+            "pattern_key": "codex_app_server",
+            "pattern_keys": ["codex_app_server"],
+            "allow_permanent": allow_permanent,
+            "allow_session": True,
+        }
+        decision = _await_gateway_decision(
+            bound_session_key,
+            notify_cb,
+            approval_data,
+            surface="codex_app_server",
+        )
+        if decision.get("notify_failed"):
+            return "deny"
+        if not decision.get("resolved") or decision.get("choice") is None:
+            return "timeout"
+
+        choice = decision["choice"]
+        if choice in {"once", "session", "always", "deny"}:
+            return choice
+        return "deny"
+
+    return _gateway_approval_callback
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:

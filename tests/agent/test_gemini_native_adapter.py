@@ -675,3 +675,18 @@ def test_text_only_tool_result_has_no_parts():
     )
     fr = request["contents"][1]["parts"][0]["functionResponse"]
     assert "parts" not in fr
+
+
+def test_is_native_gemini_base_url():
+    """Verify is_native_gemini_base_url detects AI Studio and Vertex Express Mode endpoints."""
+    from agent.gemini_native_adapter import is_native_gemini_base_url
+
+    assert is_native_gemini_base_url("https://generativelanguage.googleapis.com") is True
+    assert is_native_gemini_base_url("https://generativelanguage.googleapis.com/v1beta") is True
+    assert is_native_gemini_base_url("https://generativelanguage.googleapis.com/v1beta/openai") is False
+    assert is_native_gemini_base_url("https://aiplatform.googleapis.com/v1/publishers/google") is True
+    assert is_native_gemini_base_url("https://aiplatform.googleapis.com/v1/publishers/google/") is True
+    assert is_native_gemini_base_url("https://api.openai.com/v1") is False
+    assert is_native_gemini_base_url("") is False
+    assert is_native_gemini_base_url(None) is False
+

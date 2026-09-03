@@ -90,6 +90,10 @@ def is_native_gemini_base_url(base_url: str) -> bool:
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
         return False
+    # Vertex AI Express Mode
+    if normalized == "https://aiplatform.googleapis.com/v1/publishers/google":
+        return True
+    # Google AI Studio
     if "generativelanguage.googleapis.com" not in normalized:
         return False
     return not normalized.endswith("/openai")

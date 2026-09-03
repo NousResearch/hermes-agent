@@ -311,7 +311,9 @@ export function useRouteResume({
       // having fired. A flapping backend could then hit MAX in a couple of
       // re-renders with far fewer than MAX real attempts. (Point 3)
       retryAttemptRef.current += 1
-      void resumeSession(sessionId, true)
+      // Reconciliation is a transport retry, not user navigation. Preserve the
+      // mounted session and leave composer focus under the user's control.
+      void resumeSession(sessionId, false)
     }, resumeRetryDelayMs(attempt))
 
     return () => clearTimeout(timer)

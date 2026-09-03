@@ -509,7 +509,7 @@ describe('useRouteResume bounded auto-retry after a failed resume', () => {
     // First backoff window (1s) elapses → one retry.
     vi.advanceTimersByTime(1_000)
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', false)
   })
 
   it('does NOT retry a failed session that is not the routed one', () => {

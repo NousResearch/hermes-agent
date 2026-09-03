@@ -5742,6 +5742,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # there isn't (self._conn is None) — never opens a new
             # connection to a file already known to be structurally damaged.
             return None
+        if self._db_replaced or self._db_wal_generation_lost:
+            # Same reasoning as _db_corrupt above, for the other two halted
+            # states _reopen_after_close_locked already refuses to reopen
+            # for: the path has been resolved to a different file generation
+            # (_db_replaced, #89332) or this handle's WAL/SHM generation was
+            # deleted out from under it (_db_wal_generation_lost). Opening a
+            # fresh read-only connection here would hand out a connection to
+            # that new generation through stale WAL/shm assumptions — the
+            # same hazard a reopen would. Fall back to the locked path
+            # instead, which hits _reopen_after_close_locked's existing
+            # checks for both. Only the already-set flags are checked here
+            # (not the proactive _db_file_was_replaced()/
+            # _wal_generation_was_lost() stat probes _reopen_after_close_locked
+            # also runs) to keep this hot-path check as cheap as the
+            # _db_corrupt check above; an out-of-band replace/WAL-loss not yet
+            # observed by this handle is caught the next time a write or an
+            # explicit check touches it.
+            return None
         with self._read_conns_lock:
             if self._read_conns_closed:
                 return None

@@ -2045,7 +2045,7 @@ display:
     fields: ["model", "duration", "total_tokens"]   # visibility only; built-in order is preserved
 ```
 
-Supported fields: `model`, `context_detail` (used/total tokens), `context_pct` (percent + meter), `cache_hit` (prompt cache hit ratio — resets on model switch and compression), `latency` (rolling mean API latency, last 10 calls), `tps` (rolling output tokens/sec, last 10 calls), `compressions`, `bg_tasks`, `bg_processes`, `bg_subagents`, `goal`, `duration`, `prompt_elapsed`, `idle_since`, `focus`, `yolo`, `stash`, `battery`, `title` (right-aligned session badge), and `total_tokens` (session Σ — opt-in only, never shown by default).
+Supported fields: `model`, `context_detail` (used/total tokens), `context_pct` (percent + meter), `cache_hit` (prompt cache hit ratio — resets on model switch and compression), `latency` (rolling mean API latency, last 10 calls), `tps` (rolling output tokens/sec, last 10 calls), `compressions`, `bg_tasks`, `bg_processes`, `bg_subagents`, `goal`, `duration`, `prompt_elapsed`, `idle_since`, `focus`, `yolo`, `stash`, `battery`, `quota` (provider subscription limit — see [Provider quota read-out](#provider-quota-read-out-tui); `display.quota` selects the window), `title` (right-aligned session badge), and `total_tokens` (session Σ — opt-in only, never shown by default).
 
 Notes:
 
@@ -2056,6 +2056,42 @@ Notes:
 - `battery` and `title` visibility here compose with their own toggles (`/battery`, `/title`) — both must be on for the segment to show.
 - The same key also filters the **Ink TUI** status rule (`hermes tui`), where `cache_hit`, `latency`, and `tps` render as width-budgeted tail segments (◎ / ◷ / ↑) on terminals ≥96/104/110 columns respectively.
 - Display-only: no effect on prompt caching or request payloads. Changes take effect on the next session start.
+
+### Provider quota read-out (TUI)
+
+When the active provider exposes account limits (OpenAI Codex today), the TUI
+keeps them on screen: every window under the session id in the branding panel,
+and a compact segment in the status bar. `display.quota` chooses what the
+status-bar segment shows — or turns the whole read-out off:
+
+```yaml
+display:
+  quota: session   # session (default) | both | weekly | tightest | off
+```
+
+| Value | Status-bar segment |
+| --- | --- |
+| `session` | The short rolling window — percent remaining plus its reset countdown (`5h` is accepted as an alias) |
+| `both` | The session pair, then the weekly one appended last (`all` is an alias) |
+| `weekly` | Only the weekly cap |
+| `tightest` | Whichever window is closest to spent |
+| `off` | Nothing renders, in the panel or the bar, and the provider is never polled for quota |
+
+Run `/quota` with no argument to see every mode with the segment it produces,
+rendered from your own current limits, and pick from there — `/quota both`,
+`/quota off`, and so on. The choice persists to `display.quota`, so the command
+and the config file are two doors to the same setting.
+
+The segment reads `◔ 100% 2h 13m` — percent **remaining** and the countdown to
+that window's reset; with `both` it becomes `◔ 100% 2h 13m · 81% 5d 0h`, the
+weekly figure last. That trailing figure is budgeted after every other segment,
+so a narrow terminal drops it while the session pair stays. The branding panel
+always lists every window the provider reports, labelled.
+
+A provider that names its windows differently falls back to the tightest one,
+so a named setting never blanks the segment. `display.status_bar.fields`
+composes with this: the segment needs `quota` in the field list (when the list
+is customized) *and* `display.quota` not set to `off`.
 
 ### Runtime-metadata footer (gateway only)
 

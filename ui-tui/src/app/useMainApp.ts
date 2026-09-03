@@ -57,6 +57,7 @@ import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
+import { useAccountUsagePoll } from './useAccountUsagePoll.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
@@ -581,6 +582,7 @@ export function useMainApp(gw: GatewayClient) {
 
   useConfigSync({ gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
   useBatteryPoll(gw)
+  useAccountUsagePoll(gw)
 
   useEffect(() => {
     if (!ui.sid) {

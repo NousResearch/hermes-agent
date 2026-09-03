@@ -36,6 +36,100 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"available": False, "percent": None, "plugged": None, "category": "dim"})
 
 
+@method("account.usage")
+def _(rid, params: dict) -> dict:
+    """Return the provider's account quota windows for the live TUI read-out.
+
+    Same data the account block of ``/usage`` renders (see
+    ``_handle_usage_command`` in gateway/slash_commands.py), reshaped for
+    polling: the branding panel and the status bar keep the subscription
+    limit and its reset countdown on screen instead of making the user
+    re-run the command. Provider/base_url/api_key come from the session's
+    live agent, so a session on a provider with no quota API resolves
+    ``available: false`` and the TUI stays quiet.
+
+    Percentages are passed through raw (the TUI normalizes, like
+    ``system.battery`` → ``toBatteryInfo``); a window the provider left
+    unreported is dropped rather than rendered as a zeroed gauge.
+
+    Listed in server.py's ``_LONG_HANDLERS``: the fetch is a blocking
+    provider HTTP round-trip and must never run on the stdin reader thread.
+    ``_sess_building`` (not ``_sess``) resolves the session: a background poll
+    must not sit in ``_wait_agent`` for up to 30s on a cold session. With no
+    agent resident the provider comes from the session row's persisted
+    ``billing_provider`` instead, so the read-out appears on the first poll.
+    """
+    session, err = _sess_building(params, rid)
+    if err:
+        return err
+    try:
+        from agent.account_usage import fetch_account_usage
+        # "custom"/"auto" are billing classes, not routable providers.
+        from hermes_state import _BARE_BILLING_PROVIDERS
+
+        agent = session.get("agent") if session else None
+        provider = str(params.get("provider") or getattr(agent, "provider", None) or "").strip()
+        base_url = getattr(agent, "base_url", None) if agent else None
+        api_key = getattr(agent, "api_key", None) if agent else None
+        if not provider:
+            # No agent resident yet — a freshly opened session, or one that
+            # has not taken a turn. Fall back to the billing bucket persisted
+            # on the session row, the same fallback /usage makes, so the
+            # read-out lands on the FIRST poll instead of staying blank until
+            # an agent exists (an idle session may never build one).
+            row = {}
+            try:
+                db = _get_db()
+                if db is not None:
+                    row = db.get_session(str(params.get("session_id") or "")) or {}
+            except Exception:
+                row = {}
+            persisted = str(row.get("billing_provider") or "").strip()
+            if persisted.lower() not in _BARE_BILLING_PROVIDERS:
+                provider = persisted
+                base_url = base_url or row.get("billing_base_url")
+        if not provider:
+            # Still nothing: a session created seconds ago has no agent and
+            # its row may not be on disk yet. The configured default is what
+            # its agent will be built with anyway, so the very first poll
+            # after launch resolves instead of showing a blank panel.
+            try:
+                cfg_model = _load_cfg().get("model") or {}
+                configured = str(cfg_model.get("provider") or "").strip()
+                if configured.lower() not in _BARE_BILLING_PROVIDERS:
+                    provider = configured
+                    base_url = base_url or cfg_model.get("base_url")
+            except Exception:
+                pass
+        if not provider:
+            return _ok(rid, {"available": False})
+        snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+        windows = [
+            {
+                "label": w.label,
+                "used_percent": w.used_percent,
+                "reset_at": w.reset_at.isoformat() if w.reset_at else None,
+            }
+            for w in (snapshot.windows if snapshot else ())
+            if w.used_percent is not None
+        ]
+        if not windows:
+            return _ok(rid, {"available": False})
+        return _ok(
+            rid,
+            {
+                "available": True,
+                "plan": snapshot.plan,
+                "provider": snapshot.provider,
+                "windows": windows,
+            },
+        )
+    except Exception:
+        # Fail-open like system.battery: a provider outage or a credential
+        # refresh mid-poll must never surface as a status-bar error.
+        return _ok(rid, {"available": False})
+
+
 @method("process.stop")
 def _(rid, params: dict) -> dict:
     try:
@@ -742,6 +836,68 @@ def _(rid, params: dict) -> dict:
                 "output": format_focus_toggle_message(
                     bool(_target), _payload.get("tool_progress") or "all"
                 ),
+            },
+        )
+
+    if name == "quota":
+        # /quota mirrors /focus: display-only, routed through the same
+        # config.set branch the TUI honors, so one state machine and one
+        # persistence path serve both surfaces.
+        from agent.quota_display import (
+            describe_quota_mode,
+            format_reset_in,
+            normalize_quota_mode,
+            quota_usage,
+            render_quota_menu,
+        )
+
+        _display_q = _load_cfg().get("display")
+        _d_q: dict = _display_q if isinstance(_display_q, dict) else {}
+        _cur_q = normalize_quota_mode(_d_q.get("quota")) or "session"
+        _arg_q = (arg or "").strip().lower()
+        if _arg_q in {"", "status", "show"}:
+            # Bare /quota is a picker, not a blind toggle: every mode with the
+            # segment it produces, rendered from the live snapshot so the user
+            # sees what they are choosing. Reuses the account.usage handler
+            # (its provider-resolution chain and fail-open behavior), so an
+            # unavailable provider just falls back to sample numbers.
+            _live_q: dict = {}
+            try:
+                _usage_q = (
+                    _methods["account.usage"](
+                        rid, {"session_id": params.get("session_id", "")}
+                    ).get("result")
+                    or {}
+                )
+                for _w in _usage_q.get("windows") or ():
+                    _label = str(_w.get("label") or "").lower()
+                    _key = "session" if _label.startswith("session") else "weekly" if _label.startswith("week") else ""
+                    if _key and _w.get("used_percent") is not None:
+                        _live_q[_key] = (
+                            round(100.0 - float(_w["used_percent"]), 1),
+                            format_reset_in(_w.get("reset_at")),
+                        )
+            except Exception:
+                _live_q = {}
+            return _ok(rid, {"type": "exec", "output": render_quota_menu(_cur_q, _live_q)})
+        _target_q = normalize_quota_mode(_arg_q)
+        if _target_q is None:
+            return _err(rid, 4004, quota_usage())
+        _res_q = _methods["config.set"](
+            rid,
+            {
+                "key": "quota",
+                "value": _target_q,
+                "session_id": params.get("session_id", ""),
+            },
+        )
+        if "error" in _res_q:
+            return _res_q
+        return _ok(
+            rid,
+            {
+                "type": "exec",
+                "output": f"  Quota read-out: {_target_q} — {describe_quota_mode(_target_q)}",
             },
         )
 

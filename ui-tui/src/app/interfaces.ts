@@ -38,6 +38,34 @@ export interface StateSetter<T> {
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
+// One provider subscription window (`account.usage`), normalized for display:
+// percentages are integers and `resetIn` is the coarse countdown computed when
+// the snapshot landed (`2h 45m`, `5d 3h`) — it refreshes with the next poll.
+export interface AccountUsageWindow {
+  label: string
+  remainingPercent: number
+  resetAt: null | string
+  resetIn: string
+  usedPercent: number
+}
+
+// Provider account limits behind the branding-panel and status-bar read-outs.
+// null when the provider exposes no quota API (or the fetch failed), so the
+// read-out hides itself instead of showing a zeroed gauge.
+export interface AccountUsageInfo {
+  plan: null | string
+  provider: string
+  windows: readonly AccountUsageWindow[]
+}
+
+// `display.quota` — what the status-bar segment shows, or 'off' to hide the
+// quota read-outs entirely (and skip polling for them). Default 'session':
+// the short rolling window is the cap that bites next. 'both' appends the
+// weekly one after it, 'weekly' shows only that, and 'tightest' tracks
+// whichever window is closest to spent. A name a provider does not report
+// falls back to the tightest window, so a setting never blanks the segment.
+export type QuotaDisplay = 'both' | 'off' | 'session' | 'tightest' | 'weekly'
+
 export type BatteryCategory = 'bad' | 'critical' | 'dim' | 'good' | 'warn'
 
 // A single battery reading pushed from the Python gateway (`system.battery`).
@@ -296,6 +324,8 @@ export interface OverlayState {
   pager: null | PagerState
   petPicker: boolean
   pluginsHub: boolean
+  /** `display.quota` picker (/quota) — floating, ↑/↓ + enter. */
+  quotaPicker: boolean
   secret: null | SecretReq
   sessions: boolean
   skillsHub: boolean
@@ -316,6 +346,8 @@ export interface TranscriptRow {
 }
 
 export interface UiState {
+  accountUsage: AccountUsageInfo | null
+  quotaDisplay: QuotaDisplay
   battery: boolean
   batteryStatus: BatteryInfo | null
   bgTasks: Set<string>

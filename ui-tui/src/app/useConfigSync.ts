@@ -13,6 +13,7 @@ import {
   DEFAULT_INDICATOR_STYLE,
   INDICATOR_STYLES,
   type IndicatorStyle,
+  type QuotaDisplay,
   type StatusBarMode
 } from './interfaces.js'
 import { turnController } from './turnController.js'
@@ -40,6 +41,41 @@ export const normalizeStatusBarFields = (raw: unknown): null | ReadonlySet<strin
   const cleaned = raw.map(v => String(v).trim().toLowerCase()).filter(Boolean)
 
   return cleaned.length ? new Set(cleaned) : null
+}
+
+const QUOTA_ALIAS: Record<string, QuotaDisplay> = {
+  '5h': 'session',
+  all: 'both',
+  both: 'both',
+  hidden: 'off',
+  none: 'off',
+  off: 'off',
+  on: 'session',
+  session: 'session',
+  short: 'session',
+  tightest: 'tightest',
+  week: 'weekly',
+  weekly: 'weekly'
+}
+
+// `display.quota` — which window the status-bar segment pins, or off to hide
+// the quota read-outs (and stop polling the provider for them). Boolean false
+// is accepted like the other display toggles; anything unrecognized falls back
+// to the default rather than hiding a read-out the user asked for.
+//
+// Keep the alias table in step with `agent/quota_display.py`, which serves
+// /quota on both surfaces and only ever writes canonical values here — the
+// aliases below exist for a hand-edited config.yaml.
+export const normalizeQuotaDisplay = (raw: unknown): QuotaDisplay => {
+  if (raw === false) {
+    return 'off'
+  }
+
+  if (typeof raw !== 'string') {
+    return 'session'
+  }
+
+  return QUOTA_ALIAS[raw.trim().toLowerCase()] ?? 'session'
 }
 
 const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
@@ -304,6 +340,7 @@ export const applyDisplay = (
     mouseTracking: normalizeMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
+    quotaDisplay: normalizeQuotaDisplay(d.quota),
     sections: resolveSections(d.sections),
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),

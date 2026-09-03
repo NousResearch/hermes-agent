@@ -1,7 +1,9 @@
-import { Box, Text, useStdout } from '@hermes/ink'
+import { Box, stringWidth, Text, useStdout } from '@hermes/ink'
+import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
+import { $uiState } from '../app/uiStore.js'
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { mix } from '../lib/color.js'
 import { flat } from '../lib/text.js'
@@ -204,6 +206,62 @@ const SKELETON_ROWS: readonly (readonly [number, number])[] = [
   [10, 13]
 ]
 
+/**
+ * Whether a quota row has to drop to its compact form to fit `maxWidth`.
+ *
+ * Exported for the width test: the verbose form is the one that reads well,
+ * but it is ~46 columns and the hero track is a fixed ~32, so the decision
+ * itself is worth pinning.
+ */
+export const quotaLineIsCompact = (
+  w: { label: string; remainingPercent: number; resetIn: string; usedPercent: number },
+  maxWidth: number
+): boolean => {
+  const reset = w.resetIn ? ` · resets in ${w.resetIn}` : ''
+
+  return stringWidth(`${w.label}: ${w.remainingPercent}% left (${w.usedPercent}% used)${reset}`) > maxWidth
+}
+
+// Provider account limits, polled by useAccountUsagePoll. Rendered directly
+// under the session id — in the hero column when wide, in the info column when
+// narrow — so the quota travels with the rest of the session identity in both
+// layouts. Self-hiding: no snapshot (provider has no quota API, or the fetch
+// failed) renders nothing rather than an empty gauge.
+function AccountQuotaLines({ maxWidth, t }: { maxWidth: number; t: Theme }) {
+  const { accountUsage, quotaDisplay } = useStore($uiState)
+
+  // `display.quota: off` hides the panel rows too — the setting is one switch
+  // for the whole read-out, not just the status-bar segment.
+  if (!accountUsage || quotaDisplay === 'off') {
+    return null
+  }
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      {accountUsage.windows.map(w => {
+        // The hero column is a fixed ~32-col track (leftW), so the verbose
+        // form truncates exactly where the countdown sits — the half that
+        // actually tells you when the cap lifts. Drop the used-% and the
+        // "resets in" wording when the full form doesn't fit, rather than
+        // letting truncate-end eat the tail.
+        const reset = w.resetIn ? ` · resets in ${w.resetIn}` : ''
+        const compact = quotaLineIsCompact(w, maxWidth)
+
+        return (
+          <Text key={w.label} wrap="truncate-end">
+            <Text color={t.color.sessionLabel}>{w.label}: </Text>
+            <Text color={w.remainingPercent <= 10 ? t.color.warn : t.color.text}>
+              {w.remainingPercent}%{compact ? '' : ' left'}
+            </Text>
+            {compact ? null : <Text color={t.color.muted}>{` (${w.usedPercent}% used)`}</Text>}
+            {w.resetIn ? <Text color={t.color.muted}>{compact ? ` · ${w.resetIn}` : reset}</Text> : null}
+          </Text>
+        )
+      })}
+    </Box>
+  )
+}
+
 // ── SessionPanel ─────────────────────────────────────────────────────
 
 const SKILLS_MAX = 8
@@ -368,6 +426,8 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           <Text color={t.color.sessionBorder}>{sid}</Text>
         </Text>
       )}
+
+      <AccountQuotaLines maxWidth={leftW} t={t} />
     </Box>
   ) : null
 
@@ -398,6 +458,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
               <Text color={t.color.sessionBorder}>{sid}</Text>
             </Text>
           )}
+          <AccountQuotaLines maxWidth={lineBudget} t={t} />
         </Box>
       )}
 

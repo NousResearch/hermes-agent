@@ -547,3 +547,71 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
     expect(textContent(element)).not.toContain('weekly-digest')
   })
 })
+
+describe('StatusRule account quota indicator', () => {
+  const session = { label: 'Session', remainingPercent: 100, resetAt: null, resetIn: '2h 13m', usedPercent: 0 }
+  const weekly = { label: 'Weekly', remainingPercent: 81, resetAt: null, resetIn: '5d 0h', usedPercent: 19 }
+  const quota = (windows: (typeof session)[]) => ({ plan: 'plus', provider: 'openai-codex', windows })
+
+  it('shows the session window: percent left and its reset countdown', () => {
+    const element = StatusRule({ ...baseProps, accountUsage: quota([session, weekly]), cols: 160 })
+
+    expect(textContent(element)).toContain('◔ 100% 2h 13m')
+  })
+
+  it('appends the weekly window last when display.quota asks for both', () => {
+    const element = StatusRule({
+      ...baseProps,
+      accountUsage: quota([session, weekly]),
+      cols: 160,
+      quotaDisplay: 'both'
+    })
+
+    expect(textContent(element)).toContain('◔ 100% 2h 13m · 81% 5d 0h')
+  })
+
+  it('drops the trailing weekly figure before the session pair on a narrow bar', () => {
+    const rendered = textContent(
+      StatusRule({ ...baseProps, accountUsage: quota([session, weekly]), cols: 74, quotaDisplay: 'both' })
+    )
+
+    expect(rendered).toContain('◔ 100% 2h 13m')
+    expect(rendered).not.toContain('81% 5d 0h')
+  })
+
+  it('warns in the error tone once the shown window is nearly spent', () => {
+    const element = StatusRule({
+      ...baseProps,
+      accountUsage: quota([{ ...session, remainingPercent: 4, resetIn: '35m' }]),
+      cols: 160
+    })
+
+    expect(findElementWithText(element, '◔ 4%')?.props.color).toBe(DEFAULT_THEME.color.error)
+  })
+
+  it('omits the segment when no snapshot has landed', () => {
+    expect(textContent(StatusRule({ ...baseProps, cols: 160 }))).not.toContain('◔')
+  })
+
+  it('omits the segment when display.quota is off', () => {
+    const element = StatusRule({
+      ...baseProps,
+      accountUsage: quota([session, weekly]),
+      cols: 160,
+      quotaDisplay: 'off'
+    })
+
+    expect(textContent(element)).not.toContain('◔')
+  })
+
+  it('omits the segment when the fields filter leaves quota out', () => {
+    const element = StatusRule({
+      ...baseProps,
+      accountUsage: quota([session, weekly]),
+      cols: 160,
+      statusBarFields: new Set(['model', 'context_pct'])
+    })
+
+    expect(textContent(element)).not.toContain('◔')
+  })
+})

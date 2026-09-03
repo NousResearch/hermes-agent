@@ -262,6 +262,10 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # response writes are safe.
 _LONG_HANDLERS = frozenset(
     {
+        # account.usage does the same blocking provider quota round-trip
+        # /usage makes, and the TUI polls it every 60s — inline it would
+        # stall the reader thread on a slow provider once a minute.
+        "account.usage",
         # Billing/usage reads each do a blocking portal HTTP fetch (state + usage
         # is two serial round-trips); keep them off the main stdin loop so a slow
         # portal can't stall approval.respond / session.interrupt / other RPCs.
@@ -15242,6 +15246,18 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4002, f"unknown battery value: {value}")
         _write_config_key("display.battery", nv_b)
         return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
+
+    if key == "quota":
+        # `display.quota` — which provider quota window the status bar pins, or
+        # off to hide the read-out (and stop polling for it). Modes live in
+        # agent/quota_display.py so /quota, the TUI and the docs agree.
+        from agent.quota_display import normalize_quota_mode, quota_usage
+
+        nv_q = normalize_quota_mode(str(value or "").strip())
+        if nv_q is None:
+            return _err(rid, 4002, f"unknown quota value: {value} ({quota_usage()})")
+        _write_config_key("display.quota", nv_q)
+        return _ok(rid, {"key": key, "value": nv_q})
 
     if key == "theme":
         # TUI light/dark mode pin: 'light'/'dark' beat background

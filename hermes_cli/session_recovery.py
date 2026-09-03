@@ -1595,6 +1595,18 @@ def _recover_via_lost_and_found(
         )
     finally:
         plausibility_conn.close()
+    # Records whose width matched no known physical layout were inserted
+    # positionally as a guess. Once the recognised rows map correctly the
+    # all-rows timestamp gate above no longer sees them, so they need their
+    # own tell: the guessed rows may be shifted while the report otherwise
+    # looks clean.
+    guessed = int(mapping.get("unrecognized_layout_rows") or 0)
+    if guessed:
+        plausibility_errors.append(
+            f"{guessed} salvaged row(s) matched no known physical column "
+            "layout and were mapped positionally; their fields may be "
+            "shifted. Inspect the affected sessions before trusting them."
+        )
     if plausibility_errors:
         verification["errors"].extend(plausibility_errors)
         verification["healthy"] = False

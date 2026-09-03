@@ -3064,8 +3064,9 @@ class TestThreadReplyHandling:
         assert msg_event.text == "run"
         # Cold-start context carries the parent so the agent sees the ask.
         assert "check this and ask me for run" in msg_event.channel_context
-        # Thread remembered so later replies skip the parent fetch.
-        assert "123.000" in adapter_with_session_store._mentioned_threads
+        # Thread remembered with workspace ownership so a timestamp collision
+        # in another Slack team cannot inherit this summons.
+        assert ("T_TEAM", "123.000") in adapter_with_session_store._mentioned_threads
 
     @pytest.mark.asyncio
     async def test_top_level_mention_registers_thread_for_replies(

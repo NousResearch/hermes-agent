@@ -24,6 +24,7 @@ extracted into _should_wake_on_unmentioned_message so it's directly
 testable without spinning up Slack.
 """
 
+import logging
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
@@ -93,19 +94,52 @@ def _make_adapter(bot_authored_root: bool = False):
     adapter._team_bot_user_ids = {}
     adapter._bot_message_ts = set()
     adapter._mentioned_threads = set()
+    adapter._MENTIONED_THREADS_MAX = 5000
+    adapter._THREAD_CACHE_TTL = 300
     adapter._thread_context_cache = {}
+    if bot_authored_root:
+        adapter._thread_context_cache[f"{CHANNEL_ID}:{THREAD_TS}:"] = (
+            _ThreadContextCache(
+                content="ctx",
+                parent_user_id=BOT_USER_ID,
+                parent_text="bot-posted root",
+                messages=[
+                    {
+                        "ts": THREAD_TS,
+                        "user": BOT_USER_ID,
+                        "text": "bot-posted root",
+                        "bot_id": "B_SELF",
+                    }
+                ],
+            )
+        )
 
     adapter._has_active_session_for_thread = lambda **kw: False
     # Mock _fetch_thread_context so the miss-path doesn't make a real
     # Slack API call. Tests that need a populated cache pre-populate
     # _thread_context_cache directly.
     adapter._fetch_thread_context = AsyncMock(return_value="")
-    # The 4th-check helper is mocked so wake-decision tests can control
-    # its result without setting up the full cache path. Helper-specific
-    # tests call the real method via the class instead.
-    adapter._bot_authored_thread_root = AsyncMock(return_value=bot_authored_root)
+    adapter._resolve_user_is_bot = AsyncMock(return_value=False)
+    adapter._slack_strict_mention = lambda: False
 
     return adapter
+
+
+def _cache_root(adapter, *, user_id: str, bot_id: str = "", text: str = "root"):
+    adapter._thread_context_cache[f"{CHANNEL_ID}:{THREAD_TS}:"] = _ThreadContextCache(
+        content="ctx",
+        parent_user_id=user_id,
+        parent_text=text,
+        messages=[
+            {
+                "ts": THREAD_TS,
+                "user": user_id,
+                "text": text,
+                "bot_id": bot_id,
+                "subtype": "bot_message" if bot_id else None,
+            }
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +178,192 @@ async def test_wake_decision_returns_true_when_bot_authored_thread_root():
         "human reply in a thread whose root was bot-posted (not via gateway "
         "send) should wake the bot — #63530"
     )
+
+
+@pytest.mark.asyncio
+async def test_foreign_bot_root_rejects_stale_local_send_marker():
+    """Peer-root metadata wins over contradictory process-local state."""
+    adapter = _make_adapter()
+    _cache_root(adapter, user_id="U_PEER_BOT", bot_id="B_PEER")
+    adapter._bot_message_ts = {THREAD_TS}
+
+    decision = await adapter._decide_unmentioned_message_wake(
+        event_thread_ts=THREAD_TS,
+        channel_id=CHANNEL_ID,
+        user_id=USER_ID,
+        is_thread_reply=True,
+    )
+
+    assert decision.wake is False
+    assert decision.reason == "foreign_bot_root_without_ownership"
+    assert decision.root_owner == "foreign_bot"
+
+
+@pytest.mark.asyncio
+async def test_foreign_bot_root_rejects_other_workspace_bare_mention_marker():
+    adapter = _make_adapter()
+    adapter._team_bot_user_ids = {"T_CURRENT": BOT_USER_ID}
+    adapter._thread_context_cache[
+        f"{CHANNEL_ID}:{THREAD_TS}:T_CURRENT"
+    ] = _ThreadContextCache(
+        content="ctx",
+        parent_user_id="U_PEER_BOT",
+        parent_text="peer root",
+        messages=[
+            {
+                "ts": THREAD_TS,
+                "user": "U_PEER_BOT",
+                "text": "peer root",
+                "bot_id": "B_PEER",
+                "subtype": "bot_message",
+            }
+        ],
+    )
+    adapter._mentioned_threads = {THREAD_TS}
+
+    decision = await adapter._decide_unmentioned_message_wake(
+        event_thread_ts=THREAD_TS,
+        channel_id=CHANNEL_ID,
+        user_id=USER_ID,
+        is_thread_reply=True,
+        team_id="T_CURRENT",
+    )
+
+    assert decision.wake is False
+    assert decision.reason == "foreign_bot_root_without_ownership"
+
+
+@pytest.mark.asyncio
+async def test_foreign_bot_root_rejects_after_cold_cache_fetch():
+    """A cold process classifies the Slack API root before admitting."""
+    adapter = _make_adapter()
+
+    async def _fake_fetch(channel_id, thread_ts, current_ts, team_id=""):
+        _cache_root(adapter, user_id="U_PEER_BOT", bot_id="B_PEER")
+        return "ctx"
+
+    adapter._fetch_thread_context = AsyncMock(side_effect=_fake_fetch)
+
+    decision = await adapter._decide_unmentioned_message_wake(
+        event_thread_ts=THREAD_TS,
+        channel_id=CHANNEL_ID,
+        user_id=USER_ID,
+        is_thread_reply=True,
+    )
+
+    assert decision.reason == "foreign_bot_root_without_ownership"
+    adapter._fetch_thread_context.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ownership", "reason"),
+    [
+        ("mention", "prior_bot_specific_mention"),
+        ("session", "owned_active_session"),
+    ],
+)
+async def test_foreign_bot_root_allows_current_bot_owned_continuation(
+    ownership, reason
+):
+    adapter = _make_adapter()
+    _cache_root(adapter, user_id="U_PEER_BOT", bot_id="B_PEER")
+    if ownership == "mention":
+        adapter._mentioned_threads = {THREAD_TS}
+    else:
+        adapter._has_active_session_for_thread = lambda **kw: True
+
+    decision = await adapter._decide_unmentioned_message_wake(
+        event_thread_ts=THREAD_TS,
+        channel_id=CHANNEL_ID,
+        user_id=USER_ID,
+        is_thread_reply=True,
+    )
+
+    assert decision.wake is True
+    assert decision.reason == reason
+
+
+@pytest.mark.asyncio
+async def test_foreign_bot_root_mention_survives_cold_process_start():
+    """A root that explicitly summons this bot remains a valid handoff."""
+    adapter = _make_adapter()
+    _cache_root(
+        adapter,
+        user_id="U_PEER_BOT",
+        bot_id="B_PEER",
+        text=f"<@{BOT_USER_ID}> please take this",
+    )
+
+    decision = await adapter._decide_unmentioned_message_wake(
+        event_thread_ts=THREAD_TS,
+        channel_id=CHANNEL_ID,
+        user_id=USER_ID,
+        is_thread_reply=True,
+    )
+
+    assert decision.wake is True
+    assert decision.reason == "root_bot_specific_mention"
+    assert THREAD_TS in adapter._mentioned_threads
+
+
+@pytest.mark.asyncio
+async def test_human_root_rejects_contradictory_local_send_marker():
+    adapter = _make_adapter()
+    _cache_root(adapter, user_id="U_HUMAN")
+    adapter._bot_message_ts = {THREAD_TS}
+
+    decision = await adapter._decide_unmentioned_message_wake(
+        event_thread_ts=THREAD_TS,
+        channel_id=CHANNEL_ID,
+        user_id=USER_ID,
+        is_thread_reply=True,
+    )
+
+    assert decision.reason == "local_send_marker_owner_conflict"
+    assert decision.wake is False
+
+
+@pytest.mark.asyncio
+async def test_unknown_root_preserves_authoritative_local_send_marker():
+    """A transient Slack lookup failure does not orphan a root sent by us."""
+    adapter = _make_adapter()
+    adapter._bot_message_ts = {THREAD_TS}
+
+    decision = await adapter._decide_unmentioned_message_wake(
+        event_thread_ts=THREAD_TS,
+        channel_id=CHANNEL_ID,
+        user_id=USER_ID,
+        is_thread_reply=True,
+    )
+
+    assert decision.wake is True
+    assert decision.reason == "local_self_send_marker"
+    assert decision.root_owner == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_safe_reason_coded_diagnostic_omits_message_text(caplog):
+    adapter = _make_adapter()
+    _cache_root(adapter, user_id="U_PEER_BOT", bot_id="B_PEER")
+
+    with caplog.at_level(logging.DEBUG):
+        wake = await adapter._should_wake_on_unmentioned_message(
+            event_thread_ts=THREAD_TS,
+            channel_id=CHANNEL_ID,
+            user_id=USER_ID,
+            is_thread_reply=True,
+        )
+
+    assert wake is False
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "unmentioned_thread_admission" in record.getMessage()
+    )
+    assert "reason=foreign_bot_root_without_ownership" in message
+    assert "root_owner=foreign_bot" in message
+    assert "please take this" not in message
 
 
 # ---------------------------------------------------------------------------

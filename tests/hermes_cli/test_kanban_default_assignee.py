@@ -35,6 +35,72 @@ def _fake_spawn(*args, **kwargs):
     return 12345
 
 
+def test_unassigned_ready_skip_is_recorded_as_a_task_event(isolated_kanban_home):
+    """An unattended skip must leave a durable operator-visible signal."""
+    kb, _home = isolated_kanban_home
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        task_id = kb.create_task(conn, title="needs routing", assignee=None)
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=False,
+            default_assignee=None,
+        )
+        events = conn.execute(
+            "SELECT kind, payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'skipped_unassigned' ORDER BY id",
+            (task_id,),
+        ).fetchall()
+
+    assert result.skipped_unassigned == [task_id]
+    assert len(events) == 1
+    assert json.loads(events[0]["payload"]) == {"reason": "no_assignee"}
+
+
+def test_unassigned_ready_dry_run_does_not_record_skip_event(isolated_kanban_home):
+    kb, _home = isolated_kanban_home
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        task_id = kb.create_task(conn, title="needs routing", assignee=None)
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=True,
+            default_assignee=None,
+        )
+        events = conn.execute(
+            "SELECT kind FROM task_events "
+            "WHERE task_id = ? AND kind = 'skipped_unassigned'",
+            (task_id,),
+        ).fetchall()
+
+    assert result.skipped_unassigned == [task_id]
+    assert events == []
+
+
+def test_invalid_default_does_not_emit_no_assignee_event(
+    isolated_kanban_home, monkeypatch,
+):
+    kb, _home = isolated_kanban_home
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: False)
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        task_id = kb.create_task(conn, title="needs valid default", assignee=None)
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=False,
+            default_assignee="missing-profile",
+        )
+        events = conn.execute(
+            "SELECT kind FROM task_events "
+            "WHERE task_id = ? AND kind = 'skipped_unassigned'",
+            (task_id,),
+        ).fetchall()
+
+    assert result.skipped_unassigned == [task_id]
+    assert events == []
 
 
 def test_unassigned_task_auto_assigned_with_default_assignee(isolated_kanban_home):

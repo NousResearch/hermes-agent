@@ -10168,6 +10168,14 @@ def _dispatch_once_locked(
                 result.auto_assigned_default.append(row["id"])
             else:
                 result.skipped_unassigned.append(row["id"])
+                if not dry_run and _default_assignee is None:
+                    with write_txn(conn):
+                        _append_event(
+                            conn,
+                            row["id"],
+                            "skipped_unassigned",
+                            {"reason": "no_assignee"},
+                        )
                 continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails

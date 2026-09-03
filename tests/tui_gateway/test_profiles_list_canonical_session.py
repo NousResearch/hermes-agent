@@ -26,6 +26,8 @@ Contract under test:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import tui_gateway.server as srv
@@ -114,6 +116,111 @@ def test_canonical_session_is_the_bot_chat_row_not_latest(home):
     assert "forever chat content" in canonical["preview"]
     # last_session keeps its own contract: the most recently active session.
     assert row["last_session"]["id"] == "other1"
+
+
+def test_profile_session_previews_flatten_structured_message_content(home):
+    db = _db(home)
+    _add_session(
+        db,
+        "structured1",
+        title="Bot Chat",
+        ts=1000,
+        text=[
+            {"type": "output_text", "text": "structured preview"},
+            {"type": "image_url", "image_url": {"url": "https://example.invalid/private.png"}},
+        ],
+    )
+    db.close()
+
+    row = _row(_profiles({}), "default")
+
+    assert row["canonical_session"]["preview"] == "structured preview"
+    assert row["last_session"]["preview"] == "structured preview"
+
+
+def test_profile_session_previews_omit_top_level_image_mapping(home):
+    db = _db(home)
+    _add_session(
+        db,
+        "image1",
+        title="Bot Chat",
+        ts=1000,
+        text={
+            "type": "image_url",
+            "image_url": {"url": "https://example.invalid/private.png"},
+        },
+    )
+    db.close()
+
+    row = _row(_profiles({}), "default")
+
+    assert row["canonical_session"]["preview"] == ""
+    assert row["last_session"]["preview"] == ""
+
+
+def test_profile_session_previews_omit_malformed_structured_content(home):
+    db = _db(home)
+    _add_session(
+        db,
+        "corrupt1",
+        title="Bot Chat",
+        ts=1000,
+        text="seed",
+    )
+    malformed = (
+        '\x00json:{"type":"image_url","image_url":'
+        '{"url":"https://example.invalid/private.png"}'
+    )
+    conn = db._conn
+    assert conn is not None
+    with db._lock:
+        conn.execute(
+            "UPDATE messages SET content = ? WHERE session_id = ?",
+            (malformed, "corrupt1"),
+        )
+    db.close()
+
+    row = _row(_profiles({}), "default")
+
+    assert row["canonical_session"]["preview"] == ""
+    assert row["last_session"]["preview"] == ""
+
+
+def test_profile_session_previews_flatten_nonserializable_text_object(home):
+    db = _db(home)
+    _add_session(
+        db,
+        "object-text1",
+        title="Bot Chat",
+        ts=1000,
+        text=SimpleNamespace(type="output_text", text="object preview"),
+    )
+    db.close()
+
+    row = _row(_profiles({}), "default")
+
+    assert row["canonical_session"]["preview"] == "object preview"
+    assert row["last_session"]["preview"] == "object preview"
+
+
+def test_profile_session_previews_omit_nonserializable_image_object(home):
+    db = _db(home)
+    _add_session(
+        db,
+        "object-image1",
+        title="Bot Chat",
+        ts=1000,
+        text=SimpleNamespace(
+            type="image_url",
+            image_url={"url": "https://example.invalid/private.png"},
+        ),
+    )
+    db.close()
+
+    row = _row(_profiles({}), "default")
+
+    assert row["canonical_session"]["preview"] == ""
+    assert row["last_session"]["preview"] == ""
 
 
 def test_canonical_session_resolves_hidden_row(home):

@@ -37,6 +37,8 @@ def flatten_message_text(content: Any, *, sep: str = "\n") -> str:
         return ""
     if isinstance(content, str):
         return content
+    if isinstance(content, Mapping):
+        return _text_from_part(content)
     if isinstance(content, list):
         chunks = [_text_from_part(part) for part in content]
         return sep.join(chunk for chunk in chunks if chunk)
@@ -44,6 +46,8 @@ def flatten_message_text(content: Any, *, sep: str = "\n") -> str:
     text = _text_from_part(content)
     if text:
         return text
+    if _field(content, "type") is not None:
+        return ""
     try:
         return str(content)
     except Exception:

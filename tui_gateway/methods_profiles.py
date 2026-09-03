@@ -55,7 +55,17 @@ def _(rid, params: dict) -> dict:
             return ""
         if not row:
             return ""
-        text = " ".join(str(row[0] or "").split()).strip()
+        from agent.message_content import flatten_message_text
+
+        raw = row[0]
+        decoded = db._decode_content(raw)
+        if (
+            isinstance(raw, str)
+            and raw.startswith(db._CONTENT_JSON_PREFIX)
+            and decoded == raw
+        ):
+            return ""
+        text = " ".join(flatten_message_text(decoded).split()).strip()
         if len(text) > 80:
             return text[:80] + "..."
         return text

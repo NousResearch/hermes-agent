@@ -23,3 +23,21 @@ def test_flatten_message_text_accepts_object_parts():
     ]
 
     assert flatten_message_text(content) == "object text\nlegacy content"
+
+
+def test_flatten_message_text_omits_top_level_image_mapping():
+    content = {
+        "type": "image_url",
+        "image_url": {"url": "https://example.invalid/private.png"},
+    }
+
+    assert flatten_message_text(content) == ""
+
+
+def test_flatten_message_text_omits_top_level_image_object():
+    content = SimpleNamespace(
+        type="image_url",
+        image_url={"url": "https://example.invalid/private.png"},
+    )
+
+    assert flatten_message_text(content) == ""

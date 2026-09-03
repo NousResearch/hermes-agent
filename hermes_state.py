@@ -12486,6 +12486,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # surrogate as \udXXX — already safe to bind.
             return cls._CONTENT_JSON_PREFIX + json.dumps(content)
         except (TypeError, ValueError):
+            try:
+                part_type = getattr(content, "type", None)
+            except Exception:
+                part_type = None
+            if part_type is not None:
+                try:
+                    from agent.message_content import flatten_message_text
+
+                    return _sanitize_surrogates(flatten_message_text(content))
+                except Exception:
+                    pass
             # Last-resort fallback: stringify so persistence never fails.
             return _sanitize_surrogates(str(content))
 

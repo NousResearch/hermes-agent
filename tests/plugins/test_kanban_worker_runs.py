@@ -92,6 +92,66 @@ def test_workers_active_empty_board(client):
     assert "checked_at" in body
 
 
+def test_workers_active_preserves_open_run_predicate(client):
+    """An open run does not require tasks.current_run_id to be visible."""
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="active-worker", assignee="alice")
+        conn.execute("UPDATE tasks SET status='running' WHERE id=?", (task_id,))
+        _insert_run(conn, task_id, worker_pid=12345)
+    finally:
+        conn.close()
+
+    body = client.get("/api/plugins/kanban/workers/active").json()
+    assert body["count"] == 1
+    assert body["workers"][0]["task_id"] == task_id
+    assert body["workers"][0]["worker_pid"] == 12345
+
+
+def test_workers_active_scans_all_boards_when_board_is_omitted(client):
+    """Workers on a non-current board are visible in the fleet-wide response."""
+    kb.create_board("other")
+    conn = kb.connect(board="other")
+    try:
+        task_id = kb.create_task(conn, title="other-board-worker", assignee="dana")
+        conn.execute("UPDATE tasks SET status='running' WHERE id=?", (task_id,))
+        _insert_run(conn, task_id, worker_pid=24680)
+    finally:
+        conn.close()
+
+    body = client.get("/api/plugins/kanban/workers/active").json()
+    assert body["count"] == 1
+    assert body["workers"][0]["board"] == "other"
+    assert body["workers"][0]["task_id"] == task_id
+
+    default_only = client.get(
+        "/api/plugins/kanban/workers/active?board=default"
+    ).json()
+    assert default_only["count"] == 0
+
+
+def test_workers_active_deduplicates_resolved_db_paths(
+    client, kanban_home, monkeypatch
+):
+    """HERMES_KANBAN_DB aliases must not duplicate the same worker."""
+    shared_db = kanban_home / "shared-kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(shared_db))
+    kb.init_db()
+    kb.create_board("shared-alias")
+
+    conn = kb.connect(board="default")
+    try:
+        task_id = kb.create_task(conn, title="shared-db-worker", assignee="erin")
+        conn.execute("UPDATE tasks SET status='running' WHERE id=?", (task_id,))
+        _insert_run(conn, task_id, worker_pid=13579)
+    finally:
+        conn.close()
+
+    body = client.get("/api/plugins/kanban/workers/active").json()
+    assert body["count"] == 1
+    assert body["workers"][0]["task_id"] == task_id
+
+
 # ---------------------------------------------------------------------------
 # GET /runs/{run_id}
 # ---------------------------------------------------------------------------

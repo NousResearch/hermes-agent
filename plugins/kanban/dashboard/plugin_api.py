@@ -1551,64 +1551,90 @@ except ImportError:
 
 @router.get("/workers/active")
 def list_active_workers(
-    board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
+    board: Optional[str] = Query(
+        None,
+        description="Kanban board slug; omit to scan all non-archived boards",
+    ),
 ):
-    """Return every currently-running worker on the board.
+    """Return every currently-running worker across the requested board scope.
+
+    When ``board`` is omitted, scan every non-archived board so this endpoint
+    matches gateway-embedded dispatch behavior. Resolved physical database paths
+    are scanned only once because ``HERMES_KANBAN_DB`` can map multiple board
+    slugs to the same SQLite file.
 
     A worker is a ``task_runs`` row whose ``ended_at`` is NULL and whose
-    ``worker_pid`` is non-NULL, belonging to a task with ``status='running'``.
+    ``worker_pid`` is non-NULL, belonging to a task with
+    ``status='running'``.
 
-    Returns ``{workers: [...], count: N, checked_at: <epoch>}``.  Each
-    worker entry carries enough context for the dashboard to link back to
-    its task without a second round-trip.
+    Returns ``{workers: [...], count: N, checked_at: <epoch>}``. Each worker
+    includes its board slug so callers can link a cross-board result back to the
+    correct task.
     """
-    board = _resolve_board(board)
-    conn = _conn(board=board)
-    try:
-        rows = conn.execute(
-            """
-            SELECT
-                r.id          AS run_id,
-                r.task_id,
-                t.title       AS task_title,
-                t.status      AS task_status,
-                t.assignee    AS task_assignee,
-                r.profile,
-                r.worker_pid,
-                r.started_at,
-                r.claim_lock,
-                r.claim_expires,
-                r.last_heartbeat_at,
-                r.max_runtime_seconds
-            FROM task_runs r
-            JOIN tasks t ON t.id = r.task_id
-            WHERE r.ended_at IS NULL
-              AND r.worker_pid IS NOT NULL
-              AND t.status = 'running'
-            ORDER BY r.started_at ASC
-            """,
-        ).fetchall()
-        workers = [
-            {
-                "run_id": row["run_id"],
-                "task_id": row["task_id"],
-                "task_title": row["task_title"],
-                "task_status": row["task_status"],
-                "task_assignee": row["task_assignee"],
-                "profile": row["profile"],
-                "worker_pid": row["worker_pid"],
-                "started_at": row["started_at"],
-                "claim_lock": row["claim_lock"],
-                "claim_expires": row["claim_expires"],
-                "last_heartbeat_at": row["last_heartbeat_at"],
-                "max_runtime_seconds": row["max_runtime_seconds"],
-            }
-            for row in rows
+    if board is None:
+        board_slugs = [
+            str(meta.get("slug") or kanban_db.DEFAULT_BOARD)
+            for meta in kanban_db.list_boards(include_archived=False)
         ]
-        return {"workers": workers, "count": len(workers), "checked_at": int(time.time())}
-    finally:
-        conn.close()
+    else:
+        resolved = _resolve_board(board)
+        board_slugs = [resolved or kanban_db.get_current_board()]
 
+    workers: list[dict[str, Any]] = []
+    seen_db_paths: set[str] = set()
+    for board_slug in board_slugs:
+        db_path = str(kanban_db.kanban_db_path(board_slug).resolve())
+        if db_path in seen_db_paths:
+            continue
+        seen_db_paths.add(db_path)
+
+        conn = _conn(board=board_slug)
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                    r.id          AS run_id,
+                    r.task_id,
+                    t.title       AS task_title,
+                    t.status      AS task_status,
+                    t.assignee    AS task_assignee,
+                    r.profile,
+                    r.worker_pid,
+                    r.started_at,
+                    r.claim_lock,
+                    r.claim_expires,
+                    r.last_heartbeat_at,
+                    r.max_runtime_seconds
+                FROM task_runs r
+                JOIN tasks t ON t.id = r.task_id
+                WHERE r.ended_at IS NULL
+                  AND r.worker_pid IS NOT NULL
+                  AND t.status = 'running'
+                ORDER BY r.started_at ASC
+                """,
+            ).fetchall()
+            workers.extend(
+                {
+                    "board": board_slug,
+                    "run_id": row["run_id"],
+                    "task_id": row["task_id"],
+                    "task_title": row["task_title"],
+                    "task_status": row["task_status"],
+                    "task_assignee": row["task_assignee"],
+                    "profile": row["profile"],
+                    "worker_pid": row["worker_pid"],
+                    "started_at": row["started_at"],
+                    "claim_lock": row["claim_lock"],
+                    "claim_expires": row["claim_expires"],
+                    "last_heartbeat_at": row["last_heartbeat_at"],
+                    "max_runtime_seconds": row["max_runtime_seconds"],
+                }
+                for row in rows
+            )
+        finally:
+            conn.close()
+
+    return {"workers": workers, "count": len(workers), "checked_at": int(time.time())}
 
 @router.get("/runs/{run_id}")
 def get_run_endpoint(

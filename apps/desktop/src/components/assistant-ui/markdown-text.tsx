@@ -7,7 +7,6 @@ import {
   type SyntaxHighlighterProps,
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
-import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
@@ -56,41 +55,10 @@ import { paragraphPlainText, TranscriptDirectiveLeaf, useIsClaimedDirective } fr
 // `singleDollarTextMath: true` enables `$x^2$` for inline math (de-facto
 // LLM convention). The default false-setting only accepts `$$...$$`.
 const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
-
-// `@streamdown/code` statically imports ALL of shiki (every grammar + theme —
-// the single largest chunk in the renderer), so it must never sit on the
-// entry graph. Load it on first markdown mount and swap it into the plugin
-// table when it lands; until then fenced code renders through the
-// `SyntaxHighlighter` override's plain path (same output Shiki's own
-// `delay` fallback shows), so nothing flashes or reflows unexpectedly.
-type CodePlugin = typeof streamdownCode
-let codePluginCache: CodePlugin | null = null
-
-function useCodePlugin(): CodePlugin | null {
-  const [plugin, setPlugin] = useState(codePluginCache)
-
-  useEffect(() => {
-    if (plugin) {
-      return
-    }
-
-    let cancelled = false
-
-    void import('@streamdown/code').then(({ code }) => {
-      codePluginCache = code
-
-      if (!cancelled) {
-        setPlugin(code)
-      }
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [plugin])
-
-  return plugin
-}
+// This surface always installs its own SyntaxHighlighter adapter below, which
+// bypasses Streamdown's code plugin. Passing @streamdown/code would therefore
+// download every Shiki grammar/theme without using its highlighter.
+const MARKDOWN_PLUGINS = { math: mathPlugin }
 
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
 // flush) with a tail-bounded repair. Must stay module-scope so the prop
@@ -542,13 +510,6 @@ function MarkdownTextSurface({
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
 
-  // Keep code parsing enabled while streaming so incomplete fenced blocks still
-  // render as code cards. The expensive Shiki pass is deferred by
-  // `SyntaxHighlighter` below when `isStreaming` is true, and the code plugin
-  // itself arrives async (useCodePlugin) so shiki never blocks cold start.
-  const code = useCodePlugin()
-  const plugins = useMemo(() => (code ? { math: mathPlugin, code } : { math: mathPlugin }), [code])
-
   const components = useMemo(
     () =>
       ({
@@ -569,8 +530,8 @@ function MarkdownTextSurface({
         // Inline code must not vote when an ancestor resolves `dir="auto"`
         // (HTML's algorithm skips descendants that carry their own dir),
         // mirroring the CSS isolate that already keeps it out of the
-        // plaintext scan. Fenced code never reaches this override; it goes
-        // through the code plugin's CodeCard path.
+        // plaintext scan. Fenced code reaches the SyntaxHighlighter override
+        // below instead.
         inlineCode: ({ className, ...props }: ComponentProps<'code'>) => (
           <code className={className} dir="ltr" {...props} />
         ),
@@ -690,7 +651,7 @@ function MarkdownTextSurface({
         // remend pass.
         parseIncompleteMarkdown={false}
         parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
-        plugins={plugins}
+        plugins={MARKDOWN_PLUGINS}
         preprocess={preprocessWithTailRepair}
       />
     </ErrorBoundary>

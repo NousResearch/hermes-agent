@@ -210,9 +210,11 @@ describe('preview store', () => {
   })
 
   it('closes on host-case and trailing-slash differences', () => {
-    openPreview(urlTarget('https://example.com/App'), 'tool-result')
+    // Path case is significant — only the host and trailing slashes
+    // normalize. Same path, different host case + trailing slash.
+    openPreview(urlTarget('https://example.com/App/'), 'tool-result')
 
-    expect(closePreviewMatching('https://EXAMPLE.com/app/')).toBe(true)
+    expect(closePreviewMatching('https://EXAMPLE.com/App')).toBe(true)
     expect($previewTabs.get()).toHaveLength(0)
   })
 

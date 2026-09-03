@@ -1,5 +1,6 @@
 """Tests for agent/insights.py — InsightsEngine analytics and reporting."""
 
+import json
 import sqlite3
 import time
 import pytest
@@ -260,6 +261,130 @@ class TestInsightsPopulated:
         assert overview["total_output_tokens"] == expected_output
         assert overview["total_tokens"] == expected_input + expected_output
 
+    def test_overview_distinguishes_active_and_trace_tool_calls(self, db):
+        db.create_session(session_id="tool-scope", source="telegram", model="test-model")
+        db.append_message(
+            "tool-scope", role="tool", tool_name="terminal",
+            tool_call_id="old", content='{"exit_code":0}',
+        )
+        db.append_message(
+            "tool-scope", role="tool", tool_name="terminal",
+            tool_call_id="active", content='{"exit_code":0}',
+        )
+        db._conn.execute(
+            "UPDATE messages SET active = 0, compacted = 1 "
+            "WHERE session_id = ? AND tool_call_id = ?",
+            ("tool-scope", "old"),
+        )
+        db._conn.execute(
+            "UPDATE sessions SET tool_call_count = 1 WHERE id = ?",
+            ("tool-scope",),
+        )
+        db._conn.commit()
+
+        overview = InsightsEngine(db).generate(days=30)["overview"]
+
+        assert overview["total_tool_calls"] == 1
+        assert overview["active_tool_calls"] == 1
+        assert overview["trace_tool_calls"] == 2
+
+    def test_efficiency_reports_cache_and_code_mode_metrics(self, db):
+        db.create_session(session_id="opt", source="telegram", model="model-a")
+        db.update_token_counts(
+            "opt", input_tokens=100, output_tokens=20,
+            cache_read_tokens=900, api_call_count=2,
+            model="model-a", billing_provider="custom",
+        )
+        for call_id, calls, suffix in (
+            ("exec-1", 4, ""),
+            ("exec-2", 0, ""),
+            ("exec-3", 2, "\n\n[Subdirectory context discovered]"),
+            ("exec-failed", 5, ""),
+        ):
+            db.append_message(
+                "opt", role="tool", tool_name="execute_code",
+                tool_call_id=call_id,
+                content=(
+                    json.dumps({
+                        "status": "error" if call_id == "exec-failed" else "success",
+                        "exit_code": 1 if call_id == "exec-failed" else 0,
+                        "tool_calls_made": calls,
+                    }) + suffix
+                ),
+            )
+        db._conn.commit()
+
+        efficiency = InsightsEngine(db).generate(days=30)["efficiency"]
+
+        assert efficiency["api_calls"] == 2
+        assert efficiency["cache_read_ratio_pct"] == pytest.approx(90.0)
+        assert efficiency["uncached_input_per_api_call"] == pytest.approx(50.0)
+        assert efficiency["cache_read_per_api_call"] == pytest.approx(450.0)
+        assert efficiency["code_mode"]["executions"] == 4
+        assert efficiency["code_mode"]["successful_executions"] == 3
+        assert efficiency["code_mode"]["failed_executions"] == 1
+        assert efficiency["code_mode"]["inner_tool_calls"] == 6
+        assert efficiency["code_mode"]["estimated_model_turns_avoided"] == 4
+
+    def test_behavior_eval_counts_true_false_and_na(self, db):
+        def add_call(session_id, call_id, tool, arguments, result):
+            db.append_message(
+                session_id, role="assistant",
+                tool_calls=[{
+                    "id": call_id,
+                    "function": {"name": tool, "arguments": json.dumps(arguments)},
+                }],
+            )
+            db.append_message(
+                session_id, role="tool", tool_name=tool,
+                tool_call_id=call_id, content=json.dumps(result),
+            )
+
+        for session_id in ("pass", "fail", "na"):
+            db.create_session(session_id=session_id, source="telegram", model="model-a")
+        add_call("pass", "write", "write_file", {"path": "src/app.py"}, {"verified": True})
+        add_call("pass", "test", "terminal", {"command": "pytest -q"}, {"exit_code": 0})
+        add_call("fail", "write", "write_file", {"path": "src/app.py"}, {"verified": True})
+        add_call("na", "docs", "write_file", {"path": "README.md"}, {"verified": True})
+        db._conn.commit()
+
+        behavior = InsightsEngine(db).generate(days=30)["behavior_evals"][
+            "code-change-verification"
+        ]
+
+        assert behavior["counts"] == {"true": 1, "false": 1, "n/a": 1}
+        assert behavior["evaluated_sessions"] == 3
+
+    def test_behavior_recent_failures_are_newest_first(self, db):
+        for index in range(6):
+            session_id = f"failure-{index}"
+            db.create_session(session_id=session_id, source="telegram", model="model-a")
+            db.append_message(
+                session_id, role="assistant",
+                tool_calls=[{
+                    "id": f"write-{index}",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": json.dumps({"path": f"src/app_{index}.py"}),
+                    },
+                }],
+            )
+            db.append_message(
+                session_id, role="tool", tool_name="write_file",
+                tool_call_id=f"write-{index}", content='{"verified":true}',
+            )
+        db._conn.commit()
+
+        failures = InsightsEngine(db).generate(days=30)["behavior_evals"][
+            "code-change-verification"
+        ]["recent_failures"]
+        event_ids = [
+            item["evidence"]["last_mutation"]["message_id"] for item in failures
+        ]
+
+        assert len(event_ids) == 5
+        assert event_ids == sorted(event_ids, reverse=True)
+
 
 
 
@@ -333,6 +458,38 @@ class TestInsightsPopulated:
         # Percentages should sum to ~100%
         total_pct = sum(t["percentage"] for t in tools)
         assert total_pct == pytest.approx(100.0, abs=0.1)
+
+    def test_tool_usage_deduplicates_ids_and_keeps_assistant_only_calls(self, db):
+        db.create_session(session_id="mixed", source="telegram", model="model-a")
+        calls = []
+        for call_id in ("r1", "r2", "r3", "assistant-only"):
+            calls.append({
+                "id": call_id,
+                "function": {"name": "terminal", "arguments": "{}"},
+            })
+        db.append_message("mixed", role="assistant", tool_calls=calls)
+        for call_id in ("r1", "r2", "r3"):
+            db.append_message(
+                "mixed", role="tool", tool_name="terminal",
+                tool_call_id=call_id, content='{"exit_code":0}',
+            )
+        db.create_session(session_id="legacy", source="telegram", model="model-a")
+        db.append_message(
+            "legacy", role="assistant",
+            tool_calls=[{
+                "id": "legacy-call",
+                "function": {"name": "terminal", "arguments": "{}"},
+            }],
+        )
+        db.append_message(
+            "legacy", role="tool", tool_name="terminal",
+            tool_call_id=None, content='{"exit_code":0}',
+        )
+        db._conn.commit()
+
+        usage = InsightsEngine(db)._get_tool_usage(0.0)
+        terminal = next(row for row in usage if row["tool_name"] == "terminal")
+        assert terminal["count"] == 5
 
     def test_skill_breakdown(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -536,6 +693,9 @@ class TestTerminalFormatting:
 
         assert "Hermes Insights" in text
         assert "Overview" in text
+        assert "Optimization Efficiency" in text
+        assert "active" in text
+        assert "trace" in text
         assert "Models Used" in text
         assert "Top Tools" in text
         assert "Top Skills" in text

@@ -63,30 +63,46 @@ def _expand_tilde(path: str) -> str:
 # Configurable via config.yaml:  file_read_max_chars: 200000
 # ---------------------------------------------------------------------------
 _DEFAULT_MAX_READ_CHARS = 100_000
-_max_read_chars_cached: int | None = None
+_max_read_chars_by_home: dict[str, int] = {}
 
 
 def _get_max_read_chars() -> int:
     """Return the configured max characters per file read.
 
-    Reads ``file_read_max_chars`` from config.yaml on first call, caches
-    the result for the lifetime of the process.  Falls back to the
-    built-in default if the config is missing or invalid.
+    Reads ``file_read_max_chars`` from config.yaml on first use for the active
+    Hermes home, then caches it per profile for the lifetime of the process.
+    Falls back to the built-in default if the config is missing or invalid.
     """
-    global _max_read_chars_cached
-    if _max_read_chars_cached is not None:
-        return _max_read_chars_cached
+    cache_key: str | None = None
+    try:
+        from hermes_constants import hermes_home_key
+        cache_key = hermes_home_key()
+    except Exception:
+        pass
+
+    if cache_key is not None:
+        cached = _max_read_chars_by_home.get(cache_key)
+        if cached is not None:
+            return cached
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
         val = cfg.get("file_read_max_chars")
         if isinstance(val, (int, float)) and val > 0:
-            _max_read_chars_cached = int(val)
-            return _max_read_chars_cached
+            resolved = int(val)
+            if cache_key is not None:
+                _max_read_chars_by_home[cache_key] = resolved
+            return resolved
     except Exception:
         pass
-    _max_read_chars_cached = _DEFAULT_MAX_READ_CHARS
-    return _max_read_chars_cached
+    if cache_key is not None:
+        _max_read_chars_by_home[cache_key] = _DEFAULT_MAX_READ_CHARS
+    return _DEFAULT_MAX_READ_CHARS
+
+
+def _reset_max_read_chars_cache() -> None:
+    """Clear cached read limits for every profile."""
+    _max_read_chars_by_home.clear()
 
 
 def _truncate_to_char_budget(content: str, max_chars: int) -> tuple[str, int, bool]:

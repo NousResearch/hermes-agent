@@ -5182,7 +5182,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout)
                     )
                     _is_conn_err = isinstance(
-                        e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError)
+                        e, (_httpx.ConnectError, _httpx.RemoteProtocolError, _httpx.ReadError, ConnectionError)
                     )
                     _is_stream_parse_err = agent._is_provider_stream_parse_error(e)
                     _is_empty_stream = isinstance(e, EmptyStreamError)
@@ -5219,6 +5219,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                     "peer closed",
                                     "broken pipe",
                                     "upstream connect error",
+                                    "unexpected_eof",
                                 )
                                 _is_sse_conn_err_preview = any(
                                     phrase in _err_lower_preview
@@ -5317,6 +5318,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 "peer closed",
                                 "broken pipe",
                                 "upstream connect error",
+                                "unexpected_eof",
                             )
                             _is_sse_conn_err = any(
                                 phrase in _err_lower_sse

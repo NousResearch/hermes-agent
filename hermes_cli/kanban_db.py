@@ -3223,6 +3223,11 @@ def create_task(
     config — passed to the worker as ``-m <model> [--provider <name>]``.
     ``provider_override`` requires ``model_override``.
 
+    ``goal_mode`` requires a non-blank body because the continuation judge
+    evaluates the title and body as the task's acceptance contract. A title-only
+    goal card has no reliable completion criterion and must be specified before
+    it becomes dispatchable.
+
     ``reasoning_effort`` pins the worker's thinking depth for this task
     (``minimal``…``ultra``, or ``none`` to disable thinking), passed as
     ``--reasoning <level>``. It is independent of ``model_override``: a task
@@ -3242,6 +3247,8 @@ def create_task(
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+    if goal_mode and (not isinstance(body, str) or not body.strip()):
+        raise ValueError("body is required when goal_mode is enabled")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"

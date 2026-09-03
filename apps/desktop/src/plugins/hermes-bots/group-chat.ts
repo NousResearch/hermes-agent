@@ -13,6 +13,8 @@ import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
+import { displayName } from './labels'
+import { botRosterMeta } from './routing'
 import { getPluginCtx } from './shared'
 import type {
   Attachment,
@@ -1240,6 +1242,12 @@ export function groupSpeakerLabel(name?: null | string) {
   // the ACTIVE gateway's roster row. Source-scoped remote speakers carry
   // their device suffix separately and keep their raw name here.
   const roster = $lastRoster.get()
+
+  const exactRow = Array.isArray(roster) ? roster.find(bot => botRosterKey(bot) === trimmed) : null
+
+  if (exactRow) {
+    return displayName(exactRow, botRosterMeta(exactRow, $botMeta.get()))
+  }
 
   const row = Array.isArray(roster)
     ? roster.find(bot => bot?.name === trimmed && !bot?.remoteSource && !bot?.sourceScoped)

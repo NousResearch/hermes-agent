@@ -763,6 +763,34 @@ describe('stopGroupThread (#91868/#94569)', () => {
     expect(interrupts[0].params.session_id).toBe('live-alpha-sid')
   })
 
+  it('interrupts a source-scoped member by its exact working key', async () => {
+    const room = await loadRoom()
+
+    const member = {
+      connectionId: 'local',
+      name: 'default',
+      route: { connectionId: 'local', mode: 'local', profile: 'default', targetProfile: 'default' },
+      sourceScoped: true
+    } as GroupMember
+
+    room.chat.$groupChats.set({
+      Room: {
+        epoch: 3,
+        log: [],
+        members: [member],
+        running: true,
+        sessions: { 'local::default': 'live-default-sid' },
+        turn: 'local::default',
+        watermarks: {}
+      }
+    } as unknown as Record<string, GroupChat>)
+
+    await room.rounds.stopGroupThread('Room', 't1', [member])
+
+    expect(room.gateway.rpcFor('session.interrupt')).toHaveLength(1)
+    expect(room.gateway.rpcFor('session.interrupt')[0].params.session_id).toBe('live-default-sid')
+  })
+
   it('stops a room with nobody on turn without any interrupt RPC', async () => {
     const room = await loadRoom()
     seedRoom(room, null)

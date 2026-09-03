@@ -8904,6 +8904,24 @@ def _agent_fallback_model(agent):
     return _load_fallback_model()
 
 
+def _inherited_enabled_toolsets(agent) -> list[str] | None:
+    """Inherit the parent agent's toolset scope for a detached child build.
+
+    ``None`` (unset) means "no explicit scope" → resolve the profile surface.
+    An INTENTIONAL ``[]`` means "no tools" — it must be preserved verbatim and
+    must never be reopened from profile config (F1 v5: explicit ``is not
+    None`` semantics, not truthiness).
+    """
+    inherited = getattr(agent, "enabled_toolsets", None)
+    if inherited is not None:
+        return list(inherited)
+    # Detached background tasks declare platform="tui" below: they have no
+    # UI session id, so a renderer-routed event has nowhere to land. Resolve
+    # their toolsets against that same platform rather than the gateway
+    # process's, so they never carry GUI schema they cannot use.
+    return _load_enabled_toolsets("tui")
+
+
 def _background_agent_kwargs(agent, task_id: str) -> dict:
     cfg = _load_cfg()
 
@@ -8916,12 +8934,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "acp_args": getattr(agent, "acp_args", None) or None,
         "model": getattr(agent, "model", None) or _resolve_model(),
         "max_iterations": _cfg_max_turns(cfg, 25),
-        "enabled_toolsets": getattr(agent, "enabled_toolsets", None)
-        # Detached background tasks declare platform="tui" below: they have no
-        # UI session id, so a renderer-routed event has nowhere to land. Resolve
-        # their toolsets against that same platform rather than the gateway
-        # process's, so they never carry GUI schema they cannot use.
-        or _load_enabled_toolsets("tui"),
+        "enabled_toolsets": _inherited_enabled_toolsets(agent),
         # D8 parity (F1): background agents must inherit the profile's
         # denials too, or tool-level denials apply everywhere EXCEPT
         # background execution.
@@ -8952,14 +8965,19 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
 
 def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:
     kwargs = _background_agent_kwargs(agent, task_id)
-    # F1 (Prince round-2 finding 1): the preview agent's terminal+file
-    # selection is a NARROWING default for unpinned profiles only — it must
-    # never RESTORE tools the profile pin denies. Intersect with the
-    # authoritative surface and pass the denials through unchanged.
-    enabled = kwargs.get("enabled_toolsets")
-    if isinstance(enabled, list) and enabled:
-        if not {"terminal", "file"} <= set(enabled):
-            kwargs["enabled_toolsets"] = [t for t in enabled if t in {"terminal", "file"}]
+    # F1 (Prince v5 blocker 1): the preview agent's terminal+file selection
+    # must resolve to EXACTLY ``surface ∩ {terminal, file}`` — never a
+    # widening and never a partial pass-through. On an unpinned profile the
+    # resolved surface is the broad default (None), and intersecting it with
+    # {terminal, file} yields exactly the historical [terminal, file] default.
+    # On a pinned profile, the intersection can only narrow. A parent with an
+    # intentional [] inherits [] (nothing to preview with — preserved).
+    inherited = kwargs.get("enabled_toolsets")
+    if inherited is None:
+        # Unpinned: historical base behavior — exactly terminal + file.
+        kwargs["enabled_toolsets"] = ["terminal", "file"]
+    else:
+        kwargs["enabled_toolsets"] = [t for t in inherited if t in {"terminal", "file"}]
     kwargs.update(
         {
             "session_db": None,

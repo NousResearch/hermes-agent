@@ -461,6 +461,102 @@ def test_tui_ephemeral_builder_never_restores_denied_tools():
     assert kwargs["disabled_toolsets"] == []
 
 
+def _builder_env(monkeypatch, cfg):
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    return server
+
+
+def test_v5_preview_unpinned_terminal_file_web_keeps_base_behavior(monkeypatch):
+    """Prince v5 blocker 1 (unpinned compatibility): on an UNPINNED profile,
+    the preview surface must remain exactly the historical [terminal, file]
+    default — no extras leak in and nothing is removed."""
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda platform="tui": None)
+
+    class FakeAgent:
+        model = "test-model"
+        enabled_toolsets = None  # unpinned parent
+
+    kwargs = server._ephemeral_preview_agent_kwargs(FakeAgent(), "task-1")
+    assert sorted(kwargs["enabled_toolsets"]) == ["file", "terminal"]
+
+
+def test_v5_preview_pinned_terminal_file_web_narrows_to_intersection(monkeypatch):
+    """Prince v5 blocker 1 (pinned): with profile surface [terminal, file, web],
+    the preview must resolve to EXACTLY surface ∩ {terminal, file} — the `web`
+    extra must NOT survive (set equality, not partial exclusion)."""
+    server = _builder_env(monkeypatch, {"tools": {"enabled_toolsets": ["terminal", "file", "web"]}})
+
+    class FakeAgent:
+        model = "test-model"
+        enabled_toolsets = ["terminal", "file", "web"]
+
+    kwargs = server._ephemeral_preview_agent_kwargs(FakeAgent(), "task-1")
+    assert kwargs["enabled_toolsets"] == ["terminal", "file"]
+
+
+def test_v5_preview_pin_without_terminal_or_file_collapses_to_empty(monkeypatch):
+    """A read-only pin: preview surface ∩ {terminal,file} = [] — no restore."""
+    server = _builder_env(monkeypatch, {"tools": {"enabled_toolsets": ["web", "file_readonly"]}})
+
+    class FakeAgent:
+        model = "test-model"
+        enabled_toolsets = ["web", "file_readonly"]
+
+    kwargs = server._ephemeral_preview_agent_kwargs(FakeAgent(), "task-1")
+    assert kwargs["enabled_toolsets"] == []
+
+
+def test_v5_background_inherits_intentional_empty_scope(monkeypatch):
+    """Prince v5 blocker 2: a parent with an INTENTIONAL [] keeps [] — the
+    child builder must NOT reopen it from the profile surface (`is not None`
+    semantics, not truthiness)."""
+    server = _builder_env(monkeypatch, {"tools": {"enabled_toolsets": ["web"]}})
+
+    class FakeAgent:
+        model = "test-model"
+        enabled_toolsets = []  # intentional "no tools"
+
+    kwargs = server._background_agent_kwargs(FakeAgent(), "task-1")
+    assert kwargs["enabled_toolsets"] == []
+
+
+def test_v5_background_unpinned_parent_resolves_profile_surface(monkeypatch):
+    """None (unset) on the parent still falls back to the resolved profile
+    surface — unpinned behavior unchanged."""
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(
+        server, "_load_enabled_toolsets", lambda platform="tui": ["web", "memory"]
+    )
+
+    class FakeAgent:
+        model = "test-model"
+        enabled_toolsets = None
+
+    kwargs = server._background_agent_kwargs(FakeAgent(), "task-1")
+    assert kwargs["enabled_toolsets"] == ["web", "memory"]
+
+
+def test_v5_preview_inherits_intentional_empty_scope(monkeypatch):
+    """The preview path also preserves an intentional [] — no tools, and
+    certainly no terminal/file restoration."""
+    server = _builder_env(monkeypatch, {"tools": {"enabled_toolsets": ["web"]}})
+
+    class FakeAgent:
+        model = "test-model"
+        enabled_toolsets = []
+
+    kwargs = server._ephemeral_preview_agent_kwargs(FakeAgent(), "task-1")
+    assert kwargs["enabled_toolsets"] == []
+
+
 def test_cli_explicit_flag_narrows_pin_never_widens():
     """Finding 2/3: an explicit --toolsets selection is intersected with the
     profile pin — requesting terminal under a read-only pin yields only the

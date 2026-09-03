@@ -146,7 +146,10 @@ _JS_LOCKFILES = (
 )
 
 # package.json scripts / Makefile targets worth surfacing as verify commands.
-_VERIFY_TARGETS = ("test", "tests", "lint", "typecheck", "check", "build", "fmt", "format")
+# Formatting aliases are intentionally excluded: their names alone cannot prove
+# they are non-writing checks, and these commands feed prompt, stop-nudge, and
+# detected-recipe consumers.
+_VERIFY_TARGETS = ("test", "tests", "lint", "typecheck", "check", "build")
 _MAX_VERIFY_COMMANDS = 8
 _MAX_FACT_FILE_BYTES = 256 * 1024
 

@@ -20,6 +20,7 @@ from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
+    _link_citations_to_sources,
     _strip_mdv2,
     _wrap_markdown_tables,
 )
@@ -206,6 +207,54 @@ class TestFormatMessageLinks:
         result = adapter.format_message("[link](https://example.com/path_(1))")
         # The ) in URL should be escaped
         assert "\\)" in result
+
+    def test_numbered_citation_links_to_declared_source_url(self, adapter):
+        text = (
+            "Claim supported by [16].\n\n"
+            "**Sources:**\n"
+            "[16] [Source title](https://example.com/source)\n"
+        )
+        result = adapter.format_message(text)
+        assert r"[\[16\]](https://example.com/source)" in result
+
+    def test_numbered_citation_supports_bare_source_url(self):
+        text = "Claim [2].\n\n## Sources\n[2] https://example.com/article - Article"
+        assert _link_citations_to_sources(text).startswith(
+            "Claim [[2]](https://example.com/article)."
+        )
+
+    def test_adjacent_numbered_citations_are_each_linked(self):
+        text = "Claim [2][16].\n\n## Sources\n[2] https://example.com/a\n[16] https://example.com/b"
+        assert _link_citations_to_sources(text).startswith(
+            "Claim [[2]](https://example.com/a)[[16]](https://example.com/b)."
+        )
+
+    def test_unlisted_bracket_number_is_unchanged(self, adapter):
+        result = adapter.format_message("Array [16] without a Sources block")
+        assert "\\[16\\]" in result
+
+    def test_numbered_citation_includes_square_brackets_in_link_text(self, adapter):
+        text = "Claim [16].\n\n## Sources\n[16] https://example.com/source"
+        result = adapter.format_message(text)
+        assert r"[\[16\]](https://example.com/source)" in result
+
+    def test_numbered_citation_inside_fenced_code_is_not_linked(self):
+        text = (
+            "```text\n[16]\n```\nClaim [16].\n\n"
+            "## Sources\n[16] https://example.com/source"
+        )
+        result = _link_citations_to_sources(text)
+        assert "```text\n[16]\n```" in result
+        assert "Claim [[16]](https://example.com/source)." in result
+
+    def test_plain_sources_word_does_not_start_bibliography(self):
+        text = "Sources\nClaim [16].\n[16] https://example.com/source"
+        assert _link_citations_to_sources(text) == text
+
+    def test_source_url_with_underscore_is_preserved(self, adapter):
+        text = "Claim [16].\n\nSources:\n[16] https://example.com/some_page"
+        result = adapter.format_message(text)
+        assert r"[\[16\]](https://example.com/some_page)" in result
 
 
 # =========================================================================

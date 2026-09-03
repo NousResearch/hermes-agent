@@ -96,6 +96,13 @@ const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
 const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
 const SystemPage = lazy(() => import("@/pages/SystemPage"));
 const ChatPage = lazy(() => import("@/pages/ChatPage"));
+const MemoryWikiPage = lazy(() => import("@/pages/MemoryWikiPage"));
+const MemorySubjectPage = lazy(() =>
+  import("@/pages/MemoryWikiPage").then((m) => ({ default: m.MemorySubjectPage })),
+);
+const MemoryDayPage = lazy(() =>
+  import("@/pages/MemoryWikiPage").then((m) => ({ default: m.MemoryDayPage })),
+);
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -157,6 +164,9 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/files": FilesPage,
+  "/memory": MemoryWikiPage,
+  "/memory/subjects/:slug": MemorySubjectPage,
+  "/memory/days/:date": MemoryDayPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -191,6 +201,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     icon: MessageSquare,
   },
   { path: "/files", label: "Files", icon: FolderOpen },
+  {
+    path: "/memory",
+    labelKey: "memory",
+    label: "Memory Wiki",
+    icon: Database,
+  },
   {
     path: "/analytics",
     labelKey: "analytics",

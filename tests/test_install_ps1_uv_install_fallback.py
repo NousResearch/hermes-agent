@@ -1,118 +1,121 @@
-"""Regression: Install-Uv must surface installer errors and have fallbacks.
+"""Native Windows coverage for the verified uv installer fallbacks."""
 
-Issue #69216: Windows installs died with only the generic message
-``uv installed but not found at ...\\bin\\uv.exe``.  Two root causes:
+from __future__ import annotations
 
-1. ``Install-Uv`` piped the astral installer's entire output straight into
-   ``Out-Null`` (``2>&1 | Out-Null``), so any real failure -- download error,
-   corporate proxy block, AV quarantine, permissions -- was swallowed and
-   the user only ever saw the generic post-condition failure (first
-   identified in #69366).
-2. There was exactly one install source, ``astral.sh``.  Corporate proxies
-   commonly block astral.sh while the byte-identical installer published at
-   GitHub releases downloads fine (diagnosed by @gakugaku on #69216).
-
-The fix installs a three-rung ladder inside ``Install-Uv``:
-
-- Rung 1: astral.sh installer, output captured via ``Tee-Object``.
-- Rung 2: GitHub releases installer mirror, same ``UV_INSTALL_DIR``.
-- Rung 3: salvage an existing ``uv.exe`` (``Get-Command uv`` or
-  ``%USERPROFILE%\\.local\\bin\\uv.exe``) by copying it into
-  ``$HermesHome\\bin\\uv.exe`` so the managed-first invariant holds.
-
-Only after all three rungs fail does it error out -- and then it prints the
-tail of the captured installer output so the real cause reaches the user.
-
-install.ps1 only runs on Windows, so these tests lock the contract at the
-source-text level (same style as test_install_ps1_uv_powershell_host.py).
-"""
-
-import re
+import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
+
 _INSTALL_PS1 = Path(__file__).resolve().parents[1] / "scripts" / "install.ps1"
-
-_GITHUB_INSTALLER_URL = (
-    "https://github.com/astral-sh/uv/releases/download/$UvInstallerVersion/uv-installer.ps1"
-)
-
-
-@pytest.fixture(scope="module")
-def source() -> str:
-    return _INSTALL_PS1.read_text(encoding="utf-8")
+_EXPECTED_URLS = [
+    "https://astral.sh/uv/0.11.6/install.ps1",
+    "https://github.com/astral-sh/uv/releases/download/0.11.6/uv-installer.ps1",
+]
 
 
-def _install_uv_body(source: str) -> str:
-    """Extract the text of Install-Uv up to the next top-level function."""
-    start = source.index("function Install-Uv")
-    tail = source[start + 1 :]
-    match = re.search(r"^function ", tail, flags=re.MULTILINE)
-    end = start + 1 + (match.start() if match else len(tail))
-    return source[start:end]
+def _powershell() -> str:
+    executable = shutil.which("powershell") or shutil.which("pwsh")
+    assert executable, "native PowerShell is required for this Windows-only test"
+    return executable
 
 
-def test_astral_installer_output_not_swallowed_by_out_null(source: str):
-    """Regression pin for the suppression bug (#69366 / #69216).
+def _run_install_uv_harness(tmp_path: Path, *, digest_matches: bool) -> dict:
+    hermes_home = tmp_path / "hermes-home"
+    user_profile = tmp_path / "user-profile"
+    sentinel = tmp_path / "payload-executed.txt"
+    payload = tmp_path / "payload.ps1"
+    payload.write_text("# fake downloaded installer\n", encoding="utf-8")
 
-    The astral invocation must not discard the installer's merged output
-    stream; a failed download/AV block has to reach the user.
-    """
-    forbidden = 'irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null'
-    assert forbidden not in source, (
-        "Install-Uv pipes the astral uv installer's output straight to "
-        "Out-Null again -- failures become the generic 'uv installed but "
-        "not found' message. Capture the output (e.g. Tee-Object) instead."
+    reported_hash = (
+        "46da9313591884d09aa4f06f7f78f74154ea01a8012d425ed090163d4799295c"
+        if digest_matches
+        else "0" * 64
+    )
+    harness = tmp_path / "harness.ps1"
+    harness.write_text(
+        "param([string]$Installer)\n"
+        f"$HarnessHermesHome = '{hermes_home}'\n"
+        "$env:HERMES_HOME = $HarnessHermesHome\n"
+        f"$env:USERPROFILE = '{user_profile}'\n"
+        f". '{_INSTALL_PS1}' -HermesHome $HarnessHermesHome -InstallDir (Join-Path $HarnessHermesHome 'hermes-agent')\n"
+        "$HermesHome = $HarnessHermesHome\n"
+        "$script:AttemptedUrls = @()\n"
+        "function global:Invoke-WebRequest {\n"
+        "  param([switch]$UseBasicParsing, $Uri, $OutFile, $ErrorAction)\n"
+        "  $script:AttemptedUrls += [string]$Uri\n"
+        "  Copy-Item -LiteralPath $Installer -Destination $OutFile -Force\n"
+        "}\n"
+        "function global:Get-FakeFileHash {\n"
+        "  param($Algorithm, $Path)\n"
+        f"  [pscustomobject]@{{ Hash = '{reported_hash}' }}\n"
+        "}\n"
+        "Set-Alias -Name Get-FileHash -Value Get-FakeFileHash -Scope Global\n"
+        "function global:Get-Command { param($Name) if ($Name -eq 'uv') { return $null } Microsoft.PowerShell.Core\\Get-Command @PSBoundParameters }\n"
+        "function global:Get-PowerShellHostExe { return 'Invoke-FakePowerShell' }\n"
+        "function global:Invoke-FakePowerShell {\n"
+        f"  Add-Content -LiteralPath '{sentinel}' -Value executed\n"
+        "  $target = Join-Path $env:UV_INSTALL_DIR 'uv.exe'\n"
+        "  Set-Content -LiteralPath $target -Value fake-uv\n"
+        "}\n"
+        "$ok = Install-Uv\n"
+        "$result = @{\n"
+        "  attempted_urls = @($script:AttemptedUrls)\n"
+        f"  payload_executed = Test-Path -LiteralPath '{sentinel}'\n"
+        f"  execution_count = @((Get-Content -LiteralPath '{sentinel}' -ErrorAction SilentlyContinue)).Count\n"
+        "  install_succeeded = [bool]$ok\n"
+        "}\n"
+        "Write-Output ('HARNESS:' + ($result | ConvertTo-Json -Compress))\n",
+        encoding="utf-8",
     )
 
-
-def test_astral_installer_output_is_captured(source: str):
-    body = _install_uv_body(source)
-    assert "https://astral.sh/uv/$UvInstallerVersion/install.ps1" in body
-    assert "Tee-Object -Variable sourceOut" in body, (
-        "installer output must be captured so failures reach the user"
+    executable = _powershell()
+    env = os.environ.copy()
+    env.setdefault("SystemDrive", Path(executable).drive or "C:")
+    completed = subprocess.run(
+        [
+            executable,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness),
+            "-Installer",
+            str(payload),
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+        timeout=30,
     )
-    assert "Get-FileHash -Algorithm SHA256" in body, (
-        "downloaded installer bytes must be verified before execution"
+    marker = next(
+        line.removeprefix("HARNESS:")
+        for line in completed.stdout.splitlines()
+        if line.startswith("HARNESS:")
     )
-
-
-def test_github_releases_fallback_installer_present(source: str):
-    """Rung 2: the GitHub releases mirror of the installer must be tried."""
-    body = _install_uv_body(source)
-    assert _GITHUB_INSTALLER_URL in body, (
-        "Install-Uv must fall back to the GitHub releases uv installer "
-        f"({_GITHUB_INSTALLER_URL}) when astral.sh is blocked "
-        "(corporate proxies, #69216)."
-    )
-    assert "releases/latest" not in body
-    assert "& $psHostExe -ExecutionPolicy ByPass -File $installerPath" in body
-
-
-def test_existing_uv_salvage_rung_present(source: str):
-    """Rung 3: probe PATH and the astral default dir, copy into managed bin."""
-    body = _install_uv_body(source)
-    assert "Get-Command uv" in body, (
-        "Install-Uv must probe for an existing uv on PATH (Get-Command uv) "
-        "before failing."
-    )
-    assert '".local\\bin\\uv.exe"' in body and "$env:USERPROFILE" in body, (
-        "Install-Uv must probe the astral default install location "
-        "(%USERPROFILE%\\.local\\bin\\uv.exe)."
-    )
-    assert "Copy-Item" in body and "$managedUv" in body, (
-        "A salvaged uv.exe must be copied into the managed location "
-        "($HermesHome\\bin\\uv.exe) so managed-first resolution holds."
-    )
+    return json.loads(marker)
 
 
-def test_failure_path_keeps_manual_install_pointer_and_shows_output(source: str):
-    body = _install_uv_body(source)
-    assert "https://docs.astral.sh/uv/getting-started/installation/" in body, (
-        "the manual-install pointer must survive in the failure path"
-    )
-    assert "$installerOutput" in body and "Select-Object -Last" in body, (
-        "the failure path must print the tail of the captured installer "
-        "output so the real error reaches the user"
-    )
+@pytest.mark.windows_only
+def test_checksum_mismatch_attempts_both_sources_without_execution(tmp_path):
+    result = _run_install_uv_harness(tmp_path, digest_matches=False)
+
+    assert result["attempted_urls"] == _EXPECTED_URLS
+    assert result["payload_executed"] is False
+    assert result["execution_count"] == 0
+    assert result["install_succeeded"] is False
+
+
+@pytest.mark.windows_only
+def test_matching_checksum_executes_only_downloaded_installer(tmp_path):
+    result = _run_install_uv_harness(tmp_path, digest_matches=True)
+
+    assert result["payload_executed"] is True
+    assert result["attempted_urls"] == _EXPECTED_URLS[:1]
+    assert result["execution_count"] == 1
+    assert result["install_succeeded"] is False

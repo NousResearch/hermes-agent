@@ -91,6 +91,51 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
 
 
+    def test_status_prefers_active_fallback_agent_effort(self):
+        """After a fallback swap the /reasoning status must report the effort of
+        the model actually answering (agent.reasoning_config), not the primary
+        model's effort pinned on the CLI at init.
+
+        Repro: primary gpt-5.6-terra (override high) falls back to
+        deepseek-v4-flash (override max). try_activate_fallback re-resolves
+        agent.reasoning_config to max, but self.reasoning_config stays high.
+        /reasoning must show max.
+        """
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        agent = SimpleNamespace(reasoning_config={"enabled": True, "effort": "max"})
+        stub = SimpleNamespace(
+            reasoning_config={"enabled": True, "effort": "high"},  # primary, stale
+            show_reasoning=True,
+            reasoning_full=True,
+            agent=agent,
+        )
+        printed = []
+        with patch("cli._cprint", side_effect=lambda *a, **k: printed.append(a[0] if a else "")):
+            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning")
+
+        effort_line = next(l for l in printed if "Reasoning effort:" in l)
+        self.assertIn("max", effort_line)
+        self.assertNotIn("high", effort_line)
+
+    def test_status_uses_cli_config_when_no_agent(self):
+        """Before any agent is initialised (self.agent is None), the status
+        falls back to the CLI-level reasoning_config."""
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        stub = SimpleNamespace(
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            show_reasoning=False,
+            reasoning_full=False,
+            agent=None,
+        )
+        printed = []
+        with patch("cli._cprint", side_effect=lambda *a, **k: printed.append(a[0] if a else "")):
+            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning")
+
+        effort_line = next(l for l in printed if "Reasoning effort:" in l)
+        self.assertIn("xhigh", effort_line)
+
     def test_effort_defaults_to_session_only(self):
         """Plain /reasoning <level> is session-scoped — no config write."""
         from hermes_cli.cli_commands_mixin import CLICommandsMixin

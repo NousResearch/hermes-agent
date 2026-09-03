@@ -3801,8 +3801,16 @@ class CLICommandsMixin:
         parts = cmd.strip().split(maxsplit=1)
 
         if len(parts) < 2:
-            # Show current state
-            rc = self.reasoning_config
+            # Show current state. Prefer the live agent's reasoning_config when
+            # an agent exists: on a fallback swap, try_activate_fallback
+            # re-resolves reasoning_config for the *active* model's per-model
+            # override (agent/chat_completion_helpers.py), while the CLI-level
+            # self.reasoning_config stays pinned to the primary model resolved at
+            # init. Reading it directly would report the primary's effort while a
+            # fallback model is actually answering. Mirrors how the status bar
+            # prefers agent.model over self.model (cli.py _get_status_bar_snapshot).
+            agent = getattr(self, "agent", None)
+            rc = getattr(agent, "reasoning_config", None) if agent is not None else self.reasoning_config
             if rc is None:
                 level = "medium (default)"
             elif rc.get("enabled") is False:

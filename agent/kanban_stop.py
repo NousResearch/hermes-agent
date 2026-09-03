@@ -22,12 +22,37 @@ _TERMINAL_KANBAN_TOOLS = frozenset({"kanban_complete", "kanban_block"})
 _DEFAULT_MAX_ATTEMPTS = 2
 
 
+def _is_delegated_child_context() -> bool:
+    """Mirror of ``tools.kanban_tools._is_delegated_child_context``.
+
+    Kept local so this policy module stays importable without the tools
+    package.  Fails open (``False``) so non-delegated workers are unaffected
+    if the delegation module is unavailable.
+    """
+    try:
+        from agent.delegation_context import is_delegated_child_context
+
+        return is_delegated_child_context()
+    except Exception:
+        return False
+
+
 def kanban_stop_nudge_enabled() -> bool:
     """Return whether the kanban stop-guard is active for this process.
 
     On when ``HERMES_KANBAN_TASK`` is set (dispatcher-spawned worker), unless
     ``HERMES_KANBAN_STOP_NUDGE`` explicitly disables it.
+
+    Never on for delegated ``delegate_task`` children.  The ``kanban`` toolset
+    is stripped from them (``tools/delegate_tool.py`` appends ``"kanban"`` to
+    ``child_disabled_toolsets``, and ``tools/kanban_tools.py`` gates every
+    kanban surface on the same delegated-child check), so nudging a child
+    toward ``kanban_complete`` demands a tool it cannot call.  Children still
+    observe ``HERMES_KANBAN_TASK`` because the env scrub only materializes
+    across a subprocess boundary and in-process children never fork.
     """
+    if _is_delegated_child_context():
+        return False
     env = os.environ.get("HERMES_KANBAN_STOP_NUDGE")
     if env is not None and env.strip().lower() in {"0", "false", "no", "off"}:
         return False

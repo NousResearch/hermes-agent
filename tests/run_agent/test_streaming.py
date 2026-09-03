@@ -15,14 +15,14 @@ import pytest
 
 def _make_stream_chunk(
     content=None, tool_calls=None, finish_reason=None,
-    model=None, reasoning_content=None, usage=None,
+    model=None, reasoning_content=None, reasoning=None, usage=None,
 ):
     """Build a mock streaming chunk matching OpenAI's ChatCompletionChunk shape."""
     delta = SimpleNamespace(
         content=content,
         tool_calls=tool_calls,
         reasoning_content=reasoning_content,
-        reasoning=None,
+        reasoning=reasoning,
     )
     choice = SimpleNamespace(
         index=0,
@@ -95,6 +95,37 @@ class TestStreamingAccumulator:
         assert response.choices[0].finish_reason == "stop"
         assert response.usage is not None
         assert response.usage.completion_tokens == 3
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_ignores_non_string_content_delta(self, mock_close, mock_create):
+        """Malformed provider content cannot abort a later text delta."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content=42),
+            _make_stream_chunk(content="still delivered", finish_reason="stop"),
+        ]
+        deltas = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=deltas.append,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "still delivered"
+        assert deltas == ["still delivered"]
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
@@ -809,6 +840,45 @@ class TestReasoningStreaming:
         assert text_deltas == ["The answer is 42"]
         assert response.choices[0].message.reasoning_content == "Let me think about this"
         assert response.choices[0].message.content == "The answer is 42"
+
+    @pytest.mark.parametrize("reasoning_field", ["reasoning_content", "reasoning"])
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_ignores_non_string_reasoning_delta(
+        self, mock_close, mock_create, reasoning_field
+    ):
+        """Malformed reasoning cannot abort later reasoning or text deltas."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(**{reasoning_field: 42}),
+            _make_stream_chunk(reasoning_content="still thinking"),
+            _make_stream_chunk(content="still delivered", finish_reason="stop"),
+        ]
+        reasoning_deltas = []
+        text_deltas = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=text_deltas.append,
+            reasoning_callback=reasoning_deltas.append,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.reasoning_content == "still thinking"
+        assert response.choices[0].message.content == "still delivered"
+        assert reasoning_deltas == ["still thinking"]
+        assert text_deltas == ["still delivered"]
 
 
 # ── Test: _has_stream_consumers ──────────────────────────────────────────

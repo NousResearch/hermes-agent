@@ -3458,6 +3458,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "chat_completions_streaming": True,
                 "responses_api": True,
                 "responses_streaming": True,
+                "reasoning_streaming": True,
                 "run_submission": True,
                 "runs_idempotency": _api_runs._idempotency_capabilities(
                     self,
@@ -5185,6 +5186,8 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
+        request_reasoning = _request_reasoning_config(body.get("model_options"))
+        reasoning_output_enabled = request_reasoning != {"enabled": False}
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -5328,6 +5331,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put_threadsafe(delta)
 
+            def _on_tool_progress(event_type, name=None, preview=None, args=None, **kwargs):
+                if reasoning_output_enabled and event_type == "reasoning.available" and preview:
+                    _stream_q.put_threadsafe(("__reasoning__", preview))
+
             # Track which tool_call_ids we've emitted a "running" lifecycle
             # event for, so a "completed" event without a matching "running"
             # (e.g. internal/filtered tools) is silently dropped instead of
@@ -5379,11 +5386,9 @@ class APIServerAdapter(BasePlatformAdapter):
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             #
-            # ``tool_progress_callback`` is intentionally not wired here:
-            # it would duplicate every emit because ``run_agent`` fires it
-            # side-by-side with ``tool_start_callback``/``tool_complete_callback``.
-            # The structured callbacks are strictly richer (they carry
-            # the tool_call id), so they own the chat-completions SSE channel.
+            # Structured callbacks own ordinary tool lifecycle events because
+            # they carry call ids. The progress callback is retained only for
+            # reasoning.available, which has no structured equivalent.
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -5391,6 +5396,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
@@ -5463,6 +5469,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
 
         final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
+        output_start_index = self._response_messages_turn_start_index(
+            history, user_message, result
+        )
+        reasoning_text = (
+            self._extract_result_reasoning(result, start_index=output_start_index)
+            if reasoning_output_enabled
+            else ""
+        )
         is_partial = bool(result.get("partial"))
         is_failed = bool(result.get("failed"))
         completed = bool(result.get("completed", True))
@@ -5527,6 +5541,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "total_tokens": usage.get("total_tokens", 0),
             },
         }
+        if reasoning_text:
+            response_data["choices"][0]["message"]["reasoning_content"] = reasoning_text
         if is_partial or is_failed or not completed:
             response_data["hermes"] = {
                 "completed": completed,
@@ -5588,14 +5604,25 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
-                Tagged tuples ``("__tool_progress__", payload)`` are sent
-                as a custom ``event: hermes.tool.progress`` SSE event so
+                Tagged tuples carry either reasoning or tool progress. Tool
+                progress is sent as a custom ``event: hermes.tool.progress`` so
                 frontends can display them without storing the markers in
                 conversation history.  See #6972 for the original event,
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     await response.write(_sse_frame(item[1], event="hermes.tool.progress"))
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning__":
+                    reasoning_chunk = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"reasoning_content": item[1]},
+                            "finish_reason": None,
+                        }],
+                    }
+                    await response.write(_sse_frame(reasoning_chunk))
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
@@ -5752,6 +5779,7 @@ class APIServerAdapter(BasePlatformAdapter):
         store: bool,
         session_id: str,
         gateway_session_key: Optional[str] = None,
+        reasoning_enabled: bool = True,
     ) -> "web.StreamResponse":
         """Write an SSE stream for POST /v1/responses (OpenAI Responses API).
 
@@ -5819,6 +5847,11 @@ class APIServerAdapter(BasePlatformAdapter):
         message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
         message_output_index: Optional[int] = None
         message_opened = False
+        reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+        reasoning_output_index: Optional[int] = None
+        reasoning_opened = False
+        reasoning_parts: List[str] = []
+        reasoning_item: Optional[Dict[str, Any]] = None
 
         async def _write_event(event_type: str, data: Dict[str, Any]) -> None:
             nonlocal sequence_number
@@ -5939,6 +5972,71 @@ class APIServerAdapter(BasePlatformAdapter):
                     "content_index": 0,
                     "delta": delta_text,
                     "logprobs": [],
+                })
+
+            async def _open_reasoning_item() -> None:
+                nonlocal reasoning_opened, reasoning_output_index, reasoning_item, output_index
+                if reasoning_opened:
+                    return
+                reasoning_opened = True
+                reasoning_output_index = output_index
+                output_index += 1
+                reasoning_item = {
+                    "id": reasoning_item_id,
+                    "type": "reasoning",
+                    "status": "in_progress",
+                    "summary": [],
+                }
+                emitted_items.append(reasoning_item)
+                await _write_event("response.output_item.added", {
+                    "type": "response.output_item.added",
+                    "output_index": reasoning_output_index,
+                    "item": dict(reasoning_item),
+                })
+                await _write_event("response.reasoning_summary_part.added", {
+                    "type": "response.reasoning_summary_part.added",
+                    "item_id": reasoning_item_id,
+                    "output_index": reasoning_output_index,
+                    "summary_index": 0,
+                    "part": {"type": "summary_text", "text": ""},
+                })
+
+            async def _emit_reasoning_delta(delta_text: str) -> None:
+                await _open_reasoning_item()
+                reasoning_parts.append(delta_text)
+                await _write_event("response.reasoning_summary_text.delta", {
+                    "type": "response.reasoning_summary_text.delta",
+                    "item_id": reasoning_item_id,
+                    "output_index": reasoning_output_index,
+                    "summary_index": 0,
+                    "delta": delta_text,
+                })
+
+            async def _close_reasoning_item() -> None:
+                if not reasoning_opened:
+                    return
+                reasoning_text = "".join(reasoning_parts)
+                summary_part = {"type": "summary_text", "text": reasoning_text}
+                await _write_event("response.reasoning_summary_text.done", {
+                    "type": "response.reasoning_summary_text.done",
+                    "item_id": reasoning_item_id,
+                    "output_index": reasoning_output_index,
+                    "summary_index": 0,
+                    "text": reasoning_text,
+                })
+                await _write_event("response.reasoning_summary_part.done", {
+                    "type": "response.reasoning_summary_part.done",
+                    "item_id": reasoning_item_id,
+                    "output_index": reasoning_output_index,
+                    "summary_index": 0,
+                    "part": summary_part,
+                })
+                reasoning_item["status"] = "completed"
+                reasoning_item["summary"] = [summary_part]
+                await _write_event("response.output_item.done", {
+                    "type": "response.output_item.done",
+                    "output_index": reasoning_output_index,
+                    "item": dict(reasoning_item),
                 })
 
             async def _emit_tool_started(payload: Dict[str, Any]) -> str:
@@ -6067,6 +6165,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         await _emit_tool_started(payload)
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
+                    elif tag == "__reasoning__" and isinstance(payload, str) and payload:
+                        await _emit_reasoning_delta(payload)
                 elif isinstance(it, str):
                     # Batch text deltas — append to buffer, flush on timer
                     _batch_buf.append(it)
@@ -6155,6 +6255,25 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:  # noqa: BLE001
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
                 agent_error = _redact_api_error_text(e)
+
+            result_reasoning = (
+                self._extract_result_reasoning(
+                    result,
+                    start_index=self._response_messages_turn_start_index(
+                        conversation_history, user_message, result
+                    ) if isinstance(result, dict) else 0,
+                )
+                if reasoning_enabled
+                else ""
+            )
+            streamed_reasoning = "".join(reasoning_parts)
+            if result_reasoning and not streamed_reasoning:
+                await _emit_reasoning_delta(result_reasoning)
+            elif result_reasoning.startswith(streamed_reasoning):
+                reasoning_suffix = result_reasoning[len(streamed_reasoning):]
+                if reasoning_suffix:
+                    await _emit_reasoning_delta(reasoning_suffix)
+            await _close_reasoning_item()
 
             # Close the message item if it was opened
             final_response_text = "".join(final_text_parts) or final_response_text
@@ -6470,6 +6589,8 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
+        request_reasoning = _request_reasoning_config(body.get("model_options"))
+        reasoning_output_enabled = request_reasoning != {"enabled": False}
         route = self._resolve_route(body.get("model"))
         agent_overrides = _request_agent_overrides(
             body,
@@ -6501,13 +6622,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     _stream_q.put_threadsafe(delta)
 
             def _on_tool_progress(event_type, name, preview, args, **kwargs):
-                """Queue non-start tool progress events if needed in future.
-
-                The structured Responses stream uses ``tool_start_callback``
-                and ``tool_complete_callback`` for exact call-id correlation,
-                so progress events are currently ignored here.
-                """
-                return
+                """Queue reasoning; structured callbacks own tool lifecycle."""
+                if reasoning_output_enabled and event_type == "reasoning.available" and preview:
+                    _stream_q.put_threadsafe(("__reasoning__", preview))
 
             def _on_tool_start(tool_call_id, function_name, function_args):
                 """Queue a started tool for live function_call streaming."""
@@ -6565,6 +6682,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 store=store,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                reasoning_enabled=reasoning_output_enabled,
             )
 
         async def _compute_response():
@@ -6650,7 +6768,11 @@ class APIServerAdapter(BasePlatformAdapter):
             user_message,
             result,
         )
-        output_items = self._extract_output_items(result, start_index=output_start_index)
+        output_items = self._extract_output_items(
+            result,
+            start_index=output_start_index,
+            include_reasoning=reasoning_output_enabled,
+        )
 
         response_data = {
             "id": response_id,
@@ -7251,7 +7373,48 @@ class APIServerAdapter(BasePlatformAdapter):
         return out
 
     @staticmethod
-    def _extract_output_items(result: Dict[str, Any], start_index: int = 0) -> List[Dict[str, Any]]:
+    def _message_reasoning_text(message: Dict[str, Any]) -> str:
+        """Return the displayable reasoning summary carried by one message."""
+        for key in ("reasoning_content", "reasoning"):
+            value = message.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        parts: List[str] = []
+        for detail in message.get("reasoning_details") or []:
+            if not isinstance(detail, dict):
+                continue
+            for key in ("summary", "text"):
+                value = detail.get(key)
+                if isinstance(value, str) and value.strip():
+                    parts.append(value.strip())
+                    break
+        return "\n\n".join(parts)
+
+    @classmethod
+    def _extract_result_reasoning(
+        cls, result: Dict[str, Any], start_index: int = 0
+    ) -> str:
+        """Collect this turn's assistant reasoning without replaying history."""
+        messages = result.get("messages", []) if isinstance(result, dict) else []
+        if start_index > 0:
+            messages = messages[start_index:]
+        parts: List[str] = []
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            text = cls._message_reasoning_text(message)
+            if text and text not in parts:
+                parts.append(text)
+        return "\n\n".join(parts)
+
+    @classmethod
+    def _extract_output_items(
+        cls,
+        result: Dict[str, Any],
+        start_index: int = 0,
+        include_reasoning: bool = True,
+    ) -> List[Dict[str, Any]]:
         """
         Build the output item array from the agent's messages.
 
@@ -7264,6 +7427,19 @@ class APIServerAdapter(BasePlatformAdapter):
         messages = result.get("messages", [])
         if start_index > 0:
             messages = messages[start_index:]
+
+        reasoning = (
+            cls._extract_result_reasoning(result, start_index=start_index)
+            if include_reasoning
+            else ""
+        )
+        if reasoning:
+            items.append({
+                "id": f"rs_{uuid.uuid4().hex[:24]}",
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [{"type": "summary_text", "text": reasoning}],
+            })
 
         for msg in messages:
             role = msg.get("role")

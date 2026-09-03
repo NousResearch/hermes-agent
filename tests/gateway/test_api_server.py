@@ -873,6 +873,7 @@ class TestCapabilitiesEndpoint:
             assert data["runtime"]["split_runtime"] is False
             assert "API-server host" in data["runtime"]["description"]
             assert data["features"]["chat_completions"] is True
+            assert data["features"]["reasoning_streaming"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["runs_idempotency"] == {
@@ -1038,6 +1039,50 @@ class TestChatCompletionsEndpoint:
         assert kwargs["requested_model"] == "MiniMax-M3"
         assert kwargs["requested_provider"] == "minimax"
         assert kwargs["model_options"] == model_options
+
+
+    @pytest.mark.asyncio
+    async def test_stream_exposes_reasoning_as_reasoning_content(self, adapter):
+        async def _mock_run_agent(**kwargs):
+            kwargs["tool_progress_callback"](
+                "reasoning.available", "_thinking", "Check the premise.", None
+            )
+            kwargs["stream_delta_callback"]("The premise holds.")
+            return (
+                {
+                    "final_response": "The premise holds.",
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "The premise holds.",
+                            "reasoning": "Check the premise.",
+                        }
+                    ],
+                },
+                {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+            )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "Check it"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                events = [
+                    json.loads(line.removeprefix("data: "))
+                    for line in (await resp.text()).splitlines()
+                    if line.startswith("data: {")
+                ]
+
+        deltas = [event["choices"][0]["delta"] for event in events]
+        assert {"reasoning_content": "Check the premise."} in deltas
+        assert {"content": "The premise holds."} in deltas
 
 
     @pytest.mark.asyncio
@@ -1311,6 +1356,43 @@ class TestChatCompletionsEndpoint:
             assert '"status": "completed"' not in body
 
 
+    @pytest.mark.asyncio
+    async def test_non_streaming_exposes_reasoning_on_message(self, adapter):
+        result = {
+            "final_response": "The premise holds.",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "The premise holds.",
+                    "reasoning_content": "Check the premise.",
+                }
+            ],
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_run_agent",
+                new=AsyncMock(
+                    return_value=(
+                        result,
+                        {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+                    )
+                ),
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "Check it"}],
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["choices"][0]["message"]["reasoning_content"] == "Check the premise."
+
+
 # ---------------------------------------------------------------------------
 # _derive_chat_session_id unit tests
 # ---------------------------------------------------------------------------
@@ -1368,6 +1450,44 @@ class TestResponsesEndpoint:
             assert data["output"][0]["type"] == "message"
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
+
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_includes_reasoning_output_item(self, adapter):
+        result = {
+            "final_response": "The premise holds.",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "The premise holds.",
+                    "reasoning": "Check the premise.",
+                }
+            ],
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_run_agent",
+                new=AsyncMock(
+                    return_value=(
+                        result,
+                        {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+                    )
+                ),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "test", "input": "Check it"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        reasoning = next(item for item in data["output"] if item["type"] == "reasoning")
+        assert reasoning["status"] == "completed"
+        assert reasoning["summary"] == [
+            {"type": "summary_text", "text": "Check the premise."}
+        ]
 
 
     @pytest.mark.asyncio
@@ -1617,6 +1737,67 @@ class TestResponsesEndpoint:
 
 
 class TestResponsesStreaming:
+
+
+    @pytest.mark.asyncio
+    async def test_stream_emits_reasoning_summary_with_monotonic_sequence(self, adapter):
+        async def _mock_run_agent(**kwargs):
+            kwargs["tool_progress_callback"](
+                "reasoning.available", "_thinking", "Check the premise.", None
+            )
+            kwargs["tool_start_callback"]("call_1", "terminal", {"command": "pwd"})
+            kwargs["tool_complete_callback"](
+                "call_1", "terminal", {"command": "pwd"}, "C:/workspace"
+            )
+            kwargs["stream_delta_callback"]("The premise holds.")
+            return (
+                {
+                    "final_response": "The premise holds.",
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "The premise holds.",
+                            "reasoning": "Check the premise.",
+                        }
+                    ],
+                },
+                {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+            )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "test", "input": "Check it", "stream": True},
+                )
+                assert resp.status == 200
+                events = [
+                    json.loads(line.removeprefix("data: "))
+                    for line in (await resp.text()).splitlines()
+                    if line.startswith("data: {")
+                ]
+
+        event_types = [event["type"] for event in events]
+        assert "response.reasoning_summary_part.added" in event_types
+        assert "response.reasoning_summary_text.delta" in event_types
+        assert "response.reasoning_summary_text.done" in event_types
+        assert "response.reasoning_summary_part.done" in event_types
+        sequence_numbers = [event["sequence_number"] for event in events]
+        assert sequence_numbers == list(range(len(sequence_numbers)))
+        completed = next(event for event in events if event["type"] == "response.completed")
+        assert [item["type"] for item in completed["response"]["output"]] == [
+            "reasoning",
+            "function_call",
+            "function_call_output",
+            "message",
+        ]
+        reasoning = next(
+            item for item in completed["response"]["output"] if item["type"] == "reasoning"
+        )
+        assert reasoning["summary"] == [
+            {"type": "summary_text", "text": "Check the premise."}
+        ]
 
 
     @pytest.mark.asyncio

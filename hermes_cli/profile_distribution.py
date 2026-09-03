@@ -71,6 +71,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_constants import clear_named_profile_deleted
 from hermes_cli._subprocess_compat import noninteractive_git_env
 
 
@@ -699,6 +700,7 @@ def install_distribution(
             if collision is None:
                 create_wrapper_script(plan.manifest.name)
 
+        clear_named_profile_deleted(plan.target_dir)
         return plan
 
 

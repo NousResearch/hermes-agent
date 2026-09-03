@@ -230,6 +230,34 @@ class TestInstall:
         assert m.name == "installed"
         assert m.source == str(staged)
 
+    def test_reinstall_after_delete_restores_live_profile(self, profile_env):
+        from unittest.mock import patch
+
+        from hermes_cli.profiles import (
+            delete_profile,
+            list_profiles,
+            profile_exists,
+            resolve_profile_env,
+        )
+        from hermes_constants import named_profile_is_deleted
+
+        staged = _make_staging_dir(profile_env, "reinstall")
+        original = install_distribution(str(staged), name="reinstalled")
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), patch(
+            "hermes_cli.profiles._stop_profile_backends"
+        ):
+            delete_profile("reinstalled", yes=True)
+
+        assert named_profile_is_deleted(original.target_dir)
+        assert not profile_exists("reinstalled")
+
+        reinstalled = install_distribution(str(staged), name="reinstalled")
+
+        assert not named_profile_is_deleted(reinstalled.target_dir)
+        assert profile_exists("reinstalled")
+        assert "reinstalled" in {profile.name for profile in list_profiles()}
+        assert Path(resolve_profile_env("reinstalled")) == reinstalled.target_dir
+
     def test_install_respects_distribution_owned_allowlist(self, profile_env):
         """Install must only copy paths listed in distribution_owned."""
         mf = DistributionManifest(

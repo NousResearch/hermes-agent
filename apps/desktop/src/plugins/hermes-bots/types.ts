@@ -250,6 +250,9 @@ export interface RoutineJob {
   enabled?: boolean
   job_id: string
   last_delivery_error?: string
+  /** `platform:chat_id` targets whose live adapter acked the send with no
+   *  message_id/raw_response — accepted as delivered, but unconfirmed. */
+  last_delivery_unverified?: Array<string> | null
   last_fire_error?: string
   last_run_at?: string
   last_status?: string

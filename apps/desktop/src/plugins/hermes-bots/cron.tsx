@@ -400,7 +400,16 @@ export function routineDetailRows(job: RoutineJob | null | undefined): Array<{ l
  *  "paused"; the scheduler's own reason and the last fire/delivery failures
  *  had no surface in Bot Mode at all. */
 export function routineDetailIssue(job: RoutineJob | null | undefined): null | string {
-  const reasons = [job?.last_fire_error, job?.last_delivery_error, job?.paused_reason]
+  const unverified = job?.last_delivery_unverified
+  // A live adapter acked the last send but returned no message_id/
+  // raw_response (Slack/Matrix/Mattermost shape): accepted as delivered, but
+  // said here rather than only in a gateway WARNING log line, mirroring
+  // `hermes cron list`'s own "Delivery UNVERIFIED" line.
+  const unverifiedMessage = Array.isArray(unverified) && unverified.length > 0
+    ? `Delivery unverified: adapter acked ${unverified.join(', ')} without confirmation`
+    : null
+
+  const reasons = [job?.last_fire_error, job?.last_delivery_error, unverifiedMessage, job?.paused_reason]
   const first = reasons.find(value => typeof value === 'string' && value.trim())
 
   return first ? first.trim() : null

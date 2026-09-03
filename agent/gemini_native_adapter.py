@@ -29,7 +29,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from agent.bounded_response import read_streaming_error_body
-from agent.gemini_schema import sanitize_gemini_tool_parameters
+from agent.gemini_schema import prepare_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
 
@@ -575,7 +575,11 @@ def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
             decl["description"] = description
         parameters = fn.get("parameters")
         if isinstance(parameters, dict):
-            decl["parameters"] = sanitize_gemini_tool_parameters(parameters)
+            # Full JSON Schema via ``parametersJsonSchema`` — the legacy
+            # ``parameters`` field only accepts a lossy OpenAPI subset that
+            # broke real MCP tool schemas (anyOf unions, bare arrays,
+            # $ref/$defs). Clean-room port of zed-industries/zed#63342.
+            decl["parametersJsonSchema"] = prepare_gemini_tool_parameters(parameters)
         declarations.append(decl)
     return [{"functionDeclarations": declarations}] if declarations else []
 

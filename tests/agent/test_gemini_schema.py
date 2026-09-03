@@ -1,169 +1,183 @@
-"""Tests for agent.gemini_schema — OpenAI→Gemini tool parameter translation."""
+"""Tests for agent.gemini_schema — full-JSON-Schema normalization for Gemini.
 
-from agent.gemini_schema import (
-    sanitize_gemini_schema,
-    sanitize_gemini_tool_parameters,
-)
+Hermes sends tool schemas to Gemini through ``parametersJsonSchema`` (plain
+JSON Schema) instead of down-translating into the legacy ``parameters``
+subset (clean-room port of zed-industries/zed#63342).  These tests pin the
+normalizer's contract: lossless passthrough of full JSON Schema constructs,
+$ref inlining for MCP/pydantic-shaped schemas, and untouched passthrough
+when references cannot be resolved.
+"""
 
+import copy
 
-class TestSanitizeGeminiSchema:
-    def test_strips_unknown_top_level_keys(self):
-        """$schema / additionalProperties etc. must not reach Gemini."""
-        schema = {
-            "type": "object",
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "additionalProperties": False,
-            "properties": {"foo": {"type": "string"}},
-        }
-        cleaned = sanitize_gemini_schema(schema)
-        assert "$schema" not in cleaned
-        assert "additionalProperties" not in cleaned
-        assert cleaned["type"] == "object"
-        assert cleaned["properties"] == {"foo": {"type": "string"}}
+from agent.gemini_schema import prepare_gemini_tool_parameters
 
 
-    def test_stringifies_integer_enum_to_satisfy_gemini(self):
-        """Gemini rejects numeric enum metadata unless values are strings.
-
-        Regression for the Discord tool's ``auto_archive_duration``:
-        ``{type: integer, enum: [60, 1440, 4320, 10080]}`` caused
-        Gemini HTTP 400 INVALID_ARGUMENT
-        "Invalid value ... (TYPE_STRING), 60" on every request that
-        shipped the full tool catalog to generativelanguage.googleapis.com.
-        """
-        schema = {
-            "type": "integer",
-            "enum": [60, 1440, 4320, 10080],
-            "description": "Minutes (60, 1440, 4320, 10080).",
-        }
-        cleaned = sanitize_gemini_schema(schema)
-        assert cleaned["type"] == "integer"
-        assert cleaned["enum"] == ["60", "1440", "4320", "10080"]
-        # Description remains useful model guidance.
-        assert cleaned["description"].startswith("Minutes")
-
-
-
-
-
-    def test_stringifies_nested_integer_enum_inside_properties(self):
-        """The fix must apply recursively — the Discord case is nested."""
+class TestFullSchemaPassthrough:
+    def test_anyof_union_survives(self):
+        # The exact shape the legacy subset translator broke: a union whose
+        # outer node carries no ``type`` (pydantic ``str | list[str]``).
         schema = {
             "type": "object",
             "properties": {
-                "auto_archive_duration": {
-                    "type": "integer",
-                    "enum": [60, 1440, 4320, 10080],
-                    "description": "Thread archive duration in minutes.",
-                },
-                "status": {
-                    "type": "string",
-                    "enum": ["active", "archived"],
-                },
+                "globs": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "array", "items": {"type": "string"}},
+                    ],
+                    "description": "one or many globs",
+                }
+            },
+            "required": ["globs"],
+        }
+        out = prepare_gemini_tool_parameters(schema)
+        assert out["properties"]["globs"]["anyOf"] == schema["properties"]["globs"]["anyOf"]
+        assert out["required"] == ["globs"]
+
+    def test_bare_array_and_additional_properties_survive(self):
+        schema = {
+            "type": "object",
+            "properties": {"tags": {"type": "array"}},
+            "additionalProperties": False,
+        }
+        out = prepare_gemini_tool_parameters(schema)
+        assert out["properties"]["tags"] == {"type": "array"}
+        assert out["additionalProperties"] is False
+
+    def test_root_dollar_schema_stripped(self):
+        schema = {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {},
+        }
+        out = prepare_gemini_tool_parameters(schema)
+        assert "$schema" not in out
+
+    def test_input_never_mutated(self):
+        schema = {
+            "$schema": "x",
+            "type": "object",
+            "properties": {"p": {"$ref": "#/$defs/P"}},
+            "$defs": {"P": {"type": "integer"}},
+        }
+        snapshot = copy.deepcopy(schema)
+        prepare_gemini_tool_parameters(schema)
+        assert schema == snapshot
+
+    def test_empty_or_invalid_input_returns_object_schema(self):
+        assert prepare_gemini_tool_parameters(None) == {"type": "object", "properties": {}}
+        assert prepare_gemini_tool_parameters({}) == {"type": "object", "properties": {}}
+        assert prepare_gemini_tool_parameters("nope") == {"type": "object", "properties": {}}
+
+    def test_object_root_gains_properties(self):
+        out = prepare_gemini_tool_parameters({"type": "object"})
+        assert out == {"type": "object", "properties": {}}
+
+
+class TestRefInlining:
+    def test_pydantic_style_defs_inlined(self):
+        schema = {
+            "type": "object",
+            "properties": {"payload": {"$ref": "#/$defs/Payload"}},
+            "$defs": {
+                "Payload": {"type": "object", "properties": {"x": {"type": "integer"}}}
             },
         }
-        cleaned = sanitize_gemini_schema(schema)
-        props = cleaned["properties"]
-        # Integer enum is retained as Gemini-compatible string metadata...
-        assert props["auto_archive_duration"]["type"] == "integer"
-        assert props["auto_archive_duration"]["enum"] == ["60", "1440", "4320", "10080"]
-        # ...but the sibling string enum is preserved.
-        assert props["status"]["enum"] == ["active", "archived"]
+        out = prepare_gemini_tool_parameters(schema)
+        assert out["properties"]["payload"]["type"] == "object"
+        assert out["properties"]["payload"]["properties"]["x"] == {"type": "integer"}
+        assert "$defs" not in out
 
+    def test_legacy_definitions_inlined(self):
+        schema = {
+            "type": "object",
+            "properties": {"p": {"$ref": "#/definitions/P"}},
+            "definitions": {"P": {"type": "string"}},
+        }
+        out = prepare_gemini_tool_parameters(schema)
+        assert out["properties"]["p"]["type"] == "string"
+        assert "definitions" not in out
 
-
-    def test_non_dict_input_returns_empty(self):
-        assert sanitize_gemini_schema(None) == {}
-        assert sanitize_gemini_schema("not a schema") == {}
-        assert sanitize_gemini_schema([1, 2, 3]) == {}
-
-
-class TestRequiredPropertyPruning:
-    """Gemini rejects ``required`` names missing from the node's ``properties``.
-
-    Regression for the Kilo-Org/kilocode#11955 bug class: MCP servers (e.g.
-    the GitHub remote MCP) emit array item schemas whose ``required`` lists
-    reference properties that don't exist in the same node — Google fails the
-    entire GenerateContentRequest with HTTP 400 "property is not defined".
-    """
-
-
-
-    def test_prunes_inside_array_items(self):
-        """The exact shape from the GitHub MCP report — nested in items."""
+    def test_ref_siblings_preserved(self):
+        # JSON Schema allows annotations next to $ref; they must survive.
         schema = {
             "type": "object",
             "properties": {
-                "issue_fields": {
-                    "type": "array",
-                    "items": {
+                "p": {"$ref": "#/$defs/P", "description": "the payload"}
+            },
+            "$defs": {"P": {"type": "string"}},
+        }
+        out = prepare_gemini_tool_parameters(schema)
+        assert out["properties"]["p"]["type"] == "string"
+        assert out["properties"]["p"]["description"] == "the payload"
+
+    def test_nested_refs_inlined(self):
+        schema = {
+            "type": "object",
+            "properties": {"outer": {"$ref": "#/$defs/Outer"}},
+            "$defs": {
+                "Outer": {
+                    "type": "object",
+                    "properties": {"inner": {"$ref": "#/$defs/Inner"}},
+                },
+                "Inner": {"type": "boolean"},
+            },
+        }
+        out = prepare_gemini_tool_parameters(schema)
+        assert (
+            out["properties"]["outer"]["properties"]["inner"]["type"] == "boolean"
+        )
+
+    def test_unresolvable_ref_passes_schema_through_untouched(self):
+        # Half-rewriting hides the real problem; the provider's error names
+        # the bad pointer. Only the root $schema metadata is dropped.
+        schema = {
+            "$schema": "x",
+            "type": "object",
+            "properties": {"p": {"$ref": "#/$defs/Missing"}},
+        }
+        out = prepare_gemini_tool_parameters(schema)
+        assert out["properties"]["p"] == {"$ref": "#/$defs/Missing"}
+        assert "$schema" not in out
+
+    def test_circular_ref_passes_schema_through_untouched(self):
+        schema = {
+            "type": "object",
+            "properties": {"p": {"$ref": "#/$defs/Loop"}},
+            "$defs": {"Loop": {"properties": {"again": {"$ref": "#/$defs/Loop"}}}},
+        }
+        out = prepare_gemini_tool_parameters(schema)
+        # Original shape retained, including its $defs (still referenced).
+        assert out["properties"]["p"] == {"$ref": "#/$defs/Loop"}
+        assert "$defs" in out
+
+
+class TestAdapterWiring:
+    def test_translate_tools_emits_parameters_json_schema(self):
+        from agent.gemini_native_adapter import _translate_tools_to_gemini
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "union_tool",
+                    "description": "d",
+                    "parameters": {
                         "type": "object",
-                        "required": ["field_id", "value"],
+                        "properties": {
+                            "globs": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "array", "items": {"type": "string"}},
+                                ]
+                            }
+                        },
                     },
                 },
-            },
-            "required": ["issue_fields"],
-        }
-        cleaned = sanitize_gemini_schema(schema)
-        items = cleaned["properties"]["issue_fields"]["items"]
-        assert "required" not in items
-        # Top-level required is valid and survives.
-        assert cleaned["required"] == ["issue_fields"]
-
-
-    def test_valid_required_untouched(self):
-        schema = {
-            "type": "object",
-            "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
-            "required": ["a", "b"],
-        }
-        cleaned = sanitize_gemini_schema(schema)
-        assert cleaned["required"] == ["a", "b"]
-
-
-    def test_prunes_inside_anyof_branches(self):
-        schema = {
-            "anyOf": [
-                {
-                    "type": "object",
-                    "properties": {"x": {"type": "string"}},
-                    "required": ["x", "ghost"],
-                },
-                {"type": "object", "required": ["orphan"]},
-            ]
-        }
-        cleaned = sanitize_gemini_schema(schema)
-        assert cleaned["anyOf"][0]["required"] == ["x"]
-        assert "required" not in cleaned["anyOf"][1]
-
-
-class TestSanitizeGeminiToolParameters:
-    def test_empty_parameters_return_valid_object_schema(self):
-        """Gemini requires ``parameters`` to be a valid object schema."""
-        cleaned = sanitize_gemini_tool_parameters({})
-        assert cleaned == {"type": "object", "properties": {}}
-
-    def test_discord_create_thread_parameters_no_longer_trip_gemini(self):
-        """End-to-end regression: the exact shape that was rejected in prod."""
-        params = {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "enum": ["create_thread"]},
-                "auto_archive_duration": {
-                    "type": "integer",
-                    "enum": [60, 1440, 4320, 10080],
-                    "description": "Thread archive duration in minutes "
-                    "(create_thread, default 1440).",
-                },
-            },
-            "required": ["action"],
-        }
-        cleaned = sanitize_gemini_tool_parameters(params)
-        aad = cleaned["properties"]["auto_archive_duration"]
-        # The field that triggered the Gemini 400 is now string metadata.
-        assert aad["enum"] == ["60", "1440", "4320", "10080"]
-        # Type + description survive so the model still knows what to send.
-        assert aad["type"] == "integer"
-        assert "1440" in aad["description"]
-        # And the string-enum sibling is untouched.
-        assert cleaned["properties"]["action"]["enum"] == ["create_thread"]
+            }
+        ]
+        out = _translate_tools_to_gemini(tools)
+        decl = out[0]["functionDeclarations"][0]
+        assert "parametersJsonSchema" in decl
+        assert "parameters" not in decl
+        assert decl["parametersJsonSchema"]["properties"]["globs"]["anyOf"]

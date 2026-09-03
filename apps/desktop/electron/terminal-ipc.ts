@@ -166,6 +166,18 @@ export function registerTerminalIpc({
     // which marks the agent *backend* and gates cron/gateway behavior.
     env.HERMES_DESKTOP_TERMINAL = '1'
 
+    // On Windows, disable MSYS argv path conversion for any MSYS2/Git Bash subprocesses.
+    // Without this, commands like `tasklist /FI` or `schtasks /Create` get their
+    // slash-prefixed flags rewritten to C:/... paths (e.g. /FI -> C:/.../git/FI),
+    // matching the Python terminal tool's _apply_windows_msys_bash_env_defaults
+    // in tools/environments/local.py. Set both vars for coverage:
+    // MSYS_NO_PATHCONV for Git for Windows bash, MSYS2_ARG_CONV_EXCL=* as fallback
+    // for MSYS2/Cygwin bash. Preserve any user-specified values.
+    if (process.platform === 'win32') {
+      env.MSYS_NO_PATHCONV = env.MSYS_NO_PATHCONV || '1'
+      env.MSYS2_ARG_CONV_EXCL = env.MSYS2_ARG_CONV_EXCL || '*'
+    }
+
     return env
   }
 

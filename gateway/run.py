@@ -25132,8 +25132,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # When streaming already delivered the text (already_sent=True),
         # the base adapter will receive None and can't run auto-TTS,
         # so the runner must take over.
+        #
+        # Exception: when the bot is in a Discord voice channel, the
+        # runner's _send_voice_reply() is the only path that correctly
+        # calls play_in_voice_channel(). The base adapter's play_tts()
+        # override routes to the VC too, but the dedup skip below
+        # prevents _send_voice_reply from running, and the base adapter
+        # path can fail silently when the response was already sent
+        # via streaming. So for VC-connected Discord, let the runner
+        # handle it. (#101185)
         if is_voice_input and not already_sent:
-            return False
+            adapter = self._adapter_for_source(event.source)
+            guild_id = self._get_guild_id(event)
+            is_in_vc = getattr(adapter, "is_in_voice_channel", None)
+            if (guild_id and callable(is_in_vc) and is_in_vc(guild_id)):
+                pass  # Don't skip — let _send_voice_reply play in VC
+            else:
+                return False
 
         return True
 

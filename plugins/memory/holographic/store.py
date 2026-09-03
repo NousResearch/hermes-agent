@@ -47,7 +47,10 @@ CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
 CREATE INDEX IF NOT EXISTS idx_entities_name  ON entities(name);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
-    USING fts5(content, tags, content=facts, content_rowid=fact_id);
+    USING fts5(
+        content, tags, content=facts, content_rowid=fact_id,
+        tokenize='trigram remove_diacritics 1'
+    );
 
 CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
     INSERT INTO facts_fts(rowid, content, tags)
@@ -176,11 +179,40 @@ class MemoryStore:
         from hermes_state import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
         self._conn.executescript(_SCHEMA)
+        self._migrate_fts_tokenizer()
         # Migrate: add hrr_vector column if missing (safe for existing databases)
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
         self._conn.commit()
+
+    def _migrate_fts_tokenizer(self) -> None:
+        """Rebuild legacy unicode61 indexes with the CJK-safe trigram tokenizer."""
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'facts_fts'"
+        ).fetchone()
+        if row is None or "trigram" in row["sql"].lower():
+            return
+
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            self._conn.execute("DROP TABLE facts_fts")
+            self._conn.execute(
+                """
+                CREATE VIRTUAL TABLE facts_fts USING fts5(
+                    content, tags, content=facts, content_rowid=fact_id,
+                    tokenize='trigram remove_diacritics 1'
+                )
+                """
+            )
+            self._conn.execute(
+                "INSERT INTO facts_fts(facts_fts) VALUES('rebuild')"
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            if self._conn.in_transaction:
+                self._conn.execute("ROLLBACK")
+            raise
 
     # ------------------------------------------------------------------
     # Public API

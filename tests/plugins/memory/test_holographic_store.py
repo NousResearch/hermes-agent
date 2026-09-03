@@ -107,6 +107,37 @@ class TestSharedConnection:
             a.close()
             b.close()
 
+    @pytest.mark.parametrize("query", ["watchdog", "ppid", "桌面后端"])
+    def test_existing_store_migrates_mixed_cjk_content_index(self, db_path, query):
+        content = (
+            "桌面后端秒退根因:web_server的HERMES_PARENT_PID父进程"
+            "watchdog单层ppid比较会误杀健康后端。"
+        )
+        with MemoryStore(db_path) as store:
+            fact_id = store.add_fact(content)
+            store._conn.executescript(
+                """
+                DROP TABLE facts_fts;
+                CREATE VIRTUAL TABLE facts_fts USING fts5(
+                    content, tags, content=facts, content_rowid=fact_id
+                );
+                INSERT INTO facts_fts(facts_fts) VALUES('rebuild');
+                """
+            )
+
+        with MemoryStore(db_path) as migrated_store:
+            results = migrated_store.search_facts(query)
+
+        assert [result["fact_id"] for result in results] == [fact_id]
+
+    def test_trigram_search_preserves_diacritic_folding(self, db_path):
+        with MemoryStore(db_path) as store:
+            fact_id = store.add_fact("café deployment notes")
+
+            results = store.search_facts("cafe")
+
+        assert [result["fact_id"] for result in results] == [fact_id]
+
 
 class TestCloseSemantics:
     def test_closing_one_instance_keeps_sibling_alive(self, db_path):

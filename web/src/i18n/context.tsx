@@ -11,6 +11,7 @@ import { tr } from "./tr";
 import { uk } from "./uk";
 import { af } from "./af";
 import { ko } from "./ko";
+import { lo } from "./lo";
 import { it } from "./it";
 import { ga } from "./ga";
 import { pt } from "./pt";
@@ -30,6 +31,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   uk,
   af,
   ko,
+  lo,
   it,
   ga,
   pt,
@@ -63,6 +65,7 @@ export const LOCALE_META: Record<Locale, { name: string }> = {
   uk: { name: "Українська" },
   af: { name: "Afrikaans" },
   ko: { name: "한국어" },
+  lo: { name: "ລາວ" },
   it: { name: "Italiano" },
   ga: { name: "Gaeilge" },
   pt: { name: "Português" },

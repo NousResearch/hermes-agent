@@ -322,3 +322,98 @@ def test_turn_clock_stamped_only_with_budget(monkeypatch, tmp_path):
 
     assert agent_with._run_budget_started_at is not None
     assert agent_with._run_budget_wrapup_injected is False
+
+
+# ── local-endpoint stale-timeout override (Bug 2 regression) ─────────────
+
+
+class TestLocalEndpointStaleTimeout:
+    """Regression: local endpoints must get float("inf") stale timeout
+    regardless of reasoning-model floor matching.
+
+    Bug: Qwen3.8-27B-mxfp8 matches the "qwen3" reasoning floor pattern
+    (regex ^qwen3(?:$|[\-._]) matches "qwen3.8" because "." is in the
+    separator class). This sets uses_implicit_default=False, which disables
+    the local-endpoint float("inf") short-circuit. Result: a healthy local
+    mlx-lm server gets killed after 180s of no output.
+
+    Fix: move the is_local_endpoint check BEFORE the reasoning-model floor
+    in _resolved_api_call_stale_timeout_base, so local endpoints always get
+    float("inf") regardless of reasoning model detection.
+    """
+
+    def test_local_endpoint_with_reasoning_model_gets_inf(self, monkeypatch, tmp_path):
+        """A local endpoint running a Qwen3 model must get inf, not 180s."""
+        import run_agent
+        monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+        agent = _make_agent(
+            tmp_path, monkeypatch,
+            model="mlx-community/Qwen3.8-27B-mxfp8",
+            provider="custom",
+            base_url="http://127.0.0.1:8080/v1",
+        )
+        base, implicit = agent._resolved_api_call_stale_timeout_base()
+        assert base == float("inf"), (
+            f"Local endpoint with Qwen3 model should get inf, got {base}"
+        )
+        assert implicit is True
+
+    def test_local_endpoint_with_deepseek_gets_inf(self, monkeypatch, tmp_path):
+        """A local endpoint running deepseek-v4-pro must get inf, not 600s."""
+        import run_agent
+        monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+        agent = _make_agent(
+            tmp_path, monkeypatch,
+            model="deepseek/deepseek-v4-pro",
+            provider="custom",
+            base_url="http://127.0.0.1:8080/v1",
+        )
+        base, implicit = agent._resolved_api_call_stale_timeout_base()
+        assert base == float("inf"), (
+            f"Local endpoint with deepseek-v4-pro should get inf, got {base}"
+        )
+        assert implicit is True
+
+    def test_cloud_endpoint_still_gets_reasoning_floor(self, monkeypatch, tmp_path):
+        """A cloud endpoint running deepseek-v4-pro must still get 600s floor."""
+        import run_agent
+        monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+        agent = _make_agent(
+            tmp_path, monkeypatch,
+            model="deepseek/deepseek-v4-pro",
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        base, implicit = agent._resolved_api_call_stale_timeout_base()
+        assert base == 600.0, (
+            f"Cloud endpoint with deepseek-v4-pro should get 600s, got {base}"
+        )
+        assert implicit is False
+
+    def test_explicit_config_still_wins_over_local(self, monkeypatch, tmp_path):
+        """Explicit stale_timeout_seconds overrides even local endpoint inf."""
+        import run_agent
+        monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: 300.0)
+        agent = _make_agent(
+            tmp_path, monkeypatch,
+            model="mlx-community/Qwen3.8-27B-mxfp8",
+            provider="custom",
+            base_url="http://127.0.0.1:8080/v1",
+        )
+        base, implicit = agent._resolved_api_call_stale_timeout_base()
+        assert base == 300.0
+        assert implicit is False
+
+    def test_local_endpoint_non_reasoning_model_gets_inf(self, monkeypatch, tmp_path):
+        """A local endpoint with a non-reasoning model also gets inf."""
+        import run_agent
+        monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+        agent = _make_agent(
+            tmp_path, monkeypatch,
+            model="llama3.1:8b",
+            provider="custom",
+            base_url="http://127.0.0.1:11434/v1",
+        )
+        base, implicit = agent._resolved_api_call_stale_timeout_base()
+        assert base == float("inf")
+        assert implicit is True

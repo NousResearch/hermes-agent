@@ -1195,6 +1195,109 @@ class TestGetModelContextLength:
         mock_local_ctx.assert_called_once()
 
 
+# =========================================================================
+# _query_ollama_api_show: non-Ollama server gating (regression)
+# =========================================================================
+
+class TestNonOllamaServerGating:
+    """Regression: _query_ollama_api_show must not POST /api/show to
+    non-Ollama local servers.
+
+    Servers like mlx-lm, sglang, TabbyAPI expose an OpenAI-compatible
+    /v1/chat/completions endpoint but do NOT implement Ollama's native
+    /api/show. Before the fix, the context-length resolver fired
+    POST /api/show at any unrecognized local endpoint, producing a 404
+    on every probe cycle (~30s TTL, never memoized on failure).
+
+    The fix: _query_ollama_api_show_uncached gates on
+    detect_local_server_type() — the same guard its sibling probes
+    (query_ollama_num_ctx, query_ollama_supports_vision) already use.
+    Non-Ollama servers identified by the probe waterfall are skipped;
+    unknown servers (detect_local_server_type returns None) still
+    receive the probe as a fallback (the original conservative behavior).
+    """
+
+    @patch("agent.model_metadata._endpoint_blackholed", return_value=False)
+    @patch("agent.model_metadata.detect_local_server_type", return_value="vllm")
+    @patch("agent.model_metadata._auth_headers", return_value={})
+    def test_non_ollama_server_skips_api_show(self, mock_auth, mock_detect, mock_blackhole):
+        """A server identified as 'vllm' should never receive POST /api/show."""
+        import httpx
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        with patch.object(httpx, "Client", return_value=mock_client):
+            from agent.model_metadata import _query_ollama_api_show_uncached
+            result = _query_ollama_api_show_uncached(
+                "mlx-community/Qwen3.8-27B-mxfp8",
+                "http://127.0.0.1:8080/v1",
+            )
+        assert result is None
+        mock_client.post.assert_not_called()
+
+    @patch("agent.model_metadata._endpoint_blackholed", return_value=False)
+    @patch("agent.model_metadata.detect_local_server_type", return_value="ollama")
+    @patch("agent.model_metadata._auth_headers", return_value={})
+    def test_ollama_server_still_receives_api_show(self, mock_auth, mock_detect, mock_blackhole):
+        """A server identified as 'ollama' must still receive POST /api/show."""
+        import httpx
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "model_info": {"model.context_length": 131072},
+            "parameters": "",
+        }
+        mock_client.post.return_value = mock_response
+        with patch.object(httpx, "Client", return_value=mock_client):
+            from agent.model_metadata import _query_ollama_api_show_uncached
+            result = _query_ollama_api_show_uncached(
+                "my-model",
+                "http://127.0.0.1:11434",
+            )
+        assert result == 131072
+        mock_client.post.assert_called_once()
+
+    @patch("agent.model_metadata._endpoint_blackholed", return_value=False)
+    @patch("agent.model_metadata.detect_local_server_type", return_value=None)
+    @patch("agent.model_metadata._auth_headers", return_value={})
+    def test_unknown_server_falls_through_to_probe(self, mock_auth, mock_detect, mock_blackhole):
+        """Unknown server type (None) preserves original behavior: probe fires."""
+        import httpx
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_client.post.return_value = mock_response
+        with patch.object(httpx, "Client", return_value=mock_client):
+            from agent.model_metadata import _query_ollama_api_show_uncached
+            result = _query_ollama_api_show_uncached(
+                "my-model",
+                "http://127.0.0.1:8080/v1",
+            )
+        assert result is None
+        mock_client.post.assert_called_once()
+
+    @patch("agent.model_metadata._endpoint_blackholed", return_value=False)
+    @patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio")
+    @patch("agent.model_metadata._auth_headers", return_value={})
+    def test_lm_studio_skips_api_show(self, mock_auth, mock_detect, mock_blackhole):
+        """LM Studio identified servers must not receive POST /api/show."""
+        import httpx
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        with patch.object(httpx, "Client", return_value=mock_client):
+            from agent.model_metadata import _query_ollama_api_show_uncached
+            result = _query_ollama_api_show_uncached(
+                "my-model",
+                "http://127.0.0.1:1234/v1",
+            )
+        assert result is None
+        mock_client.post.assert_not_called()
 
 
 # =========================================================================

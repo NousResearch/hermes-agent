@@ -803,7 +803,17 @@ def _touch_stale_kill_activity(agent, elapsed: float) -> None:
 
 def _check_stale_giveup(agent) -> None:
     """Raise immediately when the consecutive-stale streak is past the
-    give-up threshold — no network attempt, no stale-timeout wait."""
+    give-up threshold — no network attempt, no stale-timeout wait.
+
+    Local endpoints are exempt: bouncing your own inference server is
+    routine ops, so a stale streak accumulated against a local server
+    must never permanently wedge the session. Mirrors the
+    local-endpoint infinite-stale-timeout policy in run_agent.py.
+    """
+    base_url = getattr(agent, "_base_url", None) or getattr(agent, "base_url", None) or ""
+    if base_url and is_local_endpoint(base_url):
+        return
+
     _giveup = env_int("HERMES_STREAM_STALE_GIVEUP", 5)
     _streak = _stale_streak(agent)
     if _giveup > 0 and _streak >= _giveup:

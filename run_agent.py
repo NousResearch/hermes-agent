@@ -1565,6 +1565,16 @@ class AIAgent:
         if env_timeout is not None:
             return float(env_timeout), False
 
+        # Local endpoints: never kill for being slow. The stale detector
+        # is designed for cloud gateways that idle-kill connections;
+        # local servers (mlx-lm, llama.cpp, vLLM, etc.) don't have that
+        # problem. Check BEFORE the reasoning-model floor so over-broad
+        # pattern matching (e.g. "qwen3" matching "Qwen3.8-27B-mxfp8")
+        # doesn't disable this protection for local endpoints.
+        base_url = getattr(self, "_base_url", None) or self.base_url or ""
+        if base_url and is_local_endpoint(base_url):
+            return float("inf"), True
+
         # Reasoning-model floor: auto-mitigation for known reasoning models
         # (Nemotron 3 Ultra, OpenAI o1/o3, Anthropic Opus 4.x thinking,
         # DeepSeek R1, Qwen QwQ, xAI Grok reasoning, etc.) whose cloud

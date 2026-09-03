@@ -2192,10 +2192,11 @@ def query_ollama_supports_vision(model: str, base_url: str, api_key: str = "") -
 def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query an Ollama server's native ``/api/show`` for context length.
 
-    Provider-agnostic: works against ANY Ollama-compatible server regardless
-    of hostname — local Ollama, Ollama Cloud (``ollama.com``), custom Ollama
-    hosting behind a reverse proxy, etc.  For non-Ollama servers the POST
-    returns 404/405 quickly; the function handles errors gracefully.
+    Gated on ``detect_local_server_type``: the POST only fires for servers
+    identified as Ollama-compatible (local Ollama, Ollama Cloud (``ollama.com``), custom Ollama
+    hosting behind a reverse proxy, etc.). Non-Ollama servers (mlx-lm, sglang,
+    TabbyAPI, etc.) are skipped to prevent 404 spray — the server-type probe
+    is cached for the process lifetime so no extra round-trips are paid.
 
     Results are cached in ``_LOCAL_CTX_PROBE_CACHE`` (same 30s TTL,
     positive-only — see ``_query_local_context_length``) so back-to-back
@@ -2240,6 +2241,25 @@ def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = ""
         server_url = server_url[:-3]
 
     if _endpoint_blackholed(server_url):
+        return None
+
+    # Gate on server type: only POST /api/show to servers that are actually
+    # Ollama-compatible. detect_local_server_type (line 996) runs a probe
+    # waterfall — LM Studio /api/v1/models, Ollama /api/tags, llama.cpp /props,
+    # vLLM /version — and caches the result for the process lifetime. Its
+    # sibling probes (query_ollama_num_ctx, query_ollama_supports_vision,
+    # _query_local_context_length_uncached) all gate on it the same way.
+    #
+    # This prevents 404 spray against non-Ollama local servers (mlx-lm, sglang,
+    # TabbyAPI, etc.) that speak OpenAI-compatible /v1/chat/completions but
+    # don't implement Ollama's native /api/show. The in-memory + disk cache
+    # in detect_local_server_type means the probe waterfall only fires once
+    # per (host:port) per process.
+    try:
+        server_type = detect_local_server_type(base_url, api_key=api_key)
+    except Exception:
+        return None
+    if server_type is not None and server_type != "ollama":
         return None
 
     headers = _auth_headers(api_key)

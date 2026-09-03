@@ -390,7 +390,7 @@ def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file)
     assert not dm_file.exists()
 
 
-def test_delivery_runner_unlinks_when_child_launch_raises(tmp_path, monkeypatch):
+def test_delivery_runner_retains_payload_when_child_launch_raises(tmp_path, monkeypatch):
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
 
@@ -400,10 +400,10 @@ def test_delivery_runner_unlinks_when_child_launch_raises(tmp_path, monkeypatch)
     monkeypatch.setattr(subprocess, "run", boom)
     with pytest.raises(RuntimeError, match="child launch failed"):
         bot_mode_dm._run_delivery(["hermes"], str(dm_file), stdin_file=False)
-    assert not dm_file.exists()
+    assert dm_file.exists()
 
 
-def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
+def test_delivery_runner_preserves_child_failure_and_payload(tmp_path):
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
     child = tmp_path / "fail.py"
@@ -419,7 +419,38 @@ def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     )
 
     assert returncode == 7
-    assert not dm_file.exists()
+    assert dm_file.exists()
+
+
+def test_non_delivered_payload_is_retained_and_replay_returns_cached_receipt(
+    tmp_path, monkeypatch, capsys
+):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    calls = []
+
+    def failed_transport(*args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(
+            args[0],
+            1,
+            stdout="",
+            stderr="Session abc already has a live owner (desktop, pid 1).",
+        )
+
+    monkeypatch.setattr(subprocess, "run", failed_transport)
+
+    assert bot_mode_dm._run_delivery(["hermes"], str(dm_file), stdin_file=False) == 1
+    first = json.loads(capsys.readouterr().out)
+    assert dm_file.exists()
+    assert first["reason"] == "target_busy"
+    assert first["payload_file"] == str(dm_file)
+    assert first["retry_command"]
+
+    assert bot_mode_dm._run_delivery(["hermes"], str(dm_file), stdin_file=False) == 1
+    second = json.loads(capsys.readouterr().out)
+    assert second == first
+    assert len(calls) == 1
 
 
 def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
@@ -445,11 +476,61 @@ def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
     assert "NOT delivered" in payload["error"]
 
 
+def test_delivery_runner_hands_off_to_live_owner(tmp_path, monkeypatch, capsys):
+    """#101060: when Desktop owns Bot Chat, local delivery uses the live-owner
+    handoff instead of the fenced-out CLI subprocess."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("Message from 🤖 forge (@forge): ping", encoding="utf-8")
+    profile_home = tmp_path / "profiles" / "ops"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        bot_mode_dm,
+        "_hermes_root",
+        lambda home: tmp_path,
+    )
+    calls = []
+
+    def fake_find(home):
+        assert Path(home) == profile_home
+        return "canonical"
+
+    def fake_deliver(home, session_id, content, **kwargs):
+        calls.append((Path(home), session_id, content, kwargs))
+        return {"status": "delivered", "delivery_id": "a" * 32, "reply": "pong"}
+
+    monkeypatch.setattr(
+        "tools.bot_live_delivery.find_canonical_live_owner", fake_find
+    )
+    monkeypatch.setattr(
+        "tools.bot_live_delivery.deliver_to_live_owner", fake_deliver
+    )
+    spawned = []
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: spawned.append(a) or None
+    )
+
+    returncode = bot_mode_dm._run_delivery(
+        ["hermes", "-p", "ops", "chat", "-c", "Bot Chat"],
+        str(dm_file),
+        stdin_file=False,
+    )
+
+    assert returncode == 0
+    assert not spawned
+    assert calls and calls[0][1] == "canonical"
+    assert "ping" in calls[0][2]
+    assert capsys.readouterr().out.strip() == "pong"
+    assert not dm_file.exists()
+
+
 def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
     tmp_path, monkeypatch
 ):
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
+    (tmp_path / "profiles" / "researcher").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     calls = []
     responses = [
         subprocess.CompletedProcess([], 1, stdout="", stderr="HTTP 429 rate limit"),
@@ -512,7 +593,7 @@ def test_delivery_main_runs_valid_cli_and_unlinks(tmp_path, mode):
     assert not dm_file.exists()
 
 
-def test_delivery_main_maps_launch_exception_to_one_and_unlinks(tmp_path, monkeypatch):
+def test_delivery_main_maps_launch_exception_to_one_and_retains_payload(tmp_path, monkeypatch):
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
 
@@ -526,7 +607,7 @@ def test_delivery_main_maps_launch_exception_to_one_and_unlinks(tmp_path, monkey
         )
         == 1
     )
-    assert not dm_file.exists()
+    assert dm_file.exists()
 
 
 @pytest.mark.parametrize("stdin_file", [False, True])

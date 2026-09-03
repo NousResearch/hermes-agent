@@ -83,13 +83,48 @@ _TRUST_MIN       =  0.0
 _TRUST_MAX       =  1.0
 
 # Entity extraction patterns
+# Multi-word proper nouns: "John Doe", "New York City"
 _RE_CAPITALIZED  = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b')
+# Single-word proper nouns: "Michael", "Anne", "Obsidian"
+# Matches any standalone capitalized word (3+ chars to avoid "I", "A",
+# "An").  Sentence-initial common words ("The", "When", "This", …) are
+# filtered out by the _RE_STOPWORDS set below rather than by position,
+# because real proper nouns can also appear at the start of a sentence
+# ("Michael prefers dark roast coffee.").
+_RE_SINGLE_CAP   = re.compile(r'\b([A-Z][a-z]{2,})\b')
 _RE_DOUBLE_QUOTE = re.compile(r'"([^"]+)"')
 _RE_SINGLE_QUOTE = re.compile(r"'([^']+)'")
 _RE_AKA          = re.compile(
     r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)',
     re.IGNORECASE,
 )
+# Common English words that are capitalized but are not proper nouns.
+# These are filtered out of single-word entity candidates.
+_RE_STOPWORDS = frozenset({
+    'The', 'This', 'That', 'These', 'Those', 'There', 'Their', 'They',
+    'Then', 'Thus', 'Therefore', 'However', 'Moreover', 'Meanwhile',
+    'When', 'Where', 'While', 'What', 'Who', 'Why', 'How', 'Which',
+    'After', 'Before', 'Although', 'Because', 'Since', 'Unless',
+    'Some', 'Such', 'Same', 'Both', 'Each', 'Every', 'Either', 'Neither',
+    'It', 'Its', 'In', 'On', 'At', 'By', 'For', 'From', 'Of', 'To',
+    'As', 'An', 'And', 'But', 'Or', 'Nor', 'So', 'Yet',
+    'I', 'We', 'You', 'He', 'She', 'They', 'Me', 'Him', 'Her', 'Us',
+    'My', 'Your', 'His', 'Our',
+    'A', 'If', 'No', 'Not', 'Yes', 'Oh', 'Ah',
+    'Also', 'Even', 'Only', 'Just', 'Still', 'Now', 'Here',
+    'First', 'Second', 'Third', 'Last', 'Next', 'Once',
+    'Yes', 'Maybe', 'Perhaps',
+    'Does', 'Did', 'Do', 'Done', 'Doing',
+    'Has', 'Had', 'Have', 'Having',
+    'Was', 'Were', 'Will', 'Would', 'Could', 'Should', 'Shall',
+    'Can', 'May', 'Might', 'Must',
+    'Is', 'Are', 'Am', 'Be', 'Been', 'Being',
+    'About', 'Above', 'Across', 'After', 'Against', 'Along',
+    'Among', 'Around', 'Behind', 'Below', 'Beside', 'Between',
+    'Beyond', 'During', 'Except', 'Inside', 'Into', 'Near',
+    'Outside', 'Over', 'Through', 'Throughout', 'Toward', 'Towards',
+    'Under', 'Until', 'Upon', 'Within', 'Without',
+})
 
 
 def _clamp_trust(value: float) -> float:
@@ -450,9 +485,10 @@ class MemoryStore:
 
         Rules applied (in order):
         1. Capitalized multi-word phrases  e.g. "John Doe"
-        2. Double-quoted terms             e.g. "Python"
-        3. Single-quoted terms             e.g. 'pytest'
-        4. AKA patterns                    e.g. "Guido aka BDFL" -> two entities
+        2. Single capitalized words (non-sentence-initial, non-stopword) e.g. "Michael"
+        3. Double-quoted terms             e.g. "Python"
+        4. Single-quoted terms             e.g. 'pytest'
+        5. AKA patterns                    e.g. "Guido aka BDFL" -> two entities
 
         Returns a deduplicated list preserving first-seen order.
         """
@@ -467,6 +503,15 @@ class MemoryStore:
 
         for m in _RE_CAPITALIZED.finditer(text):
             _add(m.group(1))
+
+        # Single-word proper nouns — skip common English stopwords that
+        # happen to be capitalized (e.g. "The", "When", "This").
+        # Words already captured as part of a multi-word match are deduped
+        # by the ``seen`` set, so we only add genuinely new single tokens.
+        for m in _RE_SINGLE_CAP.finditer(text):
+            word = m.group(1)
+            if word and word not in _RE_STOPWORDS:
+                _add(word)
 
         for m in _RE_DOUBLE_QUOTE.finditer(text):
             _add(m.group(1))

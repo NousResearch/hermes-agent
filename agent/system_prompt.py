@@ -309,9 +309,28 @@ def _session_start_like(agent: Any, now: Any) -> Any:
     3. ``now`` (initial/legacy build without either).
 
     Session-id and ``session_start`` stamps are recorded in the box's local
-    wall-clock; attach that zone first, then convert to the configured /
-    rendered zone (``now``'s tzinfo) so the displayed date is consistent with
-    the per-turn clock even when the box's TZ differs from the configured one.
+    wall-clock. We attach that zone for type-consistency (some callers may
+    later want %Z/offset info) but we deliberately do NOT convert the value
+    into the configured / rendered zone (``now``'s tzinfo).
+
+    Converting a wall-clock reading into a *different* UTC offset can shift
+    which calendar day it falls on whenever the instant sits within one
+    offset-delta of local midnight in either zone (e.g. a session minted at
+    23:30 box-local, with a display zone several hours ahead, lands on the
+    display zone's NEXT calendar day). That shift silently detaches the
+    printed weekday from the printed day-of-month — ``strftime`` never lies
+    about which weekday a given date falls on, but the *date itself* becomes
+    wrong for the day the session actually started on, which is what
+    "Conversation started" promises to report. Verified with real stdlib
+    zoneinfo: an instant recorded as 23:30 US/Pacific on Sept 4 reads as
+    Sept 5 once converted to Asia/Kolkata or Europe/London — a full
+    calendar-day (and weekday) shift caused purely by the display-zone
+    conversion, not by any real ambiguity about when the session started.
+
+    The box-local wall-clock calendar date is ground truth for "what day did
+    this session start" — it must never move because of a display-timezone
+    choice. Only the offset/zone *annotation* appended elsewhere (via
+    ``now``, see ``_zone_suffix`` below) may vary with the configured zone.
     """
     from datetime import datetime
 
@@ -321,15 +340,15 @@ def _session_start_like(agent: Any, now: Any) -> Any:
         machine_local_tz = None
 
     def _to_display_tz(dt: Any) -> Any:
+        # Attach the box-local zone for callers that inspect ``.tzinfo``,
+        # but never ``astimezone()`` into a different zone here — see the
+        # docstring above for why that conversion is exactly the bug this
+        # function exists to avoid. The calendar date/time-of-day fields of
+        # ``dt`` are never altered.
         if machine_local_tz is not None and dt.tzinfo is None:
             try:
                 dt = dt.replace(tzinfo=machine_local_tz)
             except ValueError:
-                pass
-        if getattr(now, "tzinfo", None) is not None and dt.tzinfo is not None:
-            try:
-                dt = dt.astimezone(now.tzinfo)
-            except (ValueError, OSError):
                 pass
         return dt
 

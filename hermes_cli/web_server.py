@@ -919,6 +919,18 @@ def _desktop_loopback_auth_exempt(
     )
 
 
+# ── Multi-host bind seam (web_serve_bind slice) ───────────────────────────
+# ``create_server_sockets`` / ``all_hosts_loopback`` live in the extracted
+# pure module so they are independently testable and keep web_server.py thin.
+# Re-exported here with identity preserved (``web_server.X is
+# web_serve_bind.X``) so existing callers and monkeypatch targets keep working.
+from hermes_cli.web_serve_bind import (  # noqa: E402,F401
+    all_hosts_loopback,
+    close_server_sockets,
+    create_server_sockets,
+)
+
+
 def _host_header_hostname(host_header: str) -> str:
     """Return a normalized hostname from a valid HTTP Host authority.
 
@@ -959,16 +971,20 @@ def _host_header_hostname(host_header: str) -> str:
 
 def _is_accepted_host(
     host_header: str,
-    bound_host: str,
+    bound_host,
     trusted_public_hosts: frozenset[str] = frozenset(),
 ) -> bool:
-    """True if the Host header targets the interface we bound to.
+    """True if the Host header targets one of the interfaces we bound to.
+
+    ``bound_host`` is either a single bound address (legacy / single-stack) or a
+    collection of bound addresses (dual-stack, e.g. ``{"0.0.0.0", "::"}``). It
+    is normalised to a set internally so both call styles share one code path.
 
     Accepts:
-    - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
+    - Exact bound host (with or without port suffix) matching ANY bound address
+    - Loopback aliases when at least one bound host is loopback
     - Exact operator-declared public hosts (with or without port suffix)
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
+    - Any host when bound to 0.0.0.0 or :: (explicit opt-in to all-interfaces,
       no protection possible at this layer)
     """
     host_only = _host_header_hostname(host_header)
@@ -978,19 +994,29 @@ def _is_accepted_host(
     if host_only in trusted_public_hosts:
         return True
 
-    # 0.0.0.0 bind means operator explicitly opted into all-interfaces
-    # (requires --insecure per web_server.start_server). No Host-layer
-    # defence can protect that mode; rely on operator network controls.
-    if bound_host in {"0.0.0.0", "::"}:
+    # Normalise to a set of lower-cased bound spellings. A bare str is treated
+    # as a single-element set so existing single-host callers are unaffected.
+    if isinstance(bound_host, str):
+        bound_set = {bound_host.lower()} if bound_host else set()
+    elif bound_host is None:
+        bound_set = set()
+    else:
+        bound_set = {str(b).lower() for b in bound_host}
+
+    # Any wildcard bind means the operator explicitly opted into all-interfaces
+    # (requires --insecure per web_server.start_server). No Host-layer defence
+    # can protect that mode; rely on operator network controls.
+    if bound_set & {"0.0.0.0", "::"}:
         return True
 
-    # Loopback bind: accept the loopback names
-    bound_lc = bound_host.lower()
-    if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+    # Loopback bind (at least one loopback member): accept the loopback names.
+    if bound_set & _LOOPBACK_HOST_VALUES:
+        if host_only in _LOOPBACK_HOST_VALUES:
+            return True
 
-    # Explicit non-loopback bind: require exact host match
-    return host_only == bound_lc
+    # Explicit non-loopback bind(s): require an exact match against any bound
+    # host.
+    return host_only in bound_set
 
 
 @app.middleware("http")
@@ -1005,9 +1031,13 @@ async def host_header_middleware(request: Request, call_next):
 
     See GHSA-ppp5-vxwm-4cf7.
     """
-    # Store the bound host on app.state so this middleware can read it —
-    # set by start_server() at listen time.
-    bound_host = getattr(app.state, "bound_host", None)
+    # Store the bound host(s) on app.state so this middleware can read them —
+    # set by start_server() at listen time. ``bound_hosts`` (frozenset, may be
+    # multi-entry for dual-stack binds) is preferred; singular ``bound_host``
+    # remains as a fallback for legacy callers that only set one.
+    bound_host = getattr(app.state, "bound_hosts", None) or getattr(
+        app.state, "bound_host", None
+    )
     if bound_host:
         host_header = request.headers.get("host", "")
         trusted_public_hosts = getattr(
@@ -16454,6 +16484,21 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
+def _ws_bound_host_set() -> frozenset[str]:
+    """Normalised set of hosts the server is bound to, for WS-layer checks.
+
+    Reads ``app.state.bound_hosts`` (frozenset, authoritative for dual-stack
+    binds) and falls back to the singular ``app.state.bound_host`` for legacy
+    callers/tests that only set one. Empty when neither is set (e.g. a TestClient
+    without an explicit bind).
+    """
+    hosts = getattr(app.state, "bound_hosts", None)
+    if hosts:
+        return frozenset(str(h).strip().lower() for h in hosts)
+    single = (getattr(app.state, "bound_host", "") or "").strip().lower()
+    return frozenset({single}) if single else frozenset()
+
+
 def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
     """Return a rejection reason for the client IP, or None when allowed.
 
@@ -16465,8 +16510,10 @@ def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
     """
     if getattr(app.state, "auth_required", False):
         return None
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    bound_set = _ws_bound_host_set()
+    # A bind with ANY non-loopback member is an explicit non-loopback opt-in;
+    # the loopback-only peer gate only applies when EVERY bound host is loopback.
+    if bound_set and not bound_set.issubset(_LOOPBACK_HOSTS):
         return None
     client_host = ws.client.host if ws.client else ""
     if not client_host:
@@ -16475,10 +16522,13 @@ def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
         # behind a misconfigured proxy or unix socket can deliver
         # ws.client == None or "" — treating that as "allowed" would let
         # an unidentified peer reach a loopback-only surface.
-        return f"missing_or_empty_peer bound={bound_host or '?'}"
+        return f"missing_or_empty_peer bound={', '.join(sorted(bound_set)) or '?'}"
     if client_host in _LOOPBACK_HOSTS:
         return None
-    return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
+    return (
+        f"peer_not_loopback peer={client_host} "
+        f"bound={', '.join(sorted(bound_set)) or '?'}"
+    )
 
 
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
@@ -16512,8 +16562,8 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     # access via --insecure.  The loopback-only peer gate only applies to
     # an actual loopback bind; otherwise the WS handshake is rejected even
     # though same-bind HTTP requests pass _is_accepted_host.
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    bound_set = _ws_bound_host_set()
+    if bound_set and not bound_set.issubset(_LOOPBACK_HOSTS):
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
@@ -16531,8 +16581,8 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     machine-parseable token (``host_mismatch …`` / ``origin_mismatch …``)
     on rejection so the close path can log *why* the upgrade was refused.
     """
-    bound_host = getattr(app.state, "bound_host", None)
-    if not bound_host:
+    bound_hosts = _ws_bound_host_set()
+    if not bound_hosts:
         return None
 
     trusted_public_hosts = getattr(
@@ -16541,9 +16591,9 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
 
     host_header = ws.headers.get("host", "")
     if not _is_accepted_host(
-        host_header, bound_host, trusted_public_hosts
+        host_header, bound_hosts, trusted_public_hosts
     ):
-        return f"host_mismatch host={host_header or '?'} bound={bound_host}"
+        return f"host_mismatch host={host_header or '?'} bound={', '.join(sorted(bound_hosts))}"
 
     origin = ws.headers.get("origin", "")
     if not origin:
@@ -16557,12 +16607,12 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return None
 
     if not parsed.netloc:
-        return f"origin_mismatch origin={origin} bound={bound_host}"
+        return f"origin_mismatch origin={origin} bound={', '.join(sorted(bound_hosts))}"
 
     if not _is_accepted_host(
-        parsed.netloc, bound_host, trusted_public_hosts
+        parsed.netloc, bound_hosts, trusted_public_hosts
     ):
-        return f"origin_mismatch origin={origin} bound={bound_host}"
+        return f"origin_mismatch origin={origin} bound={', '.join(sorted(bound_hosts))}"
     return None
 
 
@@ -16592,8 +16642,8 @@ def _ws_auth_mode() -> str:
     """Short label for the active WS auth mode — logged on every connection."""
     if getattr(app.state, "auth_required", False):
         return "gated"
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    bound_set = _ws_bound_host_set()
+    if bound_set and not bound_set.issubset(_LOOPBACK_HOSTS):
         return "insecure"
     return "loopback"
 
@@ -19776,7 +19826,7 @@ def _dashboard_forwarded_allow_ips(dashboard_config: dict[str, Any]) -> list[str
 
 
 def start_server(
-    host: str = "127.0.0.1",
+    hosts: list[str] | None = None,
     port: int = 9119,
     open_browser: bool = True,
     allow_public: bool = False,
@@ -19785,8 +19835,16 @@ def start_server(
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
+    *,
+    host: "str | list[str] | None" = None,
 ):
     """Start the web UI server.
+
+    ``hosts`` is a list of interface addresses to bind (e.g.
+    ``["0.0.0.0", "::"]`` for dual-stack). Each entry gets its own pre-bound
+    socket; uvicorn accepts all of them via ``server.startup(sockets=…)``. When
+    ``None`` (default) it falls back to ``["127.0.0.1"]``. A single string is
+    also accepted for backward compatibility with old callers.
 
     ``initial_profile`` (when set) is appended to the auto-opened browser
     URL as ``?profile=<name>`` so the SPA's profile switcher preselects it
@@ -19804,6 +19862,20 @@ def start_server(
     background MCP discovery thread until the ready sentinel has been written,
     so its SDK import cannot hold the GIL against the pre-bind import path.
     """
+    # Normalise the bind targets to a list of host strings. Accepts a single
+    # string (legacy callers), None (default loopback), or an explicit list for
+    # dual-stack binds. ``host=`` is kept as a backward-compatible keyword alias
+    # for old callers (Desktop spawn, tests) that pass a single address; ``hosts``
+    # takes precedence when both are given. ``host`` below is the PRIMARY address
+    # — the one uvicorn reports and the browser opens; every listener shares it.
+    _raw_targets: str | list[str] = hosts if hosts is not None else (
+        host if host is not None else ["127.0.0.1"]
+    )
+    _bind_hosts: list[str] = [_raw_targets] if isinstance(_raw_targets, str) else list(_raw_targets)
+    hosts = _bind_hosts
+    _primary = _bind_hosts[0]
+    host = _primary
+
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 
@@ -19833,34 +19905,42 @@ def start_server(
     # Stash the auth-gate flag on app.state so middleware / SPA-token injection /
     # WS-auth paths can branch on it consistently. It also decides whether to
     # refuse startup, log the gate-on banner, and enable uvicorn proxy_headers.
-    if _desktop_loopback_auth_exempt(host, ssh_session_token, ssh_owner_nonce):
+    # For a multi-host bind the gate engages if ANY bound host would require it
+    # (a dual-stack ["127.0.0.1", "0.0.0.0"] bind is public overall). The
+    # Desktop loopback exemption only applies when EVERY bound host is loopback —
+    # a single public member makes the whole process remotely reachable.
+    _all_loopback_bind = all(h in _LOOPBACK_HOST_VALUES for h in hosts)
+    if _all_loopback_bind and _desktop_loopback_auth_exempt(
+        host, ssh_session_token, ssh_owner_nonce
+    ):
         # A configured dashboard.public_url describes the operator's PUBLIC
         # deployment, not this private Desktop-owned loopback backend (#96490).
         # Desktop authenticates with the per-spawn session token; forcing the
         # ticket-only gate here broke every Desktop boot while the actual
         # public dashboard — a separate non-loopback process — stayed gated.
-        app.state.auth_required = should_require_auth(host)
+        app.state.auth_required = any(should_require_auth(h) for h in hosts)
         _log.info(
             "Desktop-owned loopback backend: dashboard.public_url does not "
             "engage the ticket gate for this process; the public deployment "
             "keeps its own gate.",
         )
     else:
-        app.state.auth_required = should_require_dashboard_auth(
-            host, app.state.trusted_public_hosts
+        app.state.auth_required = any(
+            should_require_dashboard_auth(h, app.state.trusted_public_hosts)
+            for h in hosts
         )
 
     # ``--insecure`` no longer disables the auth gate (June 2026 hardening:
     # the hermes-0day MCP-persistence campaign abused unauthenticated public
     # dashboards). If a caller still passes it, warn that it is now a no-op
     # rather than silently changing their expectation of an open bind.
-    if allow_public and host not in _LOOPBACK_HOST_VALUES:
+    if allow_public and any(h not in _LOOPBACK_HOST_VALUES for h in hosts):
         _log.warning(
             "--insecure no longer bypasses dashboard authentication. A "
             "non-loopback bind (%s) now ALWAYS requires an auth provider "
             "(OAuth or the bundled password provider). Configure one — see "
             "below — or bind to 127.0.0.1 and reach it over an SSH tunnel / "
-            "Tailscale.", host,
+            "Tailscale.", ", ".join(hosts),
         )
 
     if app.state.auth_required:
@@ -19975,12 +20055,15 @@ def start_server(
             )
         _log.info(
             "Dashboard binding to %s with auth gate enabled. Providers: %s",
-            host,
+            ", ".join(hosts),
             ", ".join(p.name for p in list_providers()),
         )
 
-    # Record the bound host so host_header_middleware can validate incoming
-    # Host headers against it. Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
+    # Record the bound host(s) so host_header_middleware can validate incoming
+    # Host headers against them. Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
+    # ``bound_hosts`` is the authoritative frozenset for multi-host binds; the
+    # singular ``bound_host`` (primary) is kept for legacy readers/tests.
+    app.state.bound_hosts = frozenset(hosts)
     app.state.bound_host = host
 
     # ── Start uvicorn with direct Server API ─────────────────────────
@@ -20015,7 +20098,7 @@ def start_server(
     # (idle timeout ~100s) where half-open IS a real failure mode, so keep the
     # ping at 20/20 to detect it promptly and stay under the tunnel's idle
     # window.
-    _is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    _is_loopback = all_hosts_loopback(hosts, _LOOPBACK_HOST_VALUES)
     # Non-loopback ping cadence is config-driven (dashboard.ws_ping_interval /
     # dashboard.ws_ping_timeout, #79635); the 20/20 defaults keep the
     # Cloudflare-Tunnel-friendly behaviour when unset or invalid.
@@ -20079,6 +20162,22 @@ def start_server(
         _report_port_in_use(host, port)
         raise SystemExit(PORT_IN_USE_EXIT_CODE)
 
+    # ── Pre-bind sockets for all requested hosts ───────────────────────
+    # Done AFTER the primary-host probe so we never mask our own listeners in
+    # the probe. Pre-creating one socket per address lets us bind multiple
+    # interfaces (e.g. IPv4 + IPv6 dual-stack) on a single port; IPv6 sockets
+    # get IPV6_V6ONLY=1 so they coexist with IPv4 listeners. A bind failure on
+    # ANY host (e.g. the secondary IPv6 address already taken) is reported as
+    # the same port-in-use sentinel rather than crashing with a bare OSError.
+    try:
+        _precreated_socks = create_server_sockets(hosts, port)
+    except OSError as exc:
+        close_server_sockets(globals().get("_precreated_socks", []))
+        _log.error("Failed to bind dashboard socket(s) %s:%s — %s",
+                   ", ".join(hosts), port, exc)
+        _report_port_in_use(host, port)
+        raise SystemExit(PORT_IN_USE_EXIT_CODE) from exc
+
     async def _serve():
         # Split startup from main_loop so we can read the bound port
         # after the socket is live (ephemeral port discovery).
@@ -20086,7 +20185,7 @@ def start_server(
             config.load()
         server.lifespan = config.lifespan_class(config)
         with server.capture_signals():
-            await server.startup()
+            await server.startup(sockets=_precreated_socks)
             if server.should_exit:
                 return
 

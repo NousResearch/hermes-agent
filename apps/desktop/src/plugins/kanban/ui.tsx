@@ -3,6 +3,7 @@
 
 import {
   atom,
+  cn,
   coarseElapsed,
   Codicon,
   DropdownMenu,
@@ -231,11 +232,27 @@ export function StatusMenu({
 // create dialog's Field, and the orchestration panel all read identically.
 export const FIELD_LABEL = 'text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-(--ui-text-quaternary)'
 
-export function Section({ action, children, label }: { action?: ReactNode; children: ReactNode; label: string }) {
+export function Section({
+  action,
+  children,
+  label,
+  variant = 'field'
+}: {
+  action?: ReactNode
+  children: ReactNode
+  label: string
+  variant?: 'drawer' | 'field'
+}) {
+  const isDrawer = variant === 'drawer'
+
   return (
-    <section className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between">
-        <div className={FIELD_LABEL}>{label}</div>
+    <section className={cn('flex flex-col', isDrawer ? 'gap-2' : 'gap-1.5')}>
+      <div className={cn('flex items-center justify-between', isDrawer && 'gap-3')}>
+        {isDrawer ? (
+          <h3 className="text-xs font-semibold text-(--ui-text-secondary)">{label}</h3>
+        ) : (
+          <div className={FIELD_LABEL}>{label}</div>
+        )}
         {action}
       </div>
       {children}

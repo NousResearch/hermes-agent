@@ -118,6 +118,13 @@ type KanbanMessages = {
   evtReprioritized: (priority: string) => string
   someone: string
   // drawer — meta + sections
+  tabOverview: string
+  tabTimeline: string
+  tabExecution: string
+  currentState: string
+  details: string
+  noTimeline: string
+  noExecution: string
   metaPriority: string
   metaTenant: string
   metaCreatedBy: string
@@ -331,6 +338,13 @@ export const en: KanbanMessages = {
   evtArchived: 'archived',
   evtReprioritized: priority => `priority set to ${priority}`,
   someone: 'someone',
+  tabOverview: 'Overview',
+  tabTimeline: 'Timeline',
+  tabExecution: 'Execution',
+  currentState: 'Current state',
+  details: 'Details',
+  noTimeline: 'No comments or activity yet.',
+  noExecution: 'No runs or worker log yet.',
   metaPriority: 'Priority',
   metaTenant: 'Tenant',
   metaCreatedBy: 'Created by',
@@ -542,6 +556,13 @@ const ja: KanbanMessages = {
   evtArchived: 'アーカイブ済み',
   evtReprioritized: priority => `優先度を ${priority} に設定`,
   someone: '誰か',
+  tabOverview: '概要',
+  tabTimeline: '履歴',
+  tabExecution: '実行',
+  currentState: '現在の状況',
+  details: '詳細',
+  noTimeline: 'コメントやアクティビティはまだありません。',
+  noExecution: '実行履歴やワーカーログはまだありません。',
   metaPriority: '優先度',
   metaTenant: 'テナント',
   metaCreatedBy: '作成者',
@@ -752,6 +773,13 @@ const zh: KanbanMessages = {
   evtArchived: '已归档',
   evtReprioritized: priority => `优先级设为 ${priority}`,
   someone: '某人',
+  tabOverview: '概览',
+  tabTimeline: '时间线',
+  tabExecution: '执行',
+  currentState: '当前状态',
+  details: '详细信息',
+  noTimeline: '暂无评论或活动。',
+  noExecution: '暂无运行记录或工作单元日志。',
   metaPriority: '优先级',
   metaTenant: '租户',
   metaCreatedBy: '创建者',
@@ -960,6 +988,13 @@ const zhHant: KanbanMessages = {
   evtArchived: '已封存',
   evtReprioritized: priority => `優先順序設為 ${priority}`,
   someone: '某人',
+  tabOverview: '概覽',
+  tabTimeline: '時間軸',
+  tabExecution: '執行',
+  currentState: '目前狀態',
+  details: '詳細資訊',
+  noTimeline: '尚無留言或活動。',
+  noExecution: '尚無執行記錄或工作單元日誌。',
   metaPriority: '優先順序',
   metaTenant: '租戶',
   metaCreatedBy: '建立者',

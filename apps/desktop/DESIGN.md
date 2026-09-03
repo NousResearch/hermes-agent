@@ -174,6 +174,11 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 - **`SegmentedControl`** — the choice control for small mutually-exclusive sets
   (color mode, tool-call display, usage period). Replaces radio piles and
   pill rows.
+- **`Tabs`** — use the default `segmented` treatment for compact mode switches.
+  Use `variant="line"` on both `TabsList` and its `TabsTrigger` children for
+  persistent content regions whose views share one panel (for example,
+  overview / timeline / execution). The line variant stays flat and marks the
+  active view with the shared accent underline.
 - **`Switch`** (`size="xs"`) — bare, with `aria-label`. No bordered text wrapper.
 
 ## Layout

@@ -4372,7 +4372,7 @@ _BACKSLASH_LINE_CONTINUATION_RE = re.compile(r"\\[ \t]*$")
 
 
 def _is_ghostty_terminal(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether the terminal is Ghostty (either detection path).
+    """Whether the terminal must be treated as Ghostty for the extended-keys push.
 
     Ghostty must be pushed ONLY modifyOtherKeys, not the Kitty keyboard
     protocol: its Kitty disambiguate-mode implementation strips the Alt
@@ -4382,14 +4382,23 @@ def _is_ghostty_terminal(env: Optional[Mapping[str, str]] = None) -> bool:
     regression).  Ghostty implements modifyOtherKeys correctly (it then
     emits ``\\x1b[27;3;127~``, which the alias table also maps).
 
-    Matches exactly the two conditions that admit Ghostty through
-    ``_terminal_supports_extended_enter_keys``.
+    The TERM_PROGRAM/TERM conditions match exactly the two paths that
+    admit Ghostty through ``_terminal_supports_extended_enter_keys``.
+    herdr panes embed a Ghostty core but scrub those markers, and the
+    WT_SESSION they inherit from the outer Windows Terminal describes
+    that outer terminal, not the pane hermes talks to — pushing Kitty
+    there re-encodes shifted punctuation as CSI-u sequences the alias
+    table doesn't map, leaking them as literal text on non-US layouts
+    (#100169).  herdr sets HERDR_ENV in every pane, so a pane marker
+    means the same Ghostty core and the same modifyOtherKeys-only
+    exception applies.
     """
     if env is None:
         env = os.environ
     return (
         (env.get("TERM_PROGRAM") or "").strip() == "ghostty"
         or (env.get("TERM") or "").strip().lower() == "xterm-ghostty"
+        or bool((env.get("HERDR_ENV") or "").strip())
     )
 
 

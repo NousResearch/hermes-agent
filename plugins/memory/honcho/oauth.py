@@ -412,6 +412,15 @@ def _rotate_and_persist(
     endpoint until a new login rotates the refresh token.
     """
     try:
+        # Read the store BEFORE spending the refresh token: rotation is
+        # single-use, so an exchange whose result cannot be persisted loses
+        # the grant. An unreadable store is a refresh failure (fail open,
+        # cooldown), not a reason to write a single-host file.
+        raw = _read_config_strict(path)
+    except OSError:
+        _refresh_failure_at[key] = time.monotonic()
+        return None
+    try:
         rotated = _exchange_with_retry(cred, now=now)
     except OAuthRefreshError as exc:
         if exc.permanent:
@@ -431,14 +440,62 @@ def _rotate_and_persist(
             op_label, host, _redact_tokens(str(exc)),
         )
         return None
-    _persist_credential(path, host, rotated)
+    _persist_credential(path, host, rotated, raw=raw)
     return rotated
 
 
 def _read_config(path: Path) -> dict[str, Any]:
+    """Tolerant reader for the fail-open READ paths only.
+
+    An unreadable or unparseable store reads as "no credential" and callers
+    fall back per this module's contract. Never feed this into a full-file
+    write — that is what turned one bad read into a store wipe; writers go
+    through :func:`_read_config_strict`.
+    """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _read_config_strict(path: Path) -> dict[str, Any]:
+    """Reader for the WRITE paths: never lets a failed read become an empty store.
+
+    A missing file is the bootstrap case and reads as ``{}``. A file that
+    EXISTS but cannot be read (EACCES after a root-owned write, EIO, a stalled
+    mount) raises instead — ``_atomic_write_config`` replaces the whole file
+    and ``os.replace`` needs only a writable parent, so degrading here would
+    let the next persist erase every other host's credentials. Genuine
+    corruption still degrades, but only after preserving a ``.corrupt`` copy:
+    a truncated store usually holds the other hosts' tokens verbatim, and the
+    next full-file write would otherwise destroy the only recoverable version.
+    """
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        logger.warning(
+            "Honcho config at %s could not be read; refusing to treat it as "
+            "empty (a persist would erase every other host's credentials)",
+            path, exc_info=True,
+        )
+        raise
+    except json.JSONDecodeError as exc:
+        corrupt = path.with_name(path.name + ".corrupt")
+        preserved = False
+        try:
+            import shutil
+            shutil.copy2(path, corrupt)
+            preserved = True
+        except Exception:
+            logger.debug("could not preserve a copy at %s", corrupt, exc_info=True)
+        logger.warning(
+            "Honcho config at %s is corrupt (%s); starting from an empty store. "
+            "%s", path, exc,
+            f"Original preserved at {corrupt}" if preserved
+            else f"A copy could NOT be preserved at {corrupt}",
+        )
         return {}
 
 
@@ -467,9 +524,19 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     return base
 
 
-def _persist_credential(path: Path, host: str, cred: OAuthCredential) -> None:
-    """Persist ``cred`` into ``host``'s block (apiKey + oauth), leaving all else intact."""
-    raw = _read_config(path)
+def _persist_credential(
+    path: Path, host: str, cred: OAuthCredential,
+    raw: dict[str, Any] | None = None,
+) -> None:
+    """Persist ``cred`` into ``host``'s block (apiKey + oauth), leaving all else intact.
+
+    "Leaving all else intact" is only true if the existing store was actually
+    READ: raises on an unreadable file rather than replacing the whole store
+    with a single-host block. Callers that already hold a strict read pass it
+    as ``raw`` (also closes the re-read race between lock and persist).
+    """
+    if raw is None:
+        raw = _read_config_strict(path)
     hosts = raw.setdefault("hosts", {})
     block = hosts.setdefault(host, {})
     block["apiKey"] = cred.access_token
@@ -608,7 +675,10 @@ def install_grant(
         token_type=str(grant.get("token_type", "Bearer")),
     )
 
-    raw = _read_config(path)
+    # Strict: a fresh login must not seed its write from a store that exists
+    # but could not be read — the root-merge below would erase every other
+    # host. Raising here surfaces in the interactive setup flow.
+    raw = _read_config_strict(path)
     granted_config = grant.get("config")
     if isinstance(granted_config, dict):
         cred.consent_peer_name = granted_config.get("peerName")

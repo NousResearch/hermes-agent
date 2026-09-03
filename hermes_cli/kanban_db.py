@@ -5397,6 +5397,17 @@ def complete_task(
     attempt is auditable. When all ids verify, they are recorded on the
     ``completed`` event payload.
 
+    Handoff resolution: ``result`` is the canonical completion payload, but
+    many callers (the ``kanban_complete`` tool, whose ``summary`` field is
+    required and ``result`` optional; the QA ``/qa-verdict`` ship path which
+    builds a natural-language verdict in ``summary``) pass only ``summary``.
+    Without a fallback the ``tasks.result`` column and the ``completed``
+    event's ``result_len`` would both be empty even though a real handoff
+    exists, so ``result`` falls back to ``summary`` and then to
+    ``event_summary`` (see below) when it is not supplied explicitly. Callers
+    that want an empty ``result`` but a populated ``summary`` must pass an
+    explicit empty string.
+
     After a successful completion, ``summary`` and ``result`` are scanned
     for prose references like ``t_deadbeefcafe`` that do not resolve.
     Any suspected phantom references are recorded as a
@@ -5404,6 +5415,16 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    # Handoff resolution: callers that supply only ``summary`` (the
+    # ``kanban_complete`` tool, whose ``summary`` is required and
+    # ``result`` optional; the QA ship path that builds a natural-language
+    # verdict in ``summary``) would otherwise leave ``tasks.result`` empty
+    # and the completed-event ``result_len`` at 0 even though a real handoff
+    # exists. Fall back to ``summary`` (then to the event summary built
+    # below) so the canonical result field is populated. An explicit
+    # ``result`` — including an empty string — always wins.
+    if result is None:
+        result = summary if summary is not None else ""
     # Fail before validating cards or staging artifacts; re-check inside the
     # final write transaction below to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):

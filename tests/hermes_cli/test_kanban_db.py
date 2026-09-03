@@ -612,6 +612,43 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     ]
 
 
+def test_complete_task_fallback_summary_to_result(kanban_home):
+    """A completion that supplies only ``summary`` must still populate
+    ``tasks.result`` and the completed-event ``result_len``.
+
+    Regression for R6 (t_60c802d5): the ``kanban_complete`` tool requires
+    ``summary`` and treats ``result`` as optional, so workers completed cards
+    with a populated run summary but an empty ``tasks.result`` and a
+    ``result_len: 0`` completion event. The handoff was not lost (it lives on
+    the run row) but the canonical result field went blind downstream.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="summary-only handoff")
+        kb.complete_task(conn, t, summary="handoff text here")
+        task = kb.get_task(conn, t)
+        completed = [
+            e for e in kb.list_events(conn, t) if e.kind == "completed"
+        ][-1]
+
+    # The bug: result was empty and result_len was 0. Both must now be set
+    # from the summary fallback.
+    assert task.result == "handoff text here"
+    assert completed.payload["result_len"] == len("handoff text here")
+
+    # An explicit result always wins over the summary fallback.
+    with kb.connect() as conn:
+        t2 = kb.create_task(conn, title="explicit wins")
+        kb.complete_task(conn, t2, summary="s", result="explicit result")
+        assert kb.get_task(conn, t2).result == "explicit result"
+
+    # An explicit empty string is honoured (a caller that truly wants no
+    # result passes "" rather than omitting the argument).
+    with kb.connect() as conn:
+        t3 = kb.create_task(conn, title="explicit empty")
+        kb.complete_task(conn, t3, summary="s", result="")
+        assert kb.get_task(conn, t3).result == ""
+
+
 
 
 # ---------------------------------------------------------------------------

@@ -446,6 +446,136 @@ class TestPrompt:
 
         assert captured.get("child") == resp.session_id
 
+    @pytest.mark.asyncio
+    async def test_crashed_turn_preserves_agent_working_history(self, agent, mock_manager):
+        """#80770 counterpart for the ACP surface: agent.run_conversation()
+        persists its own working transcript into agent._session_messages
+        independently of this ACP session's state.history snapshot (see
+        agent/conversation_loop.py's per-round _persist_session() calls). If
+        the turn raises, the next prompt must not be built on the stale
+        pre-turn state.history while the agent's own persisted transcript has
+        already moved on."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.history = [{"role": "user", "content": "old message"}]
+
+        def _crash(*args, **kwargs):
+            # Simulates _persist_session() having already run at least once
+            # during the turn (e.g. after a tool call) before the crash.
+            state.agent._session_messages = [
+                {"role": "user", "content": "old message"},
+                {"role": "assistant", "content": "partial work before crash"},
+            ]
+            raise RuntimeError("simulated turn crash")
+
+        state.agent.run_conversation = _crash
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="trigger crash")],
+            session_id=resp.session_id,
+        )
+
+        assert state.history == state.agent._session_messages
+
+    @pytest.mark.asyncio
+    async def test_crashed_turn_with_no_working_history_keeps_pre_turn_snapshot(
+        self, agent, mock_manager
+    ):
+        """If the crash happens before _persist_session() ever ran (no tool
+        round completed yet), agent._session_messages is whatever a REAL
+        agent leaves it as pre-persist -- [] (agent/agent_init.py initializes
+        it that way, never None) -- and state.history must fall back to the
+        pre-turn snapshot rather than adopting it.
+
+        Explicitly sets _session_messages = [] rather than leaving the mock's
+        unconfigured auto-attribute (a MagicMock, not a list): that auto-
+        attribute shape let isinstance(agent_messages, list) alone appear to
+        discriminate this case in the original fix, but a real agent's actual
+        pre-persist value ([]) IS a list -- the isinstance check can't tell
+        it apart from genuine this-turn progress. This test now exercises
+        the real invariant: the pre-turn/post-crash snapshots must compare
+        equal (unchanged) for the fallback to kick in.
+        """
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.history = [{"role": "user", "content": "old message"}]
+        state.agent._session_messages = []
+
+        def _crash(*args, **kwargs):
+            raise RuntimeError("simulated turn crash before any persist")
+
+        state.agent.run_conversation = _crash
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="trigger crash")],
+            session_id=resp.session_id,
+        )
+
+        assert state.history == [{"role": "user", "content": "old message"}]
+
+    @pytest.mark.asyncio
+    async def test_crashed_turn_after_reset_does_not_resurrect_stale_history(
+        self, agent, mock_manager
+    ):
+        """Review finding: _cmd_reset clears state.history but never touches
+        agent._session_messages -- reset_session_state() (run_agent.py) only
+        resets session-scoped token counters and the context-compressor
+        engine, not this cache. Before this fix, a crash before the FIRST
+        persist of a NEW turn (right after /reset) returned the
+        _session_messages leftover from the PRE-reset conversation,
+        resurrecting the "cleared" conversation on the next prompt: the
+        isinstance(agent_messages, list) guard never discriminated stale
+        content from genuine this-turn progress, since _session_messages is
+        always a list (initialized to [] and never reset to None)."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        # Pre-reset conversation already persisted into the agent's own cache
+        # by an earlier, successful turn.
+        state.agent._session_messages = [
+            {"role": "user", "content": "pre-reset message"},
+            {"role": "assistant", "content": "pre-reset reply"},
+        ]
+        state.history = list(state.agent._session_messages)
+
+        # /reset clears state.history but not agent._session_messages
+        # (matches _cmd_reset's actual behavior).
+        state.history.clear()
+
+        def _crash(*args, **kwargs):
+            # Crashes before this turn's first persist -- _session_messages
+            # is untouched, still holding the pre-reset conversation.
+            raise RuntimeError("simulated turn crash before any persist")
+
+        state.agent.run_conversation = _crash
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="trigger crash after reset")],
+            session_id=resp.session_id,
+        )
+
+        assert state.history == [], (
+            "crash right after /reset resurrected the pre-reset conversation "
+            "instead of keeping the cleared history"
+        )
+
 
 
 

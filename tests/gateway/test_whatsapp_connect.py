@@ -15,7 +15,7 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 import asyncio
 import signal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -82,6 +82,25 @@ def _mock_aiohttp(status=200, json_data=None, json_side_effect=None):
     mock_session.get = MagicMock(return_value=_AsyncCM(mock_resp))
 
     return MagicMock(return_value=_AsyncCM(mock_session))
+
+
+def _mock_http_response(*, status=200, json_data=None):
+    mock_resp = MagicMock()
+    mock_resp.status = status
+    mock_resp.json = AsyncMock(return_value=json_data or {})
+    return mock_resp
+
+
+def _mock_http_session(routes):
+    session = MagicMock()
+
+    def get(url, **kwargs):
+        if url not in routes:
+            raise AssertionError(f"Unexpected GET {url}")
+        return _AsyncCM(routes[url])
+
+    session.get = MagicMock(side_effect=get)
+    return session
 
 
 def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
@@ -275,6 +294,159 @@ class TestBridgeRuntimeFailure:
         payload = mock_session.post.call_args.kwargs["json"]
         assert payload["chatId"] == "50766715226@s.whatsapp.net"
 
+    @pytest.mark.asyncio
+    async def test_send_leaves_group_jid_untouched(self):
+        """A fully-qualified group JID must pass through unchanged."""
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._bridge_process = None
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"messageId": "msg-2"})
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=_AsyncCM(mock_resp))
+        adapter._http_session = mock_session
+
+        result = await adapter.send("123456789-987654321@g.us", "hello")
+
+        assert result.success is True
+        payload = mock_session.post.call_args.kwargs["json"]
+        assert payload["chatId"] == "123456789-987654321@g.us"
+
+    @pytest.mark.asyncio
+    async def test_poll_messages_marks_retryable_fatal_when_managed_bridge_exits(self):
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._http_session = MagicMock()  # Persistent session active
+        mock_fh = MagicMock()
+        adapter._bridge_log_fh = mock_fh
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 23
+        adapter._bridge_process = mock_proc
+
+        await adapter._poll_messages()
+
+        assert adapter.fatal_error_code == "whatsapp_bridge_exited"
+        assert adapter.fatal_error_retryable is True
+        fatal_handler.assert_awaited_once()
+        mock_fh.close.assert_called_once()
+        assert adapter._bridge_log_fh is None
+
+    @pytest.mark.asyncio
+    async def test_poll_messages_marks_retryable_fatal_when_bridge_health_is_degraded(self):
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._http_session = _mock_http_session({
+            "http://127.0.0.1:19876/health": _mock_http_response(
+                json_data={
+                    "status": "degraded",
+                    "connectionState": "connected",
+                    "disconnectCount60s": 6,
+                    "disconnectWindowSeconds": 60,
+                }
+            ),
+        })
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        adapter._bridge_process = mock_proc
+
+        await adapter._poll_messages()
+
+        assert adapter.fatal_error_code == "whatsapp_bridge_degraded"
+        assert adapter.fatal_error_retryable is True
+        assert "disconnects=6/60s" in adapter.fatal_error_message
+        fatal_handler.assert_awaited_once()
+        adapter._http_session.get.assert_called_once_with(
+            "http://127.0.0.1:19876/health",
+            timeout=ANY,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("returncode", [0, -2, -15])
+    async def test_shutdown_suppresses_fatal_on_planned_bridge_exit(self, returncode):
+        """During graceful disconnect(), SIGTERM/SIGINT/clean-exit are NOT fatal.
+
+        Regression guard for the bug where every gateway shutdown/restart
+        logged "Fatal whatsapp adapter error (whatsapp_bridge_exited)" and
+        dispatched a fatal-error notification just before the normal
+        "✓ whatsapp disconnected" — because _check_managed_bridge_exit()
+        saw the bridge's returncode of -15 (our own SIGTERM) and classified
+        it as an unexpected crash.
+        """
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._http_session = MagicMock()
+        adapter._bridge_log_fh = MagicMock()
+        adapter._shutting_down = True  # disconnect() sets this before SIGTERM
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = returncode
+        adapter._bridge_process = mock_proc
+
+        result = await adapter._check_managed_bridge_exit()
+
+        assert result is None, (
+            f"returncode={returncode} during shutdown should be suppressed, "
+            f"got fatal message: {result!r}"
+        )
+        assert adapter.fatal_error_code is None
+        fatal_handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_still_surfaces_nonzero_crash(self):
+        """Even during shutdown, a truly crashed bridge (e.g. returncode 9) is fatal.
+
+        The suppression list is deliberately narrow (0, -2, -15) so that
+        OOM-kill (137), assertion failures, or custom error exits still
+        reach the fatal-error handler and user notification path.
+        """
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._http_session = MagicMock()
+        adapter._bridge_log_fh = MagicMock()
+        adapter._shutting_down = True
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 137  # SIGKILL / OOM-kill
+        adapter._bridge_process = mock_proc
+
+        result = await adapter._check_managed_bridge_exit()
+
+        assert result is not None
+        assert "exited unexpectedly" in result
+        assert adapter.fatal_error_code == "whatsapp_bridge_exited"
+        fatal_handler.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_closed_when_http_not_ready(self):
+        """Health endpoint never returns 200 within 15 attempts."""
+        adapter = _make_adapter()
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # bridge alive
+
+        mock_client_cls = _mock_aiohttp(status=503)
+        mock_fh = MagicMock()
+        patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
+
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patches[5], patches[6], patches[7], patches[8]:
+            result = await adapter.connect()
+
+        assert result is False
+        mock_fh.close.assert_called_once()
+        assert adapter._bridge_log_fh is None
 
     @pytest.mark.asyncio
     async def test_closed_when_bridge_dies_phase2(self):

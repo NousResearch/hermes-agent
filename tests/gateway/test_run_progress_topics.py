@@ -526,9 +526,15 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
 
     assert result["final_response"] == "done"
     assert adapter.sent
+    # Issue #102271: progress metadata now carries ``_interim_send=True``
+    # so stream-is-the-message adapters (relay Slack native) skip
+    # seal-interception on the first tool-progress bubble. The marker is
+    # gateway-internal and stripped before the wire; downstream adapters
+    # therefore still observe the same external contract.
     expected_metadata = {
         "thread_id": "1234567890.000001",
         "message_id": "1234567890.000001",
+        "_interim_send": True,
     }
     assert adapter.sent[0]["metadata"] == expected_metadata
     assert all(call["metadata"] == expected_metadata for call in adapter.typing)

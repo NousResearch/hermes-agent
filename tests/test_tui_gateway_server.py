@@ -10972,6 +10972,26 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     assert captured["prompt"] == "expanded prompt"
 
 
+def test_image_attach_host_path_refused_over_remote_connection(monkeypatch):
+    server._sessions["sid"] = _session()
+    try:
+        resp = server.dispatch(
+            {
+                "id": "1",
+                "method": "image.attach",
+                "params": {"session_id": "sid", "path": "/tmp/cat.png"},
+            },
+            transport=_PeerWS("203.0.113.9:54321"),
+        )
+
+        assert "error" in resp
+        assert resp["error"]["code"] == 4016
+        assert "remote connection" in resp["error"]["message"]
+        assert server._sessions["sid"].get("attached_images") == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_image_attach_appends_local_image(monkeypatch):
     fake_cli = types.ModuleType("cli")
     fake_cli._IMAGE_EXTENSIONS = {".png"}
@@ -11072,6 +11092,75 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
         server._sessions.pop("sid", None)
 
 
+def test_file_attach_refuses_remote_gateway_visible_file_outside_workspace(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "home"
+    source = tmp_path / "outside.txt"
+    source.write_text("gateway secret", encoding="utf-8")
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: source
+
+    server._sessions["sid"] = _session(cwd=str(workspace), profile_home=str(home))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.dispatch(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {"session_id": "sid", "path": str(source)},
+            },
+            transport=_PeerWS("203.0.113.9:54321"),
+        )
+
+        assert "error" in resp
+        assert resp["error"]["code"] == 5028
+        assert "remote connection" in resp["error"]["message"]
+        assert not (home / "attachments" / "outside.txt").exists()
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_remote_data_url_ignores_gateway_visible_path(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "home"
+    source = tmp_path / "outside.txt"
+    source.write_text("gateway secret", encoding="utf-8")
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: source
+
+    server._sessions["sid"] = _session(cwd=str(workspace), profile_home=str(home))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.dispatch(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": str(source),
+                    "data_url": "data:text/plain;base64,Y2xpZW50IGJ5dGVz",
+                },
+            },
+            transport=_PeerWS("203.0.113.9:54321"),
+        )
+
+        stored = home / "attachments" / "attachment"
+        assert resp["result"]["attached"] is True
+        assert resp["result"]["uploaded"] is True
+        assert resp["result"]["path"] == str(stored)
+        assert stored.read_text(encoding="utf-8") == "client bytes"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, tmp_path):
     """Local case: gateway can see the file but it's outside the workspace → copy in."""
     workspace = tmp_path / "workspace"
@@ -11088,12 +11177,13 @@ def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, 
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
     try:
-        resp = server.handle_request(
+        resp = server.dispatch(
             {
                 "id": "1",
                 "method": "file.attach",
                 "params": {"session_id": "sid", "path": str(source)},
-            }
+            },
+            transport=_PeerWS("127.0.0.1:54321"),
         )
 
         stored = home / "attachments" / "outside.txt"
@@ -11561,6 +11651,56 @@ def test_input_detect_drop_attaches_image(monkeypatch):
     assert resp["result"]["matched"] is True
     assert resp["result"]["is_image"] is True
     assert resp["result"]["text"] == "[User attached image: cat.png]"
+
+
+def test_input_detect_drop_remote_host_path_is_not_a_drop(monkeypatch):
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: (_ for _ in ()).throw(
+        AssertionError("remote input.detect_drop must not resolve host paths")
+    )
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.dispatch(
+            {
+                "id": "1",
+                "method": "input.detect_drop",
+                "params": {"session_id": "sid", "text": "/tmp/cat.png"},
+            },
+            transport=_PeerWS("203.0.113.9:54321"),
+        )
+
+        assert resp["result"] == {"matched": False}
+        assert server._sessions["sid"]["attached_images"] == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_input_detect_drop_remote_plain_text_is_not_a_drop(monkeypatch):
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: (_ for _ in ()).throw(
+        AssertionError("remote plain text should not hit host path resolver")
+    )
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.dispatch(
+            {
+                "id": "1",
+                "method": "input.detect_drop",
+                "params": {"session_id": "sid", "text": "ordinary prompt text"},
+            },
+            transport=_PeerWS("203.0.113.9:54321"),
+        )
+
+        assert resp["result"] == {"matched": False}
+        assert server._sessions["sid"]["attached_images"] == []
+    finally:
+        server._sessions.pop("sid", None)
 
 
 def test_input_detect_drop_path_with_spaces(tmp_path):
@@ -18570,6 +18710,60 @@ def test_pdf_attach_requires_path_or_bytes(monkeypatch, tmp_path):
     )
     assert "error" in resp
     assert resp["error"]["code"] == 4015
+
+
+class _PeerWS:
+    """Minimal WSTransport stand-in carrying a peer label (host:port)."""
+
+    def __init__(self, peer):
+        self._peer = peer
+
+    def write(self, _obj):
+        return True
+
+
+def test_pdf_attach_host_path_refused_over_remote_connection(monkeypatch, tmp_path):
+    """A non-loopback (remote) WS caller must NOT be able to use pdf.attach's
+    host ``path`` branch to read arbitrary host PDFs — it has to upload bytes
+    via content_base64. Regression guard for the /api/media-style confinement
+    gap on the attach direction (the TUI gateway is a local-IPC surface)."""
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/pdftoppm")
+    server._sessions["pdfr"] = _session()
+
+    resp = server.dispatch(
+        {
+            "id": "1",
+            "method": "pdf.attach",
+            "params": {"session_id": "pdfr", "path": "/etc/anything.pdf"},
+        },
+        transport=_PeerWS("203.0.113.9:54321"),
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4016
+    assert "remote connection" in resp["error"]["message"]
+
+
+def test_pdf_attach_host_path_allowed_for_local_caller(monkeypatch, tmp_path):
+    """A local (loopback) caller keeps the host-path fast path: the remote guard
+    does not fire, so resolution proceeds normally (it fails here as a plain
+    "not found", NOT as the remote-connection refusal)."""
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/pdftoppm")
+    server._sessions["pdfl"] = _session()
+
+    resp = server.dispatch(
+        {
+            "id": "1",
+            "method": "pdf.attach",
+            "params": {"session_id": "pdfl", "path": "/nonexistent/file.pdf"},
+        },
+        transport=_PeerWS("127.0.0.1:54321"),
+    )
+    assert "error" in resp
+    assert "remote connection" not in resp["error"]["message"]
 
 
 def test_decode_attach_base64_helper():

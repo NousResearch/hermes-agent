@@ -1186,6 +1186,28 @@ def _arm_exit_watchdog_on_shutdown_signal() -> None:
         pass  # never let the backstop break signal handling
 
 
+def _windows_sigint_is_escalation(cli_obj) -> bool:
+    """True when a Windows console SIGINT means "get me out", not console noise.
+
+    Windows delivers spurious ``CTRL_C_EVENT`` whenever a background thread
+    spawns a ``.cmd`` child, so ``run()`` binds SIGINT to a silent absorber
+    and lets prompt_toolkit's ``c-c`` binding drive real cancellation. Once
+    shutdown intent already exists that ambiguity is gone: the TUI is on its
+    way out (or already gone), nothing is spawning children, and a Ctrl+C can
+    only be the user escalating a shutdown that is taking too long.
+
+    SIGINT is the only shutdown signal a Windows console can deliver — there
+    is no ``SIGHUP``, and Ctrl+C never raises ``SIGTERM`` — so this is the
+    sole place the #65998 exit backstop can be armed on Windows. Without it a
+    graceful unwind that wedges before ``_run_cleanup`` (a prompt_toolkit
+    teardown that never returns, an agent worker blocking the ``finally``)
+    leaves a CLI that no keystroke can end.
+    """
+    if _cleanup_in_progress or _cleanup_done:
+        return True
+    return bool(getattr(cli_obj, "_should_exit", False))
+
+
 def _run_cleanup(*, notify_session_finalize: bool = True):
     """Run resource cleanup exactly once."""
     global _cleanup_done, _cleanup_in_progress
@@ -21448,6 +21470,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # time. Real user Ctrl+C routes through prompt_toolkit's
                     # own c-c key binding at the TUI layer (same pattern as
                     # Claude Code's Windows handling).
+                    #
+                    # Still absorbed either way — but once shutdown intent is
+                    # already established the press is unambiguous escalation,
+                    # so arm the exit backstop. SIGINT is the only shutdown
+                    # signal a Windows console can deliver (no SIGHUP; Ctrl+C
+                    # never raises SIGTERM), which makes this the sole place
+                    # the #65998 watchdog _signal_handler arms on POSIX can be
+                    # armed here. See _windows_sigint_is_escalation.
+                    try:
+                        if _windows_sigint_is_escalation(self):
+                            _arm_exit_watchdog_on_shutdown_signal()
+                    except Exception:
+                        pass  # never raise from a signal handler
                     return
                 _signal.signal(_signal.SIGINT, _sigint_absorb)
         except Exception:

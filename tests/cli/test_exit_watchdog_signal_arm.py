@@ -166,3 +166,76 @@ def test_signal_watchdog_is_skipped_once_cleanup_starts():
     finally:
         if p.poll() is None:
             p.kill()
+
+
+class TestWindowsSigintEscalation:
+    """The Windows-only half of the backstop (#100747).
+
+    ``run()`` binds SIGINT to a silent absorber on Windows because the console
+    fires spurious ``CTRL_C_EVENT`` whenever a background thread spawns a
+    ``.cmd`` child. That absorber is the ONLY handler a Windows console can
+    reach — there is no ``SIGHUP`` and Ctrl+C never raises ``SIGTERM`` — so if
+    it never arms the backstop, a wedge before ``_run_cleanup`` leaves a CLI
+    no keystroke can end.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_cleanup_flags(self, monkeypatch):
+        monkeypatch.setattr(cli, "_cleanup_in_progress", False)
+        monkeypatch.setattr(cli, "_cleanup_done", False)
+
+    def test_idle_press_is_console_noise(self):
+        """No shutdown intent: the press stays fully absorbed."""
+        stub = type("Stub", (), {"_should_exit": False})()
+        assert cli._windows_sigint_is_escalation(stub) is False
+
+    def test_press_after_exit_requested_is_escalation(self):
+        """``handle_ctrl_c`` set ``_should_exit`` and ``app.exit()`` wedged."""
+        stub = type("Stub", (), {"_should_exit": True})()
+        assert cli._windows_sigint_is_escalation(stub) is True
+
+    def test_press_during_cleanup_is_escalation(self, monkeypatch):
+        monkeypatch.setattr(cli, "_cleanup_in_progress", True)
+        stub = type("Stub", (), {"_should_exit": False})()
+        assert cli._windows_sigint_is_escalation(stub) is True
+
+    def test_press_after_cleanup_is_escalation(self, monkeypatch):
+        monkeypatch.setattr(cli, "_cleanup_done", True)
+        stub = type("Stub", (), {"_should_exit": False})()
+        assert cli._windows_sigint_is_escalation(stub) is True
+
+    def test_missing_attribute_is_not_escalation(self):
+        """A CLI object without ``_should_exit`` must not arm a hard kill."""
+        assert cli._windows_sigint_is_escalation(object()) is False
+
+
+def test_windows_absorber_arms_backstop_only_on_escalation(monkeypatch):
+    """End-to-end handler shape: absorb always, arm only when escalating.
+
+    Mirrors the closure installed in ``HermesCLI.run()`` without booting the
+    whole TUI: the absorber must return ``None`` in both cases (never raise,
+    never interrupt the agent) and reach the backstop only once shutdown
+    intent exists.
+    """
+    calls = []
+    monkeypatch.setattr(
+        cli, "_arm_exit_watchdog_on_shutdown_signal", lambda: calls.append(1)
+    )
+    monkeypatch.setattr(cli, "_cleanup_in_progress", False)
+    monkeypatch.setattr(cli, "_cleanup_done", False)
+    stub = type("Stub", (), {"_should_exit": False})()
+
+    def _sigint_absorb(signum, frame):
+        try:
+            if cli._windows_sigint_is_escalation(stub):
+                cli._arm_exit_watchdog_on_shutdown_signal()
+        except Exception:
+            pass
+        return
+
+    assert _sigint_absorb(signal.SIGINT, None) is None
+    assert calls == []
+
+    stub._should_exit = True
+    assert _sigint_absorb(signal.SIGINT, None) is None
+    assert calls == [1]

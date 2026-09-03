@@ -167,6 +167,11 @@ async def persist_delegation_delivery(
             "persist_delegation_delivery: api_server SessionDB unavailable — "
             f"cannot persist completion for session {session_id}"
         )
+    resolved_session_id = await asyncio.to_thread(
+        db.resolve_resume_session_id, session_id
+    )
+    if resolved_session_id:
+        session_id = resolved_session_id
     metadata = _delegation_display_metadata(evt or {})
     if metadata["delegation_id"]:
         await asyncio.to_thread(

@@ -168,6 +168,47 @@ def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
     assert meta["duration_seconds"] == 12.5
 
 
+def test_persist_delegation_delivery_follows_rollover_tip_and_replay_is_once(tmp_path):
+    """A completion addressed to an ended API parent belongs on its live child."""
+    from pathlib import Path
+
+    from gateway.wake import persist_delegation_delivery
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=Path(tmp_path) / "state.db")
+    parent = "api-parent"
+    child = "api-child"
+    db.create_session(parent, source="api_server")
+    db.append_message(parent, "user", content="before rollover")
+    db.end_session(parent, "compression")
+    db.create_session(child, source="api_server", parent_session_id=parent)
+    db.append_message(child, "assistant", content="continued after rollover")
+    assert db.resolve_resume_session_id(parent) == child
+
+    class DbAdapter(ApiServerLikeAdapter):
+        def _ensure_session_db(self):
+            return db
+
+    evt = {"delegation_id": "deleg_rollover", "results": [{"status": "completed"}]}
+    for _ in range(2):
+        asyncio.run(persist_delegation_delivery(
+            DbAdapter(), text="[ASYNC DELEGATION BATCH COMPLETE]",
+            session_id=parent, evt=evt,
+        ))
+
+    parent_deliveries = [
+        row for row in db.get_messages(parent)
+        if row["display_kind"] == "async_delegation_complete"
+    ]
+    child_deliveries = [
+        row for row in db.get_messages(child)
+        if row["display_kind"] == "async_delegation_complete"
+    ]
+    assert parent_deliveries == []
+    assert len(child_deliveries) == 1
+    assert child_deliveries[0]["display_metadata"]["delegation_id"] == "deleg_rollover"
+
+
 def test_persist_delegation_delivery_raises_without_db():
     """DB unavailable must RAISE so the durable claim is released for retry."""
     from gateway.wake import persist_delegation_delivery

@@ -50,6 +50,7 @@ _BUILTIN_NAMES = frozenset({
     "edge",
     "elevenlabs",
     "openai",
+    "openai_compatible",
     "minimax",
     "xai",
     "mistral",

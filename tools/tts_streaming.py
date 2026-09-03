@@ -293,6 +293,72 @@ class OpenAIStreamer(StreamingTTSProvider):
             yield from _capped(response.iter_bytes(), "OpenAI streaming TTS")
 
 
+@register("openai_compatible")
+class OpenAICompatibleStreamer(StreamingTTSProvider):
+    """Any OpenAI-compatible server with ``response_format=pcm`` (24 kHz).
+
+    Serves the self-hosted ecosystem — qwentts.cpp, LocalAI, kokoro-fastapi,
+    Speaches, cloned-openai proxies — where ``base_url`` identifies the
+    server and an API key is usually optional (sent as ``Bearer`` when set).
+    Unlike the ``openai`` streamer there is nothing to auto-detect: no
+    configured ``tts.openai_compatible.base_url`` means unavailable.
+    """
+
+    sample_rate = 24000
+
+    @staticmethod
+    def available() -> bool:
+        try:
+            section = (_load_tts_config().get("openai_compatible") or {})
+        except Exception:
+            section = {}
+        # Same resolution _base_url() will use at stream time — an env-only
+        # setup must not advertise a provider that can never stream.
+        return bool(
+            str(section.get("base_url") or "").strip()
+            or str(get_env_value("OPENAI_COMPATIBLE_TTS_BASE_URL") or "").strip()
+        )
+
+    def _base_url(self) -> str:
+        return str(
+            self.section.get("base_url")
+            or get_env_value("OPENAI_COMPATIBLE_TTS_BASE_URL")
+            or ""
+        ).strip().rstrip("/")
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        import requests
+
+        base_url = self._base_url()
+        if not base_url:
+            raise RuntimeError(
+                "openai_compatible streaming TTS requires tts.openai_compatible.base_url"
+            )
+        api_key = str(self.section.get("api_key") or "").strip()
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        payload = {
+            "model": str(self.section.get("model") or "tts-1").strip(),
+            "input": text,
+            "response_format": "pcm",
+        }
+        voice = str(self.section.get("voice") or "").strip()
+        if voice:
+            payload["voice"] = voice
+
+        def _pcm_chunks() -> Iterator[bytes]:
+            with requests.post(
+                f"{base_url}/audio/speech",
+                headers=headers,
+                json=payload,
+                timeout=120,
+                stream=True,
+            ) as response:
+                response.raise_for_status()
+                yield from response.iter_content(chunk_size=4096)
+
+        yield from _capped(_pcm_chunks(), "openai_compatible streaming TTS")
+
+
 def _capped(chunks: Iterator[bytes], label: str) -> Iterator[bytes]:
     """Pass chunks through, aborting past the 16 MiB per-sentence cap.
 

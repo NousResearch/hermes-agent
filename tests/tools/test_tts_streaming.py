@@ -155,6 +155,116 @@ def test_openai_streamer_prefers_configured_api_key(monkeypatch):
     assert captured["client"]["api_key"] == "cfg-key"
 
 
+# ── openai_compatible: self-hosted servers with no mandatory key ─────────
+
+
+def test_openai_compatible_available_requires_configured_base_url(monkeypatch):
+    monkeypatch.setattr(
+        ts, "_load_tts_config",
+        lambda: {"openai_compatible": {"base_url": "http://127.0.0.1:8902/v1"}},
+    )
+    assert ts.OpenAICompatibleStreamer.available() is True
+    monkeypatch.setattr(ts, "_load_tts_config", lambda: {"openai_compatible": {}})
+    assert ts.OpenAICompatibleStreamer.available() is False
+    monkeypatch.setattr(ts, "_load_tts_config", lambda: {})
+    assert ts.OpenAICompatibleStreamer.available() is False
+
+
+def test_openai_compatible_streams_pcm_without_any_api_key(monkeypatch):
+    """A keyless local server is the whole point — auth header must be absent."""
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size=None):
+            yield b"\x01\x00\x02\x00"
+            yield b"\x03\x00"
+
+    class _Requests:
+        @staticmethod
+        def post(url, headers=None, json=None, timeout=None, stream=None):
+            captured.update(
+                url=url, headers=headers, json=json, timeout=timeout, stream=stream
+            )
+            return _Response()
+
+    monkeypatch.setitem(sys.modules, "requests", _Requests)
+    monkeypatch.setattr(
+        ts, "_load_tts_config",
+        lambda: {"openai_compatible": {"base_url": "http://127.0.0.1:8902/v1"}},
+    )
+
+    config = {
+        "provider": "openai_compatible",
+        "openai_compatible": {"base_url": "http://127.0.0.1:8902/v1"},
+    }
+    streamer = ts.resolve_streaming_provider(config)
+
+    assert streamer is not None
+    assert list(streamer.stream("Hola.")) == [b"\x01\x00\x02\x00", b"\x03\x00"]
+    assert captured["url"] == "http://127.0.0.1:8902/v1/audio/speech"
+    assert "Authorization" not in (captured["headers"] or {})
+    assert captured["json"]["response_format"] == "pcm"
+    assert captured["json"]["model"] == "tts-1"
+    assert captured["stream"] is True
+
+
+def test_openai_compatible_sends_bearer_when_key_configured(monkeypatch):
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size=None):
+            yield b"\x01\x00"
+
+    class _Requests:
+        @staticmethod
+        def post(url, headers=None, json=None, timeout=None, stream=None):
+            captured.update(url=url, headers=headers, json=json)
+            return _Response()
+
+    monkeypatch.setitem(sys.modules, "requests", _Requests)
+    monkeypatch.setattr(
+        ts, "_load_tts_config",
+        lambda: {"openai_compatible": {
+            "base_url": "http://tts.example/v1",
+            "api_key": "local-secret",
+            "voice": "argentina",
+        }},
+    )
+
+    config = {
+        "provider": "openai_compatible",
+        "openai_compatible": {
+            "base_url": "http://tts.example/v1",
+            "api_key": "local-secret",
+            "voice": "argentina",
+        },
+    }
+    streamer = ts.resolve_streaming_provider(config)
+
+    assert streamer is not None
+    list(streamer.stream("Hola."))
+    assert captured["headers"] == {"Authorization": "Bearer local-secret"}
+    assert captured["json"]["voice"] == "argentina"
+
+
 # ── Dispatch: chunked streamer path ──────────────────────────────────────
 
 

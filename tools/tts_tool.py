@@ -801,6 +801,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "edge",
     "elevenlabs",
     "openai",
+    "openai_compatible",
     "minimax",
     "xai",
     "mistral",
@@ -1955,6 +1956,60 @@ def _generate_openai_tts(
 # (filtered by the ``tts`` surface tag) — no hardcoded model ids in this
 # file, so retired models disappear from hermes the next time the
 # catalog is fetched without a patch.
+
+
+def _generate_openai_compatible_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio from any OpenAI-compatible ``/v1/audio/speech`` server.
+
+    Self-hosted companions of the ``openai`` provider — qwentts.cpp,
+    LocalAI, kokoro-fastapi, Speaches… — where ``base_url`` is the server
+    and an API key is usually optional. Uses ``requests`` directly (no SDK)
+    so keyless servers work, mirroring the ``openai_compatible`` streaming
+    provider in ``tools/tts_streaming.py``.
+    """
+    # ``tts.openai_compatible: null`` in YAML yields None — coalesce.
+    section = (tts_config.get("openai_compatible") if isinstance(tts_config, dict) else None) or {}
+    base_url = str(section.get("base_url") or "").strip().rstrip("/")
+    if not base_url:
+        raise ValueError(
+            "openai_compatible TTS requires tts.openai_compatible.base_url "
+            "(e.g. http://127.0.0.1:8080/v1) in config.yaml."
+        )
+    api_key = str(section.get("api_key") or "").strip()
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    payload: Dict[str, Any] = {
+        "model": str(section.get("model") or "tts-1").strip(),
+        "input": text,
+        # mp3 matches the OpenAI default — every compatible server speaks it,
+        # and Hermes' delivery pipeline already handles it.
+        "response_format": "mp3",
+    }
+    voice = str(section.get("voice") or "").strip()
+    if voice:
+        payload["voice"] = voice
+    speed_default = tts_config.get("speed", 1.0) if isinstance(tts_config, dict) else 1.0
+    speed = float(section.get("speed", speed_default))
+    if speed != 1.0:
+        payload["speed"] = speed
+
+    import requests
+
+    response = requests.post(
+        f"{base_url}/audio/speech",
+        headers=headers,
+        json=payload,
+        timeout=300,
+    )
+    response.raise_for_status()
+    content_type = response.headers.get("Content-Type", "")
+    if "audio" not in content_type and "octet-stream" not in content_type:
+        raise ValueError(
+            f"openai_compatible TTS: unexpected Content-Type {content_type!r} "
+            f"from {base_url} — is it an OpenAI-compatible speech endpoint?"
+        )
+    with open(output_path, "wb") as f:
+        f.write(response.content)
+    return output_path
 
 
 def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -3580,6 +3635,10 @@ def _text_to_speech_single(
                 }, ensure_ascii=False)
             logger.info("Generating speech with OpenAI TTS...")
             _generate_openai_tts(text, file_str, tts_config, instructions=instructions)
+
+        elif provider == "openai_compatible":
+            logger.info("Generating speech with OpenAI-compatible TTS...")
+            _generate_openai_compatible_tts(text, file_str, tts_config)
 
         elif provider == "deepinfra":
             try:

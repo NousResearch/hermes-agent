@@ -651,26 +651,32 @@ class HonchoMemoryProvider(MemoryProvider):
         """Format the prefetch context dict into a readable system prompt block."""
         parts = []
 
-        # Session summary — session-scoped context, placed first for relevance
-        summary = ctx.get("summary", "")
-        if summary:
-            parts.append(f"## Session Summary\n{summary}")
-
-        rep = ctx.get("representation", "")
-        if rep:
-            parts.append(f"## User Representation\n{rep}")
-
-        card = ctx.get("card", "")
+        # Curated cards are the durable, high-signal layer. Keep them ahead of
+        # summaries and free-form representations so final context-budget
+        # truncation can shorten episodic context without discarding standing facts.
+        card = (ctx.get("card") or "").strip()
         if card:
             parts.append(f"## User Peer Card\n{card}")
 
-        ai_rep = ctx.get("ai_representation", "")
-        if ai_rep:
-            parts.append(f"## AI Self-Representation\n{ai_rep}")
-
-        ai_card = ctx.get("ai_card", "")
+        ai_card = (ctx.get("ai_card") or "").strip()
         if ai_card:
             parts.append(f"## AI Identity Card\n{ai_card}")
+
+        # Session summary is useful but episodic; it follows both curated cards.
+        summary = (ctx.get("summary") or "").strip()
+        if summary:
+            parts.append(f"## Session Summary\n{summary}")
+
+        # A peer card supersedes the free-form representation for automatic
+        # injection. The full representation remains available through Honcho
+        # context/search/reasoning tools; use it here only as a cold-start fallback.
+        rep = (ctx.get("representation") or "").strip()
+        if rep and not card:
+            parts.append(f"## User Representation (fallback context)\n{rep}")
+
+        ai_rep = (ctx.get("ai_representation") or "").strip()
+        if ai_rep and not ai_card:
+            parts.append(f"## AI Self-Representation (fallback context)\n{ai_rep}")
 
         if not parts:
             return ""

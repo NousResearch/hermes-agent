@@ -14,6 +14,11 @@ Selection precedence for the tier (first hit wins):
 3. ``image_gen.model`` in ``config.yaml`` (when it's one of our tier IDs)
 4. :data:`DEFAULT_MODEL` — ``gpt-image-2-medium``
 
+The Codex chat model that hosts the ``image_generation`` tool defaults to
+``gpt-5.5`` for compatibility. It can be selected independently with
+``image_gen.openai-codex.host_model``; this never changes the underlying
+``gpt-image-2`` image model or its quality tier.
+
 Output is saved as PNG under ``$HERMES_HOME/cache/images/``. Source images for
 image-to-image/editing are sent as Responses ``input_image`` content parts.
 """
@@ -175,8 +180,17 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
 
     if candidate is not None:
         return candidate, _MODELS[candidate]
-
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
+
+
+def _resolve_host_model() -> str:
+    """Return the Codex chat model that hosts ``image_generation``."""
+    cfg = _load_image_gen_config()
+    sub = cfg.get("openai-codex") if isinstance(cfg.get("openai-codex"), dict) else {}
+    candidate = sub.get("host_model") if isinstance(sub, dict) else None
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    return _CODEX_CHAT_MODEL
 
 
 def _read_codex_access_token() -> Optional[str]:
@@ -317,7 +331,7 @@ def _build_responses_payload(
     if input_images:
         content.extend(input_images)
     return {
-        "model": _CODEX_CHAT_MODEL,
+        "model": _resolve_host_model(),
         "store": False,
         "instructions": _CODEX_INSTRUCTIONS,
         "input": [{

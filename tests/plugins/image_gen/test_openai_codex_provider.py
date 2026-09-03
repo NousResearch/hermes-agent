@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
 # The plugin directory uses a hyphen, which is not a valid Python identifier
 # for the dotted-import form. Load it via importlib so tests don't need to
 # touch sys.path or rename the directory.
@@ -161,6 +163,73 @@ class TestGenerate:
         # Progressive previews disabled: partial frames were being saved as
         # finals and presented as smeared/unfinished images.
         assert tool["partial_images"] == 0
+
+    def test_codex_stream_host_model_can_be_configured_independently(
+        self, provider, monkeypatch, tmp_path
+    ):
+        default_home = tmp_path
+        profile_home = tmp_path / "profiles" / "artist"
+        profile_home.mkdir(parents=True)
+        (default_home / "config.yaml").write_text(
+            """\
+image_gen:
+  model: gpt-image-2-low
+  openai-codex:
+    host_model: gpt-5.4
+""",
+            encoding="utf-8",
+        )
+        (profile_home / "config.yaml").write_text(
+            """\
+image_gen:
+  model: gpt-image-2-low
+  openai-codex:
+    model: gpt-image-2-high
+    host_model: " gpt-5.6-sol "
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, input_images=None):
+            captured.update(codex_plugin._build_responses_payload(
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                input_images=input_images,
+            ))
+            return {"b64": _b64_png(), "source": "final"}
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            result = provider.generate("a cat")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2-high"
+        assert captured["model"] == "gpt-5.6-sol"
+        assert captured["tools"][0]["model"] == "gpt-image-2"
+
+    @pytest.mark.parametrize("configured", [None, "", "   ", 42])
+    def test_invalid_host_model_keeps_compatible_default(self, monkeypatch, configured):
+        monkeypatch.setattr(
+            codex_plugin,
+            "_load_image_gen_config",
+            lambda: {"openai-codex": {"host_model": configured}},
+        )
+
+        payload = codex_plugin._build_responses_payload(
+            prompt="a cat",
+            size="1024x1024",
+            quality="medium",
+        )
+
+        assert payload["model"] == "gpt-5.5"
+        assert payload["tools"][0]["model"] == "gpt-image-2"
 
     def test_capabilities_advertise_image_inputs(self, provider):
         caps = provider.capabilities()

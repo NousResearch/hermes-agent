@@ -73,6 +73,25 @@ image_gen:
 to the global tool-worker limit, so image providers receive bounded parallel
 requests without allowing an image batch to bypass the agent's concurrency cap.
 
+### OpenAI (Codex auth): host model
+
+The `openai-codex` backend runs the Responses API `image_generation` tool under
+a Codex chat model. That host is separate from the underlying `gpt-image-2`
+image model and its quality tier. It defaults to `gpt-5.5`; override it for the
+current Hermes profile in `config.yaml` with `host_model`:
+
+```yaml
+image_gen:
+  provider: openai-codex
+  openai-codex:
+    model: gpt-image-2-high
+    host_model: gpt-5.6-sol
+```
+
+Changing `host_model` only selects the chat model that invokes the image tool.
+It does not change the generated-image model (`gpt-image-2`) or the configured
+`low`, `medium`, or `high` image tier.
+
 ### OpenRouter: the full Image API catalog
 
 With `image_gen.provider: openrouter`, the model picker lists OpenRouter's

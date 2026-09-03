@@ -729,6 +729,35 @@ def test_slash_exec_keeps_tui_skills_commands_on_the_worker_path():
     worker.run.assert_called_once_with("skills audit")
 
 
+def test_slash_exec_keeps_server_internal_tui_skills_commands_on_the_worker_path():
+    worker = Mock()
+    worker.run.return_value = "audit complete"
+    server._sessions["sid"] = _session(slash_worker=worker)
+    transport = types.SimpleNamespace(
+        auth_identity={"user_id": "server-internal", "provider": "server-internal"}
+    )
+
+    try:
+        response = _dispatch_sync(
+            {
+                "id": "skills-audit-ws",
+                "method": "slash.exec",
+                "params": {
+                    "command": "skills audit",
+                    "session_id": "sid",
+                    "surface": "tui",
+                },
+            },
+            transport,
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert response is not None
+    assert response["result"]["output"] == "audit complete"
+    worker.run.assert_called_once_with("skills audit")
+
+
 def test_slash_exec_refuses_spoofed_tui_surface_without_stdio_transport(monkeypatch):
     class _ExplodingWorker:
         def __init__(self, *args, **kwargs):

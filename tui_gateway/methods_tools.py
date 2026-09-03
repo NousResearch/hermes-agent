@@ -1203,10 +1203,21 @@ def _(rid, params: dict) -> dict:
     _cmd_base = (_cmd_parts[0] if _cmd_parts else "").lower()
     _cmd_arg = _cmd_parts[1] if len(_cmd_parts) > 1 else ""
 
-    # /skills has an interactive hub for the stdio TUI.  Every other transport
-    # gets the registry's review-only slice.  Bind that decision to the server-
-    # selected transport: an RPC param claiming ``surface=tui`` is not authority.
-    if _cmd_base == "skills" and current_transport() is not _stdio_transport:
+    # /skills has an interactive hub for the stdio TUI and the server-spawned
+    # TUI WebSocket. Other transports get the registry's review-only slice.
+    # Bind that decision to server-authenticated transport state: an RPC param
+    # claiming ``surface=tui`` is not authority.
+    transport = current_transport()
+    identity = getattr(transport, "auth_identity", None)
+    server_internal_tui = identity == {
+        "user_id": "server-internal",
+        "provider": "server-internal",
+    }
+    if (
+        _cmd_base == "skills"
+        and transport is not _stdio_transport
+        and not server_internal_tui
+    ):
         from hermes_cli.commands import resolve_command
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from hermes_constants import (

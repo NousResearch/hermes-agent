@@ -16628,8 +16628,9 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     ``internal``, ``token``, or ``none``) so the accepted path can log *how*
     a peer authed, not just that it did.
 
-    Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
-    parameter, constant-time compared.
+    Loopback / ``--insecure``: either the legacy
+    ``?token=<_SESSION_TOKEN>`` query parameter, constant-time compared, or
+    the process-lifetime internal credential used by server-spawned clients.
 
     Gated (public bind, no ``--insecure``): one of two credentials —
 
@@ -16722,6 +16723,23 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                 path=ws.url.path,
             )
             return "ticket_invalid", "ticket"
+
+    internal = ws.query_params.get("internal", "")
+    if internal:
+        from hermes_cli.dashboard_auth.ws_tickets import (
+            TicketInvalid,
+            consume_internal_credential,
+        )
+
+        try:
+            info = consume_internal_credential(internal)
+            ws._hermes_auth_identity = {
+                "user_id": info.get("user_id"),
+                "provider": info.get("provider"),
+            }
+            return None, "internal"
+        except TicketInvalid:
+            return "internal_invalid", "internal"
 
     token = ws.query_params.get("token", "")
     if not token:
@@ -16916,11 +16934,9 @@ def _resolve_client_ws_host() -> Optional[str]:
 def _build_gateway_ws_url() -> Optional[str]:
     """ws:// URL the PTY child should attach to for JSON-RPC gateway traffic.
 
-    Loopback / ``--insecure``: ``?token=<_SESSION_TOKEN>``.
-
-    Gated mode: the legacy token path is rejected by ``_ws_auth_ok``, so the
-    server-spawned PTY child authenticates with the process-lifetime internal
-    credential (``?internal=``). It must NOT use a single-use browser ticket:
+    The server-spawned PTY child authenticates with the process-lifetime
+    internal credential (``?internal=``) in every server mode. It must NOT use
+    a single-use browser ticket:
     the child reads this URL once at startup and reuses it on every reconnect,
     and a 30s-TTL ticket can expire before a slow cold boot even dials.
     """
@@ -16936,12 +16952,9 @@ def _build_gateway_ws_url() -> Optional[str]:
         else f"{host}:{port}"
     )
 
-    if getattr(app.state, "auth_required", False):
-        from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
+    from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
 
-        qs = urllib.parse.urlencode({"internal": internal_ws_credential()})
-    else:
-        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
+    qs = urllib.parse.urlencode({"internal": internal_ws_credential()})
 
     return f"ws://{netloc}/api/ws?{qs}"
 

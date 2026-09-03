@@ -344,7 +344,10 @@ describe('desktop slash command curation', () => {
     })
 
     expect(desktopSubcommandAllowlist('/skills')).toEqual([])
-    expect(desktopSubcommandUnavailableMessage('/skills', 'pending')).toContain('/skills pending')
+    expect(isDesktopSlashSuggestion('/skills')).toBe(false)
+    expect(desktopSubcommandUnavailableMessage('/skills', 'pending')).toBe(
+      '/skills is not available in the desktop app — use the terminal for it.'
+    )
   })
 
   it('falls back to the static /skills allowlist when the catalog has none', () => {

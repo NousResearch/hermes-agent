@@ -540,6 +540,11 @@ export function desktopSubcommandUnavailableMessage(command: string, arg: string
   }
 
   const display = command.trim().startsWith('/') ? command.trim() : `/${command.trim()}`
+
+  if (allowed.length === 0) {
+    return `${display} is not available in the desktop app — use the terminal for it.`
+  }
+
   const first = arg.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
 
   if (!first) {
@@ -669,7 +674,7 @@ export function isDesktopSlashSuggestion(command: string): boolean {
   const spec = resolveDesktopCommand(normalized)
 
   if (spec) {
-    return spec.surface.kind !== 'unavailable' && !spec.hidden
+    return spec.surface.kind !== 'unavailable' && !spec.hidden && spec.desktopSubcommands?.length !== 0
   }
 
   // Skill / quick commands the backend provides.

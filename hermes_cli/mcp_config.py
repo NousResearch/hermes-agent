@@ -792,7 +792,7 @@ def cmd_mcp_test(args):
     except Exception as exc:
         elapsed_ms = (time.monotonic() - start) * 1000
         _error(f"Connection failed ({elapsed_ms:.0f}ms): {exc}")
-        return
+        raise SystemExit(1) from exc
 
     _success(f"Connected ({elapsed_ms:.0f}ms)")
     _success(f"Tools discovered: {len(tools)}")

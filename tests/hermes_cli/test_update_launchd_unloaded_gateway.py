@@ -45,10 +45,10 @@ def launchd(monkeypatch):
     monkeypatch.setattr(gateway_mod, "get_launchd_label", lambda: "ai.hermes.gateway", raising=False)
     monkeypatch.setattr(gateway_mod, "get_launchd_plist_path", lambda: state["plist"], raising=False)
 
-    def fake_restart():
+    def fake_restart(*, no_drain=False):
         if state["restart_exc"] is not None:
             raise state["restart_exc"]
-        calls.append("restart")
+        calls.append("restart-no-drain" if no_drain else "restart")
 
     monkeypatch.setattr(gateway_mod, "launchd_restart", fake_restart, raising=False)
 
@@ -79,6 +79,16 @@ class TestLaunchdRestartAfterUpdate:
         # No `launchctl list` classification happens in this helper.
         assert subprocess_calls == []
         assert "NOT running" not in capsys.readouterr().out
+
+    def test_no_drain_forwards_immediate_restart_escape(self, launchd, capsys):
+        calls, _, subprocess_calls = launchd
+
+        assert update_cmd._restart_launchd_gateway_after_update(
+            supervision_verify=False, no_drain=True
+        ) == (["ai.hermes.gateway"], [])
+        assert calls == ["restart-no-drain"]
+        assert subprocess_calls == []
+        assert "--no-drain" in capsys.readouterr().out
 
     def test_restart_failure_warns_that_gateway_is_down(self, launchd, capsys):
         calls, state, _ = launchd

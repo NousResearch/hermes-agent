@@ -7015,7 +7015,7 @@ def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
 
 
 def _restart_launchd_gateway_after_update(
-    *, supervision_verify: bool = True
+    *, supervision_verify: bool = True, no_drain: bool = False
 ) -> tuple[list, list]:
     """Restart the invoking profile's launchd gateway after an update.
 
@@ -7052,7 +7052,14 @@ def _restart_launchd_gateway_after_update(
         if not get_launchd_plist_path().exists():
             return [], []  # not a launchd install — nothing to do or warn
         try:
-            launchd_restart()
+            if no_drain:
+                print(
+                    f"  ⚠ {current_label}: --no-drain requested; "
+                    "forcing immediate restart"
+                )
+                launchd_restart(no_drain=True)
+            else:
+                launchd_restart()
         except subprocess.CalledProcessError as e:
             stderr = (getattr(e, "stderr", "") or "").strip()
             print(
@@ -7097,6 +7104,8 @@ def _restart_macos_launchd_gateways(
     restarted_services: list,
     failed_or_stale_units: list,
     drain_budget: float,
+    *,
+    no_drain: bool = False,
 ) -> None:
     """Restart every launchd-managed gateway after an update (macOS).
 
@@ -7129,7 +7138,8 @@ def _restart_macos_launchd_gateways(
 
     # --- Current profile: unchanged single-service path ---------------------
     _restarted, _failed = _restart_launchd_gateway_after_update(
-        supervision_verify=True
+        supervision_verify=True,
+        no_drain=no_drain,
     )
     restarted_services.extend(_restarted)
     failed_or_stale_units.extend(_failed)
@@ -7150,11 +7160,13 @@ def _restart_macos_launchd_gateways(
                 # mid-way) — nothing is running old code here.
                 continue
             graceful_ok = False
-            if old_pid is not None and old_pid > 0:
+            if old_pid is not None and old_pid > 0 and not no_drain:
                 print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
                 graceful_ok = _graceful_restart_via_sigusr1(
                     old_pid, drain_timeout=drain_budget
                 )
+            elif no_drain:
+                print(f"  ⚠ {label}: --no-drain requested; forcing immediate restart")
             if graceful_ok and _wait_for_launchd_service_pid(
                 label, old_pid=old_pid, timeout=10.0, domain=domain
             ):
@@ -8127,6 +8139,8 @@ def _drain_or_signal_gateway_for_update(
     pid: int,
     drain_budget: float,
     label: str,
+    *,
+    no_drain: bool = False,
 ) -> bool:
     """Decide how ``hermes update`` hands a running gateway over to new code.
 
@@ -8166,6 +8180,13 @@ def _drain_or_signal_gateway_for_update(
         probe_gateway_loop_liveness,
     )
 
+    if no_drain:
+        print(
+            f"  ⚠ {label}: --no-drain requested — skipping graceful drain; "
+            "the immediate restart path may terminate in-flight work"
+        )
+        return False
+
     if _is_pid_ancestor_of_current_process(pid):
         print(
             f"  → {label}: update is running inside this gateway's "
@@ -8203,6 +8224,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else None
     )
     assume_yes = bool(getattr(args, "yes", False))
+    no_drain = bool(getattr(args, "no_drain", False))
     # --keep-stash (desktop updater): stash local changes so the update can
     # proceed, but never re-apply them afterward — they stay parked in git
     # stash. Only applies when an update actually landed; abort/no-op paths
@@ -10198,7 +10220,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # graceful drain) — shared with the bare-process
                             # path below.
                             _graceful_ok = _drain_or_signal_gateway_for_update(
-                                _main_pid, _drain_budget, svc_name
+                                _main_pid,
+                                _drain_budget,
+                                svc_name,
+                                no_drain=no_drain,
                             )
 
                         if _graceful_ok:
@@ -10426,6 +10451,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         restarted_services,
                         failed_or_stale_units,
                         _drain_budget,
+                        no_drain=no_drain,
                     )
                 except (FileNotFoundError, ImportError):
                     pass
@@ -10479,7 +10505,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # that stream update progress the silence reads as a hung
                 # update (#44515).
                 drained = _drain_or_signal_gateway_for_update(
-                    pid, _drain_budget, proc.profile
+                    pid,
+                    _drain_budget,
+                    proc.profile,
+                    no_drain=no_drain,
                 )
                 if not drained:
                     try:

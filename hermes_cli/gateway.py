@@ -5999,7 +5999,7 @@ def _wait_for_launchd_service_pid(
         time.sleep(0.5)
 
 
-def launchd_restart():
+def launchd_restart(*, no_drain: bool = False):
     label = get_launchd_label()
     domain = _launchd_domain()
     target = f"{domain}/{label}"
@@ -6007,6 +6007,19 @@ def launchd_restart():
 
     try:
         pid = get_running_pid()
+        if no_drain:
+            # Explicit operator escape hatch: skip SIGUSR1 and let launchd
+            # terminate the service immediately.  This is intentionally not
+            # used by /restart or normal updates because it can kill active
+            # agent/cron work.
+            print(
+                f"⚠ {label}: --no-drain requested — forcing immediate restart; "
+                "in-flight work may be lost"
+            )
+            subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+            print("✓ Service restarted")
+            _clear_launchd_unsupported_marker()
+            return
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
             _clear_launchd_unsupported_marker()

@@ -16,6 +16,7 @@ The fix: when the target gateway PID is an ancestor of this process,
 fire-and-forget (SIGUSR1 + return) instead of drain-waiting.
 """
 
+import argparse
 from unittest.mock import patch
 
 import pytest
@@ -165,3 +166,26 @@ class TestDrainOrSignalTriage:
         assert calls["drain"] == [(1234, 900.0)]
         assert calls["self_restart"] == []
         assert calls["escalate"] == []
+
+    def test_no_drain_skips_all_graceful_paths(self, monkeypatch, capsys):
+        """The explicit escape hatch reaches the caller's immediate-kill path."""
+        from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
+
+        calls = self._patched(monkeypatch, ancestor=True, wedged=False)
+        assert _drain_or_signal_gateway_for_update(
+            1234, 900.0, "svc", no_drain=True
+        ) is False
+        assert calls == {"self_restart": [], "escalate": [], "drain": []}
+        assert "--no-drain" in capsys.readouterr().out
+
+
+def test_update_parser_defaults_and_accepts_no_drain():
+    """Keep the destructive escape explicit and opt-in at the CLI boundary."""
+    from hermes_cli.subcommands.update import build_update_parser
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_update_parser(subparsers, cmd_update=lambda _args: None)
+
+    assert parser.parse_args(["update"]).no_drain is False
+    assert parser.parse_args(["update", "--no-drain"]).no_drain is True

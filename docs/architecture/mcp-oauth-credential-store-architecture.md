@@ -704,6 +704,7 @@ credential_ambiguous
 backend_unavailable
 backend_locked
 backend_timeout
+interaction_required
 credential_corrupt
 unsupported_schema
 revision_conflict
@@ -723,6 +724,7 @@ deletion_failed
 
 - `credential_ambiguous` — a backend found more than one stored item matching the identity (e.g. two Keychain generic-password items with the same service and account). The payload is not corrupt, so `credential_corrupt` would misdescribe it; the store must refuse the operation rather than act on an arbitrary match, and diagnostics name the exact remediation.
 - `authorization_endpoint_unavailable` — a pre-token step (discovery, registration, token exchange) failed on a transient transport condition (HTTP 5xx / 429 / timeout) that persisted through one retry (§6.2). Distinct from `authorization_timeout`, which is the user not completing the browser step. Surfaces present it as "retry shortly", carrying any `Retry-After` interval.
+- `backend_locked` vs `interaction_required` — `backend_locked` is a locked login Keychain the user can unlock once; `interaction_required` is a specific item whose access-control policy would raise an interactive prompt in the current (often background) context. Both fail closed without hanging or writing plaintext; the remediation differs (unlock the Keychain vs re-grant the item or run interactively).
 
 Surfaces translate these errors into presentation appropriate to interactive or background operation. They do not infer deletion, retry, or fallback policy from raw exception text.
 

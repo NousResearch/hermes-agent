@@ -3,7 +3,7 @@
 Status: design proposal (not yet implemented; design-review updates applied 2026-09-03)
 Depends on: versioned bundle store protocol (Chunk 5)
 Platform: macOS
-Architecture: [`../architecture/mcp-oauth-credential-store-architecture.md`](../architecture/mcp-oauth-credential-store-architecture.md) §4.1, §8.3, §8.4, §10, §14, §17.1
+Architecture: [`../architecture/mcp-oauth-credential-store-architecture.md`](../architecture/mcp-oauth-credential-store-architecture.md) §2.6, §4.1, §5.1, §8.3, §8.4, §10, §11, §14, §17.1
 Design-review updates: [`../requirements/mcp-oauth-design-review-approaches.md`](../requirements/mcp-oauth-design-review-approaches.md) (F-6 duplicate-item ambiguity, F-1 probe cost, F-0 identity)
 
 ## Purpose
@@ -68,7 +68,7 @@ Every operation first resolves how many items match the exact service/account:
 - Resolve match count (above).
 - Query the single item; bound output size.
 - Parse and validate the envelope.
-- Verify schema and revision; verify the recomputed identity digest equals the account name.
+- Verify schema and revision; verify the recomputed identity digest equals the account name (a stored envelope whose identity disagrees with its account is `credential_corrupt`).
 - Map a missing item to `credential_not_found`.
 
 ### Create and replacement

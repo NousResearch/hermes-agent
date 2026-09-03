@@ -481,6 +481,44 @@ class TestSaveEnvValueSecure:
             assert load_env()["TERMINAL_SSH_KEY"] == raw
 
 
+class TestLoadEnvInlineComments:
+    """load_env() must strip dotenv-style inline comments from values.
+
+    Regression: credential-pool seeding read ``KEY=https://x/v4  # comment``
+    as a base URL containing the comment text, producing runtime HTTP 404
+    (URL-encoded spaces). Mirrors agent.secret_scope.load_env_file() semantics.
+    """
+
+    def test_unquoted_value_inline_comment_stripped(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            (tmp_path / ".env").write_text(
+                "GLM_BASE_URL=https://api.z.ai/api/paas/v4  # Override default base URL\n",
+                encoding="utf-8",
+            )
+            assert load_env()["GLM_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+
+    def test_quoted_value_trailing_comment_stripped(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            (tmp_path / ".env").write_text(
+                'QUOTED="https://x/v1"  # trailing comment\n',
+                encoding="utf-8",
+            )
+            assert load_env()["QUOTED"] == "https://x/v1"
+
+    def test_hash_without_preceding_whitespace_is_not_a_comment(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            (tmp_path / ".env").write_text("TOKEN=foo#bar\n", encoding="utf-8")
+            assert load_env()["TOKEN"] == "foo#bar"
+
+    def test_export_prefix_with_inline_comment(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            (tmp_path / ".env").write_text(
+                "export GLM_BASE_URL=https://api.z.ai/api/paas/v4  # comment\n",
+                encoding="utf-8",
+            )
+            assert load_env()["GLM_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+
+
 class TestRemoveEnvValue:
     def test_removes_key_from_env_file(self, tmp_path):
         env_path = tmp_path / ".env"

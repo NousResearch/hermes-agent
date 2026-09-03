@@ -47,6 +47,7 @@ class FailoverReason(enum.Enum):
 
     # Transport
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
+    thread_exhaustion = "thread_exhaustion"  # Local worker creation failed
     # TLS certificate verification failure — deterministic for the host
     # (TLS-inspecting proxy, missing/expired CA bundle, self-signed cert).
     # Retrying reproduces the identical handshake failure, so fail fast
@@ -1228,8 +1229,14 @@ def classify_api_error(
             should_fallback=True,
         )
 
-    # ── 8. Transport / timeout heuristics ───────────────────────────
+    # ── 8. Local thread exhaustion ───────────────────────────────────
+    if "can't start new thread" in error_msg or (
+        "resource temporarily unavailable" in error_msg
+        and error_type in {"OSError", "RuntimeError"}
+    ):
+        return _result(FailoverReason.thread_exhaustion, retryable=False)
 
+    # ── 9. Transport / timeout heuristics ───────────────────────────
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
         return _result(FailoverReason.timeout, retryable=True)
 

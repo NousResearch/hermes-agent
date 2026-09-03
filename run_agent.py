@@ -5176,6 +5176,14 @@ class AIAgent:
         # still holds the closed agent (e.g. a draining background task).
         try:
             self._session_messages = []
+            # Shadow copies of the same transcript: the DB-flush settled-prefix
+            # snapshot (a shallow copy of the whole list, see
+            # _flush_session_to_db) and the streamed-text accumulator. On a
+            # closed delegate child these were the only remaining owners of
+            # every message dict, so a retained child kept its full history
+            # alive in the parent's heap.
+            self._db_flush_scan_prefix = None
+            self._streamed_assistant_text_parts = []
         except Exception:
             pass
 

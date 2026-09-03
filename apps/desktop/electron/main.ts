@@ -4309,6 +4309,14 @@ async function handOffWindowsBootstrapRecovery(reason) {
   if (!handoffOutcome.ok) {
     rememberLog(`[bootstrap] recovery hand-off not viable, staying alive: ${handoffOutcome.message}`)
 
+    if (IS_WINDOWS) {
+      // Same drain-semantics restore as applyUpdates's abort paths (#70337):
+      // releaseBackendLockForUpdate above already ran `gateway stop --all`
+      // for every profile; a failed hand-off means nothing else will bring
+      // them back.
+      startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
+    }
+
     return false
   }
 

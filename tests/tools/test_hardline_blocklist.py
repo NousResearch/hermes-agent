@@ -97,6 +97,12 @@ _HARDLINE_BLOCK = [
     # System-wide kill
     "kill -9 -1",
     "kill -1",
+    # separated signal operands still hit the kill-all floor (#102389)
+    "kill -s KILL -1",
+    "kill -s 9 -1",
+    "kill --signal KILL -1",
+    "kill --signal=KILL -1",
+    "kill -9 -s TERM -1",
     # Shutdown / reboot / halt
     "shutdown -h now",
     "shutdown -r now",
@@ -201,6 +207,8 @@ _HARDLINE_ALLOW = [
     # targeted kill
     "kill -9 12345",
     "kill -HUP 1234",
+    "kill -s KILL 1234",
+    "kill --signal TERM 1234",
     "pkill python",
     # Ordinary ops
     "git status",
@@ -455,6 +463,11 @@ _TRUE_POSITIVES_93392 = [
     "true && kill -HUP -1",
     "$(kill -1)",
     'bash -c "kill -1"',
+    # separated signal operands in carrier positions (#102389)
+    "sudo kill -s KILL -1",
+    "ls; kill --signal KILL -1",
+    "$(kill -s KILL -1)",
+    'bash -c "kill -s KILL -1"',
     # fork bomb
     ":(){ :|:& };:",
     "true && :(){ :|:& };:",

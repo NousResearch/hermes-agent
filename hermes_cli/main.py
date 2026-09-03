@@ -8522,7 +8522,18 @@ def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
     if not (desktop_dir / "package.json").exists():
+        # Wheel/Brew installs land hermes_cli inside site-packages, which
+        # does not ship apps/desktop — the Electron source tree is only
+        # present in git/managed installs. Point the user at the install
+        # method that actually carries the desktop app instead of a bare
+        # "source not found" that reads like corruption (#61056).
         print(f"Desktop GUI source not found at: {desktop_dir}")
+        print()
+        print("This Hermes install does not include the Electron desktop")
+        print("source tree (it ships only with git and managed installs).")
+        print("To use the Desktop app, install via the managed installer:")
+        print("    curl -fsSL https://hermes.nousresearch.com/install.sh | bash")
+        print("or clone the repository and run from the checkout root.")
         sys.exit(1)
 
     try:

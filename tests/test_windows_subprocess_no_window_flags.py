@@ -428,3 +428,75 @@ def test_suppress_platform_ver_console_stubs_syscmd_ver(monkeypatch):
     # Idempotent + never raises on repeat calls.
     _subprocess_compat.suppress_platform_ver_console()
     assert platform._syscmd_ver() == ("", "", "")
+
+
+
+
+# ── #101895 statusbar GPU probes (nvidia-smi) ───────────────────────────────
+#
+# The desktop's statusbar polls /api/local-models/hardware every ~5s; the
+# endpoint and the budget probe it consults each shell out to nvidia-smi
+# (a console-subsystem exe). From the windowless pythonw backend every
+# bare spawn allocated a visible console — two flashing windows per poll.
+# Both call sites are hide-only (creationflags); the synchronous
+# capture_output contract stays intact.
+
+
+def test_nvidia_vram_probe_hides_console_window(monkeypatch):
+    from hermes_cli.local_runtime import hardware
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="24576, 24576")
+
+    monkeypatch.setattr(hardware, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(
+        hardware, "_nvidia_smi_path", lambda: "C:/Windows/System32/nvidia-smi.exe"
+    )
+    monkeypatch.setattr(hardware.subprocess, "run", fake_run)
+
+    assert hardware._nvidia_vram() == (24576 << 20, 24576 << 20)
+
+    assert len(captured) == 1, captured
+    cmd, kwargs = captured[0]
+    assert cmd[0] == "C:/Windows/System32/nvidia-smi.exe"
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["capture_output"] is True
+
+
+def test_local_models_hardware_hides_console_window(monkeypatch):
+    from hermes_cli.local_runtime import hardware
+    from hermes_cli.web_routers import local_models
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="NVIDIA GeForce RTX 5090, 4, 512")
+
+    monkeypatch.setattr(
+        hardware, "_nvidia_smi_path", lambda: "C:/Windows/System32/nvidia-smi.exe"
+    )
+    monkeypatch.setattr(hardware.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        hardware,
+        "probe_budget",
+        lambda: SimpleNamespace(
+            uma=False, total_device_bytes=32 << 30, usable_vram_bytes=30 << 30
+        ),
+    )
+    monkeypatch.setattr(hardware, "_ram_bytes", lambda: (64 << 30, 32 << 30))
+    _patch_hide_flags(monkeypatch)
+
+    out = local_models.local_models_hardware()
+
+    assert out["gpu_name"] == "NVIDIA GeForce RTX 5090"
+    assert out["gpu_util_percent"] == 4
+    assert out["vram_used_bytes"] == 512 << 20
+    spawns = _spawns(captured, "--query-gpu=name,utilization.gpu,memory.used")
+    assert len(spawns) == 1, captured
+    cmd, kwargs = spawns[0]
+    assert cmd[0] == "C:/Windows/System32/nvidia-smi.exe"
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW

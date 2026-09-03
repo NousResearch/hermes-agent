@@ -42,6 +42,7 @@ Requires:
 import asyncio
 import errno
 import hashlib
+import inspect
 import hmac
 import json
 from contextlib import contextmanager, nullcontext
@@ -3126,6 +3127,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: str,
         *,
         fail_closed: bool = False,
+        resolve_compaction: bool = True,
     ) -> List[Dict[str, Any]]:
         db = await self._ensure_session_db_async()
         if db is None:
@@ -3133,7 +3135,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 raise RuntimeError("session_db_unavailable")
             return []
         try:
-            return await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+            resolved_id = session_id
+            resolve_session = getattr(db, "resolve_resume_session_id", None)
+            if resolve_compaction and callable(resolve_session):
+                candidate = await asyncio.to_thread(resolve_session, session_id)
+                if isinstance(candidate, str) and candidate:
+                    resolved_id = candidate
+            return await asyncio.to_thread(db.get_messages_as_conversation, resolved_id)
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             if fail_closed:
@@ -6369,14 +6377,23 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                     if callable(resolve_session):
                         resolved_session_id = await asyncio.to_thread(
-                        resolve_session, continuation_session_id
+                            resolve_session, continuation_session_id
                         )
                         if isinstance(resolved_session_id, str) and resolved_session_id:
                             continuation_session_id = resolved_session_id
-                conversation_history = await self._conversation_history_for_session(
-                    continuation_session_id,
-                    fail_closed=True,
-                )
+                            session_id = resolved_session_id
+                history_loader = self._conversation_history_for_session
+                if inspect.ismethod(history_loader):
+                    conversation_history = await history_loader(
+                        continuation_session_id,
+                        fail_closed=True,
+                        resolve_compaction=False,
+                    )
+                else:
+                    conversation_history = await history_loader(
+                        continuation_session_id,
+                        fail_closed=True,
+                    )
             except Exception:
                 return web.json_response(
                     _openai_error(

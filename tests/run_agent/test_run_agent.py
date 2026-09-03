@@ -1965,13 +1965,18 @@ class TestTerminalRateLimitGuidance:
             self.status_code = status_code
 
     @staticmethod
-    def _run_failure(agent, *, model, status_code):
+    def _run_failure(agent, *, model, status_code, streaming=False):
         agent.provider = "openrouter"
         agent.model = model
         agent._api_max_retries = 1
-        agent._interruptible_api_call = MagicMock(
+        failing_call = MagicMock(
             side_effect=TestTerminalRateLimitGuidance._APIError(status_code)
         )
+        if streaming:
+            agent._has_stream_consumers = MagicMock(return_value=True)
+            agent._interruptible_streaming_api_call = failing_call
+        else:
+            agent._interruptible_api_call = failing_call
 
         with (
             patch.object(agent, "_persist_session"),
@@ -2013,6 +2018,24 @@ class TestTerminalRateLimitGuidance:
         assert final.startswith("API call failed after 1 retries:")
         assert "provider dashboard" not in final.lower()
         assert "free tier" not in final.lower()
+
+    @pytest.mark.parametrize(
+        ("status_code", "expected_guidance"),
+        [(429, True), (500, False)],
+    )
+    def test_streaming_worker_failure_uses_terminal_rate_limit_guidance(
+        self, agent, status_code, expected_guidance
+    ):
+        result = self._run_failure(
+            agent,
+            model="minimax/minimax-m3:free",
+            status_code=status_code,
+            streaming=True,
+        )
+
+        final = result["final_response"]
+        assert ("Rate limit reached" in final) is expected_guidance
+        assert ("`/model minimax/minimax-m3 --provider openrouter`" in final) is expected_guidance
 
 
 class TestRetryAfterCap:

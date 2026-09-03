@@ -1192,7 +1192,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_send_document_reply_uses_thread_flag(self):
+    def test_send_document_reply_does_not_use_thread_flag(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -1244,7 +1244,7 @@ class TestAdapterBehavior(unittest.TestCase):
             os.unlink(file_path)
 
         self.assertTrue(result.success)
-        self.assertTrue(captured["request"].request_body.reply_in_thread)
+        self.assertFalse(captured["request"].request_body.reply_in_thread)
 
 
     @patch.dict(os.environ, {}, clear=True)

@@ -39,6 +39,7 @@ from typing import Optional, Dict, List, Any, Set, Tuple, Union, Collection
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
+from hermes_time import get_timezone
 from utils import atomic_replace, atomic_write_text
 
 # ``croniter`` compiles ~15 ms of regexes at import and only matters for
@@ -1567,8 +1568,21 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
                 base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
             except Exception:
                 base_time = now
-        cron = croniter(expr, base_time)
-        next_run = cron.get_next(datetime)
+        # Anchor cron matching to the CONFIGURED IANA timezone's WALL CLOCK,
+        # not to the UTC offset carried by ``last_run_at``. croniter ignores
+        # the tzinfo on its start time and uses the start's UTC offset as its
+        # working offset, so a ``last_run_at`` stored in UTC (+00:00) would
+        # push the next fire to 09:00 UTC instead of 09:00 local, and DST
+        # transition days (spring-forward / fall-back) would land one hour off
+        # (08:00 or 10:00). Render the base as the configured zone's naive
+        # wall clock for croniter, then re-attach the zone to the result, so
+        # the wall-clock hour stays correct every calendar day, including DST
+        # boundaries (#DST-bug, morning-routine 09:00 America/Toronto).
+        # Fall back to the base's own zone only when nothing is configured.
+        zone = get_timezone() or base_time.tzinfo
+        base_wall = base_time.astimezone(zone).replace(tzinfo=None)
+        cron = croniter(expr, base_wall)
+        next_run = cron.get_next(datetime).replace(tzinfo=zone)
         return next_run.isoformat()
 
     return None

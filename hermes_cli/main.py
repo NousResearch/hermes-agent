@@ -7116,6 +7116,18 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
         shutil.rmtree(previous, ignore_errors=True)
         moved_aside = False
         if live_root.exists():
+            # The pre-pack stop ran minutes ago (the npm pack takes 1-2 min),
+            # and a desktop instance re-launched inside that window (autostart,
+            # updater relaunch, stray shortcut) re-locks ``release/<unpacked>``;
+            # the rename below then dies with WinError 32 and aborts the whole
+            # update over a verified staged build (#101878). Stop again right
+            # before promoting; off-Windows the stopper is a no-op.
+            stopped = _stop_desktop_processes_locking_build(desktop_dir)
+            if stopped:
+                print(
+                    "  ⚠ Stopped re-launched desktop app before installing the "
+                    f"rebuild (pid {', '.join(map(str, stopped))})"
+                )
             os.rename(live_root, previous)
             moved_aside = True
         try:

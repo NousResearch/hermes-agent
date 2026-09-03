@@ -332,3 +332,86 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
     mock_stamp.assert_not_called()
     out = capsys.readouterr().out
     assert "integrity check" in out
+
+
+# ─── stage-and-swap promotion vs. re-locked release trees (#101878) ─────────
+
+
+def _unpacked_exe_rel() -> Path:
+    """The platform's unpacked-tree exe layout, as electron-builder emits it."""
+    if sys.platform == "darwin":
+        return Path("mac/Hermes.app/Contents/MacOS/Hermes")
+    if sys.platform == "win32":
+        return Path("win-unpacked/Hermes.exe")
+    return Path("linux-unpacked/hermes")
+
+
+def _make_unpacked_tree(base: Path, payload: str) -> Path:
+    exe = base / _unpacked_exe_rel()
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_text(payload, encoding="utf-8")
+    return exe
+
+
+def test_swap_restops_relaunched_desktop_before_promoting(tmp_path, capsys):
+    """The pack window between the pre-pack stop and the swap is minutes
+    long; a desktop instance re-launched inside it (autostart, updater
+    relaunch) re-locks ``release/<unpacked>`` and the promote rename dies
+    with WinError 32, aborting the whole update over a verified staged build
+    (#101878). The swap must re-stop lockers right before promoting."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    staging_dir = desktop_dir / ".staging-1-0"
+    _make_unpacked_tree(staging_dir, "staged")
+    live_exe = _make_unpacked_tree(desktop_dir / "release", "live")
+
+    with patch(
+        "hermes_cli.main._stop_desktop_processes_locking_build",
+        return_value=[4242, 4243],
+    ) as mock_stop:
+        promoted = cli_main._swap_staged_desktop_app(desktop_dir, staging_dir)
+
+    assert promoted == live_exe
+    mock_stop.assert_called_once_with(desktop_dir)
+    assert live_exe.read_text(encoding="utf-8") == "staged"
+    assert not staging_dir.exists()
+    out = capsys.readouterr().out
+    assert "Stopped re-launched desktop app" in out
+    assert "4242, 4243" in out
+
+
+def test_swap_keeps_failsafe_when_the_relock_survives_the_restop(tmp_path):
+    """A re-lock the re-stop cannot clear (e.g. a third-party process keeping
+    ``release/`` as its working directory) must still land in the stage-and-
+    swap failsafe: live app untouched, staging discarded, ``None`` returned."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    staging_dir = desktop_dir / ".staging-1-0"
+    _make_unpacked_tree(staging_dir, "staged")
+    live_exe = _make_unpacked_tree(desktop_dir / "release", "live")
+
+    with patch(
+        "hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]
+    ) as mock_stop, patch(
+        "hermes_cli.main.os.rename",
+        side_effect=PermissionError(32, "The process cannot access the file"),
+    ):
+        promoted = cli_main._swap_staged_desktop_app(desktop_dir, staging_dir)
+
+    assert promoted is None
+    mock_stop.assert_called_once_with(desktop_dir)
+    assert live_exe.read_text(encoding="utf-8") == "live"
+    assert not staging_dir.exists()
+
+
+def test_swap_skips_the_restop_on_fresh_install(tmp_path):
+    """No live tree to promote over means no needless process-table sweep."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    staging_dir = desktop_dir / ".staging-1-0"
+    _make_unpacked_tree(staging_dir, "staged")
+
+    with patch(
+        "hermes_cli.main._stop_desktop_processes_locking_build"
+    ) as mock_stop:
+        promoted = cli_main._swap_staged_desktop_app(desktop_dir, staging_dir)
+
+    assert promoted == desktop_dir / "release" / _unpacked_exe_rel()
+    mock_stop.assert_not_called()

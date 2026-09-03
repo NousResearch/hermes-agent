@@ -100,6 +100,44 @@ AdaptiveCard = None  # type: ignore[assignment,misc]
 ExecuteAction = None  # type: ignore[assignment,misc]
 TextBlock = None  # type: ignore[assignment,misc]
 
+def _is_rtl(text: str) -> bool:
+    """True when the text is predominantly Hebrew/Arabic.
+
+    Used to decide whether to send a plain markdown message (LTR) or an
+    Adaptive Card with ``rtl=True`` so Teams renders the content
+    right-to-left.
+    """
+    rtl = sum(1 for c in text if "\u0590" <= c <= "\u05ff" or "\u0600" <= c <= "\u06ff")
+    letters = sum(1 for c in text if c.isalpha())
+    return letters > 0 and rtl / letters > 0.3
+
+
+def _rtl_lists(text: str) -> str:
+    """Rewrite markdown list markers as plain leading characters.
+
+    Teams renders markdown lists (``- ``, ``1. ``) as LTR HTML lists whose
+    markers ignore the card's RTL, so in a Hebrew answer the bullets/numbers
+    end up on the left.  As plain text they flow with the RTL paragraph
+    (marker on the right).  A non-breaking space after a number stops Teams
+    re-detecting it as an ordered list.
+    """
+    out: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        indent = line[: len(line) - len(stripped)]
+        if stripped[:2] in ("- ", "* "):
+            out.append(f"{indent}\u2022 {stripped[2:]}  ")
+        else:
+            n = 0
+            while n < len(stripped) and stripped[n].isdigit():
+                n += 1
+            if n and stripped[n : n + 2] == ". ":
+                out.append(f"{indent}{stripped[:n]}.\u00a0{stripped[n + 2:]}  ")
+            else:
+                out.append(line)
+    return "\n".join(out)
+
+
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
@@ -1362,6 +1400,27 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Teams app not initialized")
 
         formatted = self.format_message(content)
+
+        # RTL content (Hebrew/Arabic) must be sent as an Adaptive Card with
+        # rtl=True — plain markdown messages always render LTR in Teams.
+        if _is_rtl(formatted) and AdaptiveCard is not None and TextBlock is not None:
+            rtl_text = _rtl_lists(formatted)
+            chunks = self.truncate_message(rtl_text)
+            last_message_id = None
+            for chunk in chunks:
+                card = (
+                    AdaptiveCard()
+                    .with_version("1.5")
+                    .with_rtl(True)
+                    .with_body([TextBlock(text=chunk, wrap=True)])
+                )
+                try:
+                    result = await self._send_card(chat_id, card)
+                    last_message_id = getattr(result, "id", None)
+                except Exception as e:
+                    return SendResult(success=False, error=str(e), retryable=True)
+            return SendResult(success=True, message_id=last_message_id)
+
         chunks = self.truncate_message(formatted)
         last_message_id = None
 

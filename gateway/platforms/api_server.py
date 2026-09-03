@@ -316,9 +316,28 @@ def _sse_frame(data: Any, *, event: str = None, ensure_ascii: bool = True) -> by
     ``ensure_ascii=False``) pass ``ensure_ascii=False`` explicitly — the
     option exists so every writer shares one helper without changing any
     existing byte stream.
+
+    A frame that cannot be encoded is *repaired*, never dropped.  With
+    ``ensure_ascii=False`` a lone UTF-16 surrogate survives serialization as
+    a raw code point and UTF-8 cannot encode it, so the frame is re-encoded
+    with surrogates replaced by U+FFFD.  Frames that already encode are
+    byte-identical to before.
     """
     prefix = f"event: {event}\n" if event else ""
-    return f"{prefix}data: {json.dumps(data, ensure_ascii=ensure_ascii)}\n\n".encode()
+    frame = f"{prefix}data: {json.dumps(data, ensure_ascii=ensure_ascii)}\n\n"
+    try:
+        return frame.encode()
+    except UnicodeEncodeError:
+        # Being the single chokepoint, this is also the last place a stream
+        # can survive unencodable text.  A raised UnicodeEncodeError here
+        # propagates into the caller's writer loop, which stops consuming
+        # and closes a response that already sent HTTP 200 — the client
+        # hangs with no terminal event.  U+FFFD is legal inside a JSON
+        # string literal, so the repaired frame stays parseable (#80366
+        # class).
+        from agent.message_sanitization import _sanitize_surrogates
+
+        return _sanitize_surrogates(frame).encode()
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:

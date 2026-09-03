@@ -1113,8 +1113,22 @@ def kanban_command(args: argparse.Namespace) -> int:
             print("kanban: --board requires a slug", file=sys.stderr)
             return 2
         # Boards other than 'default' must already exist — typoed slugs
-        # would otherwise silently create an empty board.
-        if normed != kb.DEFAULT_BOARD and not kb.board_exists(normed):
+        # would otherwise silently create an empty board. Board-management
+        # subcommands (`boards ...`) are exempt from this pre-check:
+        # bootstrap-by-flag (`hermes kanban --board ghost boards create
+        # ghost`) was legal before the explicit scope existed (base
+        # 6051590677 dispatched `boards` before this check) and must stay
+        # legal — the check would otherwise reject the very slug the
+        # boards subcommand is about to create (t_4eff74eb critic round 2).
+        # With a not-yet-existing slug pinned, the scope still outranks
+        # the worker path pins, and the typo-aliasing risk the guard
+        # exists for cannot arise: no task-level subcommand dispatches
+        # under `boards ...`.
+        if (
+            action != "boards"
+            and normed != kb.DEFAULT_BOARD
+            and not kb.board_exists(normed)
+        ):
             print(
                 f"kanban: board {normed!r} does not exist. "
                 f"Create it with `hermes kanban boards create {normed}`.",
@@ -1144,9 +1158,15 @@ def kanban_command(args: argparse.Namespace) -> int:
     # Task-level board-management operations (boards switch / rename /
     # rm / create / set-default-workdir / import) intentionally run under
     # the scope as well: they address their target board by slug and do
-    # not consult the active-board chain, so the scope never changes
-    # their target — it only keeps the scope's contextvar consistent
-    # for any helper that resolves paths during the call.
+    # not consult the active-board chain to FIND their target — so when
+    # the flagged board exists, the scope cannot change their target; it
+    # only keeps the scope's contextvar consistent for any helper that
+    # resolves paths during the call. When the flagged slug does NOT
+    # exist yet (bootstrap-by-flag — no exists-check for boards actions,
+    # see above), the scope pins that absent slug: creation helpers
+    # (create/import) then materialize the board at that slug's own
+    # directory rather than diverting anything to the worker's pinned
+    # board.
     with board_scope:
         if action == "boards":
             return _dispatch_boards(args)

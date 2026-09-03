@@ -40,6 +40,7 @@ const REMOTE_LOCK_DIR = '~/.hermes/desktop-ssh'
 const SUPPORTED_REMOTE_OS = new Set(['Linux', 'Darwin'])
 const DEFAULT_READY_TIMEOUT_MS = 45_000
 const READY_POLL_INTERVAL_MS = 750
+const REMOTE_LOGIN_PATH_MARKER = '__HERMES_DESKTOP_LOGIN_PATH__:'
 // macOS sshd starts non-interactive shells with a 256-FD soft limit even when
 // the hard limit is unlimited. A Desktop backend can legitimately exceed that
 // while serving several profiles/tools, so raise only the child process limit.
@@ -161,6 +162,49 @@ function expandRemotePath(p) {
   }
 
   return shq(p)
+}
+
+// A command executed directly over SSH inherits sshd's minimal, non-login
+// PATH. Resolve the user's configured login-shell PATH before detaching the
+// backend so tools installed by nvm, pyenv, asdf, Cargo, Homebrew, or the
+// per-user Hermes/Codex installers remain discoverable by child processes.
+//
+// Startup files may print banners, so frame the value with a private marker
+// and take the final marked line. If the configured shell is unavailable or
+// exits unsuccessfully, preserve the non-login PATH as the compatibility rung.
+async function resolveRemoteLoginPath(ssh) {
+  const emitPath = `printf '\\n${REMOTE_LOGIN_PATH_MARKER}%s\\n' "$PATH"`
+
+  const command =
+    `remote_shell=\${SHELL:-/bin/sh}; ` +
+    `if test -x "$remote_shell" && "$remote_shell" -lc ${shq(emitPath)}; then exit 0; fi; ` +
+    emitPath
+
+  let output
+
+  try {
+    output = String(await ssh.exec(command))
+  } catch (cause) {
+    const error: any = new Error('Could not resolve the remote login-shell PATH.')
+
+    error.kind = 'transient-transport-error'
+    error.cause = cause
+    throw error
+  }
+
+  const markedLine = output
+    .split(/\r?\n/)
+    .filter(line => line.startsWith(REMOTE_LOGIN_PATH_MARKER))
+    .at(-1)
+
+  const remoteLoginPath = markedLine?.slice(REMOTE_LOGIN_PATH_MARKER.length) || ''
+
+  // eslint-disable-next-line no-control-regex -- reject unsafe PATH data before shell interpolation
+  if (!remoteLoginPath || /[\x00\n\r]/.test(remoteLoginPath)) {
+    return ''
+  }
+
+  return remoteLoginPath
 }
 
 // Resolve the remote hermes executable. An EXPLICIT path is honored strictly
@@ -1044,6 +1088,14 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const ownerArg = opts.spawnNonce ? ` --ssh-owner-nonce ${validateSpawnNonce(opts.spawnNonce)}` : ''
   const subCmd = `serve --isolated --host 127.0.0.1 --port 0${tokenArg}${ownerArg}`
   const marker = expandRemotePath(`${remoteInstallRoot(opts.hermesHome || '~/.hermes')}/.hermes-update-in-progress`)
+  const remoteLoginPath = String(opts.remoteLoginPath || '')
+
+  // eslint-disable-next-line no-control-regex -- reject unsafe PATH data before shell interpolation
+  if (/[\x00\n\r]/.test(remoteLoginPath)) {
+    throw new Error('Unsafe remote login PATH: contains NUL or newline.')
+  }
+
+  const pathEnv = remoteLoginPath ? ` PATH=${shq(remoteLoginPath)}` : ''
 
   const updateMutex = expandRemotePath(
     `${remoteInstallRoot(opts.hermesHome || '~/.hermes')}/.hermes-update-in-progress.mutex`
@@ -1062,7 +1114,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
 
   const dashCmd =
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
-    `exec env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
+    `exec env HERMES_DESKTOP=1${pathEnv} ${hermes} ${profileArgs}${subCmd}`
 
   const detachedShell = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
   const detachedSpawn = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1" & echo $!)`
@@ -1168,7 +1220,15 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT
 
 async function spawnRemoteDashboard(
   ssh,
-  { hermesPath, profile, token, ownershipId, hermesHome = '~/.hermes', assertInstallClear = async () => {} }
+  {
+    hermesPath,
+    profile,
+    token,
+    ownershipId,
+    hermesHome = '~/.hermes',
+    remoteLoginPath = '',
+    assertInstallClear = async () => {}
+  }
 ) {
   if (!(await remoteSupportsSshOwnership(ssh, hermesPath))) {
     const err: any = new Error(
@@ -1238,6 +1298,7 @@ async function spawnRemoteDashboard(
         tokenFilePath,
         logPath,
         hermesHome,
+        remoteLoginPath,
         ownershipId,
         reservationNonce: spawnNonce,
         lockMetadata: {
@@ -1533,6 +1594,7 @@ async function connect(deps) {
   assertBootstrapNotSuperseded(signal)
   await assertRemoteInstallUpdateClear(ssh, hermesHome)
   const spawnToken = mintToken()
+  const remoteLoginPath = await resolveRemoteLoginPath(ssh)
 
   const spawned = await spawnRemoteDashboard(ssh, {
     hermesPath,
@@ -1540,6 +1602,7 @@ async function connect(deps) {
     token: spawnToken,
     ownershipId,
     hermesHome,
+    remoteLoginPath,
     assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome)
   })
 
@@ -1679,6 +1742,7 @@ export {
   remoteProcessCreationTime,
   remoteSupportsSshOwnership,
   removeLockfile,
+  resolveRemoteLoginPath,
   scrapeReadyPort,
   shq,
   spawnLogPath,

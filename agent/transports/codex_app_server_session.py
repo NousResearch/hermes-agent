@@ -260,6 +260,21 @@ class _ServerRequestRouting:
 
     auto_approve_exec: bool = False
     auto_approve_apply_patch: bool = False
+    prompt_mcp_elicitation_servers: frozenset[str] = frozenset()
+
+
+def _is_empty_confirmation_elicitation(params: dict) -> bool:
+    """Return whether Codex is asking for a binary form confirmation."""
+    if params.get("mode") != "form":
+        return False
+    schema = params.get("requestedSchema")
+    if not isinstance(schema, dict):
+        return False
+    return (
+        schema.get("type") == "object"
+        and schema.get("properties") == {}
+        and schema.get("required") in (None, [])
+    )
 
 
 class CodexAppServerSession:
@@ -279,6 +294,7 @@ class CodexAppServerSession:
         codex_home: Optional[str] = None,
         permission_profile: Optional[str] = None,
         approval_callback: Optional[Callable[..., str]] = None,
+        mcp_elicitation_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
@@ -293,6 +309,7 @@ class CodexAppServerSession:
             )
         )
         self._approval_callback = approval_callback
+        self._mcp_elicitation_callback = mcp_elicitation_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
         self._client_factory = client_factory or CodexAppServerClient
@@ -1026,25 +1043,7 @@ class CodexAppServerSession:
             # shouldn't be silently accepted.
             self._client.respond(rid, {"decision": "decline"})
         elif method == "mcpServer/elicitation/request":
-            # Codex's MCP layer asks the user for structured input on
-            # behalf of an MCP server (e.g. tool-call confirmation,
-            # OAuth, form data). For our own hermes-tools callback we
-            # auto-accept — the user already approved Hermes' tools
-            # by enabling the runtime, and we never expose anything
-            # codex's built-in shell can't already do. For other MCP
-            # servers we decline so the user explicitly opts in via
-            # codex's own auth flow.
-            server_name = params.get("serverName") or ""
-            if server_name == "hermes-tools":
-                self._client.respond(
-                    rid,
-                    {"action": "accept", "content": None, "_meta": None},
-                )
-            else:
-                self._client.respond(
-                    rid,
-                    {"action": "decline", "content": None, "_meta": None},
-                )
+            self._client.respond(rid, self._decide_mcp_elicitation(params))
         else:
             # Unknown server request — codex can extend this surface. Reject
             # cleanly so codex doesn't hang waiting for us.
@@ -1134,6 +1133,58 @@ class CodexAppServerSession:
                 logger.exception("approval_callback raised on apply_patch")
                 return "decline"
         return "decline"
+
+    def _decide_mcp_elicitation(self, params: dict) -> dict:
+        """Route an MCP confirmation through Hermes' consent UI.
+
+        Codex uses an empty form schema for binary MCP tool-call approval.
+        Only that shape is compatible with Hermes' existing approval UI.
+        URL elicitations and forms requesting user-provided fields remain
+        fail-closed: accepting either without collecting their input would
+        produce a misleading or schema-invalid response.
+        """
+        response = {"action": "decline", "content": None, "_meta": None}
+        raw_server_name = params.get("serverName")
+        if not isinstance(raw_server_name, str) or not raw_server_name.strip():
+            return response
+        server_name = raw_server_name.strip()
+
+        # The internal callback remains separately trusted. It only exposes
+        # Hermes tools that the user already enabled for this runtime.
+        if server_name == "hermes-tools":
+            return {"action": "accept", "content": None, "_meta": None}
+
+        if server_name not in self._routing.prompt_mcp_elicitation_servers:
+            return response
+        if not _is_empty_confirmation_elicitation(params):
+            return response
+        if self._mcp_elicitation_callback is None:
+            return response
+
+        raw_message = params.get("message")
+        message = (
+            raw_message
+            if isinstance(raw_message, str) and raw_message.strip()
+            else f"Allow MCP server '{server_name}' to perform this action?"
+        )
+        description = (
+            f"Codex requests confirmation for MCP server '{server_name}'."
+        )
+        try:
+            action = self._mcp_elicitation_callback(
+                message,
+                description,
+                surface=f"mcp-elicitation/{server_name}",
+            )
+        except Exception:
+            logger.exception(
+                "MCP elicitation callback raised for server %s", server_name
+            )
+            return response
+
+        if action in {"accept", "decline", "cancel"}:
+            response["action"] = action
+        return response
 
     def _track_pending_file_change(self, note: dict) -> None:
         """Maintain self._pending_file_changes from item/started + item/completed

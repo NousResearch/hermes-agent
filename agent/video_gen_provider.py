@@ -302,30 +302,32 @@ def save_url_video(
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     short = uuid.uuid4().hex[:8]
     path = _videos_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
+    partial_path = path.with_name(f".{path.name}.part")
 
     bytes_written = 0
-    with path.open("wb") as fh:
-        for chunk in response.iter_content(chunk_size=256 * 1024):
-            if not chunk:
-                continue
-            bytes_written += len(chunk)
-            if bytes_written > max_bytes:
-                fh.close()
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-                raise ValueError(
-                    f"Video at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
-                )
-            fh.write(chunk)
+    try:
+        with partial_path.open("wb") as fh:
+            for chunk in response.iter_content(chunk_size=256 * 1024):
+                if not chunk:
+                    continue
+                bytes_written += len(chunk)
+                if bytes_written > max_bytes:
+                    raise ValueError(
+                        f"Video at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; "
+                        "refusing to cache."
+                    )
+                fh.write(chunk)
 
-    if bytes_written == 0:
+        if bytes_written == 0:
+            raise ValueError(f"Video at {url} was empty (0 bytes).")
+
+        partial_path.replace(path)
+    except BaseException:
         try:
-            path.unlink()
+            partial_path.unlink()
         except OSError:
             pass
-        raise ValueError(f"Video at {url} was empty (0 bytes).")
+        raise
 
     return path
 

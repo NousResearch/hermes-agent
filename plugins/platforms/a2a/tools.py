@@ -4,6 +4,7 @@ A2A client tools — let the Hermes agent talk to *other* agents as a peer.
 Tools (registered in the ``a2a`` toolset):
   - a2a_discover(url)         -> fetch + summarize a peer's Agent Card
   - a2a_call(agent, message)  -> send a task to a peer, return its reply
+  - a2a_get_task(agent, task_id) -> poll GetTask for a prior non-holding receipt
   - a2a_list()                -> list configured peers + persisted conversations
   - a2a_history(context_id)   -> recall a persisted A2A conversation
   - a2a_orchestrate(...)      -> fan-out task to multiple peers by capability
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -36,6 +38,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 120
 _ORCHESTRATE_MAX_WORKERS = 6  # max parallel peers for fan-out
+_POLL_INTERVAL = 0.5  # seconds between GetTask polls after a working receipt
+_SETTLED_STATES = protocol.TERMINAL_STATES | {
+    protocol.STATE_INPUT_REQUIRED,
+    protocol.STATE_AUTH_REQUIRED,
+}
 
 
 # --------------------------------------------------------------------------
@@ -146,8 +153,65 @@ def _short_state(state: str) -> str:
     return state.replace("TASK_STATE_", "").replace("_", "-").lower() if state else ""
 
 
-def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
-    """Send one message/send to a peer. Returns (reply_text, context_id, state).
+def _task_fields(payload: Any, fallback_ctx: str) -> tuple[str, str, str]:
+    """Return (task_id, context_id, state) from a Task or Message payload."""
+    if not isinstance(payload, dict):
+        return "", fallback_ctx, ""
+    task_id = str(payload.get("id") or "")
+    ctx = str(payload.get("contextId") or fallback_ctx)
+    state = str((payload.get("status") or {}).get("state") or "")
+    return task_id, ctx, state
+
+
+def _rpc_get_task(rpc_url: str, headers: dict, task_id: str, timeout: int) -> dict:
+    """Call GetTask. Returns the Task object (not a SendMessage wrapper)."""
+    body = {
+        "jsonrpc": "2.0",
+        "id": protocol.new_task_id(),
+        "method": "GetTask",
+        "params": {"taskId": task_id},
+    }
+    resp = _http_post_json(rpc_url, body, headers, timeout)
+    if "error" in resp:
+        err = resp["error"]
+        raise ValueError(f"GetTask failed: {err.get('message', err)}")
+    result = resp.get("result", {})
+    payload = protocol.unwrap_send_message_response(result)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _poll_until_settled(
+    rpc_url: str,
+    headers: dict,
+    task_id: str,
+    deadline: float,
+    payload: dict,
+) -> dict:
+    """Poll GetTask until a settled state or ``deadline``. Keep last payload on error."""
+    latest = payload
+    while time.time() < deadline:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        try:
+            latest = _rpc_get_task(
+                rpc_url, headers, task_id, max(1, min(int(remaining) or 1, 30)),
+            )
+        except Exception:
+            logger.debug("A2A GetTask poll failed for %s", task_id, exc_info=True)
+            break
+        state = str((latest.get("status") or {}).get("state") or "")
+        if state in _SETTLED_STATES:
+            return latest
+        time.sleep(min(_POLL_INTERVAL, max(0.0, deadline - time.time())))
+    return latest
+
+
+def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str, str]:
+    """Send one message/send to a peer.
+
+    Returns (reply_text, context_id, state, task_id). A non-holding working
+    receipt is followed by GetTask polls until settled or the peer timeout.
 
     Raises urllib errors / ValueError for the caller to format. Handles
     outbound redaction, audit, persistence, and metrics.
@@ -183,21 +247,25 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
     protocol.metrics.outbound_total += 1
 
-    resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
+    rpc_url = _rpc_url(base_url, card)
+    started = time.time()
+    resp = _http_post_json(rpc_url, rpc_body, headers, timeout)
     if "error" in resp:
         err = resp["error"]
         raise ValueError(f"Peer '{agent_label}' returned an error: {err.get('message', err)}")
 
     result = resp.get("result", {})
     payload = protocol.unwrap_send_message_response(result)
+    task_id, reply_ctx, state = _task_fields(payload, ctx)
+    if task_id and state not in _SETTLED_STATES:
+        remaining = timeout - (time.time() - started)
+        if remaining > 0 and isinstance(payload, dict):
+            payload = _poll_until_settled(rpc_url, headers, task_id, started + timeout, payload)
+            task_id, reply_ctx, state = _task_fields(payload, reply_ctx)
     reply = _reply_text_from_result(payload)
-    reply_ctx, state = ctx, ""
-    if isinstance(payload, dict):
-        reply_ctx = payload.get("contextId", ctx)
-        state = (payload.get("status") or {}).get("state", "")
-    protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
+    protocol.persist_message(reply_ctx, "agent", reply, task_id or rpc_body["id"])
     protocol.metrics.inbound_total += 1
-    return reply, reply_ctx, state
+    return reply, reply_ctx, state, task_id
 
 
 def _reply_text_from_result(result: Any) -> str:
@@ -277,7 +345,7 @@ def a2a_call(args: dict, **_: Any) -> str:
         )
 
     try:
-        reply, reply_ctx, state = _send_task(agent, peer, message, context_id)
+        reply, reply_ctx, state, task_id = _send_task(agent, peer, message, context_id)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             return f"Error: peer '{agent}' rejected auth (HTTP {e.code}). Check the configured token."
@@ -292,12 +360,66 @@ def a2a_call(args: dict, **_: Any) -> str:
     header = f"[{agent} · context {reply_ctx}"
     if state:
         header += f" · {_short_state(state)}"
+    if task_id:
+        header += f" · task {task_id}"
     header += "]"
     body = reply or "(no text reply)"
     if state == protocol.STATE_INPUT_REQUIRED:
         body += (
             "\n\n(The peer needs more input — answer by calling a2a_call again "
             f"with context_id '{reply_ctx}'.)"
+        )
+    elif state not in _SETTLED_STATES and task_id:
+        body += (
+            "\n\n(The peer is still working — poll with a2a_get_task using "
+            f"task_id '{task_id}'.)"
+        )
+    return f"{header}\n{body}"
+
+
+def a2a_get_task(args: dict, **_: Any) -> str:
+    """Fetch a prior task by id via GetTask (non-holding receipt follow-up)."""
+    agent = str(args.get("agent") or args.get("agent_name") or args.get("name") or "").strip()
+    task_id = str(args.get("task_id") or args.get("taskId") or args.get("id") or "").strip()
+    if not agent or not task_id:
+        return "Error: both 'agent' and 'task_id' are required."
+
+    peer = _resolve_peer(agent)
+    if not peer or not peer.get("url"):
+        return (
+            f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in "
+            f"config.yaml or pass a full http(s):// URL."
+        )
+
+    base_url = peer.get("url", "")
+    headers = _auth_header(peer.get("auth", {}) or {})
+    timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
+    card = None
+    try:
+        card = _fetch_card(base_url, headers, min(timeout, 30))
+    except Exception:
+        pass
+
+    try:
+        payload = _rpc_get_task(_rpc_url(base_url, card), headers, task_id, timeout)
+    except urllib.error.HTTPError as e:
+        return f"Error: GetTask to '{agent}' failed — HTTP {e.code}."
+    except ValueError as e:
+        return str(e)
+    except Exception as e:
+        return f"Error: GetTask to '{agent}' failed — {e}."
+
+    _tid, reply_ctx, state = _task_fields(payload, "")
+    reply = _reply_text_from_result(payload)
+    header = f"[{agent} · context {reply_ctx}" if reply_ctx else f"[{agent}"
+    if state:
+        header += f" · {_short_state(state)}"
+    header += f" · task {task_id}]"
+    body = reply or "(no text reply)"
+    if state not in _SETTLED_STATES:
+        body += (
+            "\n\n(The peer is still working — poll with a2a_get_task using "
+            f"task_id '{task_id}'.)"
         )
     return f"{header}\n{body}"
 
@@ -387,7 +509,7 @@ def _call_peer_sync(agent_name: str, peer_entry: dict, message: str, context_id:
             "auth": peer_entry.get("auth", {}) or {},
             "timeout": int(peer_entry.get("timeout", _DEFAULT_TIMEOUT)),
         }
-        reply, _ctx, _state = _send_task(agent_name, peer, message, context_id)
+        reply, _ctx, _state, _task_id = _send_task(agent_name, peer, message, context_id)
         return (agent_name, reply or "(no reply)")
     except Exception as e:
         return (agent_name, f"Error: {e}")
@@ -522,6 +644,24 @@ _SCHEMAS: dict[str, _ToolSchema] = {
             },
         },
     },
+    "a2a_get_task": {
+        "type": "function",
+        "function": {
+            "name": "a2a_get_task",
+            "description": (
+                "Fetch a remote A2A task by id via GetTask. Use this after "
+                "a2a_call returns a working receipt with task <id>."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent": {"type": "string", "description": "Configured peer name (from a2a_agents) or a full http(s):// URL."},
+                    "task_id": {"type": "string", "description": "Server task id from a prior a2a_call header."},
+                },
+                "required": ["agent", "task_id"],
+            },
+        },
+    },
     "a2a_list": {
         "type": "function",
         "function": {
@@ -576,6 +716,7 @@ _SCHEMAS: dict[str, _ToolSchema] = {
 _HANDLERS = {
     "a2a_discover": a2a_discover,
     "a2a_call": a2a_call,
+    "a2a_get_task": a2a_get_task,
     "a2a_list": a2a_list,
     "a2a_history": a2a_history,
     "a2a_orchestrate": a2a_orchestrate,

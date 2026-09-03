@@ -119,6 +119,34 @@ def test_message_send_observation_deadline_never_terminalizes_running_task(monke
     assert after["reply"] == "late body"
 
 
+def test_disconnect_with_callback_bound_pending_does_not_crash():
+    """Reply-future callbacks must not mutate `_pending` during disconnect iteration."""
+    from gateway.config import PlatformConfig
+
+    adapter = a2a_adapter.A2AAdapter(PlatformConfig(enabled=True))
+    for i in range(3):
+        task_id = f"task-dc-{i}"
+        context_id = f"ctx-dc-{i}"
+        future = adapter._add_pending(task_id, context_id)
+        adapter.tasks.create(task_id, context_id, "peer")
+        adapter.tasks.set_state(task_id, protocol.STATE_WORKING)
+        adapter._finalize_when_reply_arrives({
+            "task_id": task_id,
+            "context_id": context_id,
+            "peer": "peer",
+            "future": future,
+            "created_iso": protocol.now_iso(),
+            "started": time.time(),
+        })
+
+    asyncio.run(adapter.disconnect())
+
+    assert adapter._pending == {}
+    rec = adapter.tasks.get("task-dc-0")
+    assert rec is not None
+    assert rec["state"] == protocol.STATE_FAILED
+
+
 def test_orphan_watchdog_outlives_routed_agent_timeout(monkeypatch):
     from gateway.config import PlatformConfig
 
@@ -710,6 +738,75 @@ class TestRegistryDispatchConvention:
         out = tools.a2a_call({"agent_name": "peer", "message": "ping"})
         assert captured.get("sent") is True
         assert "PONG" in out
+        assert "task t" in out or "task t]" in out or " · task t]" in out
+
+
+    def test_call_polls_get_task_after_working_receipt(self, monkeypatch):
+        """Non-holding SendMessage receipts must be followed until a body exists."""
+        monkeypatch.setattr(tools, "_load_config",
+                            lambda: {"a2a_agents": {"r": {"url": "http://peer.invalid"}}})
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+        monkeypatch.setattr(tools, "_POLL_INTERVAL", 0)
+        methods = []
+
+        def fake_post(url, body, headers, timeout):
+            methods.append(body["method"])
+            if body["method"] == "SendMessage":
+                return protocol.jsonrpc_result(
+                    body["id"],
+                    protocol.build_task("task-1270", "ctx-1270", protocol.STATE_WORKING, ""),
+                )
+            assert body["method"] == "GetTask"
+            assert body["params"]["taskId"] == "task-1270"
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("task-1270", "ctx-1270", protocol.STATE_COMPLETED, "late body"),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        out = tools.a2a_call({"agent": "r", "message": "do it"})
+        assert "late body" in out
+        assert "task-1270" in out
+        assert "completed" in out
+        assert "(no text reply)" not in out
+        assert methods == ["SendMessage", "GetTask"]
+
+    def test_call_keeps_task_handle_when_still_working(self, monkeypatch):
+        monkeypatch.setattr(tools, "_load_config",
+                            lambda: {"a2a_agents": {"r": {"url": "http://peer.invalid", "timeout": 1}}})
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+        monkeypatch.setattr(tools, "_POLL_INTERVAL", 5)
+
+        def fake_post(url, body, headers, timeout):
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("task-still", "ctx-1270", protocol.STATE_WORKING, ""),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        out = tools.a2a_call({"agent": "r", "message": "do it"})
+        assert "task-still" in out
+        assert "working" in out
+        assert "a2a_get_task" in out
+
+    def test_get_task_returns_body_and_handle(self, monkeypatch):
+        monkeypatch.setattr(tools, "_load_config",
+                            lambda: {"a2a_agents": {"r": {"url": "http://peer.invalid"}}})
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+
+        def fake_post(url, body, headers, timeout):
+            assert body["method"] == "GetTask"
+            assert body["params"]["taskId"] == "task-1270"
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("task-1270", "ctx-1270", protocol.STATE_COMPLETED, "late body"),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        out = tools.a2a_get_task({"agent": "r", "task_id": "task-1270"})
+        assert "late body" in out
+        assert "task-1270" in out
+        assert "completed" in out
 
 
 # --------------------------------------------------------------------------
@@ -1572,10 +1669,11 @@ class TestClientTenantAndDiscovery:
 
         monkeypatch.setattr(tools, "_http_get_json", fake_get)
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
-        reply, _ctx, _state = tools._send_task(
+        reply, _ctx, _state, task_id = tools._send_task(
             "dev", {"url": "http://peer.example", "auth": {}, "timeout": 5}, "hello", "ctx-1"
         )
         assert reply == "ok"
+        assert task_id == "task-1"
         assert posted["url"] == "http://peer.example/dev/"
         assert posted["body"]["params"]["tenant"] == "dev-team"
 
@@ -1654,10 +1752,11 @@ class TestV1SpecRegressionFixes:
 
         monkeypatch.setattr(tools, "_http_get_json", fake_get)
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
-        reply, _ctx, state = tools._send_task(
+        reply, _ctx, state, task_id = tools._send_task(
             "dev", {"url": "http://peer.example", "auth": {}, "timeout": 5}, "hello", "ctx-1")
         assert reply == "ok"
         assert state == protocol.STATE_COMPLETED
+        assert task_id == "task-1"
         assert posted["body"]["method"] == "SendMessage"
         assert posted["body"]["params"]["tenant"] == "dev-team"
 

@@ -509,12 +509,15 @@ class A2AAdapter(BasePlatformAdapter):
                 pass
             self._httpd = None
         # Fail any in-flight replies so blocked HTTP threads don't hang.
+        # Snapshot then release: reply-future callbacks (_finalize_when_reply_arrives)
+        # call _pop_pending and must not mutate `_pending` during iteration.
         with self._pending_lock:
-            for _ctx, fut in self._pending.values():
-                if not fut.done():
-                    fut.set_result((protocol.STATE_FAILED, "[agent shutting down]"))
+            futures = [fut for _ctx, fut in self._pending.values()]
             self._pending.clear()
             self._pending_order.clear()
+        for fut in futures:
+            if not fut.done():
+                fut.set_result((protocol.STATE_FAILED, "[agent shutting down]"))
 
     # ── Orphaned task watchdog ─────────────────────────────────────────────
 

@@ -13,6 +13,7 @@ extracted functions reach back through the ``run_agent`` module via
 from __future__ import annotations
 
 import concurrent.futures
+import gc
 import json
 from pathlib import Path
 import logging
@@ -54,6 +55,33 @@ from tools.tool_result_storage import (
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
+
+# Trigger a full GC when a single raw tool result is at least 1 MB of UTF-8.
+# Measure before spillover replaces large content with a small path stub, so
+# cyclic temporaries created while processing that content remain eligible for
+# prompt collection without charging every small result. (#70684)
+_GC_COLLECT_THRESHOLD_BYTES = 1_000_000
+
+
+def _maybe_collect_gc_after_tool_result(
+    content: Any,
+    threshold_bytes: int = _GC_COLLECT_THRESHOLD_BYTES,
+) -> None:
+    """Run gc.collect() when content reaches the UTF-8 byte threshold."""
+    try:
+        serialized = (
+            content
+            if isinstance(content, str)
+            else json.dumps(content, ensure_ascii=False)
+        )
+    except (TypeError, ValueError, OverflowError):
+        try:
+            serialized = str(content)
+        except Exception:
+            return
+    size = len(serialized.encode("utf-8", errors="replace"))
+    if size >= threshold_bytes:
+        gc.collect()
 
 
 def _pairing_tool_call_id(tool_call: Any) -> str:
@@ -1854,6 +1882,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             effect_disposition=effect_disposition,
         )
         messages.append(tool_message)
+        _maybe_collect_gc_after_tool_result(display_function_result)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(
             agent,
@@ -2776,6 +2805,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             effect_disposition="unknown" if _execution_timed_out else None,
         )
         messages.append(tool_message)
+        _maybe_collect_gc_after_tool_result(display_function_result)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(
             agent,

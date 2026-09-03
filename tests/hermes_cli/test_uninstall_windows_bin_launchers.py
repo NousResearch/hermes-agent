@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import uninstall
+from hermes_cli import gui_uninstall, uninstall
 from hermes_cli._install_repair import _WINDOWS_BIN_LAUNCHERS
 
 
@@ -34,7 +34,9 @@ def managed_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_removes_both_launcher_forms_and_keeps_managed_uv(managed_bin: Path):
-    removed = uninstall.remove_windows_bin_launchers(windows=True)
+    removed = uninstall.remove_windows_bin_launchers(
+        managed_bin.parent / "hermes-agent", windows=True
+    )
 
     assert sorted(p.name for p in removed) == ["hermes-acp.cmd", "hermes.exe"]
     assert not (managed_bin / "hermes.exe").exists()
@@ -52,14 +54,21 @@ def test_anchors_on_default_root_not_profile_home(
     home = managed_bin.parent
     monkeypatch.setenv("HERMES_HOME", str(home / "profiles" / "work"))
 
-    removed = uninstall.remove_windows_bin_launchers(windows=True)
+    removed = uninstall.remove_windows_bin_launchers(
+        home / "hermes-agent", windows=True
+    )
 
     assert sorted(p.name for p in removed) == ["hermes-acp.cmd", "hermes.exe"]
     assert not (managed_bin / "hermes.exe").exists()
 
 
 def test_noop_on_posix(managed_bin: Path):
-    assert uninstall.remove_windows_bin_launchers(windows=False) == []
+    assert (
+        uninstall.remove_windows_bin_launchers(
+            managed_bin.parent / "hermes-agent", windows=False
+        )
+        == []
+    )
     assert (managed_bin / "hermes.exe").exists()
 
 
@@ -68,7 +77,105 @@ def test_noop_when_no_launchers_staged(tmp_path: Path, monkeypatch: pytest.Monke
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    assert uninstall.remove_windows_bin_launchers(windows=True) == []
+    assert (
+        uninstall.remove_windows_bin_launchers(home / "hermes-agent", windows=True)
+        == []
+    )
+
+
+def test_unrelated_project_cannot_remove_managed_launchers(managed_bin: Path):
+    unrelated_root = managed_bin.parent.parent / "source-checkout"
+
+    assert uninstall.remove_windows_bin_launchers(unrelated_root, windows=True) == []
+    assert (managed_bin / "hermes.exe").exists()
+    assert (managed_bin / "hermes-acp.cmd").exists()
+    assert (managed_bin / "uv.exe").exists()
+
+
+@pytest.fixture
+def isolated_windows_uninstall(monkeypatch: pytest.MonkeyPatch):
+    """Keep _perform_uninstall focused on launcher/PATH ownership."""
+    path_calls: list[bool] = []
+
+    monkeypatch.setattr(uninstall, "_is_windows", lambda: True)
+    monkeypatch.setattr(uninstall, "uninstall_gateway_service", lambda: False)
+    monkeypatch.setattr(uninstall, "remove_path_from_shell_configs", lambda: [])
+    monkeypatch.setattr(
+        uninstall,
+        "remove_path_from_windows_registry",
+        lambda _home, *, include_managed_bin=False: (
+            path_calls.append(include_managed_bin) or []
+        ),
+    )
+    monkeypatch.setattr(uninstall, "remove_hermes_env_vars_windows", lambda: [])
+    monkeypatch.setattr(uninstall, "remove_wrapper_script", lambda: [])
+    monkeypatch.setattr(uninstall, "remove_node_symlinks", lambda _home: [])
+    monkeypatch.setattr(uninstall, "remove_portable_tooling_windows", lambda _home: [])
+    monkeypatch.setattr(gui_uninstall, "uninstall_gui", lambda _home: [])
+    return path_calls
+
+
+def test_unrelated_keep_data_uninstall_preserves_managed_bin(
+    managed_bin: Path,
+    tmp_path: Path,
+    isolated_windows_uninstall: list[bool],
+):
+    unrelated_root = tmp_path / "source-checkout" / "hermes-agent"
+    unrelated_root.mkdir(parents=True)
+
+    uninstall._perform_uninstall(
+        project_root=unrelated_root,
+        hermes_home=managed_bin.parent,
+        full_uninstall=False,
+        remove_profiles=False,
+        named_profiles=[],
+    )
+
+    assert not unrelated_root.exists()
+    assert (managed_bin / "hermes.exe").exists()
+    assert (managed_bin / "hermes-acp.cmd").exists()
+    assert (managed_bin / "uv.exe").exists()
+    assert isolated_windows_uninstall == [False]
+
+
+def test_managed_keep_data_uninstall_removes_only_owned_launchers(
+    managed_bin: Path,
+    isolated_windows_uninstall: list[bool],
+):
+    project_root = managed_bin.parent / "hermes-agent"
+    project_root.mkdir()
+
+    uninstall._perform_uninstall(
+        project_root=project_root,
+        hermes_home=managed_bin.parent,
+        full_uninstall=False,
+        remove_profiles=False,
+        named_profiles=[],
+    )
+
+    assert not (managed_bin / "hermes.exe").exists()
+    assert not (managed_bin / "hermes-acp.cmd").exists()
+    assert (managed_bin / "uv.exe").exists()
+    assert isolated_windows_uninstall == [False]
+
+
+def test_managed_full_uninstall_sweeps_bin_path_and_home(
+    managed_bin: Path,
+    isolated_windows_uninstall: list[bool],
+):
+    project_root = managed_bin.parent / "hermes-agent"
+    project_root.mkdir()
+
+    uninstall._perform_uninstall(
+        project_root=project_root,
+        hermes_home=managed_bin.parent,
+        full_uninstall=True,
+        remove_profiles=False,
+        named_profiles=[],
+    )
+
+    assert not managed_bin.parent.exists()
+    assert isolated_windows_uninstall == [True]
 
 
 def test_launcher_names_stay_in_lockstep_with_install_ps1():

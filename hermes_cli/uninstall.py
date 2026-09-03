@@ -444,7 +444,9 @@ def remove_portable_tooling_windows(hermes_home: Path) -> list[Path]:
     return removed
 
 
-def remove_windows_bin_launchers(*, windows: bool | None = None) -> list[Path]:
+def remove_windows_bin_launchers(
+    project_root: Path, *, windows: bool | None = None
+) -> list[Path]:
     """Delete the ``hermes`` launchers install.ps1 staged in the managed
     binary dir (the default Hermes root's ``bin``, next to the managed uv).
 
@@ -459,8 +461,10 @@ def remove_windows_bin_launchers(*, windows: bool | None = None) -> list[Path]:
     ``_install_repair._quarantine_running_hermes_exe`` relies on), so
     deletion falls back to renaming it aside with a non-executable suffix.
 
-    *windows* is an injectable platform verdict for tests (same pattern as
-    ``_install_repair.ensure_windows_bin_launchers``).
+    Only the managed checkout owns launchers in the default root's binary
+    directory. Source/custom checkouts must not remove that other install's
+    launchers when they uninstall. *windows* is an injectable platform verdict
+    for tests (same pattern as ``_install_repair.ensure_windows_bin_launchers``).
     """
     if windows is None:
         windows = _is_windows()
@@ -469,10 +473,22 @@ def remove_windows_bin_launchers(*, windows: bool | None = None) -> list[Path]:
     try:
         # Lockstep launcher-name list — the same names install.ps1 and the
         # startup heal stage into this dir.
-        from hermes_cli._install_repair import _WINDOWS_BIN_LAUNCHERS
+        from hermes_cli._install_repair import (
+            _WINDOWS_BIN_LAUNCHERS,
+            _normalize_windows_path,
+        )
         from hermes_constants import get_default_hermes_root
 
-        bin_dir = get_default_hermes_root() / "bin"
+        home = Path(get_default_hermes_root())
+        if _normalize_windows_path(Path(project_root).parent) != _normalize_windows_path(
+            home
+        ):
+            log_info(
+                "Skipping Windows launcher cleanup: this checkout does not own "
+                "the managed binary directory"
+            )
+            return []
+        bin_dir = home / "bin"
     except Exception as e:
         log_warn(f"Could not locate the managed binary dir: {e}")
         return []
@@ -897,12 +913,12 @@ def _perform_uninstall(
     #     error on its missing venv target, worse than command-not-found.
     if _is_windows():
         log_info("Removing Windows hermes launchers...")
-        removed_launchers = remove_windows_bin_launchers()
+        removed_launchers = remove_windows_bin_launchers(project_root)
         if removed_launchers:
             for launcher in removed_launchers:
                 log_success(f"Removed {launcher}")
         else:
-            log_info("No Windows hermes launchers found")
+            log_info("No owned Windows hermes launchers removed")
 
     # 3b. Remove node/npm/npx symlinks the installer left in ~/.local/bin
     #     (only when they still point into this Hermes home's node dir, so we

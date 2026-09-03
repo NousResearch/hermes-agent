@@ -258,6 +258,50 @@ def test_read_worker_log_tail(kanban_home):
 # Max-runtime enforcement (item 1 from the Multica audit)
 # ---------------------------------------------------------------------------
 
+
+def test_worker_tree_signal_uses_owned_process_group(monkeypatch):
+    """Reclaim/timeout must reach terminal children, not only the agent leader."""
+    calls = []
+    monkeypatch.setattr(kb.os, "name", "posix")
+    monkeypatch.setattr(kb.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(kb.os, "getpgrp", lambda: 111)
+    monkeypatch.setattr(kb.os, "killpg", lambda pgid, sig: calls.append(("group", pgid, sig)))
+    monkeypatch.setattr(kb.os, "kill", lambda pid, sig: calls.append(("pid", pid, sig)))
+
+    kb._worker_tree_signal(222, 15)
+
+    assert calls == [("group", 222, 15)]
+
+
+def test_worker_tree_signal_signals_orphaned_group_when_leader_dead(monkeypatch):
+    """A leader that already exited leaves its group members alive; the
+    known pgid (== original pid) must still be signalled."""
+    calls = []
+    monkeypatch.setattr(kb.os, "name", "posix")
+    def _getpgid(pid):
+        raise ProcessLookupError()
+    monkeypatch.setattr(kb.os, "getpgid", _getpgid)
+    monkeypatch.setattr(kb.os, "getpgrp", lambda: 111)
+    monkeypatch.setattr(kb.os, "killpg", lambda pgid, sig: calls.append(("group", pgid, sig)))
+    monkeypatch.setattr(kb.os, "kill", lambda pid, sig: calls.append(("pid", pid, sig)))
+
+    kb._worker_tree_signal(222, 15)
+
+    assert calls == [("group", 222, 15)]
+
+
+def test_worker_tree_signal_never_targets_own_process_group(monkeypatch):
+    calls = []
+    monkeypatch.setattr(kb.os, "name", "posix")
+    monkeypatch.setattr(kb.os, "getpgid", lambda _pid: 111)
+    monkeypatch.setattr(kb.os, "getpgrp", lambda: 111)
+    monkeypatch.setattr(kb.os, "killpg", lambda pgid, sig: calls.append(("group", pgid, sig)))
+    monkeypatch.setattr(kb.os, "kill", lambda pid, sig: calls.append(("pid", pid, sig)))
+
+    kb._worker_tree_signal(222, 15)
+
+    assert calls == [("pid", 222, 15)]
+
 def test_max_runtime_terminates_overrun_worker(kanban_home):
     """A running task whose elapsed time exceeds max_runtime_seconds gets
     SIGTERM'd, emits a ``timed_out`` event, and goes back to ready."""
@@ -1406,5 +1450,4 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         assert events == [], "historical events must not replay to a new sub"
     finally:
         conn.close()
-
 

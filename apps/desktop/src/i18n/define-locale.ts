@@ -11,7 +11,24 @@ type TranslationOverride<T> = T extends (...args: never[]) => string
         ? { [K in keyof T]?: TranslationOverride<T[K]> }
         : T
 
-export type TranslationOverrides = TranslationOverride<Translations>
+// A few locale bundles still carry copy for UI surfaces that were removed from
+// the current English contract. Keep those known legacy keys typed while the
+// locale files catch up, without opening TranslationOverrides to arbitrary keys.
+type LegacyTranslationOverrides = {
+  titlebar?: {
+    openKeybinds?: string
+  }
+  settings?: {
+    gateway?: {
+      appliesTo?: string
+    }
+  }
+  preview?: {
+    closeTab?: (label: string) => string
+  }
+}
+
+export type TranslationOverrides = TranslationOverride<Translations> & LegacyTranslationOverrides
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

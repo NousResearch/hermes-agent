@@ -452,12 +452,38 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         assert kb.check_respawn_guard(conn, ready_id) == "active_pr"
         assert kb.check_respawn_guard(conn, review_id, lane="review") is None
 
+        for assignee in ("builder", "coder", "developer", "implementer", "worker"):
+            implementation_id = kb.create_task(
+                conn, title=f"{assignee} existing PR", assignee=assignee,
+            )
+            kb.add_comment(conn, implementation_id, author="worker", body=pr_comment)
+            assert kb.check_respawn_guard(conn, implementation_id) == "active_pr"
+
+        # A PR is a duplicate-work signal only for the implementation lane.
+        # QA and release lanes consume the existing PR and must remain
+        # dispatchable even when their card contains the same link.
+        for assignee in ("qa", "release"):
+            downstream_id = kb.create_task(
+                conn, title=f"{assignee} existing PR", assignee=assignee,
+            )
+            kb.add_comment(conn, downstream_id, author="worker", body=pr_comment)
+            assert kb.check_respawn_guard(conn, downstream_id) is None
+
         res = kb.dispatch_once(conn, dry_run=True)
         spawned_ids = [s[0] for s in res.spawned]
         guarded = dict(res.respawn_guarded)
         assert review_id in spawned_ids
         assert ready_id not in spawned_ids
         assert guarded.get(ready_id) == "active_pr"
+        assert all(
+            task_id in spawned_ids
+            for task_id in (
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM tasks WHERE assignee IN ('qa', 'release')"
+                )
+            )
+        )
 
         # Rate-limit cooldown still defers the review lane.
         _now = int(__import__("time").time())

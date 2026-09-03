@@ -9397,6 +9397,23 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _is_developer_dispatch_lane(assignee: Optional[str]) -> bool:
+    """Return whether an assignee names an implementation/developer lane.
+
+    ``active_pr`` is intentionally scoped to implementation reruns.  QA and
+    release workers consume the PR produced by the implementation worker, so
+    applying that guard to every ready card would strand downstream work.  The
+    board has no separate role column; use the established implementation
+    profile names and fail open for other profile names. ``worker`` and
+    ``builder`` are retained because they are the generic implementation
+    profiles used by existing boards.
+    """
+    if not isinstance(assignee, str):
+        return False
+    role = assignee.strip().lower()
+    return role in {"builder", "coder", "developer", "implementer", "worker"}
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -9456,7 +9473,7 @@ def check_respawn_guard(
     genuinely dead (no live PID on this host).
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT assignee, last_failure_error FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -9538,12 +9555,13 @@ def check_respawn_guard(
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    if _is_developer_dispatch_lane(row["assignee"]):
+        for c in conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+            (task_id, pr_cutoff),
+        ).fetchall():
+            if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+                return "active_pr"
 
     return None
 

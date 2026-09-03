@@ -571,14 +571,14 @@ class TestToolTimerTick:
         finally:
             loop.close()
 
-    def test_tick_shows_only_tool_name_not_arguments(self):
-        """Timer tick must render just the tool name — no command text,
-        URLs, queries, or filenames cross the transport (Issue B)."""
+    def test_tick_shows_full_progress_line_with_arguments(self):
+        """Timer tick must render the full progress line (including arguments)
+        so users see what the tool is doing, not just "terminal"."""
         consumer = _make_consumer(native_streaming=True)
         loop = asyncio.new_event_loop()
         consumer._tool_timer_loop = loop
         try:
-            # A progress line rich with sensitive arguments.
+            # A progress line with tool arguments.
             consumer.on_tool_progress(
                 "💻 terminal: 'python audit.py --client Acme'",
                 tool_call_id="call-1",
@@ -588,13 +588,11 @@ class TestToolTimerTick:
 
             assert len(consumer._tool_progress_lines) == 1
             line = consumer._tool_progress_lines[0]
-            # Tool name present, arguments absent.
+            # Full progress line preserved, including arguments.
             assert "terminal" in line
-            assert "audit.py" not in line
-            assert "--client" not in line
-            assert "Acme" not in line
-            # Generic wrench-prefixed status with elapsed time.
-            assert "🔧 terminal" in line
+            assert "audit.py" in line
+            assert "Acme" in line
+            # Spinner prefix + elapsed time suffix.
             assert "s)" in line
         finally:
             if consumer._tool_timer_handle:

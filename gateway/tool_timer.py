@@ -100,19 +100,18 @@ class ToolTimerMixin:
             # progress line without the ticking animation.
             if not getattr(self, "supports_tool_timer", False):
                 return
-            # Start/join the timer for this tool.  The timer label is the bare
-            # tool name only — NOT the full progress line, which carries
-            # command text, URLs, queries, and filenames.  The timer ticks
-            # ride the WeCom transport, so only a generic status may cross it
-            # (privacy: #96942).  The full line still goes to ``_queue`` above
-            # for the in-bubble overlay on the local/native surface.
+            # Start/join the timer for this tool.  Use the full progress line
+            # as the timer label so the user sees what the tool is doing
+            # (e.g. "⚙️ terminal: "git status"") instead of just "terminal".
+            # The line is already display-safe — it was built by the gateway
+            # progress_callback with truncation and preview formatting.
             tool_name = _parse_tool_name(line)
             key = tool_call_id if tool_call_id is not None else tool_name
             # Don't clear other running tools — they may be parallel.
             # on_tool_completed() handles moving finished tools to
             # _tool_completed_lines when tool.completed fires.
             with self._timer_lock:
-                self._tool_timer_labels[key] = tool_name
+                self._tool_timer_labels[key] = line.strip()
             self._start_tool_timer(key)
 
     def on_tool_started(self, tool_name: str, tool_call_id: str | None = None) -> None:
@@ -290,12 +289,18 @@ class ToolTimerMixin:
                     # cross the transport (privacy: #96942).
                     lines.append(f"{spinner} 💭 Thinking ({elapsed}s)")
                 else:
-                    # The stored label is the bare, sanitized tool name (see
-                    # on_tool_progress / on_tool_started).  Render a generic
-                    # "🔧 <tool> (Ns)" line — no arguments, URLs, queries, or
-                    # filenames — since this rides the WeCom transport.
+                    # The stored label is either the full progress line from
+                    # on_tool_progress (e.g. "⚙️ terminal: \"git status\"")
+                    # or a bare tool name from on_tool_started (when
+                    # display.tool_progress is off).  Full lines already
+                    # carry their own emoji; bare names get the default 🔧.
                     label = self._tool_timer_labels.get(tool_name, tool_name)
-                    lines.append(f"{spinner} 🔧 {label} ({elapsed}s)")
+                    if any(label.startswith(ch) for ch in "⚙️🔧🔍💻📦🌐✏️📄🖼"):
+                        # Full progress line — already has emoji prefix
+                        lines.append(f"{spinner} {label} ({elapsed}s)")
+                    else:
+                        # Bare tool name from on_tool_started
+                        lines.append(f"{spinner} 🔧 {label} ({elapsed}s)")
 
             self._tool_progress_lines = lines
         self._tool_progress_active = True

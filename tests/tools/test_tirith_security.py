@@ -29,6 +29,8 @@ def _reset_resolved_path():
     _tirith_mod._install_failure_reason = ""
     _tirith_mod._crash_count = 0
     _tirith_mod._circuit_open = False
+    with _tirith_mod._in_process_update_state_lock:
+        _tirith_mod._in_process_update_states.clear()
     # The global test fixture disables runtime installs. Most tests in this
     # module exercise Tirith's installer mechanics, so opt them in explicitly;
     # policy tests below override this nested patch with False.
@@ -39,6 +41,8 @@ def _reset_resolved_path():
     _tirith_mod._install_failure_reason = ""
     _tirith_mod._crash_count = 0
     _tirith_mod._circuit_open = False
+    with _tirith_mod._in_process_update_state_lock:
+        _tirith_mod._in_process_update_states.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +288,7 @@ class TestEnsureInstalled:
 
         thread_factory.assert_not_called()
         assert _tirith_mod._resolved_path is None
+        assert not (hermes_home / "bin").exists()
 
 
 class TestLazyInstallPolicy:
@@ -299,6 +304,33 @@ class TestLazyInstallPolicy:
         assert result == (None, "lazy_installs_disabled")
         mock_target.assert_not_called()
         mock_download.assert_not_called()
+
+    def test_installer_rechecks_opt_out_before_replacement(
+        self, tmp_path, monkeypatch
+    ):
+        """A live policy change during download prevents filesystem mutation."""
+        source = tmp_path / "verified-tirith"
+        source.write_bytes(b"verified release")
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        policy_states = iter((True, False))
+        monkeypatch.setattr(
+            _lazy_deps, "_allow_lazy_installs", lambda: next(policy_states)
+        )
+        monkeypatch.setattr(
+            _tirith_mod,
+            "_download_verified_tirith",
+            lambda *_args: (str(source), "", True),
+        )
+        replace = MagicMock()
+        monkeypatch.setattr(_tirith_mod, "_atomic_replace_binary", replace)
+
+        assert _tirith_mod._install_tirith(log_failures=False) == (
+            None,
+            "lazy_installs_disabled",
+        )
+        replace.assert_not_called()
+        assert not hermes_home.exists()
 
     def test_resolver_policy_transition_does_not_cache_install_failure(
         self, monkeypatch
@@ -523,27 +555,49 @@ class TestCosignVerification:
         assert "refs/tags/v" in identity
 
 
-    @patch("tools.tirith_security.tarfile.open")
+    @patch(
+        "tools.tirith_security._extract_release_archive",
+        return_value=(None, "binary_not_in_archive"),
+    )
     @patch("tools.tirith_security._verify_checksum", return_value=True)
     @patch("tools.tirith_security.shutil.which", return_value=None)
     @patch("tools.tirith_security._download_file")
     @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
     def test_install_proceeds_without_cosign(self, mock_target, mock_dl,
                                               mock_which, mock_checksum,
-                                              mock_tarfile):
+                                              mock_extract):
         """_install_tirith proceeds with SHA-256 only when cosign is not on PATH."""
         from tools.tirith_security import _install_tirith
-        mock_tar = MagicMock()
-        mock_tar.__enter__ = MagicMock(return_value=mock_tar)
-        mock_tar.__exit__ = MagicMock(return_value=False)
-        mock_tar.getmembers.return_value = []
-        mock_tarfile.return_value = mock_tar
 
         path, reason = _install_tirith()
         # Reaches extraction (no binary in mock archive), but got past cosign
         assert path is None
         assert reason == "binary_not_in_archive"
         assert mock_checksum.called  # SHA-256 verification ran
+        mock_extract.assert_called_once()
+
+
+class TestReleaseDownloadLimits:
+    def test_download_rejects_response_over_limit(self, tmp_path, monkeypatch):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.read.side_effect = [b"12345", b""]
+        monkeypatch.setattr(
+            _tirith_mod.urllib.request,
+            "urlopen",
+            MagicMock(return_value=response),
+        )
+        destination = tmp_path / "metadata"
+
+        with pytest.raises(ValueError, match="exceeds 4-byte limit"):
+            _tirith_mod._download_file(
+                "https://example.invalid/checksums.txt",
+                str(destination),
+                max_bytes=4,
+            )
+
+        assert not destination.exists()
 
 
 class TestInstallArchiveMemberValidation:
@@ -562,8 +616,8 @@ class TestInstallArchiveMemberValidation:
         return archive, checksums
 
     def _download_side_effect(self, archive, checksums):
-        def _download(url, dest, timeout=10):
-            del timeout
+        def _download(url, dest, timeout=10, *, max_bytes):
+            del timeout, max_bytes
             if url.endswith(".tar.gz"):
                 with open(archive, "rb") as src, open(dest, "wb") as dst:
                     dst.write(src.read())
@@ -599,6 +653,7 @@ class TestInstallArchiveMemberValidation:
 
         assert reason == ""
         assert path == str(hermes_home / "bin" / "tirith")
+        assert path is not None
         assert os.path.isfile(path)
         assert not os.path.islink(path)
         with open(path, "rb") as f:
@@ -628,6 +683,62 @@ class TestInstallArchiveMemberValidation:
         assert reason == "binary_not_regular_file"
         assert not os.path.lexists(hermes_home / "bin" / "tirith")
 
+    def test_install_rejects_oversized_tirith_member(self, tmp_path):
+        member = tarfile.TarInfo("tirith")
+        member.size = _tirith_mod._MAX_TIRITH_BINARY_BYTES + 1
+        archive = MagicMock()
+        archive.__iter__.return_value = iter([member])
+
+        path, reason = _tirith_mod._extract_tirith_binary(
+            archive, str(tmp_path), lambda *_args: None
+        )
+
+        assert path is None
+        assert reason == "archive_member_too_large"
+        archive.extractfile.assert_not_called()
+
+    def test_install_rejects_too_many_archive_members(self, tmp_path):
+        members = [
+            tarfile.TarInfo(f"extra-{index}")
+            for index in range(_tirith_mod._MAX_RELEASE_ARCHIVE_MEMBERS + 1)
+        ]
+        archive = MagicMock()
+        archive.__iter__.return_value = iter(members)
+
+        path, reason = _tirith_mod._extract_tirith_binary(
+            archive, str(tmp_path), lambda *_args: None
+        )
+
+        assert path is None
+        assert reason == "too_many_archive_members"
+        archive.extractfile.assert_not_called()
+
+    def test_install_caps_pax_metadata_before_tarfile_yields_it(
+        self, tmp_path, monkeypatch
+    ):
+        archive = tmp_path / "pax-metadata.tar.gz"
+        with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+            metadata_heavy = tarfile.TarInfo("nested/" + "a" * 16_384)
+            metadata_heavy.size = 0
+            tar.addfile(metadata_heavy)
+            binary = tarfile.TarInfo("tirith")
+            binary.size = 1
+            tar.addfile(binary, io.BytesIO(b"x"))
+
+        monkeypatch.setattr(
+            _tirith_mod,
+            "_MAX_RELEASE_ARCHIVE_UNPACKED_BYTES",
+            4 * 1024,
+        )
+
+        path, reason = _tirith_mod._extract_release_archive(
+            str(archive), str(tmp_path), lambda *_args: None
+        )
+
+        assert path is None
+        assert reason == "archive_too_large"
+        assert not (tmp_path / "tirith").exists()
+
 
 # ---------------------------------------------------------------------------
 # Background install / non-blocking startup (P2)
@@ -642,7 +753,7 @@ class TestBackgroundInstall:
                    return_value={"tirith_enabled": True, "tirith_path": "tirith",
                                  "tirith_timeout": 5, "tirith_fail_open": True}), \
              patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"), \
+             patch("tools.tirith_security._managed_tirith_path", return_value="/nonexistent/tirith"), \
              patch("tools.tirith_security._is_install_failed_on_disk", return_value=False), \
              patch("tools.tirith_security.threading.Thread") as MockThread:
             mock_thread = MagicMock()
@@ -665,7 +776,7 @@ class TestBackgroundInstall:
         _tirith_mod._install_thread = mock_thread
 
         with patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"):
+             patch("tools.tirith_security._managed_tirith_path", return_value="/nonexistent/tirith"):
             result = _resolve_tirith_path("tirith")
             assert result == "tirith"  # returns configured default, doesn't block
 
@@ -701,7 +812,7 @@ class TestDiskFailureMarker:
         _tirith_mod._install_failure_reason = "cosign_exec_failed"
 
         with patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"), \
+             patch("tools.tirith_security._managed_tirith_path", return_value="/nonexistent/tirith"), \
              patch("tools.tirith_security._install_tirith") as mock_install:
             result = _resolve_tirith_path("tirith")
             assert result == "tirith"  # fallback

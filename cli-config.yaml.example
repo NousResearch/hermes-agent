@@ -498,7 +498,12 @@ terminal:
 # =============================================================================
 # Optional pre-exec command security scanning via tirith.
 # Detects homograph URLs, pipe-to-shell, terminal injection, env manipulation.
-# Install: brew install sheeki03/tap/tirith
+# With the default path, Hermes installs and updates its managed Tirith binary
+# in $HERMES_HOME/bin (or a platform-qualified subdirectory for immutable
+# images that share this data root with the host). PATH and explicitly
+# configured binaries stay externally managed. Set security.allow_lazy_installs
+# to false to disable Hermes-managed runtime installs and updates.
+# Manual install: brew install sheeki03/tap/tirith
 # Docs: https://github.com/sheeki03/tirith
 #
 # security:

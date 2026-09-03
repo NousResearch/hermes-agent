@@ -1493,11 +1493,69 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
 
+    async def _cache_audio_for_gate(self, data: Dict[str, Any]) -> Optional[str]:
+        """Download or accept an already-cached voice/audio path for gate STT."""
+        from gateway.platforms.base import cache_audio_from_url
+
+        raw_urls = data.get("mediaUrls") or []
+        for url in raw_urls:
+            if not url:
+                continue
+            url = str(url)
+            if url.startswith(("http://", "https://")):
+                try:
+                    return await cache_audio_from_url(url, ext=".ogg")
+                except Exception as e:
+                    print(f"[{self.name}] Failed to cache gate audio: {e}", flush=True)
+                    continue
+            if os.path.isabs(url) and _is_allowed_bridge_path(url):
+                return url
+        return None
+
+    async def _eager_transcribe_for_gate(self, data: Dict[str, Any]):
+        """Transcribe a captionless voice note once so mention_patterns can see it.
+
+        Returns ``(transcript, cached_path)``. ``cached_path`` is reused by
+        ``_build_message_event`` so the audio is not downloaded twice.
+        """
+        try:
+            from tools.transcription_tools import transcribe_audio
+        except Exception as e:
+            print(f"[{self.name}] STT module unavailable: {e}", flush=True)
+            return None, None
+        cached_path = await self._cache_audio_for_gate(data)
+        if not cached_path:
+            return None, None
+        try:
+            result = await asyncio.to_thread(transcribe_audio, cached_path, None, "gateway")
+        except Exception as e:
+            print(f"[{self.name}] Eager voice transcription failed: {e}", flush=True)
+            return None, cached_path
+        if isinstance(result, dict) and result.get("success"):
+            text = (result.get("transcript") or result.get("text") or "").strip()
+            return (text or None), cached_path
+        return None, cached_path
+
+    @staticmethod
+    def _apply_gate_transcript(event: MessageEvent, transcript: str) -> None:
+        """Cache the gate transcript so the runner does not run STT again."""
+        setattr(event, "_gateway_pending_stt_text", f'"{transcript}"')
+        setattr(event, "_gateway_pending_stt_transcripts", [transcript])
+
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
+            gate_transcript = None
+            gate_audio_path = None
             if not self._should_process_message(data):
-                return None
+                if not self._needs_eager_voice_mention_gate(data):
+                    return None
+                gate_transcript, gate_audio_path = await self._eager_transcribe_for_gate(data)
+                if not gate_transcript or not self._transcript_matches_mention_patterns(gate_transcript):
+                    return None
+                data["_gate_transcript"] = gate_transcript
+                if gate_audio_path:
+                    data["_gate_audio_path"] = gate_audio_path
 
             # Determine message type
             msg_type = MessageType.TEXT
@@ -1536,6 +1594,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             raw_urls = data.get("mediaUrls", [])
             cached_urls = []
             media_types = []
+            if gate_audio_path:
+                cached_urls.append(gate_audio_path)
+                media_types.append(
+                    str(data.get("mime") or "").strip()
+                    or ("audio/ogg" if "ptt" in str(data.get("mediaType") or "").lower() else "audio/mpeg")
+                )
             for url in raw_urls:
                 bridge_mime = str(data.get("mime") or "").strip()
                 if msg_type == MessageType.PHOTO and url.startswith(("http://", "https://")):
@@ -1556,6 +1620,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
                     else:
                         print(f"[{self.name}] Rejected bridge image path outside cache dir: {url}", flush=True)
+                elif msg_type in {MessageType.VOICE, MessageType.AUDIO} and gate_audio_path:
+                    # Audio already cached for the mention-gate STT pass.
+                    continue
                 elif msg_type in {MessageType.VOICE, MessageType.AUDIO} and url.startswith(("http://", "https://")):
                     try:
                         cached_path = await cache_audio_from_url(url, ext=".ogg")
@@ -1677,7 +1744,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if not body.startswith(_OWNER_REPLY_PREFIX):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
 
-            return MessageEvent(
+            event = MessageEvent(
                 text=body,
                 message_type=msg_type,
                 source=source,
@@ -1691,6 +1758,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_author_id=reply_to_author_id,
                 reply_to_is_own_message=reply_to_is_own_message,
             )
+            if gate_transcript:
+                self._apply_gate_transcript(event, gate_transcript)
+            return event
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
             return None

@@ -374,6 +374,52 @@ class WhatsAppBehaviorMixin:
         body = str(data.get("body") or "")
         return any(pattern.search(body) for pattern in self._mention_patterns)
 
+    def _transcript_matches_mention_patterns(self, transcript: str) -> bool:
+        if not transcript or not self._mention_patterns:
+            return False
+        return any(pattern.search(transcript) for pattern in self._mention_patterns)
+
+    def _is_captionless_audio(self, data: Dict[str, Any]) -> bool:
+        """True for a voice/audio payload whose body has no usable wake-word text."""
+        if not data.get("hasMedia"):
+            return False
+        media_type = str(data.get("mediaType") or "").lower()
+        if "ptt" not in media_type and "audio" not in media_type:
+            return False
+        body = str(data.get("body") or "").strip()
+        return (not body) or body.lower() == "[ptt received]"
+
+    def _needs_eager_voice_mention_gate(self, data: Dict[str, Any]) -> bool:
+        """True when only a spoken wake word could satisfy the group mention gate.
+
+        Called after ``_should_process_message`` has already returned False.
+        Extra STT is limited to group chats with ``require_mention`` +
+        ``mention_patterns`` and a captionless voice/audio note.
+        """
+        if not data.get("isGroup"):
+            return False
+        chat_id = str(data.get("chatId") or "")
+        if self._is_broadcast_chat(chat_id):
+            return False
+        if not self._is_group_allowed(chat_id):
+            return False
+        if chat_id in self._whatsapp_free_response_chats():
+            return False
+        if not self._whatsapp_require_mention():
+            return False
+        if not self._mention_patterns:
+            return False
+        if not self._is_captionless_audio(data):
+            return False
+        body = str(data.get("body") or "").strip()
+        if body.startswith("/"):
+            return False
+        if self._message_is_reply_to_bot(data):
+            return False
+        if self._message_mentions_bot(data):
+            return False
+        return True
+
     def _clean_bot_mention_text(self, text: str, data: Dict[str, Any]) -> str:
         if not text:
             return text

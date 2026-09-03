@@ -3,6 +3,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import pytest
+
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.base import MessageType
 from gateway.session import SessionSource
@@ -882,3 +884,105 @@ def test_identity_freshness_does_not_depend_on_host_uptime(monkeypatch):
 
     adapter._note_bot_username("new_helper_bot")
     assert adapter._bot_identity_is_fresh() is True
+
+
+def _voice_group_message(*, reply_to_bot=False, caption=None, text=None):
+    msg = _group_message(text, caption=caption, reply_to_bot=reply_to_bot)
+    msg.voice = SimpleNamespace(file_id="voice1", duration=3)
+    msg.audio = None
+    msg.sticker = None
+    msg.photo = None
+    msg.video = None
+    msg.document = None
+    msg.media_group_id = None
+    return msg
+
+
+def test_captionless_voice_does_not_match_mention_patterns_on_text():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"(?i)\bhermes\b"])
+
+    assert adapter._should_process_message(_group_message("hermes, what's on today?")) is True
+    voice = _voice_group_message()
+    assert adapter._should_process_message(voice) is False
+    assert adapter._should_process_message(_voice_group_message(reply_to_bot=True)) is True
+    assert adapter._should_process_message(
+        _group_message(None, caption="hermes hello")
+    ) is True
+
+
+def test_voice_accepted_by_transcript_flag_passes_mention_gate():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"(?i)\bhermes\b"])
+    voice = _voice_group_message()
+    assert adapter._should_process_message(voice) is False
+    voice._voice_accepted_by_transcript = True
+    assert adapter._should_process_message(voice) is True
+
+
+def test_needs_eager_voice_mention_gate_is_narrow():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"(?i)\bhermes\b"])
+
+    assert adapter._needs_eager_voice_mention_gate(_voice_group_message()) is True
+    assert adapter._needs_eager_voice_mention_gate(
+        _voice_group_message(reply_to_bot=True)
+    ) is False
+    assert adapter._needs_eager_voice_mention_gate(
+        _group_message("hermes, what's on today?")
+    ) is False
+    assert adapter._needs_eager_voice_mention_gate(
+        _voice_group_message(caption="hermes hello")
+    ) is False
+    assert adapter._transcript_matches_mention_patterns("hermes, what's on today?") is True
+    assert adapter._transcript_matches_mention_patterns("no wake word here") is False
+
+    no_patterns = _make_adapter(require_mention=True, mention_patterns=[])
+    assert no_patterns._needs_eager_voice_mention_gate(_voice_group_message()) is False
+
+
+@pytest.mark.asyncio
+async def test_handle_media_message_accepts_voice_via_transcript():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"(?i)\bhermes\b"])
+    handled = []
+
+    async def _handle(event):
+        handled.append(event)
+
+    adapter.handle_message = _handle
+    adapter._is_user_authorized_from_message = lambda _msg: True
+    adapter._apply_telegram_group_observe_attribution = lambda event: event
+    adapter._telegram_media_size_allowed = lambda *_a, **_k: (True, None)
+
+    async def _fake_transcribe(msg):
+        return "hermes, what's on today?", "/tmp/tg-gate.ogg"
+
+    adapter._eager_transcribe_voice = _fake_transcribe
+
+    update = SimpleNamespace(message=_voice_group_message(), update_id=1)
+    await adapter._handle_media_message(update, SimpleNamespace())
+
+    assert len(handled) == 1
+    event = handled[0]
+    assert getattr(event, "_gateway_pending_stt_text") == '"hermes, what\'s on today?"'
+    assert getattr(event, "_gateway_pending_stt_transcripts") == ["hermes, what's on today?"]
+    assert event.media_urls == ["/tmp/tg-gate.ogg"]
+
+
+@pytest.mark.asyncio
+async def test_handle_media_message_drops_voice_without_wake_word():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"(?i)\bhermes\b"])
+    handled = []
+
+    async def _handle(event):
+        handled.append(event)
+
+    adapter.handle_message = _handle
+    adapter._is_user_authorized_from_message = lambda _msg: True
+
+    async def _fake_transcribe(msg):
+        return "weather looks fine", None
+
+    adapter._eager_transcribe_voice = _fake_transcribe
+
+    update = SimpleNamespace(message=_voice_group_message(), update_id=1)
+    await adapter._handle_media_message(update, SimpleNamespace())
+
+    assert handled == []

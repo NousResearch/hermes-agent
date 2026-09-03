@@ -19,6 +19,7 @@ import contextlib
 import json
 import os
 import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -539,6 +540,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Release an active worker claim on a running task",
     )
     p_reclaim.add_argument("task_id")
+    p_reclaim.add_argument(
+        "--force", action="store_true",
+        help="Reclaim even when the task worktree holds uncommitted work",
+    )
     p_reclaim.add_argument(
         "--reason", default=None,
         help="Human-readable reason (recorded on the reclaimed event)",
@@ -1993,8 +1998,57 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
     return 0
 
 
+def _dirty_worktree_refusal(conn, task_id: str) -> Optional[str]:
+    """Advisory refusal message when the task worktree is dirty, else None.
+
+    CLI-only guard (#101788): reclaiming a task whose worktree holds
+    uncommitted work lets the next takeover rebase/reset it away. Any
+    inspection failure returns None (clean) so this can never block a
+    reclaim — advisory by construction. The dispatcher's automatic
+    stale-claim reclaim calls ``reclaim_task`` directly and is untouched.
+    """
+    try:
+        task = kb.get_task(conn, task_id)
+        if task is None:
+            return None
+        if task.workspace_kind != "worktree" or not task.workspace_path:
+            return None
+        result = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=normal"],
+            cwd=task.workspace_path, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=15,
+        )
+        if result.returncode != 0:
+            return None
+        entries = [ln for ln in result.stdout.splitlines() if ln.strip()]
+        if not entries:
+            return None
+        shown = entries[:10]
+        more = (
+            f"\n  ... and {len(entries) - len(shown)} more"
+            if len(entries) > len(shown) else ""
+        )
+        listing = "\n".join(f"    {e}" for e in shown)
+        return (
+            f"refusing to reclaim {task_id}: its worktree has "
+            f"{len(entries)} uncommitted change(s) that a takeover could destroy.\n"
+            f"  worktree: {task.workspace_path}\n"
+            f"{listing}{more}\n"
+            f"  Inspect it first — a worker often leaves a correct but uncommitted fix.\n"
+            f"  Re-run with --force to reclaim anyway."
+        )
+    except Exception:
+        return None
+
+
 def _cmd_reclaim(args: argparse.Namespace) -> int:
+    force = bool(getattr(args, "force", False))
     with kb.connect_closing() as conn:
+        if not force:
+            refusal = _dirty_worktree_refusal(conn, args.task_id)
+            if refusal is not None:
+                print(refusal, file=sys.stderr)
+                return 1
         ok = kb.reclaim_task(
             conn, args.task_id,
             reason=getattr(args, "reason", None),

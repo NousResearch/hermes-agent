@@ -528,6 +528,43 @@ class TestTeamsMessageHandling:
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "group"
 
+    @pytest.mark.anyio
+    async def test_missing_conversation_type_does_not_dispatch(self, caplog):
+        """Unknown/missing Teams conversationType must not be labelled dm.
+
+        Labelling it dm would run pairing and post operator text into the
+        chat. Fail closed: log only, no handle_message, no send, no conv ref.
+        """
+        import logging
+
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        adapter.send = AsyncMock()
+
+        activity = self._make_activity(activity_id="activity-missing-type")
+        activity.conversation = SimpleNamespace(
+            id="19:abc@thread.v2",
+            name="Test Chat",
+            tenant_id="tenant-789",
+        )
+        ctx = self._make_ctx(activity)
+        ctx.conversation_ref = object()
+
+        with caplog.at_level(logging.INFO):
+            await adapter._on_message(ctx)
+
+        adapter.handle_message.assert_not_awaited()
+        adapter.send.assert_not_awaited()
+        assert "19:abc@thread.v2" not in adapter._conv_refs
+        joined = " ".join(r.getMessage() for r in caplog.records)
+        assert "unknown conversation type" in joined.lower()
+        assert "pair" not in joined.lower()
+        assert "unauthorized" not in joined.lower()
+
 
 class TestTeamsAttachmentClassification:
     """Document attachments must set MessageType.DOCUMENT so run.py's

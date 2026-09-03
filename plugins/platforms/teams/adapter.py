@@ -1026,6 +1026,24 @@ class TeamsAdapter(BasePlatformAdapter):
         if msg_id and self._dedup.is_duplicate(msg_id):
             return
 
+        # Determine chat type from conversation. Unknown/missing
+        # conversationType must not be labelled dm: that would run pairing
+        # and post operator text into the chat. Fail closed — log only.
+        conv = activity.conversation
+        conv_type = getattr(conv, "conversation_type", None) or ""
+        if conv_type == "personal":
+            chat_type = "dm"
+        elif conv_type == "groupChat":
+            chat_type = "group"
+        elif conv_type == "channel":
+            chat_type = "channel"
+        else:
+            logger.info(
+                "[teams] dropping inbound with unknown conversation type %r",
+                conv_type or "missing",
+            )
+            return
+
         # Cache the conversation reference for proactive sends (approval cards, etc.)
         conv_id = getattr(activity.conversation, "id", None)
         if conv_id:
@@ -1039,18 +1057,6 @@ class TeamsAdapter(BasePlatformAdapter):
         if "<at>" in text:
             import re
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
-
-        # Determine chat type from conversation
-        conv = activity.conversation
-        conv_type = getattr(conv, "conversation_type", None) or ""
-        if conv_type == "personal":
-            chat_type = "dm"
-        elif conv_type == "groupChat":
-            chat_type = "group"
-        elif conv_type == "channel":
-            chat_type = "channel"
-        else:
-            chat_type = "dm"
 
         # Build source
         from_account = activity.from_

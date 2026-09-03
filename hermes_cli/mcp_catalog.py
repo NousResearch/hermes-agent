@@ -668,8 +668,10 @@ def _probe_tools(name: str) -> Optional[List[tuple]]:
 
 def _write_tools_include(name: str, include: Optional[List[str]]) -> None:
     """Persist or clear ``mcp_servers.<name>.tools.include``."""
+    from hermes_cli.mcp_config import _ensure_mcp_servers_dict
+
     cfg = load_config()
-    servers = cfg.setdefault("mcp_servers", {})
+    servers = _ensure_mcp_servers_dict(cfg)
     server_entry = servers.get(name) or {}
     if include is None:
         # No filter — drop any existing tools block.
@@ -688,8 +690,10 @@ def _write_tools_include(name: str, include: Optional[List[str]]) -> None:
 
 def _write_tools_exclude(name: str, exclude: List[str]) -> None:
     """Persist ``mcp_servers.<name>.tools.exclude`` (names or glob patterns)."""
+    from hermes_cli.mcp_config import _ensure_mcp_servers_dict
+
     cfg = load_config()
-    servers = cfg.setdefault("mcp_servers", {})
+    servers = _ensure_mcp_servers_dict(cfg)
     server_entry = servers.get(name) or {}
     tools_block = server_entry.get("tools") or {}
     if not isinstance(tools_block, dict):

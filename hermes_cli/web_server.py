@@ -15291,13 +15291,13 @@ def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate
     Returns the number of servers written.
     """
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from hermes_cli.mcp_config import _save_bearer_auth_token
+    from hermes_cli.mcp_config import _save_bearer_auth_token, _ensure_mcp_servers_dict
 
     written = 0
     token = set_hermes_home_override(str(profile_dir))
     try:
         cfg = load_config()
-        mcp = cfg.setdefault("mcp_servers", {})
+        mcp = _ensure_mcp_servers_dict(cfg)
         for server in servers:
             try:
                 name, entry, bearer_token = _normalize_mcp_server_create(server)

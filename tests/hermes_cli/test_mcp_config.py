@@ -655,6 +655,45 @@ class TestConfigHelpers:
         assert servers["mysvr"]["url"] == "https://example.com/mcp"
 
 
+    def test_save_mcp_server_coerces_legacy_string_default(self, tmp_path):
+        """A legacy ``mcp_servers: ''`` string default must not crash save.
+
+        ``config.setdefault("mcp_servers", {})`` returns the existing string
+        when the key is present, so indexing it raised ``TypeError``. The
+        save path must coerce the string to a dict in place.
+        """
+        import yaml
+
+        from hermes_cli.mcp_config import _save_mcp_server, _get_mcp_servers
+
+        config_path = tmp_path / "config.yaml"
+        with open(config_path, "w") as f:
+            yaml.safe_dump({"mcp_servers": "", "_config_version": 9}, f)
+
+        _save_mcp_server("mysvr", {"url": "https://example.com/mcp"})
+        servers = _get_mcp_servers()
+        assert "mysvr" in servers
+        assert servers["mysvr"]["url"] == "https://example.com/mcp"
+
+        # The on-disk value must now be a dict, not the legacy string.
+        with open(config_path) as f:
+            raw = yaml.safe_load(f)
+        assert isinstance(raw["mcp_servers"], dict)
+
+
+    def test_remove_mcp_server_coerces_legacy_string_default(self, tmp_path):
+        """Removing from a legacy ``mcp_servers: ''`` string is a no-op, not a crash."""
+        import yaml
+
+        from hermes_cli.mcp_config import _remove_mcp_server
+
+        config_path = tmp_path / "config.yaml"
+        with open(config_path, "w") as f:
+            yaml.safe_dump({"mcp_servers": "", "_config_version": 9}, f)
+
+        assert _remove_mcp_server("mysvr") is False
+
+
     def test_env_key_for_server(self):
         from hermes_cli.mcp_config import _env_key_for_server
 

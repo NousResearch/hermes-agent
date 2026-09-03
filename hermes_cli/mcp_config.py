@@ -85,6 +85,21 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     return servers
 
 
+def _ensure_mcp_servers_dict(config: dict) -> Dict[str, dict]:
+    """Return the ``mcp_servers`` dict, coercing a non-dict (e.g. the legacy
+    ``mcp_servers: ''`` string default) to an empty dict in place.
+
+    ``config.setdefault("mcp_servers", {})`` returns the existing value when
+    the key is present — so a string ``''`` (the historical default) is
+    returned as-is and indexing it raises ``TypeError``. Coerce instead.
+    """
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        servers = {}
+        config["mcp_servers"] = servers
+    return servers
+
+
 def _save_mcp_server(name: str, server_config: dict) -> bool:
     """Add or update a server entry in config.yaml.
 
@@ -99,7 +114,8 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
         _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
         return False
     config = load_config()
-    config.setdefault("mcp_servers", {})[name] = server_config
+    servers = _ensure_mcp_servers_dict(config)
+    servers[name] = server_config
     save_config(config)
     return True
 
@@ -107,7 +123,7 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
 def _remove_mcp_server(name: str) -> bool:
     """Remove a server from config.yaml.  Returns True if it existed."""
     config = load_config()
-    servers = config.get("mcp_servers", {})
+    servers = _ensure_mcp_servers_dict(config)
     if name not in servers:
         return False
     del servers[name]
@@ -1129,7 +1145,8 @@ def cmd_mcp_configure(args):
         server_entry["tools"]["include"] = chosen_names
         server_entry["tools"].pop("exclude", None)
 
-    config.setdefault("mcp_servers", {})[name] = server_entry
+    servers = _ensure_mcp_servers_dict(config)
+    servers[name] = server_entry
     save_config(config)
 
     new_count = len(chosen)

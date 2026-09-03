@@ -75,9 +75,113 @@ def _branch_exists(repo: Path, branch: str) -> bool:
     return bool(out.strip())
 
 
+def _worktree_is_locked(repo: Path, worktree: Path) -> bool:
+    listing = _git("-C", str(repo), "worktree", "list", "--porcelain")
+    blocks = [block for block in listing.strip().split("\n\n") if block]
+    target = str(worktree.resolve())
+    return any(
+        block.splitlines()[0] == f"worktree {target}"
+        and any(line.startswith("locked") for line in block.splitlines()[1:])
+        for block in blocks
+    )
+
+
 # ---------------------------------------------------------------------------
 # _cleanup_worktree_workspace unit behavior
 # ---------------------------------------------------------------------------
+
+
+def test_materialized_task_worktree_is_locked_until_lifecycle_cleanup(repo: Path) -> None:
+    wt = _make_worktree(repo, "t_aabbccdd")
+    assert _worktree_is_locked(repo, wt)
+    attempted = subprocess.run(
+        ["git", "-C", str(repo), "worktree", "remove", str(wt)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert attempted.returncode != 0
+    assert "locked working tree" in attempted.stderr
+    assert wt.is_dir()
+
+
+def test_task_worktree_is_locked_before_add_publishes(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remover released as the add returns must see a Git-native lock.
+
+    The competing remove is a separate Git process, so it tests the Git-native
+    lock rather than the in-process advisory lifecycle lock.
+    """
+    target = repo / ".worktrees" / "t_addlock"
+
+    # Race: a competing `git worktree remove` arrives just as the add publishes
+    # the tree. It must be denied by the Git native lock, not by our advisory
+    # file lock (they protect disjoint concerns — the advisory lock serialises
+    # Kanban/router lock transitions; the Git lock is what repels non-owner
+    # cleanup at the repository level).
+    original_run = subprocess.run
+    competing_returncode: int | None = None
+
+    def run_with_competitor(args, *positional, **kwargs):
+        nonlocal competing_returncode
+        result = original_run(args, *positional, **kwargs)
+        if (
+            isinstance(args, list)
+            and "worktree" in args
+            and "add" in args
+            and str(target) in args
+            and result.returncode == 0
+        ):
+            competing = original_run(
+                ["git", "-C", str(repo), "worktree", "remove", str(target)],
+                capture_output=True, text=True, check=False,
+            )
+            competing_returncode = competing.returncode
+        return result
+
+    monkeypatch.setattr(subprocess, "run", run_with_competitor)
+    kb._ensure_git_worktree(repo, target, "wt/t_addlock")
+
+    assert competing_returncode not in (None, 0)
+    assert target.is_dir()
+    assert _worktree_is_locked(repo, target)
+
+
+def test_dispatch_adopts_unlocked_nonterminal_task_worktree(
+    kanban_home: Path, repo: Path
+) -> None:
+    """A restart adopts pre-upgrade task trees before later cleanup can reap them."""
+    target = repo / ".worktrees" / "t_upgrade"
+    _git(
+        "-C", str(repo), "worktree", "add", "-b", "wt/t_upgrade",
+        str(target), "HEAD",
+    )
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="pre-upgrade", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET id=?, status='blocked', workspace_kind='worktree', "
+                "workspace_path=?, branch_name=? WHERE id=?",
+                ("t_upgrade", str(target), "wt/t_upgrade", task_id),
+            )
+        kb.dispatch_once(
+            conn,
+            max_spawn=0,
+            reconcile_orphans=False,
+            spawn_fn=lambda *_args: None,
+        )
+        # Restart recovery is idempotent: a later dispatch tick recognizes its
+        # own lease rather than unlocking or replacing it.
+        kb.dispatch_once(
+            conn,
+            max_spawn=0,
+            reconcile_orphans=False,
+            spawn_fn=lambda *_args: None,
+        )
+
+    assert target.is_dir()
+    assert _worktree_is_locked(repo, target)
 
 
 def test_clean_pushed_worktree_removed(repo: Path) -> None:
@@ -126,6 +230,48 @@ def test_non_git_dir_preserved(tmp_path: Path) -> None:
     plain.mkdir()
     kb._cleanup_worktree_workspace("t_ffff6666", str(plain))
     assert plain.is_dir()
+
+
+def test_foreign_locked_worktree_is_preserved(repo: Path) -> None:
+    wt = _make_worktree(repo, "t_f0f0f0f0")
+    _git("-C", str(repo), "worktree", "unlock", str(wt))
+    _git(
+        "-C", str(repo), "worktree", "lock", "--reason",
+        "active Hermes Kanban task wt/t_other", str(wt)
+    )
+    kb._cleanup_worktree_workspace("t_f0f0f0f0", str(wt))
+    assert wt.is_dir()
+    assert _worktree_is_locked(repo, wt)
+
+
+def test_relock_between_owned_unlock_and_remove_is_preserved(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wt = _make_worktree(repo, "t_12121212")
+    original_run = subprocess.run
+    relocked = False
+
+    def run_with_relock(args, *positional, **kwargs):
+        nonlocal relocked
+        result = original_run(args, *positional, **kwargs)
+        if (
+            not relocked
+            and isinstance(args, list)
+            and args[-3:-1] == ["worktree", "unlock"]
+            and args[-1] == str(wt)
+        ):
+            relocked = True
+            _git(
+                "-C", str(repo), "worktree", "lock", "--reason",
+                "coding router result", str(wt)
+            )
+        return result
+
+    monkeypatch.setattr(subprocess, "run", run_with_relock)
+    kb._cleanup_worktree_workspace("t_12121212", str(wt))
+    assert relocked
+    assert wt.is_dir()
+    assert _worktree_is_locked(repo, wt)
 
 
 def test_tree_dirtied_between_check_and_removal_preserved(

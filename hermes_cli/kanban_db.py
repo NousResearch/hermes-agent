@@ -5964,6 +5964,107 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         pass  # best-effort — never block completion
 
 
+def _worktree_lock_reason(
+    repo_root: Path, worktree: Path
+) -> tuple[bool, Optional[str]]:
+    """Return ``(query_succeeded, lock_reason)`` for one registered worktree."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return False, None
+    if result.returncode != 0:
+        return False, None
+    target = worktree.resolve(strict=False)
+    current: Optional[Path] = None
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            current = Path(line[len("worktree "):]).resolve(strict=False)
+        elif current == target and (line == "locked" or line.startswith("locked ")):
+            return True, line[len("locked"):].strip()
+    return True, None
+
+
+def _remove_task_worktree_under_lifecycle_lock(
+    task_id: str,
+    worktree: Path,
+    repo_root: Path,
+    common_dir: Path,
+    branch_name: Optional[str],
+) -> None:
+    """Atomically arbitrate Kanban/router ownership before removing a tree."""
+    from .active_sessions import _FileLock
+
+    with _FileLock(common_dir / "hermes-worktree-lifecycle.lock"):
+        lock_known, lock_reason = _worktree_lock_reason(repo_root, worktree)
+        if not lock_known:
+            _log.warning(
+                "Preserving worktree for task %s: unable to verify lock ownership at %s",
+                task_id, worktree,
+            )
+            return
+        branch = (branch_name or "").strip() or f"wt/{task_id}"
+        expected_lock_reason = f"active Hermes Kanban task {branch}"
+        if lock_reason and lock_reason != expected_lock_reason:
+            _log.info(
+                "Preserving worktree for task %s: foreign lock at %s (%s)",
+                task_id, worktree, lock_reason,
+            )
+            return
+        if lock_reason:
+            unlock = subprocess.run(
+                [
+                    "git", "-C", str(repo_root), "worktree", "unlock",
+                    str(worktree),
+                ],
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=30,
+                check=False,
+            )
+            if unlock.returncode != 0:
+                _log.warning(
+                    "git worktree unlock failed for task %s at %s: %s",
+                    task_id, worktree,
+                    (unlock.stderr or unlock.stdout or "").strip(),
+                )
+                return
+        # No --force: git re-verifies dirtiness and any lock acquired after
+        # our owned unlock. The repo-scoped lifecycle lock serializes Hermes'
+        # Kanban/router lock transitions around this ownership decision.
+        result = subprocess.run(
+            [
+                "git", "-C", str(repo_root), "worktree", "remove",
+                str(worktree),
+            ],
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
+            timeout=60,
+            check=False,
+        )
+        if result.returncode != 0:
+            _log.warning(
+                "git worktree remove failed for task %s at %s: %s",
+                task_id, worktree,
+                (result.stderr or result.stdout or "").strip(),
+            )
+            return
+        _log.debug("Removed worktree workspace: %s", worktree)
+        if branch.startswith("wt/"):
+            subprocess.run(
+                ["git", "-C", str(repo_root), "branch", "-D", branch],
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=30,
+                check=False,
+            )
+
+
 def _cleanup_worktree_workspace(
     task_id: str, path: str, branch_name: Optional[str] = None
 ) -> None:
@@ -5996,33 +6097,9 @@ def _cleanup_worktree_workspace(
                 task_id, wp,
             )
             return
-        # No --force: the dirty/unpushed checks above run before removal, so
-        # git's own dirty guard re-verifies at removal time. If the tree
-        # became dirty between our check and the removal (TOCTOU), removal
-        # fails safe and the worktree is preserved.
-        result = subprocess.run(
-            ["git", "-C", str(repo_root), "worktree", "remove", str(wp)],
-            capture_output=True,
-            text=True, encoding='utf-8', errors='replace',
-            timeout=60,
-            check=False,
+        _remove_task_worktree_under_lifecycle_lock(
+            task_id, wp, repo_root, common, branch_name
         )
-        if result.returncode != 0:
-            _log.warning(
-                "git worktree remove failed for task %s at %s: %s",
-                task_id, wp, (result.stderr or result.stdout or "").strip(),
-            )
-            return
-        _log.debug("Removed worktree workspace: %s", wp)
-        branch = (branch_name or "").strip() or f"wt/{task_id}"
-        if branch.startswith("wt/"):
-            subprocess.run(
-                ["git", "-C", str(repo_root), "branch", "-D", branch],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=30,
-                check=False,
-            )
     except Exception:
         pass  # best-effort — never block completion
 
@@ -7721,34 +7798,123 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _lock_task_worktree(
+    repo_root: Path, target: Path, branch_name: str
+) -> None:
+    """Prevent non-owner cleanup from removing an active Kanban checkout."""
+    from .active_sessions import _FileLock
+
+    common = _git_common_dir(repo_root)
+    if common is None:
+        raise RuntimeError(f"cannot resolve git common dir for {repo_root}")
+    with _FileLock(common / "hermes-worktree-lifecycle.lock"):
+        result = subprocess.run(
+            [
+                "git", "-C", str(repo_root), "worktree", "lock",
+                "--reason", f"active Hermes Kanban task {branch_name}",
+                str(target),
+            ],
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
+            timeout=30,
+            check=False,
+        )
+        detail = (result.stderr or result.stdout or "").strip()
+        if result.returncode != 0:
+            lock_known, lock_reason = _worktree_lock_reason(repo_root, target)
+            if not (
+                lock_known
+                and lock_reason
+                and lock_reason == f"active Hermes Kanban task {branch_name}"
+            ):
+                raise RuntimeError(
+                    f"git worktree lock failed for {target}: {detail}"
+                )
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
-    """Materialize ``target`` as a linked git worktree under ``repo_root``."""
+    """Materialize and lifecycle-lock a task worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None:
         target_common = _git_common_dir(target)
         if target_common == repo_common:
+            _lock_task_worktree(repo_root, target, branch_name)
             return
     target.parent.mkdir(parents=True, exist_ok=True)
-    if _git_branch_exists(repo_root, branch_name):
-        cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
-    else:
-        cmd = [
-            "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
-            str(target), "HEAD",
-        ]
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True, encoding='utf-8', errors='replace',
-        timeout=60,
-        check=False,
-    )
-    if result.returncode != 0:
-        stderr = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(
-            f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
+
+    # Serialize Hermes lifecycle transitions and ask Git to publish the new
+    # worktree already locked.  Locking in a second command leaves an
+    # add-return/lock-start window where an independent pruner can remove the
+    # checkout; ``worktree add --lock`` closes that window at Git's boundary.
+    from .active_sessions import _FileLock
+    common = _git_common_dir(repo_root)
+    if common is None:
+        raise RuntimeError(f"cannot resolve git common dir for {repo_root}")
+    lock_reason = f"active Hermes Kanban task {branch_name}"
+    with _FileLock(common / "hermes-worktree-lifecycle.lock"):
+        if _git_branch_exists(repo_root, branch_name):
+            cmd = [
+                "git", "-C", str(repo_root), "worktree", "add",
+                "--lock", "--reason", lock_reason, str(target), branch_name,
+            ]
+        else:
+            cmd = [
+                "git", "-C", str(repo_root), "worktree", "add",
+                "--lock", "--reason", lock_reason, "-b", branch_name,
+                str(target), "HEAD",
+            ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
+            timeout=60,
+            check=False,
         )
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(
+                f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
+            )
+
+
+def _adopt_nonterminal_task_worktrees(conn: sqlite3.Connection) -> None:
+    """Restore lifecycle locks for task worktrees created before lock leasing.
+
+    Dispatch is the restart/recovery boundary that sees every nonterminal
+    task.  Re-locking an existing checkout here closes the upgrade gap for
+    worktrees materialized by an older process, while branch verification
+    prevents a stale task row from claiming another task's checkout.
+    """
+    rows = conn.execute(
+        "SELECT id, workspace_path, branch_name FROM tasks "
+        "WHERE workspace_kind='worktree' AND workspace_path IS NOT NULL "
+        "AND status NOT IN ('done', 'archived', 'failed', 'cancelled')"
+    ).fetchall()
+    for row in rows:
+        target = Path(row["workspace_path"]).expanduser().resolve(strict=False)
+        branch = (row["branch_name"] or "").strip() or f"wt/{row['id']}"
+        try:
+            if not target.is_dir() or not _is_linked_worktree_checkout(target):
+                continue
+            if _git_current_branch(target) != branch:
+                _log.warning(
+                    "Refusing to adopt worktree for task %s: branch mismatch at %s",
+                    row["id"], target,
+                )
+                continue
+            common = _git_common_dir(target)
+            if common is None:
+                continue
+            _lock_task_worktree(common.parent, target, branch)
+        except Exception as exc:
+            # Recovery is fail-safe and best-effort: an unverifiable checkout
+            # is preserved by cleanup policy, and one bad row must not stall
+            # dispatch for unrelated projects.
+            _log.warning(
+                "Unable to adopt worktree lease for task %s at %s: %s",
+                row["id"], target, exc,
+            )
 
 
 def _resolve_worktree_workspace(
@@ -7805,6 +7971,13 @@ def _resolve_worktree_workspace(
     if requested.exists() and _is_linked_worktree_checkout(requested):
         actual_branch = _git_current_branch(requested)
         if actual_branch == branch_name:
+            existing_repo = _git_toplevel(requested)
+            if existing_repo is not None:
+                common = _git_common_dir(existing_repo)
+                if common is not None:
+                    _lock_task_worktree(
+                        common.parent, requested_resolved, branch_name
+                    )
             return requested_resolved, actual_branch
         # The requested path is an existing checkout of a DIFFERENT
         # task's branch. Decompose children inherit the root's
@@ -9981,6 +10154,8 @@ def _dispatch_once_locked(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+    if not dry_run:
+        _adopt_nonterminal_task_worktrees(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full

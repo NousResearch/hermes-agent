@@ -908,6 +908,13 @@ class TestWorktreeLockPredicate:
         p = self._mk_locked(git_repo, "hermes-foreign", "some other tool")
         assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "dead"
 
+    def test_active_kanban_lock_reason_returns_live(self, git_repo):
+        import cli
+        p = self._mk_locked(
+            git_repo, "custom-kanban-task", "active Hermes Kanban task"
+        )
+        assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "live"
+
     def test_bad_repo_root_fails_safe_to_live(self, tmp_path):
         import cli
         # Not a git repo -> git query fails -> must report "live" (never delete)

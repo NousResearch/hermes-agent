@@ -2524,6 +2524,13 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
             if current != target:
                 continue
             reason = line[len("locked"):].strip()
+            if reason.startswith("active Hermes Kanban task"):
+                # Kanban lifecycle owns this lock and releases it only when the
+                # task completes or is archived. Unlike ``hermes pid=...``
+                # locks it is intentionally not process-scoped: a task may be
+                # requeued across worker processes while retaining its source
+                # checkout. Attended/startup worktree GC must never steal it.
+                return "live"
             m = re.search(r"hermes pid=(\d+)", reason)
             if not m:
                 # Locked by something we don't recognize as a hermes session

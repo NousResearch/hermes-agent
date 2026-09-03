@@ -153,7 +153,10 @@ describe('projects RPC profile forwarding', () => {
     await fetchProjectSessions('p_123')
 
     expect(request).toHaveBeenNthCalledWith(1, 'projects.list', { profile: 'coder' })
-    expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', { preview_limit: 3, profile: 'coder' })
+    // PROJECT_TREE_PREVIEW_LIMIT was raised 3 → 20 by the move-to-project work
+    // (PR #86000) so the project tree shows enough entries to move a session
+    // into; the profile normalization is the invariant under test here.
+    expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', { preview_limit: 20, profile: 'coder' })
     expect(request).toHaveBeenNthCalledWith(3, 'projects.project_sessions', {
       profile: 'coder',
       project_id: 'p_123'

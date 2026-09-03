@@ -31,7 +31,7 @@ import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
+import { $projectTree, moveSessionToProject, openProjectCreate, projectIdForCwd, projectRootCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
@@ -149,6 +149,15 @@ function SessionColorSwatches({ sessionId }: { sessionId: string }) {
 // project's root — the fix for a chat created in the wrong folder. The current
 // owner and folderless projects (the Home bucket) are excluded: there is
 // nothing to move into.
+//
+// The "New project…" affordance is the second half of the fix: when the
+// sidebar has no other project to move into (only the synthetic Home bucket),
+// the submenu used to dead-end on a disabled "No other projects" line and the
+// session was stuck where it was. The session's existing cwd is pre-filled
+// as the new project's primary folder, and the dialog chains back through
+// `onCreated` to move the session in once the user names + creates the
+// project — turning the move from "impossible with one project" into a
+// two-click operation (name + confirm).
 function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; sessionId: string; profile?: string }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
@@ -158,8 +167,45 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   const currentProjectId = cwd ? projectIdForCwd(cwd) : null
   const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
 
+  // Open the project-create dialog with the session's cwd preloaded and a
+  // follow-up that moves the session into the new project. We do NOT call
+  // `moveSessionToProject` against a synthetic Home (NO_PROJECT_ID) — the
+  // session's cwd IS the new project folder either way, and the move
+  // re-anchors the live agent to it.
+  const openCreateAndMove = () => {
+    triggerHaptic('selection')
+
+    const prefill = cwd
+
+    openProjectCreate({
+      prefillFolder: prefill || undefined,
+      onCreated: async (project: { id: string; name: string }) => {
+        await moveSessionToProject(sessionId, project.id, profile)
+        notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(project.name || project.id) })
+      }
+    })
+  }
+
+  // Suppress the "New project…" entry when the session is already inside a
+  // *real* project (not Home) AND no other project exists to move to — that
+  // case means the user is looking at a single-project workspace where the
+  // only meaningful action is creating+renaming, not creating-and-moving.
+  // Home sessions (no current project) always get the entry, since "move"
+  // out of Home is the whole point of the menu.
+  const canCreateAndMove = !currentProjectId || targets.length > 0
+
   if (targets.length === 0) {
-    return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
+    // Single-project / Home-only world: surface the only available action.
+    if (!canCreateAndMove) {
+      return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
+    }
+
+    return (
+      <kit.Item onSelect={openCreateAndMove}>
+        <Codicon name="add" size="0.875rem" />
+        <span>{p.moveCreateNew}</span>
+      </kit.Item>
+    )
   }
 
   return (
@@ -177,6 +223,15 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
           {node.label}
         </kit.Item>
       ))}
+      {canCreateAndMove && (
+        <>
+          <kit.Separator />
+          <kit.Item onSelect={openCreateAndMove}>
+            <Codicon name="add" size="0.875rem" />
+            <span>{p.moveCreateNew}</span>
+          </kit.Item>
+        </>
+      )}
     </>
   )
 }

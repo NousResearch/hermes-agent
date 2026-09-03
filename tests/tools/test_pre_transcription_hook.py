@@ -50,10 +50,17 @@ def _make_audio(tmp_path):
 
 
 def _fake_hooks(monkeypatch, results):
-    """Install fake has_hook/invoke_hook returning *results* and capture kwargs."""
+    """Install fake has_hook/invoke_hook returning *results* and capture kwargs.
+
+    Scoped to ``pre_transcription``: the same dispatch also fires
+    ``post_transcription``, and an unscoped fake would overwrite the
+    captured payload with the later hook's kwargs.
+    """
     captured = {}
 
     def _invoke(hook_name, **kw):
+        if hook_name != "pre_transcription":
+            return []
         captured["hook_name"] = hook_name
         captured["kwargs"] = kw
         return list(results)

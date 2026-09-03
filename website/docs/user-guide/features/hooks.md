@@ -443,6 +443,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
+| [`post_transcription`](#post_transcription) | Transform | Fired by the STT dispatcher after a backend returned a successful, non-empty transcript and before it reaches the caller; string results are applied in registration order, last-writer-wins. Not fired for failed or empty transcriptions. | `file_path`, `transcript`, `provider`, `source` | `transcript` is raw user speech; a replacement is persisted as the message text. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
@@ -1404,6 +1405,51 @@ def register(ctx):
 ```
 
 Not every backend accepts a prompt. `local` maps it to faster-whisper's `initial_prompt`; `openai`, `groq`, `mistral`, and `deepinfra` send it as `prompt`; `xai`, `elevenlabs`, `local_command`, and `type: command` providers log at DEBUG and transcribe without it. See the [provider support table](/user-guide/configuration#transcription-prompt-vocabulary-hints) for the full matrix and the privacy boundary. Hook-plumbing errors are fail-open: the dispatch continues with the unmodified request.
+
+---
+
+### `post_transcription`
+
+The symmetric partner of [`pre_transcription`](#pre_transcription). Fires in the STT dispatcher **after** a backend returned a successful, non-empty transcript and **before** that transcript is handed back to the caller — so a replacement becomes the persisted message text, not just per-turn context the model sees once.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    file_path: str,
+    transcript: str,
+    provider: str,
+    source: str | None,
+    **kwargs,
+) -> str | None:
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `file_path` | `str` | Absolute path to the audio file that was transcribed. This is the same preprocessed path `pre_transcription` saw (CAF→WAV conversion and silence trimming already applied), and the file still exists while the callback runs. |
+| `transcript` | `str` | The transcript returned by the backend. Never empty or whitespace-only. |
+| `provider` | `str` | The STT provider that produced it. |
+| `source` | `str \| None` | Caller surface label (`gateway`, `voice_mode`, …). Use it to scope your plugin — the hook fires for every transcription, including agent-initiated ones, not just inbound voice messages. |
+
+**Return value:** a `str` replacing the transcript, or `None` to leave it unchanged. Non-string returns are ignored, as are strings that are empty after stripping — a plugin may annotate a transcript but never erase one. Results are applied in **registration order, last-writer-wins**, matching `pre_transcription`. Only the transcript is replaced; every other field of the transcription result passes through untouched.
+
+**Not fired** when transcription failed, or when it succeeded with an empty transcript. The gateway has a dedicated "empty or inaudible" path for that case, and annotating silence would defeat it.
+
+**Use cases:** Prefix an audio-analysis result the transcript itself cannot carry (speaker/mood/emotion markers), tag the speaker on a multi-speaker recording, apply a domain-specific spelling correction pass, or redact a phrase class before the text is stored.
+
+```python
+def add_speaker_marker(transcript, source, **kwargs):
+    if source != "gateway":
+        return None
+    return f"[Speaker: Marius] {transcript}"
+
+def register(ctx):
+    ctx.register_hook("post_transcription", add_speaker_marker)
+```
+
+The callback runs **synchronously on the transcription path** — a slow callback delays the voice message. For an analysis that takes real time, start the work in `pre_transcription` (which returns immediately, and runs concurrently with the STT backend) and join the result here; `file_path` is identical across the two hooks, which is what makes that pairing reliable. Hook errors are fail-open: an exception leaves the transcript unchanged and never breaks transcription.
+
+This hook does not fire on `transcribe_audio_local_fallback`, the gateway's recovery path when the configured provider fails — the same limitation `pre_transcription` has, so a start/join pair stays consistent.
 
 ---
 

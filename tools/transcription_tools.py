@@ -1495,6 +1495,83 @@ def _apply_pre_transcription_hook(
 
 
 # ---------------------------------------------------------------------------
+# post_transcription plugin hook
+# ---------------------------------------------------------------------------
+
+
+def _apply_post_transcription_hook(
+    result: Dict[str, Any],
+    *,
+    file_path: str,
+    provider: str,
+    source: Optional[str],
+) -> Dict[str, Any]:
+    """Fire the ``post_transcription`` plugin hook and merge its result.
+
+    The symmetric partner of :func:`_apply_pre_transcription_hook`: same
+    ``has_hook`` gate (so the no-hook path never builds hook kwargs), same
+    fail-open contract (any hook-plumbing error returns the transcript
+    untouched), and the same last-writer-wins composition — ``invoke_hook``
+    returns results in registration order, so the last plugin to return a
+    usable string wins.
+
+    Only fires for a successful, non-empty transcript. A failed
+    transcription has no text to annotate, and the gateway's "empty or
+    inaudible" sentinel (#41603) must keep seeing a genuinely empty
+    transcript rather than a plugin's annotation of nothing.
+
+    Only ``transcript`` is replaced; every other key in *result*
+    (``success``, ``provider``, …) is passed through untouched.
+    """
+    try:
+        transcript = result.get("transcript")
+        if not result.get("success") or not isinstance(transcript, str):
+            return result
+        if not transcript.strip():
+            return result
+
+        from hermes_cli.plugins import has_hook, invoke_hook
+
+        # No-hook short-circuit: keep the no-plugin path free of any hook
+        # kwargs construction or dispatch.
+        if not has_hook("post_transcription"):
+            return result
+
+        hook_results = invoke_hook(
+            "post_transcription",
+            file_path=file_path,
+            transcript=transcript,
+            provider=provider,
+            source=source,
+        )
+        replacement: Optional[str] = None
+        for hook_result in hook_results:
+            if not isinstance(hook_result, str):
+                logger.debug(
+                    "post_transcription hook returned non-string value %r "
+                    "— ignoring.", hook_result,
+                )
+                continue
+            if not hook_result.strip():
+                # A plugin may annotate a transcript, never erase one: an
+                # empty replacement would turn a real utterance into the
+                # gateway's "inaudible" sentinel case.
+                logger.debug(
+                    "post_transcription hook returned an empty transcript "
+                    "— ignoring."
+                )
+                continue
+            replacement = hook_result
+
+        if replacement is None:
+            return result
+        return {**result, "transcript": replacement}
+    except Exception as _hook_err:  # noqa: BLE001 — hook plumbing is fail-open
+        logger.debug("post_transcription hook error: %s", _hook_err)
+        return result
+
+
+# ---------------------------------------------------------------------------
 # Shared validation
 # ---------------------------------------------------------------------------
 
@@ -2951,7 +3028,8 @@ def _transcribe_prepared_audio(
         model:     Override the model. If None, uses config or provider default.
         source:    Optional caller-surface label (e.g. ``"gateway"``,
                    ``"voice_mode"``) forwarded to the ``pre_transcription``
-                   plugin hook for observability. Not used for dispatch.
+                   and ``post_transcription`` plugin hooks for observability.
+                   Not used for dispatch.
 
     Returns:
         dict with keys:
@@ -3012,7 +3090,16 @@ def _transcribe_prepared_audio(
             trim_cleanup_dir = os.path.dirname(trimmed)
 
     try:
-        return _dispatch_stt_provider(file_path, provider, stt_config, model, source)
+        result = _dispatch_stt_provider(file_path, provider, stt_config, model, source)
+        # post_transcription plugin hook — fires after the backend returned
+        # and BEFORE the trim/convert temp dir is removed, so a callback can
+        # still read the exact file that was transcribed. ``file_path`` here
+        # is the preprocessed path the pre_transcription hook also saw, which
+        # is what lets a plugin start work in pre_transcription and join it
+        # here. The helper short-circuits on has_hook() and is fail-open.
+        return _apply_post_transcription_hook(
+            result, file_path=file_path, provider=provider, source=source,
+        )
     finally:
         if trim_cleanup_dir:
             shutil.rmtree(trim_cleanup_dir, ignore_errors=True)
@@ -3202,8 +3289,9 @@ def transcribe_audio(
     """Safely validate, preprocess supported inputs, and dispatch transcription.
 
     ``source`` is an optional caller-surface label (e.g. ``"gateway"``,
-    ``"voice_mode"``) forwarded to the ``pre_transcription`` plugin hook for
-    observability. Not used for dispatch.
+    ``"voice_mode"``) forwarded to the ``pre_transcription`` and
+    ``post_transcription`` plugin hooks for observability. Not used for
+    dispatch.
     """
     # Refuse to feed a credential / secret store (auth.json, .env, OAuth
     # tokens, mcp-tokens/, ...) to an STT provider — before ANY validation or

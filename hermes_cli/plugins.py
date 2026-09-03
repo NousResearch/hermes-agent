@@ -260,6 +260,23 @@ VALID_HOOKS: Set[str] = {
     # read-only — attempts to change it are logged and dropped. The static
     # ``stt.prompt`` config value is the base; hook results mutate on top.
     "pre_transcription",
+    # Post-transcription transform hook — the symmetric partner of
+    # ``pre_transcription``. Fired by the STT dispatcher
+    # (tools.transcription_tools.transcribe_audio) AFTER a backend returned
+    # a successful, non-empty transcript and BEFORE that transcript is
+    # handed back to the caller (gateway message enrichment, voice mode,
+    # desktop upload), so a replacement reaches the persisted message text
+    # rather than only the model's per-turn context. Callbacks receive
+    # keyword args:
+    #   file_path, transcript, provider, source
+    # and may return a replacement ``str`` or None (unchanged). Results are
+    # applied in registration order, last-writer-wins — same composition
+    # rule as ``pre_transcription``. Non-string returns and strings that are
+    # empty after stripping are ignored, so a plugin cannot erase a
+    # transcript the backend actually produced. Never fired for failed or
+    # empty transcriptions: the gateway's "empty or inaudible" sentinel path
+    # (#41603) must keep seeing a genuinely empty transcript.
+    "post_transcription",
     # Kanban task lifecycle hooks. Fired by hermes_cli.kanban_db when a task
     # transitions state, AFTER the change is committed to the board DB (so the
     # hook always sees durable state and a slow plugin can never hold the

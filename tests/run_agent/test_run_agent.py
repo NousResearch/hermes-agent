@@ -4401,6 +4401,19 @@ class TestRunConversation:
         unpunctuated = SimpleNamespace(content="Based on the results the best next step is to update the config", tool_calls=None)
         assert agent._should_treat_stop_as_truncated("stop", unpunctuated, [{"role": "tool", "content": "r"}]) is False
 
+    def test_ollama_com_path_decoy_is_not_treated_as_ollama_cloud(self, agent):
+        """A self-hosted base_url with "ollama.com" appearing in the PATH
+        (not the actual hostname) must not be misclassified as Ollama Cloud
+        — a raw substring match would wrongly disable the truncation
+        workaround for a real local/internal Ollama install whose URL
+        happens to contain that substring."""
+        self._setup_agent(agent)
+        agent.base_url = "https://internal-proxy.example.net/ollama.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "glm-4-9b"
+        unpunctuated = SimpleNamespace(content="Based on the results the best next step is to update the config", tool_calls=None)
+        assert agent._should_treat_stop_as_truncated("stop", unpunctuated, [{"role": "tool", "content": "r"}]) is True
+
     def test_length_thinking_exhausted_skips_continuation(self, agent):
         """When finish_reason='length' but content is only thinking, skip retries."""
         self._setup_agent(agent)

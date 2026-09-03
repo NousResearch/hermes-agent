@@ -1901,8 +1901,13 @@ class AIAgent:
             return False
         base = self._base_url_lower
         # Ollama Cloud (hosted service or :cloud proxy) forwards finish_reason
-        # faithfully — do not rewrite.
-        if "ollama.com" in base or ":cloud" in model_lower:
+        # faithfully — do not rewrite. Hostname-exact check (mirrors the
+        # sibling ollama.com check further down this file): a raw substring
+        # match would let a self-hosted base_url that merely contains
+        # "ollama.com" somewhere (an internal proxy hostname, a path
+        # segment) get misclassified as the cloud service, silently
+        # disabling this workaround for a real local Ollama GLM install.
+        if base_url_host_matches(base, "ollama.com") or ":cloud" in model_lower:
             return False
         if "ollama" in base or ":11434" in base:
             return True

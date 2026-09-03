@@ -9,6 +9,7 @@ covered in ``test_shell_hooks_consent.py``.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -686,6 +687,20 @@ class TestEvaluateResult:
 
 
 class TestFailSemanticsEndToEnd:
+    def test_fail_closed_crashed_process_blocks(self, tmp_path):
+        script = _write_script(
+            tmp_path, "crash.py", 'raise RuntimeError("hook crashed")\n',
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call",
+            command=f'"{sys.executable}" "{script}"',
+            fail_closed=True,
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="terminal", args={"command": "rm -rf /"})
+        assert result is not None and result["action"] == "block"
+        assert "hook exited 1 with no directive" in result["message"]
+
     def test_exit_2_script_blocks(self, tmp_path):
         script = _write_script(
             tmp_path, "exit2.sh",

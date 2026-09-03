@@ -92,6 +92,8 @@ The model-facing tool description belongs in `schema["description"]`. The option
 
 Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
 
+Private general-plugin repositories can also be discovered without copying them into `~/.hermes/plugins/`. Add either a directory that contains multiple plugin folders or a direct single-plugin checkout with a root `plugin.yaml` to `plugins.extra_paths` in `~/.hermes/config.yaml`. Relative entries resolve from `~/.hermes` (or the active profile home), never from the process working directory. External plugins appear in `hermes plugins list` and can be activated with `hermes plugins enable <key>`, but they still require `plugins.enabled` before their code runs. When multiple external roots provide the same enabled plugin key, the later configured root wins and Hermes logs both sources. `extra_paths` is consumed only by the general `PluginManager`; it does not extend the independent memory, context-engine, model-provider, or dashboard-asset discovery roots.
+
 ## What plugins can do
 
 Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
@@ -126,10 +128,11 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Bundled | `<repo>/plugins/` | Ships with Hermes — see [Built-in Plugins](/user-guide/features/built-in-plugins) |
 | User | `~/.hermes/plugins/` | Personal plugins |
 | Project | `.hermes/plugins/` | Project-specific plugins (requires `HERMES_ENABLE_PROJECT_PLUGINS=true`) |
+| External | `plugins.extra_paths` | Private general-plugin repo checkouts or plugin collections |
 | pip | `hermes_agent.plugins` entry_points | Distributed packages |
 | Nix | `services.hermes-agent.extraPlugins` / `extraPythonPackages` | NixOS declarative installs — see [Nix Setup](/getting-started/nix-setup#plugins) |
 
-Later sources override earlier ones on name collision, so a user plugin with the same name as a bundled plugin replaces it.
+Later opt-in sources replace earlier plugins on key collision only when the later plugin is explicitly enabled. Merely discovering external code never suppresses an active bundled backend or platform.
 
 ### Plugin sub-categories
 
@@ -152,6 +155,9 @@ User plugins at `~/.hermes/plugins/model-providers/<name>/` and `~/.hermes/plugi
 
 ```yaml
 plugins:
+  extra_paths:
+    - ~/src/hermes-private-plugin   # direct checkout with plugin.yaml
+    - ~/src/hermes-private-plugins  # collection containing <name>/plugin.yaml
   enabled:
     - my-tool-plugin
     - disk-cleanup

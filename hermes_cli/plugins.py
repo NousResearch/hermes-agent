@@ -2,7 +2,7 @@
 Hermes Plugin System
 ====================
 
-Discovers, loads, and manages plugins from four sources:
+Discovers, loads, and manages plugins from five sources:
 
 1. **Bundled plugins** – ``<repo>/plugins/<name>/`` (shipped with hermes-agent;
    ``memory/`` and ``context_engine/`` subdirs are excluded — they have their
@@ -10,11 +10,15 @@ Discovers, loads, and manages plugins from four sources:
 2. **User plugins**   – ``~/.hermes/plugins/<name>/``
 3. **Project plugins** – ``./.hermes/plugins/<name>/`` (opt-in via
    ``HERMES_ENABLE_PROJECT_PLUGINS``)
-4. **Pip plugins**     – packages that expose the ``hermes_agent.plugins``
+4. **External plugin paths** – general PluginManager plugins listed in
+   ``plugins.extra_paths``. Specialized plugin categories keep their own
+   documented discovery locations.
+5. **Pip plugins**     – packages that expose the ``hermes_agent.plugins``
    entry-point group.
 
-Later sources override earlier ones on name collision, so a user or project
-plugin with the same name as a bundled plugin replaces it.
+Later sources can replace earlier discovered plugins only after the later
+plugin is explicitly enabled, so discovering an external path cannot
+suppress an active bundled/user plugin by itself.
 
 Each directory plugin must contain a ``plugin.yaml`` manifest **and** an
 ``__init__.py`` with a ``register(ctx)`` function.
@@ -674,6 +678,59 @@ def _get_enabled_plugins() -> Optional[set]:
         return set(enabled)
     except Exception:
         return None
+
+
+def _get_extra_plugin_paths() -> List[Path]:
+    """Read additional general-plugin discovery roots from config.
+
+    ``plugins.extra_paths`` may be a path string or a YAML list of path
+    strings. Each entry may be either a collection directory containing
+    plugin subdirectories or a direct plugin checkout containing a root
+    ``plugin.yaml``. Relative entries resolve from the active Hermes home.
+    """
+    paths: List[Path] = []
+
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        plugins_cfg = config.get("plugins")
+        if isinstance(plugins_cfg, dict):
+            raw_config = plugins_cfg.get("extra_paths", [])
+            if isinstance(raw_config, str):
+                if raw_config.strip():
+                    paths.append(Path(raw_config.strip()).expanduser())
+            elif isinstance(raw_config, list):
+                for item in raw_config:
+                    if isinstance(item, str) and item.strip():
+                        paths.append(Path(item).expanduser())
+            elif raw_config not in (None, []):
+                logger.warning(
+                    "plugins.extra_paths must be a path string or list of path strings; got %s",
+                    type(raw_config).__name__,
+                )
+    except Exception:
+        pass
+
+    deduped: List[Path] = []
+    seen: Set[str] = set()
+    for path in paths:
+        try:
+            if not path.is_absolute():
+                path = get_hermes_home() / path
+            path = path.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            logger.warning(
+                "Could not resolve configured plugin extra path %s: %s",
+                path,
+                exc,
+            )
+            continue
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
 
 
 # ---------------------------------------------------------------------------
@@ -4359,13 +4416,6 @@ class PluginManager:
         logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
         manifests.extend(ep_manifests)
 
-        # Load each manifest (skip user-disabled plugins).
-        # Later sources override earlier ones on key collision — user
-        # plugins take precedence over bundled, project plugins take
-        # precedence over user. Dedup here so we only load the final
-        # winner. Keys are path-derived (``image_gen/openai``,
-        # ``disk-cleanup``) so ``tts/openai`` and ``image_gen/openai``
-        # don't collide even when both manifests say ``name: openai``.
         disabled = _get_disabled_plugins()
         enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
         stale_relay_keys = legacy_relay_plugin_keys(enabled)
@@ -4376,9 +4426,58 @@ class PluginManager:
                 ", ".join(stale_relay_keys),
                 RELAY_PLUGINS_CONFIG_ENV,
             )
+
+        # Load each manifest (skip user-disabled plugins). Later sources can
+        # override earlier ones on key collision only after the later plugin is
+        # explicitly enabled. This preserves the opt-in execution boundary:
+        # merely discovering an external/user/project plugin must not hide or
+        # replace an earlier bundled backend/platform. Keys are path-derived
+        # (``image_gen/openai``, ``disk-cleanup``) so ``tts/openai`` and
+        # ``image_gen/openai`` do not collide even when both manifests say
+        # ``name: openai``.
         winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
-            winners[manifest.key or manifest.name] = manifest
+            lookup_key = manifest.key or manifest.name
+            is_disabled = lookup_key in disabled or manifest.name in disabled
+            is_enabled = (
+                enabled is not None
+                and (lookup_key in enabled or manifest.name in enabled)
+            )
+            requires_opt_in = not (
+                manifest.kind in {"exclusive", "model-provider"}
+                or (
+                    manifest.source == "bundled"
+                    and manifest.kind in {"backend", "platform"}
+                )
+            )
+            if (
+                lookup_key in winners
+                and requires_opt_in
+                and not is_enabled
+                and not is_disabled
+            ):
+                logger.debug(
+                    "Discovered plugin '%s' from %s but not replacing earlier "
+                    "manifest because it is not enabled",
+                    lookup_key,
+                    manifest.source,
+                )
+                continue
+            previous = winners.get(lookup_key)
+            if (
+                previous is not None
+                and previous.source == "external"
+                and manifest.source == "external"
+                and is_enabled
+            ):
+                logger.warning(
+                    "multiple enabled plugin sources provide key '%s'; "
+                    "the later configured source wins: %s -> %s",
+                    lookup_key,
+                    previous.path,
+                    manifest.path,
+                )
+            winners[lookup_key] = manifest
         # Standalone/user plugins that pass the gates below are collected
         # here and loaded AFTER the sweep in dependency-respecting order
         # (requires_plugins topological sort, #64165).
@@ -4598,6 +4697,20 @@ class PluginManager:
                 "Project plugins disabled (set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)"
             )
 
+        # 4. External general-plugin paths configured in config.yaml. These
+        # are part of general PluginManager discovery only; independent
+        # memory/context-engine/model-provider/dashboard loaders keep their
+        # own roots.
+        for external_path in _get_extra_plugin_paths():
+            logger.debug("Scanning external plugin path: %s", external_path)
+            external_manifests = self._scan_external_path(external_path)
+            logger.debug(
+                "  external %s: %d manifest(s)",
+                external_path,
+                len(external_manifests),
+            )
+            manifests.extend(external_manifests)
+
         return manifests
 
     def has_enabled_portable_mcp(self, raw_config: Mapping[str, Any]) -> bool:
@@ -4684,6 +4797,53 @@ class PluginManager:
         return self._scan_directory_level(
             path, source, skip_names=skip_names, prefix="", depth=0
         )
+
+    def _scan_external_path(self, path: Path) -> List[PluginManifest]:
+        """Scan an externally configured general-plugin path.
+
+        External paths intentionally accept two shapes:
+
+        * ``/path/to/plugins/`` containing ``<name>/plugin.yaml`` children.
+        * ``/path/to/plugin-checkout/`` containing a root ``plugin.yaml``.
+        """
+        if not path.is_dir():
+            logger.warning(
+                "Configured plugin extra path does not exist or is not a directory: %s",
+                path,
+            )
+            return []
+        try:
+            manifest_file = path / "plugin.yaml"
+            if not manifest_file.exists():
+                manifest_file = path / "plugin.yml"
+            if manifest_file.exists():
+                manifest = self._parse_manifest(
+                    manifest_file,
+                    path,
+                    source="external",
+                    prefix="",
+                )
+                if manifest is not None and manifest.kind in {"exclusive", "model-provider"}:
+                    logger.warning(
+                        "Skipping external plugin '%s': kind '%s' uses an independent "
+                        "discovery root and is not supported by plugins.extra_paths",
+                        manifest.name,
+                        manifest.kind,
+                    )
+                    return []
+                return [manifest] if manifest is not None else []
+            return self._scan_directory(
+                path,
+                source="external",
+                skip_names={"memory", "context_engine", "model-providers"},
+            )
+        except OSError as exc:
+            logger.warning(
+                "Could not scan configured plugin extra path %s: %s",
+                path,
+                exc,
+            )
+            return []
 
     def _scan_directory_level(
         self,
@@ -5280,7 +5440,7 @@ class PluginManager:
             preloaded = self._predeclared_modules.pop(plugin_key, None)
             if preloaded is not None:
                 module = preloaded
-            elif manifest.source in {"user", "project", "bundled"}:
+            elif manifest.source in {"user", "project", "bundled", "external"}:
                 module = self._load_directory_module(
                     manifest, module_name=_module_name
                 )

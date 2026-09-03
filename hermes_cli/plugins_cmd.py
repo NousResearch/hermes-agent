@@ -1880,13 +1880,51 @@ def _discover_all_plugins() -> list:
     # and model-providers/ — model providers load through the dedicated
     # provider registry (providers/__init__.py), not the general PluginManager
     # opt-in surface, so listing them as toggleable plugins is misleading.
-    from hermes_cli.plugins import get_bundled_plugins_dir
+    from hermes_cli.plugins import _env_enabled, get_bundled_plugins_dir
     repo_plugins = get_bundled_plugins_dir()
     for base, source, skip in (
         (repo_plugins, "bundled", {"memory", "context_engine", "model-providers"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)
+
+    if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
+        _scan_level(
+            Path.cwd() / ".hermes" / "plugins",
+            "project",
+            set(),
+            "",
+            0,
+            seen,
+        )
+
+    # Configured external roots support either a collection directory or a
+    # direct checkout containing a root plugin.yaml. Keep this control-plane
+    # view aligned with PluginManager so list/enable/disable can address the
+    # same external plugins the runtime sees.
+    from hermes_cli.plugins import PluginManager, _get_extra_plugin_paths
+    external_scanner = PluginManager()
+    enabled = _get_enabled_set()
+    disabled = _get_disabled_set()
+    for external_root in _get_extra_plugin_paths():
+        for manifest in external_scanner._scan_external_path(external_root):
+            key = manifest.key or manifest.name
+            selected = (
+                key in enabled
+                or manifest.name in enabled
+                or key in disabled
+                or manifest.name in disabled
+            )
+            if key in seen and not selected:
+                continue
+            seen[key] = (
+                manifest.name,
+                manifest.version,
+                manifest.description,
+                "external",
+                Path(manifest.path) if manifest.path else external_root,
+                key,
+            )
 
     # Entry-point plugins (installed as Python packages; no plugin directory).
     for name, version, description, path in _discover_entrypoint_plugins():

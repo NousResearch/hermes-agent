@@ -14,6 +14,7 @@ import { resolveTerminalConnectionForSender } from './connection-apply'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { buildInteractiveSshArgs } from './ssh-connection'
 import { createTerminalOutputGate } from './terminal-output-gate'
+import { applyWindowsMsysBashEnvDefaults } from './terminal-msys-env'
 import { buildWindowsInteractiveCommand } from './windows-remote-lifecycle'
 
 export interface TerminalIpcDeps {
@@ -165,6 +166,8 @@ export function registerTerminalIpc({
     // GUI (build_environment_hints surfaces this). Distinct from HERMES_DESKTOP,
     // which marks the agent *backend* and gates cron/gateway behavior.
     env.HERMES_DESKTOP_TERMINAL = '1'
+    // Prevent MSYS-family shells from rewriting native Windows arguments.
+    applyWindowsMsysBashEnvDefaults(env, process.platform === 'win32')
 
     return env
   }

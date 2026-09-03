@@ -2603,8 +2603,8 @@ def write_json(obj: dict) -> bool:
 
     Every routed event frame is stamped with a per-session monotonic
     ``seq`` and recorded in the bounded replay ring (tui_gateway.event_replay)
-    so a WS client can resume losslessly after a reconnect via
-    ``session.events.since``.
+    so a WS client can request best-effort recovery of retained events after a
+    reconnect via ``session.events.since``.
     """
     if obj.get("method") == "event":
         params = obj.get("params")

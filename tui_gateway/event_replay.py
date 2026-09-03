@@ -4,7 +4,9 @@ Every gateway event frame that flows through :func:`server.write_json` (and
 therefore ``_emit``) is stamped with a per-session monotonic ``seq`` and
 appended to a small ring buffer keyed by session id. A reconnecting client
 calls the ``session.events.since`` RPC with its last observed seq; the server
-replays everything newer from the buffer, then live events resume seamlessly.
+returns newer events that remain in the bounded buffer, then live delivery
+continues. Clients must reconcile authoritative history when the ring is
+truncated, absent, or otherwise cannot prove a complete gap recovery.
 
 Design constraints honored:
 - stdio TUI path unaffected: frames gain a ``seq`` field only on event frames;

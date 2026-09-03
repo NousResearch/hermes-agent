@@ -38,6 +38,8 @@ hermes acp --setup          # interactive provider/model setup for ACP terminal 
 
 `tui_gateway/server.py` is the protocol the Ink TUI (`hermes --tui`) and the embedded dashboard PTY bridge talk to. Any external host can speak the same protocol over stdio (or WebSocket via `tui_gateway/ws.py`).
 
+Stdio uses newline-delimited JSON. Each WebSocket text message instead carries one complete JSON-RPC object; do not split or join WebSocket messages on newlines.
+
 ### Method catalog (selected)
 
 ```
@@ -74,7 +76,7 @@ On a successful truncating submit against a durable session, the `prompt.submit`
 
 ### Events streamed back
 
-`message.delta`, `message.complete`, `tool.start`, `tool.progress`, `tool.complete`, `approval.request`, `clarify.request`, `sudo.request`, `sudo.expire`, `secret.request`, `secret.expire`, `gateway.ready`, plus session lifecycle and error events. Expiry events carry the original `{ request_id }`; external hosts should clear only the matching pending prompt.
+`message.delta`, `message.complete`, `tool.start`, `tool.generating`, `tool.output_risk`, `tool.complete`, `approval.request`, `clarify.request`, `sudo.request`, `sudo.expire`, `secret.request`, `secret.expire`, `gateway.ready`, plus session lifecycle and error events. The separate REST/SSE API emits `tool.progress` and `hermes.tool.progress`; the current Python TUI gateway instead emits `tool.generating` and `tool.output_risk` and has no `tool.progress` producer. Expiry events carry the original `{ request_id }`; external hosts should clear only the matching pending prompt.
 
 ### Pi-style RPC mapping
 

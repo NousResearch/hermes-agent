@@ -7,9 +7,10 @@ web client over WebSocket.
 
 Wire protocol
 -------------
-Identical to stdio: newline-delimited JSON-RPC in both directions. The server
-emits a ``gateway.ready`` event immediately after connection accept, then
-echoes responses/events for inbound requests. No framing differences.
+The JSON-RPC schema matches stdio, but framing differs: each WebSocket text
+message carries one JSON-RPC object, while stdio uses newline-delimited JSON.
+The server emits a ``gateway.ready`` event immediately after connection
+accept, then sends responses/events as individual text messages.
 
 Mounting
 --------

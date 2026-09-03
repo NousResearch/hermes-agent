@@ -436,9 +436,10 @@ def _serialize_payload(
     """Render the POST body.  Same top-level shape as shell hooks' stdin
     (documented in :mod:`agent.shell_hooks`), plus delivery metadata.
 
-    ``delivery_id`` is shared with the ``X-Hermes-Delivery`` header so
-    receivers can dedupe on either — and since it (plus ``timestamp``)
-    lives inside the HMAC-signed body, it doubles as replay protection.
+    When signed, ``delivery_id`` and ``timestamp`` give receivers
+    authenticated inputs for deduplication and freshness checks. Receivers
+    must enforce both and must compare the unsigned event and delivery
+    headers with their signed body values.
     """
     extras = {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS}
     try:

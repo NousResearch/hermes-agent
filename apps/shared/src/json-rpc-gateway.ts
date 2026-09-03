@@ -108,7 +108,7 @@ export class JsonRpcGatewayClient {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private heartbeatSequence = 0
   private lastInboundAt = 0
-  /** Last observed event seq per session_id — drives lossless reconnect replay. */
+  /** Last observed event seq per session_id — drives bounded best-effort reconnect replay. */
   private lastSeenSeq = new Map<string, number>()
   /** Set while a post-reconnect replay fetch is in flight (dedup guard). */
   private replayInFlight = false

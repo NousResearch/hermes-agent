@@ -1892,6 +1892,13 @@ Each firing POSTs a JSON body with the same top-level shape as shell hooks' stdi
 }
 ```
 
+For `pre_approval_request`, the ordinary gateway approval path places its
+approval context under `extra`, but does not include the approval queue's
+`request_id`. Treat that webhook as a notification: reconnect and reattach or
+resume the relevant session (using `extra.session_key` when necessary), call
+`approval.pending` for the authoritative pending record and `request_id`, and
+only then call `approval.respond`.
+
 Headers:
 
 | Header | Value |
@@ -1911,9 +1918,10 @@ def verify(body: bytes, header: str, secret: str) -> bool:
     return hmac.compare_digest(expected, header)
 ```
 
-Because `delivery_id` and `timestamp` live **inside the signed body**, a verified receiver also gets replay protection for free:
+Because `delivery_id` and `timestamp` live **inside the signed body**, a verified receiver has authenticated inputs with which to implement replay protection. Replay protection is not automatic; the receiver must:
 
-- **Dedupe** on `delivery_id` (or the matching `X-Hermes-Delivery` header) — remember recently seen ids and skip duplicates. Hermes retries failed deliveries once, so the same id can legitimately arrive twice.
+- **Match the headers to the signed body** — require `X-Hermes-Event` to equal the authenticated body's `hook_event_name` and `X-Hermes-Delivery` to equal its `delivery_id`; the HMAC covers the body, not the headers.
+- **Dedupe** on the signed body's `delivery_id` — remember recently seen ids and skip duplicates. Hermes retries failed deliveries once, so the same id can legitimately arrive twice.
 - **Reject stale events** by checking `timestamp` against your clock with a tolerance window (5 minutes is the common default). An attacker replaying a captured request can't forge a fresh timestamp without the secret.
 
 ### Delivery semantics

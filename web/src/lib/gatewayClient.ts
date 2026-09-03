@@ -1,10 +1,10 @@
 /**
  * Browser WebSocket client for the tui_gateway JSON-RPC protocol.
  *
- * Speaks the exact same newline-delimited JSON-RPC dialect that the Ink TUI
- * drives over stdio. The server-side transport abstraction
- * (tui_gateway/transport.py + ws.py) routes the same dispatcher's writes
- * onto either stdout or a WebSocket depending on how the client connected.
+ * Speaks the same JSON-RPC schema that the Ink TUI drives over stdio, with
+ * transport-specific framing: each WebSocket text message carries one object,
+ * while stdio is newline-delimited. The server transport abstraction routes
+ * the same dispatcher's writes onto the appropriate connection.
  *
  *   const gw = new GatewayClient()
  *   await gw.connect()

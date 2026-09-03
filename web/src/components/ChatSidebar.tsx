@@ -43,8 +43,8 @@ import {
   eventsReconnectDelayMs,
   eventsReconnectingMessage,
   eventsRejectedMessage,
-  isEventsAuthRejection,
   isEventsFeedMessage,
+  isEventsRejection,
   shouldRetryEventsClose,
 } from "@/lib/events-reconnect";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
@@ -382,7 +382,11 @@ export function ChatSidebar({
         if (maybeReloadForLoopbackWsAuthFailure(ev.code)) {
           return;
         }
-        if (isEventsAuthRejection(ev.code)) {
+        if (isEventsRejection(ev.code)) {
+          // 4401/4403 and the other 44xx policy codes: the server accepted
+          // the upgrade only to close with the reason; retrying the same
+          // request cannot succeed and would loop (the `open` above resets
+          // `attempt`), so stop here and tell the user.
           surface(eventsRejectedMessage(ev.code));
           return;
         }

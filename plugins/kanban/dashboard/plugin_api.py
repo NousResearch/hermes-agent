@@ -2982,7 +2982,16 @@ async def stream_events(ws: WebSocket):
     # Authorization on a WS upgrade, so the credential rides in the query
     # string — the browser SDK's buildWsUrl() assembles it.
     if not _ws_upgrade_authorized(ws):
-        await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
+        # Accept, then close: a close issued before accept() is answered by
+        # uvicorn with a bare HTTP 403 and no close frame, so the browser sees
+        # 1006 and the dashboard's "1008 → auth failed, reload" branch never
+        # runs (it just backs off and retries forever). Same rule as
+        # hermes_cli.web_server._ws_reject.
+        try:
+            await ws.accept()
+            await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
+        except (WebSocketDisconnect, OSError):
+            pass
         return
     await ws.accept()
 

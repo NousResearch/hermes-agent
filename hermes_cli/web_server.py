@@ -5770,10 +5770,10 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                chunked API — the client uses the POST endpoint instead.
     """
     if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
+        await _ws_reject(ws, 4401)
         return
     if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
     await ws.accept()
 
@@ -17078,6 +17078,27 @@ def _ws_close_reason(text: str) -> str:
         return text
     return encoded[:120].decode("utf-8", "ignore") + "..."
 
+async def _ws_reject(ws: "WebSocket", code: int, reason: str = "") -> None:
+    """Application-level rejection that the client can actually observe.
+
+    A ``ws.close()`` issued *before* ``ws.accept()`` never reaches the peer as
+    a close frame: uvicorn answers the upgrade with a bare HTTP 403 instead
+    (websockets_impl / wsproto_impl / websockets_sansio_impl all do this), so
+    a browser sees ``close code=1006 reason=""`` and the app-level codes the
+    dashboard keys on (4401 auth, 4403 host/origin, 4404 chat disabled, ...)
+    are lost. Complete the handshake first, then close with the code — the
+    only frames on the wire are the handshake and the close.
+
+    Every caller must ``return`` right after this; nothing is registered,
+    subscribed, or read on a rejected socket. Peer-gone errors are expected
+    here and swallowed; anything else propagates.
+    """
+    try:
+        await ws.accept()
+        await ws.close(code=code, reason=reason)
+    except (WebSocketDisconnect, OSError):
+        return
+
 
 # ---------------------------------------------------------------------------
 # /api/console — safe Hermes Console command WebSocket.
@@ -17300,7 +17321,7 @@ async def console_ws(ws: WebSocket) -> None:
 
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         _log.info("console refused: embedded chat disabled peer=%s", peer)
-        await ws.close(code=4404, reason="embedded chat disabled")
+        await _ws_reject(ws, 4404, reason="embedded chat disabled")
         return
 
     auth_reason, cred = _ws_auth_reason(ws)
@@ -17310,19 +17331,19 @@ async def console_ws(ws: WebSocket) -> None:
             "console auth rejected reason=%s mode=%s cred=%s peer=%s",
             auth_reason, mode, cred, peer,
         )
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
+        await _ws_reject(ws, 4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
         return
 
     host_origin_reason = _ws_host_origin_reason(ws)
     if host_origin_reason is not None:
         _log.warning("console refused: %s peer=%s", host_origin_reason, peer)
-        await ws.close(code=4403, reason=_ws_close_reason(host_origin_reason))
+        await _ws_reject(ws, 4403, reason=_ws_close_reason(host_origin_reason))
         return
 
     client_reason = _ws_client_reason(ws)
     if client_reason is not None:
         _log.warning("console refused: %s", client_reason)
-        await ws.close(code=4408, reason=_ws_close_reason(client_reason))
+        await _ws_reject(ws, 4408, reason=_ws_close_reason(client_reason))
         return
 
     await ws.accept()
@@ -17650,11 +17671,11 @@ async def pty_ws(ws: WebSocket) -> None:
 
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         _log.info("pty refused: embedded chat disabled peer=%s", peer)
-        await ws.close(code=4404, reason="embedded chat disabled")
+        await _ws_reject(ws, 4404, reason="embedded chat disabled")
         return
 
-    # --- auth + host/origin/peer check (before accept so we can close
-    #     cleanly AND tell the client WHY via the close code + reason).
+    # --- auth + host/origin/peer check. Rejections go through _ws_reject()
+    #     so the client actually receives the close code + reason.
     #     Each gate maps to a distinct close code so the log and the
     #     browser banner agree on the cause:
     #       4401 bad credential   4403 host/origin mismatch
@@ -17666,19 +17687,19 @@ async def pty_ws(ws: WebSocket) -> None:
             "pty auth rejected reason=%s mode=%s cred=%s peer=%s",
             auth_reason, mode, cred, peer,
         )
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
+        await _ws_reject(ws, 4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
         return
 
     host_origin_reason = _ws_host_origin_reason(ws)
     if host_origin_reason is not None:
         _log.warning("pty refused: %s peer=%s", host_origin_reason, peer)
-        await ws.close(code=4403, reason=_ws_close_reason(host_origin_reason))
+        await _ws_reject(ws, 4403, reason=_ws_close_reason(host_origin_reason))
         return
 
     client_reason = _ws_client_reason(ws)
     if client_reason is not None:
         _log.warning("pty refused: %s", client_reason)
-        await ws.close(code=4408, reason=_ws_close_reason(client_reason))
+        await _ws_reject(ws, 4408, reason=_ws_close_reason(client_reason))
         return
 
     await ws.accept()
@@ -17842,6 +17863,13 @@ async def pty_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
+    # Deliberately still close-before-accept (HTTP 403 to the client, no
+    # close code): JsonRpcGatewayClient.connect() resolves on `open`, and the
+    # desktop boot path treats a resolved connect() as a usable gateway
+    # (use-gateway-boot.ts). Rejecting after accept here would let boot
+    # complete on a socket that is already closed. Switch this endpoint to
+    # _ws_reject() together with the client change that settles connect() on
+    # the first frame (gateway.ready) instead of `open`.
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         await ws.close(code=4403)
         return
@@ -17882,20 +17910,20 @@ async def gateway_ws(ws: WebSocket) -> None:
 @app.websocket("/api/pub")
 async def pub_ws(ws: WebSocket) -> None:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
 
     if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
+        await _ws_reject(ws, 4401)
         return
 
     if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
 
     channel = _channel_or_close_code(ws)
     if not channel:
-        await ws.close(code=4400)
+        await _ws_reject(ws, 4400)
         return
 
     await ws.accept()
@@ -17910,20 +17938,20 @@ async def pub_ws(ws: WebSocket) -> None:
 @app.websocket("/api/events")
 async def events_ws(ws: WebSocket) -> None:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
 
     if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
+        await _ws_reject(ws, 4401)
         return
 
     if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
 
     channel = _channel_or_close_code(ws)
     if not channel:
-        await ws.close(code=4400)
+        await _ws_reject(ws, 4400)
         return
 
     await ws.accept()

@@ -180,6 +180,8 @@ COPY package.json package-lock.json ./
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
+# thinking-orbs is a file: workspace member (ui-tui/vendor/thinking-orbs).
+COPY ui-tui/vendor/thinking-orbs/ ui-tui/vendor/thinking-orbs/
 # apps/shared/ is copied IN FULL because web/package.json references it as a
 # `file:` workspace dependency (same pattern as hermes-ink above).
 COPY apps/shared/ apps/shared/

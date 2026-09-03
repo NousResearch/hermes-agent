@@ -330,6 +330,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // The gateway publishes voice.status + voice.transcript events that
   // createGatewayEventHandler turns into UI badges and composer injection.
   const voiceRecordToggle = () => {
+    if (voice.realtimeActive) {
+      voice.stopRealtime()
+      return
+    }
+
     if (!voice.enabled) {
       return actions.sys('voice: mode is off — enable with /voice on')
     }

@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { isSessionBusyError, markSubmitting, submitPrompt, type SubmitPromptDeps } from '../app/submissionCore.js'
+import {
+  isSessionBusyError,
+  markSubmitting,
+  submitDelegatedPrompt,
+  submitPrompt,
+  type SubmitPromptDeps
+} from '../app/submissionCore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 
@@ -147,6 +153,50 @@ describe('submissionCore.submitPrompt — literal submissions (startup -q querie
     await Promise.resolve()
 
     expect(submitted).toEqual(['/model $(rm -rf ~)'])
+  })
+})
+
+describe('submissionCore.submitDelegatedPrompt', () => {
+  beforeEach(() => {
+    resetUiState()
+    patchUiState({ sid: 'sess-1' })
+  })
+
+  it.each(['!rm -rf /', '/quit', 'inspect ${HOME}/secrets', 'search weather\nthen summarize'])(
+    'submits provider text literally to the owning session: %s',
+    async text => {
+      const { gw } = makeDeferredGateway()
+      const appendMessage = vi.fn()
+
+      await submitDelegatedPrompt(text, 'sess-1', { appendMessage, gw })
+
+      expect(gw.request).toHaveBeenCalledTimes(1)
+      expect(gw.request).toHaveBeenCalledWith('prompt.submit', {
+        session_id: 'sess-1',
+        text
+      })
+      expect(appendMessage).toHaveBeenCalledWith({ role: 'user', text })
+      expect(getUiState().busy).toBe(true)
+    }
+  )
+
+  it('rejects delegation while the session is already busy', async () => {
+    const { gw } = makeDeferredGateway()
+    patchUiState({ busy: true })
+
+    await expect(submitDelegatedPrompt('/quit', 'sess-1', { appendMessage: vi.fn(), gw })).rejects.toThrow(
+      'already running'
+    )
+    expect(gw.request).not.toHaveBeenCalled()
+  })
+
+  it('rejects delegation after the owning session changes', async () => {
+    const { gw } = makeDeferredGateway()
+
+    await expect(
+      submitDelegatedPrompt('inspect repository', 'sess-old', { appendMessage: vi.fn(), gw })
+    ).rejects.toThrow('session changed')
+    expect(gw.request).not.toHaveBeenCalled()
   })
 })
 

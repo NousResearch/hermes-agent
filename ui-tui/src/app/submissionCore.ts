@@ -18,6 +18,11 @@ export interface SubmitPromptDeps {
   sys: (text: string) => void
 }
 
+export interface SubmitDelegatedPromptDeps {
+  appendMessage: (msg: Msg) => void
+  gw: GatewayClient
+}
+
 // Optimistically flip the session to busy the INSTANT a prompt is accepted for
 // submission — synchronously, before we await anything.
 //
@@ -36,6 +41,50 @@ export interface SubmitPromptDeps {
 // submit, queue-edit picks, and the drain effect all funnel through here.
 export function markSubmitting(): void {
   patchUiState({ busy: true, status: 'running…' })
+}
+
+/**
+ * Submit a realtime provider's client-delegation request to the current Hermes
+ * session without interpreting it as a TUI command. The gateway session remains
+ * the sole owner of profile credentials, memory, tools, and authorization.
+ */
+export async function submitDelegatedPrompt(
+  text: string,
+  sessionId: string,
+  deps: SubmitDelegatedPromptDeps
+): Promise<void> {
+  const live = getUiState()
+
+  if (live.sid !== sessionId) {
+    throw new Error('Hermes session changed before the delegated request could start.')
+  }
+
+  if (live.busy) {
+    throw new Error('A Hermes text-agent request is already running.')
+  }
+
+  turnController.clearStatusTimer()
+  turnController.bufRef = ''
+  turnController.interrupted = false
+  deps.appendMessage({ role: 'user', text })
+  markSubmitting()
+
+  try {
+    const result = await deps.gw.request<PromptSubmitResponse>('prompt.submit', {
+      session_id: sessionId,
+      text
+    })
+
+    if (result?.voice_stopped) {
+      throw new Error('The delegated request was consumed as a voice stop phrase.')
+    }
+  } catch (error) {
+    if (getUiState().sid === sessionId) {
+      patchUiState({ busy: false, status: 'ready' })
+    }
+
+    throw error
+  }
 }
 
 // Submit a ready prompt (already resolved to be neither a slash command nor a

@@ -1,0 +1,52 @@
+{
+  "name": "thinking-orbs",
+  "version": "0.3.1",
+  "description": "Dotted thought-orb loading indicators for AI & agent UIs — nine tuned states, two sizes, auto dark/light",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.es.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.es.js"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./engine": {
+      "import": {
+        "types": "./dist/engine/index.d.ts",
+        "default": "./dist/engine.es.js"
+      },
+      "require": {
+        "types": "./dist/engine/index.d.ts",
+        "default": "./dist/engine.cjs"
+      }
+    },
+    "./tui": {
+      "import": {
+        "types": "./dist/tui/index.d.ts",
+        "default": "./dist/tui.es.js"
+      },
+      "require": {
+        "types": "./dist/tui/index.d.ts",
+        "default": "./dist/tui.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "peerDependencies": {
+    "react": ">=18.0.0"
+  },
+  "author": "Jakub Antalik",
+  "license": "MIT",
+  "private": true
+}

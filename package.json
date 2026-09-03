@@ -7,6 +7,7 @@
     "apps/*",
     "ui-tui",
     "ui-tui/packages/*",
+    "ui-tui/vendor/thinking-orbs",
     "web",
     "tests-js"
   ],
@@ -66,6 +67,7 @@
     "unicode-animations": false,
     "esbuild@0.28.1": true,
     "node-pty@1.1.0": true,
+    "thinking-orbs@0.3.1": true,
     "electron-winstaller@5.4.0": true,
     "electron@40.10.2": true,
     "fsevents@2.3.2": true,

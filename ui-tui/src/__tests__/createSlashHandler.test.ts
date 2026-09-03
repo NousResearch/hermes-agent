@@ -576,6 +576,25 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('/talk controls the native realtime voice process locally', () => {
+    const ctx = buildCtx()
+    const slash = createSlashHandler(ctx)
+
+    expect(slash('/talk')).toBe(true)
+    expect(slash('/talk orb')).toBe(true)
+    expect(slash('/talk waveform')).toBe(true)
+    expect(slash('/talk stop')).toBe(true)
+    expect(slash('/talk status')).toBe(true)
+    expect(ctx.voice.controlRealtimeVoice.mock.calls).toEqual([
+      ['start', undefined],
+      ['start', 'orb'],
+      ['start', 'waveform'],
+      ['stop'],
+      ['status']
+    ])
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
   // Regressions from Copilot review on #19835: /voice output + frontend
   // binding state must both track the gateway's fresh ``record_key`` on
   // every response, or a config edit shows the new shortcut in text
@@ -1198,6 +1217,7 @@ const buildTranscript = () => ({
 })
 
 const buildVoice = () => ({
+  controlRealtimeVoice: vi.fn(),
   setVoiceEnabled: vi.fn(),
   setVoiceRecordKey: vi.fn(),
   setVoiceTts: vi.fn()

@@ -6,6 +6,7 @@ import './lib/forceTruecolor.js'
 import type { FrameEvent } from '@hermes/ink'
 
 import { DASHBOARD_TUI_MODE, TERMUX_TUI_MODE } from './config/env.js'
+import { stopRegisteredRealtimeVoiceProcess } from './domain/realtimeVoice.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
@@ -59,6 +60,7 @@ let consecutiveDeadStreamErrors = 0
 
 setupGracefulExit({
   cleanups: [
+    stopRegisteredRealtimeVoiceProcess,
     () => {
       resetTerminalModes()
 

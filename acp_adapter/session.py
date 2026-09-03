@@ -674,15 +674,22 @@ class SessionManager:
         # ``mcp_discovery_timeout`` (config.yaml, default ~1.5s) so a dead
         # server can't block — servers that miss the bound are picked up by
         # the automatic late-refresh (see HermesACPAgent._schedule_mcp_late_refresh).
-        try:
-            from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
+        # Honor the host's opt-out here too.  ``entry.py`` gates the
+        # spawn-time discovery on HERMES_ACP_SKIP_CONFIGURED_MCP, but this
+        # site would (re)start the very work the host asked us to skip --
+        # just later, and inside session construction instead of at process
+        # start.  A metadata-only host that sets the flag and supplies its
+        # servers through session/new got configured-MCP startup anyway.
+        if os.environ.get("HERMES_ACP_SKIP_CONFIGURED_MCP", "").strip() != "1":
+            try:
+                from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
 
-            ensure_mcp_discovery_before_agent_build(
-                logger=logger,
-                thread_name="acp-mcp-discovery",
-            )
-        except Exception:
-            logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
+                ensure_mcp_discovery_before_agent_build(
+                    logger=logger,
+                    thread_name="acp-mcp-discovery",
+                )
+            except Exception:
+                logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 
         agent = AIAgent(**kwargs)
         # Codex app-server sessions are spawned lazily on the first turn. Stamp

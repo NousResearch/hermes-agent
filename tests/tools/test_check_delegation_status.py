@@ -29,9 +29,47 @@ from tools import async_delegation as ad
 
 def test_query_delegation_status_returns_none_for_unknown_id(tmp_path):
     """Missing delegation_id must return None, not raise."""
-    ad._set_state_db_path_for_tests(str(tmp_path / "state.db"))
+    db_path = str(tmp_path / "state.db")
+    conn = sqlite3.connect(db_path)
+    try:
+        ad._initialize_schema(conn)
+    finally:
+        conn.close()
+    ad._set_state_db_path_for_tests(db_path)
     result = ad.query_delegation_status("does-not-exist")
     assert result is None
+
+
+def test_query_delegation_status_missing_database_is_an_error(tmp_path):
+    """Observation must not create state.db while answering a read."""
+    db_path = tmp_path / "missing" / "state.db"
+    ad._set_state_db_path_for_tests(str(db_path))
+    with pytest.raises(ad.DelegationStatusReadError):
+        ad.query_delegation_status("does-not-exist")
+    assert not db_path.exists()
+
+
+def test_query_delegation_status_corrupt_database_is_an_error(tmp_path):
+    """Corruption must not collapse into the same result as an absent id."""
+    db_path = tmp_path / "state.db"
+    db_path.write_bytes(b"not a sqlite database")
+    ad._set_state_db_path_for_tests(str(db_path))
+    with pytest.raises(ad.DelegationStatusReadError):
+        ad.query_delegation_status("does-not-exist")
+
+
+def test_query_delegation_status_does_not_initialize_schema(tmp_path):
+    """A valid SQLite DB without the table stays unchanged after a failed read."""
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE sentinel (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+    before = db_path.read_bytes()
+    ad._set_state_db_path_for_tests(str(db_path))
+    with pytest.raises(ad.DelegationStatusReadError):
+        ad.query_delegation_status("does-not-exist")
+    assert db_path.read_bytes() == before
 
 
 def test_query_delegation_status_returns_row_for_known_id(tmp_path):
@@ -180,3 +218,16 @@ def test_kanban_cli_delegation_status_subcommand_exists():
     assert hasattr(args, "delegation_id") or hasattr(args, "kanban_action"), (
         "delegation-status subcommand must expose the delegation_id argument"
     )
+
+
+def test_kanban_cli_delegation_status_returns_2_on_read_error(monkeypatch):
+    """The CLI contract distinguishes verifier failure from a missing id."""
+    import argparse
+    from hermes_cli import kanban
+
+    def fail(_delegation_id):
+        raise ad.DelegationStatusReadError("read failed")
+
+    monkeypatch.setattr(ad, "query_delegation_status", fail)
+    args = argparse.Namespace(delegation_id="abc", json=False)
+    assert kanban._cmd_delegation_status(args) == 2

@@ -47,6 +47,10 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.delegation_status import (
+    DelegationStatusReadError,
+    query_delegation_status as _query_delegation_status,
+)
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 
@@ -1463,73 +1467,8 @@ def _children_activity_from_token(token: Any, now: float) -> Optional[List]:
 
 
 def query_delegation_status(delegation_id: str) -> Optional[Dict[str, Any]]:
-    """Read the durable state of one delegation directly from state.db.
-
-    Bypasses the in-memory ``_records`` dict entirely, so the result
-    reflects what was *persisted* to SQLite — not what the LLM's current
-    session believes happened. This lets a parent orchestrator
-    mechanically cross-check whether a child's self-reported completion
-    matches the ground truth stored in the async_delegations table.
-
-    Returns a dict with at minimum::
-
-        {
-            "delegation_id": str,
-            "state": str,          # e.g. "running", "done", "unknown"
-            "dispatched_at": float,
-            "completed_at": float | None,
-            "result": dict | None,  # parsed result_json, if present
-        }
-
-    Returns ``None`` when no row with that ``delegation_id`` exists.
-
-    Safe to call from any thread. Opens and closes a short-lived
-    read-only connection; does NOT acquire ``_DB_LOCK`` (this is a
-    read-only query and must not block writers).
-    """
-    try:
-        path = _db_path()
-        conn = sqlite3.connect(str(path), timeout=10)
-        conn.row_factory = sqlite3.Row
-        try:
-            _initialize_schema(conn)
-            row = conn.execute(
-                """SELECT delegation_id, origin_session, origin_ui_session_id,
-                          parent_session_id, state, dispatched_at,
-                          completed_at, updated_at, result_json,
-                          delivery_state, delivery_attempts, delivered_at,
-                          owner_pid, task_json
-                   FROM async_delegations
-                   WHERE delegation_id = ?""",
-                (delegation_id,),
-            ).fetchone()
-            if row is None:
-                return None
-            result: Dict[str, Any] = dict(row)
-            raw_result_json = result.pop("result_json", None)
-            if raw_result_json:
-                try:
-                    result["result"] = json.loads(raw_result_json)
-                except (json.JSONDecodeError, TypeError):
-                    result["result"] = raw_result_json
-            else:
-                result["result"] = None
-            raw_task_json = result.pop("task_json", None)
-            if raw_task_json:
-                try:
-                    result["task"] = json.loads(raw_task_json)
-                except (json.JSONDecodeError, TypeError):
-                    result["task"] = None
-            else:
-                result["task"] = None
-            return result
-        finally:
-            conn.close()
-    except Exception as exc:
-        logger.warning(
-            "query_delegation_status(%r) failed: %s", delegation_id, exc
-        )
-        return None
+    """Read one durable delegation via the bounded read-only observer."""
+    return _query_delegation_status(delegation_id, db_path=_db_path())
 
 
 def list_async_delegations() -> List[Dict[str, Any]]:

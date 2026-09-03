@@ -132,6 +132,87 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_worker_completion_evidence_is_bound_to_current_task_and_run(
+    monkeypatch, worker_env, tmp_path,
+):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        run_id = kb.get_task(conn, worker_env).current_run_id
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-1")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {
+            "status": "passed",
+            "root": str(tmp_path),
+            "session_id": "session-1",
+            "evidence": {
+                "id": 73,
+                "kind": "test",
+                "created_at": "2100-01-01T00:00:00+00:00",
+            },
+        },
+    )
+
+    required, evidence = kt._worker_completion_evidence(
+        worker_env, run_started_at=run_id,
+    )
+
+    assert required is True
+    assert evidence == {
+        "receipt_id": 73,
+        "source": "verification_evidence:test",
+        "status": "passed",
+        "task_id": worker_env,
+        "run_id": run_id,
+        "session_id": "session-1",
+        "root": str(tmp_path),
+        "created_at": "2100-01-01T00:00:00+00:00",
+    }
+
+
+def test_stale_worker_verification_requires_evidence_but_returns_no_receipt(
+    monkeypatch, worker_env, tmp_path,
+):
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "123")
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-1")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {"status": "stale", "evidence": {"id": 72}},
+    )
+
+    assert kt._worker_completion_evidence(worker_env) == (True, None)
+
+
+def test_receipt_from_before_current_run_is_rejected(monkeypatch, worker_env, tmp_path):
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "123")
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-1")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {
+            "status": "passed",
+            "evidence": {
+                "id": 72,
+                "kind": "test",
+                "created_at": "2000-01-01T00:00:00+00:00",
+            },
+        },
+    )
+
+    assert kt._worker_completion_evidence(
+        worker_env, run_started_at=2_000_000_000,
+    ) == (True, None)
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

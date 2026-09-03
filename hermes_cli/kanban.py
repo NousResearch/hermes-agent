@@ -3427,7 +3427,21 @@ def _cmd_delegation_status(args: argparse.Namespace) -> int:
     delegation_id = args.delegation_id
     use_json = getattr(args, "json", False)
 
-    row = query_delegation_status(delegation_id)
+    try:
+        row = query_delegation_status(delegation_id)
+    except Exception as exc:
+        # The observer raises a typed read error. Keep this boundary defensive:
+        # import/schema/runtime failures are verifier errors, never "not found".
+        if use_json:
+            import json
+            print(json.dumps({
+                "found": False,
+                "delegation_id": delegation_id,
+                "error": str(exc),
+            }))
+        else:
+            print(f"delegation-status: cannot read state.db: {exc}", file=sys.stderr)
+        return 2
     if row is None:
         if use_json:
             import json

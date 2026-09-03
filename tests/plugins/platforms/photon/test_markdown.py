@@ -43,9 +43,16 @@ def test_format_message_passthrough_by_default(
     assert adapter.format_message(_MD) == _MD
 
 
-def test_supports_code_blocks_mirrors_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_supports_code_blocks_never_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fenced code blocks are not renderable on iMessage: URL-bearing
+    messages fall back to raw text (literal fences), and the markdown path
+    renders a fence as inline monospace, not a block. The adapter therefore
+    never advertises code-block support — the gateway emits its compact
+    one-line tool preview instead (see test_code_block_capability.py)."""
     monkeypatch.delenv("PHOTON_MARKDOWN", raising=False)
-    assert _make_adapter(monkeypatch).supports_code_blocks is True
+    assert _make_adapter(monkeypatch).supports_code_blocks is False
     monkeypatch.setenv("PHOTON_MARKDOWN", "false")
     assert _make_adapter(monkeypatch).supports_code_blocks is False
 

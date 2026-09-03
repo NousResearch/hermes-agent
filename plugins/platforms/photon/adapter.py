@@ -797,9 +797,20 @@ class PhotonAdapter(BasePlatformAdapter):
         # A non-positive interval disables the watchdog entirely (escape hatch).
         self._probe_enabled = self._probe_interval > 0
 
-        # With markdown on, format_message preserves fences and the sidecar's
-        # markdown() builder renders them (or degrades them readably).
-        self.supports_code_blocks = _markdown_enabled()
+        # Prose markdown passthrough is on (bold/italic/headings render
+        # natively), but the adapter must NOT advertise fenced code-block
+        # support. Two reasons, both user-visible:
+        #   1. The sidecar's /send router (send-format.mjs) silently routes
+        #      every URL-bearing message through the plain-text builder, so
+        #      fences arrive as literal ``` characters.
+        #   2. Even on the markdown path, spectrum-ts renders a fence as
+        #      inline monospace text — not a block — so the "code block" the
+        #      gateway asked for doesn't exist on this surface either way.
+        # With the flag False, the gateway's tool-progress path emits the
+        # compact ``terminal: "cmd..."`` one-liner instead of a fenced block,
+        # and ``_outgoing_message_parts`` fence-tracking stays a no-op.
+        # Fixes raw fenced terminal commands leaking into iMessage bubbles.
+        self.supports_code_blocks = False
 
         # Runtime state
         self._sidecar_proc: Optional[subprocess.Popen] = None

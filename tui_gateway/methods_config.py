@@ -138,6 +138,7 @@ def _(rid, params: dict) -> dict:
                 hydrate=False,
                 session_limit=int(params.get("session_limit") or 2000),
                 include_discovered=True,
+                profile=_project_profile_key(params),
             )
             stamp_profile(
                 tree["projects"], _response_profile_name(params.get("profile"))
@@ -180,6 +181,7 @@ def _(rid, params: dict) -> dict:
                 hydrate=True,
                 session_limit=int(params.get("session_limit") or 5000),
                 include_discovered=False,
+                profile=_project_profile_key(params),
             )
             stamp_profile(
                 tree["projects"], _response_profile_name(params.get("profile"))

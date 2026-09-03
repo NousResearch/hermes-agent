@@ -3272,7 +3272,7 @@ def create_task(
     # anchored to the project's primary repo as a git worktree, so its branch
     # can be named deterministically (project slug + task id) instead of the
     # random ``wt/<task-id>`` fallback the worker skill applies when no branch
-    # is set. Projects live in the creator's per-profile projects.db; the repo
+    # is set. Projects live in the shared projects.db; the repo
     # path is absolute (profile-independent) and the branch name is pure, so the
     # cross-profile dispatcher needs no projects.db access at dispatch time.
     project_obj = None

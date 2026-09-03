@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Project tools — the agent's INTENTIONAL handle on first-class Projects.
 
-Projects (per-profile ``projects.db``) are the named workspaces the desktop
+Projects (shared across profiles in ``shared/projects.db``) are the named workspaces the desktop
 sidebar groups sessions into. Creating / switching a project is a deliberate act
 expressed as explicit tools — never a side effect of a terminal ``cd``.
 

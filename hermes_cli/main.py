@@ -2730,7 +2730,7 @@ def cmd_dashboard(args):
     # The in-browser Chat tab (embedded TUI over PTY/WebSocket) is always
     # available — desktop and dashboard both rely on `/api/ws` + `/api/pty`.
     start_server(
-        host=args.host,
+        hosts=args.hosts or ["127.0.0.1"],
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),

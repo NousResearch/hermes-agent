@@ -146,15 +146,22 @@ def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
     from hermes_cli.web_server import app
     if getattr(app.state, "auth_required", False):
         return None
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    # Dual-stack aware: a bind with ANY non-loopback member is an explicit
+    # non-loopback opt-in (loopback-only peer gate applies only when EVERY bound
+    # host is loopback). bound_hosts is the frozenset set by start_server; fall
+    # back to the legacy singular bound_host for older callers/tests.
+    _bound = getattr(app.state, "bound_hosts", None) or getattr(
+        app.state, "bound_host", ""
+    )
+    _bound_set = {_b.strip().lower() for _b in ([_bound] if isinstance(_bound, str) else _bound) if _b}
+    if _bound_set and not _bound_set.issubset(_LOOPBACK_HOSTS):
         return None
     client_host = ws.client.host if ws.client else ""
     if not client_host:
-        return f"missing_or_empty_peer bound={bound_host or '?'}"
+        return f"missing_or_empty_peer bound={','.join(sorted(_bound_set)) or '?'}"
     if client_host in _LOOPBACK_HOSTS:
         return None
-    return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
+    return f"peer_not_loopback peer={client_host} bound={','.join(sorted(_bound_set)) or '?'}"
 
 
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
@@ -171,21 +178,24 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     trusted — the credential check is the real auth boundary there.
     """
     from hermes_cli.web_server import _is_accepted_host, app
-    bound_host = getattr(app.state, "bound_host", None)
-    if not bound_host:
+    # Prefer the full dual-stack bound set; fall back to the legacy singular.
+    bound = getattr(app.state, "bound_hosts", None) or getattr(
+        app.state, "bound_host", None
+    )
+    if not bound:
         return None
     trusted_public_hosts = getattr(app.state, "trusted_public_hosts", frozenset())
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host, trusted_public_hosts):
-        return f"host_mismatch host={host_header or '?'} bound={bound_host}"
+    if not _is_accepted_host(host_header, bound, trusted_public_hosts):
+        return f"host_mismatch host={host_header or '?'} bound={bound}"
     origin = ws.headers.get("origin", "")
     if not origin:
         return None
     parsed = urllib.parse.urlparse(origin)
     if parsed.scheme not in {"http", "https"}:
         return None
-    if not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
-        return f"origin_mismatch origin={origin} bound={bound_host}"
+    if not parsed.netloc or not _is_accepted_host(parsed.netloc, bound, trusted_public_hosts):
+        return f"origin_mismatch origin={origin} bound={bound}"
     return None
 
 

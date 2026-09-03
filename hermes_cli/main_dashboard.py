@@ -901,6 +901,7 @@ def _route_named_profile_dashboard(
         f"Routing to the machine dashboard (profile '{_launch_profile}' "
         f"preselected). Use --isolated for a dedicated per-profile server."
     )
+    _hosts = args.hosts or ["127.0.0.1"]
     reexec_argv = [
         sys.executable, "-m", "hermes_cli.main",
         "-p", "default",
@@ -908,8 +909,9 @@ def _route_named_profile_dashboard(
         # silently rebuild the UI as `dashboard`.
         "serve" if _headless_backend else "dashboard",
         "--port", str(args.port),
-        "--host", args.host,
         "--open-profile", _launch_profile]
+    for _h in _hosts:
+        reexec_argv.extend(["--host", _h])
     for enabled, extra in (
         (_ssh_owner_nonce, ["--ssh-owner-nonce", _ssh_owner_nonce]),
         (_token_file, ["--ssh-session-token-file", _token_file]),

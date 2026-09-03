@@ -139,6 +139,48 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     return result
 
 
+def _scan_updated_plugin(plugin_dir: Path, identifier: str, console) -> None:
+    """Re-scan an updated plugin and disable dangerous revisions.
+
+    Updates have already mutated the checkout, so caution and dangerous
+    findings are reported rather than blocking the update. A dangerous result
+    disables the plugin, matching the CLI update policy for every update
+    surface.
+    """
+    if not _scan_on_install_enabled():
+        return
+
+    from tools.plugin_guard import (
+        format_scan_report,
+        scan_plugin,
+        should_allow_plugin_install,
+    )
+
+    scan_result = scan_plugin(plugin_dir, source=identifier)
+    allowed, reason = should_allow_plugin_install(scan_result)
+    if allowed is True:
+        return
+
+    console.print()
+    console.print(
+        f"[yellow]⚠ Security scan flagged the updated plugin:[/yellow] {reason}",
+    )
+    console.print(format_scan_report(scan_result))
+    if scan_result.verdict == "dangerous":
+        enabled = _get_enabled_set()
+        disabled = _get_disabled_set()
+        if identifier in enabled or identifier not in disabled:
+            enabled.discard(identifier)
+            disabled.add(identifier)
+            _save_enabled_set(enabled)
+            _save_disabled_set(disabled)
+        console.print(
+            f"[red]Plugin '{identifier}' has been disabled.[/red] Review the "
+            f"findings, then re-enable with `hermes plugins enable {identifier}` "
+            f"if you trust them.",
+        )
+
+
 # Minimum manifest version this installer understands.
 # Plugins may declare ``manifest_version: 1`` in plugin.yaml;
 # future breaking changes to the manifest schema bump this.
@@ -1131,38 +1173,7 @@ def cmd_update(name: str) -> None:
             metadata[target.name] = install_record
             _write_install_metadata(metadata)
 
-    # Re-scan after update — Cowork re-scans skills/plugins on edit, and an
-    # update can introduce malicious content into a previously clean plugin.
-    # The pull has already mutated the tree, so a dangerous verdict disables
-    # the plugin rather than leaving it active.
-    if _scan_on_install_enabled():
-        from tools.plugin_guard import (
-            format_scan_report,
-            scan_plugin,
-            should_allow_plugin_install,
-        )
-
-        scan_result = scan_plugin(target, source=name)
-        allowed, reason = should_allow_plugin_install(scan_result)
-        if allowed is not True:
-            console.print()
-            console.print(
-                f"[yellow]⚠ Security scan flagged the updated plugin:[/yellow] {reason}",
-            )
-            console.print(format_scan_report(scan_result))
-            if scan_result.verdict == "dangerous":
-                enabled = _get_enabled_set()
-                disabled = _get_disabled_set()
-                if name in enabled or name not in disabled:
-                    enabled.discard(name)
-                    disabled.add(name)
-                    _save_enabled_set(enabled)
-                    _save_disabled_set(disabled)
-                console.print(
-                    f"[red]Plugin '{name}' has been disabled.[/red] Review the "
-                    f"findings, then re-enable with `hermes plugins enable {name}` "
-                    f"if you trust them.",
-                )
+    _scan_updated_plugin(target, name, console)
 
     # Same stale-bytecode class as the main checkout (#6207/#60242): the
     # pull just changed .py files under this plugin dir, so drop any
@@ -2875,11 +2886,13 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
             metadata[target.name] = install_record
             _write_install_metadata(metadata)
 
+    from rich.console import Console
+
+    _scan_updated_plugin(target, name, Console())
+
     # Sibling of the CLI ``hermes plugins update`` path: drop bytecode
     # compiled from the pre-pull plugin revision.
     _clear_plugin_bytecode(target)
-
-    from rich.console import Console
 
     _copy_example_files(target, Console())
     unchanged = "Already up to date" in msg

@@ -136,7 +136,7 @@ def select_backend(gpu_vendor: str | None, os_name: str | None = None) -> str:
     if "nvidia" in vendor:
         return "cuda"
     if vendor in ("amd", "intel") or "radeon" in vendor or "arc" in vendor:
-        return "vulkan"
+        return "sycl"
     return "cpu"
 
 
@@ -165,7 +165,7 @@ def resolve_assets(tag: str, backend: str, os_name: str | None = None,
             raise BinaryResolutionError(
                 f"no prebuilt linux CUDA asset at {tag}; use vulkan/cpu or a source build")
         suffix = {"vulkan": f"vulkan-{arch}", "hip": f"rocm-7.2-{arch}",
-                  "cpu": arch}.get(backend)
+                  "sycl": f"sycl-{arch}", "cpu": arch}.get(backend)
         if suffix is None:
             raise BinaryResolutionError(f"unsupported linux backend {backend}")
         plan.assets = [f"llama-{tag}-bin-ubuntu-{suffix}.tar.gz"]
@@ -182,6 +182,8 @@ def resolve_assets(tag: str, backend: str, os_name: str | None = None,
             if arch == "arm64":
                 raise BinaryResolutionError(f"no win-vulkan-arm64 asset at {tag}")
             plan.assets = [f"llama-{tag}-bin-win-vulkan-x64.zip"]
+        elif backend == "sycl":
+            plan.assets = [f"llama-{tag}-bin-win-sycl-x64.zip"]
         elif backend == "hip":
             plan.assets = [f"llama-{tag}-bin-win-hip-radeon-x64.zip"]
         elif backend == "cpu":

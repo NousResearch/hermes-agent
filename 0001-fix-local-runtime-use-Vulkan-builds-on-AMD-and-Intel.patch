@@ -1,0 +1,62 @@
+From 684cde0f0ee7ae577434eac1ced5fb395407ac80 Mon Sep 17 00:00:00 2001
+From: SergiioB <sergiobarrientose@outlook.com>
+Date: Thu, 3 Sep 2026 23:55:20 +0200
+Subject: [PATCH 1/2] fix(local-runtime): use Vulkan builds on AMD and Intel
+ GPUs by detecting vendor with vulkaninfo
+
+---
+ hermes_cli/local_runtime/bootstrap.py | 28 ++++++++++++++++++++-------
+ 1 file changed, 21 insertions(+), 7 deletions(-)
+
+diff --git a/hermes_cli/local_runtime/bootstrap.py b/hermes_cli/local_runtime/bootstrap.py
+index 79402142ae..d7d6086850 100644
+--- a/hermes_cli/local_runtime/bootstrap.py
++++ b/hermes_cli/local_runtime/bootstrap.py
+@@ -30,23 +30,37 @@ _SUPERVISOR = None  # process-wide singleton; one router per Hermes process
+ def _detect_gpu_vendor() -> str | None:
+     """Best-effort GPU vendor for backend selection. NVIDIA via nvidia-smi
+     (resolved by the hardware probe's PATH-independent ladder — a stripped
+-    service PATH must not demote an NVIDIA box to vulkan/cpu); anything
+-    else defers to select_backend's fallback ladder."""
++    service PATH must not demote an NVIDIA box to vulkan/cpu); then tries
++    vulkaninfo for AMD/Intel GPUs; anything else defers to select_backend's
++    fallback ladder."""
+     from hermes_cli.local_runtime.hardware import _nvidia_smi_path
+ 
+     smi = _nvidia_smi_path()
+-    if smi is None:
+-        return None
++    if smi is not None:
++        try:
++            out = subprocess.run(
++                [smi, "--query-gpu=name", "--format=csv,noheader"],
++                capture_output=True, text=True, timeout=10)
++            if out.returncode == 0 and out.stdout.strip():
++                return "nvidia " + out.stdout.strip().splitlines()[0]
++        except (OSError, subprocess.TimeoutExpired):
++            pass
++
++    # Probe for AMD/Intel via vulkaninfo
+     try:
+         out = subprocess.run(
+-            [smi, "--query-gpu=name", "--format=csv,noheader"],
++            ["vulkaninfo", "--summary"],
+             capture_output=True, text=True, timeout=10)
+         if out.returncode == 0 and out.stdout.strip():
+-            return "nvidia " + out.stdout.strip().splitlines()[0]
++            lower_out = out.stdout.lower()
++            if "amd" in lower_out or "radeon" in lower_out:
++                return "amd"
++            if "intel" in lower_out or "arc" in lower_out:
++                return "intel"
+     except (OSError, subprocess.TimeoutExpired):
+         pass
+-    return None
+ 
++    return None
+ 
+ def models_dir() -> Path:
+     """Machine-scoped, deliberately NOT profile-scoped: a 20 GB GGUF is a
+-- 
+2.39.5
+

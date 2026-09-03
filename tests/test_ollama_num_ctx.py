@@ -143,7 +143,7 @@ class TestCompressorClampsToNumCtx:
     must not leave the compressor targeting the probed model window while
     requests run at the smaller served num_ctx."""
 
-    def _build_agent(self, cfg, probed_ctx):
+    def _build_agent(self, cfg, probed_ctx, *, base_url="http://localhost:11434/v1", provider=None):
         import agent.context_compressor as cc_mod
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
@@ -160,14 +160,17 @@ class TestCompressorClampsToNumCtx:
             ),
         ):
             from run_agent import AIAgent
-            return AIAgent(
-                model="gemma3:27b",
-                api_key="ollama",
-                base_url="http://localhost:11434/v1",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
+            kwargs = {
+                "model": "gemma3:27b",
+                "api_key": "ollama",
+                "base_url": base_url,
+                "quiet_mode": True,
+                "skip_context_files": True,
+                "skip_memory": True,
+            }
+            if provider is not None:
+                kwargs["provider"] = provider
+            return AIAgent(**kwargs)
 
     def test_num_ctx_only_config_clamps_compressor_window(self):
         agent = self._build_agent(
@@ -179,6 +182,33 @@ class TestCompressorClampsToNumCtx:
         # compaction never fires (#57275 claim 3).
         assert agent.context_compressor.context_length == 65536
         assert agent.context_compressor.threshold_tokens < 65536
+
+    def test_num_ctx_only_config_is_ignored_for_remote_endpoint(self):
+        with patch("run_agent.logger") as mock_logger:
+            agent = self._build_agent(
+                {"agent": {}, "model": {"ollama_num_ctx": 65536}},
+                probed_ctx=1_000_000,
+                base_url="https://api.anthropic.com/v1",
+                provider="anthropic",
+            )
+
+        # Ollama's num_ctx is not meaningful for remote providers. In
+        # particular, it must not shrink the compressor's remote context.
+        assert agent._ollama_num_ctx is None
+        assert agent.context_compressor.context_length == 1_000_000
+        ignored_calls = [
+            call
+            for call in mock_logger.info.call_args_list
+            if call.args
+            and call.args[0]
+            == "Ignoring model.ollama_num_ctx=%r for non-local endpoint %s"
+        ]
+        assert len(ignored_calls) == 1
+        mock_logger.info.assert_any_call(
+            "Ignoring model.ollama_num_ctx=%r for non-local endpoint %s",
+            65536,
+            "https://api.anthropic.com/v1",
+        )
 
     def test_larger_num_ctx_does_not_inflate_compressor_window(self):
         agent = self._build_agent(

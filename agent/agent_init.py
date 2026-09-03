@@ -3078,11 +3078,28 @@ def init_agent(
     _ollama_num_ctx_override = None
     if isinstance(_model_cfg, dict):
         _ollama_num_ctx_override = _model_cfg.get("ollama_num_ctx")
+    _provider_name = str(getattr(agent, "provider", "") or "").strip().lower().replace("_", "-")
+    # An explicit endpoint is authoritative: an Ollama-named provider can
+    # still be pointed at a remote-compatible service. Only fall back to the
+    # provider name when no endpoint was resolved (the local provider defaults
+    # supply their own local route later).
+    _is_local_ollama_route = (
+        bool(agent.base_url) and is_local_endpoint(agent.base_url)
+    ) or (
+        not agent.base_url and _provider_name in {"ollama", "lmstudio", "lm-studio"}
+    )
     if _ollama_num_ctx_override is not None:
-        try:
-            agent._ollama_num_ctx = int(_ollama_num_ctx_override)
-        except (TypeError, ValueError):
-            _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
+        if _is_local_ollama_route:
+            try:
+                agent._ollama_num_ctx = int(_ollama_num_ctx_override)
+            except (TypeError, ValueError):
+                _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
+        else:
+            _ra().logger.info(
+                "Ignoring model.ollama_num_ctx=%r for non-local endpoint %s",
+                _ollama_num_ctx_override,
+                agent.base_url or f"provider={getattr(agent, 'provider', '')}",
+            )
     if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
         try:
             # ``agent.api_key`` may be a callable (Entra token provider).
@@ -3128,7 +3145,8 @@ def init_agent(
     # init-order half.)
     _cc_window = getattr(agent.context_compressor, "context_length", 0) or 0
     if (
-        agent._ollama_num_ctx
+        _is_local_ollama_route
+        and agent._ollama_num_ctx
         and agent._ollama_num_ctx > 0
         and _cc_window
         and agent._ollama_num_ctx < _cc_window

@@ -869,7 +869,9 @@ class ToolRegistry:
                     logger.info(
                         "Tool '%s': toolset '%s' overriding existing toolset '%s' "
                         "(override=True opt-in)",
-                        name, toolset, existing.toolset,
+                        name,
+                        toolset,
+                        existing.toolset,
                     )
                 else:
                     # Reject every cross-toolset shadow, including MCP-to-MCP
@@ -880,7 +882,9 @@ class ToolRegistry:
                         "shadow existing tool from toolset '%s'. Pass "
                         "override=True to register() if the replacement is "
                         "intentional, or deregister the existing tool first.",
-                        name, toolset, existing.toolset,
+                        name,
+                        toolset,
+                        existing.toolset,
                     )
                     return
             target[name] = ToolEntry(

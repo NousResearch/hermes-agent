@@ -15,6 +15,27 @@ Model / provider selection mirrors `hermes chat`:
     - If only --model given, auto-detect the provider that serves it.
     - If only --provider given, error out (ambiguous — caller must pick a model).
 
+Session chaining (--resume / --continue):
+    - ``hermes --resume <id|title> -z "..."`` loads the session's prior
+      transcript as conversation history and appends this turn to the SAME
+      session id — the one-shot equivalent of resuming an interactive chat.
+      ID-or-title resolution happens in ``hermes_cli.main`` before the value
+      reaches here, so this module always receives a session id.
+    - If the value matches no existing session, it is created on first use
+      ("create-on-first-use"): callers that manage their own session keys (the
+      Smith Crafts OS gateway, cron workers, scripts) can mint a stable id up
+      front and pass it on every turn without parsing anything back out.
+      Caller-minted ids are path-guarded at the CLI boundary because a session
+      id becomes a filename downstream.
+    - ``--continue`` (optionally with a session name) resolves to the most
+      recent / named CLI session, exactly like interactive chat. Unlike
+      ``--resume``, an unmatched ``--continue`` is an error.
+    - Best-effort: if the SQLite session store is unavailable, the turn still
+      runs stateless rather than failing. A store that is merely *contended*
+      is the one exception — the resume reads wait the write lock out and
+      then fail loudly, because running a --resume turn with no context is a
+      wrong answer at full token price, not a graceful degradation.
+
 Env var fallbacks (used when the corresponding arg is not passed):
     - HERMES_INFERENCE_MODEL
 """
@@ -23,7 +44,9 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import sys
+import time
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Optional
@@ -206,6 +229,7 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    resume: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -221,6 +245,9 @@ def run_oneshot(
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
             spend per invocation.
+        resume: Optional session id to chain this turn onto. Prior transcript
+            is loaded as conversation history and this turn is appended to the
+            same session. Ids that don't exist yet are created on first use.
 
     Returns the exit code.  The caller owns process termination.
     """
@@ -283,6 +310,7 @@ def run_oneshot(
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
                     skills=skills,
+                    resume=resume,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -354,6 +382,131 @@ def _create_session_db_for_oneshot():
         return None
 
 
+class ResumeStoreContendedError(RuntimeError):
+    """A --resume read stayed blocked on the state.db write lock.
+
+    Distinct from the broken-store case, which stays best-effort: here the
+    store is healthy and merely busy, so silently dropping the chain would
+    discard recoverable context. See :func:`_read_with_lock_patience`.
+    """
+
+
+# Lock-contention patience for the two --resume reads. SessionDB gives every
+# WRITE 20-60s of jittered retry (``_WRITE_PATIENCE_S`` /
+# ``_TRANSCRIPT_WRITE_PATIENCE_S``) and its ``__init__`` gets the same budget,
+# but the READ path has none: off WAL, ``SessionDB._read_ctx`` hands back the
+# shared writer connection, which carries a 1s busy timeout and no retry loop
+# at all. Match the write budget so the reads are no more fragile than the
+# writes they bracket.
+_RESUME_READ_PATIENCE_S = 20.0
+_RESUME_READ_RETRY_MIN_S = 0.050
+_RESUME_READ_RETRY_MAX_S = 0.350
+
+
+def _is_lock_contention(exc: BaseException) -> bool:
+    """True for SQLite's transient ``database is locked`` / ``busy`` class.
+
+    Message-scoped rather than class-scoped for the same reason
+    ``SessionDB._execute_write`` does it that way: the exception CLASS varies
+    across SQLite builds, and matching on ``sqlite3.OperationalError`` alone
+    would let some builds escape the retry net.
+    """
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database is busy" in msg
+
+
+def _read_with_lock_patience(what: str, session_id: str, fn):
+    """Run one --resume read, waiting out transient write-lock contention.
+
+    Returns ``(value, ok)``. ``ok=False`` means the read genuinely failed and
+    the caller should degrade; a lock that outlasts the whole budget raises
+    :class:`ResumeStoreContendedError` instead, because that is not a broken
+    store and must not be silently swallowed (see ``_load_resume_history``).
+    """
+    deadline = time.monotonic() + _RESUME_READ_PATIENCE_S
+    while True:
+        try:
+            return fn(), True
+        except Exception as exc:
+            if not _is_lock_contention(exc):
+                logging.debug(
+                    "oneshot resume: %s failed for %s: %s", what, session_id, exc
+                )
+                return None, False
+            now = time.monotonic()
+            if now >= deadline:
+                raise ResumeStoreContendedError(
+                    f"--resume {what} for session '{session_id}' was blocked by "
+                    f"another Hermes process holding the state.db write lock for "
+                    f"over {_RESUME_READ_PATIENCE_S:.0f}s. Refusing to run this "
+                    f"turn with no prior context — retry the invocation."
+                ) from exc
+            time.sleep(
+                min(
+                    random.uniform(
+                        _RESUME_READ_RETRY_MIN_S, _RESUME_READ_RETRY_MAX_S
+                    ),
+                    max(deadline - now, 0.001),
+                )
+            )
+
+
+def _load_resume_history(session_db, resume: str) -> tuple[Optional[str], Optional[list]]:
+    """Resolve a --resume id and load its transcript for oneshot chaining.
+
+    Returns ``(session_id, conversation_history)``. Mirrors the interactive
+    resume path (cli_agent_setup_mixin): walk the compression chain via
+    ``resolve_resume_session_id``, load messages in conversation format, and
+    drop ``session_meta`` rows. Unlike interactive resume, an id with no
+    existing session is NOT an error — it is returned as-is with no history,
+    so the session is created on first use under the caller's chosen id.
+
+    A broken store stays best-effort and degrades to a stateless turn. A
+    *contended* one does NOT, and the distinction matters because these two
+    reads are the only ones in the resume path with no lock patience of their
+    own. Off WAL — the default whenever the linked SQLite carries the WAL-reset
+    bug (``apply_wal_with_fallback``), and on NFS / SMB / ZFS homes — reads run
+    on the shared writer connection with a 1s busy timeout and no retry, so a
+    sibling process holding the write lock for a second (a large FTS-triggered
+    append, an incremental merge, a checkpoint, VACUUM) fails them while every
+    surrounding write rides out the same contention on 20-60s of patience.
+    Swallowing that would silently run the turn with NO prior context, exit 0,
+    and still append the context-less result into the middle of the chain —
+    burning the tokens ``--resume`` exists to save and corrupting the
+    transcript every later turn resumes from. So: wait the lock out with the
+    write path's own budget, and if it truly never clears, fail loudly through
+    ``run_oneshot``'s error path (non-zero exit) so a scripted caller retries
+    instead of banking a context-less answer.
+    """
+    session_id = (resume or "").strip() or None
+    if not session_id or session_db is None:
+        return session_id, None
+    resolved, ok = _read_with_lock_patience(
+        "id resolution",
+        session_id,
+        lambda: session_db.resolve_resume_session_id(session_id),
+    )
+    if ok and resolved:
+        session_id = resolved
+    history: Optional[list] = None
+    restored, ok = _read_with_lock_patience(
+        "history load",
+        session_id,
+        lambda: session_db.get_messages_as_conversation(session_id),
+    )
+    if ok and restored:
+        history = [m for m in restored if m.get("role") != "session_meta"] or None
+    # Ended sessions accept appends again once reopened; harmless if the
+    # session is new or already open. Best-effort even under contention: this
+    # is a WRITE, so it already carries SessionDB's own jittered patience, and
+    # a session that stays ended still accepts this turn's appends.
+    try:
+        session_db.reopen_session(session_id)
+    except Exception:
+        pass
+    return session_id, history
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -361,6 +514,7 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
+    resume: Optional[str] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -478,12 +632,22 @@ def _run_agent(
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
     session_db = _create_session_db_for_oneshot()
-    # The try spans agent construction (not just ``chat``) so the SQLite store
-    # opened above is always closed — including when ``AIAgent(...)`` itself
-    # raises on a provider/config error. The one-shot exit path hard-exits via
-    # os._exit and skips finalizers, so an un-closed connection here would leak.
+    # The try spans the resume load and agent construction (not just ``chat``)
+    # so the SQLite store opened above is always closed — including when
+    # ``AIAgent(...)`` itself raises on a provider/config error. The one-shot
+    # exit path hard-exits via os._exit and skips finalizers, so an un-closed
+    # connection here would leak.
     agent = None
     try:
+        # --resume chaining: load the prior transcript and pin the agent to
+        # the caller's session id so this turn appends to the SAME session.
+        # Inside the try because it touches session_db — the per-step guards
+        # in _load_resume_history keep a broken store from failing the turn,
+        # but the connection must still be closed if anything else escapes.
+        resume_session_id, conversation_history = _load_resume_history(
+            session_db, resume
+        )
+
         # Read the effective fallback chain from profile config so oneshot
         # workers honour the same merge semantics as interactive CLI and
         # gateway sessions.
@@ -499,6 +663,7 @@ def _run_agent(
             enabled_toolsets=toolsets_list,
             quiet_mode=True,
             platform="cli",
+            session_id=resume_session_id,
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
@@ -523,7 +688,7 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
-        result = agent.run_conversation(prompt)
+        result = agent.run_conversation(prompt, conversation_history=conversation_history)
         return (result.get("final_response") or "", result)
     finally:
         # Ordering deliberately mirrors gateway/run.py:_cleanup_agent_resources,

@@ -160,7 +160,12 @@ def build_top_level_parser():
             "response text to stdout. No banner, no spinner, no tool "
             "previews, no session_id line. Tools, memory, rules, and "
             "AGENTS.md in the CWD are loaded as normal; approvals are "
-            "auto-bypassed. Intended for scripts / pipes."
+            "auto-bypassed. Intended for scripts / pipes. Combine with "
+            "--resume <id|title> to chain turns onto one session (a value "
+            "matching no existing session is used as-is and created on first "
+            "use, so scripts can mint their own stable ids), or --continue "
+            "[name] to chain onto the most recent / named session (unlike "
+            "--resume, an unmatched --continue is an error)."
         ),
     )
     parser.add_argument(

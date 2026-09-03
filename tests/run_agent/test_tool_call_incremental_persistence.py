@@ -381,6 +381,36 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
     ]
 
 
+@pytest.mark.parametrize("quiet_mode", [True, False])
+def test_sequential_dispatch_forwards_plugin_progress_callback(quiet_mode):
+    """Gateway progress must reach registry-backed plugin handlers."""
+    agent = _make_agent()
+    setattr(agent, "quiet_mode", quiet_mode)
+    callback = object()
+    setattr(agent, "tool_progress_callback", callback)
+    tool_call = _mock_tool_call(name="web_search", call_id="progress-call")
+    assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
+    captured: dict = {}
+
+    def _fake_dispatch(_name, _args, _task_id, **kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    agent._flush_messages_to_session_db = MagicMock()
+    with (
+        patch("run_agent.handle_function_call", side_effect=_fake_dispatch),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+    ):
+        agent._execute_tool_calls_sequential(
+            assistant_message, [], "task-progress"
+        )
+
+    assert captured.get("progress_callback") is callback
+
+
 def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
     """A KeyboardInterrupt mid-batch must not leave dangling tool_calls.
 

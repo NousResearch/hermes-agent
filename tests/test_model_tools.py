@@ -30,6 +30,46 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
+    def test_progress_callback_is_forwarded_to_registry_handler(self):
+        callback = object()
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}') as dispatch:
+            result = handle_function_call(
+                "web_search",
+                {"query": "test"},
+                task_id="task-1",
+                progress_callback=callback,
+            )
+
+        assert result == '{"ok":true}'
+        assert dispatch.call_args.kwargs["progress_callback"] is callback
+
+    def test_deferred_tool_call_forwards_progress_callback(self):
+        callback = object()
+        tool_def = {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[tool_def]),
+            patch("tools.tool_search.resolve_underlying_call", return_value=("web_search", {"q": "test"}, None)),
+            patch("tools.tool_search.scoped_deferrable_names", return_value={"web_search"}),
+            patch("tools.tool_search.validate_deferred_call_args", return_value=None),
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}') as dispatch,
+        ):
+            result = handle_function_call(
+                "tool_call",
+                {"name": "web_search", "arguments": {"q": "test"}},
+                task_id="task-bridge",
+                progress_callback=callback,
+            )
+
+        assert result == '{"ok":true}'
+        assert dispatch.call_args.kwargs["progress_callback"] is callback
+
 
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):

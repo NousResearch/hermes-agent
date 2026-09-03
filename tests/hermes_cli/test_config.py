@@ -1394,6 +1394,55 @@ class TestWriteApprovalMigration:
             assert loaded["skills"]["write_approval"] is False
 
 
+class TestBellOnPromptMigration:
+    """Version 40→41 collapses display.bell_on_clarify/bell_on_approval into
+    display.bell_on_prompt (bool).
+
+    Either legacy flag being on means the user wanted a bell on some blocking
+    prompt, so either true migrates to bell_on_prompt: true. Both old keys are
+    always removed. bell_on_prompt is only persisted when true (false matches
+    the schema default and is left implicit).
+    """
+
+    def _write(self, tmp_path, body: str):
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_either_flag_true_migrates_to_bell_on_prompt_true(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path,
+                        "_config_version: 40\ndisplay:\n  bell_on_clarify: true\n"
+                        "  bell_on_approval: true\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["display"]["bell_on_prompt"] is True
+            assert "bell_on_clarify" not in raw["display"]
+            assert "bell_on_approval" not in raw["display"]
+
+    def test_only_approval_true_migrates_to_bell_on_prompt_true(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path,
+                        "_config_version: 40\ndisplay:\n  bell_on_clarify: false\n"
+                        "  bell_on_approval: true\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["display"]["bell_on_prompt"] is True
+            assert "bell_on_clarify" not in raw["display"]
+            assert "bell_on_approval" not in raw["display"]
+
+    def test_both_false_drops_keys_without_materializing_default(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path,
+                        "_config_version: 40\ndisplay:\n  bell_on_clarify: false\n"
+                        "  bell_on_approval: false\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            loaded = load_config()
+            assert "bell_on_clarify" not in raw.get("display", {})
+            assert "bell_on_approval" not in raw.get("display", {})
+            assert "bell_on_prompt" not in raw.get("display", {})
+            assert loaded["display"]["bell_on_prompt"] is False
+
+
 class TestMigrationWriteInvariant:
     """Architectural guard: every migration write routes through the single
     _persist_migration() chokepoint, which strips schema defaults so a lean

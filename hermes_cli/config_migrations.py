@@ -885,6 +885,43 @@ def _migrate_to_40(results: Dict[str, Any], quiet: bool) -> None:
             print("  ✓ Model catalog now refreshes every 20 minutes (model_catalog.ttl_minutes)")
 
 
+def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 40 → 41: collapse display.bell_on_clarify/bell_on_approval
+    # into display.bell_on_prompt ──
+    # The two single-purpose bell flags were replaced by one key covering
+    # every blocking prompt modal (clarify, approval, sudo password, secret
+    # capture). A user who had EITHER old flag on wanted a bell on some
+    # blocking prompt, so either true migrates to bell_on_prompt: true (the
+    # broadened scope — now also sudo/secret prompts — is the intended
+    # collapse, not a regression). Both old keys are always dropped so they
+    # don't sit orphaned in the file; bell_on_prompt is only written when the
+    # migrated value is true (false already matches the schema default, so
+    # persisting it would only bloat a lean config).
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    display = config.get("display")
+    if not isinstance(display, dict):
+        return
+    had_clarify = "bell_on_clarify" in display
+    had_approval = "bell_on_approval" in display
+    if not had_clarify and not had_approval:
+        return
+
+    was_clarify_on = bool(display.pop("bell_on_clarify", False))
+    was_approval_on = bool(display.pop("bell_on_approval", False))
+    was_on = was_clarify_on or was_approval_on
+    if was_on:
+        display["bell_on_prompt"] = True
+    config["display"] = display
+    _persist_migration(config)
+    results["config_added"].append(f"display.bell_on_clarify/bell_on_approval → bell_on_prompt={was_on}")
+    if not quiet:
+        print(f"  ✓ Merged bell_on_clarify/bell_on_approval → display.bell_on_prompt={was_on}")
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
@@ -913,6 +950,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (38, _migrate_to_38),
     (39, _migrate_to_39),
     (40, _migrate_to_40),
+    (41, _migrate_to_41),
 )
 
 

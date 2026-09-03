@@ -113,3 +113,62 @@ def test_should_process_message_dm_phone_allowlist_lid_sender():
         "mentionedIds": [],
     }
     assert adapter._should_process_message(data) is True
+
+
+class TestJsonArrayStringAllowlist:
+    """#102329: a JSON-array string (pre-#88163 `config set` shape, or
+    hand-written) must authorize exactly like the equivalent YAML list —
+    never as bracket-polluted entries that match nobody."""
+
+    def test_coerce_json_array_string(self):
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        assert WhatsAppAdapter._coerce_allow_list('["15551234567", "15557654321"]') == {
+            "15551234567",
+            "15557654321",
+        }
+
+    def test_coerce_plain_shapes_unchanged(self):
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        assert WhatsAppAdapter._coerce_allow_list(["15551234567", "15557654321"]) == {
+            "15551234567",
+            "15557654321",
+        }
+        assert WhatsAppAdapter._coerce_allow_list("15551234567,15557654321") == {
+            "15551234567",
+            "15557654321",
+        }
+        assert WhatsAppAdapter._coerce_allow_list(None) == set()
+
+    def test_coerce_python_literal_list(self):
+        """Hand-written Python-literal shape, mirroring parse_config_string_list."""
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        assert WhatsAppAdapter._coerce_allow_list("['15551234567']") == {"15551234567"}
+
+    def test_intake_accepts_json_array_string_allowlist(self):
+        """End to end: the reported deaf-bot scenario now processes."""
+        _write_lid_mapping()
+        adapter = _make_adapter(dm_policy="allowlist", allow_from=f'["{PHONE}"]')
+
+        data = {
+            "isGroup": False,
+            "body": "hello",
+            "senderId": f"{LID}@lid",
+            "from": f"{LID}@lid",
+            "botIds": [],
+            "mentionedIds": [],
+        }
+        assert adapter._should_process_message(data) is True
+
+    def test_yaml_export_normalizes_json_array_string(self, monkeypatch):
+        """The bridge env export must carry clean comma values, so the Node
+        bridge parses the same membership the adapter enforces."""
+        from plugins.platforms.whatsapp.adapter import _apply_yaml_config
+
+        monkeypatch.delenv("WHATSAPP_ALLOWED_USERS", raising=False)
+        _apply_yaml_config({}, {"allow_from": '["15551234567", "15557654321"]'})
+        import os
+
+        assert os.environ["WHATSAPP_ALLOWED_USERS"] == "15551234567,15557654321"

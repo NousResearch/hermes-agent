@@ -31,6 +31,7 @@ defined on the mixin and may be overridden per-adapter if needed.
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import os
@@ -59,6 +60,40 @@ def _get_wsecret(name, default=None):
     return val if val is not None else default
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_allow_list_value(raw: Any) -> str:
+    """Render an allowlist-ish value as a clean comma string.
+
+    Accepts a YAML list, a JSON-array string (the shape ``hermes config
+    set`` produced before #88163, and easy to hand-write), or a plain
+    comma string. Bracket/quote pollution must never reach the gates or
+    the bridge env export: ``'["1555", "1555"]'`` split on commas yields
+    entries that can never match a sender, silently deafening the bot
+    (#102329). Python-literal lists (``"['1555']"``) are accepted too,
+    mirroring ``parse_config_string_list``.
+    """
+    if isinstance(raw, list):
+        parts = [str(part).strip() for part in raw]
+    else:
+        text = str(raw or "").strip()
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                parsed = None
+            if not isinstance(parsed, list):
+                try:
+                    parsed = ast.literal_eval(text)
+                except (ValueError, SyntaxError):
+                    parsed = None
+            if isinstance(parsed, list):
+                parts = [str(part).strip() for part in parsed]
+            else:
+                parts = [part.strip() for part in text.split(",")]
+        else:
+            parts = [part.strip() for part in text.split(",")]
+    return ",".join(part for part in parts if part)
 
 
 class WhatsAppBehaviorMixin:
@@ -141,18 +176,14 @@ class WhatsAppBehaviorMixin:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
             raw = _get_wsecret("WHATSAPP_FREE_RESPONSE_CHATS", default="") or ""
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        return {part.strip() for part in str(raw).split(",") if part.strip()}
+        return set(filter(None, _normalize_allow_list_value(raw).split(",")))
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
         """Parse allow_from / group_allow_from from config or env var."""
         if raw is None:
             return set()
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        return {part.strip() for part in str(raw).split(",") if part.strip()}
+        return set(filter(None, _normalize_allow_list_value(raw).split(",")))
 
     def _live_dm_allow_from(self) -> set[str]:
         """Allowlist currently enforced for DM intake / strict DM auth.

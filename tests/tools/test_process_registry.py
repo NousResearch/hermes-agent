@@ -535,6 +535,73 @@ class TestOrphanedPipeReconciliation:
         assert elapsed < 0.9  # must stay under the old 1s poll tick being regression-tested, f"wait() should wake on completion; took {elapsed:.3f}s"
 
 
+
+# =========================================================================
+# EOF-while-alive: capture pipe closes before process exits (issue #86416)
+# =========================================================================
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: pipe EOF semantics")
+class TestReaderLoopEofWhileAlive:
+    """Regression tests for issue #86416.
+
+    A child that redirects or closes its stdout/stderr can make the reader
+    reach EOF while the process is still alive. _reader_loop must not treat
+    that EOF as a real exit, because it would emit a completion with
+    exit_code=None and allow the agent to launch a replacement while the
+    original worker is still running.
+    """
+
+    def test_eof_on_closed_capture_pipe_does_not_mark_exited(self, registry):
+        """The reader thread sees EOF, but the direct child is still alive."""
+        session = registry.spawn_local(
+            f"{sys.executable} -c 'import os, sys, time; os.close(1); os.close(2); time.sleep(30)'",
+            cwd="/tmp",
+        )
+
+        # Wait for the reader thread to notice EOF and exit.
+        assert _wait_until(lambda: not session._reader_thread.is_alive(), timeout=10.0), (
+            "reader thread should reach EOF after the child closes stdout/stderr"
+        )
+
+        # The direct child must still be running; the session must NOT have been
+        # marked as exited and moved to finished.
+        assert session.process.poll() is None
+        assert session.exited is False
+        assert session.id in registry._running
+        assert session.id not in registry._finished
+        assert registry.completion_queue.empty()
+
+        # Cleanup.
+        result = registry.kill_process(session.id)
+        assert result["status"] == "killed"
+
+    def test_real_exit_after_eof_is_reconciled(self, registry):
+        """After EOF-while-alive, poll()/wait() must still finish with the real rc."""
+        session = registry.spawn_local(
+            f"{sys.executable} -c "
+            "'import os, sys, time; os.close(1); os.close(2); time.sleep(8); raise SystemExit(7)'",
+            cwd="/tmp",
+        )
+
+        assert _wait_until(lambda: not session._reader_thread.is_alive(), timeout=10.0), (
+            "reader thread should reach EOF after the child closes stdout/stderr"
+        )
+        # Reader returned while the child is still in its sleep — the
+        # EOF-while-alive window this PR exists to keep open.
+        assert session.process.poll() is None
+        assert session.exited is False
+        assert session.id in registry._running
+
+        assert _wait_until(lambda: session.process.poll() is not None, timeout=10.0), (
+            "child should exit after the remaining sleep"
+        )
+        result = registry.poll(session.id)
+        assert result["status"] == "exited", result
+        assert result["exit_code"] == 7
+        assert session.id in registry._finished
+        assert session.id not in registry._running
+
+
 # =========================================================================
 # Read log
 # =========================================================================

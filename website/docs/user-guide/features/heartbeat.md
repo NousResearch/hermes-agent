@@ -47,6 +47,17 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 - **Cache-safe.** The injected prompt is an ordinary user message. No system-prompt mutation, no toolset change.
 - **Persistence.** State lives in `SessionDB.state_meta` keyed by `heartbeat:<session_id>` — it survives `/resume` and rides across context-compression session rotations. Firing requires the owning process (CLI session or gateway) to be running; for schedules that must survive anything, use cron.
 - **Don't-invent-work guard.** The injected prompt tells the agent to reply briefly and stop when nothing meaningful changed, so an idle heartbeat doesn't generate busywork.
+- **Active hours (optional).** Restrict firing to a daily window via `config.yaml`:
+
+  ```yaml
+  heartbeat:
+    active_hours:
+      start: "08:00"   # inclusive
+      end: "22:00"     # exclusive; use e.g. 22:00–06:00 for an overnight window
+      timezone: "Asia/Kolkata"   # optional — falls back to your top-level `timezone`, else host-local
+  ```
+
+  Outside the window, due ticks are skipped (never queued) — the first poll inside the window fires immediately. Leave `start`/`end` empty (the default) for 24/7. Bounds must be distinct `HH:MM` values; anything else is ignored with a warning rather than guessed at.
 
 ## Example
 

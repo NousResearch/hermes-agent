@@ -33,7 +33,9 @@ import logging
 import re
 import time
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional
+from datetime import datetime, time as dtime
+from typing import Any, Dict, Optional, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,95 @@ HEARTBEAT_PROMPT_TEMPLATE = (
     "right now, reply briefly that nothing has changed and stop — do not "
     "invent work."
 )
+
+# ──────────────────────────────────────────────────────────────────────
+# Active hours (#93029) — optional timezone-aware fire window
+# ──────────────────────────────────────────────────────────────────────
+
+_HHMM_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+
+_warned_active_hours = False
+
+
+def parse_hhmm(value: Any) -> Optional[dtime]:
+    """Parse an ``HH:MM`` string into a time, or None when not valid."""
+    match = _HHMM_RE.match(str(value or ""))
+    if not match:
+        return None
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    return dtime(hour, minute)
+
+
+def _warn_active_hours_once(message: str) -> None:
+    global _warned_active_hours
+    if _warned_active_hours:
+        return
+    _warned_active_hours = True
+    logger.warning("heartbeat.active_hours: %s", message)
+
+
+def resolve_active_hours() -> Optional[Tuple[dtime, dtime, Optional[ZoneInfo]]]:
+    """Read ``heartbeat.active_hours`` from config.yaml.
+
+    Returns ``(start, end, tz)`` where start is inclusive, end exclusive,
+    and tz is None for host-local time — or None when no usable window is
+    configured (feature unused, or a rejected/misconfigured window: the
+    documented behavior for equal or unparseable bounds is to ignore the
+    window with a warning rather than guess which side the operator meant).
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+    except Exception:
+        return None
+    section = cfg.get("heartbeat")
+    active = section.get("active_hours") if isinstance(section, dict) else None
+    if not isinstance(active, dict):
+        return None
+    start = parse_hhmm(active.get("start"))
+    end = parse_hhmm(active.get("end"))
+    if start is None and end is None:
+        return None
+    if start is None or end is None or start == end:
+        _warn_active_hours_once(
+            "ignored — need distinct HH:MM 'start' and 'end' values "
+            "(start inclusive, end exclusive); running 24/7 instead"
+        )
+        return None
+    tz_name = str(active.get("timezone") or "").strip()
+    if not tz_name:
+        # Fall back to Hermes' own top-level configured timezone.
+        tz_name = str(cfg.get("timezone") or "").strip()
+    tz = None
+    if tz_name:
+        try:
+            tz = ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            _warn_active_hours_once(
+                f"timezone {tz_name!r} unknown; using host-local time"
+            )
+    return start, end, tz
+
+
+def in_active_hours(now: Optional[float] = None) -> bool:
+    """True when ``now`` falls inside the configured active window.
+
+    No window → always True (24/7, the unchanged default). Overnight
+    windows (e.g. 22:00–06:00) wrap midnight. Start inclusive, end
+    exclusive.
+    """
+    window = resolve_active_hours()
+    if window is None:
+        return True
+    start, end, tz = window
+    moment = datetime.fromtimestamp(now if now is not None else time.time(), tz)
+    current = moment.time().replace(tzinfo=None)
+    if start < end:
+        return start <= current < end
+    return current >= start or current < end
 
 _INTERVAL_RE = re.compile(
     r"^\s*(?:every\s+)?(\d+(?:\.\d+)?)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?)\s*$",
@@ -231,7 +322,16 @@ class HeartbeatManager:
         if s.status == "active":
             anchor = s.last_fired_at or s.created_at
             next_in = max(0, int(anchor + s.interval_seconds - time.time()))
-            return f"♥ Heartbeat (every {every}, next in ~{next_in}s{fired}): {s.prompt}"
+            window = resolve_active_hours()
+            hours = ""
+            if window is not None:
+                start, end, tz = window
+                tz_label = f" {tz}" if tz else ""
+                hours = f", active {start.strftime('%H:%M')}–{end.strftime('%H:%M')}{tz_label}"
+            return (
+                f"♥ Heartbeat (every {every}, next in ~{next_in}s"
+                f"{hours}{fired}): {s.prompt}"
+            )
         if s.status == "paused":
             return f"⏸ Heartbeat (paused, every {every}{fired}): {s.prompt}"
         return f"Heartbeat ({s.status}, every {every}{fired}): {s.prompt}"
@@ -288,9 +388,16 @@ class HeartbeatManager:
         polls or a long turn can never double-fire the same tick. Missed
         ticks coalesce into one — the anchor resets to NOW, not to the
         theoretical schedule.
+
+        Active-hours gate (#93029): outside the configured window the due
+        tick is skipped WITHOUT being recorded, so the first poll inside
+        the window fires immediately (the anchor already elapsed) — an
+        out-of-window occurrence never queues a backlog.
         """
         s = self._state
         if s is None or not s.is_due(now):
+            return None
+        if not in_active_hours(now):
             return None
         s.last_fired_at = now if now is not None else time.time()
         s.fire_count += 1
@@ -332,4 +439,7 @@ __all__ = [
     "HEARTBEAT_PROMPT_TEMPLATE",
     "MIN_INTERVAL_SECONDS",
     "POLL_SECONDS",
+    "parse_hhmm",
+    "resolve_active_hours",
+    "in_active_hours",
 ]

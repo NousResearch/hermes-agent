@@ -2260,6 +2260,23 @@ DEFAULT_CONFIG = {
         "self_paced_ceiling_seconds": 900,
     },
 
+    # Heartbeat — /heartbeat recurring in-session wakeups. The per-session
+    # prompt/interval live in session state; this section only carries the
+    # optional global time window (#93029).
+    "heartbeat": {
+        # Restrict heartbeat turns to an active window. Empty start/end =
+        # 24/7 (unchanged default). start inclusive, end exclusive; an
+        # overnight window like 22:00–06:00 wraps midnight. Out-of-window
+        # ticks are skipped (not queued) until the first in-window tick.
+        "active_hours": {
+            "start": "",
+            "end": "",
+            # IANA zone name for the window; empty = the top-level
+            # `timezone` setting, else host-local time.
+            "timezone": "",
+        },
+    },
+
     # Mixture of Agents — named presets used by /moa. A preset is an execution
     # mode around the main model, not a provider/model itself: references +
     # aggregator synthesize private guidance before each main-model iteration.

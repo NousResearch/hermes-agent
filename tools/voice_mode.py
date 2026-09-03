@@ -1839,7 +1839,15 @@ def listen_for_speech(
 
     from collections import deque
 
-    block = int(SAMPLE_RATE * 0.03)  # 30ms blocks
+    # Some devices reject a bare-16 kHz InputStream (PaErrorCode -9997);
+    # AudioRecorder already captures at the device's native rate for this
+    # reason (see _default_input_samplerate). block is sized off the same
+    # rate so every *_blocks count below still spans its documented 30ms —
+    # sizing it off the fixed SAMPLE_RATE constant while opening the stream
+    # at a different rate would silently desync the block-count timers
+    # (calibration/trip/endpoint durations) from wall-clock time.
+    capture_rate = _default_input_samplerate(sd)
+    block = int(capture_rate * 0.03)  # 30ms blocks
     calib_blocks = max(1, calibration_ms // 30)
     trip_blocks = max(1, sustained_ms // 30)
     endpoint_blocks = max(1, endpoint_silence_ms // 30)
@@ -1858,7 +1866,7 @@ def listen_for_speech(
     block_idx = 0  # block counter for diagnostic logging
 
     try:
-        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block) as stream:
+        with sd.InputStream(samplerate=capture_rate, channels=1, dtype="int16", blocksize=block) as stream:
             while not should_stop():
                 data, _ = stream.read(block)
                 rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
@@ -1956,7 +1964,9 @@ def listen_for_speech(
                     quiet = quiet + 1 if rms < SILENCE_RMS_THRESHOLD else 0
                     if quiet >= endpoint_blocks:
                         break
-                return AudioRecorder._write_wav(np.concatenate(frames, axis=0))
+                return AudioRecorder._write_wav(
+                    np.concatenate(frames, axis=0), sample_rate=capture_rate
+                )
     except Exception as e:
         logger.debug("Barge-in listener failed: %s", e)
     return None if capture else False
@@ -2062,7 +2072,12 @@ def full_duplex_listen(
 
     from collections import deque
 
-    block = int(SAMPLE_RATE * 0.03)  # 30ms blocks
+    # See listen_for_speech's identical capture_rate handling: some devices
+    # reject a bare-16 kHz InputStream, so capture at the device's native
+    # rate and size block off it so every *_blocks count below still spans
+    # its documented 30ms.
+    capture_rate = _default_input_samplerate(sd)
+    block = int(capture_rate * 0.03)  # 30ms blocks
     calib_blocks = max(1, calibration_ms // 30)
     trip_blocks = max(1, sustained_ms // 30)
     trip_needed = max(1, int(round(trip_blocks * 0.8)))
@@ -2084,7 +2099,7 @@ def full_duplex_listen(
 
     try:
         with sd.InputStream(
-            samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block
+            samplerate=capture_rate, channels=1, dtype="int16", blocksize=block
         ) as stream:
             while not should_stop():
                 data, _ = stream.read(block)
@@ -2195,7 +2210,9 @@ def full_duplex_listen(
                     quiet = quiet + 1 if rms < SILENCE_RMS_THRESHOLD else 0
                     if quiet >= endpoint_blocks:
                         break
-                return AudioRecorder._write_wav(np.concatenate(frames, axis=0))
+                return AudioRecorder._write_wav(
+                    np.concatenate(frames, axis=0), sample_rate=capture_rate
+                )
     except Exception as e:
         logger.debug("Full-duplex listener failed: %s", e)
     return None

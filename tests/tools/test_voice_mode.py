@@ -1171,7 +1171,11 @@ class TestListenForSpeechCapture:
         written = {}
         monkeypatch.setattr(
             "tools.voice_mode.AudioRecorder._write_wav",
-            staticmethod(lambda audio: written.update(audio=audio) or "/tmp/barge.wav"),
+            staticmethod(
+                lambda audio, sample_rate=None: written.update(
+                    audio=audio, sample_rate=sample_rate
+                ) or "/tmp/barge.wav"
+            ),
         )
         from tools.voice_mode import listen_for_speech
         stops = iter([False] * 200 + [True] * 10_000)
@@ -1221,7 +1225,11 @@ class TestFullDuplexListen:
         written = {}
         monkeypatch.setattr(
             "tools.voice_mode.AudioRecorder._write_wav",
-            staticmethod(lambda audio: written.update(audio=audio) or "/tmp/fd.wav"),
+            staticmethod(
+                lambda audio, sample_rate=None: written.update(
+                    audio=audio, sample_rate=sample_rate
+                ) or "/tmp/fd.wav"
+            ),
         )
         from tools.voice_mode import full_duplex_listen
 
@@ -1374,6 +1382,63 @@ class TestDefaultInputSamplerate:
         assert wav_path is not None
         with wave.open(wav_path, "rb") as wf:
             assert wf.getframerate() == 48000
+
+    def test_listen_for_speech_captures_at_device_native_rate(self, mock_sd, monkeypatch):
+        """listen_for_speech must open its InputStream — and write its WAV —
+        at the device's native rate, same as AudioRecorder, not the fixed
+        16 kHz SAMPLE_RATE constant (some devices reject a bare-16 kHz
+        stream; see test_wav_written_at_capture_rate)."""
+        np = pytest.importorskip("numpy")
+        mock_sd.query_devices.return_value = {"default_samplerate": 48000.0}
+        calib_blocks = 14  # 400ms / 30ms default calibration_ms
+        levels = [0] * calib_blocks + [5000] * 30 + [0] * 500
+        stream = _FakeInputStream(np, levels)
+        mock_sd.InputStream.return_value = stream
+        written = {}
+        monkeypatch.setattr(
+            "tools.voice_mode.AudioRecorder._write_wav",
+            staticmethod(
+                lambda audio, sample_rate=None: written.update(
+                    sample_rate=sample_rate
+                ) or "/tmp/barge.wav"
+            ),
+        )
+        from tools.voice_mode import listen_for_speech
+
+        stops = iter([False] * 200 + [True] * 10_000)
+        path = listen_for_speech(lambda: next(stops), capture=True)
+
+        assert path == "/tmp/barge.wav"
+        assert mock_sd.InputStream.call_args.kwargs["samplerate"] == 48000
+        assert written.get("sample_rate") == 48000
+
+    def test_full_duplex_listen_captures_at_device_native_rate(self, mock_sd, monkeypatch):
+        """full_duplex_listen must open its InputStream — and write its WAV
+        — at the device's native rate, same as listen_for_speech/
+        AudioRecorder."""
+        np = pytest.importorskip("numpy")
+        mock_sd.query_devices.return_value = {"default_samplerate": 48000.0}
+        calib_blocks = 15  # 450ms / 30ms default calibration_ms
+        levels = [100] * calib_blocks + [5000] * 30 + [0] * 500
+        stream = _FakeInputStream(np, levels)
+        mock_sd.InputStream.return_value = stream
+        written = {}
+        monkeypatch.setattr(
+            "tools.voice_mode.AudioRecorder._write_wav",
+            staticmethod(
+                lambda audio, sample_rate=None: written.update(
+                    sample_rate=sample_rate
+                ) or "/tmp/fd.wav"
+            ),
+        )
+        from tools.voice_mode import full_duplex_listen
+
+        stops = iter([False] * len(levels) + [True] * 10_000)
+        path = full_duplex_listen(lambda: next(stops), is_playing=lambda: False)
+
+        assert path == "/tmp/fd.wav"
+        assert mock_sd.InputStream.call_args.kwargs["samplerate"] == 48000
+        assert written.get("sample_rate") == 48000
 
 
 class TestWSL2PowerShellFallback:

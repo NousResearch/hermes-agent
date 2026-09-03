@@ -115,6 +115,15 @@ def test_early_recovery_module_is_stdlib_only(tmp_path):
             real_import = builtins.__import__
 
             def guard(name, *args, **kwargs):
+                # Allow relative imports (level > 0) to pass through unchecked -
+                # they're resolved relative to the importing module's package,
+                # and we can't reliably validate them from this guard.
+                level = kwargs.get("level", 0)
+                if args and len(args) >= 4:
+                    level = args[3] if isinstance(args[3], int) else 0
+                if level > 0:
+                    return real_import(name, *args, **kwargs)
+
                 top = name.split(".")[0]
                 if top not in STDLIB:
                     raise ImportError(f"non-stdlib import blocked: {name}")

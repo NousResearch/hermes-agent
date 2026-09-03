@@ -141,3 +141,42 @@ async def test_base_auto_tts_skips_playback_when_tool_reports_failure():
     adapter.play_tts.assert_not_awaited()
     # Text reply still goes out.
     assert adapter.sent and adapter.sent[0]["content"] == "reply text"
+
+
+@pytest.mark.asyncio
+async def test_base_auto_tts_fences_after_synthesis_before_voice_egress():
+    adapter = _DummyAdapter(Platform.TELEGRAM)
+    adapter._keep_typing = _hold_typing()
+    adapter._should_auto_tts_for_chat = lambda _chat_id: True
+    adapter.set_message_handler(
+        lambda _event: asyncio.sleep(0, result="x" * 2000)
+    )
+    event = _make_voice_event(Platform.TELEGRAM)
+    order = []
+
+    async def record_fence(chat_id, lease_id):
+        order.append("fence")
+
+    async def record_voice(**kwargs):
+        order.append("voice")
+        return SendResult(success=True, message_id="tts-1")
+
+    adapter._fence_typing_lease_before_final = AsyncMock(side_effect=record_fence)
+    adapter.play_tts = AsyncMock(side_effect=record_voice)
+
+    def fake_tts(*, text, output_path=None):
+        from pathlib import Path
+
+        order.append("synthesis")
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"fake audio")
+        return json.dumps({"success": True, "file_path": output_path})
+
+    with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+        "tools.tts_tool.text_to_speech_tool", side_effect=fake_tts
+    ):
+        await adapter._process_message_background(
+            event, build_session_key(event.source)
+        )
+
+    assert order[:3] == ["synthesis", "fence", "voice"]

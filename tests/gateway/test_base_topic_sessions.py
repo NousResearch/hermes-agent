@@ -13,6 +13,8 @@ from gateway.session import SessionSource, build_session_key
 
 
 class DummyTelegramAdapter(BasePlatformAdapter):
+    typing_send_requires_final_fence = True
+
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="fake-token"), Platform.TELEGRAM)
         self._busy_text_mode = ""
@@ -119,12 +121,10 @@ class TestBasePlatformTopicSessions:
                 "metadata": {"thread_id": "17585", "notify": True},
             }
         ]
-        assert typing_calls == [
-            {
-                "chat_id": "-1001",
-                "metadata": {"thread_id": "17585"},
-            }
-        ]
+        assert len(typing_calls) == 1
+        assert typing_calls[0]["chat_id"] == "-1001"
+        assert typing_calls[0]["metadata"]["thread_id"] == "17585"
+        assert "_hermes_typing_lease_id" in typing_calls[0]["metadata"]
         assert {
             "chat_id": "-1001",
             "stopped": True,

@@ -614,6 +614,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    # A typing HTTP request can be server-visible even if client cancellation
+    # wins locally; final delivery therefore fences it instead of timing out.
+    typing_send_requires_final_fence = True
     supports_code_blocks = True  # Telegram MarkdownV2 renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Bot API 10.1 Rich Messages cap the raw markdown/html text at 32,768
@@ -5458,6 +5461,22 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    async def _fence_typing_before_final_delivery(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        finalize: bool = False,
+        is_turn_final: Optional[bool] = None,
+    ) -> None:
+        """Fence a lease before any visible final Telegram operation."""
+        turn_final = finalize if is_turn_final is None else is_turn_final
+        if not turn_final and not (metadata or {}).get("notify"):
+            return
+        lease_id = (metadata or {}).get("_hermes_typing_lease_id")
+        if lease_id:
+            await self._fence_typing_lease_before_final(chat_id, str(lease_id))
+
     async def send(
         self,
         chat_id: str,
@@ -5489,6 +5508,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+        await self._fence_typing_before_final_delivery(chat_id, metadata)
         
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
@@ -5838,7 +5858,12 @@ class TelegramAdapter(BasePlatformAdapter):
         cached_id = self._status_message_ids.get(key)
         if cached_id is not None:
             result = await self.edit_message(
-                chat_id, cached_id, content, finalize=True, metadata=metadata,
+                chat_id,
+                cached_id,
+                content,
+                finalize=True,
+                is_turn_final=False,
+                metadata=metadata,
             )
             if result.success:
                 if result.message_id:
@@ -5851,6 +5876,23 @@ class TelegramAdapter(BasePlatformAdapter):
             self._status_message_ids[key] = str(result.message_id)
         return result
 
+    async def _rearm_typing_after_intermediate_edit(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        finalize: bool = False,
+        is_turn_final: Optional[bool] = None,
+    ) -> None:
+        """Restore Telegram's action timer after a visible progress edit."""
+        turn_final = finalize if is_turn_final is None else is_turn_final
+        if turn_final or (metadata or {}).get("notify"):
+            return
+        try:
+            await self.send_typing(chat_id, metadata=metadata)
+        except Exception:
+            pass  # Typing failures are non-fatal
+
     async def edit_message(
         self,
         chat_id: str,
@@ -5858,6 +5900,7 @@ class TelegramAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        is_turn_final: Optional[bool] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit a previously sent Telegram message.
@@ -5872,6 +5915,22 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        await self._fence_typing_before_final_delivery(
+            chat_id,
+            metadata,
+            finalize=finalize,
+            is_turn_final=is_turn_final,
+        )
+
+        async def _finish_edit(result: SendResult) -> SendResult:
+            if result.success:
+                await self._rearm_typing_after_intermediate_edit(
+                    chat_id,
+                    metadata,
+                    finalize=finalize,
+                    is_turn_final=is_turn_final,
+                )
+            return result
 
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet
@@ -5888,7 +5947,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id, message_id, content, metadata=metadata,
             )
             if rich_result is not None:
-                return rich_result
+                return await _finish_edit(rich_result)
 
         # Pre-flight: if content already exceeds the limit, split-and-deliver
         # without round-tripping a doomed edit.  During streaming
@@ -5905,8 +5964,14 @@ class TelegramAdapter(BasePlatformAdapter):
             self._last_overflow_preview.pop(_preview_key, None)
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
             if finalize:
-                return await self._edit_overflow_split(
-                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                return await _finish_edit(
+                    await self._edit_overflow_split(
+                        chat_id,
+                        message_id,
+                        content,
+                        finalize=finalize,
+                        metadata=metadata,
+                    )
                 )
             content = self._truncate_stream_overflow_preview(content)
             _saturated_preview = True
@@ -5933,7 +5998,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = content
-                return SendResult(success=True, message_id=message_id)
+                return await _finish_edit(
+                    SendResult(success=True, message_id=message_id)
+                )
 
             formatted = self.format_message(content)
             try:
@@ -5946,7 +6013,9 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as fmt_err:
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
-                    return SendResult(success=True, message_id=message_id)
+                    return await _finish_edit(
+                        SendResult(success=True, message_id=message_id)
+                    )
                 # Fallback: strip MarkdownV2 escapes and retry as clean plain text
                 safe_format_error = _redact_telegram_error_text(fmt_err)
                 logger.warning(
@@ -5960,12 +6029,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=_plain,
                 )
-            return SendResult(success=True, message_id=message_id)
+            return await _finish_edit(
+                SendResult(success=True, message_id=message_id)
+            )
         except Exception as e:
             err_str = str(e).lower()
             # "Message is not modified" — content identical, treat as success
             if "not modified" in err_str:
-                return SendResult(success=True, message_id=message_id)
+                return await _finish_edit(
+                    SendResult(success=True, message_id=message_id)
+                )
             # Reactive split-and-deliver: parse_mode formatting can inflate
             # the payload past the limit even when the raw text was under
             # (e.g. MarkdownV2 escapes).  Same fix as the pre-flight path.
@@ -5975,8 +6048,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, utf16_len(content), self.MAX_MESSAGE_LENGTH,
                 )
                 if finalize:
-                    return await self._edit_overflow_split(
-                        chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                    return await _finish_edit(
+                        await self._edit_overflow_split(
+                            chat_id,
+                            message_id,
+                            content,
+                            finalize=finalize,
+                            metadata=metadata,
+                        )
                     )
                 # Mid-stream: truncate and retry instead of splitting (#48648).
                 truncated = self._truncate_stream_overflow_preview(content)
@@ -5989,7 +6068,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     text=truncated,
                 )
                 self._last_overflow_preview[_preview_key] = truncated
-                return SendResult(success=True, message_id=message_id)
+                return await _finish_edit(
+                    SendResult(success=True, message_id=message_id)
+                )
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
             # to a normal final send instead of leaving a truncated partial.
@@ -6009,7 +6090,9 @@ class TelegramAdapter(BasePlatformAdapter):
                         message_id=int(message_id),
                         text=content,
                     )
-                    return SendResult(success=True, message_id=message_id)
+                    return await _finish_edit(
+                        SendResult(success=True, message_id=message_id)
+                    )
                 except Exception as retry_err:
                     safe_retry_error = _redact_telegram_error_text(retry_err)
                     logger.error(
@@ -8696,8 +8779,14 @@ class TelegramAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
         retry_after = getattr(exc, "retry_after", None)
         try:
-            delay = float(retry_after) if retry_after is not None else self._telegram_typing_cooldown_seconds
-        except (TypeError, ValueError):
+            total_seconds = getattr(retry_after, "total_seconds", None)
+            if callable(total_seconds):
+                delay = float(total_seconds())
+            elif retry_after is not None:
+                delay = float(retry_after)
+            else:
+                delay = self._telegram_typing_cooldown_seconds
+        except (TypeError, ValueError, OverflowError):
             delay = self._telegram_typing_cooldown_seconds
         delay = max(1.0, min(delay, 300.0))
         self._telegram_typing_cooldown_until[str(chat_id)] = loop.time() + delay
@@ -8714,9 +8803,48 @@ class TelegramAdapter(BasePlatformAdapter):
         self._telegram_typing_cooldown_until.pop(str(chat_id), None)
         return False
 
+    async def _await_typing_transport(self, awaitable: Awaitable[Any]) -> Any:
+        """Drain an admitted typing request before propagating cancellation."""
+        transport_task = asyncio.ensure_future(awaitable)
+        caller_cancelled = False
+        transport_error: Optional[Exception] = None
+
+        while not transport_task.done():
+            try:
+                await asyncio.shield(transport_task)
+            except asyncio.CancelledError:
+                caller_cancelled = True
+            except Exception as exc:
+                transport_error = exc
+                break
+
+        if caller_cancelled:
+            # The result is intentionally consumed: cancellation wins for the
+            # caller, but only after Telegram's admitted request has returned.
+            try:
+                transport_task.result()
+            except BaseException:
+                pass
+            raise asyncio.CancelledError()
+        if transport_error is not None:
+            raise transport_error
+        return transport_task.result()
+
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
-        """Send typing indicator."""
-        if not self._bot or self._typing_in_cooldown(chat_id):
+        """Send typing indicator when the platform policy permits it."""
+        # This is the policy-enforcement boundary: progress, streaming, and
+        # queued-follow-up paths call send_typing() directly and therefore do
+        # not pass through base.py's _keep_typing() config gate.
+        if not getattr(self.config, "typing_indicator", True):
+            return
+        if not self._typing_lease_allows(chat_id, metadata):
+            return
+        if not self._bot:
+            replacement = self._replacement_telegram_adapter()
+            if replacement is not None:
+                await replacement.send_typing(chat_id, metadata=metadata)
+            return
+        if self._typing_in_cooldown(chat_id):
             return
 
         _is_dm_topic: bool = False
@@ -8725,11 +8853,21 @@ class TelegramAdapter(BasePlatformAdapter):
             _typing_thread = self._metadata_thread_id(metadata)
             _is_dm_topic = bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
             message_thread_id = self._message_thread_id_for_typing(_typing_thread)
-            await self._bot.send_chat_action(
-                chat_id=normalize_telegram_chat_id(chat_id),
-                action="typing",
-                message_thread_id=message_thread_id,
-            )
+            async with self._typing_lease_lock(chat_id):
+                if (
+                    not getattr(self.config, "typing_indicator", True)
+                    or not self._typing_lease_allows(chat_id, metadata)
+                    or not self._bot
+                    or self._typing_in_cooldown(chat_id)
+                ):
+                    return
+                await self._await_typing_transport(
+                    self._bot.send_chat_action(
+                        chat_id=normalize_telegram_chat_id(chat_id),
+                        action="typing",
+                        message_thread_id=message_thread_id,
+                    )
+                )
             self._telegram_typing_cooldown_until.pop(str(chat_id), None)
         except Exception as e:
             # For DM topic lanes, Telegram may reject message_thread_id.
@@ -8737,10 +8875,20 @@ class TelegramAdapter(BasePlatformAdapter):
             # indicator at least appears in the main DM view.
             if _is_dm_topic and message_thread_id is not None:
                 try:
-                    await self._bot.send_chat_action(
-                        chat_id=normalize_telegram_chat_id(chat_id),
-                        action="typing",
-                    )
+                    async with self._typing_lease_lock(chat_id):
+                        if (
+                            not getattr(self.config, "typing_indicator", True)
+                            or not self._typing_lease_allows(chat_id, metadata)
+                            or not self._bot
+                            or self._typing_in_cooldown(chat_id)
+                        ):
+                            return
+                        await self._await_typing_transport(
+                            self._bot.send_chat_action(
+                                chat_id=normalize_telegram_chat_id(chat_id),
+                                action="typing",
+                            )
+                        )
                     self._telegram_typing_cooldown_until.pop(str(chat_id), None)
                     return
                 except Exception as fallback_exc:

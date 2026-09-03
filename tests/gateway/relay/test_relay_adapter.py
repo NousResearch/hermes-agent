@@ -176,6 +176,26 @@ async def test_send_reattaches_dm_user_id_from_inbound_scope():
 
 
 @pytest.mark.asyncio
+async def test_private_typing_lease_is_not_serialized_to_relay():
+    t = _CaptureTransport()
+    a = RelayAdapter(
+        PlatformConfig(), make_desc(platform="discord"), transport=t
+    )
+    event = _make_event(chat_id="chan-1", scope_id="scope-9")
+    a._capture_scope(event)
+    session_key = "relay:scope-9:chan-1"
+    a._begin_typing_lease("chan-1", session_key)
+    metadata = a._typing_metadata_for_session(
+        session_key, {"thread_id": "thread-1"}
+    )
+
+    await a.send("chan-1", "reply", metadata=metadata)
+
+    assert t.sent["metadata"]["thread_id"] == "thread-1"
+    assert "_hermes_typing_lease_id" not in t.sent["metadata"]
+
+
+@pytest.mark.asyncio
 async def test_scoped_reply_reattaches_both_scope_id_and_user_id():
     """A scoped (guild) reply now re-attaches BOTH scope_id AND the authentic
     author user_id. scope_id is the connector's primary discriminator; user_id

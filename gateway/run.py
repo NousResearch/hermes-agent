@@ -6041,6 +6041,7 @@ class TurnRunner:
                         self._runner._build_stream_consumer_config(
                             ctx.source, _scfg, _adapter,
                             on_missing_cursor="raise",
+                            typing_metadata=ctx._status_thread_metadata,
                         )
                     )
                     _stream_consumer = GatewayStreamConsumer(
@@ -23777,7 +23778,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 not _streaming_tts_done
                 and self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent)
             ):
-                await self._send_voice_reply(event, response)
+                await self._send_voice_reply(
+                    event, response, session_key=session_key
+                )
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -25138,16 +25141,102 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Return whether inbound voice/STT transcripts should be echoed to chat."""
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
+    def _adapter_for_final_delivery(self, source, fallback=None):
+        """Resolve the live transport immediately before a new final payload.
+
+        A handler may outlive the adapter that accepted its inbound event.  Keep
+        the supplied adapter only as a fallback for runners without a current
+        registry entry; callers re-resolve before each independently unsent
+        payload so a second reconnect cannot strand later attachments.
+        """
+        try:
+            current = self._adapter_for_source(source)
+        except Exception:
+            logger.debug("Failed to resolve live adapter for final delivery", exc_info=True)
+            current = None
+        return current if current is not None else fallback
+
+    async def _send_voice_reply(
+        self,
+        event: MessageEvent,
+        text: str,
+        *,
+        session_key: Optional[str] = None,
+    ) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
         audio_path = None
         actual_paths: List[str] = []
+        adapter = None
+        lease_id = ""
+        synthesis_lease_started = False
+        lease_fenced = False
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
             tts_text = _strip_markdown_for_tts(text)
             if not tts_text:
                 return
+
+            adapter = self._adapter_for_source(event.source)
+
+            # Resolve the destination before synthesis. A streamed text final has
+            # already fenced its original typing lease, so Telegram needs a new
+            # short-lived lease while the potentially slow TTS work is running.
+            guild_id = self._get_guild_id(event)
+            play_in_voice_channel = getattr(adapter, "play_in_voice_channel", None)
+            is_in_voice_channel = getattr(adapter, "is_in_voice_channel", None)
+            send_voice = getattr(adapter, "send_voice", None)
+            in_voice_channel = bool(
+                guild_id
+                and callable(play_in_voice_channel)
+                and callable(is_in_voice_channel)
+                and is_in_voice_channel(guild_id)
+            )
+            reply_anchor = self._reply_anchor_for_event(event)
+            thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+            stamp_typing_lease = None
+            if session_key is not None:
+                stamp_typing_lease = getattr(
+                    adapter, "_typing_metadata_for_session", None
+                )
+                if callable(stamp_typing_lease):
+                    thread_meta = stamp_typing_lease(session_key, thread_meta)
+                    lease_id = str(
+                        (thread_meta or {}).get("_hermes_typing_lease_id") or ""
+                    )
+
+            requires_typing_fence = (
+                getattr(adapter, "typing_send_requires_final_fence", False) is True
+            )
+            if (
+                session_key is not None
+                and not lease_id
+                and requires_typing_fence
+                and not in_voice_channel
+                and callable(send_voice)
+            ):
+                begin_typing_lease = getattr(adapter, "_begin_typing_lease", None)
+                if callable(begin_typing_lease):
+                    lease_id = str(
+                        begin_typing_lease(event.source.chat_id, session_key)
+                    )
+                    synthesis_lease_started = bool(lease_id)
+                    if callable(stamp_typing_lease):
+                        thread_meta = stamp_typing_lease(session_key, thread_meta)
+                    elif lease_id:
+                        thread_meta = dict(thread_meta or {})
+                        thread_meta["_hermes_typing_lease_id"] = lease_id
+                    send_typing = getattr(adapter, "send_typing", None)
+                    if synthesis_lease_started and callable(send_typing):
+                        try:
+                            await send_typing(
+                                event.source.chat_id,
+                                metadata=thread_meta,
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                "Could not start auto-TTS typing indicator: %s", exc
+                            )
 
             # Platform-aware output path: platforms whose native voice
             # bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS — Telegram,
@@ -25179,40 +25268,56 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
                 return
 
-            adapter = self._adapter_for_source(event.source)
+            # Mark the auto voice reply as notify-worthy. Mirrors the final-text
+            # path in gateway/platforms/base.py. Clone first so metadata shared
+            # with the typing indicator is not mutated.
+            if thread_meta is not None:
+                thread_meta = dict(thread_meta)
+                thread_meta["notify"] = True
+            else:
+                thread_meta = {"notify": True}
 
-            # If connected to a voice channel, play there instead of sending a file
-            guild_id = self._get_guild_id(event)
-            play_in_voice_channel = getattr(adapter, "play_in_voice_channel", None)
-            is_in_voice_channel = getattr(adapter, "is_in_voice_channel", None)
-            send_voice = getattr(adapter, "send_voice", None)
-            in_voice_channel = bool(
-                guild_id
-                and callable(play_in_voice_channel)
-                and callable(is_in_voice_channel)
-                and is_in_voice_channel(guild_id)
+            # Synthesis can outlive the ingress adapter. Fence through the live
+            # replacement, then re-resolve before every independently unsent
+            # file so another reconnect between files cannot route later audio
+            # through a disconnected transport.
+            delivery_adapter = GatewayRunner._adapter_for_final_delivery(self,
+                event.source, adapter
             )
-            reply_anchor = self._reply_anchor_for_event(event)
-            thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
-            if not in_voice_channel and callable(send_voice):
-                # Mark the auto voice reply as notify-worthy.  Mirrors the
-                # final-text path in gateway/platforms/base.py which sets
-                # ``notify=True`` so platform adapters that gate push
-                # notifications (Telegram "important" mode) deliver the
-                # final voice reply as a normal notification instead of a
-                # silent message.  Clone first so we don't mutate metadata
-                # shared with concurrent typing-indicator state.
-                if thread_meta is not None:
-                    thread_meta = dict(thread_meta)
-                    thread_meta["notify"] = True
-                else:
-                    thread_meta = {"notify": True}
+            fence_typing = getattr(
+                delivery_adapter, "_fence_typing_lease_before_final", None
+            )
+            if lease_id and callable(fence_typing):
+                await fence_typing(event.source.chat_id, lease_id)
+                lease_fenced = True
+
             for actual_path in actual_paths:
-                if in_voice_channel:
-                    play_voice = cast(Callable[..., Awaitable[Any]], play_in_voice_channel)
+                delivery_adapter = GatewayRunner._adapter_for_final_delivery(self,
+                    event.source, adapter
+                )
+                delivery_play_in_voice_channel = getattr(
+                    delivery_adapter, "play_in_voice_channel", None
+                )
+                delivery_is_in_voice_channel = getattr(
+                    delivery_adapter, "is_in_voice_channel", None
+                )
+                delivery_send_voice = getattr(delivery_adapter, "send_voice", None)
+                delivery_in_voice_channel = bool(
+                    guild_id
+                    and callable(delivery_play_in_voice_channel)
+                    and callable(delivery_is_in_voice_channel)
+                    and delivery_is_in_voice_channel(guild_id)
+                )
+                if delivery_in_voice_channel:
+                    play_voice = cast(
+                        Callable[..., Awaitable[Any]],
+                        delivery_play_in_voice_channel,
+                    )
                     await play_voice(guild_id, actual_path)
-                elif callable(send_voice):
-                    send_voice_call = cast(Callable[..., Awaitable[Any]], send_voice)
+                elif callable(delivery_send_voice):
+                    send_voice_call = cast(
+                        Callable[..., Awaitable[Any]], delivery_send_voice
+                    )
                     send_kwargs: Dict[str, Any] = {
                         "chat_id": event.source.chat_id,
                         "audio_path": actual_path,
@@ -25228,6 +25333,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     os.unlink(p)
                 except OSError:
                     pass
+            if synthesis_lease_started and lease_id and not lease_fenced:
+                cleanup_adapter = GatewayRunner._adapter_for_final_delivery(self,
+                    event.source, adapter
+                )
+                fence_typing = getattr(
+                    cleanup_adapter, "_fence_typing_lease_before_final", None
+                )
+                if callable(fence_typing):
+                    try:
+                        await fence_typing(event.source.chat_id, lease_id)
+                    except Exception as exc:
+                        logger.debug(
+                            "Could not close auto-TTS typing lease: %s", exc
+                        )
 
     async def _deliver_media_from_response(
         self,
@@ -25309,43 +25428,86 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     non_image_media.append((media_path, is_voice))
 
             if image_paths:
+                delivery_adapter = GatewayRunner._adapter_for_final_delivery(self,
+                    event.source, adapter
+                )
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(
+                    await delivery_adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
                         images=images,
                         metadata=_thread_meta,
                     )
                 except Exception as e:
-                    logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                    logger.warning(
+                        "[%s] Post-stream image batch delivery failed: %s",
+                        delivery_adapter.name,
+                        e,
+                    )
 
             for media_path, is_voice in non_image_media:
+                delivery_adapter = GatewayRunner._adapter_for_final_delivery(self,
+                    event.source, adapter
+                )
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        await delivery_adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                             is_voice=is_voice,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        await delivery_adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        await delivery_adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
                 except Exception as e:
-                    logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    logger.warning(
+                        "[%s] Post-stream media delivery failed: %s",
+                        delivery_adapter.name,
+                        e,
+                    )
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
+
+    @staticmethod
+    async def _edit_message_with_optional_metadata(
+        adapter,
+        *,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """Edit a message without breaking legacy adapter signatures."""
+        kwargs = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "content": content,
+            "finalize": finalize,
+        }
+        try:
+            params = inspect.signature(adapter.edit_message).parameters
+            accepts_kwargs = any(
+                param.kind is inspect.Parameter.VAR_KEYWORD
+                for param in params.values()
+            )
+            if metadata is not None and ("metadata" in params or accepts_kwargs):
+                kwargs["metadata"] = metadata
+        except (TypeError, ValueError):
+            pass
+        return await adapter.edit_message(**kwargs)
 
     async def _deliver_queued_first_response(
         self,
@@ -25359,8 +25521,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         stream_consumer=None,
     ) -> None:
         """Deliver a queued response using the normal text+attachment split."""
+        final_metadata = dict(metadata or {})
+        final_metadata["notify"] = True
+        delivery_adapter = GatewayRunner._adapter_for_final_delivery(
+            self, source, adapter
+        )
+        lease_id = final_metadata.get("_hermes_typing_lease_id")
+        fence = getattr(
+            delivery_adapter, "_fence_typing_lease_before_final", None
+        )
+        if lease_id and callable(fence):
+            await fence(source.chat_id, str(lease_id))
         if not text_already_delivered:
-            text_content = _strip_response_attachments_for_direct_send(response, adapter)
+            text_content = _strip_response_attachments_for_direct_send(
+                response, delivery_adapter
+            )
             if text_content:
                 # Reconcile-by-edit first (live finding, 2026-08-16 canary):
                 # when the stream consumer delivered/sealed a message but its
@@ -25378,11 +25553,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and not getattr(stream_consumer, "_turn_split_delivery", False)
                 ):
                     try:
-                        _edit_res = await adapter.edit_message(
+                        _edit_res = await self._edit_message_with_optional_metadata(
+                            delivery_adapter,
                             chat_id=source.chat_id,
                             message_id=_sc_msg_id,
                             content=text_content,
                             finalize=True,
+                            metadata=final_metadata,
                         )
                         if getattr(_edit_res, "success", False):
                             _reconciled = True
@@ -25396,10 +25573,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _qe,
                         )
                 if not _reconciled:
-                    await adapter.send(
+                    delivery_adapter = GatewayRunner._adapter_for_final_delivery(self,
+                        source, delivery_adapter
+                    )
+                    await delivery_adapter.send(
                         source.chat_id,
                         text_content,
-                        metadata=metadata,
+                        metadata=final_metadata,
                     )
 
         # Failed turns still deliver their (normalized failure) text above,
@@ -25417,9 +25597,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await self._deliver_media_from_response(
             response,
             synthetic_event,
-            adapter,
-            thread_metadata=metadata,
+            delivery_adapter,
+            thread_metadata=final_metadata,
         )
+
+    @staticmethod
+    def _renew_followup_typing_lease(
+        adapter,
+        *,
+        chat_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Give a queued Telegram turn a fresh private typing generation."""
+        if not getattr(adapter, "typing_send_requires_final_fence", False):
+            return metadata
+        begin_lease = getattr(adapter, "_begin_typing_lease", None)
+        stamp_lease = getattr(adapter, "_typing_metadata_for_session", None)
+        if not callable(begin_lease) or not callable(stamp_lease):
+            return metadata
+        begin_lease(chat_id, session_key)
+        return stamp_lease(session_key, metadata)
 
     async def _run_background_task(
         self,
@@ -30758,6 +30956,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter: Any,
         *,
         on_missing_cursor: str,
+        typing_metadata: Optional[Dict[str, Any]] = None,
     ) -> "tuple[Any, Optional[Callable[[], None]]]":
         """Build the shared ``StreamConsumerConfig`` and the optional
         Telegram pause-typing closure used by both agent-run paths.
@@ -30775,12 +30974,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from gateway.stream_consumer import StreamConsumerConfig
 
         _pause_typing_before_finalize = None
-        if source.platform == Platform.TELEGRAM and hasattr(adapter, "pause_typing_for_chat"):
-            def _pause_typing_before_finalize(
-                _adapter=adapter,
-                _chat_id=source.chat_id,
-            ) -> None:
-                _adapter.pause_typing_for_chat(_chat_id)
+        if source.platform == Platform.TELEGRAM:
+            lease_id = (typing_metadata or {}).get("_hermes_typing_lease_id")
+            fence = getattr(adapter, "_fence_typing_lease_before_final", None)
+            if lease_id and callable(fence):
+                async def _pause_typing_before_finalize(
+                    _fence=fence,
+                    _chat_id=source.chat_id,
+                    _lease_id=lease_id,
+                ) -> None:
+                    await _fence(_chat_id, _lease_id)
+            elif hasattr(adapter, "pause_typing_for_chat"):
+                def _pause_typing_before_finalize(
+                    _adapter=adapter,
+                    _chat_id=source.chat_id,
+                ) -> None:
+                    _adapter.pause_typing_for_chat(_chat_id)
         # Platforms that don't support editing sent messages
         # (e.g. QQ, WeChat) should skip streaming entirely —
         # without edit support, the consumer sends a partial
@@ -30948,6 +31157,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        _typing_adapter = self._adapter_for_source(source)
+        _stamp_typing_lease = getattr(_typing_adapter, "_typing_metadata_for_session", None)
+        if callable(_stamp_typing_lease):
+            _thread_metadata = _stamp_typing_lease(session_key, _thread_metadata)
 
         if _streaming_enabled:
             try:
@@ -30958,6 +31171,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         self._build_stream_consumer_config(
                             source, _scfg, _adapter,
                             on_missing_cursor="fallback",
+                            typing_metadata=_thread_metadata,
                         )
                     )
                     _stream_consumer = GatewayStreamConsumer(
@@ -31723,6 +31937,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # reply anchor; carry it so progress joins that thread.
             _progress_metadata = {"reply_to_message_id": event_message_id}
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
+        _typing_lease_adapter = self._adapter_for_source(source)
+        _stamp_typing_lease = getattr(
+            _typing_lease_adapter, "_typing_metadata_for_session", None
+        )
+        if callable(_stamp_typing_lease):
+            _progress_metadata = _stamp_typing_lease(session_key, _progress_metadata)
         if _native_slack_task_cards:
             # chat.startStream in channels requires the recipient team/user
             # pair; harmless extras elsewhere, so stamp them whenever known.
@@ -31875,6 +32095,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _status_thread_metadata = {
                     "reply_to_message_id": event_message_id
                 }
+        if callable(_stamp_typing_lease):
+            _status_thread_metadata = _stamp_typing_lease(
+                session_key, _status_thread_metadata
+            )
 
         # Bridge extracted to TurnRunner._status_callback_sync; publish the
         # status wiring computed above onto the shared TurnContext at the
@@ -32837,12 +33061,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
                 # typing task is still alive but may be stale.
-                _followup_adapter = self._adapter_for_source(source)
+                _followup_adapter = self._adapter_for_source(next_source)
                 if _followup_adapter:
                     try:
+                        _followup_typing_metadata = self._thread_metadata_for_source(
+                            next_source, next_message_id
+                        )
+                        _followup_typing_metadata = self._renew_followup_typing_lease(
+                            _followup_adapter,
+                            chat_id=next_source.chat_id,
+                            session_key=next_session_key,
+                            metadata=_followup_typing_metadata,
+                        )
                         await _followup_adapter.send_typing(
-                            source.chat_id,
-                            metadata=_status_thread_metadata,
+                            next_source.chat_id,
+                            metadata=_followup_typing_metadata,
                         )
                     except Exception:
                         pass
@@ -33050,11 +33283,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 elif _sc_msg_id and _sc_msg_id != "__no_edit__" and _sc_adapter is not None:
                     try:
-                        _reconcile_res = await _sc_adapter.edit_message(
+                        _reconcile_res = await self._edit_message_with_optional_metadata(
+                            _sc_adapter,
                             chat_id=source.chat_id,
                             message_id=_sc_msg_id,
                             content=_final,
                             finalize=True,
+                            metadata=_status_thread_metadata,
                         )
                         if getattr(_reconcile_res, "success", True):
                             response["already_sent"] = True
@@ -33084,11 +33319,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _sc_msg_id = _sc.message_id
                 if _sc_msg_id:
                     try:
-                        await _sc.adapter.edit_message(
+                        await self._edit_message_with_optional_metadata(
+                            _sc.adapter,
                             chat_id=source.chat_id,
                             message_id=_sc_msg_id,
                             content=response["final_response"],
                             finalize=True,
+                            metadata=_status_thread_metadata,
                         )
                         response["already_sent"] = True
                         logger.info(

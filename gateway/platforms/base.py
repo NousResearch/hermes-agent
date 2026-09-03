@@ -114,6 +114,16 @@ _HISTORY_MEDIA_LOOKUP_ADMISSION = threading.BoundedSemaphore(
     _HISTORY_MEDIA_LOOKUP_MAX_WORKERS
 )
 
+# Typing state belongs to a gateway runtime, not to one transport instance: a
+# Telegram reconnect can replace its adapter while an inbound task is alive.
+_TYPING_LEASE_GUARD = threading.RLock()
+_TYPING_LEASES: dict[str, tuple[str, str]] = {}
+_TYPING_LEASE_BY_SESSION: dict[tuple[str, str], str] = {}
+_TYPING_LEASE_CLOSING: set[str] = set()
+_TYPING_LEASE_LOCKS: weakref.WeakValueDictionary[
+    tuple[str, str, int], asyncio.Lock
+] = weakref.WeakValueDictionary()
+
 
 def _platform_name(platform) -> str:
     """Normalize a Platform enum / raw string into a lowercase name."""
@@ -173,6 +183,10 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
 def _mark_notify_metadata(metadata: dict | None) -> dict:
     """Clone metadata and mark a user-visible reply as notify-worthy."""
     notify_metadata = dict(metadata) if metadata else {}
+    # Typing leases are internal control-plane state. Final user-visible sends
+    # must not retain the token because Telegram's post-send typing re-arm is
+    # explicitly suppressed for notify replies.
+    notify_metadata.pop("_hermes_typing_lease_id", None)
     notify_metadata["notify"] = True
     return notify_metadata
 
@@ -5494,12 +5508,131 @@ class BasePlatformAdapter(ABC):
 
         return paths, cleaned
 
+    def _typing_lease_scope(self) -> str:
+        """Stable runtime scope shared by reconnect replacement adapters."""
+        platform = _platform_name(getattr(self, "platform", ""))
+        profile = str(getattr(self, "_owner_profile", None) or "default")
+        runner = getattr(self, "gateway_runner", None)
+        owner = runner if runner is not None else self
+        with _TYPING_LEASE_GUARD:
+            runtime_id = getattr(owner, "_typing_lease_runtime_id", None)
+            if not isinstance(runtime_id, str) or not runtime_id:
+                runtime_id = uuid.uuid4().hex
+                setattr(owner, "_typing_lease_runtime_id", runtime_id)
+        return f"{platform}:{profile}:{runtime_id}"
+
+    def _begin_typing_lease(self, chat_id: str, session_key: str) -> str:
+        """Grant a generation-safe lease shared across replacement adapters."""
+        scope = self._typing_lease_scope()
+        session_ref = (scope, str(session_key))
+        lease_id = uuid.uuid4().hex
+        with _TYPING_LEASE_GUARD:
+            previous = _TYPING_LEASE_BY_SESSION.get(session_ref)
+            if previous:
+                _TYPING_LEASES.pop(previous, None)
+                _TYPING_LEASE_CLOSING.discard(previous)
+            _TYPING_LEASES[lease_id] = (scope, str(chat_id))
+            _TYPING_LEASE_BY_SESSION[session_ref] = lease_id
+        return lease_id
+
+    def _typing_metadata_for_session(self, session_key: str, metadata=None):
+        """Return metadata stamped with the active inbound task's lease."""
+        if not getattr(self, "typing_send_requires_final_fence", False):
+            return metadata
+        lease_id = self._typing_lease_id_for_session(session_key)
+        if not lease_id:
+            return metadata
+        stamped = dict(metadata or {})
+        stamped["_hermes_typing_lease_id"] = lease_id
+        return stamped
+
+    def _typing_lease_id_for_session(self, session_key: str) -> str | None:
+        """Return the current private lease id without exposing it to egress."""
+        session_ref = (self._typing_lease_scope(), str(session_key))
+        with _TYPING_LEASE_GUARD:
+            return _TYPING_LEASE_BY_SESSION.get(session_ref)
+
+    def _typing_lease_allows(self, chat_id: str, metadata=None) -> bool:
+        """Whether metadata belongs to a live lease for this exact chat."""
+        lease_id = str((metadata or {}).get("_hermes_typing_lease_id") or "")
+        if not lease_id:
+            return False
+        expected = (self._typing_lease_scope(), str(chat_id))
+        with _TYPING_LEASE_GUARD:
+            return (
+                lease_id not in _TYPING_LEASE_CLOSING
+                and _TYPING_LEASES.get(lease_id) == expected
+            )
+
+    def _revoke_typing_lease(self, lease_id: str) -> None:
+        """Revoke one task's lease without disturbing a replacement task."""
+        with _TYPING_LEASE_GUARD:
+            _TYPING_LEASES.pop(lease_id, None)
+            _TYPING_LEASE_CLOSING.discard(lease_id)
+            for session_ref, current_lease in tuple(_TYPING_LEASE_BY_SESSION.items()):
+                if current_lease == lease_id:
+                    _TYPING_LEASE_BY_SESSION.pop(session_ref, None)
+
+    def _revoke_all_typing_leases(self) -> None:
+        """Fail-close all leases owned by this runtime during teardown."""
+        scope = self._typing_lease_scope()
+        with _TYPING_LEASE_GUARD:
+            lease_ids = [
+                lease_id
+                for lease_id, (lease_scope, _chat_id) in _TYPING_LEASES.items()
+                if lease_scope == scope
+            ]
+            for lease_id in lease_ids:
+                _TYPING_LEASES.pop(lease_id, None)
+                _TYPING_LEASE_CLOSING.discard(lease_id)
+            for session_ref, lease_id in tuple(_TYPING_LEASE_BY_SESSION.items()):
+                if session_ref[0] == scope or lease_id in lease_ids:
+                    _TYPING_LEASE_BY_SESSION.pop(session_ref, None)
+
+    async def _fence_all_typing_leases(self) -> None:
+        """Close and drain every runtime lease before shutdown returns."""
+        scope = self._typing_lease_scope()
+        with _TYPING_LEASE_GUARD:
+            leases = [
+                (lease_id, chat_id)
+                for lease_id, (lease_scope, chat_id) in _TYPING_LEASES.items()
+                if lease_scope == scope
+            ]
+            _TYPING_LEASE_CLOSING.update(lease_id for lease_id, _ in leases)
+        for lease_id, chat_id in leases:
+            async with self._typing_lease_lock(chat_id):
+                self._revoke_typing_lease(lease_id)
+
+    def _typing_lease_lock(self, chat_id: str) -> asyncio.Lock:
+        """Return the shared outbound typing lock for this runtime chat."""
+        key = (
+            self._typing_lease_scope(),
+            str(chat_id),
+            id(asyncio.get_running_loop()),
+        )
+        with _TYPING_LEASE_GUARD:
+            lock = _TYPING_LEASE_LOCKS.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                _TYPING_LEASE_LOCKS[key] = lock
+            return lock
+
+    async def _fence_typing_lease_before_final(self, chat_id: str, lease_id: str) -> None:
+        """Close a lease, drain an admitted send, then revoke it."""
+        with _TYPING_LEASE_GUARD:
+            if lease_id not in _TYPING_LEASES:
+                return
+            _TYPING_LEASE_CLOSING.add(lease_id)
+        async with self._typing_lease_lock(chat_id):
+            self._revoke_typing_lease(lease_id)
+
     async def _keep_typing(
         self,
         chat_id: str,
         interval: float = 2.0,
         metadata=None,
         stop_event: asyncio.Event | None = None,
+        session_key: str | None = None,
     ) -> None:
         """
         Continuously send typing indicator until cancelled.
@@ -5531,10 +5664,27 @@ class BasePlatformAdapter(ABC):
                     return
                 if chat_id not in self._typing_paused:
                     try:
-                        await asyncio.wait_for(
-                            self.send_typing(chat_id, metadata=metadata),
-                            timeout=_send_typing_timeout,
+                        send_metadata = (
+                            self._typing_metadata_for_session(
+                                session_key, metadata
+                            )
+                            if session_key
+                            else metadata
                         )
+                        if getattr(self, "typing_send_requires_final_fence", False):
+                            # A fenced transport must not abandon a request
+                            # after it may have reached the platform. Final
+                            # delivery waits on the same per-chat lock.
+                            await self.send_typing(
+                                chat_id, metadata=send_metadata
+                            )
+                        else:
+                            await asyncio.wait_for(
+                                self.send_typing(
+                                    chat_id, metadata=send_metadata
+                                ),
+                                timeout=_send_typing_timeout,
+                            )
                     except asyncio.TimeoutError:
                         # Slow network — abandon this tick, keep the loop
                         # on schedule so the next send_typing fires fresh.
@@ -5591,6 +5741,8 @@ class BasePlatformAdapter(ABC):
     ) -> None:
         """Stop the refresh task and platform typing state as one operation."""
         self._typing_paused.add(chat_id)
+        stop_metadata = dict(metadata or {})
+        stop_metadata.pop("_hermes_typing_lease_id", None)
         try:
             if typing_task is not None and not typing_task.done():
                 typing_task.cancel()
@@ -5605,7 +5757,7 @@ class BasePlatformAdapter(ABC):
             attempts = max(1, stop_attempts)
             for attempt in range(attempts):
                 try:
-                    await self._stop_typing_with_metadata(chat_id, metadata)
+                    await self._stop_typing_with_metadata(chat_id, stop_metadata)
                 except Exception:
                     pass
                 if attempt < attempts - 1:
@@ -6639,7 +6791,14 @@ class BasePlatformAdapter(ABC):
         # Gated per-platform: when typing_indicator=False the refresh loop is
         # never spawned, so no "typing…" / "is thinking…" status is shown.
         # typing_task stays None; _stop_typing_refresh already no-ops on None.
-        _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        # Every typing producer for this inbound task shares one opaque lease.
+        # Revoke it before cleanup/callback work so a late progress callback
+        # cannot re-arm a platform-side typing status after final delivery.
+        typing_lease_id = self._begin_typing_lease(event.source.chat_id, session_key)
+        _thread_metadata = self._typing_metadata_for_session(
+            session_key,
+            _thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
+        )
         typing_task: Optional[asyncio.Task] = None
         if getattr(self.config, "typing_indicator", True):
             _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
@@ -6649,6 +6808,8 @@ class BasePlatformAdapter(ABC):
                 _keep_typing_sig = None
             if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
                 _keep_typing_kwargs["stop_event"] = interrupt_event
+            if _keep_typing_sig is None or "session_key" in _keep_typing_sig.parameters:
+                _keep_typing_kwargs["session_key"] = session_key
             typing_task = asyncio.create_task(
                 self._keep_typing(
                     event.source.chat_id,
@@ -6656,7 +6817,32 @@ class BasePlatformAdapter(ABC):
                 )
             )
 
+        owner_task = asyncio.current_task()
+
+        def _owns_session() -> bool:
+            registered_task = self._session_tasks.get(session_key)
+            if registered_task is not None:
+                return registered_task is owner_task
+            return self._active_sessions.get(session_key) is interrupt_event
+
+        async def _fence_typing_leases() -> None:
+            lease_ids = [typing_lease_id]
+            # Queued logical turns rotate the lease while remaining inside the
+            # same adapter task, so their successor must be fenced before the
+            # outer final egress. Once session ownership transfers, however,
+            # the registry points at a replacement turn and stale cleanup must
+            # never revoke that fresh lease.
+            if _owns_session():
+                current_lease_id = self._typing_lease_id_for_session(session_key)
+                if current_lease_id and current_lease_id not in lease_ids:
+                    lease_ids.append(current_lease_id)
+            for lease_id in lease_ids:
+                await self._fence_typing_lease_before_final(
+                    event.source.chat_id, lease_id
+                )
+
         async def _stop_typing_task() -> None:
+            await _fence_typing_leases()
             await self._stop_typing_refresh(
                 event.source.chat_id,
                 typing_task,
@@ -6837,11 +7023,18 @@ class BasePlatformAdapter(ABC):
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
+                # Synthesis is still active work and can take a while, so keep
+                # typing alive until immediately before the first visible final
+                # delivery. Then close the lease and drain any already-admitted
+                # Bot API action before voice, text, or attachments can egress.
+                await _fence_typing_leases()
+
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
                 _tts_cleanup_paths = {_tts_requested_path, *_tts_paths} - {None}
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
+                        delivery_adapter = self._final_delivery_adapter(event.source)
                         # Caption eligibility and payload stay on the ORIGINAL
                         # reply text. The spoken script is for synthesis only:
                         # normalization can shrink a long reply below the
@@ -6852,12 +7045,12 @@ class BasePlatformAdapter(ABC):
                         telegram_tts_caption = None
                         if (
                             _tts_index == 0
-                            and self.platform == Platform.TELEGRAM
+                            and delivery_adapter.platform == Platform.TELEGRAM
                             and text_content
                             and text_content[:1024] == text_content
                         ):
                             telegram_tts_caption = text_content
-                        tts_result = await self.play_tts(
+                        tts_result = await delivery_adapter.play_tts(
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
                             caption=telegram_tts_caption,
@@ -7017,9 +7210,10 @@ class BasePlatformAdapter(ABC):
 
                 # Send extracted images as native attachments
                 if images:
-                    logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
+                    delivery_adapter = self._final_delivery_adapter(event.source)
+                    logger.info("[%s] Extracted %d image(s) to send as attachments", delivery_adapter.name, len(images))
                     try:
-                        await self.send_multiple_images(
+                        await delivery_adapter.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=images,
                             metadata=_final_thread_metadata,
@@ -7059,9 +7253,10 @@ class BasePlatformAdapter(ABC):
                         _non_image_local.append(file_path)
 
                 if _image_paths:
+                    delivery_adapter = self._final_delivery_adapter(event.source)
                     try:
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
-                        await self.send_multiple_images(
+                        await delivery_adapter.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=_batch,
                             metadata=_final_thread_metadata,
@@ -7080,9 +7275,10 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
+                        delivery_adapter = self._final_delivery_adapter(event.source)
                         ext = Path(media_path).suffix.lower()
-                        if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
-                            media_result = await self.send_voice(
+                        if should_send_media_as_audio(delivery_adapter.platform, ext, is_voice=is_voice):
+                            media_result = await delivery_adapter.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
                                 metadata=_final_thread_metadata,
@@ -7091,25 +7287,26 @@ class BasePlatformAdapter(ABC):
                         elif ext in _VIDEO_EXTS:
                             logger.info(
                                 "[%s] Sending video attachment (%s) to %s",
-                                self.name,
+                                delivery_adapter.name,
                                 ext,
                                 event.source.chat_id,
                             )
-                            media_result = await self.send_video(
+                            media_result = await delivery_adapter.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,
                                 metadata=_final_thread_metadata,
                             )
                         else:
-                            media_result = await self.send_document(
+                            media_result = await delivery_adapter.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
                                 metadata=_final_thread_metadata,
                             )
 
                         if not media_result.success:
-                            logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
-                            await self._notify_media_delivery_failure(
+                            logger.warning("[%s] Failed to send media (%s): %s", delivery_adapter.name, ext, media_result.error)
+                            notification_adapter = self._final_delivery_adapter(event.source)
+                            await notification_adapter._notify_media_delivery_failure(
                                 event.source.chat_id,
                                 media_path,
                                 is_voice=is_voice,
@@ -7123,15 +7320,16 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
+                        delivery_adapter = self._final_delivery_adapter(event.source)
                         ext = Path(file_path).suffix.lower()
                         if ext in _VIDEO_EXTS:
-                            file_result = await self.send_video(
+                            file_result = await delivery_adapter.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
                         else:
-                            file_result = await self.send_document(
+                            file_result = await delivery_adapter.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
                                 metadata=_final_thread_metadata,
@@ -7139,11 +7337,12 @@ class BasePlatformAdapter(ABC):
                         if not file_result.success:
                             logger.warning(
                                 "[%s] Failed to send local file (%s): %s",
-                                self.name,
+                                delivery_adapter.name,
                                 ext,
                                 file_result.error,
                             )
-                            await self._notify_media_delivery_failure(
+                            notification_adapter = self._final_delivery_adapter(event.source)
+                            await notification_adapter._notify_media_delivery_failure(
                                 event.source.chat_id,
                                 file_path,
                                 metadata=_final_thread_metadata,
@@ -7236,6 +7435,7 @@ class BasePlatformAdapter(ABC):
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
+            await _fence_typing_leases()
             # Send the error to the user so they aren't left with radio silence
             try:
                 error_type = type(e).__name__
@@ -7412,6 +7612,7 @@ class BasePlatformAdapter(ABC):
         whole shutdown path.  Stragglers are released from our tracking and
         allowed to finish unwinding on their own.
         """
+        await self._fence_all_typing_leases()
         # Loop until no new tasks appear.  Without this, a message
         # arriving during the `await asyncio.gather` below would spawn
         # a fresh _process_message_background task (added to

@@ -555,6 +555,7 @@ class GatewayStreamConsumer:
         message_id: str,
         content: str,
         finalize: bool = False,
+        is_turn_final: bool = True,
     ):
         """Edit via the adapter, passing routing metadata when supported."""
         kwargs = {
@@ -566,16 +567,22 @@ class GatewayStreamConsumer:
         # must accept finalize= even when it is False (guarded by tests).
         kwargs["finalize"] = finalize
 
-        if self.metadata:
-            try:
-                params = inspect.signature(self.adapter.edit_message).parameters
+        try:
+            params = inspect.signature(self.adapter.edit_message).parameters
+            accepts_kwargs = any(
+                param.kind is inspect.Parameter.VAR_KEYWORD
+                for param in params.values()
+            )
+            if self.metadata:
                 if "metadata" in params or any(
                     param.kind is inspect.Parameter.VAR_KEYWORD
                     for param in params.values()
                 ):
                     kwargs["metadata"] = self.metadata
-            except (TypeError, ValueError):
-                pass
+            if "is_turn_final" in params or accepts_kwargs:
+                kwargs["is_turn_final"] = is_turn_final
+        except (TypeError, ValueError):
+            pass
         return await self.adapter.edit_message(**kwargs)
 
     def _append_accumulated(self, text: str) -> None:
@@ -1723,6 +1730,10 @@ class GatewayStreamConsumer:
                         and self._use_draft_streaming
                         and self._message_id is None
                     )
+                    if got_done and (
+                        self._accumulated or self._message_id is not None or self._already_sent
+                    ):
+                        await self._notify_before_finalize()
                     current_update_visible = await self._send_or_edit(
                         display_text,
                         finalize=(got_done or got_segment_break),
@@ -1739,8 +1750,6 @@ class GatewayStreamConsumer:
                         self._tool_progress_active = False
 
                 if got_done:
-                    if self._accumulated or self._message_id is not None or self._already_sent:
-                        await self._notify_before_finalize()
                     # Final edit without cursor. If progressive editing failed
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
@@ -2943,7 +2952,10 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                metadata=self._metadata_for_send(final=True),
+                metadata=self._metadata_for_send(
+                    final=is_turn_final,
+                    expect_edits=not is_turn_final,
+                ),
             )
         except Exception as e:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
@@ -3413,6 +3425,7 @@ class GatewayStreamConsumer:
                         message_id=self._message_id,
                         content=text,
                         finalize=finalize,
+                        is_turn_final=is_turn_final,
                     )
                     if result.success:
                         self._already_sent = True
@@ -3571,13 +3584,14 @@ class GatewayStreamConsumer:
             else:
                 # First message — send new, threaded to the original user message
                 # so it lands in the correct topic/thread.
+                turn_final = finalize and is_turn_final
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
                     reply_to=self._initial_reply_to_id,
                     metadata=self._metadata_for_send(
-                        final=finalize,
-                        expect_edits=not finalize,
+                        final=turn_final,
+                        expect_edits=not turn_final,
                     ),
                 )
                 if result.success:

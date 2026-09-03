@@ -319,6 +319,32 @@ class TestSendVoiceReply:
         call_args = mock_adapter.send_voice.call_args
         assert call_args.kwargs.get("chat_id") == "123"
 
+    @pytest.mark.asyncio
+    async def test_auto_voice_reply_re_resolves_adapter_after_synthesis(self, runner):
+        from gateway.config import Platform
+
+        stale = AsyncMock()
+        stale.send_voice = AsyncMock()
+        replacement = AsyncMock()
+        replacement.send_voice = AsyncMock()
+        event = _make_event()
+        event.source.platform = Platform.TELEGRAM
+        runner.adapters[event.source.platform] = stale
+
+        def synthesize(**_kwargs):
+            runner.adapters[event.source.platform] = replacement
+            return json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", side_effect=synthesize), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, "Hello replacement")
+
+        stale.send_voice.assert_not_awaited()
+        replacement.send_voice.assert_awaited_once()
+
 
     @pytest.mark.asyncio
     async def test_auto_voice_reply_uses_thread_metadata_helper(self, runner):
@@ -354,6 +380,101 @@ class TestSendVoiceReply:
             # mirrors the final-text path in gateway/platforms/base.py.
             "notify": True,
         }
+
+    @pytest.mark.asyncio
+    async def test_auto_voice_reply_fences_typing_before_transport(self, runner):
+        from gateway.config import Platform
+
+        order = []
+        mock_adapter = AsyncMock()
+        mock_adapter._typing_metadata_for_session = MagicMock(
+            side_effect=lambda session_key, metadata: {
+                **(metadata or {}),
+                "_hermes_typing_lease_id": "lease-1",
+            }
+        )
+        mock_adapter._fence_typing_lease_before_final = AsyncMock(
+            side_effect=lambda chat_id, lease_id: order.append(
+                ("fence", chat_id, lease_id)
+            )
+        )
+        mock_adapter.send_voice = AsyncMock(
+            side_effect=lambda **kwargs: order.append(
+                ("send", kwargs["chat_id"], kwargs["metadata"])
+            )
+        )
+        event = _make_event()
+        event.source.platform = Platform.TELEGRAM
+        runner.adapters[event.source.platform] = mock_adapter
+
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(
+                event, "Hello world", session_key="telegram:123"
+            )
+
+        assert order[0] == ("fence", "123", "lease-1")
+        assert order[1][0:2] == ("send", "123")
+        assert order[1][2]["_hermes_typing_lease_id"] == "lease-1"
+        assert order[1][2]["notify"] is True
+
+    @pytest.mark.asyncio
+    async def test_streamed_auto_voice_starts_synthesis_lease_until_egress(
+        self, runner
+    ):
+        from gateway.config import Platform, PlatformConfig
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        order = []
+        adapter = TelegramAdapter(
+            PlatformConfig(enabled=True, token="test-token")
+        )
+        adapter.gateway_runner = runner
+        adapter._bot = AsyncMock()
+        event = _make_event()
+        event.source.platform = Platform.TELEGRAM
+        runner.adapters[event.source.platform] = adapter
+        session_key = "telegram:123"
+
+        old_lease = adapter._begin_typing_lease("123", session_key)
+        await adapter._fence_typing_lease_before_final("123", old_lease)
+        assert adapter._typing_lease_id_for_session(session_key) is None
+
+        adapter._bot.send_chat_action = AsyncMock(
+            side_effect=lambda **kwargs: order.append("typing")
+        )
+        adapter.send_voice = AsyncMock(
+            side_effect=lambda **kwargs: order.append("voice")
+        )
+        real_fence = adapter._fence_typing_lease_before_final
+
+        async def record_fence(chat_id, lease_id):
+            order.append("fence")
+            await real_fence(chat_id, lease_id)
+
+        adapter._fence_typing_lease_before_final = AsyncMock(
+            side_effect=record_fence
+        )
+
+        def synthesize(**kwargs):
+            order.append("synthesis")
+            return json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", side_effect=synthesize), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(
+                event, "Hello world", session_key=session_key
+            )
+
+        assert order[:4] == ["typing", "synthesis", "fence", "voice"]
+        assert adapter._typing_lease_id_for_session(session_key) is None
 
 
 # =====================================================================

@@ -11,7 +11,7 @@ import importlib
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -22,6 +22,8 @@ from gateway.session import SessionSource, build_session_key
 
 
 class _MediaRoutingAdapter(BasePlatformAdapter):
+    typing_send_requires_final_fence = True
+
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
 
@@ -85,6 +87,161 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
         is_voice=True,
     )
     adapter.send_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_replacement_owns_all_unsent_final_media(tmp_path, monkeypatch):
+    stale = _MediaRoutingAdapter()
+    replacement = _MediaRoutingAdapter()
+    event = _event(thread_id="topic-1")
+    image = _allowed_media_path(tmp_path, monkeypatch, "result.png")
+    voice = _allowed_media_path(tmp_path, monkeypatch, "speech.ogg")
+    video = _allowed_media_path(tmp_path, monkeypatch, "clip.mp4")
+    document = _allowed_media_path(tmp_path, monkeypatch, "report.pdf")
+    stale._message_handler = AsyncMock(
+        return_value=(
+            "Final files\n[[audio_as_voice]]\n"
+            f"MEDIA:{image}\nMEDIA:{voice}\nMEDIA:{video}\nMEDIA:{document}"
+        )
+    )
+
+    runner = SimpleNamespace(_adapter_for_source=lambda _source: replacement)
+    stale.gateway_runner = runner
+    replacement.gateway_runner = runner
+    for adapter in (stale, replacement):
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="text"))
+        adapter.send_multiple_images = AsyncMock(return_value=None)
+        adapter.send_voice = AsyncMock(
+            return_value=SendResult(success=True, message_id="voice")
+        )
+        adapter.send_video = AsyncMock(
+            return_value=SendResult(success=True, message_id="video")
+        )
+        adapter.send_document = AsyncMock(
+            return_value=SendResult(success=True, message_id="document")
+        )
+
+    await stale._process_message_background(event, build_session_key(event.source))
+
+    stale.send.assert_not_awaited()
+    stale.send_multiple_images.assert_not_awaited()
+    stale.send_voice.assert_not_awaited()
+    stale.send_video.assert_not_awaited()
+    stale.send_document.assert_not_awaited()
+    replacement.send.assert_awaited_once()
+    replacement.send_multiple_images.assert_awaited_once()
+    replacement.send_voice.assert_awaited_once()
+    replacement.send_video.assert_awaited_once()
+    replacement.send_document.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_replacement_owns_unsent_automatic_tts(tmp_path):
+    stale = _MediaRoutingAdapter()
+    replacement = _MediaRoutingAdapter()
+    event = _event(thread_id="topic-1")
+    event.message_type = MessageType.VOICE
+    stale._message_handler = AsyncMock(return_value="Voice final")
+    stale._should_auto_tts_for_chat = lambda _chat_id: True
+
+    runner = SimpleNamespace(_adapter_for_source=lambda _source: replacement)
+    stale.gateway_runner = runner
+    replacement.gateway_runner = runner
+    stale.play_tts = AsyncMock(
+        return_value=SendResult(success=True, message_id="stale-voice")
+    )
+    replacement.play_tts = AsyncMock(
+        return_value=SendResult(success=True, message_id="replacement-voice")
+    )
+    stale.send = AsyncMock(return_value=SendResult(success=True, message_id="stale-text"))
+    replacement.send = AsyncMock(
+        return_value=SendResult(success=True, message_id="replacement-text")
+    )
+    tts_path = tmp_path / "reply.ogg"
+    tts_path.write_bytes(b"audio")
+
+    with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+        "tools.tts_tool.text_to_speech_tool",
+        return_value=f'{{"file_path": "{tts_path}"}}',
+    ):
+        await stale._process_message_background(event, build_session_key(event.source))
+
+    stale.play_tts.assert_not_awaited()
+    stale.send.assert_not_awaited()
+    replacement.play_tts.assert_awaited_once()
+    # The short reply is the successful Telegram voice caption, so no duplicate
+    # text send should be necessary on either transport.
+    replacement.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_stream_media_re_resolves_between_payloads(tmp_path, monkeypatch):
+    first = _MediaRoutingAdapter()
+    replacement = _MediaRoutingAdapter()
+    event = _event(thread_id="topic-1")
+    voice = _allowed_media_path(tmp_path, monkeypatch, "speech.ogg")
+    document = _allowed_media_path(tmp_path, monkeypatch, "report.pdf")
+    current = {"adapter": first}
+    runner = object.__new__(GatewayRunner)
+    runner._adapter_for_source = lambda _source: current["adapter"]
+
+    async def send_voice_then_replace(**_kwargs):
+        current["adapter"] = replacement
+        return SendResult(success=True, message_id="voice")
+
+    first.send_voice = AsyncMock(side_effect=send_voice_then_replace)
+    first.send_document = AsyncMock(
+        return_value=SendResult(success=True, message_id="stale-document")
+    )
+    replacement.send_document = AsyncMock(
+        return_value=SendResult(success=True, message_id="replacement-document")
+    )
+
+    await runner._deliver_media_from_response(
+        f"[[audio_as_voice]]\nMEDIA:{voice}\nMEDIA:{document}",
+        event,
+        first,
+        thread_metadata={"thread_id": "topic-1"},
+    )
+
+    first.send_voice.assert_awaited_once()
+    first.send_document.assert_not_awaited()
+    replacement.send_document.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_queued_delivery_re_resolves_media_after_text(tmp_path, monkeypatch):
+    first = _MediaRoutingAdapter()
+    replacement = _MediaRoutingAdapter()
+    event = _event(thread_id="topic-1")
+    document = _allowed_media_path(tmp_path, monkeypatch, "queued.pdf")
+    current = {"adapter": first}
+    runner = object.__new__(GatewayRunner)
+    runner._adapter_for_source = lambda _source: current["adapter"]
+
+    async def send_text_then_replace(*_args, **_kwargs):
+        current["adapter"] = replacement
+        return SendResult(success=True, message_id="text")
+
+    first.send = AsyncMock(side_effect=send_text_then_replace)
+    first.send_document = AsyncMock(
+        return_value=SendResult(success=True, message_id="stale-document")
+    )
+    replacement.send_document = AsyncMock(
+        return_value=SendResult(success=True, message_id="replacement-document")
+    )
+
+    await runner._deliver_queued_first_response(
+        f"Queued final\nMEDIA:{document}",
+        source=event.source,
+        adapter=first,
+        metadata={"thread_id": "topic-1"},
+        event_message_id=event.message_id,
+    )
+
+    first.send.assert_awaited_once()
+    first.send_document.assert_not_awaited()
+    replacement.send_document.assert_awaited_once()
 
 
 def _fake_runner(thread_meta):
@@ -236,13 +393,122 @@ async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_ima
     adapter.send.assert_awaited_once_with(
         "chat-1",
         "Quote here",
-        metadata={"thread_id": "topic-1"},
+        metadata={"thread_id": "topic-1", "notify": True},
     )
     adapter.send_multiple_images.assert_awaited_once_with(
         chat_id="chat-1",
         images=[(f"file://{media_file.as_posix()}", "")],
-        metadata={"thread_id": "topic-1"},
+        metadata={"thread_id": "topic-1", "notify": True},
     )
+
+
+@pytest.mark.asyncio
+async def test_queued_delivery_fences_lease_before_text_and_media(
+    tmp_path, monkeypatch,
+):
+    event = _event(thread_id="topic-1")
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "fenced.png")
+    runner = object.__new__(GatewayRunner)
+    adapter = SimpleNamespace(
+        name="test",
+        _fence_typing_lease_before_final=AsyncMock(),
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send=AsyncMock(return_value=SendResult(success=True, message_id="text")),
+        send_multiple_images=AsyncMock(return_value=None),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+    metadata = {"_hermes_typing_lease_id": "lease-1"}
+
+    await GatewayRunner._deliver_queued_first_response(
+        runner,
+        f"Final text\nMEDIA:{media_file}",
+        source=event.source,
+        adapter=adapter,
+        metadata=metadata,
+        event_message_id=event.message_id,
+    )
+
+    adapter._fence_typing_lease_before_final.assert_awaited_once_with(
+        "chat-1", "lease-1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_queued_reconcile_supports_legacy_edit_signature_without_metadata():
+    event = _event(thread_id="topic-1")
+    runner = object.__new__(GatewayRunner)
+    edit_calls = []
+
+    async def legacy_edit_message(
+        chat_id, message_id, content, *, finalize=False
+    ):
+        edit_calls.append((chat_id, message_id, content, finalize))
+        return SendResult(success=True, message_id=message_id)
+
+    adapter = SimpleNamespace(
+        name="legacy",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        edit_message=legacy_edit_message,
+        send=AsyncMock(return_value=SendResult(success=True, message_id="duplicate")),
+    )
+    stream_consumer = SimpleNamespace(
+        message_id="preview-1",
+        _turn_split_delivery=False,
+    )
+
+    await GatewayRunner._deliver_queued_first_response(
+        runner,
+        "Final text",
+        source=event.source,
+        adapter=adapter,
+        metadata={"thread_id": "topic-1"},
+        event_message_id=event.message_id,
+        deliver_media=False,
+        stream_consumer=stream_consumer,
+    )
+
+    assert edit_calls == [
+        ("chat-1", "preview-1", "Final text", True)
+    ]
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_queued_followup_gets_successor_lease_for_typing():
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter(
+        PlatformConfig(enabled=True, token="test-token")
+    )
+    adapter._bot = AsyncMock()
+    session_key = "telegram:chat-1"
+    old_lease = adapter._begin_typing_lease("chat-1", session_key)
+    old_metadata = adapter._typing_metadata_for_session(session_key, {})
+    await adapter._fence_typing_lease_before_final("chat-1", old_lease)
+
+    successor_metadata = GatewayRunner._renew_followup_typing_lease(
+        adapter,
+        chat_id="chat-1",
+        session_key=session_key,
+        metadata={
+            "thread_id": "123",
+            "telegram_dm_topic_reply_fallback": True,
+        },
+    )
+
+    await adapter.send_typing("chat-1", metadata=old_metadata)
+    adapter._bot.send_chat_action.assert_not_awaited()
+
+    await adapter.send_typing("chat-1", metadata=successor_metadata)
+    adapter._bot.send_chat_action.assert_awaited_once()
+    assert successor_metadata["thread_id"] == "123"
+    assert successor_metadata["_hermes_typing_lease_id"] != old_lease
 
 
 @pytest.mark.asyncio
@@ -286,12 +552,12 @@ async def test_queued_followup_delivery_reuses_routing_metadata_for_media(
     adapter.send.assert_awaited_once_with(
         "chat-1",
         "Threaded image",
-        metadata=routing_metadata,
+        metadata={**routing_metadata, "notify": True},
     )
     adapter.send_multiple_images.assert_awaited_once_with(
         chat_id="chat-1",
         images=[(f"file://{media_file.as_posix()}", "")],
-        metadata=routing_metadata,
+        metadata={**routing_metadata, "notify": True},
     )
 
 
@@ -327,7 +593,7 @@ async def test_queued_followup_delivery_keeps_remote_image_url_in_text():
     adapter.send.assert_awaited_once_with(
         "chat-1",
         response,
-        metadata={"thread_id": "topic-1"},
+        metadata={"thread_id": "topic-1", "notify": True},
     )
     adapter.send_multiple_images.assert_not_awaited()
 
@@ -370,7 +636,7 @@ async def test_queued_followup_delivery_keeps_bare_local_path_in_text(
     adapter.send.assert_awaited_once_with(
         "chat-1",
         response,
-        metadata={"thread_id": "topic-1"},
+        metadata={"thread_id": "topic-1", "notify": True},
     )
     adapter.send_multiple_images.assert_not_awaited()
     adapter.send_document.assert_not_awaited()
@@ -409,7 +675,7 @@ async def test_queued_followup_delivery_preserves_protected_media_example():
     adapter.send.assert_awaited_once_with(
         "chat-1",
         response,
-        metadata={"thread_id": "topic-1"},
+        metadata={"thread_id": "topic-1", "notify": True},
     )
     adapter.send_multiple_images.assert_not_awaited()
     adapter.send_document.assert_not_awaited()

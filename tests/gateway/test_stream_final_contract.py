@@ -266,3 +266,32 @@ class TestQueuedLaneReconcile:
         )
         assert adapter.edit_calls == []
         assert len(adapter.send_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_queued_first_response_marks_fallback_send_final(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        adapter = _make_draft_adapter()
+        source = SimpleNamespace(chat_id="D1")
+        metadata = {"_hermes_typing_lease_id": "lease-1"}
+        await GatewayRunner._deliver_queued_first_response(
+            runner,
+            "final text",
+            source=source,
+            adapter=adapter,
+            metadata=metadata,
+            text_already_delivered=False,
+            deliver_media=False,
+            stream_consumer=SimpleNamespace(message_id=None, _turn_split_delivery=False),
+        )
+
+        assert adapter.send_calls == [
+            {
+                "content": "final text",
+                "metadata": {
+                    "_hermes_typing_lease_id": "lease-1",
+                    "notify": True,
+                },
+            }
+        ]

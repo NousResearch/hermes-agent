@@ -157,6 +157,79 @@ class TestEditMessageFinalizeSignature:
             f"stream_consumer._send_or_edit passes it unconditionally"
         )
 
+    @pytest.mark.asyncio
+    async def test_turn_final_semantics_reach_supporting_adapter(self):
+        calls = []
+
+        class TurnAwareAdapter:
+            async def edit_message(
+                self,
+                chat_id,
+                message_id,
+                content,
+                *,
+                finalize=False,
+                is_turn_final=True,
+                metadata=None,
+            ):
+                calls.append(
+                    {
+                        "finalize": finalize,
+                        "is_turn_final": is_turn_final,
+                        "metadata": metadata,
+                    }
+                )
+                return SimpleNamespace(success=True, message_id=message_id)
+
+        metadata = {"_hermes_typing_lease_id": "lease-1"}
+        consumer = GatewayStreamConsumer(
+            TurnAwareAdapter(), "chat_1", metadata=metadata
+        )
+
+        await consumer._edit_message(
+            message_id="m1",
+            content="sealed intermediate segment",
+            finalize=True,
+            is_turn_final=False,
+        )
+
+        assert calls == [
+            {
+                "finalize": True,
+                "is_turn_final": False,
+                "metadata": metadata,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_turn_final_semantics_are_omitted_for_legacy_adapter(self):
+        calls = []
+
+        class LegacyAdapter:
+            async def edit_message(
+                self,
+                chat_id,
+                message_id,
+                content,
+                *,
+                finalize=False,
+                metadata=None,
+            ):
+                calls.append({"finalize": finalize, "metadata": metadata})
+                return SimpleNamespace(success=True, message_id=message_id)
+
+        metadata = {"route": "thread-1"}
+        consumer = GatewayStreamConsumer(LegacyAdapter(), "chat_1", metadata=metadata)
+
+        await consumer._edit_message(
+            message_id="m1",
+            content="sealed intermediate segment",
+            finalize=True,
+            is_turn_final=False,
+        )
+
+        assert calls == [{"finalize": True, "metadata": metadata}]
+
 
 class TestSendOrEditMediaStripping:
     """Verify _send_or_edit strips MEDIA: before sending to the platform."""
@@ -295,17 +368,14 @@ class TestBeforeFinalizeHook:
             adapter,
             "chat_123",
             StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
-            on_before_finalize=lambda: events.append("pause"),
+            on_before_finalize=lambda: events.append("fence"),
         )
         consumer.on_delta("Hello")
         consumer.finish()
 
         await consumer.run()
 
-        assert events == ["send", "pause", "edit"]
-
-
-# ── Segment break (tool boundary) tests ──────────────────────────────────
+        assert events == ["fence", "send", "edit"]
 
 
 class TestSegmentBreakOnToolBoundary:

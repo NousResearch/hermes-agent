@@ -1009,6 +1009,7 @@ def _run_claimed_job(
     fire_owner = None
     try:
         from cron.scheduler import (
+            allow_unscoped_cron_worker,
             release_running_job,
             run_one_job,
             try_register_running_job,
@@ -1111,12 +1112,18 @@ def _run_claimed_job(
         adapters = getattr(runner, "adapters", None) if runner is not None else None
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
 
+        # Immediate CLI / tool runs used to own the execution in THIS
+        # process. A caller timeout then proved the owner dead and
+        # recover_interrupted_executions() marked the attempt unknown.
+        # allow_unscoped_cron_worker() hands the durable owner to a
+        # start_new_session child so the waiter can die independently.
         try:
             try:
-                processed = run_one_job(
-                    job, adapters=adapters, loop=gateway_loop,
-                    extra_prompt=extra_prompt,
-                )
+                with allow_unscoped_cron_worker():
+                    processed = run_one_job(
+                        job, adapters=adapters, loop=gateway_loop,
+                        extra_prompt=extra_prompt,
+                    )
             finally:
                 _heartbeat_stop.set()
                 if _heartbeat_thread is not None:
@@ -1152,6 +1159,7 @@ def _run_claimed_job(
             "claimed": True,
             "success": bool(processed and ok),
             "error": run_error,
+            "execution_id": execution_id,
         }
 
     except Exception as e:
@@ -1832,6 +1840,8 @@ def cronjob(
             result = _format_job(get_job(job_id) or {"id": job_id})
             result["executed"] = exec_result.get("claimed", False)
             result["execution_success"] = exec_result.get("success", False)
+            if exec_result.get("execution_id"):
+                result["execution_id"] = exec_result["execution_id"]
             if not exec_result.get("claimed", False):
                 result["execution_skipped"] = exec_result.get("error") or (
                     "Already being fired by the scheduler; not run again."

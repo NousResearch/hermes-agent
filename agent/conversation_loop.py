@@ -8761,12 +8761,7 @@ def run_conversation(
                             "answer:\n\n" + reasoning_preview
                         )
                     else:
-                        final_response = agent._format_turn_completion_explanation(
-                            _turn_exit_reason
-                        ) or (
-                            "⚠️ No reply: the model returned empty content after "
-                            "all retries and fallback attempts."
-                        )
+                        final_response = "(empty)"
                     break
                 
                 # Reset retry counter/signature on successful content

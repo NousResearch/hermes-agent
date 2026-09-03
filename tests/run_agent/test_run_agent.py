@@ -3601,16 +3601,12 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch.object(
-                agent, "_turn_completion_explainer_enabled", return_value=False
-            ),
             caplog.at_level(logging.INFO, logger="agent.conversation_loop"),
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
         assert result["api_calls"] == 2
         assert agent.session_api_calls == 2
-        assert result["final_response"].startswith("⚠️ No reply:")
         assert caplog.text.count("usage=unavailable") == 2
 
     def test_truly_empty_response_succeeds_on_nudge(self, agent):

@@ -33,7 +33,9 @@ These tests pin the floor's behavior:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -191,10 +193,15 @@ def _resolve_stream_stale_timeout(
     else:
         timeout = stale_base
 
-    # Reasoning-model floor (the new branch this PR adds).
-    floor = get_reasoning_stale_timeout_floor(model)
-    if floor is not None:
-        timeout = max(timeout, floor)
+    # Reasoning-model floor — applied only to the implicit default: an
+    # explicit stale base (config / env in production) wins over the floor
+    # (issue #99707), mirroring _stream_stale_timeout_is_explicit.
+    if stale_base == 180.0 and not os.environ.get(
+        "HERMES_STREAM_STALE_TIMEOUT", ""
+    ).strip():
+        floor = get_reasoning_stale_timeout_floor(model)
+        if floor is not None:
+            timeout = max(timeout, floor)
     return timeout
 
 
@@ -210,3 +217,61 @@ def test_stream_stale_timeout_floor_for_nemotron_3_ultra():
         est_tokens=10_000,
     )
     assert timeout == 600.0
+
+
+def test_stream_stale_timeout_floor_respects_explicit_config():
+    """Explicit per-model stale_timeout_seconds wins over the 600s floor.
+
+    Issue #99707: the main streaming path applied the reasoning floor via an
+    unconditional max(), so an explicitly configured 120s was silently raised
+    back to 600s and provider failover only kicked in after 10 minutes.
+    """
+    timeout = _resolve_stream_stale_timeout(
+        model="nvidia/nemotron-3-ultra-550b-a55b",
+        base_url="https://integrate.api.nvidia.com/v1",
+        est_tokens=10_000,
+        stale_base=120.0,
+    )
+    assert timeout == 120.0
+
+
+# ── integration: _derive_stream_stale_timeout (Bedrock mirror, direct) ─────
+
+
+_NEMOTRON = "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+
+def _fake_agent(provider: str = "openrouter", model: str = _NEMOTRON):
+    return SimpleNamespace(provider=provider, model=model, base_url=None)
+
+
+def _small_kwargs(model: str = _NEMOTRON) -> dict:
+    return {"model": model, "messages": [{"role": "user", "content": "hi"}]}
+
+
+def test_derive_stream_stale_timeout_explicit_config_wins(monkeypatch):
+    """Explicit per-model stale_timeout_seconds=120 must not be raised to 600."""
+    import agent.chat_completion_helpers as cch
+    monkeypatch.setattr(cch, "get_provider_stale_timeout", lambda *a, **k: 120.0)
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+    assert cch._derive_stream_stale_timeout(_fake_agent(), _small_kwargs()) == 120.0
+
+
+def test_derive_stream_stale_timeout_env_var_wins(monkeypatch):
+    """An explicitly set HERMES_STREAM_STALE_TIMEOUT also overrides the floor.
+
+    Matches the non-stream contract (run_agent._stale_timeout_is_explicit):
+    env var counts as explicit user configuration.
+    """
+    import agent.chat_completion_helpers as cch
+    monkeypatch.setattr(cch, "get_provider_stale_timeout", lambda *a, **k: None)
+    monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "150")
+    assert cch._derive_stream_stale_timeout(_fake_agent(), _small_kwargs()) == 150.0
+
+
+def test_derive_stream_stale_timeout_implicit_default_keeps_floor(monkeypatch):
+    """No config, no env -> the reasoning floor still raises the 180s default."""
+    import agent.chat_completion_helpers as cch
+    monkeypatch.setattr(cch, "get_provider_stale_timeout", lambda *a, **k: None)
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+    assert cch._derive_stream_stale_timeout(_fake_agent(), _small_kwargs()) == 600.0

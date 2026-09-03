@@ -815,6 +815,20 @@ def _check_stale_giveup(agent) -> None:
         )
 
 
+def _stream_stale_timeout_is_explicit(cfg_stale: "float | None") -> bool:
+    """True when the stream stale timeout was explicitly configured.
+
+    The reasoning-model stale-timeout floor is a better *default*, not an
+    override (contract in ``agent/reasoning_timeouts.py``): an explicit
+    ``providers.<id>.models.<model>.stale_timeout_seconds`` or a set
+    ``HERMES_STREAM_STALE_TIMEOUT`` env var wins, mirroring the non-stream
+    resolver (``run_agent.AIAgent._stale_timeout_is_explicit``).
+    """
+    if cfg_stale is not None:
+        return True
+    return bool(os.getenv("HERMES_STREAM_STALE_TIMEOUT", "").strip())
+
+
 def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     """Stale-stream patience for a provider that is never a local endpoint.
 
@@ -848,7 +862,7 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     _reasoning_floor = get_reasoning_stale_timeout_floor(_model_id)
     if _reasoning_floor is None and api_kwargs.get("modelId"):
         _reasoning_floor = _bedrock_reasoning_stale_floor(api_kwargs["modelId"])
-    if _reasoning_floor is not None:
+    if _reasoning_floor is not None and not _stream_stale_timeout_is_explicit(_cfg_stale):
         _timeout = max(_timeout, _reasoning_floor)
     return _timeout
 
@@ -5476,7 +5490,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # (handled by get_provider_stale_timeout above).
         from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
         _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
-        if _reasoning_floor is not None:
+        if _reasoning_floor is not None and not _stream_stale_timeout_is_explicit(_cfg_stale):
             _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
 
     # Delegated children and gateway cron turns run the streaming request

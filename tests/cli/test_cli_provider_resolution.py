@@ -227,6 +227,15 @@ def test_hermes_cli_init_does_not_eagerly_resolve_runtime_provider(monkeypatch):
     assert calls["count"] == 0
 
 
+def test_hermes_cli_uses_compact_display_config_by_default(monkeypatch):
+    cli = _import_cli()
+    monkeypatch.setitem(cli.CLI_CONFIG["display"], "compact", True)
+
+    shell = cli.HermesCLI(model="gpt-5", max_turns=1)
+
+    assert shell.compact is True
+
+
 def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     cli = _import_cli()
     calls = {"count": 0}

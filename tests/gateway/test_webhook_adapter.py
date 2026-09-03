@@ -1118,3 +1118,23 @@ class TestBlankRouteSecretFailsClosed:
         adapter = _make_adapter(routes={"hook": {"secret": _INSECURE_NO_AUTH}},
                                 host="127.0.0.1")
         assert asyncio.run(adapter.connect()) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("blank", ["   ", "\t", "\n"])
+    async def test_route_with_a_blank_secret_rejects_a_request(self, blank):
+        """The per-request check must fail closed too, not only connect().
+
+        Sibling of test_route_without_secret_rejects_unsigned_request: that one
+        covers ``secret=""``, this one the whitespace form that used to slip
+        through and serve the request unauthenticated.
+        """
+        adapter = _make_adapter(routes={"test": {"secret": blank, "prompt": "hi"}})
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/test", json={"data": "value"})
+            assert resp.status == 403
+            assert (await resp.json())["error"] == "Webhook route is missing an HMAC secret"
+
+        adapter.handle_message.assert_not_called()

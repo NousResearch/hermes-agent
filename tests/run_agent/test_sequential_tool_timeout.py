@@ -112,7 +112,10 @@ def _clarify_call(call_id: str = "clarify-1"):
         type="function",
         function=SimpleNamespace(
             name="clarify",
-            arguments='{"question": "Pick one?", "choices": ["A", "B"]}',
+            arguments=(
+                '{"context": "The checks are complete; choose how to proceed.", '
+                '"question": "Pick one?", "choices": ["A", "B"]}'
+            ),
         ),
     )
 

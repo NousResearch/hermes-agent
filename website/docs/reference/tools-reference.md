@@ -46,7 +46,9 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 
 ### Asking multiple questions at once
 
-The `clarify` tool also accepts a `questions` array (2–5 independent questions, each with its own `choices` and `multi_select`) so the agent can batch several clarification needs into a single prompt instead of asking sequentially. The result is a `responses` array in the same order, with each question's `id` (when supplied) echoed back.
+Every `clarify` call requires a non-empty `context` decision brief explaining the relevant findings, blocker, stakes, and why the user's answer is needed. That brief is rendered with the interactive form itself; answer options belong only in each question's `choices` array.
+
+The `questions` array accepts 1–5 independent questions, each with its own `choices` and `multi_select`, so one question and multi-question batches use the same interface. The result is a `responses` array in question order.
 
 Per-surface behavior:
 
@@ -376,5 +378,4 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
 

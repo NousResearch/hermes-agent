@@ -136,6 +136,11 @@ def _invoke_callback(callback, question, choices, multi_select):
     return callback(question, choices)
 
 
+def _render_question(context: str, question: str) -> str:
+    """Keep the decision brief and question together on every surface."""
+    return f"{context}\n\n{question}" if question else context
+
+
 def _parse_multi_select_response(raw_response) -> List[str]:
     """Parse a multi-select response into a list of cleaned choice strings.
 
@@ -276,7 +281,9 @@ def _batch_result(normalized: List[dict], answers: dict, timed_out: bool) -> str
     return json.dumps(result, ensure_ascii=False)
 
 
-def _run_batch(normalized: List[dict], callback, question: str) -> str:
+def _run_batch(
+    normalized: List[dict], callback, question: str, context: str,
+) -> str:
     """Dispatch a validated batch to the platform callback.
 
     Batch-capable callbacks (a ``questions`` kwarg, detected by signature)
@@ -292,7 +299,15 @@ def _run_batch(normalized: List[dict], callback, question: str) -> str:
     are kept either way.
     """
     if _callback_accepts_questions(callback):
-        raw = callback(question, None, questions=normalized)
+        # Current batch renderers consume the per-question text; some ignore
+        # the legacy top-level title entirely. Compose the explicit brief into
+        # every rendered question so it stays on the same form even when the
+        # user navigates among several questions.
+        rendered = [
+            {**entry, "question": _render_question(context, entry["question"])}
+            for entry in normalized
+        ]
+        raw = callback(question, None, questions=rendered)
 
         answers: dict = {}
         timed_out = False
@@ -317,7 +332,10 @@ def _run_batch(normalized: List[dict], callback, question: str) -> str:
     timed_out = False
     for entry in normalized:
         raw = _invoke_callback(
-            callback, entry["question"], entry["choices"], entry["multi_select"],
+            callback,
+            _render_question(context, entry["question"]),
+            entry["choices"],
+            entry["multi_select"],
         )
         if raw is None or (isinstance(raw, str) and raw.strip() == TIMEOUT_RESPONSE):
             timed_out = True
@@ -332,6 +350,7 @@ def clarify_tool(
     multi_select: bool = False,
     questions: Optional[List[dict]] = None,
     callback: Optional[Callable] = None,
+    context: str = "",
 ) -> str:
     """
     Ask the user a question, optionally with multiple-choice options.
@@ -359,10 +378,20 @@ def clarify_tool(
                       in one call; platforms without it are looped one
                       question at a time.
                       Injected by the agent runner (cli.py / gateway).
+        context:      Concise decision brief shown with every question. It
+                      should explain the relevant findings, blocker, stakes,
+                      and why the user's answer is needed.
 
     Returns:
         JSON string with the user's response(s).
     """
+    if not isinstance(context, str) or not context.strip():
+        return tool_error(
+            "context must be non-empty text explaining the decision and why "
+            "the user's answer is needed."
+        )
+    context = context.strip()
+
     if questions is not None:
         normalized, error = _normalize_questions(questions)
         if error:
@@ -373,7 +402,9 @@ def clarify_tool(
                     "Clarify tool is not available in this execution context."
                 )
             try:
-                return _run_batch(normalized, callback, str(question or "").strip())
+                return _run_batch(
+                    normalized, callback, str(question or "").strip(), context,
+                )
             except Exception as exc:
                 return tool_error(f"Failed to get user input: {exc}")
         # Empty questions array → fall through to the single-question path.
@@ -413,7 +444,9 @@ def clarify_tool(
         choices = mark_recommended(choices)
 
     try:
-        raw_response = _invoke_callback(callback, question, choices, multi_select)
+        raw_response = _invoke_callback(
+            callback, _render_question(context, question), choices, multi_select,
+        )
     except Exception as exc:
         return tool_error(f"Failed to get user input: {exc}")
 
@@ -442,7 +475,9 @@ CLARIFY_SCHEMA = {
     "name": "clarify",
     "description": (
         "Ask the user one or more questions when you need a decision, "
-        "clarification, or feedback before proceeding. Pass every question "
+        "clarification, or feedback before proceeding. Include a concise "
+        "decision brief in `context`; it is shown with every question. Pass "
+        "every question "
         f"in `questions` (1-{MAX_QUESTIONS} entries) — a single question is a "
         "one-entry array, and several INDEPENDENT questions belong in ONE "
         "call (one form beats a chain of clarify calls; if one answer would "
@@ -461,6 +496,15 @@ CLARIFY_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
+            "context": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Concise user-visible decision brief: relevant findings, "
+                    "blocker, stakes, and why an answer is needed. Do not put "
+                    "answer options here; use each question's choices array."
+                ),
+            },
             "questions": {
                 "type": "array",
                 "minItems": 1,
@@ -492,7 +536,7 @@ CLARIFY_SCHEMA = {
             # at top level; a top-level `question` beside `questions` is the
             # batch form's title). One documented way to call.
         },
-        "required": ["questions"],
+        "required": ["context", "questions"],
     },
 }
 
@@ -509,6 +553,7 @@ registry.register(
         choices=args.get("choices"),
         multi_select=args.get("multi_select", False),
         questions=args.get("questions"),
+        context=args.get("context", ""),
         callback=kw.get("callback")),
     check_fn=check_clarify_requirements,
     emoji="❓",

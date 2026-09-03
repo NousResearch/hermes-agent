@@ -3,9 +3,10 @@
 import json
 from typing import List, Optional
 
+import pytest
 
 from tools.clarify_tool import (
-    clarify_tool,
+    clarify_tool as _clarify_tool,
     check_clarify_requirements,
     MAX_CHOICES,
     MAX_QUESTIONS,
@@ -14,13 +15,22 @@ from tools.clarify_tool import (
 )
 
 
+DECISION_CONTEXT = "The deployment checks passed, but the target is still undecided."
+
+
+def clarify_tool(*args, **kwargs):
+    """Exercise existing behavior with the newly required decision brief."""
+    kwargs.setdefault("context", DECISION_CONTEXT)
+    return _clarify_tool(*args, **kwargs)
+
+
 class TestClarifyToolBasics:
     """Basic functionality tests for clarify_tool."""
 
     def test_simple_question_with_callback(self):
         """Should return user response for simple question."""
         def mock_callback(question: str, choices: Optional[List[str]]) -> str:
-            assert question == "What color?"
+            assert question == f"{DECISION_CONTEXT}\n\nWhat color?"
             assert choices is None
             return "blue"
 
@@ -178,7 +188,11 @@ class TestClarifySchema:
         limit. The legacy top-level `question` shape stays handler-accepted
         but unadvertised."""
         params = CLARIFY_SCHEMA["parameters"]
-        assert params["required"] == ["questions"]
+        assert params["required"] == ["context", "questions"]
+        assert params["properties"]["context"]["type"] == "string"
+        assert params["properties"]["context"]["minLength"] == 1
+        assert "choices" not in params["properties"]
+        assert "choices" in params["properties"]["questions"]["items"]["properties"]
         assert params["properties"]["questions"]["maxItems"] == MAX_QUESTIONS
         assert params["properties"]["questions"].get("minItems") == 1
         # Legacy shape must remain accepted by the handler even though the
@@ -367,7 +381,12 @@ class TestRegistryMultiSelectPassThrough:
             return "a, b"
 
         result = json.loads(entry.handler(
-            {"question": "Pick", "choices": ["a", "b"], "multi_select": True},
+            {
+                "context": DECISION_CONTEXT,
+                "question": "Pick",
+                "choices": ["a", "b"],
+                "multi_select": True,
+            },
             callback=cb,
         ))
         assert seen["multi"] is True
@@ -383,7 +402,11 @@ class TestRegistryMultiSelectPassThrough:
             return "a"
 
         result = json.loads(entry.handler(
-            {"question": "Pick", "choices": ["a", "b"]},
+            {
+                "context": DECISION_CONTEXT,
+                "question": "Pick",
+                "choices": ["a", "b"],
+            },
             callback=cb,
         ))
         assert seen["multi"] is False
@@ -392,6 +415,24 @@ class TestRegistryMultiSelectPassThrough:
 
 class TestClarifyBatchValidation:
     """Validation of the `questions` batch parameter (issue #18450)."""
+
+    @pytest.mark.parametrize("context_kwargs", [{}, {"context": ""}, {"context": "  \n"}])
+    def test_contextless_batch_is_rejected_before_callback(self, context_kwargs):
+        calls = []
+
+        def cb(*args, **kwargs):
+            calls.append((args, kwargs))
+            return {"answers": {"q0": "yes"}}
+
+        result = json.loads(_clarify_tool(
+            "",
+            questions=[{"question": "Go?"}],
+            callback=cb,
+            **context_kwargs,
+        ))
+
+        assert "context" in result["error"].lower()
+        assert calls == []
 
     def test_batch_takes_precedence_over_question(self):
         """When both are present, `questions` wins and `question` is ignored."""
@@ -409,7 +450,21 @@ class TestClarifyBatchValidation:
         assert "responses" in result
         assert len(result["responses"]) == 1
         assert result["responses"][0]["question"] == "What color?"
-        assert seen["questions"][0]["question"] == "What color?"
+        assert seen["questions"][0]["question"] == (
+            f"{DECISION_CONTEXT}\n\nWhat color?"
+        )
+
+    def test_direct_question_renders_context_in_same_prompt(self):
+        seen = []
+
+        def cb(question, choices):
+            seen.append(question)
+            return "yes"
+
+        result = json.loads(clarify_tool("Proceed?", callback=cb))
+
+        assert seen == [f"{DECISION_CONTEXT}\n\nProceed?"]
+        assert result["question"] == "Proceed?"
 
     def test_batch_rejects_more_than_five(self):
         result = json.loads(clarify_tool(
@@ -436,7 +491,7 @@ class TestClarifyBatchValidation:
     def test_batch_empty_list_falls_back_to_single_question(self):
         """An empty questions array degrades to the single-question path."""
         def cb(question, choices):
-            assert question == "Single?"
+            assert question == f"{DECISION_CONTEXT}\n\nSingle?"
             return "yes"
 
         result = json.loads(clarify_tool("Single?", questions=[], callback=cb))
@@ -520,6 +575,28 @@ class TestClarifyBatchDispatch:
         assert len(calls) == 1
         assert [r["user_response"] for r in result["responses"]] == ["x", "y"]
 
+    @pytest.mark.parametrize(
+        "questions",
+        [
+            [{"question": "One?"}],
+            [{"question": "One?"}, {"question": "Two?"}],
+        ],
+    )
+    def test_batch_callback_renders_context_with_one_or_many_questions(
+        self, questions,
+    ):
+        seen = []
+
+        def cb(question, choices, multi_select=False, questions=None):
+            seen.extend(entry["question"] for entry in questions)
+            return {"answers": {}}
+
+        clarify_tool("", questions=questions, callback=cb)
+
+        assert seen == [
+            f"{DECISION_CONTEXT}\n\n{entry['question']}" for entry in questions
+        ]
+
     def test_batch_callback_json_string_response(self):
         """A _block-style bridge returns the answers as a JSON string."""
         def cb(question, choices, multi_select=False, questions=None):
@@ -588,7 +665,7 @@ class TestClarifyBatchDispatch:
 
         def legacy_cb(question, choices, multi_select=False):
             calls.append((question, tuple(choices or []) or None, multi_select))
-            return f"answer to {question}"
+            return f"answer {len(calls)}"
 
         result = json.loads(clarify_tool(
             "",
@@ -598,11 +675,14 @@ class TestClarifyBatchDispatch:
             ],
             callback=legacy_cb,
         ))
-        assert [c[0] for c in calls] == ["One?", "Two?"]
+        assert [c[0] for c in calls] == [
+            f"{DECISION_CONTEXT}\n\nOne?",
+            f"{DECISION_CONTEXT}\n\nTwo?",
+        ]
         assert calls[0][1] == ("a (Recommended)", "b")
         assert calls[1][1] is None
         assert [r["user_response"] for r in result["responses"]] == [
-            "answer to One?", "answer to Two?",
+            "answer 1", "answer 2",
         ]
         assert "timed_out" not in result
 
@@ -624,7 +704,10 @@ class TestClarifyBatchDispatch:
             ],
             callback=legacy_cb,
         ))
-        assert calls == ["One?", "Two?"]
+        assert calls == [
+            f"{DECISION_CONTEXT}\n\nOne?",
+            f"{DECISION_CONTEXT}\n\nTwo?",
+        ]
         assert result["timed_out"] is True
         assert [r["user_response"] for r in result["responses"]] == [
             "answered", "", "",
@@ -643,7 +726,10 @@ class TestClarifyBatchDispatch:
             questions=[{"question": "One?"}, {"question": "Two?"}],
             callback=legacy_cb,
         ))
-        assert calls == ["One?", "Two?"]
+        assert calls == [
+            f"{DECISION_CONTEXT}\n\nOne?",
+            f"{DECISION_CONTEXT}\n\nTwo?",
+        ]
         assert [r["user_response"] for r in result["responses"]] == ["", "second"]
         assert "timed_out" not in result
 
@@ -671,8 +757,11 @@ class TestRegistryBatchPassThrough:
             return {"answers": {"q0": "yes"}}
 
         result = json.loads(entry.handler(
-            {"questions": [{"question": "Go?"}]},
+            {
+                "context": DECISION_CONTEXT,
+                "questions": [{"question": "Go?"}],
+            },
             callback=cb,
         ))
-        assert seen["questions"][0]["question"] == "Go?"
+        assert seen["questions"][0]["question"] == f"{DECISION_CONTEXT}\n\nGo?"
         assert result["responses"][0]["user_response"] == "yes"

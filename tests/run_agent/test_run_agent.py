@@ -2494,7 +2494,13 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("todo_list", {"todos": []}),
         ("session_search", {"query": "needle"}),
         ("memory", {"action": "view", "target": "memory"}),
-        ("clarify", {"question": "Continue?"}),
+        (
+            "clarify",
+            {
+                "context": "The checks finished and need a go/no-go decision.",
+                "questions": [{"question": "Continue?"}],
+            },
+        ),
         ("read_terminal", {}),
         ("desktop_preview", {"action": "read"}),
         ("drive_preview", {"action": "elements"}),
@@ -2597,6 +2603,52 @@ class TestAgentRuntimePostHookOwnershipSync:
             f"{tool_name}-sequential",
         ]
         assert all(call["tool_name"] == tool_name for call in post_calls)
+
+    def test_clarify_context_reaches_both_agent_runtime_paths(
+        self, agent, monkeypatch,
+    ):
+        seen = []
+        tool_args = {
+            "context": "The checks passed; deployment timing remains undecided.",
+            "questions": [{"question": "Deploy now?", "choices": ["Yes", "No"]}],
+        }
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            lambda *args, **kwargs: (None, None),
+        )
+        monkeypatch.setattr(
+            "tools.clarify_tool.clarify_tool",
+            lambda **kwargs: seen.append(kwargs) or '{"ok":true}',
+        )
+
+        with patch(
+            "run_agent.handle_function_call",
+            side_effect=AssertionError("clarify must stay in the agent runtime"),
+        ):
+            agent._invoke_tool(
+                "clarify",
+                dict(tool_args),
+                "task-concurrent",
+                tool_call_id="clarify-concurrent",
+            )
+            tool_call = _mock_tool_call(
+                name="clarify",
+                arguments=json.dumps(tool_args),
+                call_id="clarify-sequential",
+            )
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[tool_call]),
+                [],
+                "task-sequential",
+            )
+
+        assert [call["context"] for call in seen] == [
+            tool_args["context"], tool_args["context"],
+        ]
+        assert [call["questions"] for call in seen] == [
+            tool_args["questions"], tool_args["questions"],
+        ]
 
     def test_post_hook_ownership_contract_lists_exercised_tools(self):
         from agent.agent_runtime_helpers import AGENT_RUNTIME_POST_HOOK_TOOL_NAMES

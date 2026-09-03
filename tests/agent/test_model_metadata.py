@@ -1008,6 +1008,52 @@ class TestProviderProfileLiveMetadataContextResolution:
             base_url=None,
         )
 
+    def test_live_fallback_matches_across_namespace_and_tag_boundaries(self):
+        """A near-miss id still resolves when the difference is a vendor
+        namespace or a variant tag, never a bare hyphen split."""
+        import agent.model_metadata as mm
+
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/model", "context_length": 65_536},
+            {"id": "vendor/model:beta", "context_length": 131_072},
+        ]
+
+        with patch("providers.get_provider_profile", return_value=profile):
+            # Query without the vendor namespace prefix.
+            assert (
+                get_model_context_length("model", provider="vendor") == 65_536
+            )
+            mm._profile_model_metadata_cache.clear()
+            mm._profile_model_metadata_cache_time.clear()
+            # Query for the untagged id when the catalog only lists the
+            # tagged variant of the same base model.
+            assert (
+                get_model_context_length(
+                    "vendor/model:beta", provider="vendor"
+                )
+                == 131_072
+            )
+
+    def test_near_miss_catalog_id_does_not_match_and_falls_through(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/model-large", "context_length": 131_072},
+        ]
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "agent.models_dev.lookup_models_dev_context",
+                return_value=262_144,
+            ),
+        ):
+            context_length = get_model_context_length(
+                "vendor/model", provider="vendor"
+            )
+
+        assert context_length == 262_144
+
     def test_opted_in_known_provider_uses_live_context_before_persistent_cache(self):
         profile = MagicMock(use_live_model_metadata=True)
         profile.fetch_model_metadata.return_value = [

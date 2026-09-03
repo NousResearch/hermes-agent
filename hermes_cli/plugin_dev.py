@@ -116,6 +116,18 @@ def _doctor_runtime(plugin_path: Path):
             registered_hooks=tuple(loaded.hooks_registered),
         )
     finally:
+        # Dispose the plugin's own registrations FIRST, while the temporary
+        # HERMES_HOME still exists. This runs the host-owned ctx.on_unload(...)
+        # callbacks — e.g. closing a SQLite handle a context-engine plugin
+        # opened under that home. Without it the DB stays open and stack.close()
+        # below (TemporaryDirectory removal) fails with WinError 32 on Windows
+        # (#99918). Best-effort: the snapshot restore below remains the
+        # authoritative registry cleanup, so an unload hiccup never masks it or
+        # the original exception.
+        try:
+            manager.unload()
+        except Exception:
+            pass
         entries_after = {entry.name: entry for entry in registry._snapshot_entries()}
         changed_names = {
             name

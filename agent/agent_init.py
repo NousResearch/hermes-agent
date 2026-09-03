@@ -962,6 +962,21 @@ def init_agent(
     
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
+    if reasoning_config is None:
+        # No caller-supplied config: resolve the user's configured effort here
+        # rather than leaving it None. A None reaches build_anthropic_kwargs as
+        # "no thinking key at all", so adaptive Claude falls back to the API
+        # default display:"omitted" and returns thinking blocks with empty text
+        # and only an opaque signature — which hosts render as garbled bytes
+        # where reasoning should be. Resolving at this single chokepoint keeps
+        # every construction site correct, including ones that forget the kwarg.
+        try:
+            from hermes_cli.config import load_config_readonly as _load_rc_cfg
+            from hermes_constants import resolve_reasoning_config as _resolve_rc
+
+            reasoning_config = _resolve_rc(_load_rc_cfg() or {}, agent.model or "")
+        except Exception:
+            reasoning_config = None
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
     # Per-provider reasoning_content echo opt-in (see _reasoning_echo_opt_in).
     # Read once at init; switch_model / try_activate_fallback / restore

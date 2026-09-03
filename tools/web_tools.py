@@ -355,6 +355,14 @@ def _get_capability_backend(capability: str) -> str:
     cfg = _load_web_config()
     specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
     if specific:
+        # The managed "nous" pin (Desktop "Use for search/extract" on the
+        # Nous Subscription row) is serviced by the firecrawl provider
+        # through the Tool Gateway — the same dispatch mapping _get_backend()
+        # applies to the shared web.backend.
+        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+
+        if specific == NOUS_MANAGED_PROVIDER:
+            return "firecrawl"
         return specific
     return _get_backend()
 

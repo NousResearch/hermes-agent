@@ -427,6 +427,34 @@ def removed_backend_note(section: str, name: str) -> Optional[str]:
     return REMOVED_BACKENDS.get(section, {}).get(normalized)
 
 
+def capability_pins_managed_nous(section: str = "web") -> bool:
+    """True when a per-capability key pins the managed Nous row.
+
+    ``read_selection()`` only reads the shared name key (``web.backend``),
+    so a Desktop per-capability pick on the managed Nous Subscription row
+    (``web.search_backend`` / ``web.extract_backend`` storing ``"nous"``)
+    is invisible to it. Vendor-side resolvers use this to promote the
+    client onto the Tool Gateway when the capability being served is the
+    pinned one.
+    """
+    extra = _EXTRA_SELECTION_KEYS.get(section, ())
+    if not extra:
+        return False
+    try:
+        from hermes_cli.config import read_raw_config_readonly
+
+        cfg = read_raw_config_readonly() or {}
+        raw = cfg.get(section) if isinstance(cfg, dict) else None
+    except Exception:
+        return False
+    if not isinstance(raw, dict):
+        return False
+    return any(
+        str(raw.get(key) or "").strip().lower() == NOUS_MANAGED_PROVIDER
+        for key in extra
+    )
+
+
 def selection_error(section: str, selection_name: str, failure: str) -> str:
     """The uniform honest-error contract for a selected-but-broken provider."""
     note = removed_backend_note(section, selection_name)

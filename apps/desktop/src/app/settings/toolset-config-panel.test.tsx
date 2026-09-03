@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
@@ -1068,6 +1068,93 @@ describe('ToolsetConfigPanel', () => {
       await screen.findByText('Microsoft Edge TTS')
       expect(screen.queryByText(/^Search: /)).toBeNull()
       expect(screen.queryByRole('button', { name: 'Use for Search' })).toBeNull()
+    })
+
+    it('lights only the managed row for a stored nous pin, not the BYOK rows sharing the vendor string', async () => {
+      // The managed Nous Subscription row and the BYOK Firecrawl row both
+      // carry web_backend 'firecrawl'; the stored 'nous' pin must match the
+      // managed row (via managed_nous_feature) and only that one.
+      getToolsetConfig.mockResolvedValue(
+        webConfig({
+          active_provider: 'Nous Subscription',
+          active_extract_backend: 'nous',
+          providers: [
+            {
+              name: 'Nous Subscription',
+              badge: 'subscription',
+              tag: 'Managed Firecrawl billed to your subscription',
+              env_vars: [],
+              post_setup: null,
+              requires_nous_auth: false,
+              is_active: true,
+              status: 'ready',
+              web_backend: 'firecrawl',
+              capabilities: ['search', 'extract'],
+              managed_nous_feature: 'web'
+            },
+            {
+              name: 'Firecrawl Self-Hosted',
+              badge: 'free · self-hosted',
+              tag: 'Run your own Firecrawl instance',
+              env_vars: [],
+              post_setup: null,
+              requires_nous_auth: false,
+              is_active: false,
+              status: 'ready',
+              web_backend: 'firecrawl',
+              capabilities: ['search', 'extract']
+            }
+          ]
+        })
+      )
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
+
+      // Badges show the stored pin as reported by the endpoint.
+      expect(await screen.findByText('Extract: nous')).toBeTruthy()
+      // Exactly one "Extract backend" pill: on the managed row. The BYOK row
+      // sharing web_backend 'firecrawl' must stay dark.
+      expect(screen.getAllByText('Extract backend')).toHaveLength(1)
+      const managedRow = screen.getByRole('button', { name: /Nous Subscription/ })
+      expect(within(managedRow).getByText('Extract backend')).toBeTruthy()
+      const byokRow = screen.getByRole('button', { name: /Firecrawl Self-Hosted/ })
+      expect(within(byokRow).queryByText('Extract backend')).toBeNull()
+    })
+
+    it('mirrors the nous pin (not the vendor string) after a capability pick on the managed row', async () => {
+      getToolsetConfig.mockResolvedValue(
+        webConfig({
+          providers: [
+            {
+              name: 'Nous Subscription',
+              badge: 'subscription',
+              tag: 'Managed Firecrawl billed to your subscription',
+              env_vars: [],
+              post_setup: null,
+              requires_nous_auth: false,
+              is_active: false,
+              status: 'ready',
+              web_backend: 'firecrawl',
+              capabilities: ['search', 'extract'],
+              managed_nous_feature: 'web'
+            }
+          ]
+        })
+      )
+      selectToolsetProvider.mockResolvedValue({ ok: true, name: 'web', provider: 'Nous Subscription', capability: 'extract' })
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
+
+      // The sole provider row is auto-expanded by the panel's initializer —
+      // clicking it again would toggle it shut.
+      fireEvent.click(await screen.findByRole('button', { name: 'Use for Extract' }))
+
+      await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('web', 'Nous Subscription', 'extract'))
+      // The optimistic badge mirrors the persisted 'nous' pin — writing the
+      // vendor 'firecrawl' here would light the BYOK rows until a refetch.
+      await waitFor(() => expect(screen.getByText('Extract: nous')).toBeTruthy())
     })
   })
 })

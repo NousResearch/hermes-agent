@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import types
+from types import SimpleNamespace
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -86,6 +87,55 @@ class TestFirecrawlClientConfig:
 
 
     # ── Singleton caching ────────────────────────────────────────────
+
+    def test_capability_nous_pin_routes_client_to_gateway(self):
+        """A per-capability 'nous' pin with an empty shared backend (the
+        Brave-search + Nous-extract mix) must route the firecrawl client
+        through the managed Tool Gateway instead of demanding BYOK keys
+        (#100513)."""
+        raw = {"web": {"search_backend": "brave-free", "extract_backend": "nous"}}
+        token = "nous" + "-token"
+        with patch("hermes_cli.config.read_raw_config_readonly", return_value=raw), \
+             patch("tools.web_tools._load_web_config", return_value=raw["web"]), \
+             patch(
+                 "tools.web_tools.resolve_managed_tool_gateway",
+                 return_value=SimpleNamespace(
+                     nous_user_token=token,
+                     gateway_origin="https://gw.example.com",
+                 ),
+             ), \
+             patch("tools.web_tools._read_nous_access_token", return_value=token), \
+             patch("tools.web_tools.Firecrawl") as mock_fc:
+            from tools.web_tools import _get_firecrawl_client
+            result = _get_firecrawl_client()
+            mock_fc.assert_called_once_with(
+                api_key=token,
+                api_url="https://gw.example.com",
+            )
+            assert result is mock_fc.return_value
+
+    def test_capability_vendor_pin_keeps_direct_only_semantics(self):
+        """A BYOK per-capability pin (extract_backend: firecrawl, shared
+        backend empty) keeps the direct-only semantics: with no credentials
+        it serves the keyless cloud tier (the explicit-selection unlock) —
+        it must NOT silently route through the managed Tool Gateway billed
+        to Nous."""
+        import tools.web_tools
+        raw = {"web": {"extract_backend": "firecrawl"}}
+        with patch("hermes_cli.config.read_raw_config_readonly", return_value=raw), \
+             patch("tools.web_tools._load_web_config", return_value=raw["web"]), \
+             patch(
+                 "tools.web_tools.resolve_managed_tool_gateway",
+                 return_value=SimpleNamespace(
+                     nous_user_token="nous" + "-token",
+                     gateway_origin="https://gw.example.com",
+                 ),
+             ) as resolve_gateway, \
+             patch("tools.web_tools._read_nous_access_token", return_value=None):
+            from tools.web_tools import _get_firecrawl_client
+            _get_firecrawl_client()
+            resolve_gateway.assert_not_called()
+            assert tools.web_tools._firecrawl_client_config[0] == "direct-keyless"
 
 
     def test_constructor_failure_allows_retry(self):
@@ -380,6 +430,25 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch("tools.web_tools._is_tool_gateway_ready", return_value=True):
             assert _get_backend() == "firecrawl"
+
+    def test_nous_extract_pin_maps_to_firecrawl(self):
+        """The managed 'nous' per-capability pin (web.extract_backend, written
+        by the Desktop "Use for extract" pick on the Nous Subscription row)
+        is serviced by the firecrawl provider — the same dispatch mapping
+        _get_backend() applies to the shared web.backend (#100513)."""
+        from tools.web_tools import _get_extract_backend
+        with patch("tools.web_tools._load_web_config", return_value={
+            "search_backend": "brave-free", "extract_backend": "nous",
+        }):
+            assert _get_extract_backend() == "firecrawl"
+
+    def test_nous_search_pin_maps_to_firecrawl(self):
+        """Same mapping on the search side of the split."""
+        from tools.web_tools import _get_search_backend
+        with patch("tools.web_tools._load_web_config", return_value={
+            "search_backend": "nous", "extract_backend": "tavily",
+        }):
+            assert _get_search_backend() == "firecrawl"
 
 
 class TestParallelClientConfig:

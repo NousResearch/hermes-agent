@@ -98,6 +98,16 @@ function providerStatus(provider: ToolProvider, envState: Record<string, boolean
   return providerConfigured(provider, envState) ? 'ready' : 'needs_keys'
 }
 
+/**
+ * The config key a per-capability pick on this row writes (and the badge key
+ * it matches on): Nous-managed rows persist the 'nous' pin instead of their
+ * vendor `web_backend` (e.g. the Nous Subscription and BYOK firecrawl rows
+ * both carry web_backend 'firecrawl' — only the pin tells them apart).
+ */
+function webBackendKey(provider: ToolProvider): string {
+  return provider.managed_nous_feature ? 'nous' : (provider.web_backend ?? provider.name)
+}
+
 interface EnvVarFieldProps {
   envVar: ToolEnvVar
   isSet: boolean
@@ -705,14 +715,18 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
     try {
       await selectToolsetProvider(toolset, provider.name, capability, profile)
       // Mirror the backend write locally so the Search:/Extract: badges track
-      // the new per-capability backend without a refetch.
+      // the new per-capability backend without a refetch. The managed Nous
+      // row persists the 'nous' pin (not its vendor web_backend), so mirror
+      // that pin — otherwise the badges would light the BYOK row sharing the
+      // vendor string until the next refetch.
+      const writtenPin = webBackendKey(provider)
       setCfg(current =>
         current
           ? {
               ...current,
               ...(capability === 'search'
-                ? { active_search_backend: provider.web_backend ?? provider.name }
-                : { active_extract_backend: provider.web_backend ?? provider.name })
+                ? { active_search_backend: writtenPin }
+                : { active_extract_backend: writtenPin })
             }
           : current
       )
@@ -768,8 +782,11 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
         const isBackendActive = provider.is_active || cfg?.active_provider === provider.name
         const status = providerStatus(provider, envState)
         const webCaps = toolset === 'web' ? (provider.capabilities ?? []) : []
-        const isSearchBackend = Boolean(provider.web_backend && cfg.active_search_backend === provider.web_backend)
-        const isExtractBackend = Boolean(provider.web_backend && cfg.active_extract_backend === provider.web_backend)
+        // Managed rows match the stored 'nous' pin; vendor rows match their
+        // web_backend (see webBackendKey).
+        const backendKey = webBackendKey(provider)
+        const isSearchBackend = Boolean(provider.web_backend && cfg.active_search_backend === backendKey)
+        const isExtractBackend = Boolean(provider.web_backend && cfg.active_extract_backend === backendKey)
 
         return (
           <div className="overflow-hidden rounded-xl bg-background/60" key={provider.name}>

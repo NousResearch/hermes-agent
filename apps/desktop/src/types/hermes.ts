@@ -1097,6 +1097,10 @@ export interface ToolProvider {
   /** Web toolset only: the backend key written to web.*backend config
    *  (e.g. 'searxng'). Absent on other toolsets and older backends. */
   web_backend?: string
+  /** Web toolset only: set on Nous-managed rows (e.g. the Nous Subscription
+   *  row). Their web_backend is the vendor string shared with BYOK rows, so
+   *  a stored 'nous' per-capability pin matches on this flag instead. */
+  managed_nous_feature?: string
   /** TTS toolset only: the provider key written to tts.provider when this row
    *  is selected (e.g. 'openai'). Doubles as the config section that holds the
    *  provider's voice/model settings (tts.<key>.*). Absent on other toolsets

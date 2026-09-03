@@ -334,12 +334,19 @@ def _get_firecrawl_client() -> Any:
     import tools.web_tools as _wt
     from tools.tool_backend_helpers import (
         NOUS_MANAGED_PROVIDER,
+        capability_pins_managed_nous,
         read_selection,
         selection_error,
         selection_exists,
     )
 
     selected = read_selection("web")
+    # Per-capability pins (Desktop "Use for search/extract" on the managed
+    # row) store "nous" in web.{search,extract}_backend while the shared
+    # web.backend stays empty — promote those onto the Tool Gateway too, or
+    # e.g. Brave-search + Nous-extract would demand BYOK firecrawl keys.
+    if selected is None and capability_pins_managed_nous():
+        selected = NOUS_MANAGED_PROVIDER
 
     direct_config = _get_direct_firecrawl_config()
 

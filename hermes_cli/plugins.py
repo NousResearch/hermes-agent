@@ -682,6 +682,21 @@ def _get_enabled_plugins() -> Optional[set]:
 
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 
+# Per-harness manifest directories that plugin repos ship for OTHER agent
+# harnesses (Claude Code, Codex, Cursor, Devin, Kimi — e.g. obra/superpowers
+# keeps one plugin.json per harness inside them). Their plugin.json is not an
+# Agent Plugins v1 manifest and can never validate, so attempting it on every
+# discovery pass only spams warnings (#101962). Directory discovery skips
+# them; a plugin's real Hermes manifest (.hermes-plugin/plugin.yaml or a
+# top-level plugin.yaml/plugin.json) is unaffected.
+_FOREIGN_HARNESS_MANIFEST_DIRS = frozenset({
+    ".claude-plugin",
+    ".codex-plugin",
+    ".cursor-plugin",
+    ".devin-plugin",
+    ".kimi-plugin",
+})
+
 
 def _portable_skill_namespace(key: str) -> str:
     """Return a readable, collision-resistant namespace for a portable plugin."""
@@ -4708,6 +4723,11 @@ class PluginManager:
             if not child.is_dir():
                 continue
             if depth == 0 and skip_names and child.name in skip_names:
+                continue
+            if child.name in _FOREIGN_HARNESS_MANIFEST_DIRS:
+                logger.debug(
+                    "Skipping %s (foreign-harness manifest convention)", child
+                )
                 continue
             manifest_file = child / "plugin.yaml"
             if not manifest_file.exists():

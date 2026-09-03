@@ -28,9 +28,14 @@ def handle_bot_transfer_action(args) -> bool:
 
     try:
         if action == "share":
-            from hermes_cli.profiles import get_profile_dir
+            from hermes_cli.profiles import (
+                get_profile_dir,
+                normalize_profile_name,
+                validate_profile_name,
+            )
 
-            name = args.profile_name
+            name = normalize_profile_name(args.profile_name)
+            validate_profile_name(name)
             profile_dir = get_profile_dir(name)
             if not profile_dir.is_dir():
                 raise FileNotFoundError(f"Profile '{name}' does not exist.")

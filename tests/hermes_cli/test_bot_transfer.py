@@ -4,6 +4,7 @@ import multiprocessing
 import shutil
 import tarfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -90,6 +91,44 @@ def test_pull_policy_is_per_profile_and_fails_closed_for_malformed_yaml(profile_
 
     (source / "profile.yaml").write_text("cloneable: 'false'\n", encoding="utf-8")
     assert profile_is_cloneable("helper") is False
+
+
+def test_clone_policy_rejects_profile_path_traversal(profile_root):
+    outside = profile_root / "outside"
+    outside.mkdir()
+
+    assert profile_is_cloneable("../outside") is False
+    with pytest.raises(ValueError, match="Invalid profile name"):
+        set_profile_cloneable("../outside", True)
+
+    assert not (outside / BOT_ID_FILENAME).exists()
+    assert not (outside / "profile.yaml").exists()
+
+
+def test_bot_identity_is_published_atomically_for_concurrent_exporters(
+    profile_root,
+):
+    source = _source_profile(profile_root)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        identities = set(pool.map(lambda _: bot_transfer.ensure_profile_bot_id(source), range(8)))
+
+    assert len(identities) == 1
+    assert get_profile_bot_id(source) == identities.pop()
+    assert not list(source.glob(f".{BOT_ID_FILENAME}.*.tmp"))
+
+
+def test_bot_identity_publish_failure_leaves_no_partial_file(
+    profile_root, monkeypatch
+):
+    source = _source_profile(profile_root)
+    monkeypatch.setattr(bot_transfer.os, "link", lambda *_args: (_ for _ in ()).throw(OSError("fail")))
+
+    with pytest.raises(OSError, match="fail"):
+        bot_transfer.ensure_profile_bot_id(source)
+
+    assert not (source / BOT_ID_FILENAME).exists()
+    assert not list(source.glob(f".{BOT_ID_FILENAME}.*.tmp"))
 
 
 def test_bot_import_allows_rename_but_rejects_name_and_identity_collisions(profile_root, tmp_path):
@@ -265,3 +304,56 @@ def test_remote_clone_refuses_cleartext_bearer_auth_off_loopback(monkeypatch):
 
     with pytest.raises(ValueError, match="must use HTTPS"):
         pull_bot_profile("helper", remote="http://gateway.example")
+
+
+def test_pull_wraps_network_failures(profile_root, monkeypatch):
+    real_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    monkeypatch.setenv("GATEWAY_PROXY_KEY", "remote-secret")
+    monkeypatch.setattr(
+        bot_transfer.httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    with pytest.raises(bot_transfer.BotTransferError, match="request failed"):
+        pull_bot_profile("helper", remote="https://remote.example")
+
+
+def test_push_wraps_network_failures(profile_root, monkeypatch):
+    _source_profile(profile_root)
+    real_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    monkeypatch.setenv("GATEWAY_PROXY_KEY", "remote-secret")
+    monkeypatch.setattr(
+        bot_transfer.httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    with pytest.raises(bot_transfer.BotTransferError, match="request failed"):
+        push_bot_profile("helper", remote="https://remote.example")
+
+
+def test_push_rejects_malformed_success_response(profile_root, monkeypatch):
+    _source_profile(profile_root)
+    real_client = httpx.Client
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"object": "hermes.bot_clone"})
+
+    monkeypatch.setenv("GATEWAY_PROXY_KEY", "remote-secret")
+    monkeypatch.setattr(
+        bot_transfer.httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    with pytest.raises(bot_transfer.BotTransferError, match="invalid bot clone response"):
+        push_bot_profile("helper", remote="https://remote.example")

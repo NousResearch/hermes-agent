@@ -76,21 +76,36 @@ def ensure_profile_bot_id(profile_dir: Path) -> str:
 
     candidate = str(uuid.uuid4())
     path = profile_dir / BOT_ID_FILENAME
+    fd, temporary = tempfile.mkstemp(
+        dir=profile_dir, prefix=f".{BOT_ID_FILENAME}.", suffix=".tmp"
+    )
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        # A concurrent exporter won the identity race.
-        return _valid_bot_id(path.read_text(encoding="utf-8"))
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(candidate + "\n")
-    return candidate
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(candidate + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        try:
+            os.link(temporary, path)
+            return candidate
+        except FileExistsError:
+            return _valid_bot_id(path.read_text(encoding="utf-8"))
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def set_profile_cloneable(name: str, allowed: bool) -> str:
     """Set the per-bot pull policy and return its stable bot UUID."""
-    from hermes_cli.profiles import get_profile_dir, write_profile_meta
+    from hermes_cli.profiles import (
+        get_profile_dir,
+        normalize_profile_name,
+        validate_profile_name,
+        write_profile_meta,
+    )
 
-    profile_dir = get_profile_dir(name)
+    canon = normalize_profile_name(name)
+    validate_profile_name(canon)
+    profile_dir = get_profile_dir(canon)
     if not profile_dir.is_dir():
         raise FileNotFoundError(f"Profile '{name}' does not exist.")
     bot_id = ensure_profile_bot_id(profile_dir)
@@ -99,9 +114,19 @@ def set_profile_cloneable(name: str, allowed: bool) -> str:
 
 
 def profile_is_cloneable(name: str) -> bool:
-    from hermes_cli.profiles import get_profile_dir, read_profile_meta
+    from hermes_cli.profiles import (
+        get_profile_dir,
+        normalize_profile_name,
+        read_profile_meta,
+        validate_profile_name,
+    )
 
-    profile_dir = get_profile_dir(name)
+    canon = normalize_profile_name(name)
+    try:
+        validate_profile_name(canon)
+    except (TypeError, ValueError):
+        return False
+    profile_dir = get_profile_dir(canon)
     return profile_dir.is_dir() and bool(read_profile_meta(profile_dir).get("cloneable"))
 
 
@@ -399,18 +424,23 @@ def pull_bot_profile(
     headers = {"Authorization": f"Bearer {key}", "Accept": "application/gzip"}
     with tempfile.TemporaryDirectory(prefix="hermes_bot_pull_") as tmpdir:
         archive = Path(tmpdir) / "bot.tar.gz"
-        with httpx.Client(timeout=120.0, follow_redirects=False) as client:
-            with client.stream("GET", url, headers=headers) as response:
-                if response.status_code != 200:
-                    response.read()
-                    raise _response_error(response)
-                total = 0
-                with archive.open("wb") as handle:
-                    for chunk in response.iter_bytes():
-                        total += len(chunk)
-                        if total > MAX_BOT_CLONE_BYTES:
-                            raise BotTransferError("Remote bot clone exceeds the 10 MB transfer limit.")
-                        handle.write(chunk)
+        try:
+            with httpx.Client(timeout=120.0, follow_redirects=False) as client:
+                with client.stream("GET", url, headers=headers) as response:
+                    if response.status_code != 200:
+                        response.read()
+                        raise _response_error(response)
+                    total = 0
+                    with archive.open("wb") as handle:
+                        for chunk in response.iter_bytes():
+                            total += len(chunk)
+                            if total > MAX_BOT_CLONE_BYTES:
+                                raise BotTransferError(
+                                    "Remote bot clone exceeds the 10 MB transfer limit."
+                                )
+                            handle.write(chunk)
+        except httpx.HTTPError as exc:
+            raise BotTransferError(f"Remote bot clone request failed: {exc}") from exc
         return import_bot_profile(str(archive), name=name)
 
 
@@ -430,9 +460,27 @@ def push_bot_profile(
             "Accept": "application/json",
         }
         params = {"name": name} if name else None
-        with archive.open("rb") as body, httpx.Client(timeout=120.0, follow_redirects=False) as client:
-            response = client.post(f"{base}/v1/bots/clone", headers=headers, params=params, content=body)
+        try:
+            with archive.open("rb") as body, httpx.Client(
+                timeout=120.0, follow_redirects=False
+            ) as client:
+                response = client.post(
+                    f"{base}/v1/bots/clone",
+                    headers=headers,
+                    params=params,
+                    content=body,
+                )
+        except httpx.HTTPError as exc:
+            raise BotTransferError(f"Remote bot clone request failed: {exc}") from exc
         if response.status_code != 201:
             raise _response_error(response)
-        payload = response.json()
-        return str(payload["name"]), _valid_bot_id(payload["bot_id"])
+        try:
+            payload = response.json()
+            remote_name = payload["name"]
+            if not isinstance(remote_name, str) or not remote_name:
+                raise ValueError("missing name")
+            return remote_name, _valid_bot_id(payload["bot_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise BotTransferError(
+                "Remote gateway returned an invalid bot clone response."
+            ) from exc

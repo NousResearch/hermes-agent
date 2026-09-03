@@ -310,7 +310,10 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     with a baseline record the first time they're seen so their inactivity
     clock starts NOW rather than at epoch — a long-unused built-in is therefore
     archived only after a fresh ``archive_after_days`` of non-use, not on the
-    first pass after the flag flips on.
+    first pass after the flag flips on. A built-in whose record predates the
+    curator (pure telemetry: never used, no activity) gets its clock
+    re-anchored the first time it is seen here, so pre-seeded built-ins aren't
+    all marked stale on the first run (#79295).
 
     Returns a counter dict describing what changed.
     """
@@ -344,6 +347,25 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
         # (e.g. a newly-eligible built-in): anchor its clock to now and defer.
         if not row.get("_persisted", True):
             _u.seed_record_if_missing(name)
+            counts["seeded"] += 1
+            continue
+
+        # A bundled built-in whose only record is pure telemetry (never used,
+        # no activity) carries a created_at that predates the first curator
+        # run — telemetry writes the record the moment the skill is seeded,
+        # which can be long before ``curator.prune_builtins`` is enabled.
+        # Anchoring the clock there marks a fresh built-in stale on the first
+        # pass. On first sight, re-anchor created_at to now (stamping
+        # first_seen_at) so the clock starts from this run; the skill then
+        # ages normally and is pruned only after a full window of non-use.
+        # Fixes #79295.
+        if (
+            row.get("provenance") == "bundled"
+            and int(row.get("use_count", 0) or 0) == 0
+            and not _parse_iso(row.get("last_activity_at"))
+            and not row.get("first_seen_at")
+        ):
+            _u.reanchor_clock(name)
             counts["seeded"] += 1
             continue
 

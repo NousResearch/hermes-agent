@@ -652,6 +652,10 @@ def _empty_record() -> Dict[str, Any]:
         "last_reused_patch_generation": 0,
         "last_patched_at": None,
         "created_at": _now_iso(),
+        # When the curator first anchored this skill's inactivity clock.
+        # Written on first sight (seed or re-anchor) so later runs don't
+        # re-anchor a record whose clock already started (see reanchor_clock).
+        "first_seen_at": None,
         "state": STATE_ACTIVE,
         "pinned": False,
         "archived_at": None,
@@ -733,7 +737,11 @@ def seed_record_if_missing(skill_name: str) -> None:
             data = load_usage()
             if isinstance(data.get(skill_name), dict):
                 return
-            data[skill_name] = _empty_record()
+            rec = _empty_record()
+            # Stamp first sight so a later run knows the clock was already
+            # anchored here and doesn't re-anchor it (see reanchor_clock).
+            rec["first_seen_at"] = _now_iso()
+            data[skill_name] = rec
             save_usage(data)
     except Exception as e:
         logger.debug("skill_usage.seed_record_if_missing(%s) failed: %s", skill_name, e, exc_info=True)
@@ -842,6 +850,31 @@ def _emit_skill_lifecycle(
             action,
             exc_info=True,
         )
+
+
+def reanchor_clock(skill_name: str) -> None:
+    """Anchor a skill's curator inactivity clock to now, exactly once.
+
+    A bundled built-in can carry a pure-telemetry record (``use_count`` 0, no
+    activity) whose ``created_at`` predates the curator's first sight of the
+    skill — e.g. records batch-created when skills were seeded, before
+    ``curator.prune_builtins`` was ever enabled. Anchoring the clock there
+    would mark a fresh built-in stale on the very first curator run. This
+    resets ``created_at`` to now and stamps ``first_seen_at`` so the clock
+    measures non-use from first curation — matching the no-record first-sight
+    behavior of :func:`seed_record_if_missing` — and the ``first_seen_at``
+    stamp keeps later runs from re-anchoring (the clock then ticks normally
+    and the skill ages out after a full stale window of non-use). No-op when
+    no record exists.
+    """
+    if not skill_name:
+        return
+
+    def _apply(rec: Dict[str, Any]) -> None:
+        rec["created_at"] = _now_iso()
+        rec["first_seen_at"] = _now_iso()
+
+    _mutate(skill_name, _apply)
 
 
 # ---------------------------------------------------------------------------

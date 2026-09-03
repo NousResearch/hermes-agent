@@ -530,6 +530,17 @@ def _detect_claude_code_version() -> str:
 
 
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
+# Appended after the Claude Code identity line when injecting via OAuth.
+# Claude models that see "You are Claude Code" believe they are running inside
+# the Claude Code runtime and attempt to call Claude Code's native tools —
+# Glob, Read, Grep — which do not exist in Hermes (#84222).  This suffix
+# explicitly declares that the native Claude Code tools are NOT available and
+# directs the model to use only the tools defined in the API request.
+_CLAUDE_CODE_TOOL_OVERRIDE = (
+    " Note: You are running via the Hermes agent framework, not the standard "
+    "Claude Code CLI. The Claude Code native file tools (Glob, Read, Grep, etc.) "
+    "are not available. Use only the tools provided in the API request."
+)
 _MCP_TOOL_PREFIX = "mcp__"
 
 # Anthropic's OAuth billing classifier fingerprints certain Hermes tool
@@ -983,8 +994,11 @@ def build_anthropic_kwargs(
 
     # ── OAuth: Claude Code identity ──────────────────────────────────
     if is_oauth:
-        # 1. Prepend Claude Code system prompt identity
-        cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
+        # 1. Prepend Claude Code system prompt identity with an explicit tool
+        #    override to prevent the model from calling Claude Code's native
+        #    tools (Glob, Read, Grep) that don't exist in Hermes (#84222).
+        cc_text = _CLAUDE_CODE_SYSTEM_PREFIX + _CLAUDE_CODE_TOOL_OVERRIDE
+        cc_block = {"type": "text", "text": cc_text}
         if isinstance(system, list):
             system = [cc_block] + system
         elif isinstance(system, str) and system:

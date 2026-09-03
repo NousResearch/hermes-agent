@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import json
 import os
@@ -133,6 +134,108 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+
+TASK_CONTRACT_LIST_FIELDS = frozenset({
+    "required_capabilities",
+    "allowed_actions",
+    "forbidden_actions",
+    "required_evidence",
+    "safety_acceptance",
+    "outcome_acceptance",
+    "recoverable_conditions",
+    "hard_stop_conditions",
+    "evidence_hierarchy",
+})
+TASK_CONTRACT_STATUS_FIELDS = frozenset({
+    "prepared",
+    "implemented",
+    "verified",
+    "reviewed",
+    "ci_pr_merge_observed",
+    "production_executed",
+    "business_outcome",
+    "gaps",
+})
+TASK_CONTRACT_FIELDS = TASK_CONTRACT_LIST_FIELDS | frozenset({
+    "safety_acceptance",
+    "outcome_acceptance",
+    "plane_for_bau_process_tracking",
+    "status_fields",
+})
+
+
+def _unique_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, Mapping)):
+        values = list(value)
+    else:
+        values = [value]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def normalize_task_contract(contract: Optional[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
+    """Return the stored per-task capability/acceptance manifest.
+
+    The manifest is additive and inert unless an assigned profile opts into
+    ``profile_contract.enforce_kanban_route_compatibility``.  Every field the
+    cross-project reliability contract needs is explicit so a reviewer can see
+    the task's capabilities, permitted/forbidden actions, evidence standard,
+    safety/outcome acceptance, BAU Plane boundary, and separated status lanes
+    without inferring them from prose.
+    """
+    if contract is None:
+        return None
+    if not isinstance(contract, Mapping):
+        raise ValueError("task_contract must be an object/dict")
+    normalized: dict[str, Any] = {}
+    for field in TASK_CONTRACT_LIST_FIELDS:
+        normalized[field] = _unique_string_list(contract.get(field))
+    normalized["plane_for_bau_process_tracking"] = bool(
+        contract.get("plane_for_bau_process_tracking", False)
+    )
+    raw_status = contract.get("status_fields")
+    if raw_status is not None and not isinstance(raw_status, Mapping):
+        raise ValueError("task_contract.status_fields must be an object/dict")
+    status_fields: dict[str, Any] = {}
+    raw_status_map = raw_status if isinstance(raw_status, Mapping) else {}
+    for field in TASK_CONTRACT_STATUS_FIELDS:
+        value = raw_status_map.get(field)
+        if field == "gaps":
+            value = _unique_string_list(value)
+        status_fields[field] = value
+    normalized["status_fields"] = status_fields
+    # Preserve any future extension keys as JSON-compatible values, but never
+    # let them replace the canonical P0 fields above.
+    for key, value in contract.items():
+        if key not in normalized:
+            normalized[str(key)] = value
+    return normalized
+
+
+def _parse_task_contract_blob(value: Optional[str]) -> Optional[dict[str, Any]]:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return None
+    if not isinstance(parsed, Mapping):
+        return None
+    try:
+        return normalize_task_contract(parsed)
+    except ValueError:
+        return dict(parsed)
 
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
@@ -1141,6 +1244,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Optional per-task capability/acceptance manifest.  Stored as JSON in the
+    # tasks table; ignored by legacy profiles and enforced only when the
+    # assigned profile opts into route-compatibility checks.
+    task_contract: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1234,6 +1341,10 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            task_contract=(
+                _parse_task_contract_blob(row["task_contract"])
+                if "task_contract" in keys else None
             ),
         )
 
@@ -1422,7 +1533,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Optional per-task capability/acceptance manifest, stored as JSON.  The
+    -- dispatcher ignores it unless the assignee profile explicitly enables
+    -- profile_contract.enforce_kanban_route_compatibility, preserving legacy
+    -- board behavior while making P0 reliability contracts machine-readable.
+    task_contract        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2689,6 +2805,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
+    if "task_contract" not in cols:
+        # Optional per-task route/capability/acceptance manifest. NULL keeps
+        # legacy rows inert; enforcement is additionally gated by the assignee
+        # profile's config.
+        _add_column_if_missing(conn, "tasks", "task_contract", "task_contract TEXT")
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -3194,6 +3315,7 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    task_contract: Optional[Mapping[str, Any]] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3237,6 +3359,7 @@ def create_task(
     model_override = (model_override or "").strip() or None
     provider_override = (provider_override or "").strip() or None
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    normalized_task_contract = normalize_task_contract(task_contract)
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
     assignee = _canonical_assignee(assignee)
@@ -3508,8 +3631,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, task_contract
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3535,6 +3658,10 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        (
+                            json.dumps(normalized_task_contract, sort_keys=True)
+                            if normalized_task_contract is not None else None
+                        ),
                     ),
                 )
                 for pid in parents:
@@ -3563,6 +3690,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "task_contract": normalized_task_contract,
                     },
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
@@ -4623,6 +4751,121 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
         "AND p.status NOT IN ('done', 'archived') LIMIT 1",
         (task_id,),
     ).fetchone() is None
+
+
+def _deep_merge_dict(base: dict[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in overlay.items():
+        if isinstance(value, Mapping) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _profile_contract_config(assignee: Optional[str]) -> dict[str, Any]:
+    """Read the assignee's profile contract config without mutating globals."""
+    try:
+        from hermes_cli.config import DEFAULT_CONFIG, read_user_config_raw
+        from hermes_cli.profiles import get_profile_dir
+    except Exception:
+        return {}
+    base = copy.deepcopy(DEFAULT_CONFIG.get("profile_contract", {}))
+    if not assignee:
+        return base
+    try:
+        raw = read_user_config_raw(get_profile_dir(assignee) / "config.yaml")
+    except Exception:
+        raw = {}
+    overlay = raw.get("profile_contract") if isinstance(raw, Mapping) else None
+    if isinstance(overlay, Mapping):
+        return _deep_merge_dict(base, overlay)
+    return base
+
+
+def _route_compatibility_issue(
+    task: Optional[Task],
+    assignee: Optional[str],
+) -> Optional[dict[str, Any]]:
+    """Return a compatibility blocker for this task/profile, or None.
+
+    The check is intentionally opt-in at the *profile* level so old boards and
+    ordinary profiles preserve behavior.  Once enabled, a task's
+    ``required_capabilities`` and ``allowed_actions`` are compared against the
+    assignee profile's declared typed capabilities/actions before a worker is
+    claimed.  Sanitized displays are explicitly non-authoritative for exact
+    source identity when they appear in the task contract's evidence list.
+    """
+    if task is None or not assignee:
+        return None
+    contract = task.task_contract or {}
+    profile_contract = _profile_contract_config(assignee)
+    if not profile_contract.get("enforce_kanban_route_compatibility", False):
+        return None
+    required = set(_unique_string_list(contract.get("required_capabilities")))
+    profile_caps = set(_unique_string_list(profile_contract.get("capabilities")))
+    missing_caps = sorted(required - profile_caps)
+    task_allowed = set(_unique_string_list(contract.get("allowed_actions")))
+    profile_allowed = set(_unique_string_list(profile_contract.get("allowed_actions")))
+    # Empty profile allowed_actions means no typed action manifest was declared;
+    # if the task requires explicit actions under an enforcing profile, block
+    # rather than silently treating an undeclared action set as universal.
+    missing_actions = sorted(task_allowed - profile_allowed) if task_allowed else []
+    evidence = _unique_string_list(contract.get("required_evidence"))
+    if "sanitized_display" in evidence and not any(
+        item in evidence
+        for item in (
+            "exact_external_readback_or_raw_source",
+            "raw_source",
+            "executable_test_result",
+            "cryptographic_hash_or_signed_receipt",
+            "structured_machine_receipt",
+            "unsanitized_artifact",
+        )
+    ):
+        missing_caps.append("authoritative_non_sanitized_evidence")
+    if not missing_caps and not missing_actions:
+        return None
+    return {
+        "assignee": assignee,
+        "missing_capabilities": missing_caps,
+        "missing_allowed_actions": missing_actions,
+        "plane_for_bau_process_tracking": bool(
+            profile_contract.get("plane_for_bau_process_tracking", False)
+        ),
+    }
+
+
+def _block_route_incompatible_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    issue: Mapping[str, Any],
+) -> None:
+    reason = (
+        "route capability mismatch: missing capabilities="
+        f"{issue.get('missing_capabilities') or []}; missing allowed_actions="
+        f"{issue.get('missing_allowed_actions') or []}"
+    )
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status = 'blocked',
+                   block_kind = 'capability',
+                   last_failure_error = ?
+             WHERE id = ?
+               AND status IN ('ready', 'review')
+               AND claim_lock IS NULL
+            """,
+            (reason[:1000], task_id),
+        )
+        if cur.rowcount == 1:
+            _append_event(
+                conn,
+                task_id,
+                "route_compatibility_blocked",
+                {"reason": reason, **dict(issue)},
+            )
 
 
 def claim_task(
@@ -8093,6 +8336,10 @@ class DispatchResult:
     spawned. ``None`` when memory was fine/unknown and the guard imposed
     no restriction. Reclaim/promotion bookkeeping still ran either way;
     deferred tasks stay queued for the next tick."""
+    skipped_incompatible: list[tuple[str, str, dict[str, Any]]] = field(default_factory=list)
+    """Tasks blocked before claim because the assignee profile opted into
+    route-compatibility enforcement and lacks the task's required typed
+    capabilities/actions.  Each entry is ``(task_id, assignee, issue)``."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -10192,6 +10439,16 @@ def _dispatch_once_locked(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        compatibility_issue = _route_compatibility_issue(
+            get_task(conn, row["id"]), row_assignee,
+        )
+        if compatibility_issue is not None:
+            result.skipped_incompatible.append(
+                (row["id"], row_assignee, compatibility_issue)
+            )
+            if not dry_run:
+                _block_route_incompatible_task(conn, row["id"], compatibility_issue)
+            continue
         # Per-profile concurrency cap (#21582): even if there's global
         # headroom, refuse to spawn for an assignee that's already at
         # its in-flight cap. Prevents one profile's local model / API
@@ -10339,6 +10596,16 @@ def _dispatch_once_locked(
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        compatibility_issue = _route_compatibility_issue(
+            get_task(conn, row["id"]), row["assignee"],
+        )
+        if compatibility_issue is not None:
+            result.skipped_incompatible.append(
+                (row["id"], row["assignee"], compatibility_issue)
+            )
+            if not dry_run:
+                _block_route_incompatible_task(conn, row["id"], compatibility_issue)
             continue
         if _per_profile_cap is not None:
             current = _per_profile_running.get(row["assignee"], 0)

@@ -31,6 +31,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
+from pathlib import Path
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -60,6 +62,121 @@ def _profile_has_kanban_toolset() -> bool:
         return "kanban" in toolsets
     except Exception:
         return False
+
+
+def _route_required_for_task_tools() -> bool:
+    try:
+        cfg = load_config()
+        contract = cfg.get("profile_contract") or {}
+        return bool(contract.get("route_required_for_task_tools", False))
+    except Exception:
+        return False
+
+
+def _profile_name_for_route_lookup() -> str:
+    explicit = (os.environ.get("HERMES_PROFILE") or "").strip()
+    if explicit:
+        return explicit
+    home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser().resolve()
+    if home.parent.name == "profiles":
+        return home.name
+    return "default"
+
+
+def _route_runtime_db_path() -> Path:
+    home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser().resolve()
+    root = home.parent.parent if home.parent.name == "profiles" else home
+    return root / "unified-control" / "runtime.db"
+
+
+def _route_governor_has_selected_route() -> bool:
+    """Return whether the route-governor DB has a route for this task/session.
+
+    ``hermes_route_select`` persists the authoritative selected route in the
+    route-governor runtime DB. Worker processes do not necessarily receive an
+    extra environment marker after selecting a route, so the Kanban lifecycle
+    gate must also consult that host-owned state before refusing a mutation.
+    """
+    db_path = _route_runtime_db_path()
+    if not db_path.exists():
+        return False
+    profile = _profile_name_for_route_lookup()
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    session_id = (os.environ.get("HERMES_SESSION_ID") or "").strip()
+    clauses: list[str] = []
+    params: list[str] = [profile]
+    if task_id:
+        clauses.append("task_id=?")
+        params.append(task_id)
+    if session_id:
+        clauses.append("session_id=?")
+        params.append(session_id)
+        clauses.append("task_id=?")
+        params.append(session_id)
+    if not clauses:
+        return False
+    try:
+        with sqlite3.connect(str(db_path), timeout=1.0) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM route_state "
+                f"WHERE profile=? AND ({' OR '.join(clauses)}) "
+                "ORDER BY selected_at DESC LIMIT 1",
+                params,
+            ).fetchone()
+            if row is not None:
+                return True
+            # Some route providers receive the Hermes session id only through
+            # tool-call kwargs, not as an environment variable visible to this
+            # module. In that host path the route is still authoritative but is
+            # keyed by the session id in route_state.task_id/session_id. Accept
+            # a fresh route for the same profile as a bounded fallback so the
+            # worker can perform its required terminal Kanban lifecycle write.
+            recent = conn.execute(
+                "SELECT 1 FROM route_state "
+                "WHERE profile=? AND selected_at >= strftime('%s','now') - 3600 "
+                "ORDER BY selected_at DESC LIMIT 1",
+                (profile,),
+            ).fetchone()
+        return recent is not None
+    except Exception:
+        logger.exception("failed to inspect route governor state for Kanban gate")
+        return False
+
+
+def _route_selected_for_this_worker() -> bool:
+    """Best-effort process/session hook for route-required task tools.
+
+    Host integrations may bind a selected route through env markers. When they
+    do not, fall back to the route-governor runtime DB, which is what
+    ``hermes_route_select`` updates.
+    """
+    selected = (os.environ.get("HERMES_ROUTE_SELECTED") or "").strip().lower()
+    if selected in {"1", "true", "yes", "ok", "selected"}:
+        return True
+    selected_task = (os.environ.get("HERMES_ROUTE_TASK") or "").strip()
+    if selected_task and selected_task == (os.environ.get("HERMES_KANBAN_TASK") or ""):
+        return True
+    selected_session = (os.environ.get("HERMES_ROUTE_SESSION_ID") or "").strip()
+    if (
+        selected_session
+        and selected_session == (os.environ.get("HERMES_SESSION_ID") or "")
+    ):
+        return True
+    return _route_governor_has_selected_route()
+
+
+def _reject_missing_route(tool_name: str) -> Optional[str]:
+    if not _route_required_for_task_tools():
+        return None
+    if not (os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker()):
+        return None
+    if _route_selected_for_this_worker():
+        return None
+    return tool_error(
+        f"{tool_name} refused: profile_contract.route_required_for_task_tools "
+        "is enabled, but no selected route marker is bound to this worker task "
+        "or session. Call hermes_route_select before mutating Kanban task state."
+    )
 
 
 def _is_delegated_child_context() -> bool:
@@ -98,6 +215,10 @@ def _reject_delegated_child_mutation(tool_name: str) -> Optional[str]:
         "worker or an explicitly configured Kanban orchestrator must perform "
         "board mutations."
     )
+
+
+def _reject_disallowed_task_tool(tool_name: str) -> Optional[str]:
+    return _reject_delegated_child_mutation(tool_name) or _reject_missing_route(tool_name)
 
 
 def _check_kanban_mode() -> bool:
@@ -509,6 +630,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "current_run_id": task.current_run_id,
         "model_override": task.model_override,
         "provider_override": task.provider_override,
+        "task_contract": task.task_contract,
         "parents": parents,
         "children": children,
         "parent_count": len(parents),
@@ -555,6 +677,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
                     "provider_override": t.provider_override,
+                    "task_contract": t.task_contract,
                 }
 
             def _run_dict(r):
@@ -660,7 +783,7 @@ def _handle_list(args: dict, **kw) -> str:
 
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
-    delegated_err = _reject_delegated_child_mutation("kanban_complete")
+    delegated_err = _reject_disallowed_task_tool("kanban_complete")
     if delegated_err:
         return delegated_err
     tid = _default_task_id(args.get("task_id"))
@@ -830,7 +953,7 @@ def _handle_complete(args: dict, **kw) -> str:
 
 def _handle_block(args: dict, **kw) -> str:
     """Transition the task to blocked with a reason a human will read."""
-    delegated_err = _reject_delegated_child_mutation("kanban_block")
+    delegated_err = _reject_disallowed_task_tool("kanban_block")
     if delegated_err:
         return delegated_err
     tid = _default_task_id(args.get("task_id"))
@@ -911,7 +1034,7 @@ def _handle_block(args: dict, **kw) -> str:
 
 def _handle_request_review(args: dict, **kw) -> str:
     """Move implementation into the first-class review phase."""
-    delegated_err = _reject_delegated_child_mutation("kanban_request_review")
+    delegated_err = _reject_disallowed_task_tool("kanban_request_review")
     if delegated_err:
         return delegated_err
     tid = _default_task_id(args.get("task_id"))
@@ -995,7 +1118,7 @@ def _handle_request_review(args: dict, **kw) -> str:
 
 def _handle_request_changes(args: dict, **kw) -> str:
     """Return a reviewer-owned running task to its implementer."""
-    delegated_err = _reject_delegated_child_mutation("kanban_request_changes")
+    delegated_err = _reject_disallowed_task_tool("kanban_request_changes")
     if delegated_err:
         return delegated_err
     tid = _default_task_id(args.get("task_id"))
@@ -1051,7 +1174,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     by ``release_stale_claims`` — which is exactly the trap that
     ``heartbeat_claim``'s docstring warns against.
     """
-    delegated_err = _reject_delegated_child_mutation("kanban_heartbeat")
+    delegated_err = _reject_disallowed_task_tool("kanban_heartbeat")
     if delegated_err:
         return delegated_err
     tid = _default_task_id(args.get("task_id"))
@@ -1097,7 +1220,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
 
 def _handle_comment(args: dict, **kw) -> str:
     """Append a comment to a task's thread."""
-    delegated_err = _reject_delegated_child_mutation("kanban_comment")
+    delegated_err = _reject_disallowed_task_tool("kanban_comment")
     if delegated_err:
         return delegated_err
     tid = args.get("task_id")
@@ -1145,7 +1268,7 @@ def _handle_attach(args: dict, **kw) -> str:
     """
     from hermes_cli import kanban_db as kb
 
-    delegated_err = _reject_delegated_child_mutation("kanban_attach")
+    delegated_err = _reject_disallowed_task_tool("kanban_attach")
     if delegated_err:
         return delegated_err
     tid = _default_task_id(args.get("task_id"))
@@ -1267,7 +1390,7 @@ def _handle_attach_url(args: dict, **kw) -> str:
     """
     from hermes_cli import kanban_db as kb
 
-    delegated_err = _reject_delegated_child_mutation("kanban_attach_url")
+    delegated_err = _reject_disallowed_task_tool("kanban_attach_url")
     if delegated_err:
         return delegated_err
     tid = _default_task_id(args.get("task_id"))
@@ -1366,7 +1489,7 @@ def _handle_create(args: dict, **kw) -> str:
     ``parents`` can be a list of task ids; dependency-gated promotion
     works as usual.
     """
-    delegated_err = _reject_delegated_child_mutation("kanban_create")
+    delegated_err = _reject_disallowed_task_tool("kanban_create")
     if delegated_err:
         return delegated_err
     title = args.get("title")
@@ -1431,8 +1554,13 @@ def _handle_create(args: dict, **kw) -> str:
     goal_max_turns = args.get("goal_max_turns")
     model_override = args.get("model")
     provider_override = args.get("provider")
+    task_contract = args.get("task_contract")
     if provider_override and not model_override:
         return tool_error("'provider' requires 'model' to be set as well")
+    if task_contract is not None and not isinstance(task_contract, dict):
+        return tool_error(
+            f"task_contract must be an object/dict, got {type(task_contract).__name__}"
+        )
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):
@@ -1474,6 +1602,7 @@ def _handle_create(args: dict, **kw) -> str:
                 skills=skills,
                 model_override=model_override,
                 provider_override=provider_override,
+                task_contract=task_contract,
                 goal_mode=goal_mode,
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
@@ -1631,7 +1760,7 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
 
 def _handle_unblock(args: dict, **kw) -> str:
     """Transition a blocked task to ready, or todo while parents remain open."""
-    delegated_err = _reject_delegated_child_mutation("kanban_unblock")
+    delegated_err = _reject_disallowed_task_tool("kanban_unblock")
     if delegated_err:
         return delegated_err
     guard = _require_orchestrator_tool("kanban_unblock")
@@ -1663,7 +1792,7 @@ def _handle_unblock(args: dict, **kw) -> str:
 
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact."""
-    delegated_err = _reject_delegated_child_mutation("kanban_link")
+    delegated_err = _reject_disallowed_task_tool("kanban_link")
     if delegated_err:
         return delegated_err
     parent_id = args.get("parent_id")
@@ -2321,6 +2450,22 @@ KANBAN_CREATE_SCHEMA = {
                     "provider — a model name alone is resolved against "
                     "the profile's provider and will fail if it belongs "
                     "to a different one. Requires 'model'."
+                ),
+            },
+            "task_contract": {
+                "type": "object",
+                "description": (
+                    "Optional machine-readable capability/acceptance manifest. "
+                    "When the assignee profile enables route-compatibility "
+                    "checks, the dispatcher validates required_capabilities and "
+                    "allowed_actions before claim. Include explicit fields for "
+                    "required_capabilities, allowed_actions, forbidden_actions, "
+                    "required_evidence, safety_acceptance, outcome_acceptance, "
+                    "recoverable_conditions, hard_stop_conditions, "
+                    "evidence_hierarchy, status_fields (prepared, implemented, "
+                    "verified, reviewed, ci_pr_merge_observed, "
+                    "production_executed, business_outcome, gaps), and "
+                    "plane_for_bau_process_tracking=false for ordinary BAU runs."
                 ),
             },
             "board": _board_schema_prop(),

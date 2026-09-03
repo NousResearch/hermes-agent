@@ -2986,6 +2986,7 @@ DEFAULT_CONFIG = {
         "done_sub_retention_days": 30,
     },
 
+
     # Bot Mode cross-connection relay (tools/bot_relay.py). Envelopes queued
     # by message_agent for agents on other connections wait in an on-disk
     # outbox until the Desktop drains them.
@@ -3002,6 +3003,53 @@ DEFAULT_CONFIG = {
         # 'target_busy' error. Deliveries are serialized per profile with a
         # cross-process file lock so two turns never race one Bot Chat.
         "turn_wait_seconds": 120,
+    },
+
+    # Cross-profile task/capability contract. This is intentionally inert by
+    # default. BAU recurring runs are not Plane/project state by default; they
+    # should rely on runtime receipts, logs, monitors, and readbacks, escalating
+    # to Plane only for material anomalies, incidents, change requests, project
+    # blockers, or owner planning decisions. Step-by-step build/test pipelines
+    # must preserve exact unredacted intermediate artifacts/readbacks as the
+    # local evidence source of truth; redaction is presentation-only and is not
+    # authoritative for schema, identifiers, byte equality, hashes, or downstream
+    # execution.
+    "profile_contract": {
+        "enforce_kanban_route_compatibility": False,
+        "route_required_for_task_tools": False,
+        "fallback_policy": "deny",
+        "capabilities": [],
+        "allowed_actions": [],
+        "forbidden_actions": [],
+        "required_evidence": [],
+        "safety_acceptance": [],
+        "outcome_acceptance": [],
+        "recoverable_conditions": [],
+        "hard_stop_conditions": [],
+        "plane_for_bau_process_tracking": False,
+        "preserve_unredacted_step_artifacts": True,
+        "redaction_layer": "presentation_only",
+        "evidence_hierarchy": [
+            "exact_external_readback_or_raw_source",
+            "unredacted_step_artifact_or_readback",
+            "executable_test_result",
+            "cryptographic_hash_or_signed_receipt",
+            "structured_machine_receipt",
+            "unsanitized_artifact",
+            "sanitized_display_presentation_only",
+            "worker_summary",
+            "conversational_claim",
+        ],
+        "status_fields": {
+            "prepared": None,
+            "implemented": None,
+            "verified": None,
+            "reviewed": None,
+            "ci_pr_merge_observed": None,
+            "production_executed": None,
+            "business_outcome": None,
+            "gaps": [],
+        },
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

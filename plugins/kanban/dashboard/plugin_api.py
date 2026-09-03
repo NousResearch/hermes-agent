@@ -613,6 +613,7 @@ class CreateTaskBody(BaseModel):
     goal_max_turns: Optional[int] = None
     model_override: Optional[str] = None
     provider_override: Optional[str] = None
+    task_contract: Optional[dict[str, Any]] = None
     # Per-task thinking depth (none|minimal|…|ultra). None = inherit the
     # assigned profile's own agent.reasoning_effort.
     reasoning_effort: Optional[str] = None
@@ -645,6 +646,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             goal_max_turns=payload.goal_max_turns,
             model_override=payload.model_override,
             provider_override=payload.provider_override,
+            task_contract=payload.task_contract,
             reasoning_effort=payload.reasoning_effort,
             project_id=payload.project_id,
             board=board,

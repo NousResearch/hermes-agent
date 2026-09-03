@@ -241,6 +241,13 @@ These patterns are loaded at startup and silently approved in all future session
 Use `hermes config edit` to review or remove patterns from your permanent allowlist.
 :::
 
+:::caution
+The list is read when Hermes starts. A pattern you remove while a session is
+already running stays approved in that session until it next writes the file
+(the next time you answer `always` to a prompt) or you restart Hermes. If you
+removed it for safety reasons, restart.
+:::
+
 ### Mining Approval History (`hermes approvals suggest`)
 
 Instead of answering the same prompt session after session, you can mine your

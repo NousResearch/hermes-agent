@@ -180,27 +180,58 @@ model:
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
         _fresh_modules()
 
-        from agent.auxiliary_client import resolve_vision_provider_client
-        provider, client, _model = resolve_vision_provider_client(provider="auto")
+        from unittest.mock import patch
+
+        import agent.auxiliary_client as auxiliary_client
+
+        # Pin the capability contract instead of depending on models.dev cache
+        # state; this test owns the routing decision, not catalog hydration.
+        with patch.object(
+            auxiliary_client,
+            "_main_model_supports_vision",
+            return_value=False,
+        ):
+            provider, client, _model = auxiliary_client.resolve_vision_provider_client(
+                provider="auto"
+            )
         assert client is None, (
             f"Vision auto-detect must skip text-only main {provider!r} when "
             "no vision-capable aggregator is available, not return a client "
             "that will fail at API time"
         )
 
-    def test_vision_capable_main_used(self, isolated_home, monkeypatch):
+    def test_vision_capable_main_used(self, isolated_home):
         """Vision-capable main provider should be returned by auto chain."""
         _write_config(isolated_home, """
 model:
   provider: anthropic
   default: claude-sonnet-4-6
 """)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         _fresh_modules()
 
-        from agent.auxiliary_client import resolve_vision_provider_client
-        provider, client, _model = resolve_vision_provider_client(provider="auto")
-        assert client is not None
+        from unittest.mock import patch
+
+        import agent.auxiliary_client as auxiliary_client
+
+        expected_client = object()
+        # Exercise auto-chain ordering without requiring the optional
+        # Anthropic SDK in the hermetic test environment.
+        with (
+            patch.object(
+                auxiliary_client,
+                "_main_model_supports_vision",
+                return_value=True,
+            ),
+            patch.object(
+                auxiliary_client,
+                "_try_anthropic",
+                return_value=(expected_client, "claude-sonnet-4-6"),
+            ),
+        ):
+            provider, client, _model = auxiliary_client.resolve_vision_provider_client(
+                provider="auto"
+            )
+        assert client is expected_client
         assert provider == "anthropic"
 
     def test_unknown_capability_does_not_block(self, isolated_home, monkeypatch):

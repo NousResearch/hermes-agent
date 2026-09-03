@@ -3285,6 +3285,26 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
     except Exception:
         return False
 
+def _abort_on_failed_upstream_sync() -> None:
+    """Abort the update after a FAILED upstream pull (never returns).
+
+    Called by the post-dependency call site in ``_cmd_update_impl`` when
+    ``_sync_with_upstream_if_needed()`` returned False AND the helper
+    actually reached the ``pull --ff-only upstream main`` step. The
+    early call site does NOT call this — it treats a False as a
+    possibly-skipped convenience (no upstream remote, declined prompt,
+    fetch/compare failure) and lets the later caller surface the real
+    pull failure. Without this helper, the run would fall through to
+    "Already up to date!" with exit 0 (#73108's inverse). The message
+    lives here once so the gateway and CLI flows cannot drift apart.
+    """
+    print()
+    print("X Update failed: could not pull from upstream.")
+    print("   Resolve manually, then re-run the update:")
+    print("     git pull upstream main")
+    sys.exit(1)
+
+
 def _sync_with_upstream_if_needed(
     git_cmd: list[str],
     cwd: Path,
@@ -9380,12 +9400,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Fork upstream sync logic (only for main branch on forks)
         if is_fork and branch == "main":
-            _m()._sync_with_upstream_if_needed(
+            if not _m()._sync_with_upstream_if_needed(
                 git_cmd,
                 _m().PROJECT_ROOT,
                 assume_yes=assume_yes,
                 input_fn=gw_input_fn,
-            )
+            ):
+                # A failed upstream pull must abort with a non-zero exit so
+                # Desktop / CI / the command-boundary receipt record a failure
+                # instead of a successful update (see the function docstring
+                # and #73108 for the sibling misreport). We do this only at
+                # the post-dependency call site so that early-call skipped
+                # cases (no upstream remote, declined prompt, fetch/compare
+                # failure) still let the regular origin/main update path run.
+                _abort_on_failed_upstream_sync()
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras

@@ -10,6 +10,11 @@ import pytest
 from hermes_cli.main import cmd_update, PROJECT_ROOT
 
 
+def _completed_process(returncode: int = 0):
+    """A minimal CompletedProcess stand-in for mocked subprocess.run calls."""
+    return subprocess.CompletedProcess(args=[], returncode=returncode)
+
+
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
     """Build a side_effect function for subprocess.run that simulates git commands."""
 
@@ -524,6 +529,110 @@ class TestCmdUpdateBranchFallback:
         post_update_step.assert_called_once_with()
         captured = capsys.readouterr()
         assert "Already up to date!" not in captured.out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_fork_upstream_pull_failure_exits_nonzero_second_call_site(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """Same failure contract at the post-dependency-sync call site.
+
+        The second ``is_fork`` sync runs after the regular update path. A
+        False there must abort via the same helper so both flows print an
+        identical message (#73679 covers its success counterpart).
+        """
+        from hermes_cli import main as hm
+
+        # commit_count="1" skips the commit_count == 0 early-return block so
+        # the run reaches the SECOND call site after dependency bookkeeping.
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(
+            hm, "_sync_with_upstream_if_needed", return_value=False
+        ), patch.object(
+            hm,
+            "_reload_updated_runtime_modules",
+            side_effect=SystemExit(0),
+        ) as post_update_step:
+            with pytest.raises(SystemExit) as exit_info:
+                cmd_update(mock_args)
+
+        assert exit_info.value.code == 1
+        post_update_step.assert_not_called()
+        captured = capsys.readouterr()
+        assert "Already up to date!" not in captured.out
+        assert "Update failed" in captured.out
+
+    def test_sync_bool_mapping_on_head_semantics(self, tmp_path):
+        """Unit-test the bool mapping of _sync_with_upstream_if_needed directly.
+
+        On current upstream/main the function returns True only when
+        origin/main was actually verified against the official upstream/main;
+        every path where the check never happened (prompt skipped or
+        declined, remote add failed, fetch or compare failed, pull failed)
+        returns False so the caller can avoid reporting the checkout as up
+        to date on the strength of an origin comparison alone (#97052
+        review). The post-dependency call site aborts on False.
+        """
+        from hermes_cli.update_cmd import _sync_with_upstream_if_needed
+
+        git_cmd = ["git"]
+        with patch(
+            "hermes_cli.update_cmd._has_upstream_remote", return_value=True
+        ) as has_upstream, patch(
+            "hermes_cli.update_cmd._should_skip_upstream_prompt", return_value=True
+        ), patch(
+            "hermes_cli.update_cmd.subprocess.run"
+        ) as mock_run, patch(
+            "hermes_cli.update_cmd._count_commits_between", return_value=0
+        ), patch(
+            "hermes_cli.update_cmd._sync_fork_with_upstream", return_value=True
+        ):
+            # Up-to-date fork → True (verified).
+            mock_run.return_value = _completed_process()
+            assert _sync_with_upstream_if_needed(git_cmd, tmp_path) is True
+            has_upstream.assert_called_once()
+
+            # Fetch failure → False (the check never happened).
+            mock_run.side_effect = [subprocess.CalledProcessError(1, ["git", "fetch"])]
+            assert _sync_with_upstream_if_needed(git_cmd, tmp_path) is False
+
+            # Compare failure → False (the check never happened).
+            mock_run.side_effect = None
+            mock_run.return_value = _completed_process()
+            with patch(
+                "hermes_cli.update_cmd._count_commits_between",
+                side_effect=lambda *a, **k: -1,
+            ):
+                assert _sync_with_upstream_if_needed(git_cmd, tmp_path) is False
+
+            # Failed pull --ff-only → False (must abort at the caller).
+            with patch(
+                "hermes_cli.update_cmd._count_commits_between",
+                side_effect=[0, 1],
+            ):
+                mock_run.side_effect = [
+                    _completed_process(),
+                    subprocess.CalledProcessError(128, ["git", "pull"]),
+                ]
+                assert _sync_with_upstream_if_needed(git_cmd, tmp_path) is False
+
+            # Successful pull → True (verified and advanced).
+            with patch(
+                "hermes_cli.update_cmd._count_commits_between",
+                side_effect=[0, 1],
+            ):
+                mock_run.side_effect = [
+                    _completed_process(),
+                    _completed_process(),
+                ]
+                assert _sync_with_upstream_if_needed(git_cmd, tmp_path) is True
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""

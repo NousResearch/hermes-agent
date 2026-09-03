@@ -230,6 +230,10 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     handoff = Mock(return_value={"id": "exec-1", "handoff_pending": 1})
     monkeypatch.setattr(scheduler, "mark_execution_handoff_pending", handoff)
     monkeypatch.setattr(scheduler.subprocess, "Popen", popen)
+    monkeypatch.setattr(
+        scheduler, "windows_detach_popen_kwargs",
+        lambda: {"start_new_session": True},
+    )
     observed_statuses = iter(
         [
             {"id": "exec-1", "status": "running"},
@@ -255,6 +259,56 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     assert payloads[0]["multiplex_active"] is True
     # Once the attempt is terminal the parent reaps its own handoff artifacts.
     assert not (tmp_path / "cron/external-workers/exec-1.json").exists()
+
+
+def test_direct_cli_worker_detaches_without_waiting_for_terminal_state(
+    tmp_path, monkeypatch
+):
+    import cron.scheduler as scheduler
+
+    job = {"id": "job-direct", "execution_id": "exec-direct", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_kwargs: command,
+    )
+    monkeypatch.setattr(
+        scheduler, "mark_execution_handoff_pending",
+        Mock(return_value={"id": "exec-direct", "handoff_pending": 1}),
+    )
+    monkeypatch.setattr(
+        scheduler, "windows_detach_popen_kwargs",
+        lambda: {"start_new_session": True},
+    )
+
+    process = Mock()
+    process.poll.return_value = None
+    process.wait.side_effect = AssertionError("detached launch waited for completion")
+
+    def popen(command, **_kwargs):
+        ack = Path(command[command.index("--ack-file") + 1])
+        ack.write_text(
+            json.dumps({"pid": 4321, "execution_id": "exec-direct"}),
+            encoding="utf-8",
+        )
+        return process
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", popen)
+
+    assert scheduler._launch_external_cron_worker(
+        job,
+        detach=True,
+        allow_unscoped=True,
+        extra_prompt="one fire only",
+    ) is True
+
+    process.wait.assert_not_called()
+    payload = json.loads(
+        (tmp_path / "cron/external-workers/exec-direct.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["extra_prompt"] == "one fire only"
 
 
 def test_external_worker_exit_rechecks_exact_execution_before_failure(monkeypatch):

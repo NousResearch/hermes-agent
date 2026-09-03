@@ -992,6 +992,96 @@ def _execute_job_now(
     return _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
 
 
+def _try_dispatch_detached_run(
+    job: Dict[str, Any], extra_prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Claim a direct CLI run and hand it to a durable child process.
+
+    Unlike the async-delegation path, this worker owns its execution ledger
+    row and does not depend on the foreground CLI process remaining alive.
+    The acknowledgement is published before agent or script side effects
+    begin, so returning the execution id is a durable receipt rather than a
+    terminal outcome claim.
+    """
+    job_id = job["id"]
+    try:
+        from cron.scheduler import get_running_job_ids
+
+        if job_id in get_running_job_ids():
+            return {
+                "claimed": False,
+                "dispatched": False,
+                "error": (
+                    "Job is already running (a scheduler tick or another "
+                    "manual run is executing it); not started again."
+                ),
+            }
+    except Exception:
+        pass
+
+    try:
+        claimed_job = claim_job_for_fire(job_id, return_job=True)
+        if not isinstance(claimed_job, dict):
+            refreshed = get_job(job_id)
+            if refreshed is None:
+                reason = "Job no longer exists; nothing to run."
+            elif not is_job_runnable(refreshed):
+                reason = "Job is paused/disabled; resume it before running."
+            else:
+                reason = "Job is already being fired by the scheduler; not run again."
+            return {
+                "claimed": False,
+                "dispatched": False,
+                "error": reason,
+            }
+
+        from cron.executions import create_execution, finish_execution
+        from cron.scheduler import _launch_external_cron_worker
+
+        execution = create_execution(job_id, source="direct")
+        execution_id = str(execution["id"])
+        claimed_job["execution_id"] = execution_id
+        if not _launch_external_cron_worker(
+            claimed_job, detach=True, allow_unscoped=True,
+            extra_prompt=extra_prompt,
+        ):
+            raise RuntimeError("detached cron worker was not launched")
+        return {
+            "claimed": True,
+            "dispatched": True,
+            "execution_id": execution_id,
+        }
+    except Exception as exc:
+        logger.error("Failed to dispatch cron job %s durably: %s", job_id, exc)
+        execution_id = locals().get("execution_id")
+        if execution_id:
+            try:
+                terminal = finish_execution(
+                    execution_id, success=False, error=str(exc)
+                )
+            except Exception:
+                terminal = None
+            if terminal is None:
+                # Ownership may already have transferred. Its ledger row is the
+                # authority; never clear the fire claim and risk a duplicate.
+                return {
+                    "claimed": True,
+                    "dispatched": True,
+                    "execution_id": execution_id,
+                    "warning": str(exc),
+                }
+        try:
+            mark_job_run(job_id, False, str(exc))
+        except Exception:
+            pass
+        return {
+            "claimed": True,
+            "dispatched": False,
+            "success": False,
+            "error": str(exc),
+        }
+
+
 def _run_claimed_job(
     job: Dict[str, Any], extra_prompt: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -1533,6 +1623,7 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
+    detach_run: bool = False,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1787,20 +1878,30 @@ def cronjob(
             # batches of manual runs (#80xxx — the "stuck Telegram session"
             # incident). Falls back to inline execution when the session
             # runtime can't receive detached completions.
-            bg = _try_dispatch_background_run(
-                job, session_id=session_id, extra_prompt=extra_prompt
-            )
+            if detach_run:
+                bg = _try_dispatch_detached_run(job, extra_prompt=extra_prompt)
+            else:
+                bg = _try_dispatch_background_run(
+                    job, session_id=session_id, extra_prompt=extra_prompt
+                )
             if bg is not None and bg.get("dispatched"):
                 _notify_provider_jobs_changed_safe()
                 result = _format_job(get_job(job_id) or {"id": job_id})
                 result["executed"] = True
-                result["execution_mode"] = "background"
-                result["delegation_id"] = bg.get("delegation_id")
+                if detach_run:
+                    result["execution_mode"] = "detached"
+                    result["execution_id"] = bg.get("execution_id")
+                else:
+                    result["execution_mode"] = "background"
+                    result["delegation_id"] = bg.get("delegation_id")
                 return json.dumps(
                     {
                         "success": True,
                         "job": result,
                         "note": (
+                            "The job is running in a detached worker. Track its "
+                            "durable execution receipt with `hermes cron runs`."
+                            if detach_run else
                             "The job is running in the background. You and the "
                             "user can keep working; its outcome re-enters the "
                             "conversation as a new message when it finishes. "

@@ -931,7 +931,11 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
         except Exception:
             _stateless_reset = None
     try:
-        result = _cron_api(action=action, job_id=job_id)
+        result = _cron_api(
+            action=action,
+            job_id=job_id,
+            **({"detach_run": True} if action == "run" else {}),
+        )
     finally:
         if _stateless_reset is not None:
             _stateless_reset()
@@ -953,7 +957,13 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
         # success/failure verdict would be a lie (#83340). Report the
         # background dispatch instead of claiming the run failed.
         delegation_id = job.get("delegation_id")
-        if job.get("execution_mode") == "background" or delegation_id:
+        execution_id = job.get("execution_id")
+        if job.get("execution_mode") == "detached":
+            if execution_id:
+                print(f"  Running in detached worker (execution {execution_id}).")
+            else:
+                print("  Running in detached worker.")
+        elif job.get("execution_mode") == "background" or delegation_id:
             if delegation_id:
                 print(f"  Running in background (delegation {delegation_id}).")
             else:

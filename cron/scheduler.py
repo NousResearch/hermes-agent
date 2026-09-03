@@ -45,7 +45,10 @@ from typing import Any, Callable, List, Optional, Protocol
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    windows_detach_popen_kwargs,
+    windows_hide_flags,
+)
 from hermes_cli.config import (
     _expand_env_vars,
     cron_model_drift_axes,
@@ -8133,13 +8136,19 @@ def _wait_for_external_cron_worker(
                 pass
 
 
-def _launch_external_cron_worker(job: dict) -> bool:
-    """Launch *job* outside a managed gateway cgroup when required.
+def _launch_external_cron_worker(
+    job: dict,
+    *,
+    detach: bool = False,
+    allow_unscoped: bool = False,
+    extra_prompt: Optional[str] = None,
+) -> bool:
+    """Launch *job* in a process that survives its dispatching caller.
 
-    Returns ``False`` when the caller is not a managed systemd gateway and the
-    existing in-process path should be used.  In managed topology, failure to
-    establish the transient scope raises: falling back would recreate the
-    restart interruption this handoff exists to prevent.
+    Managed gateways use a transient systemd scope and wait for the worker's
+    terminal ledger state. Direct CLI runs pass ``allow_unscoped`` and
+    ``detach``: they return after ownership acknowledgement with a durable
+    execution receipt. Other unscoped callers keep the in-process path.
     """
     execution_id = str(job["execution_id"])
     job_id = str(job["id"])
@@ -8165,7 +8174,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         command,
         unit_suffix=f"cron-{job_id}-exec-{execution_id}",
     )
-    if scoped_command == command:
+    if scoped_command == command and not allow_unscoped:
         return False
 
     if mark_execution_handoff_pending(execution_id) is None:
@@ -8186,6 +8195,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     "job": job,
                     "profile_home": str(_get_hermes_home().resolve()),
                     "multiplex_active": multiplex_active,
+                    "extra_prompt": extra_prompt,
                 },
                 payload_file,
             )
@@ -8208,8 +8218,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            creationflags=windows_hide_flags(),
+            **windows_detach_popen_kwargs(),
         )
     except BaseException:
         payload_path.unlink(missing_ok=True)
@@ -8258,6 +8267,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 acknowledgement.get("pid"),
                 execution_id,
             )
+            if detach:
+                return True
             return _wait_for_external_cron_worker(
                 process,
                 execution_id=execution_id,
@@ -8358,7 +8369,13 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
             try:
-                return run_one_job(job, adapters=None, loop=None, verbose=False)
+                return run_one_job(
+                    job,
+                    adapters=None,
+                    loop=None,
+                    verbose=False,
+                    extra_prompt=payload.get("extra_prompt"),
+                )
             finally:
                 if old_external_execution is None:
                     os.environ.pop("_HERMES_CRON_EXTERNAL_WORKER", None)

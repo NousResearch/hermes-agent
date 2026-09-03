@@ -421,6 +421,63 @@ def _make_hermes_provider_class() -> Optional[type]:
             ):
                 storage.save_oauth_metadata(meta)
 
+        async def _apply_google_issuer_compat(
+            self, discovery_request: Any, response: Any
+        ) -> None:
+            """Reconcile Google's MCP PRM/ASM trailing-slash disagreement.
+
+            Google Drive and Calendar currently advertise
+            ``https://accounts.google.com/`` in protected-resource metadata,
+            while the corresponding authorization-server metadata declares
+            ``https://accounts.google.com``. MCP SDK 2.x correctly compares
+            those strings exactly, so reconnect-time discovery otherwise
+            raises ``OAuthFlowError`` before a cached token can be refreshed.
+
+            Keep the exception vendor- and endpoint-specific: only the two
+            Google MCP hosts, Google's well-known metadata response, and this
+            exact slash-only pair qualify. Every other issuer mismatch still
+            reaches the SDK's strict validator unchanged.
+            """
+            from urllib.parse import urlsplit
+
+            if getattr(self.context, "auth_server_url", None) != (
+                "https://accounts.google.com/"
+            ):
+                return
+
+            try:
+                server_host = urlsplit(str(self.context.server_url)).hostname
+                request_url = urlsplit(str(discovery_request.url))
+            except (AttributeError, ValueError):
+                return
+            if server_host not in {
+                "drivemcp.googleapis.com",
+                "calendarmcp.googleapis.com",
+            }:
+                return
+            if request_url.hostname != "accounts.google.com" or request_url.path not in {
+                "/.well-known/oauth-authorization-server",
+                "/.well-known/openid-configuration",
+            }:
+                return
+            if getattr(response, "status_code", None) != 200:
+                return
+
+            try:
+                import json
+
+                payload = json.loads(await response.aread())
+            except (AttributeError, TypeError, ValueError):
+                return
+            if payload.get("issuer") != "https://accounts.google.com":
+                return
+
+            self.context.auth_server_url = "https://accounts.google.com"
+            logger.debug(
+                "MCP OAuth '%s': normalized Google's slash-only issuer mismatch",
+                self._hermes_server_name,
+            )
+
         async def _maybe_flag_poisoned_client(self, response: Any) -> None:
             """Detect a dead client registration and force re-registration.
 
@@ -579,6 +636,7 @@ def _make_hermes_provider_class() -> Optional[type]:
                         break
                     # Sniff the response for a dead-client-registration signal
                     # before handing it back to the SDK (best-effort, GH#36767).
+                    await self._apply_google_issuer_compat(outgoing, incoming)
                     await self._maybe_flag_poisoned_client(incoming)
                     outgoing = await inner.asend(incoming)
             except StopAsyncIteration:

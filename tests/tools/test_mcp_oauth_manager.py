@@ -365,6 +365,85 @@ def test_bridge_forwards_requests_and_poisons_on_token_endpoint_400(
     assert not (d / "srv.client.json").exists()
     assert provider._initialized is False
     assert provider.context.client_info is None
+
+
+def _drive_google_issuer_discovery(provider, monkeypatch, *, server_url):
+    """Run the provider bridge across the SDK's strict issuer validator."""
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+    from mcp.client.auth.utils import validate_metadata_issuer
+    from mcp.shared.auth import OAuthMetadata
+
+    discovery_request = SimpleNamespace(
+        url="https://accounts.google.com/.well-known/oauth-authorization-server"
+    )
+    metadata = OAuthMetadata.model_validate({
+        "issuer": "https://accounts.google.com",
+        "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_endpoint": "https://oauth2.googleapis.com/token",
+        "response_types_supported": ["code"],
+    })
+
+    async def fake_base_flow(self, request):
+        self.context.auth_server_url = "https://accounts.google.com/"
+        response = yield discovery_request
+        validate_metadata_issuer(metadata, self.context.auth_server_url)
+
+    monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_base_flow)
+    provider.context.server_url = server_url
+    provider.context.oauth_metadata = metadata
+
+    metadata_response = _fake_response(
+        200,
+        str(discovery_request.url),
+        metadata.model_dump_json().encode(),
+    )
+
+    async def drive():
+        gen = provider.async_auth_flow(object())
+        assert await gen.__anext__() is discovery_request
+        try:
+            await gen.asend(metadata_response)
+        except StopAsyncIteration:
+            pass
+
+    asyncio.run(drive())
+
+
+def test_google_mcp_trailing_slash_issuer_is_accepted(tmp_path, monkeypatch):
+    """Google MCP's PRM/ASM slash disagreement must not break reconnect auth."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://oauth2.googleapis.com/token", monkeypatch
+    )
+
+    _drive_google_issuer_discovery(
+        provider,
+        monkeypatch,
+        server_url="https://drivemcp.googleapis.com/mcp/v1",
+    )
+
+    assert provider.context.auth_server_url == "https://accounts.google.com"
+
+
+def test_non_google_mcp_trailing_slash_issuer_stays_rejected(tmp_path, monkeypatch):
+    """The compatibility exception must not weaken issuer checks generally."""
+    from mcp.client.auth import OAuthFlowError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://oauth2.googleapis.com/token", monkeypatch
+    )
+
+    with pytest.raises(OAuthFlowError, match="issuer mismatch"):
+        _drive_google_issuer_discovery(
+            provider,
+            monkeypatch,
+            server_url="https://mcp.example.com/mcp",
+        )
+
+    assert provider.context.auth_server_url == "https://accounts.google.com/"
+
+
 @pytest.mark.asyncio
 async def test_manager_provider_token_exchange_includes_dcr_secret(tmp_path, monkeypatch):
     """The manager provider path applies the same Supabase DCR secret fix."""

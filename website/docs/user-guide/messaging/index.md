@@ -263,6 +263,7 @@ session_reset:
   mode: idle        # "idle", "daily", "both", or "none" (default)
   idle_minutes: 1440  # for idle/both: minutes of inactivity before reset
   at_hour: 4          # for daily/both: hour of day (0-23, local time)
+  notify: true        # set false to suppress the user-facing reset notice
 ```
 
 | Mode | Description |

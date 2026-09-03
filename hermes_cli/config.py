@@ -5707,6 +5707,21 @@ _SCHEMA_DEFINED_DICT_KEYS = frozenset({
     "plugins",
 })
 
+# Optional fixed-shape sections that are intentionally absent from
+# DEFAULT_CONFIG until a user opts in. Unlike open dictionaries, their child
+# keys are runtime-defined and should still get typo detection from
+# ``hermes config set``.
+_OPTIONAL_FIXED_CONFIG_SCHEMAS = {
+    "session_reset": {
+        "mode": None,
+        "at_hour": None,
+        "idle_minutes": None,
+        "notify": None,
+        "notify_exclude_platforms": None,
+        "bg_process_max_age_hours": None,
+    },
+}
+
 # Top-level keys that can be ANY user-supplied name (platform/provider dict
 # shapes where the outer key IS user-defined).
 _DYNAMIC_TOP_LEVEL_KEYS = frozenset({
@@ -5735,6 +5750,7 @@ def _known_top_level_keys() -> set[str]:
     keys.update(_OPEN_DICT_TOP_LEVEL_KEYS)
     keys.update(_DYNAMIC_TOP_LEVEL_KEYS)
     keys.update(_SCHEMA_DEFINED_DICT_KEYS)
+    keys.update(_OPTIONAL_FIXED_CONFIG_SCHEMAS)
     return keys
 
 
@@ -5819,7 +5835,9 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
         # providers.<name>.api_key, etc.).
         return True, None
 
-    node: Any = DEFAULT_CONFIG.get(top)
+    node: Any = DEFAULT_CONFIG.get(
+        top, _OPTIONAL_FIXED_CONFIG_SCHEMAS.get(top)
+    )
     consumed = [top]
     for seg in segments[1:]:
         # ``gateway.platforms.<name>.<field>`` (and any other nested

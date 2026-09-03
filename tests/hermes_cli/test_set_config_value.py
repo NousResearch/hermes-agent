@@ -119,6 +119,13 @@ class TestConfigYamlRouting:
         assert "not a recognized config key" not in capsys.readouterr().out
         assert "nudge_interval: 0" in _read_config(_isolated_hermes_home)
 
+    def test_session_reset_notify_is_recognized(self, _isolated_hermes_home, capsys):
+        """The gateway's documented auto-reset notice toggle is runtime config."""
+        set_config_value("session_reset.notify", "false")
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        assert "notify: false" in _read_config(_isolated_hermes_home)
+
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
         config = _read_config(_isolated_hermes_home)
@@ -547,6 +554,8 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        "session_reset.notify",
+        "session_reset.bg_process_max_age_hours",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
@@ -557,6 +566,7 @@ class TestValidateConfigKey:
         ("gateway.discord.gateway_restart_notification", None),  # no close suggestion
         ("disco", "discord"),
         ("agent.max_turn", "agent.max_turns"),
+        ("session_reset.notfy", "session_reset.notify"),
     ])
     def test_unknown_keys_with_suggestion(self, key, expected_in_suggestion):
         from hermes_cli.config import _validate_config_key

@@ -164,6 +164,15 @@ class TestInternalActivityResetPolicy:
 
 class TestResetPolicyNotify:
 
+    def test_cli_schema_matches_gateway_policy_fields(self):
+        """CLI validation and gateway runtime fields must not drift."""
+        from hermes_cli import config as cli_config
+
+        schema = getattr(cli_config, "_OPTIONAL_FIXED_CONFIG_SCHEMAS")
+        assert set(schema["session_reset"]) == set(
+            SessionResetPolicy.__dataclass_fields__
+        )
+
     def test_notify_exclude_defaults(self):
         policy = SessionResetPolicy()
         assert "api_server" in policy.notify_exclude_platforms

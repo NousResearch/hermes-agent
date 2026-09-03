@@ -793,6 +793,17 @@ in to automatic resets via the `session_reset` section in `config.yaml`:
 - **daily** — reset at a specific hour each day
 - **both** — reset on whichever comes first (idle or daily)
 
+Automatic resets normally send a short explanation to the affected chat. To
+keep the reset policy but suppress that user-facing notice, set:
+
+```yaml
+session_reset:
+  notify: false
+```
+
+`notify_exclude_platforms` can suppress notices only on selected platforms;
+`api_server` and `webhook` are excluded by default.
+
 Before a session is auto-reset, the agent is given a turn to save any important memories or skills from the conversation.
 
 Sessions with **active background processes** are never auto-reset, regardless of policy.

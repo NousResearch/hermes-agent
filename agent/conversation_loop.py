@@ -4396,6 +4396,71 @@ def run_conversation(
                                 truncated_response_parts.append(_interim_content)
 
                             if length_continue_retries < 4:
+                                # Guard: if this is a kanban worker and its own run
+                                # has already transitioned to a terminal state, the
+                                # mid-stream drop happened AFTER a successful
+                                # kanban_request_changes / kanban_complete call.
+                                # Injecting a continuation would restart work that
+                                # already finished — writing ghost comments onto a
+                                # card owned by the next run (#98750).
+                                #
+                                # Check that the run-id in the env still matches an
+                                # active run on the task.  If the run has moved on,
+                                # abort cleanly instead of continuing.
+                                _kanban_task = (
+                                    getattr(agent, "_kanban_task_id", None)
+                                    or agent.context_env.get("HERMES_KANBAN_TASK")
+                                    if hasattr(agent, "context_env")
+                                    else None
+                                )
+                                _kanban_run = (
+                                    getattr(agent, "_kanban_run_id", None)
+                                    or agent.context_env.get("HERMES_KANBAN_RUN_ID")
+                                    if hasattr(agent, "context_env")
+                                    else None
+                                )
+                                if _kanban_task and _kanban_run:
+                                    try:
+                                        from hermes_cli.kanban import _worker_run_id_for
+                                        _live_run = _worker_run_id_for(_kanban_task)
+                                        if _live_run is not None and str(_live_run) != str(_kanban_run):
+                                            # The task has moved to a new run —
+                                            # this worker's run is done.
+                                            agent._vprint(
+                                                f"{agent.log_prefix}⚠️  Kanban run "
+                                                f"{_kanban_run} is no longer the "
+                                                f"active run on task {_kanban_task} "
+                                                f"(current run: {_live_run}) — "
+                                                f"aborting continuation to prevent "
+                                                f"ghost work.",
+                                                force=True,
+                                            )
+                                            logger.info(
+                                                "conversation_loop: kanban run %s "
+                                                "superseded by %s on task %s — "
+                                                "suppressing mid-stream continuation",
+                                                _kanban_run, _live_run, _kanban_task,
+                                            )
+                                            agent._cleanup_task_resources(effective_task_id)
+                                            agent._persist_session(messages, conversation_history)
+                                            return {
+                                                "final_response": (
+                                                    partial_response
+                                                    if (partial_response := agent._strip_think_blocks(
+                                                        _join_truncated_parts(truncated_response_parts)
+                                                    ).strip())
+                                                    else (
+                                                        getattr(assistant_message, "content", None) or ""
+                                                    )
+                                                ),
+                                                "messages": messages,
+                                                "api_calls": api_call_count,
+                                                "completed": True,
+                                                "kanban_run_superseded": True,
+                                            }
+                                    except Exception:
+                                        pass  # best-effort; proceed with normal continuation
+
                                 _is_partial_stream_stub = (
                                     getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
                                 )

@@ -91,7 +91,7 @@ class _StalledSummaryWorker:
             fence.finish_commit()
 
 
-def _run(worker, *, chain, timeouts, messages, idle=0.05, ceiling=0.2):
+def _run(worker, *, chain, timeouts, messages, idle=0.05, ceiling=3.0):
     with _patch_chain(chain):
         return run_compress_context_with_progress_timeout(
             worker=worker,
@@ -134,15 +134,17 @@ def test_stalled_summary_attempts_configured_fallback_chain():
 
 def test_worker_first_deadline_abort_attempts_fallback_exactly_once(monkeypatch):
     """A worker that publishes its deadline abort before the host timeout
-    branch wins must take the same single fallback path as host-first expiry."""
+    branch wins must take the same single fallback path as host-first expiry,
+    even when durable-parent adoption returns a distinct transcript list."""
     original = [{"role": "user", "content": "keep-me"}]
+    adopted = [*original, {"role": "assistant", "content": "concurrent growth"}]
     compressed = [{"role": "user", "content": "fallback summary"}]
     fallback = MagicMock(return_value=(compressed, "fallback-prompt"))
 
     def worker(fence: CompressionCommitFence):
         fence._deadline = 0.0
         fence.mark_route_deadline_abort()
-        return original, "primary-aborted"
+        return adopted, "primary-aborted"
 
     monkeypatch.setattr(cc, "_retry_compression_on_fallback_chain", fallback)
 

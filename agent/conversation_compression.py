@@ -1626,12 +1626,7 @@ def run_compress_context_with_progress_timeout(
             )
             try:
                 result = future.result(timeout=wait_slice)
-                if (
-                    fence.route_deadline_aborted
-                    and isinstance(result, tuple)
-                    and result
-                    and result[0] is messages
-                ):
+                if fence.route_deadline_aborted:
                     # The worker can observe the shared hard deadline and
                     # unwind just before Future.result() raises on the host.
                     # Treat that scheduling order exactly like the timeout

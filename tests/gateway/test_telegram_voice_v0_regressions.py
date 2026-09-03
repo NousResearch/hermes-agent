@@ -117,7 +117,7 @@ def _run_agent_runner(adapter):
     runner._queued_events = {}
     runner._draining = False
     runner.hooks = SimpleNamespace(loaded_hooks=False)
-    runner._should_echo_stt_transcripts = lambda: True
+    runner._should_echo_stt_transcripts = lambda _platform: True
     return runner
 
 

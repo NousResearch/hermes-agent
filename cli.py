@@ -5188,6 +5188,169 @@ def _should_seed_interactive(query, image, quiet: bool, oneshot: bool) -> bool:
         return False
 
 
+# Display names for the gateway status panel. Platforms absent from this map
+# fall back to their enum value title-cased, so first-party additions and
+# plugin platforms render without touching this panel again.
+_GATEWAY_PLATFORM_DISPLAY_NAMES: dict = {
+    "telegram": "Telegram",
+    "discord": "Discord",
+    "whatsapp": "WhatsApp",
+    "whatsapp_cloud": "WhatsApp Cloud",
+    "slack": "Slack",
+    "signal": "Signal",
+    "a2a": "A2A",
+    "mattermost": "Mattermost",
+    "matrix": "Matrix",
+    "homeassistant": "HomeAssistant",
+    "email": "Email",
+    "sms": "SMS",
+    "dingtalk": "DingTalk",
+    "api_server": "API Server",
+    "webhook": "Webhook",
+    "msgraph_webhook": "MSGraph Webhook",
+    "feishu": "Feishu",
+    "wecom": "WeCom",
+    "wecom_callback": "WeCom Callback",
+    "weixin": "Weixin",
+    "bluebubbles": "BlueBubbles",
+    "qqbot": "QQBot",
+    "yuanbao": "Yuanbao",
+    "relay": "Relay",
+}
+
+# Credential env var shown next to "Not configured" for token-based
+# platforms. Sourced from the canonical credential map so the hint stays in
+# sync with what config validation actually checks.
+_GATEWAY_PLATFORM_ENV_HINTS: dict = {
+    "telegram": "TELEGRAM_BOT_TOKEN",
+    "discord": "DISCORD_BOT_TOKEN",
+    "slack": "SLACK_BOT_TOKEN",
+    "whatsapp": "WHATSAPP_ENABLED",
+    "mattermost": "MATTERMOST_TOKEN",
+    "matrix": "MATRIX_ACCESS_TOKEN",
+    "weixin": "WEIXIN_TOKEN",
+}
+
+
+def _gateway_platform_display_name(platform) -> str:
+    """Human-readable platform label for the gateway status panel."""
+    value = getattr(platform, "value", str(platform)).lower()
+    return _GATEWAY_PLATFORM_DISPLAY_NAMES.get(value, value.replace("_", " ").title())
+
+
+def _gateway_runtime_platform_state() -> dict:
+    """Live per-platform health states from the gateway runtime snapshot."""
+    try:
+        from gateway.status import read_runtime_status
+
+        runtime = read_runtime_status()
+    except Exception:
+        return {}
+    platforms = (runtime or {}).get("platforms")
+    if not isinstance(platforms, dict):
+        return {}
+    return {
+        str(key).lower(): entry
+        for key, entry in platforms.items()
+        if isinstance(entry, dict)
+    }
+
+
+def _gateway_status_symbol(state: str) -> str:
+    """Panel marker for a platform's runtime state."""
+    if state == "connected":
+        return "✓"
+    if state in ("retrying", "needs_attention"):
+        return "!"
+    return "○"
+
+
+def format_gateway_platform_rows(config) -> list:
+    """Build the gateway status panel's platform rows from actual config.
+
+    Rows come from the platforms present in the loaded ``GatewayConfig`` (so
+    Signal, A2A, and plugin platforms appear by construction) plus any
+    platform the running gateway reports in its runtime snapshot that config
+    alone would miss. Runtime state decorates every enabled row; the classic
+    token platforms keep their credential hints when not configured.
+    """
+    from gateway.config import Platform
+
+    rows: list = []
+    seen: set = set()
+
+    runtime_states = _gateway_runtime_platform_state()
+
+    def _emit(platform, pconfig, runtime_entry=None):
+        key = platform.value.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        name = _gateway_platform_display_name(platform)
+        entry = runtime_entry if runtime_entry is not None else (runtime_states.get(key) or {})
+        state = str(entry.get("state") or "").lower()
+        needs_attention = bool(entry.get("needs_attention"))
+        if pconfig and pconfig.enabled:
+            home = config.get_home_channel(platform)
+            home_str = f" → {home.name}" if home else ""
+            state_str = f" ({state})" if state and state != "connected" else ""
+            att_str = " [needs attention]" if needs_attention else ""
+            symbol = _gateway_status_symbol(state if not needs_attention else "needs_attention")
+            rows.append(
+                f"    {symbol} {name:<12} Enabled{home_str}{state_str}{att_str}"
+            )
+        elif state:
+            # Platform is running (e.g. secondary-profile adapter) but has no
+            # enabled config entry in this profile: still report live state.
+            symbol = _gateway_status_symbol(state if not needs_attention else "needs_attention")
+            att_str = " [needs attention]" if needs_attention else ""
+            rows.append(f"    {symbol} {name:<12} {state}{att_str}")
+        else:
+            env_hint = _GATEWAY_PLATFORM_ENV_HINTS.get(key)
+            hint_str = f" ({env_hint})" if env_hint else ""
+            rows.append(f"    ○ {name:<12} Not configured{hint_str}")
+
+    for platform, pconfig in config.platforms.items():
+        if platform == Platform.LOCAL:
+            continue
+        _emit(platform, pconfig)
+
+    # Runtime-only platforms (multiplexed profiles, plugins that never write
+    # to this profile's config): append after config rows so the panel shows
+    # everything the live gateway is actually running.
+    from gateway.config import Platform as _Platform
+
+    for raw_key, entry in runtime_states.items():
+        key = raw_key
+        if ":" in key:
+            # Secondary-profile entries are "<profile>:<platform>" — surface
+            # the platform part so multiplexed channels aren't lost.
+            key = key.split(":", 1)[1]
+            if key in seen:
+                continue
+        else:
+            entry = None
+        if key in seen:
+            continue
+        try:
+            platform = _Platform(key)
+        except (ValueError, AttributeError):
+            continue
+        _emit(platform, None, runtime_entry=entry)
+
+    if not rows:
+        # Nothing configured anywhere: keep the classic onboarding hints so
+        # an empty setup still tells the user which env vars enable what.
+        for key, env_hint in _GATEWAY_PLATFORM_ENV_HINTS.items():
+            try:
+                platform = _Platform(key)
+            except (ValueError, AttributeError):
+                continue
+            name = _gateway_platform_display_name(platform)
+            rows.append(f"    ○ {name:<12} Not configured ({env_hint})")
+    return rows
+
+
 class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     """
     Interactive CLI for the Hermes Agent.
@@ -12503,36 +12666,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
-        from gateway.config import load_gateway_config, Platform
-        
+        from gateway.config import load_gateway_config
+
         print()
         print("+" + "-" * 60 + "+")
         print("|" + " " * 15 + "(✿◠‿◠) Gateway Status" + " " * 17 + "|")
         print("+" + "-" * 60 + "+")
         print()
-        
+
         try:
             config = load_gateway_config()
-            
+
             print("  Messaging Platform Configuration:")
             print("  " + "-" * 55)
-            
-            platform_status = {
-                Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
-                Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),
-                Platform.SLACK: ("Slack", "SLACK_BOT_TOKEN"),
-                Platform.WHATSAPP: ("WhatsApp", "WHATSAPP_ENABLED"),
-            }
-            
-            for platform, (name, env_var) in platform_status.items():
-                pconfig = config.platforms.get(platform)
-                if pconfig and pconfig.enabled:
-                    home = config.get_home_channel(platform)
-                    home_str = f" → {home.name}" if home else ""
-                    print(f"    ✓ {name:<12} Enabled{home_str}")
-                else:
-                    print(f"    ○ {name:<12} Not configured ({env_var})")
-            
+
+            for line in format_gateway_platform_rows(config):
+                print(line)
+
             print()
             print("  Session Reset Policy:")
             print("  " + "-" * 55)
@@ -12540,14 +12690,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print(f"    Mode: {policy.mode}")
             print(f"    Daily reset at: {policy.at_hour}:00")
             print(f"    Idle timeout: {policy.idle_minutes} minutes")
-            
+
             print()
             print("  To start the gateway:")
             print("    python cli.py --gateway")
             print()
             print(f"  Configuration file: {display_hermes_home()}/config.yaml")
             print()
-            
+
         except Exception as e:
             print(f"  Error loading gateway config: {e}")
             print()
@@ -12557,7 +12707,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print("       DISCORD_BOT_TOKEN=your_token")
             print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
             print()
-    
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.

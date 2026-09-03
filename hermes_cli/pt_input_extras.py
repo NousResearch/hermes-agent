@@ -11,6 +11,397 @@ can be unit-tested without importing the whole CLI runtime.
 
 from __future__ import annotations
 
+import os
+
+
+def _kitty_reports_unshifted_codepoints() -> bool:
+    """True when the CSI-u path will be driven with UNSHIFTED codepoints.
+
+    The kitty keyboard protocol always reports the base (unshifted) codepoint
+    plus a Shift modifier, while xterm modifyOtherKeys emitters report the
+    already-shifted one.  That single difference decides which half of the
+    Shift+punctuation table can ever fire, and therefore whether a US-layout
+    assumption is load-bearing — see ``_shift_punctuation_base_map_is_safe``.
+
+    Ghostty is excluded deliberately: it is pushed modifyOtherKeys only (its
+    kitty disambiguate mode strips Alt from Backspace), so it reports shifted
+    codepoints even though its TERM mentions neither protocol.
+    """
+    env = os.environ
+    if (env.get("TERM_PROGRAM") or "").strip() == "ghostty":
+        return False
+    term = (env.get("TERM") or "").strip().lower()
+    if term == "xterm-ghostty":
+        return False
+    return bool(env.get("KITTY_WINDOW_ID") or "kitty" in term)
+
+
+def _configured_layout() -> str:
+    """The primary configured keyboard layout, or "" when nothing says.
+
+    Cheap and env/file based on purpose: this runs on the CLI startup path, so
+    it must not spawn a subprocess.
+    """
+    layout = (os.environ.get("XKB_DEFAULT_LAYOUT") or "").strip().lower()
+    if not layout:
+        for path, key in (
+            ("/etc/default/keyboard", "XKBLAYOUT"),
+            ("/etc/vconsole.conf", "KEYMAP"),
+        ):
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    for line in handle:
+                        name, _, value = line.partition("=")
+                        if name.strip() == key:
+                            layout = value.strip().strip('"').strip("'").lower()
+                            break
+            except OSError:
+                continue
+            if layout:
+                break
+    # "us,gr" means us is primary; "us-acentos"/"us.utf-8" are console keymaps.
+    return layout.split(",")[0].strip()
+
+
+def _configured_layout_and_variant() -> tuple[str, str]:
+    """Split the primary layout into ``(layout, variant)``.
+
+    xkb spells a variant as ``us(dvorak)``; the variant is the block name inside
+    the layout's symbol file, so keeping it lets the derived map describe the
+    layout the user is actually typing on rather than that file's default.
+    """
+    primary = _configured_layout()
+    if primary.endswith(")") and "(" in primary:
+        layout, _, variant = primary.partition("(")
+        return layout.strip(), variant[:-1].strip()
+    return primary, ""
+
+
+def _us_punctuation_layout() -> bool:
+    """True only when Shift+<punct> is POSITIVELY known to follow US layout.
+
+    Unknown answers return False, because the caller treats False as "do not
+    guess".
+    """
+    primary = _configured_layout()
+    if not primary:
+        return False
+    # Only bare "us" (optionally with a console encoding suffix such as
+    # "us.utf-8") is safe by NAME. "us-" prefixed console keymaps are NOT:
+    # us-acentos turns ' and " into dead accent keys, so Shift+' is not '"'
+    # there. Anything else falls through to the xkb table, which answers from
+    # the layout's actual definition instead of its name.
+    if primary == "us" or primary.startswith("us."):
+        return True
+    # The name is not "us", but the layout may still leave Shift+punctuation
+    # exactly where US puts it — Greek does.  Ask its xkb table rather than
+    # rejecting a layout that is in fact compatible.
+    return _layout_keeps_us_shift_punctuation(primary)
+
+
+# Shift+<punct> on a US layout, keyed by the base character.  Single source of
+# truth: the alias table below builds both of its halves from this, and
+# ``_layout_keeps_us_shift_punctuation`` checks a foreign layout against it, so
+# the two can never drift apart.
+_SHIFT_PUNCTUATION_BY_CHAR = {
+    "1": "!",
+    "2": "@",
+    "3": "#",
+    "4": "$",
+    "5": "%",
+    "6": "^",
+    "7": "&",
+    "8": "*",
+    "9": "(",
+    "0": ")",
+    "-": "_",
+    "=": "+",
+    "[": "{",
+    "]": "}",
+    "\\": "|",
+    ";": ":",
+    "'": '"',
+    ",": "<",
+    ".": ">",
+    "/": "?",
+    "`": "~",
+}
+_SHIFT_PUNCTUATION = {ord(b): s for b, s in _SHIFT_PUNCTUATION_BY_CHAR.items()}
+
+# xkb key names for the keys the Shift+punctuation map covers, plus the keysym
+# names those keys carry at shift level 2 on US.  These answer the question the
+# layout NAME cannot: does this layout leave Shift+punctuation where US puts it?
+# Greek DOES — it declares the number row ``any, any`` or with the identical US
+# symbols and only overrides the AltGr levels — while AZERTY does not (``AE01``
+# is ``ampersand, 1``).  Judging by name alone would reject Greek needlessly,
+# and that is exactly the difference between a kitty user getting the fix or not.
+_XKB_KEY_BY_BASE = {
+    "1": "AE01",
+    "2": "AE02",
+    "3": "AE03",
+    "4": "AE04",
+    "5": "AE05",
+    "6": "AE06",
+    "7": "AE07",
+    "8": "AE08",
+    "9": "AE09",
+    "0": "AE10",
+    "-": "AE11",
+    "=": "AE12",
+    "[": "AD11",
+    "]": "AD12",
+    "\\": "BKSL",
+    ";": "AC10",
+    "'": "AC11",
+    ",": "AB08",
+    ".": "AB09",
+    "/": "AB10",
+    "`": "TLDE",
+}
+_XKB_KEYSYM_CHAR = {
+    "exclam": "!",
+    "at": "@",
+    "numbersign": "#",
+    "dollar": "$",
+    "percent": "%",
+    "asciicircum": "^",
+    "ampersand": "&",
+    "asterisk": "*",
+    "parenleft": "(",
+    "parenright": ")",
+    "underscore": "_",
+    "plus": "+",
+    "braceleft": "{",
+    "braceright": "}",
+    "bar": "|",
+    "colon": ":",
+    "quotedbl": '"',
+    "less": "<",
+    "greater": ">",
+    "question": "?",
+    "asciitilde": "~",
+}
+_XKB_SYMBOLS_DIRS = ("/usr/share/X11/xkb/symbols", "/usr/local/share/X11/xkb/symbols")
+_XKB_KEY_RE = None
+
+
+# X11 keysym names for every printable ASCII character.  Needed to turn an xkb
+# key definition back into the characters it produces, so the Shift+punctuation
+# map can be DERIVED from the user's actual layout instead of assumed from US.
+_KEYSYM_NAMES = (
+    "space exclam quotedbl numbersign dollar percent ampersand apostrophe "
+    "parenleft parenright asterisk plus comma minus period slash "
+    "colon semicolon less equal greater question at "
+    "bracketleft backslash bracketright asciicircum underscore grave "
+    "braceleft bar braceright asciitilde"
+).split()
+_KEYSYM_CHARS = " !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+_XKB_SYM_TO_CHAR = dict(zip(_KEYSYM_NAMES, _KEYSYM_CHARS))
+_XKB_SYM_TO_CHAR.update({c: c for c in "0123456789"})
+_XKB_SYM_TO_CHAR.update({c: c for c in "abcdefghijklmnopqrstuvwxyz"})
+_XKB_SYM_TO_CHAR.update({c: c for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"})
+
+
+def _xkb_symbol_char(name: str) -> str | None:
+    """Resolve one xkb keysym name to its character, or None if not printable.
+
+    Dead keys (``dead_acute``), Greek/Cyrillic letters and anything outside
+    printable ASCII deliberately resolve to None: a key whose shifted value we
+    cannot represent as a character is one we must leave alone.
+    """
+    char = _XKB_SYM_TO_CHAR.get(name)
+    if char is not None:
+        return char
+    if len(name) >= 5 and name[0] == "U":
+        try:
+            code = int(name[1:], 16)
+        except ValueError:
+            return None
+        if 0x20 <= code < 0x7F:
+            return chr(code)
+    return None
+
+
+def _derive_shift_punctuation(layout: str, variant: str = "") -> dict[int, str] | None:
+    """Build ``{base codepoint: shifted char}`` from *layout*'s own xkb table.
+
+    This is what makes the kitty path layout-correct rather than layout-guessed.
+    Kitty reports the UNSHIFTED codepoint, so knowing what a given physical key
+    produces at shift level 2 on THIS layout is exactly the missing information —
+    and xkb already holds it.  On AZERTY ``AE01`` is ``[ampersand, 1]``, so the
+    correct entry is ``ord('&') -> '1'``; on Greek ``AE01`` is ``[1, exclam]``,
+    giving ``ord('1') -> '!'``.  Neither is the US table.
+
+    Only the named variant block is read (``basic`` by default), because later
+    blocks in the same file describe *other* variants and mixing them would
+    invent a layout nobody is using.  Keys whose level-1 or level-2 symbol is
+    not printable ASCII — dead keys, Greek letters — are skipped, so they keep
+    leaking rather than typing something wrong.  Returns None when no xkb data
+    is available at all.
+    """
+    if not layout or "/" in layout or "." in layout or ".." in layout:
+        return None
+    block = _xkb_variant_block(layout, variant or "basic")
+    if block is None:
+        return None
+    _compile_xkb_key_re()
+    wanted = {v: k for k, v in _XKB_KEY_BY_BASE.items()}  # xkb key name -> base char
+    derived: dict[int, str] = {}
+    for match in _XKB_KEY_RE.finditer(block):
+        if match.group("key") not in wanted:
+            continue
+        syms = [s.strip() for s in match.group("syms").split(",")]
+        if len(syms) < 2:
+            continue
+        level1, level2 = syms[0], syms[1]
+        if level1 == "any" or level2 == "any":
+            # Inherits the base (US) layout for this key.
+            us_base = wanted[match.group("key")]
+            derived[ord(us_base)] = _SHIFT_PUNCTUATION_BY_CHAR[us_base]
+            continue
+        base_char = _xkb_symbol_char(level1)
+        shifted_char = _xkb_symbol_char(level2)
+        if base_char is None or shifted_char is None or base_char == shifted_char:
+            continue
+        # Dvorak and friends put LETTERS on punctuation positions, so the scan
+        # picks up pairs like s -> S. Correct, but already covered by the
+        # letter table above and out of place in a punctuation map; skip them
+        # so this map means only what its name says.
+        if base_char.isalpha() and shifted_char.isalpha():
+            continue
+        derived[ord(base_char)] = shifted_char
+    return derived or None
+
+
+def _xkb_variant_block(layout: str, variant: str) -> str | None:
+    """Return the text of ``xkb_symbols "<variant>"`` from *layout*'s file."""
+    for directory in _XKB_SYMBOLS_DIRS:
+        try:
+            with open(
+                f"{directory}/{layout}", encoding="utf-8", errors="replace"
+            ) as handle:
+                text = handle.read()
+        except OSError:
+            continue
+        marker = f'xkb_symbols "{variant}"'
+        start = text.find(marker)
+        if start < 0:
+            return None
+        nxt = text.find("xkb_symbols", start + len(marker))
+        return text[start:] if nxt < 0 else text[start:nxt]
+    return None
+
+
+def _compile_xkb_key_re() -> None:
+    global _XKB_KEY_RE
+    if _XKB_KEY_RE is None:
+        import re
+
+        _XKB_KEY_RE = re.compile(
+            r"key\s*<(?P<key>[A-Z0-9]+)>\s*\{[^}]*?\[(?P<syms>[^\]]*)\]"
+        )
+
+
+def _layout_keeps_us_shift_punctuation(layout: str) -> bool:
+    """True when *layout*'s xkb definition leaves Shift+punctuation at US values.
+
+    Answers by reading the layout's own symbol table rather than trusting its
+    name.  A key that is absent, or declared ``any, any``, inherits the base
+    layout and therefore matches US; a key that names a level-2 keysym must
+    name the US one.  Anything unreadable or unresolvable is treated as a
+    mismatch, because the caller's contract is "do not guess".
+
+    Deliberately conservative across variants: if ANY block in the file gives a
+    target key a level-2 symbol that disagrees with US, the layout is rejected.
+    A needless rejection costs a leaked escape sequence; a wrong acceptance
+    costs wrongly typed characters.
+    """
+    global _XKB_KEY_RE
+    if not layout or "/" in layout or "." in layout:
+        return False
+    if _XKB_KEY_RE is None:
+        import re
+
+        _XKB_KEY_RE = re.compile(
+            r"key\s*<(?P<key>[A-Z0-9]+)>\s*\{\s*\[(?P<syms>[^\]]*)\]"
+        )
+    wanted = {_XKB_KEY_BY_BASE[b]: v for b, v in _SHIFT_PUNCTUATION_BY_CHAR.items()}
+    seen: set[str] = set()
+    for directory in _XKB_SYMBOLS_DIRS:
+        try:
+            with open(
+                f"{directory}/{layout}", encoding="utf-8", errors="replace"
+            ) as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        for match in _XKB_KEY_RE.finditer(text):
+            key = match.group("key")
+            expected = wanted.get(key)
+            if expected is None:
+                continue
+            syms = [s.strip() for s in match.group("syms").split(",")]
+            if len(syms) < 2:
+                return False
+            level2 = syms[1]
+            if level2 == "any":
+                seen.add(key)  # inherits the base layout => US
+                continue
+            if _XKB_KEYSYM_CHAR.get(level2) != expected:
+                return False  # redefined away from US
+            seen.add(key)
+        return bool(seen)  # file found; verdict stands
+    return False  # no xkb data available
+
+
+def _shift_punctuation_base_map() -> dict[int, str] | None:
+    """The base-codepoint half of the Shift+punctuation map, or None.
+
+    Three cases, in order:
+
+    * **modifyOtherKeys terminals** report the already-shifted codepoint, so
+      this half is never consulted. The US table is harmless there and costs
+      nothing, so install it and keep the behaviour identical to before.
+    * **A literal "us" layout** — the US table is simply correct.
+    * **kitty on anything else** — the terminal reports the UNSHIFTED codepoint,
+      so what Shift produces depends on the layout. Derive it from that
+      layout's own xkb definition; on AZERTY that yields ``&`` -> ``1``, on
+      Greek ``1`` -> ``!``. Keys whose shifted value is a dead key or a
+      non-ASCII letter are omitted and keep leaking, which is the correct
+      failure. If xkb data is unavailable, return None and guess nothing.
+    """
+    if not _kitty_reports_unshifted_codepoints():
+        return dict(_SHIFT_PUNCTUATION)
+    layout, variant = _configured_layout_and_variant()
+    if not layout:
+        return None
+    if layout == "us" or layout.startswith("us."):
+        return dict(_SHIFT_PUNCTUATION)
+    return _derive_shift_punctuation(layout, variant)
+
+
+def _shift_punctuation_base_map_is_safe() -> bool:
+    """Whether the base-codepoint half of the Shift+punctuation map may install.
+
+    The map has two halves and they are NOT equally safe:
+
+    * ``punct_map[ord(shifted)] = shifted`` is an IDENTITY mapping — whatever
+      shifted codepoint the terminal reports is echoed back.  Correct on every
+      keyboard layout, so it installs unconditionally.
+    * ``punct_map[base_cp] = shifted`` translates ``2`` into ``@`` from a US
+      table.  It is a guess, and on a non-US layout it types the WRONG
+      character rather than leaking an escape sequence.
+
+    Which half fires is decided entirely by the terminal, and only kitty
+    reaches the guessing half — so a kitty user on a Greek/AZERTY/German
+    keyboard is the one who would eat wrong input.  The original Shift+letter
+    patch refused symbols for exactly this reason ("they will leak, but that's
+    better than wrong input"); leaking is still the better failure, so the
+    guess installs only where it cannot be wrong.
+    """
+    return not _kitty_reports_unshifted_codepoints() or _us_punctuation_layout()
+
+
 # kitty CSI-u ORs lock-key state into the modifier parameter of every key
 # event while a lock is on: CapsLock=64, NumLock=128, both=192 (#88221,
 # #89651).  Every fixed-modifier CSI-u (and legacy CSI-tilde / CSI-letter)
@@ -43,6 +434,7 @@ def _clear_vt100_prefix_cache() -> None:
         from prompt_toolkit.input.vt100_parser import (
             _IS_PREFIX_OF_LONGER_MATCH_CACHE,
         )
+
         _IS_PREFIX_OF_LONGER_MATCH_CACHE.clear()
     except Exception:
         pass
@@ -230,6 +622,80 @@ def install_cmd_backspace_alias() -> int:
     return changed
 
 
+def _install_literal_key_data_patch() -> bool:
+    """Make character-valued ``ANSI_SEQUENCES`` entries insert themselves.
+
+    prompt_toolkit's VT100 parser builds every key press as
+    ``KeyPress(key=<table value>, data=<matched bytes>)``, and the default
+    ``Keys.Any`` binding inserts ``event.data`` — the *bytes*, not the key.
+    That is invisible for entries resolving to a ``Keys`` member (bindings
+    match on ``key``, and ``data`` is unused), which is every entry stock
+    prompt_toolkit ships.
+
+    It is not invisible for the character-valued entries registered above.
+    Mapping ``ESC[27;2;72~`` → ``"H"`` makes the parser emit
+    ``KeyPress(key="H", data="\\x1b[27;2;72~")``, so the prompt still
+    receives the raw escape sequence as literal text — the mapping alone
+    fixes what the key *is* but not what it *types*.
+
+    This narrows ``data`` to the character for that CSI→char case. Stock
+    Keys-valued table entries and the plain-typing path (where ``key`` is
+    already ``data``) keep prior behavior. Multi-key ANSI matches that
+    intentionally blank trailing ``insert_text`` are also left alone.
+
+    Idempotent; returns True when this call installed the patch.
+    """
+    try:
+        from prompt_toolkit.input.vt100_parser import Vt100Parser
+        from prompt_toolkit.keys import Keys
+    except Exception:
+        return False
+
+    # `_call_handler` is prompt_toolkit-private. Fetch it defensively so a
+    # future rename degrades to the same no-op as a missing module, rather
+    # than raising through install_modify_other_keys_aliases() into cli.py's
+    # blanket `except Exception: pass` — which would silently skip the
+    # installers that run after it.
+    original_call_handler = getattr(Vt100Parser, "_call_handler", None)
+    if original_call_handler is None:
+        return False
+
+    # The idempotency marker rides on the wrapper rather than the class, so
+    # it cannot outlive the wrapper it describes: if anything later replaces
+    # `_call_handler`, the marker goes with it and we wrap the replacement
+    # instead of skipping on a stale flag.
+    if getattr(original_call_handler, "_hermes_literal_key_data", False):
+        return False
+
+    def _call_handler(self, key, insert_text):  # type: ignore[no-untyped-def]
+        # Only rewrite when the parser handed us a real payload that is the
+        # raw escape bytes. Stock _call_handler blanks insert_text for every
+        # key after the first in a multi-key ANSI match (Alt+letter →
+        # (Escape, "a") with "" on the letter). Reviving that blank would
+        # insert the letter and break meta chords (Shift+Alt+a → "A").
+        #
+        # Keys is a str Enum, so Keys members are isinstance(..., str). The
+        # `not isinstance(key, Keys)` check is load-bearing — do not drop it
+        # even though no current Keys value has len == 1.
+        if (
+            isinstance(key, str)
+            and not isinstance(key, Keys)
+            and len(key) == 1
+            and insert_text
+            and insert_text != key
+        ):
+            insert_text = key
+        return original_call_handler(self, key, insert_text)
+
+    _call_handler._hermes_literal_key_data = True  # type: ignore[attr-defined]
+
+    try:
+        Vt100Parser._call_handler = _call_handler  # type: ignore[assignment]
+    except Exception:
+        return False
+    return True
+
+
 def install_modify_other_keys_aliases() -> int:
     """Map Ctrl+key and Alt+key sequences emitted under ``modifyOtherKeys`` level 2
     and Kitty CSI-u to the same ``Keys``.* values that the raw control bytes
@@ -301,7 +767,7 @@ def install_modify_other_keys_aliases() -> int:
     ctrl_key_map: dict[int, object] = {}
 
     # a-z: Ctrl+A = \x01 = Keys.ControlA, ..., Ctrl+Z = \x1a = Keys.ControlZ
-    for ch in range(ord('a'), ord('z') + 1):
+    for ch in range(ord("a"), ord("z") + 1):
         raw = chr(ch & 0x1F)  # 0x01..0x1a
         existing = ANSI_SEQUENCES.get(raw)
         if existing is not None:
@@ -311,7 +777,7 @@ def install_modify_other_keys_aliases() -> int:
     # (e.g. chr(ord('0') & 0x1F) = 0x10 = ControlP, not Control0), so map
     # them directly to Keys.Control0..Keys.Control9.
     for d in range(10):
-        ctrl_key_map[ord('0') + d] = getattr(Keys, f"Control{d}")
+        ctrl_key_map[ord("0") + d] = getattr(Keys, f"Control{d}")
 
     # Symbols that produce control chars:
     # Ctrl+@   (64)  = \x00 = Keys.ControlAt
@@ -361,7 +827,7 @@ def install_modify_other_keys_aliases() -> int:
     # leaks as literal text. prompt_toolkit handles bare Alt+letter as
     # (Escape, <letter>), so we map the extended sequences to the same tuple.
     alt_map: dict[int, tuple] = {}
-    for ch in range(ord('a'), ord('z') + 1):
+    for ch in range(ord("a"), ord("z") + 1):
         letter = chr(ch)
         upper = chr(ch - 32)  # uppercase variant
         alt_map[ch] = (Keys.Escape, letter)
@@ -381,11 +847,34 @@ def install_modify_other_keys_aliases() -> int:
     # Map both the lowercase and uppercase codepoints — some terminals send
     # the already-shifted codepoint (65 for 'A') with modifier=2.
     shift_map: dict[int, str] = {}
-    for ch in range(ord('a'), ord('z') + 1):
+    for ch in range(ord("a"), ord("z") + 1):
         upper_char = chr(ch - 32)  # 'A'..'Z'
         shift_map[ch] = upper_char
         shift_map[ch - 32] = upper_char
     _install_paired(2, shift_map)
+
+    # -- Shift+punctuation → the shifted character ----
+    # Shifted punctuation (tilde, @, ^, _, {}, |, etc.) is essential for
+    # coding prompts. Terminals re-encode Shift+1 as ESC[27;2;49~ (base
+    # codepoint) and Shift+{ as ESC[27;2;123~ (already-shifted codepoint)
+    # the same way they send Shift+a as codepoint 97 or 65 — map both
+    # forms. Each base key maps to its US-layout shifted character.
+    punct_shift = _SHIFT_PUNCTUATION
+    punct_map: dict[int, str] = {}
+    # Identity half — echoes back whatever shifted codepoint the terminal
+    # reported. Layout-independent by construction, so it always installs.
+    for _base_cp, shifted in punct_shift.items():
+        punct_map[ord(shifted)] = shifted
+    # Base half — the UNSHIFTED codepoint, which only the kitty protocol
+    # reports. What that key produces under Shift is a property of the user's
+    # layout, so DERIVE it from xkb rather than assuming US; a US table would
+    # type the wrong character on AZERTY instead of leaking. Falls back to the
+    # US table only where it cannot be wrong: modifyOtherKeys terminals (which
+    # never reach this half) and a layout that is literally "us".
+    base_map = _shift_punctuation_base_map()
+    if base_map:
+        punct_map.update(base_map)
+    _install_paired(2, punct_map)
 
     # -- Multi-modifier letters: Shift+Alt (4), Ctrl+Shift (6),
     # Ctrl+Alt (7), Ctrl+Alt+Shift (8) ----
@@ -398,7 +887,7 @@ def install_modify_other_keys_aliases() -> int:
     shift_alt_map: dict[int, tuple] = {}
     ctrl_shift_map: dict[int, object] = {}
     ctrl_alt_map: dict[int, tuple] = {}
-    for ch in range(ord('a'), ord('z') + 1):
+    for ch in range(ord("a"), ord("z") + 1):
         upper_char = chr(ch - 32)
         ctrl_key = ctrl_key_map.get(ch)
         for cp in (ch, ch - 32):
@@ -421,9 +910,7 @@ def install_modify_other_keys_aliases() -> int:
     # how a lone Esc keypress arrives with a lock on. Lock bits (caps/num)
     # get the same variant treatment as _install_paired.
     for seq in ["\x1b[27u"] + [
-        f"\x1b[27;{mod}u"
-        for m in range(1, 17)
-        for mod in _lock_variants(m)
+        f"\x1b[27;{mod}u" for m in range(1, 17) for mod in _lock_variants(m)
     ]:
         if seq not in ANSI_SEQUENCES:
             ANSI_SEQUENCES[seq] = Keys.Escape
@@ -432,21 +919,30 @@ def install_modify_other_keys_aliases() -> int:
     # -- Modified Enter / Tab / Backspace / Space ----
     # Shift+Enter / Ctrl+Enter are installed by install_shift_enter_alias /
     # install_ctrl_enter_alias (which run first and win via setdefault).
-    _install_paired(2, {
-        9: Keys.BackTab,        # Shift+Tab — same as the legacy ESC[Z
-        127: Keys.ControlH,     # Shift+Backspace — plain backspace
-        32: " ",                # Shift+Space — still a space (#86866)
-    })
-    _install_paired(3, {
-        13: (Keys.Escape, Keys.ControlM),   # Alt+Enter — newline tuple
-        127: (Keys.Escape, Keys.ControlH),  # Alt+Backspace — backward-kill-word
-        32: (Keys.Escape, " "),             # Alt+Space
-    })
-    _install_paired(5, {
-        9: Keys.ControlI,                   # Ctrl+Tab — degrade to Tab
-        127: (Keys.Escape, Keys.ControlH),  # Ctrl+Backspace — backward-kill-word,
-                                            # matching Ink TUI + Desktop (#78285)
-    })
+    _install_paired(
+        2,
+        {
+            9: Keys.BackTab,  # Shift+Tab — same as the legacy ESC[Z
+            127: Keys.ControlH,  # Shift+Backspace — plain backspace
+            32: " ",  # Shift+Space — still a space (#86866)
+        },
+    )
+    _install_paired(
+        3,
+        {
+            13: (Keys.Escape, Keys.ControlM),  # Alt+Enter — newline tuple
+            127: (Keys.Escape, Keys.ControlH),  # Alt+Backspace — backward-kill-word
+            32: (Keys.Escape, " "),  # Alt+Space
+        },
+    )
+    _install_paired(
+        5,
+        {
+            9: Keys.ControlI,  # Ctrl+Tab — degrade to Tab
+            127: (Keys.Escape, Keys.ControlH),  # Ctrl+Backspace — backward-kill-word,
+            # matching Ink TUI + Desktop (#78285)
+        },
+    )
 
     # -- Unmodified keys with a lock bit set (kitty modifier 1 = "none") --
     # With a lock on, kitty stamps the lock bit onto keys pressed with NO
@@ -455,12 +951,15 @@ def install_modify_other_keys_aliases() -> int:
     # bare mod-1 spelling and its lock twins. Only keys kitty CSI-u-encodes
     # on their own are listed; plain text characters are still delivered
     # as UTF-8, lock bits or not.
-    _install_paired(1, {
-        9: Keys.ControlI,     # Tab
-        13: Keys.ControlM,    # Enter
-        32: " ",              # Space
-        127: Keys.ControlH,   # Backspace
-    })
+    _install_paired(
+        1,
+        {
+            9: Keys.ControlI,  # Tab
+            13: Keys.ControlM,  # Enter
+            32: " ",  # Space
+            127: Keys.ControlH,  # Backspace
+        },
+    )
 
     # -- Lock-key modifier bits (NumLock=128, CapsLock=64) on the legacy
     # CSI-letter / CSI-tilde forms kitty keeps using under the disambiguate
@@ -504,28 +1003,40 @@ def install_modify_other_keys_aliases() -> int:
     # have no legacy encoding, so unmapped they leak as literal text in any
     # kitty session regardless of which modes were pushed.
     functional_map: dict[int, object] = {}
-    for d in range(10):                       # KP_0..KP_9 → digits
+    for d in range(10):  # KP_0..KP_9 → digits
         functional_map[57399 + d] = str(d)
-    functional_map.update({                   # KP operators / punctuation
-        57409: ".", 57410: "/", 57411: "*", 57412: "-",
-        57413: "+", 57414: Keys.ControlM, 57415: "=", 57416: ",",
+    functional_map.update({  # KP operators / punctuation
+        57409: ".",
+        57410: "/",
+        57411: "*",
+        57412: "-",
+        57413: "+",
+        57414: Keys.ControlM,
+        57415: "=",
+        57416: ",",
     })
-    functional_map.update({                   # KP navigation → non-keypad keys
-        57417: Keys.Left, 57418: Keys.Right, 57419: Keys.Up,
-        57420: Keys.Down, 57421: Keys.PageUp, 57422: Keys.PageDown,
-        57423: Keys.Home, 57424: Keys.End, 57425: Keys.Insert,
+    functional_map.update({  # KP navigation → non-keypad keys
+        57417: Keys.Left,
+        57418: Keys.Right,
+        57419: Keys.Up,
+        57420: Keys.Down,
+        57421: Keys.PageUp,
+        57422: Keys.PageDown,
+        57423: Keys.Home,
+        57424: Keys.End,
+        57425: Keys.Insert,
         57426: Keys.Delete,
     })
-    for n in range(13, 25):                   # F13..F24
+    for n in range(13, 25):  # F13..F24
         functional_map[57376 + (n - 13)] = getattr(Keys, f"F{n}")
     # No prompt_toolkit equivalent (lock keys, PrintScreen, Menu, F25-F35,
     # KP_BEGIN, media keys, bare modifier events): consume as Ignore
     # instead of leaking literal text.
     for code in (
-        list(range(57358, 57364))       # locks, PrintScreen, Pause, Menu
-        + list(range(57388, 57399))     # F25..F35
-        + [57427]                       # KP_BEGIN
-        + list(range(57428, 57455))     # media keys + modifier key events
+        list(range(57358, 57364))  # locks, PrintScreen, Pause, Menu
+        + list(range(57388, 57399))  # F25..F35
+        + [57427]  # KP_BEGIN
+        + list(range(57428, 57455))  # media keys + modifier key events
     ):
         functional_map.setdefault(code, Keys.Ignore)
     for code, key_val in functional_map.items():
@@ -545,6 +1056,12 @@ def install_modify_other_keys_aliases() -> int:
     # created before this install (or in earlier tests) can't misparse.
     if changed:
         _clear_vt100_prefix_cache()
+
+    # Character-valued entries above (Shift+letter, Shift+Space, keypad
+    # digits) need the parser to type the character rather than the escape
+    # sequence that produced it. Without this, Ghostty/iTerm/WezTerm/kitty
+    # Shift+letter still leaks `[27;2;<code>~` into the prompt (#87390).
+    _install_literal_key_data_patch()
 
     return changed
 

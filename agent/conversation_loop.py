@@ -3874,8 +3874,22 @@ def run_conversation(
                     
                     # Check for x-openrouter-provider or similar metadata
                     if provider_name == "Unknown" and response:
-                        # Log all response attributes for debugging
-                        resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
+                        # Log all response attributes for debugging. Some SDK
+                        # response shapes (slotted classes, some Pydantic
+                        # models) don't expose __dict__, so vars() would raise
+                        # TypeError — fall back to model_dump(), then to a
+                        # plain type-name repr (#6133).
+                        try:
+                            _resp_dict = getattr(response, "__dict__", None)
+                            if _resp_dict is None and hasattr(response, "model_dump"):
+                                _resp_dict = response.model_dump()
+                            resp_attrs = {
+                                k: str(v)[:100]
+                                for k, v in _resp_dict.items()
+                                if not k.startswith('_')
+                            }
+                        except (TypeError, AttributeError):
+                            resp_attrs = {type(response).__name__: str(response)[:200]}
                         if agent.verbose_logging:
                             logging.debug(f"Response attributes for invalid response: {resp_attrs}")
                     

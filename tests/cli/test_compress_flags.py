@@ -50,9 +50,25 @@ def test_compact_listed_in_flat_commands():
 
 
 def test_dry_run_is_preview():
-    for form in ("--dry-run", "--dryrun", "--DRY-RUN"):
+    for form in ("--preview", "--dry-run", "--dryrun", "--DRY-RUN", "preview", "dry-run", "dryrun", "PREVIEW"):
         _, preview, _ = extract_compress_flags(form)
         assert preview is True, form
+
+
+def test_bare_preview_with_here_syntax():
+    rest, preview, _ = extract_compress_flags("here 10 preview")
+    assert preview is True
+    assert rest == "here 10"
+    partial, keep, focus = parse_partial_compress_args(rest)
+    assert partial is True
+    assert keep == 10
+    assert focus is None
+
+
+def test_bare_aggressive_flag():
+    for form in ("--aggressive", "aggressive", "AGGRESSIVE"):
+        _, _, aggressive = extract_compress_flags(form)
+        assert aggressive is True, form
 
 
 

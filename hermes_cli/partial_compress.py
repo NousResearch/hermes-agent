@@ -133,9 +133,9 @@ def extract_compress_flags(raw_args: str) -> Tuple[str, bool, bool]:
     kept: List[str] = []
     for tok in (raw_args or "").split():
         low = tok.lower()
-        if low in ("--preview", "--dry-run", "--dryrun"):
+        if low in ("--preview", "--dry-run", "--dryrun", "preview", "dry-run", "dryrun"):
             preview = True
-        elif low == "--aggressive":
+        elif low in ("--aggressive", "aggressive"):
             aggressive = True
         else:
             kept.append(tok)

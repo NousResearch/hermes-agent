@@ -2683,8 +2683,8 @@ def _run_single_child(
     # gateway inactivity timeout doesn't fire while the subagent is working.
     # Without this, the parent's _last_activity_ts freezes when delegate_task
     # starts and the gateway eventually kills the agent for "no activity".
-    # Runs on the shared periodic scheduler thread (agent/periodic_scheduler)
-    # rather than one daemon thread per child; returning False stops it.
+    # Timed by the shared scheduler (agent/periodic_scheduler) and dispatched
+    # on an isolated callback worker; returning False stops it.
     # Stale detection: track the child's (tool, iteration, activity_ts) across
     # heartbeat cycles. If none advances, count the cycle as stale.
     # Different thresholds for idle vs in-tool (see _HEARTBEAT_STALE_CYCLES_*).

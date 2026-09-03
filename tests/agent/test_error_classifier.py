@@ -205,6 +205,122 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.auth
         assert result.should_fallback is True
 
+    # ── Usage-limit errors surfaced as 401/403 (not auth) ──
+
+    def test_401_usage_limit_with_reset_signal_is_rate_limit(self):
+        # OpenAI-compatible proxies can surface quota exhaustion as 401 with
+        # the real cause in the body. Without disambiguation this was
+        # reported as an invalid/missing API key instead of a transient cap.
+        e = MockAPIError(
+            "Your account has reached its usage limit. Please try again later.",
+            status_code=401,
+            body={
+                "error": {
+                    "code": "usage_limit_reached",
+                    "message": "Your account has reached its usage limit. "
+                    "Please try again later.",
+                }
+            },
+        )
+        result = classify_api_error(
+            e, provider="openai-codex", model="gpt-5.6-terra-900k"
+        )
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_401_usage_limit_without_reset_is_billing(self):
+        # Usage-limit text with no reset window is a quota wall — route to
+        # billing, not auth, so the surface offers credit/top-up guidance.
+        e = MockAPIError(
+            "As a safety precaution, access has been limited.",
+            status_code=401,
+            body={
+                "error": {
+                    "code": "usage_limit_reached",
+                    "message": "As a safety precaution, access has been limited.",
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openai-codex")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_401_plain_invalid_key_stays_auth(self):
+        # A genuinely invalid key must still be auth — the usage-limit
+        # disambiguation only fires on usage-limit/billing signals.
+        e = MockAPIError(
+            "Incorrect API key provided: sk-xxxx. You can find your API key at "
+            "https://platform.openai.com/account/api-keys.",
+            status_code=401,
+            body={"error": {"code": "invalid_api_key"}},
+        )
+        result = classify_api_error(e, provider="openai")
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is False
+
+    def test_403_usage_limit_with_reset_is_rate_limit(self):
+        # Some OpenAI-compatible gateways surface usage caps as 403
+        # Forbidden without a billing phrase. With a reset signal it's a
+        # transient quota, not auth.
+        e = MockAPIError(
+            "Usage limit exceeded for this key. Resets in 1 hour.",
+            status_code=403,
+            body={
+                "error": {
+                    "message": "Usage limit exceeded for this key. Resets in 1 hour.",
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openai-codex")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_fallback is True
+
+    def test_403_usage_limit_without_reset_is_billing(self):
+        # Usage-limit text with no reset window is a quota wall — mirrors
+        # the 429 disambiguation (billing, not auth).
+        e = MockAPIError(
+            "Usage limit exceeded for this key",
+            status_code=403,
+            body={"error": {"message": "Usage limit exceeded for this key"}},
+        )
+        result = classify_api_error(e, provider="openai-codex")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_403_plain_forbidden_stays_auth(self):
+        e = MockAPIError(
+            "Forbidden: token not authorized for this resource",
+            status_code=403,
+        )
+        result = classify_api_error(e, provider="openai-codex")
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is False
+
+    def test_401_usage_limit_explicit_rate_limit_phrase_wins(self):
+        # "Rate limit exceeded" contains the "limit exceeded" usage-limit
+        # substring; an explicit rate-limit phrase must stay rate_limit.
+        e = MockAPIError(
+            "Rate limit exceeded: too many requests, please retry in 3 minutes",
+            status_code=401,
+            body={
+                "error": {
+                    "code": "rate_limit_exceeded",
+                    "message": "Rate limit exceeded: too many requests, "
+                    "please retry in 3 minutes",
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openai-codex")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
 
 
 

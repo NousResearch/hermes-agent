@@ -1262,6 +1262,15 @@ def _classify_by_status(
     """Classify based on HTTP status code with message-aware refinement."""
 
     if status_code == 401:
+        # Some providers/proxies return usage-limit or billing errors as
+        # 401 (auth status) with the real cause in the body. Disambiguate
+        # before defaulting to auth so a transient quota is retried/rotated
+        # instead of being reported as an invalid/missing API key.
+        usage_limit_classified = _classify_usage_limit_4xx(
+            error_msg, error_code, body, response_headers, result_fn
+        )
+        if usage_limit_classified is not None:
+            return usage_limit_classified
         # Not retryable on its own — credential pool rotation and
         # provider-specific refresh (Codex, Anthropic, Nous) run before
         # the retryability check in run_agent.py.  If those succeed, the
@@ -1292,6 +1301,14 @@ def _classify_by_status(
                 should_rotate_credential=True,
                 should_fallback=True,
             )
+        # A 403 can also carry usage-limit/quota text without a billing
+        # phrase (some OpenAI-compatible gateways surface usage caps as
+        # 403 Forbidden). Disambiguate before defaulting to auth.
+        usage_limit_classified = _classify_usage_limit_4xx(
+            error_msg, error_code, body, response_headers, result_fn
+        )
+        if usage_limit_classified is not None:
+            return usage_limit_classified
         return result_fn(
             FailoverReason.auth,
             retryable=False,
@@ -1573,6 +1590,59 @@ def _has_usage_limit_transient_signal(
             if value is not None and value != "":
                 return True
     return False
+
+
+def _classify_usage_limit_4xx(
+    error_msg: str,
+    error_code: str,
+    body: dict,
+    response_headers,
+    result_fn,
+) -> Optional[ClassifiedError]:
+    """Disambiguate usage-limit/billing text in 401/403 responses.
+
+    401 and 403 are the auth status codes, but several providers and
+    OpenAI-compatible proxies return quota exhaustion or billing stops with
+    those codes while the real cause lives in the body. Without this check
+    Hermes reported "invalid/missing API key" for a transient usage limit,
+    marked the credential auth-failed (no reset timer), and triggered
+    re-auth flows — all wrong when the fix is to wait for the quota window.
+
+    Returns None when the body carries no usage-limit or billing signal, so
+    the caller falls through to its status-specific default (auth for
+    401/403). Mirrors the 429 disambiguation: usage-limit + explicit reset
+    signal → rate_limit; usage-limit without a reset window → billing; an
+    explicit rate-limit phrase always wins over the usage-limit wording.
+    """
+    has_billing = any(p in error_msg for p in _BILLING_PATTERNS)
+    has_usage_limit = (
+        str(error_code or "").lower() == "usage_limit_reached"
+        or "usage_limit_reached" in error_msg
+        or any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+    )
+    if not (has_billing or has_usage_limit):
+        return None
+    has_explicit_rate_limit = any(p in error_msg for p in _RATE_LIMIT_PATTERNS)
+    has_transient_signal = _has_usage_limit_transient_signal(
+        error_msg, body, response_headers
+    )
+    if (
+        (has_billing or has_usage_limit)
+        and not has_explicit_rate_limit
+        and not has_transient_signal
+    ):
+        return result_fn(
+            FailoverReason.billing,
+            retryable=False,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
+    return result_fn(
+        FailoverReason.rate_limit,
+        retryable=True,
+        should_rotate_credential=True,
+        should_fallback=True,
+    )
 
 
 def _classify_402(error_msg: str, result_fn) -> ClassifiedError:

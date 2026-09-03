@@ -1,12 +1,21 @@
 """Tests for the WeCom callback-mode adapter."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import sqlite3
+import threading
+import time
+from unittest.mock import Mock
 from xml.etree import ElementTree as ET
 
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from plugins.platforms.wecom.callback_adapter import (
+    MESSAGE_DEDUP_TTL_SECONDS,
+    WecomCallbackAdapter,
+)
 from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt
 
 
@@ -26,6 +35,46 @@ def _config(apps=None):
         enabled=True,
         extra={"mode": "callback", "host": "127.0.0.1", "port": 0, "apps": apps or [_app()]},
     )
+
+
+@pytest.fixture
+def hermes_home(tmp_path):
+    token = set_hermes_home_override(str(tmp_path))
+    try:
+        yield tmp_path
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _callback_request(
+    app, *, msg_id="callback-1", msg_type="text", valid_signature=True,
+):
+    """Build the real signed/encrypted HTTP request WeCom sends."""
+    from aiohttp import StreamReader
+    from aiohttp.test_utils import make_mocked_request
+
+    plaintext = f"""
+    <xml>
+      <ToUserName>{app['corp_id']}</ToUserName>
+      <FromUserName>alice</FromUserName>
+      <CreateTime>1710000000</CreateTime>
+      <MsgType>{msg_type}</MsgType>
+      <Content>hello</Content>
+      <MsgId>{msg_id}</MsgId>
+    </xml>
+    """
+    crypt = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
+    envelope = crypt.encrypt(plaintext, nonce="nonce123", timestamp="1710000000")
+    root = ET.fromstring(envelope)
+    signature = root.findtext("MsgSignature") if valid_signature else "invalid"
+    query = (
+        f"msg_signature={signature}"
+        f"&timestamp={root.findtext('TimeStamp')}&nonce={root.findtext('Nonce')}"
+    )
+    reader = StreamReader(protocol=Mock(_reading_paused=False), limit=2**20)
+    reader.feed_data(envelope.encode())
+    reader.feed_eof()
+    return make_mocked_request("POST", f"/wecom/callback?{query}", payload=reader)
 
 
 class TestWecomCrypto:
@@ -169,6 +218,333 @@ class TestWecomCallbackPollLoop:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert calls == ["test"]
+
+
+class TestWecomCallbackRetryDeduplication:
+    @pytest.mark.asyncio
+    async def test_slow_claim_does_not_block_event_loop(self, hermes_home, monkeypatch):
+        app = _app()
+        adapter = WecomCallbackAdapter(_config([app]))
+        adapter._init_replay_store()
+        claim_started = threading.Event()
+        release_claim = threading.Event()
+
+        def slow_claim(*args, **kwargs):
+            claim_started.set()
+            assert release_claim.wait(timeout=1)
+            return True
+
+        monkeypatch.setattr(adapter, "_claim_message", slow_claim)
+        callback = asyncio.create_task(adapter._handle_callback(_callback_request(app)))
+        assert await asyncio.to_thread(claim_started.wait, 1)
+
+        sentinel = asyncio.Event()
+        asyncio.get_running_loop().call_soon(sentinel.set)
+        await asyncio.wait_for(sentinel.wait(), timeout=0.05)
+        assert not callback.done()
+
+        release_claim.set()
+        response = await callback
+        assert response.status == 200
+        assert adapter._message_queue.qsize() == 1
+        await adapter._cleanup()
+
+    @pytest.mark.asyncio
+    async def test_lock_contention_fails_quickly_without_queueing(self, hermes_home):
+        app = _app()
+        adapter = WecomCallbackAdapter(_config([app]))
+        adapter._init_replay_store()
+        db_path = adapter._replay_store.execute("PRAGMA database_list").fetchone()[2]
+        blocker = sqlite3.connect(db_path)
+        blocker.execute("BEGIN IMMEDIATE")
+        try:
+            started = time.monotonic()
+            response = await adapter._handle_callback(_callback_request(app))
+            elapsed = time.monotonic() - started
+        finally:
+            blocker.rollback()
+            blocker.close()
+
+        assert response.status == 500
+        assert elapsed < 1.0
+        assert adapter._message_queue.empty()
+        await adapter._cleanup()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_survives_adapter_restart(self, hermes_home):
+        app = _app()
+        first = WecomCallbackAdapter(_config([app]))
+        first._init_replay_store()
+
+        response = await first._handle_callback(_callback_request(app, msg_id="same-id"))
+        assert response.status == 200
+        assert response.text == "success"
+        assert first._message_queue.qsize() == 1
+        await first._cleanup()
+
+        restarted = WecomCallbackAdapter(_config([app]))
+        restarted._init_replay_store()
+        response = await restarted._handle_callback(_callback_request(app, msg_id="same-id"))
+        assert response.status == 200
+        assert response.text == "success"
+        assert restarted._message_queue.empty()
+        await restarted._cleanup()
+
+    @pytest.mark.asyncio
+    async def test_same_message_id_is_scoped_by_corp_and_agent(self, hermes_home):
+        apps = [
+            _app(name="corp-a", corp_id="corp-a", agent_id="1001"),
+            _app(name="corp-b", corp_id="corp-b", agent_id="2002"),
+        ]
+        adapter = WecomCallbackAdapter(_config(apps))
+        adapter._init_replay_store()
+
+        for app in apps:
+            response = await adapter._handle_callback(_callback_request(app, msg_id="shared"))
+            assert response.status == 200
+        assert adapter._message_queue.qsize() == 2
+
+        # Agent ID is part of the durable key too, independently of callback routing.
+        assert adapter._claim_message(apps[0], "agent-scoped") is True
+        other_agent = {**apps[0], "agent_id": "9999"}
+        assert adapter._claim_message(other_agent, "agent-scoped") is True
+        await adapter._cleanup()
+
+    def test_claim_is_atomic_across_connections(self, hermes_home):
+        first = WecomCallbackAdapter(_config())
+        second = WecomCallbackAdapter(_config())
+        first._init_replay_store()
+        second._init_replay_store()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            claims = list(pool.map(lambda adapter: adapter._claim_message(_app(), "race"), [first, second]))
+
+        assert sorted(claims) == [False, True]
+        first._close_replay_store()
+        second._close_replay_store()
+
+    def test_ttl_is_strict_and_expired_rows_are_pruned(self, hermes_home, monkeypatch):
+        from plugins.platforms.wecom import callback_adapter as callback_module
+
+        adapter = WecomCallbackAdapter(_config())
+        adapter._init_replay_store()
+        monkeypatch.setattr(callback_module.time, "time", lambda: 1_000.0)
+        assert adapter._claim_message(_app(), "boundary") is True
+
+        monkeypatch.setattr(
+            callback_module.time,
+            "time",
+            lambda: 1_000.0 + MESSAGE_DEDUP_TTL_SECONDS - 0.001,
+        )
+        assert adapter._claim_message(_app(), "boundary") is False
+
+        monkeypatch.setattr(
+            callback_module.time,
+            "time",
+            lambda: 1_000.0 + MESSAGE_DEDUP_TTL_SECONDS,
+        )
+        assert adapter._claim_message(_app(), "boundary") is True
+        rows = adapter._replay_store.execute(
+            "SELECT COUNT(*) FROM callback_replays WHERE claimed_at <= ?",
+            (1_000.0,),
+        ).fetchone()[0]
+        assert rows == 0
+        adapter._close_replay_store()
+
+    def test_initialization_prunes_expired_metadata(self, hermes_home, monkeypatch):
+        from plugins.platforms.wecom import callback_adapter as callback_module
+
+        adapter = WecomCallbackAdapter(_config())
+        adapter._init_replay_store()
+        adapter._replay_store.executemany(
+            "INSERT INTO callback_replays VALUES (?, ?, ?, ?)",
+            [
+                ("corp", "agent", "expired", 699.0),
+                ("corp", "agent", "fresh", 701.0),
+            ],
+        )
+        adapter._replay_store.commit()
+        adapter._close_replay_store()
+
+        monkeypatch.setattr(callback_module.time, "time", lambda: 1_000.0)
+        adapter._init_replay_store()
+        message_ids = {
+            row[0]
+            for row in adapter._replay_store.execute(
+                "SELECT message_id FROM callback_replays"
+            )
+        }
+        assert message_ids == {"fresh"}
+        adapter._close_replay_store()
+
+    def test_reinitialization_closes_previous_connection(self, hermes_home):
+        adapter = WecomCallbackAdapter(_config())
+        adapter._init_replay_store()
+        previous = adapter._replay_store
+
+        adapter._init_replay_store()
+
+        with pytest.raises(sqlite3.ProgrammingError):
+            previous.execute("SELECT 1")
+        assert adapter._replay_store is not previous
+        adapter._close_replay_store()
+
+    def test_retry_metadata_is_profile_isolated(self, tmp_path):
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+        token_a = set_hermes_home_override(str(profile_a))
+        try:
+            first = WecomCallbackAdapter(_config())
+            first._init_replay_store()
+            assert first._claim_message(_app(), "same-id") is True
+            first._close_replay_store()
+
+            token_b = set_hermes_home_override(str(profile_b))
+            try:
+                second = WecomCallbackAdapter(_config())
+                second._init_replay_store()
+                assert second._claim_message(_app(), "same-id") is True
+                second._close_replay_store()
+            finally:
+                reset_hermes_home_override(token_b)
+        finally:
+            reset_hermes_home_override(token_a)
+
+    @pytest.mark.asyncio
+    async def test_store_failure_returns_500_without_queueing(self, hermes_home):
+        app = _app()
+        adapter = WecomCallbackAdapter(_config([app]))
+        adapter._init_replay_store()
+        adapter._replay_store.close()
+
+        response = await adapter._handle_callback(_callback_request(app))
+
+        assert response.status == 500
+        assert adapter._message_queue.empty()
+        await adapter._cleanup()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("request_kwargs", "expected_status"),
+        [
+            ({"msg_type": "image"}, 200),
+            ({"valid_signature": False}, 400),
+        ],
+    )
+    async def test_invalid_or_ignored_callback_does_not_claim(
+        self, hermes_home, monkeypatch, request_kwargs, expected_status,
+    ):
+        app = _app()
+        adapter = WecomCallbackAdapter(_config([app]))
+        adapter._init_replay_store()
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("invalid/ignored callbacks must not consume a replay key")
+
+        monkeypatch.setattr(adapter, "_claim_message", fail_if_called)
+        response = await adapter._handle_callback(
+            _callback_request(app, msg_id="unclaimed", **request_kwargs)
+        )
+
+        assert response.status == expected_status
+        assert adapter._message_queue.empty()
+        await adapter._cleanup()
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_closed_before_binding_when_store_init_fails(
+        self, monkeypatch,
+    ):
+        from plugins.platforms.wecom import callback_adapter as callback_module
+
+        adapter = WecomCallbackAdapter(_config())
+        bound = False
+
+        def fail_store(*args, **kwargs):
+            raise OSError("storage unavailable")
+
+        class NeverBind:
+            def __init__(self, *args, **kwargs):
+                nonlocal bound
+                bound = True
+
+        monkeypatch.setattr(callback_module, "plugin_db", fail_store, raising=False)
+        monkeypatch.setattr(callback_module.web, "TCPSite", NeverBind)
+
+        assert await adapter.connect() is False
+        assert bound is False
+        assert adapter._message_queue.empty()
+
+    @pytest.mark.asyncio
+    async def test_repeated_connect_closes_previous_replay_connection(
+        self, hermes_home, monkeypatch,
+    ):
+        from plugins.platforms.wecom import callback_adapter as callback_module
+
+        class TokenResponse:
+            def json(self):
+                return {"errcode": 0, "access_token": "token", "expires_in": 7200}
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                self.closed = False
+
+            async def get(self, *args, **kwargs):
+                return TokenResponse()
+
+            async def aclose(self):
+                self.closed = True
+
+        monkeypatch.setattr(callback_module.httpx, "AsyncClient", FakeClient)
+        adapter = WecomCallbackAdapter(_config())
+        assert await adapter.connect() is True
+        previous = adapter._replay_store
+
+        assert await adapter.connect() is True
+
+        with pytest.raises(sqlite3.ProgrammingError):
+            previous.execute("SELECT 1")
+        assert adapter._replay_store is not previous
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_closes_replay_store(self, hermes_home):
+        adapter = WecomCallbackAdapter(_config())
+        adapter._init_replay_store()
+        connection = adapter._replay_store
+
+        await adapter._cleanup()
+
+        with pytest.raises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+
+    @pytest.mark.asyncio
+    async def test_cleanup_closes_every_resource_when_other_cleanup_raises(self, hermes_home):
+        adapter = WecomCallbackAdapter(_config())
+        adapter._init_replay_store()
+        connection = adapter._replay_store
+
+        class BrokenRunner:
+            async def cleanup(self):
+                raise RuntimeError("runner cleanup failed")
+
+        class BrokenClient:
+            async def aclose(self):
+                raise RuntimeError("client cleanup failed")
+
+        adapter._runner = BrokenRunner()
+        adapter._http_client = BrokenClient()
+
+        with pytest.raises(RuntimeError, match="runner cleanup failed"):
+            await adapter._cleanup()
+
+        assert adapter._runner is None
+        assert adapter._http_client is None
+        assert adapter._replay_store is None
+        with pytest.raises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+
+        # Cleanup remains safe after a partially failing cleanup pass.
+        await adapter._cleanup()
 
 
 class TestWecomCallbackBodySizeLimit:

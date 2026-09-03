@@ -453,273 +453,108 @@ def load_cli_config() -> Dict[str, Any]:
     else:
         config_path = project_config_path
 
-    # Default configuration
-    defaults = {
-        "model": {
-            "default": "",
+    from hermes_cli import managed_scope
+    from hermes_cli.config import (
+        apply_terminal_config_to_env,
+        load_config_snapshot_with_raw,
+    )
+
+    defaults, raw_config = load_config_snapshot_with_raw(config_path)
+
+    # Keep the classic CLI's model mapping shape while sourcing its value from
+    # the canonical snapshot. HermesCLI still has a few mapping-based readers;
+    # no effective defaults are resolved here.
+    if not isinstance(defaults.get("model"), dict):
+        defaults["model"] = {
+            "default": defaults.get("model") or "",
             "base_url": "",
             "provider": "auto",
-        },
-        "terminal": {
-            "env_type": "local",
-            "cwd": ".",  # "." is resolved to os.getcwd() at runtime
-            "home_mode": "auto",
-            "lifetime_seconds": 300,
-            "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-            "docker_forward_env": [],
-            "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
-            "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-            "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-            "docker_volumes": [],  # host:container volume mounts for Docker backend
-            "docker_mount_cwd_to_workspace": False,  # explicit opt-in only; default off for sandbox isolation
-            "docker_shared_container_key": "",
-        },
-        "browser": {
-            "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
-            "record_sessions": False,  # Auto-record browser sessions as WebM videos
-            "engine": "auto",  # Browser engine: auto (Chrome), lightpanda, chrome
-            "camofox": {
-                "rewrite_loopback_urls": False,
-                "loopback_host_alias": "host.docker.internal",
-            },
-        },
-        "compression": {
-            "enabled": True,      # Auto-compress when approaching context limit
-            "threshold": 0.50,    # Compress at 50% of model's context limit
-            "min_tail_user_messages": 1,  # Real user messages guaranteed in the tail (1 = existing single anchor)
-        },
-        "agent": {
-            "max_turns": 500,  # Default max tool-calling iterations (shared with subagents)
-            "verbose": False,
-            "system_prompt": "",
-            "prefill_messages_file": "",
-            "reasoning_effort": "",
-            "service_tier": "",
-            # Built-in personalities live in hermes_cli.personality
-            # (BUILTIN_PERSONALITIES) — the single owner. Entries here are
-            # user-defined additions/overrides merged on top by name.
-            "personalities": {},
-        },
-
-        "display": {
-            "compact": False,
-            "resume_display": "full",
-            # Recap tuning for /resume — see hermes_cli/config.py DEFAULT_CONFIG.
-            "resume_exchanges": 10,
-            "resume_max_user_chars": 300,
-            "resume_max_assistant_chars": 200,
-            "resume_max_assistant_lines": 3,
-            "resume_skip_tool_only": True,
-            # Live reasoning display default ON — keep in sync with
-            # hermes_cli/config.py DEFAULT_CONFIG (display.show_reasoning).
-            "show_reasoning": True,
-            "reasoning_full": False,
-            "streaming": True,
-            "busy_input_mode": "interrupt",
-            "persistent_output": True,
-            "persistent_output_max_lines": 200,
-            # Clear terminal scrollback as well as the visible viewport when the
-            # classic CLI performs a full redraw/resize recovery. Disabled by
-            # default because some users prefer preserving terminal history;
-            # enable when a terminal/tmux stack stamps stale prompt chrome into
-            # scrollback during fullscreen/restore resizes.
-            "cli_rebuild_scrollback_on_redraw": False,
-            # Print a one-line summary of resolved modal prompts (approval /
-            # clarify) into scrollback so the decision survives the repaint.
-            "persist_prompts": True,
-
-            "skin": "default",
-        },
-        "clarify": {
-            "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
-        },
-        "code_execution": {
-            "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
-            "max_tool_calls": 50,  # Max RPC tool calls per execution
-        },
-        "auxiliary": {
-            "vision": {
-                "provider": "auto",
-                "model": "",
-                "base_url": "",
-                "api_key": "",
-            },
-        },
-        "delegation": {
-            "max_iterations": 45,  # Max tool-calling turns per child agent
-            "model": "",       # Subagent model override (empty = inherit parent model)
-            "provider": "",    # Subagent provider override (empty = inherit parent provider)
-            "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
-            "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
-        },
-        "onboarding": {
-            # First-touch hint flags (see agent/onboarding.py).  Each hint is
-            # shown once per install then latched here.
-            "seen": {},
-        },
+        }
+    else:
+        defaults["model"].setdefault("default", "")
+        defaults["model"].setdefault("base_url", "")
+        defaults["model"].setdefault("provider", "auto")
+    
+    # Preserve presence-sensitive terminal env behavior without confusing
+    # canonical defaults for settings authored in the selected compatibility
+    # file. Managed provenance comes from the managed-scope API, not a second
+    # ad-hoc YAML read.
+    raw_terminal_config = raw_config.get("terminal", {})
+    if not isinstance(raw_terminal_config, dict):
+        raw_terminal_config = {}
+    authored_terminal_keys = set(raw_terminal_config)
+    managed_terminal_keys = {
+        key.removeprefix("terminal.")
+        for key in managed_scope.managed_config_keys()
+        if key.startswith("terminal.")
     }
-    
-    # Track whether the config file explicitly set terminal config.
-    # When using defaults (no config file / no terminal section), we should NOT
-    # overwrite env vars that were already set by .env -- only a user's config
-    # file should be authoritative.
-    _file_has_terminal_config = False
+    authoritative_terminal_keys = authored_terminal_keys | managed_terminal_keys
 
-    # Load from file if exists
-    if config_path.exists():
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                from hermes_cli.config import _normalize_root_model_keys
-
-                file_config = _normalize_root_model_keys(fast_safe_load(f) or {})
-            
-            _file_has_terminal_config = "terminal" in file_config
-
-            # Handle model config - can be string (new format) or dict (old format)
-            if "model" in file_config:
-                if isinstance(file_config["model"], str):
-                    # New format: model is just a string, convert to dict structure
-                    defaults["model"]["default"] = file_config["model"]
-                elif isinstance(file_config["model"], dict):
-                    # Old format: model is a dict with default/base_url
-                    defaults["model"].update(file_config["model"])
-                    # If the user config sets model.model but not model.default,
-                    # promote model.model to model.default so the user's explicit
-                    # choice isn't shadowed by the hardcoded default.  Without this,
-                    # profile configs that only set "model:" (not "default:") silently
-                    # fall back to claude-opus because the merge preserves the
-                    # hardcoded default and HermesCLI.__init__ checks "default" first.
-                    if "model" in file_config["model"] and "default" not in file_config["model"]:
-                        defaults["model"]["default"] = file_config["model"]["model"]
-
-            # Deep merge file_config into defaults.
-            # First: merge keys that exist in both (deep-merge dicts, overwrite scalars)
-            for key in defaults:
-                if key == "model":
-                    continue  # Already handled above
-                if key in file_config:
-                    if isinstance(defaults[key], dict) and file_config[key] is None:
-                        continue
-                    if isinstance(defaults[key], dict) and isinstance(file_config[key], dict):
-                        defaults[key].update(file_config[key])
-                    else:
-                        defaults[key] = file_config[key]
-            
-            # Second: carry over keys from file_config that aren't in defaults
-            # (e.g. platform_toolsets, provider_routing, memory, honcho, etc.)
-            for key in file_config:
-                if key not in defaults and key != "model":
-                    defaults[key] = file_config[key]
-            
-            # Handle legacy root-level max_turns (backwards compat) - copy to
-            # agent.max_turns whenever the nested key is missing.
-            agent_file_config = file_config.get("agent")
-            if "max_turns" in file_config and not (
-                isinstance(agent_file_config, dict)
-                and agent_file_config.get("max_turns") is not None
-            ):
-                defaults["agent"]["max_turns"] = file_config["max_turns"]
-        except Exception as e:
-            logger.warning("Failed to load cli-config.yaml: %s", e)
-
-    # Expand ${ENV_VAR} references in config values before bridging to env vars.
-    from hermes_cli.config import _expand_env_vars
-    defaults = _expand_env_vars(defaults)
-
-    # Managed scope: overlay administrator-pinned values LAST so they win over
-    # the user's config here too. cli.py builds its config independently of
-    # hermes_cli.config._load_config_impl (which has its own managed merge), so
-    # without this the entire interactive CLI/TUI surface — skin, display prefs,
-    # etc. read from CLI_CONFIG — would silently ignore managed scope while
-    # `hermes config`/`doctor`/guards (which use load_config) honor it. The
-    # shared helper mirrors _load_config_impl (env-only expansion, root-model
-    # normalization, leaf-merge) and is fail-open.
-    from hermes_cli import managed_scope
-
-    defaults = managed_scope.apply_managed_overlay(defaults)
-
-    # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
-    
-    # Normalize config key: the new config system (hermes_cli/config.py) and all
-    # documentation use "backend", the legacy cli-config.yaml uses "env_type".
-    # Accept both, with "backend" taking precedence (it's the documented key).
-    if "backend" in terminal_config:
-        terminal_config["env_type"] = terminal_config["backend"]
-    
+    if not isinstance(terminal_config, dict):
+        terminal_config = {}
+        defaults["terminal"] = terminal_config
+
+    # ``env_type`` is the classic CLI's legacy alias. A canonical backend only
+    # wins when a user or administrator actually authored it; DEFAULT_CONFIG's
+    # ``backend: local`` must not erase a legacy ``env_type: docker``.
+    canonical_backend_is_authored = "backend" in authored_terminal_keys
+    legacy_backend_is_authored = "env_type" in authored_terminal_keys
+    managed_canonical_backend = "backend" in managed_terminal_keys
+    managed_legacy_backend = "env_type" in managed_terminal_keys
+    # Aliases are one logical setting, so precedence is decided across layers,
+    # not independently by spelling. In descending order: managed canonical,
+    # managed legacy, user canonical, user legacy, default.
+    if managed_canonical_backend:
+        effective_backend = terminal_config.get("backend", "local")
+    elif managed_legacy_backend:
+        effective_backend = terminal_config.get("env_type", "local")
+    elif canonical_backend_is_authored:
+        effective_backend = terminal_config.get("backend", "local")
+    elif legacy_backend_is_authored:
+        effective_backend = terminal_config.get("env_type", "local")
+    else:
+        effective_backend = terminal_config.get("backend", "local")
+    terminal_config["backend"] = effective_backend
+    terminal_config["env_type"] = effective_backend
+    if managed_canonical_backend or managed_legacy_backend or (
+        legacy_backend_is_authored and not canonical_backend_is_authored
+    ):
+        authoritative_terminal_keys.add("backend")
+
     # CWD resolution for CLI/TUI. The gateway has its own config bridge in
     # gateway/run.py but may lazily import cli.py (triggering this code).
     # Local backend: always os.getcwd(). Use `cd /dir && hermes` to control it.
-    # Non-local with placeholder: pop so terminal_tool uses its per-backend default.
-    # Non-local with explicit path: keep as-is.
+    # Non-local with placeholder: omit it so terminal_tool uses its default.
     _CWD_PLACEHOLDERS = (".", "auto", "cwd")
-    effective_backend = terminal_config.get("env_type", "local")
-
     if effective_backend == "local":
         terminal_config["cwd"] = os.getcwd()
-        defaults["terminal"]["cwd"] = terminal_config["cwd"]
     elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
         terminal_config.pop("cwd", None)
-    
-    env_mappings = {
-        "env_type": "TERMINAL_ENV",
-        "degraded_mode": "TERMINAL_DEGRADED_MODE",
-        "cwd": "TERMINAL_CWD",
-        "timeout": "TERMINAL_TIMEOUT",
-        "home_mode": "TERMINAL_HOME_MODE",
-        "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-        "docker_image": "TERMINAL_DOCKER_IMAGE",
-        "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-        "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-        "modal_image": "TERMINAL_MODAL_IMAGE",
-        "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-        "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
-        # SSH config
-        "ssh_host": "TERMINAL_SSH_HOST",
-        "ssh_user": "TERMINAL_SSH_USER",
-        "ssh_port": "TERMINAL_SSH_PORT",
-        "ssh_key": "TERMINAL_SSH_KEY",
-        # Container resource config (docker, singularity, modal, daytona, vercel_sandbox -- ignored for local/ssh)
-        "container_cpu": "TERMINAL_CONTAINER_CPU",
-        "container_memory": "TERMINAL_CONTAINER_MEMORY",
-        "container_disk": "TERMINAL_CONTAINER_DISK",
-        "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-        "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-        "docker_env": "TERMINAL_DOCKER_ENV",
-        "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
-        "docker_shm_size": "TERMINAL_DOCKER_SHM_SIZE",
-        "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-        "docker_network": "TERMINAL_DOCKER_NETWORK",
-        "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-        "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
-        "docker_shared_container_key": "TERMINAL_DOCKER_SHARED_CONTAINER_KEY",
-        "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
-        "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-        # Persistent shell (non-local backends)
-        "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-        # Sudo support (works with all backends)
-        "sudo_password": "SUDO_PASSWORD",
-    }
-    
-    # Bridge config → env vars for terminal_tool. TERMINAL_CWD is force-exported
-    # UNLESS we're inside a gateway process (detected by _HERMES_GATEWAY marker)
-    # where it was already set correctly by gateway/run.py's config bridge.
+
+    # Reuse the canonical map/application path for every terminal setting.
+    # Keep only the two classic-CLI exceptions here: legacy env_type selection
+    # above, and CLI-specific cwd ownership.
     _is_gateway = os.environ.get("_HERMES_GATEWAY") == "1"
-    for config_key, env_var in env_mappings.items():
-        if config_key in terminal_config:
-            if env_var == "TERMINAL_CWD":
-                if _is_gateway:
-                    continue
-                # CLI: always export (overrides stale .env or inherited values)
-                os.environ[env_var] = str(terminal_config[config_key])
-                continue
-            if _file_has_terminal_config or env_var not in os.environ:
-                val = terminal_config[config_key]
-                if isinstance(val, (list, dict)):
-                    os.environ[env_var] = json.dumps(val)
-                else:
-                    os.environ[env_var] = str(val)
-    
+    bridge_terminal_config = dict(terminal_config)
+    if _is_gateway:
+        bridge_terminal_config.pop("cwd", None)
+    elif "cwd" in bridge_terminal_config:
+        authoritative_terminal_keys.add("cwd")
+    apply_terminal_config_to_env(
+        config={"terminal": bridge_terminal_config},
+        override=True,
+        authoritative_keys=authoritative_terminal_keys,
+    )
+
+    # ``sudo_password`` is a credential rather than a canonical terminal
+    # backend option, but legacy cli-config.yaml accepted it in this section.
+    if "sudo_password" in terminal_config and (
+        "sudo_password" in authoritative_terminal_keys
+        or "SUDO_PASSWORD" not in os.environ
+    ):
+        os.environ["SUDO_PASSWORD"] = str(terminal_config["sudo_password"])
+
     # Apply browser config to environment variables
     browser_config = defaults.get("browser", {})
     browser_env_mappings = {

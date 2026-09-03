@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket as _socket
+import sqlite3
+import threading
 import time
 from typing import Any, Dict, List, Optional
 # Security: parse untrusted, pre-auth request bodies (WeCom callbacks) with
@@ -47,6 +49,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from plugins.plugin_storage import plugin_db
 from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
@@ -66,6 +69,9 @@ DEFAULT_PATH = "/wecom/callback"
 _MAX_BODY = 65_536
 ACCESS_TOKEN_TTL_SECONDS = 7200
 MESSAGE_DEDUP_TTL_SECONDS = 300
+# Callback claims should fail quickly under writer contention so WeCom can
+# retry instead of tying up an HTTP request for sqlite3's five-second default.
+_REPLAY_BUSY_TIMEOUT_MS = 250
 
 
 def check_wecom_callback_requirements() -> bool:
@@ -121,7 +127,8 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._message_queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
         self._poll_task: Optional[asyncio.Task] = None
-        self._seen_messages: Dict[str, float] = {}
+        self._replay_store: Optional[sqlite3.Connection] = None
+        self._replay_store_lock = threading.Lock()
         self._user_app_map: Dict[str, str] = {}
         self._access_tokens: Dict[str, Dict[str, Any]] = {}
 
@@ -162,6 +169,22 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         # ignored — but the kwarg MUST be present or the reconnect watcher
         # dies with TypeError and the platform silently stays offline.
         del is_reconnect
+        # Be idempotent when a caller invokes connect twice without a clean
+        # disconnect. In particular, never overwrite an open replay database.
+        if any((self._poll_task, self._runner, self._http_client, self._replay_store)):
+            self._running = False
+            if self._poll_task:
+                self._poll_task.cancel()
+                try:
+                    await self._poll_task
+                except asyncio.CancelledError:
+                    pass
+                self._poll_task = None
+            try:
+                await self._cleanup()
+            except Exception:
+                logger.exception("[WecomCallback] Failed to clean up previous connection")
+                return False
         if not self._apps:
             logger.warning("[WecomCallback] No callback apps configured")
             return False
@@ -180,6 +203,10 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             pass
 
         try:
+            # Retry deduplication is a prerequisite for accepting callbacks.
+            # Open it before constructing or binding the HTTP listener so a
+            # storage failure cannot leave an endpoint without deduplication.
+            self._init_replay_store()
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
             self._http_client = httpx.AsyncClient(timeout=20.0, limits=platform_httpx_limits())
@@ -209,8 +236,11 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                     )
             return True
         except Exception:
-            await self._cleanup()
             logger.exception("[WecomCallback] Failed to start")
+            try:
+                await self._cleanup()
+            except Exception:
+                logger.exception("[WecomCallback] Startup cleanup also failed")
             return False
 
     async def disconnect(self) -> None:
@@ -228,13 +258,112 @@ class WecomCallbackAdapter(BasePlatformAdapter):
 
     async def _cleanup(self) -> None:
         self._site = None
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
+        errors: List[BaseException] = []
+        runner, self._runner = self._runner, None
+        if runner:
+            try:
+                await runner.cleanup()
+            except BaseException as exc:
+                errors.append(exc)
         self._app = None
-        if self._http_client:
-            await self._http_client.aclose()
-            self._http_client = None
+        http_client, self._http_client = self._http_client, None
+        if http_client:
+            try:
+                await http_client.aclose()
+            except BaseException as exc:
+                errors.append(exc)
+        try:
+            self._close_replay_store()
+        except BaseException as exc:
+            errors.append(exc)
+        if errors:
+            raise errors[0]
+
+    def _init_replay_store(self) -> None:
+        """Open, initialize, and prune the profile-local retry metadata."""
+        # Reinitialization must not leak a connection (notably when connect is
+        # called repeatedly by lifecycle supervisors).
+        self._close_replay_store()
+        connection = plugin_db("wecom-platform", filename="callback-replays.db")
+        try:
+            connection.execute(f"PRAGMA busy_timeout={_REPLAY_BUSY_TIMEOUT_MS}")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS callback_replays (
+                    corp_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    claimed_at REAL NOT NULL,
+                    PRIMARY KEY (corp_id, agent_id, message_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS callback_replays_claimed_at
+                ON callback_replays (claimed_at)
+                """
+            )
+            # These rows are bounded retry-deduplication metadata, not a
+            # durable message inbox. Keep them only for the configured TTL;
+            # pruning here also bounds idle stores that receive no new claim.
+            connection.execute(
+                "DELETE FROM callback_replays WHERE claimed_at <= ?",
+                (time.time() - MESSAGE_DEDUP_TTL_SECONDS,),
+            )
+            connection.commit()
+        except Exception:
+            connection.close()
+            raise
+        self._replay_store = connection
+
+    def _close_replay_store(self) -> None:
+        connection, self._replay_store = self._replay_store, None
+        if connection is not None:
+            connection.close()
+
+    def _claim_message(self, app: Dict[str, Any], message_id: str) -> bool:
+        """Atomically claim a scoped message ID, returning false for a retry.
+
+        ``BEGIN IMMEDIATE`` serializes the prune/check/insert operation across
+        SQLite connections and processes. Expiring rows at ``<= cutoff``
+        preserves the existing strict ``age < 300`` duplicate boundary.
+        """
+        connection = self._replay_store
+        if connection is None:
+            raise RuntimeError("WeCom callback replay store is not initialized")
+
+        now = time.time()
+        cutoff = now - MESSAGE_DEDUP_TTL_SECONDS
+        key = (
+            str(app.get("corp_id") or ""),
+            str(app.get("agent_id") or ""),
+            message_id,
+        )
+        with self._replay_store_lock:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    "DELETE FROM callback_replays WHERE claimed_at <= ?",
+                    (cutoff,),
+                )
+                cursor = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO callback_replays
+                        (corp_id, agent_id, message_id, claimed_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (*key, now),
+                )
+                claimed = cursor.rowcount == 1
+                connection.commit()
+                return claimed
+            except Exception:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+                raise
 
     # ------------------------------------------------------------------
     # Outbound: proactive send via access-token API
@@ -342,19 +471,29 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 event = self._build_event(app, decrypted)
                 if event is not None:
                     # Deduplicate: WeCom retries callbacks on timeout,
-                    # producing duplicate inbound messages (#10305).
+                    # producing duplicate inbound messages (#10305). The
+                    # durable, scoped claim survives gateway restarts.
                     if event.message_id:
-                        now = time.time()
-                        if event.message_id in self._seen_messages:
-                            if now - self._seen_messages[event.message_id] < MESSAGE_DEDUP_TTL_SECONDS:
-                                logger.debug("[WecomCallback] Duplicate MsgId %s, skipping", event.message_id)
-                                return web.Response(text="success", content_type="text/plain")
-                            del self._seen_messages[event.message_id]
-                        self._seen_messages[event.message_id] = now
-                        # Prune expired entries when cache grows large
-                        if len(self._seen_messages) > 2000:
-                            cutoff = now - MESSAGE_DEDUP_TTL_SECONDS
-                            self._seen_messages = {k: v for k, v in self._seen_messages.items() if v > cutoff}
+                        try:
+                            # sqlite3 transactions are blocking. Keep them off
+                            # the gateway's shared event loop so other platform
+                            # callbacks and health checks remain responsive.
+                            claimed = await asyncio.to_thread(
+                                self._claim_message, app, event.message_id,
+                            )
+                        except Exception:
+                            # Fail closed and ask WeCom to retry. An in-memory
+                            # fallback would reintroduce duplicate-delivery
+                            # races across workers and gateway restarts.
+                            logger.exception("[WecomCallback] Retry-dedup store claim failed")
+                            return web.Response(status=500, text="replay store unavailable")
+                        if not claimed:
+                            logger.debug("[WecomCallback] Duplicate MsgId %s, skipping", event.message_id)
+                            return web.Response(text="success", content_type="text/plain")
+                    # The claim intentionally happens before queueing. A crash
+                    # in this narrow window can drop this delivery until the
+                    # TTL expires; this bounded design provides retry
+                    # deduplication, not durable inbox semantics.
                     # Record which app this user belongs to.
                     if event.source and event.source.user_id:
                         map_key = self._user_app_key(

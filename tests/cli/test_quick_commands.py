@@ -154,7 +154,15 @@ class TestGatewayQuickCommands:
         runner._is_user_authorized = MagicMock(return_value=True)
 
         event = self._make_event("slow")
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+
+        async def timeout_and_close(awaitable, **_kwargs):
+            # wait_for receives proc.communicate() after that coroutine has
+            # already been created. A bare mocked TimeoutError abandons it and
+            # emits "Process.communicate was never awaited" later during GC.
+            awaitable.close()
+            raise asyncio.TimeoutError
+
+        with patch("asyncio.wait_for", side_effect=timeout_and_close):
             result = await runner._handle_message(event)
         assert result is not None
         assert "timed out" in result.lower()

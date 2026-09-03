@@ -3894,7 +3894,74 @@ def load_config() -> Dict[str, Any]:
     defensive deepcopy — that path matters in agent-loop hot spots like
     ``get_provider_request_timeout`` which is called once per API turn.
     """
-    return _load_config_impl(want_deepcopy=True)
+    return load_config_snapshot()
+
+
+def load_config_snapshot(config_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Return a mutable snapshot of canonically resolved effective config.
+
+    ``config_path`` defaults to the active profile's ``config.yaml``. The
+    explicit-path form supports compatibility readers such as the classic
+    interactive CLI's project-level ``cli-config.yaml`` fallback; it applies
+    the same defaults, recursive merge, normalization, environment expansion,
+    managed-policy overlay, and last-known-good behavior as the normal path.
+
+    This is an *effective* snapshot. Presence-sensitive and write-back paths
+    must continue to use :func:`read_user_config_raw` / :func:`read_raw_config`
+    so defaults and managed values are never mistaken for user-authored data.
+    """
+    if config_path is not None:
+        config_path = config_path.expanduser().resolve(strict=False)
+    return _load_config_impl(want_deepcopy=True, config_path=config_path)
+
+
+def load_config_snapshot_with_raw(
+    config_path: Optional[Path] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Return coherent effective and user-authored config snapshots.
+
+    This is for presence-sensitive compatibility readers that need effective
+    values and authored-key provenance from the same file observation. The
+    process lock serializes Hermes readers, while the bounded signature retry
+    also detects an editor or another process atomically replacing the file
+    between the effective and raw reads.
+    """
+    if config_path is None:
+        ensure_hermes_home()
+        config_path = get_config_path()
+    config_path = config_path.expanduser().resolve(strict=False)
+    path_key = str(config_path)
+
+    def observation_signature() -> Optional[Tuple[int, int, int, int, int]]:
+        try:
+            st = config_path.stat()
+        except OSError:
+            return None
+        return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+
+    with _CONFIG_LOCK:
+        for _attempt in range(3):
+            before = observation_signature()
+            # This compatibility API promises a pair from the observed file,
+            # rather than two independently valid cache entries. Drop only this
+            # path's entries so an atomic replacement that preserves mtime/size
+            # cannot make either half reuse the replaced inode's value.
+            _LOAD_CONFIG_CACHE.pop(path_key, None)
+            _RAW_CONFIG_CACHE.pop(path_key, None)
+            effective = _load_config_impl(want_deepcopy=True, config_path=config_path)
+            try:
+                raw = read_user_config_raw(config_path)
+            except Exception:
+                # Preserve the effective loader's last-known-good behavior while
+                # refusing to claim any authored-key provenance for bad input.
+                raw = {}
+            if before == observation_signature():
+                return effective, raw
+
+        # A continuously changing file has no coherent authored snapshot. Keep
+        # serving the effective loader's defaults/LKG, but fail safe on presence:
+        # no raw keys are treated as authoritative.
+        return effective, {}
 
 
 def load_config_readonly() -> Dict[str, Any]:
@@ -3955,6 +4022,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "cwd": "TERMINAL_CWD",
     "temp_dir": "TERMINAL_TEMP_DIR",
     "timeout": "TERMINAL_TIMEOUT",
+    "home_mode": "TERMINAL_HOME_MODE",
     "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
     "docker_image": "TERMINAL_DOCKER_IMAGE",
     "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
@@ -4035,6 +4103,7 @@ def apply_terminal_config_to_env(
     env: Optional[Dict[str, str]] = None,
     config: Optional[Dict[str, Any]] = None,
     override: Optional[bool] = None,
+    authoritative_keys: Optional[Set[str]] = None,
 ) -> Dict[str, str]:
     """Bridge ``terminal.*`` config into the env vars terminal tools read.
 
@@ -4044,29 +4113,50 @@ def apply_terminal_config_to_env(
     CLI without importing ``cli.py`` and paying for its startup side effects.
 
     Explicit keys in the user config's ``terminal`` section are authoritative
-    and override their matching env values.  Merged defaults only backfill
-    missing env vars; they never replace unrelated exported/.env values.
+    and override their matching env values. Managed keys always override env
+    values. ``authoritative_keys`` lets compatibility readers provide exact
+    user/managed provenance when ``config`` is already an effective snapshot.
+    Merged defaults only backfill missing env vars; they never replace unrelated
+    exported/.env values.
     """
     target = os.environ if env is None else env
 
-    raw_config = read_raw_config()
-    raw_terminal_cfg = raw_config.get("terminal")
-    file_has_terminal_config = isinstance(raw_terminal_cfg, dict)
-    if not file_has_terminal_config:
+    if authoritative_keys is None:
+        raw_config = read_raw_config()
+        raw_terminal_cfg = raw_config.get("terminal")
+        if not isinstance(raw_terminal_cfg, dict):
+            raw_terminal_cfg = {}
+    else:
         raw_terminal_cfg = {}
-    should_override = file_has_terminal_config if override is None else override
+    if override is None:
+        should_override = (
+            bool(raw_terminal_cfg)
+            if authoritative_keys is None
+            else bool(authoritative_keys)
+        )
+    else:
+        should_override = override
 
     cfg = config if config is not None else load_config_readonly()
     terminal_cfg = cfg.get("terminal", {}) if isinstance(cfg, dict) else {}
     if not isinstance(terminal_cfg, dict):
         return target
 
-    # A caller-supplied config is its own source of explicit keys.  For the
-    # normal merged-config path, only keys present in raw config.yaml may
-    # override existing env values; keys inherited from DEFAULT_CONFIG are
-    # backfill-only.
-    explicit_keys = terminal_cfg.keys() if config is not None else raw_terminal_cfg.keys()
-    backend_is_explicit = config is not None or "backend" in raw_terminal_cfg
+    # A caller-supplied config is its own source of explicit keys unless it
+    # provides narrower provenance. Managed terminal leaves are authoritative
+    # regardless of shell/.env values (managed-scope precedence contract).
+    from hermes_cli import managed_scope
+
+    managed_keys = {
+        key.removeprefix("terminal.")
+        for key in managed_scope.managed_config_keys()
+        if key.startswith("terminal.")
+    }
+    if authoritative_keys is None:
+        explicit_keys = set(terminal_cfg) if config is not None else set(raw_terminal_cfg)
+    else:
+        explicit_keys = set(authoritative_keys)
+    backend_is_explicit = "backend" in explicit_keys or "backend" in managed_keys
     if backend_is_explicit:
         terminal_backend = str(
             terminal_cfg.get("backend") or target.get("TERMINAL_ENV") or ""
@@ -4088,15 +4178,24 @@ def apply_terminal_config_to_env(
                 terminal_backend, raw_cwd
             ):
                 value = os.path.expanduser(value)
-        if (should_override and cfg_key in explicit_keys) or env_var not in target:
+        if (
+            cfg_key in managed_keys
+            or (should_override and cfg_key in explicit_keys)
+            or env_var not in target
+        ):
             target[env_var] = _terminal_env_value(value)
     return target
 
 
-def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+def _load_config_impl(
+    *, want_deepcopy: bool, config_path: Optional[Path] = None
+) -> Dict[str, Any]:
     with _CONFIG_LOCK:
-        ensure_hermes_home()
-        config_path = get_config_path()
+        if config_path is None:
+            ensure_hermes_home()
+            config_path = get_config_path()
+        else:
+            config_path = config_path.expanduser().resolve(strict=False)
         path_key = str(config_path)
 
         try:

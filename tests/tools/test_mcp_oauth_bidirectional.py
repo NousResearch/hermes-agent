@@ -307,6 +307,116 @@ async def test_long_lived_resource_request_does_not_block_concurrent_post(
         await get_flow.asend(httpx.Response(200, request=get_retry))
 
 
+@pytest.mark.asyncio
+async def test_explicit_authorization_drives_401_branch_without_mcp_request(
+    tmp_path, monkeypatch
+):
+    """Explicit login must open OAuth when public MCP discovery returns 200."""
+    from urllib.parse import parse_qs, urlparse
+
+    from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
+    from tools.mcp_tool import sdk_httpx
+
+    assert _HERMES_PROVIDER_CLS is not None
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    httpx = sdk_httpx()
+    real_async_client = httpx.AsyncClient
+    requested_paths: list[str] = []
+    token_bodies: list[str] = []
+
+    async def handler(request):
+        path = request.url.path
+        requested_paths.append(path)
+        if path.startswith("/.well-known/oauth-protected-resource"):
+            return httpx.Response(200, request=request, json={
+                "resource": "https://mcp.example/mcp",
+                "authorization_servers": ["https://auth.example"],
+                "scopes_supported": ["openid", "profile", "read-mcp"],
+            })
+        if path == "/.well-known/oauth-authorization-server":
+            return httpx.Response(200, request=request, json={
+                "issuer": "https://auth.example",
+                "authorization_endpoint": "https://auth.example/authorize",
+                "token_endpoint": "https://auth.example/token",
+                "registration_endpoint": "https://auth.example/register",
+                "response_types_supported": ["code"],
+                "code_challenge_methods_supported": ["S256"],
+                "scopes_supported": ["openid", "profile", "read-mcp"],
+            })
+        if path == "/register":
+            return httpx.Response(201, request=request, json={
+                "client_id": "dynamic-client",
+                "redirect_uris": ["http://127.0.0.1:48765/callback"],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "none",
+            })
+        if path == "/token":
+            token_bodies.append(request.content.decode())
+            return httpx.Response(200, request=request, json={
+                "access_token": "oauth-access-token",
+                "refresh_token": "oauth-refresh-token",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "scope": "openid profile read-mcp",
+            })
+        raise AssertionError(
+            f"unexpected outbound request: {request.method} {request.url}"
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    authorization: dict[str, str] = {}
+
+    async def redirect_handler(url: str) -> None:
+        authorization["url"] = url
+
+    async def callback_handler() -> AuthorizationCodeResult:
+        state = parse_qs(urlparse(authorization["url"]).query)["state"][0]
+        return AuthorizationCodeResult(code="authorization-code", state=state)
+
+    storage = HermesTokenStorage("anonymous-server")
+    metadata = OAuthClientMetadata(
+        redirect_uris=[AnyUrl("http://127.0.0.1:48765/callback")],
+        client_name="Hermes Agent",
+        scope="openid profile read-mcp",
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+        token_endpoint_auth_method="none",
+    )
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="anonymous-server",
+        server_url="https://mcp.example/mcp",
+        client_metadata=metadata,
+        storage=storage,
+        redirect_handler=redirect_handler,
+        callback_handler=callback_handler,
+    )
+
+    await provider.authorize_interactively()
+
+    assert "/mcp" not in requested_paths
+    assert "/register" in requested_paths
+    assert "/token" in requested_paths
+    assert parse_qs(urlparse(authorization["url"]).query)["scope"] == [
+        "openid profile read-mcp"
+    ]
+    assert parse_qs(token_bodies[0])["code"] == ["authorization-code"]
+    tokens = await storage.get_tokens()
+    assert tokens is not None
+    assert tokens.access_token == "oauth-access-token"
+
+
 async def _noop_redirect(_url: str) -> None:
     """Redirect handler that does nothing (won't be invoked in these tests)."""
     return None

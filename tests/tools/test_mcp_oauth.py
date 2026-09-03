@@ -111,6 +111,75 @@ class TestHermesTokenStorage:
             f"token parent dir mode {oct(parent_mode)} != 0o700 — siblings can traverse"
         )
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows DACL test")
+    def test_token_file_and_directory_have_private_windows_acl(
+        self, tmp_path, monkeypatch
+    ):
+        """Windows token state must not inherit repository-wide read access."""
+        import win32api
+        import win32con
+        import win32security
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        legacy_client_path = token_dir / "private-windows-server.client.json"
+        legacy_client_path.write_text('{"client_id": "legacy"}', encoding="utf-8")
+        storage = HermesTokenStorage("private-windows-server")
+        mock_token = MagicMock()
+        mock_token.model_dump.return_value = {
+            "access_token": "secret-access",
+            "token_type": "Bearer",
+            "refresh_token": "secret-refresh",
+        }
+        asyncio.run(storage.set_tokens(mock_token))
+
+        process_token = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(), win32con.TOKEN_QUERY
+        )
+        try:
+            current_user = win32security.GetTokenInformation(
+                process_token, win32security.TokenUser
+            )[0]
+        finally:
+            process_token.Close()
+        allowed_sids = {
+            win32security.ConvertSidToStringSid(current_user),
+            win32security.ConvertSidToStringSid(
+                win32security.ConvertStringSidToSid("S-1-5-18")
+            ),
+        }
+        allow_types = {
+            win32security.ACCESS_ALLOWED_ACE_TYPE,
+            win32security.ACCESS_ALLOWED_OBJECT_ACE_TYPE,
+            getattr(win32security, "ACCESS_ALLOWED_CALLBACK_ACE_TYPE", 9),
+            getattr(win32security, "ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE", 11),
+        }
+
+        for path in (
+            token_dir,
+            token_dir / "private-windows-server.json",
+            legacy_client_path,
+        ):
+            descriptor = win32security.GetNamedSecurityInfo(
+                str(path),
+                win32security.SE_FILE_OBJECT,
+                win32security.DACL_SECURITY_INFORMATION,
+            )
+            control, _ = descriptor.GetSecurityDescriptorControl()
+            assert control & win32security.SE_DACL_PROTECTED
+            dacl = descriptor.GetSecurityDescriptorDacl()
+            assert dacl is not None
+            observed_sids = set()
+            for index in range(dacl.GetAceCount()):
+                ace = dacl.GetAce(index)
+                if ace[0][0] not in allow_types or not ace[1]:
+                    continue
+                sid = win32security.ConvertSidToStringSid(ace[-1])
+                assert sid in allowed_sids
+                observed_sids.add(sid)
+            assert observed_sids == allowed_sids
+
     def test_client_info_with_secret_uses_client_secret_post(self, tmp_path, monkeypatch):
         from mcp.shared.auth import OAuthClientInformationFull
 
@@ -485,6 +554,94 @@ class TestCallbackPortReservation:
         assert port == 49399
         assert cfg["_resolved_port"] == 49399
         assert 49399 not in mod._reserved_sockets
+
+    @pytest.mark.parametrize(
+        "cached_uri",
+        [
+            "http://127.0.0.1:54649/api/mcp/oauth/callback/railway",
+            "http://localhost:49399/callback",
+        ],
+    )
+    def test_cached_loopback_redirect_is_reused_exactly(
+        self, cached_uri, tmp_path, monkeypatch
+    ):
+        """A cached DCR client keeps its complete registered redirect URI.
+
+        Railway exposed the non-default-path case after a Desktop callback
+        registration survived a backend restart. Reusing only its port changed
+        the path to ``/callback`` and the authorization server rejected the
+        client before consent.
+        """
+        import json
+        from urllib.parse import urlparse
+
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = mod.HermesTokenStorage("railway")
+        storage._client_info_path().parent.mkdir(parents=True, exist_ok=True)
+        storage._client_info_path().write_text(
+            json.dumps(
+                {
+                    "client_id": "dcr-issued",
+                    "redirect_uris": [cached_uri],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        cfg = {"cimd": False}
+        port = mod._configure_callback_port(cfg, storage)
+        metadata = mod._build_client_metadata(cfg)
+
+        assert port == urlparse(cached_uri).port
+        assert cfg["redirect_uri"] == cached_uri
+        assert str(metadata.redirect_uris[0]) == cached_uri
+
+    def test_cached_desktop_callback_path_round_trips(
+        self, tmp_path, monkeypatch
+    ):
+        """The local waiter accepts the exact cached Desktop callback path."""
+        import asyncio
+        import json
+        import threading
+
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        monkeypatch.setattr(mod, "_raise_if_non_interactive", lambda lead: None)
+        port = mod._reserve_callback_port()
+        cached_uri = (
+            f"http://127.0.0.1:{port}/api/mcp/oauth/callback/railway"
+        )
+        storage = mod.HermesTokenStorage("railway")
+        storage._client_info_path().parent.mkdir(parents=True, exist_ok=True)
+        storage._client_info_path().write_text(
+            json.dumps(
+                {
+                    "client_id": "dcr-issued",
+                    "redirect_uris": [cached_uri],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        cfg = {"cimd": False}
+        assert mod._configure_callback_port(cfg, storage) == port
+
+        async def drive():
+            task = asyncio.create_task(mod._make_callback_waiter(port)())
+            threading.Thread(
+                target=_hit_callback_when_ready,
+                args=(f"{cached_uri}?code=railway-code&state=railway-state",),
+                daemon=True,
+            ).start()
+            return await asyncio.wait_for(task, timeout=20)
+
+        result = asyncio.run(drive())
+        assert result.code == "railway-code"
+        assert result.state == "railway-state"
 
     def test_wait_for_callback_adopts_reserved_socket(self, monkeypatch):
         """E2E: reserve → _wait_for_callback binds the SAME socket and the

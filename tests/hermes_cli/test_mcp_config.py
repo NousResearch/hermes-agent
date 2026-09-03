@@ -722,11 +722,11 @@ class TestMcpLogin:
 
 
     def test_login_false_success_no_token(self, tmp_path, capsys, monkeypatch):
-        """Probe lists tools without auth (Google Drive), but no token landed.
+        """Final token check rejects a broken explicit-auth driver.
 
-        The server allows tools/list without auth (DCR 400'd), so the probe
-        succeeds yet no OAuth token exists. Login must NOT claim success — it
-        should warn and point the user at pre-registered client_id config.
+        Even after proactive authorization, a defensive persisted-token check
+        must stop an anonymously successful tools/list probe from claiming the
+        login worked.
         """
         _seed_config(tmp_path, {
             "googledrive": {
@@ -740,6 +740,10 @@ class TestMcpLogin:
             lambda name, cfg, connect_timeout=30: [
                 ("search_files", "d"), ("read_file_content", "d"),
             ],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._initiate_explicit_oauth",
+            lambda name, cfg, connect_timeout: None,
         )
         # No token file is created → _oauth_tokens_present() returns False.
         from hermes_cli.mcp_config import cmd_mcp_login
@@ -763,7 +767,15 @@ class TestMcpLogin:
         # probe drops a token file, mirroring a successful authorization.
         seen = {}
 
+        def mock_authorize(name, cfg, connect_timeout):
+            seen["authorized"] = True
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._initiate_explicit_oauth", mock_authorize
+        )
+
         def mock_probe(name, cfg, connect_timeout=30):
+            assert seen.get("authorized") is True
             seen["connect_timeout"] = connect_timeout
             token_dir.mkdir(exist_ok=True)
             (token_dir / "realserver.json").write_text('{"access_token": "x"}')

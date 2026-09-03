@@ -417,6 +417,63 @@ def _oauth_tokens_present(name: str) -> bool:
         return True
 
 
+def _initiate_explicit_oauth(
+    name: str,
+    config: dict,
+    *,
+    connect_timeout: float,
+) -> None:
+    """Drive user-requested OAuth before probing public MCP methods.
+
+    The MCP SDK normally starts OAuth only after a resource request returns
+    401. Some servers expose ``initialize`` and ``tools/list`` anonymously,
+    so an explicit login must drive the shared provider's authorization path
+    before the ordinary authenticated connection probe.
+    """
+    url = config.get("url")
+    if not url:
+        raise ValueError(f"Server '{name}' has no OAuth-capable URL")
+
+    from tools.mcp_oauth_manager import get_manager
+    from tools.mcp_tool import (
+        _ensure_mcp_loop,
+        _resolve_client_cert,
+        _run_on_mcp_loop,
+        _stop_mcp_loop_if_idle,
+    )
+
+    resolved = _resolve_mcp_server_config(config)
+    provider = get_manager().get_or_build_provider(
+        name,
+        resolved["url"],
+        resolved.get("oauth"),
+    )
+    if provider is None:
+        raise RuntimeError("MCP SDK OAuth support is unavailable")
+
+    ssl_verify = resolved.get("ssl_verify", True)
+    client_cert = _resolve_client_cert(name, resolved)
+
+    async def _authorize() -> None:
+        await provider.authorize_interactively(
+            ssl_verify=ssl_verify,
+            client_cert=client_cert,
+        )
+
+    _ensure_mcp_loop()
+    try:
+        _run_on_mcp_loop(_authorize(), timeout=connect_timeout + 10.0)
+    except BaseException as exc:
+        raise _unwrap_exception_group(exc) from None
+    finally:
+        _stop_mcp_loop_if_idle()
+
+    if not _oauth_tokens_present(name):
+        raise RuntimeError(
+            "OAuth authorization completed without a persisted token"
+        )
+
+
 def _unwrap_exception_group(exc: BaseException) -> Exception:
     """Extract the root-cause exception from anyio TaskGroup wrappers.
 
@@ -856,6 +913,11 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
             _login_connect_timeout = 0.0
         _login_connect_timeout = max(_login_connect_timeout, 315.0)
         with force_interactive_oauth():
+            _initiate_explicit_oauth(
+                name,
+                server_config,
+                connect_timeout=_login_connect_timeout,
+            )
             tools = _probe_single_server(
                 name, server_config, connect_timeout=_login_connect_timeout
             )

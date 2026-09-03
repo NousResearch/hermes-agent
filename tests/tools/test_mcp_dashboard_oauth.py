@@ -26,8 +26,17 @@ def test_dashboard_flow_exposes_authorization_url_and_accepts_callback():
         "error": None,
     }
 
-    flow.deliver_callback(code="code-1", state="s1", error=None)
-    assert asyncio.run(flow.wait_for_callback()) == ("code-1", "s1")
+    flow.deliver_callback(
+        code="code-1",
+        state="s1",
+        error=None,
+        iss="https://idp.example",
+    )
+    assert asyncio.run(flow.wait_for_callback()) == (
+        "code-1",
+        "s1",
+        "https://idp.example",
+    )
 
 
 def test_dashboard_flow_accepts_only_one_concurrent_callback():
@@ -91,11 +100,20 @@ def test_mcp_oauth_helpers_use_dashboard_flow_without_loopback_port():
                 "https://idp.example/authorize?state=state-4"
             )
         )
-        flow.deliver_callback(code="code-4", state="state-4", error=None)
+        flow.deliver_callback(
+            code="code-4",
+            state="state-4",
+            error=None,
+            iss="https://idp.example",
+        )
         # mcp 2.0's callback_handler contract returns an
         # AuthorizationCodeResult, not the legacy (code, state) tuple.
         result = asyncio.run(_make_callback_waiter(0)())
-        assert (result.code, result.state) == ("code-4", "state-4")
+        assert (result.code, result.state, result.iss) == (
+            "code-4",
+            "state-4",
+            "https://idp.example",
+        )
 
     assert flow.authorization_url == "https://idp.example/authorize?state=state-4"
 

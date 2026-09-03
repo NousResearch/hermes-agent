@@ -35,6 +35,7 @@ Design reference:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import re
 import threading
@@ -43,6 +44,143 @@ from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+_EXPLICIT_OAUTH_HTTP_TIMEOUT_SECONDS = 30.0
+
+
+_issuer_trailing_slash_compat_enabled: contextvars.ContextVar[bool] = (
+    contextvars.ContextVar(
+        "mcp_oauth_issuer_trailing_slash_compat_enabled",
+        default=False,
+    )
+)
+
+_registration_omit_scope_enabled: contextvars.ContextVar[bool] = (
+    contextvars.ContextVar(
+        "mcp_oauth_registration_omit_scope_enabled",
+        default=False,
+    )
+)
+
+
+def _differs_only_by_one_trailing_slash(actual: str, expected: str) -> bool:
+    """Return True only for an otherwise byte-identical issuer URL.
+
+    RFC 8414 normally requires exact string equality. A small number of
+    providers publish a protected-resource ``authorization_servers`` value
+    with a trailing slash while their authorization-server metadata omits it.
+    This predicate deliberately does not normalize case, escapes, ports,
+    paths, queries, or fragments.
+    """
+    return (
+        actual != expected
+        and actual.endswith("/") != expected.endswith("/")
+        and actual.removesuffix("/") == expected.removesuffix("/")
+        and "?" not in actual
+        and "?" not in expected
+        and "#" not in actual
+        and "#" not in expected
+    )
+
+
+def _install_scoped_issuer_validator() -> None:
+    """Install a task-scoped SDK compatibility wrapper exactly once."""
+    from mcp.client.auth import oauth2
+
+    current = oauth2.validate_metadata_issuer
+    if getattr(current, "_hermes_scoped_issuer_validator", False):
+        return
+
+    def _validate(oauth_metadata: Any, expected_issuer: str) -> None:
+        actual = str(oauth_metadata.issuer)
+        if (
+            _issuer_trailing_slash_compat_enabled.get()
+            and _differs_only_by_one_trailing_slash(actual, expected_issuer)
+        ):
+            logger.warning(
+                "MCP OAuth: accepting provider metadata issuer that differs "
+                "from its discovery issuer only by one trailing slash"
+            )
+            return
+        current(oauth_metadata, expected_issuer)
+
+    _validate._hermes_scoped_issuer_validator = True  # type: ignore[attr-defined]
+    oauth2.validate_metadata_issuer = _validate
+
+
+def _install_scoped_registration_scope_filter() -> None:
+    """Install a task-scoped DCR scope filter exactly once.
+
+    Indeed's MCP metadata correctly advertises its supported scopes, but its
+    dynamic-registration endpoint rejects the optional RFC 7591 ``scope``
+    client-metadata field.  Keep the scopes on the live client metadata so the
+    authorization request still asks for them; omit them only while building
+    the registration request, and only for providers that explicitly opt in.
+    """
+    from mcp.client.auth import oauth2
+
+    current = oauth2.create_client_registration_request
+    if getattr(current, "_hermes_scoped_registration_scope_filter", False):
+        return
+
+    def _create(oauth_metadata: Any, client_metadata: Any, fallback_base_url: str):
+        registration_metadata = client_metadata
+        if (
+            _registration_omit_scope_enabled.get()
+            and getattr(client_metadata, "scope", None)
+        ):
+            registration_metadata = client_metadata.model_copy(
+                update={"scope": None}
+            )
+            logger.warning(
+                "MCP OAuth: omitting provider scopes from dynamic client "
+                "registration while preserving them for authorization"
+            )
+        return current(oauth_metadata, registration_metadata, fallback_base_url)
+
+    _create._hermes_scoped_registration_scope_filter = True  # type: ignore[attr-defined]
+    oauth2.create_client_registration_request = _create
+
+
+def _merge_authorization_endpoint_query(
+    generated_url: str,
+    authorization_endpoint: str | None,
+) -> str:
+    """Repair SDK authorization URLs when the endpoint already has a query.
+
+    MCP Python SDK 2.0 currently builds the browser URL with
+    ``f"{authorization_endpoint}?{urlencode(params)}"``.  If provider metadata
+    already includes a query (Railway advertises ``?resource=...``), the
+    resulting second question mark nests ``response_type=code`` inside the
+    existing value and the authorization server rejects the request.  Preserve
+    the provider's original query bytes and join the SDK parameters with ``&``.
+
+    The exact-prefix guard keeps this narrowly scoped to the discovered
+    authorization endpoint rather than rewriting arbitrary redirect URLs.
+    """
+    if not authorization_endpoint:
+        return generated_url
+
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        endpoint = urlsplit(authorization_endpoint)
+    except ValueError:
+        return generated_url
+    if not endpoint.query:
+        return generated_url
+
+    malformed_prefix = f"{authorization_endpoint}?"
+    if not generated_url.startswith(malformed_prefix):
+        return generated_url
+
+    sdk_query = generated_url[len(malformed_prefix) :]
+    merged_query = endpoint.query
+    if sdk_query:
+        merged_query = f"{merged_query}&{sdk_query}"
+    return urlunsplit(
+        (endpoint.scheme, endpoint.netloc, endpoint.path, merged_query, endpoint.fragment)
+    )
 
 
 def _same_endpoint(a: str, b: str) -> bool:
@@ -114,6 +252,9 @@ def _make_hermes_provider_class() -> Optional[type]:
     except ImportError:  # pragma: no cover — SDK required in CI
         return None
 
+    _install_scoped_issuer_validator()
+    _install_scoped_registration_scope_filter()
+
     class HermesMCPOAuthProvider(OAuthClientProvider):
         """OAuthClientProvider with pre-flow disk-mtime reload.
 
@@ -135,6 +276,8 @@ def _make_hermes_provider_class() -> Optional[type]:
             server_name: str = "",
             preregistered: bool = False,
             token_user_agent: "str | None" = None,
+            issuer_trailing_slash_compat: bool = False,
+            registration_omit_scope: bool = False,
             **kwargs: Any,
         ):
             super().__init__(*args, **kwargs)
@@ -158,6 +301,10 @@ def _make_hermes_provider_class() -> Optional[type]:
             # oauth.user_agent — stamped onto token-endpoint requests only;
             # some authorization servers/WAFs reject httpx's default (#75576).
             self._hermes_token_user_agent = token_user_agent
+            self._hermes_issuer_trailing_slash_compat = (
+                issuer_trailing_slash_compat
+            )
+            self._hermes_registration_omit_scope = registration_omit_scope
 
         def _stamp_token_user_agent(self, request):
             ua = getattr(self, "_hermes_token_user_agent", None)
@@ -192,6 +339,35 @@ def _make_hermes_provider_class() -> Optional[type]:
             self._coerce_client_secret_post()
             request = await super()._exchange_token_authorization_code(*args, **kwargs)
             return self._stamp_token_user_agent(request)
+
+        async def _perform_authorization_code_grant(self):
+            """Keep SDK OAuth parameters top-level for query-bearing endpoints."""
+            original_redirect_handler = self.context.redirect_handler
+            metadata = getattr(self.context, "oauth_metadata", None)
+            authorization_endpoint = (
+                str(metadata.authorization_endpoint)
+                if metadata is not None
+                and getattr(metadata, "authorization_endpoint", None)
+                else None
+            )
+
+            if original_redirect_handler is None or authorization_endpoint is None:
+                return await super()._perform_authorization_code_grant()
+
+            async def query_safe_redirect_handler(url: str) -> None:
+                await original_redirect_handler(
+                    _merge_authorization_endpoint_query(url, authorization_endpoint)
+                )
+
+            self.context.redirect_handler = query_safe_redirect_handler
+            try:
+                return await super()._perform_authorization_code_grant()
+            finally:
+                # The SDK serializes one provider's OAuth flow, but restore the
+                # shared context defensively so later refresh/reauth calls keep
+                # the original Hermes callback.
+                if self.context.redirect_handler is query_safe_redirect_handler:
+                    self.context.redirect_handler = original_redirect_handler
 
         async def _refresh_token(self):
             self._coerce_client_secret_post()
@@ -543,8 +719,24 @@ def _make_hermes_provider_class() -> Optional[type]:
             resource_lock_released = False
             sent_access_token = None
             retry_after_concurrent_auth = False
+
+            async def _advance(incoming: Any = None, *, first: bool = False):
+                issuer_token = _issuer_trailing_slash_compat_enabled.set(
+                    getattr(self, "_hermes_issuer_trailing_slash_compat", False)
+                )
+                registration_token = _registration_omit_scope_enabled.set(
+                    getattr(self, "_hermes_registration_omit_scope", False)
+                )
+                try:
+                    if first:
+                        return await inner.__anext__()
+                    return await inner.asend(incoming)
+                finally:
+                    _registration_omit_scope_enabled.reset(registration_token)
+                    _issuer_trailing_slash_compat_enabled.reset(issuer_token)
+
             try:
-                outgoing = await inner.__anext__()
+                outgoing = await _advance(first=True)
                 while True:
                     # The SDK holds context.lock for its entire generator,
                     # including while HTTPX waits on the actual MCP request.
@@ -574,13 +766,12 @@ def _make_hermes_provider_class() -> Optional[type]:
                         and tokens.access_token != sent_access_token
                     ):
                         self._add_auth_header(request)
-                        await inner.aclose()
                         retry_after_concurrent_auth = True
                         break
                     # Sniff the response for a dead-client-registration signal
                     # before handing it back to the SDK (best-effort, GH#36767).
                     await self._maybe_flag_poisoned_client(incoming)
-                    outgoing = await inner.asend(incoming)
+                    outgoing = await _advance(incoming)
             except StopAsyncIteration:
                 # Persist any metadata the SDK discovered lazily during the
                 # 401 branch so a subsequent cold-load skips discovery.
@@ -598,10 +789,106 @@ def _make_hermes_provider_class() -> Optional[type]:
                     with anyio.CancelScope(shield=True):
                         await self.context.lock.acquire()
 
+                # Keep the SDK generator's anyio lock acquisition and release
+                # in this task. Letting an interrupted flow reach async-gen GC
+                # can finalize it in another task, where anyio correctly
+                # rejects releasing a lock that task does not own.
+                await inner.aclose()
+
             if retry_after_concurrent_auth:
                 yield request
                 self._persist_oauth_metadata_if_changed()
                 return
+
+        async def authorize_interactively(
+            self,
+            *,
+            ssl_verify: Any = True,
+            client_cert: Any = None,
+        ) -> None:
+            """Complete OAuth even when the MCP endpoint is anonymously listable.
+
+            The SDK begins authorization only after an MCP request returns HTTP
+            401. Some servers, including Hugging Face, allow ``initialize`` and
+            ``tools/list`` without a token. An explicit Authenticate action
+            therefore needs to drive the provider's normal 401 branch directly.
+
+            The synthetic challenge stays inside the SDK auth generator; Hermes
+            never sends a fabricated MCP request to the remote server. Metadata
+            discovery, registration, browser redirect, callback validation, and
+            token exchange still use the SDK's real requests and responses.
+            """
+            from mcp.shared.inbound import MCP_PROTOCOL_VERSION_HEADER
+            from mcp_types import LATEST_PROTOCOL_VERSION
+            from tools.mcp_tool import sdk_httpx
+
+            httpx = sdk_httpx()
+            if httpx is None:  # pragma: no cover - provider proves availability
+                raise RuntimeError("MCP SDK HTTP support is unavailable")
+
+            scope = getattr(self.context.client_metadata, "scope", None)
+            challenge = "Bearer"
+            if scope:
+                # RFC 6749 scope-token excludes DQUOTE, backslash, controls,
+                # and non-ASCII bytes. Validate before reflecting local config
+                # into a synthetic WWW-Authenticate header.
+                valid_scope = all(
+                    char == " "
+                    or ord(char) == 0x21
+                    or 0x23 <= ord(char) <= 0x5B
+                    or 0x5D <= ord(char) <= 0x7E
+                    for char in scope
+                )
+                if not valid_scope or not scope.split():
+                    raise ValueError("OAuth scope contains invalid characters")
+                challenge = f'Bearer scope="{scope}"'
+
+            original_request = httpx.Request(
+                "POST",
+                self.context.server_url,
+                headers={MCP_PROTOCOL_VERSION_HEADER: LATEST_PROTOCOL_VERSION},
+            )
+            auth_flow = self.async_auth_flow(original_request)
+            client_kwargs: dict[str, Any] = {
+                "follow_redirects": True,
+                "timeout": _EXPLICIT_OAUTH_HTTP_TIMEOUT_SECONDS,
+                "verify": ssl_verify,
+            }
+            if client_cert is not None:
+                client_kwargs["cert"] = client_cert
+
+            try:
+                outgoing = await auth_flow.__anext__()
+                challenged = False
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    while True:
+                        if outgoing is original_request:
+                            if not challenged and not self.context.is_token_valid():
+                                response = httpx.Response(
+                                    401,
+                                    request=outgoing,
+                                    headers={"www-authenticate": challenge},
+                                )
+                                challenged = True
+                            else:
+                                # Acknowledge the post-auth retry locally; it
+                                # is not a real MCP request.
+                                response = httpx.Response(204, request=outgoing)
+                        else:
+                            response = await client.send(outgoing)
+
+                        try:
+                            outgoing = await auth_flow.asend(response)
+                        except StopAsyncIteration:
+                            break
+            finally:
+                await auth_flow.aclose()
+
+            tokens = self.context.current_tokens
+            if tokens is None or not getattr(tokens, "access_token", None):
+                raise RuntimeError(
+                    "OAuth authorization completed without an access token"
+                )
 
     return HermesMCPOAuthProvider
 
@@ -764,6 +1051,12 @@ class MCPOAuthManager:
             redirect_handler=redirect_handler,
             callback_handler=callback_handler,
             token_user_agent=token_request_user_agent(cfg),
+            issuer_trailing_slash_compat=bool(
+                cfg.get("issuer_trailing_slash_compat", False)
+            ),
+            registration_omit_scope=bool(
+                cfg.get("registration_omit_scope", False)
+            ),
             **cimd_provider_kwargs(cfg),
         )
 

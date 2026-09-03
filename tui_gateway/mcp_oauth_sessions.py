@@ -132,10 +132,11 @@ def _start_loopback_listener(flow) -> "http.server.HTTPServer":
             code = (qs.get("code") or [None])[0]
             state = (qs.get("state") or [None])[0]
             error = (qs.get("error") or [None])[0]
+            iss = (qs.get("iss") or [None])[0]
             body = b"<h1>Authorization received</h1><p>You can close this tab and return to Hermes.</p>"
             status = 200
             try:
-                flow.deliver_callback(code=code, state=state, error=error)
+                flow.deliver_callback(code=code, state=state, error=error, iss=iss)
             except Exception:
                 body = b"<h1>OAuth callback rejected</h1><p>The callback was invalid or already used.</p>"
                 status = 400
@@ -171,6 +172,7 @@ def _worker(session_id: str, hermes_home: str, server_name: str, cfg: dict, reco
     is (re)saved into the profile's config.yaml.
     """
     from hermes_cli.mcp_config import (
+        _initiate_explicit_oauth,
         _oauth_tokens_present,
         _probe_single_server,
         _save_mcp_server,
@@ -201,15 +203,23 @@ def _worker(session_id: str, hermes_home: str, server_name: str, cfg: dict, reco
                 previous_entry = None
                 try:
                     previous_entry = manager.remove(server_name, hermes_home=hermes_home)
+                    auth_timeout = max(
+                        float(cfg.get("connect_timeout", 0) or 0),
+                        315.0,
+                    )
+                    _initiate_explicit_oauth(
+                        server_name,
+                        cfg,
+                        connect_timeout=auth_timeout,
+                    )
                     tools = _probe_single_server(
                         server_name,
                         cfg,
-                        connect_timeout=max(float(cfg.get("connect_timeout", 0) or 0), 315),
+                        connect_timeout=auth_timeout,
                     )
                     if not _oauth_tokens_present(server_name):
                         raise RuntimeError(
-                            "The server responded, but no OAuth token was obtained — "
-                            "this provider may require a manually-registered OAuth client."
+                            "OAuth authorization completed without a persisted token."
                         )
                     _save_mcp_server(server_name, cfg)
                     if flow is not None:

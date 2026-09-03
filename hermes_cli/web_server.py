@@ -88,6 +88,7 @@ from hermes_cli.config import (
     redact_key,
     write_platform_config_field,
     _deep_merge,
+    _preserve_env_ref_templates,
 )
 from plugins.memory.config_schema import (
     ProviderConfigSchema,
@@ -7362,7 +7363,14 @@ async def get_config(profile: Optional[str] = None):
     # override stays scoped to the worker thread.
     def _run():
         with _profile_scope(profile):
-            return _normalize_config_for_web(load_config())
+            # ``load_config()`` expands ${env:VAR} references for runtime use.
+            # Returning that expanded document to the Desktop renderer exposes
+            # live credentials in otherwise-safe editable fields such as MCP
+            # Authorization headers. Restore only raw templates whose current
+            # expansion matches the loaded value; literal config values remain
+            # literal and unrelated defaults/managed settings stay intact.
+            config = _preserve_env_ref_templates(load_config(), read_raw_config())
+            return _normalize_config_for_web(config)
 
     config = await asyncio.to_thread(_run)
     # Strip internal keys that the frontend shouldn't see or send back
@@ -13962,6 +13970,7 @@ def _mcp_oauth_transaction(flow) -> threading.Lock:
 def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
     """Run the normal MCP probe with dashboard redirect/callback handlers."""
     from hermes_cli.mcp_config import (
+        _initiate_explicit_oauth,
         _oauth_tokens_present,
         _probe_single_server,
         _save_mcp_server,
@@ -13991,15 +14000,23 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                         flow.server_name,
                         hermes_home=flow.hermes_home,
                     )
+                    auth_timeout = max(
+                        float(cfg.get("connect_timeout", 0) or 0),
+                        315.0,
+                    )
+                    _initiate_explicit_oauth(
+                        flow.server_name,
+                        cfg,
+                        connect_timeout=auth_timeout,
+                    )
                     tools = _probe_single_server(
                         flow.server_name,
                         cfg,
-                        connect_timeout=max(float(cfg.get("connect_timeout", 0) or 0), 315),
+                        connect_timeout=auth_timeout,
                     )
                     if not _oauth_tokens_present(flow.server_name):
                         raise RuntimeError(
-                            "The server responded, but no OAuth token was obtained — "
-                            "this provider may require a manually-registered OAuth client."
+                            "OAuth authorization completed without a persisted token."
                         )
                     _save_mcp_server(flow.server_name, cfg)
                     flow.tools = [{"name": t, "description": d} for t, d in tools]

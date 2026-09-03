@@ -80,10 +80,11 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
 
     response = TestClient(web_server.app).get(
         "/api/mcp/oauth/callback/reports?code=abc&state=expected"
+        "&iss=https%3A%2F%2Fidp.example"
     )
 
     assert response.status_code == 200
-    assert flow._callback == ("abc", "expected")
+    assert flow._callback == ("abc", "expected", "https://idp.example")
 
 
 def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, monkeypatch):
@@ -113,6 +114,60 @@ def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, mon
         response = _client().post("/api/mcp/servers/reports/auth?profile=work")
 
     assert response.status_code != 409
+
+
+def test_dashboard_worker_initiates_oauth_before_public_probe(tmp_path, monkeypatch):
+    """Desktop Authenticate must not rely on an anonymous tools/list probe."""
+    import asyncio
+
+    from hermes_cli import mcp_config, web_server
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, get_dashboard_oauth_flow
+
+    events = []
+
+    def fake_initiate(name, cfg, connect_timeout):
+        events.append("authorize")
+        assert name == "hugging_face"
+        assert connect_timeout >= 315
+        flow = get_dashboard_oauth_flow()
+        assert flow is not None
+        asyncio.run(
+            flow.publish_authorization_url(
+                "https://huggingface.co/oauth/authorize?state=expected"
+            )
+        )
+
+    def fake_probe(name, cfg, connect_timeout=30):
+        assert events == ["authorize"]
+        events.append("probe")
+        return [("hf_fs", "Browse Hugging Face")]
+
+    monkeypatch.setattr(mcp_config, "_initiate_explicit_oauth", fake_initiate)
+    monkeypatch.setattr(mcp_config, "_probe_single_server", fake_probe)
+    monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda _name: True)
+    monkeypatch.setattr(mcp_config, "_save_mcp_server", lambda _name, _cfg: True)
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-explicit-auth",
+        server_name="hugging_face",
+        profile=None,
+        hermes_home=str(tmp_path),
+        redirect_uri="http://127.0.0.1:43123/callback",
+    )
+    web_server._run_dashboard_mcp_oauth(
+        flow,
+        {
+            "url": "https://huggingface.co/mcp",
+            "auth": "oauth",
+            "oauth": {"scope": "openid profile read-mcp"},
+        },
+    )
+
+    assert events == ["authorize", "probe"]
+    assert flow.status == "approved"
+    assert flow.authorization_url.startswith("https://huggingface.co/oauth/authorize")
+    assert flow.tools == [{"name": "hf_fs", "description": "Browse Hugging Face"}]
+    assert flow.worker_done is True
 
 
 

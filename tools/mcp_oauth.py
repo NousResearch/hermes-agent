@@ -206,6 +206,74 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^\w\-]", "_", name).strip("_")[:128] or "default"
 
 
+def _secure_windows_credential_acl(path: Path, *, directory: bool) -> None:
+    """Restrict a Windows credential path to the current user and SYSTEM.
+
+    POSIX mode bits do not enforce access on Windows. Token files created
+    below a repository-scoped ``HERMES_HOME`` would otherwise inherit that
+    repository's broader read ACL. A protected DACL on the directory also
+    makes future OAuth state inherit the same private boundary.
+    """
+    if os.name != "nt" or not path.exists():
+        return
+
+    try:
+        import ntsecuritycon
+        import win32api
+        import win32con
+        import win32security
+    except ImportError as exc:  # pragma: no cover - pywin32 is a Windows dep
+        logger.warning("Cannot restrict Windows OAuth credential ACL: %s", exc)
+        return
+
+    try:
+        process_token = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(), win32con.TOKEN_QUERY
+        )
+        try:
+            current_user = win32security.GetTokenInformation(
+                process_token, win32security.TokenUser
+            )[0]
+        finally:
+            process_token.Close()
+        system = win32security.ConvertStringSidToSid("S-1-5-18")
+        inherit_flags = 0
+        if directory:
+            inherit_flags = (
+                win32security.OBJECT_INHERIT_ACE
+                | win32security.CONTAINER_INHERIT_ACE
+            )
+
+        acl = win32security.ACL()
+        for sid in (current_user, system):
+            acl.AddAccessAllowedAceEx(
+                win32security.ACL_REVISION,
+                inherit_flags,
+                ntsecuritycon.FILE_ALL_ACCESS,
+                sid,
+            )
+
+        security_info = (
+            win32security.DACL_SECURITY_INFORMATION
+            | win32security.PROTECTED_DACL_SECURITY_INFORMATION
+        )
+        win32security.SetNamedSecurityInfo(
+            str(path),
+            win32security.SE_FILE_OBJECT,
+            security_info,
+            None,
+            None,
+            acl,
+            None,
+        )
+    except OSError as exc:
+        # Persistence remains available if a locked-down enterprise host
+        # refuses DACL changes, but the failure is visible to operators.
+        logger.warning(
+            "Failed to restrict OAuth credential ACL for %s: %s", path, exc
+        )
+
+
 def _find_free_port() -> int:
     """Find an available TCP port on localhost."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -269,15 +337,23 @@ def _reserve_callback_port() -> int:
     return port
 
 
-def _cached_redirect_port(storage: "HermesTokenStorage | None") -> int | None:
-    """Return the loopback callback port from cached client registration.
+def _cached_loopback_redirect(
+    storage: "HermesTokenStorage | None",
+) -> tuple[str, int] | None:
+    """Return the exact loopback URI and port from cached registration.
 
     OAuth providers bind a dynamically-registered ``client_id`` to the exact
     redirect URI that was registered with it. If Hermes restarts and chooses a
     new random callback port while reusing the stored ``client_id``, providers
-    such as Summ reject the authorization request with ``redirect_uri does not
-    match any registered URIs``. Reusing the cached redirect port keeps the
-    authorization request consistent with the stored client registration.
+    such as Summ and Railway reject the authorization request with
+    ``redirect_uri does not match any registered URIs``.
+
+    Preserve the complete URI, not only its port. Desktop OAuth callbacks use a
+    server-specific ``/api/mcp/oauth/callback/<name>`` path, and ``localhost``
+    is not interchangeable with ``127.0.0.1`` for exact redirect matching. The
+    local callback handler accepts any path and extracts only the OAuth query,
+    so it can safely receive a callback at the originally registered path after
+    a Desktop/backend restart.
     """
     if storage is None:
         return None
@@ -297,11 +373,19 @@ def _cached_redirect_port(storage: "HermesTokenStorage | None") -> int | None:
         if (
             parsed.scheme == "http"
             and parsed.hostname in {"127.0.0.1", "localhost"}
-            and parsed.path == "/callback"
             and parsed.port is not None
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.fragment
         ):
-            return int(parsed.port)
+            return str(uri), int(parsed.port)
     return None
+
+
+def _cached_redirect_port(storage: "HermesTokenStorage | None") -> int | None:
+    """Backward-compatible port-only view of the cached loopback redirect."""
+    cached = _cached_loopback_redirect(storage)
+    return cached[1] if cached is not None else None
 
 
 def _cached_redirect_uri(storage: "HermesTokenStorage | None") -> str | None:
@@ -427,6 +511,7 @@ def _write_json(path: Path, data: dict) -> None:
     # secure_parent_dir refuses to chmod /, top-level dirs, or the
     # hermes-agent install tree (#25821, #93050).
     secure_parent_dir(path)
+    _secure_windows_credential_acl(path.parent, directory=True)
     # Per-process random suffix avoids collisions between concurrent
     # writers and stale leftovers from a prior crashed write.
     tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
@@ -441,6 +526,7 @@ def _write_json(path: Path, data: dict) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
+        _secure_windows_credential_acl(path, directory=False)
     except OSError:
         try:
             tmp.unlink(missing_ok=True)
@@ -468,6 +554,16 @@ class HermesTokenStorage:
     def __init__(self, server_name: str, *, hermes_home: str | Path | None = None):
         self._server_name = _safe_filename(server_name)
         self._hermes_home = Path(hermes_home) if hermes_home is not None else None
+        # One-time migration for OAuth state written before Windows DACL
+        # hardening. Only this sanitized server's known credential files are
+        # touched; unrelated files in the directory are left alone.
+        if os.name == "nt":
+            token_dir = _get_token_dir(self._hermes_home)
+            if token_dir.exists():
+                _secure_windows_credential_acl(token_dir, directory=True)
+                for suffix in (".json", ".client.json", ".meta.json", ".cimd-off"):
+                    candidate = token_dir / f"{self._server_name}{suffix}"
+                    _secure_windows_credential_acl(candidate, directory=False)
 
     def _tokens_path(self) -> Path:
         return _get_token_dir(self._hermes_home) / f"{self._server_name}.json"
@@ -670,6 +766,8 @@ class HermesTokenStorage:
             return
         token_dir = _get_token_dir(self._hermes_home)
         token_dir.mkdir(parents=True, exist_ok=True)
+        secure_parent_dir(token_dir / "credential-state")
+        _secure_windows_credential_acl(token_dir, directory=True)
         for fname, data in snapshot.items():
             path = token_dir / fname
             try:
@@ -680,6 +778,7 @@ class HermesTokenStorage:
                 )
                 with os.fdopen(fd, "wb") as fh:
                     fh.write(data)
+                _secure_windows_credential_acl(path, directory=False)
             except OSError as exc:
                 logger.warning("Failed to restore OAuth state %s: %s", fname, exc)
 
@@ -952,10 +1051,10 @@ def _make_callback_waiter(
 
         dashboard_flow = get_dashboard_oauth_flow()
         if dashboard_flow is not None:
-            # The dashboard flow still speaks the legacy tuple; normalize it
-            # here so both callback sources hand the SDK one shape.
-            dash_code, dash_state = await dashboard_flow.wait_for_callback()
-            return _authorization_code_result(dash_code, dash_state)
+            # Normalize the dashboard bridge result so both callback sources
+            # hand the SDK the installed AuthorizationCodeResult shape.
+            dash_code, dash_state, dash_iss = await dashboard_flow.wait_for_callback()
+            return _authorization_code_result(dash_code, dash_state, dash_iss)
 
         # Reject before binding the callback listener in non-interactive
         # contexts. Reaching here means the SDK entered the authorization-code
@@ -1580,6 +1679,19 @@ def _configure_callback_port(
         _oauth_port = port
         return port
     requested = int(cfg.get("redirect_port", 0))
+    cached_loopback = _cached_loopback_redirect(storage)
+    if (
+        not cfg.get("redirect_uri")
+        and not requested
+        and not cfg.get("redirect_host")
+        and cached_loopback is not None
+    ):
+        cached_uri, port = cached_loopback
+        cfg["redirect_uri"] = cached_uri
+        cfg["_resolved_port"] = port
+        _note_assigned_cimd_port(port)
+        _oauth_port = port
+        return port
     # Precedence: explicit config port → cached client-registration port →
     # fresh ephemeral port. The cached port keeps re-auth consistent with the
     # redirect URI pinned at dynamic client registration (providers reject a

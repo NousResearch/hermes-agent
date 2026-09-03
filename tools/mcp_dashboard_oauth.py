@@ -32,7 +32,9 @@ class DashboardOAuthFlow:
     error: str | None = None
     tools: list[dict] = field(default_factory=list)
     expected_state: str | None = field(default=None, init=False)
-    _callback: tuple[str, str | None] | None = field(default=None, init=False, repr=False)
+    _callback: tuple[str, str | None, str | None] | None = field(
+        default=None, init=False, repr=False
+    )
     _callback_error: str | None = field(default=None, init=False, repr=False)
     _authorization_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _callback_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
@@ -65,6 +67,7 @@ class DashboardOAuthFlow:
         code: str | None,
         state: str | None,
         error: str | None,
+        iss: str | None = None,
     ) -> None:
         with self._lock:
             if self._callback_ready.is_set():
@@ -78,12 +81,18 @@ class DashboardOAuthFlow:
             if error:
                 self._callback_error = error
             elif code:
-                self._callback = (code, state)
+                # RFC 9207 authorization-response issuer. Providers that
+                # advertise support require the SDK to validate this value;
+                # dropping it here turns a successful browser consent into a
+                # rejected token exchange and a recurring authorization loop.
+                self._callback = (code, state, iss)
             else:
                 self._callback_error = "OAuth callback did not include code or error"
             self._callback_ready.set()
 
-    async def wait_for_callback(self, timeout: float = 300.0) -> tuple[str, str | None]:
+    async def wait_for_callback(
+        self, timeout: float = 300.0
+    ) -> tuple[str, str | None, str | None]:
         ready = await asyncio.to_thread(self._callback_ready.wait, timeout)
         if not ready:
             raise TimeoutError("Timed out waiting for MCP OAuth callback")

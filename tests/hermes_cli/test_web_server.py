@@ -2542,6 +2542,37 @@ class TestConfigRoundTrip:
             "Shallow-merge regression: agent.x_dashboard_invisible_test_key " \
             "was wiped when the frontend sent a partial agent dict."
 
+    def test_get_config_keeps_mcp_environment_references_unexpanded(self, monkeypatch):
+        """Editable Desktop config must never receive an expanded MCP secret.
+
+        The runtime still needs the resolved header, but the renderer must see
+        the safe on-disk template so opening the mcp.json editor cannot expose a
+        credential or write it back as plaintext on an unrelated save.
+        """
+        from hermes_cli.config import load_config, save_config
+
+        secret = "github-secret-that-must-not-cross-the-api"
+        template = "Bearer ${env:DESKTOP_MCP_TEST_TOKEN}"
+        monkeypatch.setenv("DESKTOP_MCP_TEST_TOKEN", secret)
+        save_config({
+            "mcp_servers": {
+                "github": {
+                    "url": "https://api.githubcopilot.com/mcp/",
+                    "headers": {"Authorization": template},
+                },
+            },
+        })
+
+        # Runtime callers continue to receive the expanded credential.
+        assert load_config()["mcp_servers"]["github"]["headers"]["Authorization"] == f"Bearer {secret}"
+
+        response = self.client.get("/api/config")
+        assert response.status_code == 200
+        web_config = response.json()
+        authorization = web_config["mcp_servers"]["github"]["headers"]["Authorization"]
+        assert authorization == template
+        assert secret not in json.dumps(web_config["mcp_servers"])
+
     def test_schema_types_match_config_values(self):
         """Every schema field should have a matching-type value in the config."""
         config = self.client.get("/api/config").json()

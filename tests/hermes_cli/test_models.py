@@ -116,11 +116,23 @@ class TestOpenRouterToolSupportHelper:
         ) is True
 
 
-    def test_empty_supported_parameters_list_drops_model(self):
-        """Explicit empty list → no tools → drop."""
+    def test_empty_supported_parameters_list_is_permissive(self):
+        """Empty list carries no capability info → allow (openrouter/fusion).
+
+        OpenRouter meta-routers (e.g. ``openrouter/fusion``) publish
+        ``supported_parameters: []`` because the concrete model is resolved
+        per-request, yet they support tool calling. Treat empty like missing.
+        """
         from hermes_cli.models import _openrouter_model_supports_tools
         assert _openrouter_model_supports_tools(
-            {"id": "x", "supported_parameters": []}
+            {"id": "openrouter/fusion", "supported_parameters": []}
+        ) is True
+
+    def test_explicit_list_without_tools_drops_model(self):
+        """Non-empty list that omits 'tools' → drop."""
+        from hermes_cli.models import _openrouter_model_supports_tools
+        assert _openrouter_model_supports_tools(
+            {"id": "x", "supported_parameters": ["temperature", "response_format"]}
         ) is False
 
 
